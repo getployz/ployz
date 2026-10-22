@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { DeploymentView, HistoryView } from "@ployz/sdk";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -11,7 +11,8 @@ import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
 import { deploymentQuery, storeViewOptions, useCachedStoreRead, useStoreView } from "./store-view.queries";
 
-afterEach(() => vi.restoreAllMocks());
+// Unmount before restoring the scope spy: a hook left mounted rerenders on a later focus and reads a null router.
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const query = { query: "history", environment: { project: "shop", environment: "production" } } as const;
 
@@ -146,4 +147,9 @@ it("tells a chrome view's failed read from an unread one, across rereads, after 
   await waitFor(() => expect(reads).toHaveLength(3));
   await act(async () => reads[2]?.fail());
   await waitFor(() => expect(shown.result.current).toMatchObject({ result: { ok: true, value: { status: "running" } }, failed: true }));
+});
+
+it("leaves no History or Deployment read mounted for a later file's focus or reconnect to rerender", () => {
+  // Runs last. A hook left mounted would rerender against the real scope on the next focus and read a null router.
+  expect(document.body.childElementCount).toBe(0);
 });
