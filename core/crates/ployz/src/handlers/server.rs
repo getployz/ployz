@@ -1284,6 +1284,10 @@ mod tests {
             );
             assert!(add(allowed).is_ok(), "{allowed}");
         }
+        assert_eq!(
+            set("::ffff:203.0.113.9").unwrap(),
+            PublicIpUpdate::Set("203.0.113.9".parse().unwrap())
+        );
     }
 
     #[test]
