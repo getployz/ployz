@@ -1746,6 +1746,12 @@ describe("volume runs", () => {
       return run;
     };
 
+    const silentThird = (G: Snapshot): Member[] => [
+      { machine: { id: idOf("fsn-1"), name: "fsn-1" }, address: "fdcc::1", answered: true, view: { copy: slotCopy(G) }, floorless: false },
+      { machine: { id: B, name: "fsn-2" }, address: "fdcc::2", answered: true, view: { copy: slotCopy(G, null, "2") }, floorless: false },
+      { machine: { id: idOf("fsn-3"), name: "fsn-3" }, answered: false },
+    ];
+
     it("on a warm row starts a release back to A", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);
@@ -1760,6 +1766,52 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("on a warm row waits for a silent Server, noting it on the row, then releases back to A once it answers", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      machines.push({ name: "fsn-3", pool: true, copy: null });
+      await owned("warm");
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      const id = (await releaseRow()).id;
+      const silent = { id: "01-observe", handler: () => silentThird(G) };
+
+      const paused = await execute(id, "run-2", [silent, { id: "01-observe-1", handler: () => { throw new Error("paused"); } }]);
+
+      expect(paused.error).toBeDefined();
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
+      expect((await rows()).at(-1)).toMatchObject({ id, state: "running", message: "waiting for fsn-3 to answer (check 1 of 8)" });
+
+      verbs = [];
+      const output = await execute(id, "run-2", [silent]);
+
+      expect(output.result).toEqual({ runId: id, released: "fsn-1" });
+      expect(output.ctx.step.sleep).toHaveBeenCalledWith("01-wait-0", "5s");
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "floor@fsn-1", "floor@fsn-2", "floor@fsn-3", "forget@fsn-2", "writer@fsn-1(kept)"]);
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+      expect((await rows()).at(-1)).toMatchObject({ id, state: "done" });
+    });
+
+    it("on a warm row fails naming the Server once it stays silent through every wait, and leaves A's Container stopped", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      machines.push({ name: "fsn-3", pool: true, copy: null });
+      await owned("warm");
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      const id = (await releaseRow()).id;
+      const observes = Array.from({ length: 9 }, (_, check) => ({ id: check === 0 ? "01-observe" : `01-observe-${check}`, handler: () => silentThird(G) }));
+
+      const output = await execute(id, "run-2", observes);
+
+      expect(output.result).toMatchObject({ refused: { code: "unanswered" } });
+      expect(verbs.filter((verb) => !verb.startsWith("floor@"))).toEqual([]);
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
+      expect((await rows()).at(-1)).toMatchObject({ id, state: "failed", message: "fsn-3 did not answer; data's copies are unknown" });
     });
 
     it("on a committed row finishes on B at the Move's epoch and removes A's stopped Container", async () => {
