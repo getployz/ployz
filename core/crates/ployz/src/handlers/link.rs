@@ -704,18 +704,26 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             subject: None,
         });
     }
+    let mut partial = false;
     if let (Some(store), Some(_)) = (&store, &diff) {
         match store.try_read(&NamespaceQuery {
             environment: scope.at(),
         }) {
-            Ok(view) => attention.extend(super::status_servers::attention(
-                root,
-                &view.namespace,
-                &view.services,
-                view.authored.as_ref(),
-                &deploying,
-            )),
-            Err(error) => crate::ui::warn_cause(UNCHECKED, &store.fail(error)),
+            Ok(view) => {
+                let servers = super::status_servers::attention(
+                    root,
+                    &view.namespace,
+                    &view.services,
+                    view.authored.as_ref(),
+                    &deploying,
+                );
+                attention.extend(servers.attention);
+                partial = servers.partial;
+            }
+            Err(error) => {
+                crate::ui::warn_cause(UNCHECKED, &store.fail(error));
+                partial = true;
+            }
         }
     }
     let staged = diff.as_ref().map(|diff| Staged {
@@ -752,6 +760,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::fields(&Next::new(&status, hint.clone()), &status_record(&status))?;
     if let Some(hint) = hint {
         crate::ui::hint(&Hint::Next(hint));
+    }
+    if partial {
+        return Err(Error::partial());
     }
     Ok(())
 }

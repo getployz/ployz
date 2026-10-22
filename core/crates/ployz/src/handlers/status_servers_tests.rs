@@ -1041,6 +1041,10 @@ fn a_server_that_never_arrived_does_not_hide_a_draining_copy() {
         messages(&check)
     );
     assert!(warned(&check).is_empty());
+    assert!(
+        !check.partial(),
+        "a Server that never arrived holds no copies to miss"
+    );
 }
 
 #[test]
@@ -2118,7 +2122,8 @@ fn while_a_deployment_rolls_out_status_says_it_skips_the_check() {
     );
 }
 
-fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
+/// The check's warnings, and whether it was partial.
+fn status_warnings(config: &std::path::Path, flags: &[&str]) -> (Vec<String>, bool) {
     let mut args = vec![
         "ployz",
         "status",
@@ -2128,11 +2133,14 @@ fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
     args.extend(flags);
     let root = crate::cli::command().try_get_matches_from(args).unwrap();
     let namespace = qualified("app", "web").namespace;
-    assert!(attention(&root, &namespace, &BTreeMap::new(), None, &[]).is_empty());
+    let check = attention(&root, &namespace, &BTreeMap::new(), None, &[]);
+    assert!(check.attention.is_empty());
     let (_, json) = crate::ui::captured(|| crate::ui::show(&json!({})));
-    json.and_then(|json| json.get("warnings").cloned())
+    let warnings = json
+        .and_then(|json| json.get("warnings").cloned())
         .map(|warnings| serde_json::from_value(warnings).unwrap())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (warnings, check.partial)
 }
 
 #[test]
@@ -2141,7 +2149,8 @@ fn status_warns_when_the_context_it_was_given_does_not_exist() {
     let config = dir.path().join("config.yaml");
     std::fs::write(&config, "contexts:\n  prod:\n    connections: []\n").unwrap();
 
-    let warnings = status_warnings(&config, &["--context", "typo"]);
+    let (warnings, partial) = status_warnings(&config, &["--context", "typo"]);
+    assert!(partial, "a check that couldn't run exits 3");
 
     let [warning] = warnings.as_slice() else {
         panic!("one warning: {warnings:?}");
@@ -2161,5 +2170,47 @@ fn status_checks_nothing_and_says_nothing_with_no_server_set_up() {
     }
     let dir = tempfile::tempdir().unwrap();
 
-    assert!(status_warnings(&dir.path().join("config.yaml"), &[]).is_empty());
+    assert_eq!(
+        status_warnings(&dir.path().join("config.yaml"), &[]),
+        (Vec::new(), false)
+    );
+}
+
+#[test]
+fn a_check_that_could_not_see_every_server_is_partial() {
+    let [one, two, three] = machines();
+    let copies = || {
+        listed_copies(vec![
+            web_copy(&one, '1', CopyRotation::In, healthy(), 2, 1),
+            web_copy(&two, '2', CopyRotation::In, healthy(), 2, 1),
+        ])
+    };
+    assert!(
+        !judged(listed(&[&one, &two, &three], &[]), copies()).partial(),
+        "every Server answered"
+    );
+    assert!(
+        judged(
+            listed(&[&one, &two], &[&three]),
+            omitted_by(copies(), &three)
+        )
+        .partial(),
+        "a Down Server's copies went unchecked"
+    );
+    assert!(
+        judged(
+            listed(&[&one, &two, &three], &[]),
+            omitted_by(copies(), &three)
+        )
+        .partial(),
+        "a Server that didn't answer"
+    );
+    assert!(
+        !judged_in_app(Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::RollingOut(rolling_out(&[deployment(12, "running")]).unwrap()),
+        })
+        .partial(),
+        "status skips the copy check on purpose while a deploy runs"
+    );
 }
