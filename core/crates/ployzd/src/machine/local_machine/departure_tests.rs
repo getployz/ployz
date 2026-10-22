@@ -310,7 +310,7 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             "slot elsewhere",
             nothing.clone(),
             Some(("slot", true)),
-            Some("ployz volume restore data --from fsn-2"),
+            Some("Volume data has no writer; fsn-2 holds its only copy"),
         ),
         (
             "slot on a Machine the Cluster no longer lists",
@@ -328,7 +328,7 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             "slot held",
             slot,
             None,
-            Some("ployz volume restore data --from local"),
+            Some("Volume data has no writer; local holds its only copy"),
         ),
         ("read-only root", root(true), None, Some("mid-run")),
     ];
@@ -364,6 +364,12 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
                 };
                 assert_eq!(error.code, RpcErrorCode::Conflict, "{case}: {error:?}");
                 assert!(error.message.contains(text), "{case}: {}", error.message);
+                // Only the operator knows whether `ployz volume restore` can run here.
+                assert!(
+                    !error.message.contains("restore"),
+                    "{case}: {}",
+                    error.message
+                );
                 assert!(!prepared, "{case}: a refused mount is never prepared");
             }
         }
