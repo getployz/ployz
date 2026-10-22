@@ -750,32 +750,16 @@ fn readdressing_reconnects_every_attached_container_at_its_ipv4_address() {
 }
 
 #[test]
-fn interfaces_that_take_router_advertisements_keep_taking_them_once_forwarding() {
-    let conf = tempfile::tempdir().unwrap();
-    for (interface, accept_ra) in [
-        ("ens3", "1"),
-        ("default", "1"),
-        ("eth1", "0"),
-        ("eth2", "2"),
-    ] {
-        std::fs::create_dir(conf.path().join(interface)).unwrap();
-        std::fs::write(
-            conf.path().join(interface).join("accept_ra"),
-            format!("{accept_ra}\n"),
-        )
-        .unwrap();
-    }
-
-    keep_router_advertisements(conf.path()).unwrap();
-
-    let accept_ra = |interface: &str| {
-        std::fs::read_to_string(conf.path().join(interface).join("accept_ra"))
-            .unwrap()
-            .trim()
-            .to_owned()
-    };
-    assert_eq!(accept_ra("ens3"), "2");
-    assert_eq!(accept_ra("default"), "2");
-    assert_eq!(accept_ra("eth1"), "0");
-    assert_eq!(accept_ra("eth2"), "2");
+fn interfaces_that_rely_on_router_advertisements_are_named() {
+    let routes = "default via fe80::1 dev ens3 proto ra metric 1024 expires 1798sec pref medium
+default via 2001:db8::1 dev ens4 proto static metric 1024 onlink pref medium
+";
+    let addresses = "2: ens5    inet6 2001:db8:5::7/64 scope global dynamic mngtmpaddr noprefixroute \\       valid_lft 86393sec preferred_lft 14393sec
+3: ens4    inet6 2001:db8:4::7/64 scope global \\       valid_lft forever preferred_lft forever
+";
+    assert_eq!(
+        router_advertised_interfaces(routes, addresses),
+        BTreeSet::from(["ens3".to_owned(), "ens5".to_owned()])
+    );
+    assert!(router_advertised_interfaces("", "").is_empty());
 }

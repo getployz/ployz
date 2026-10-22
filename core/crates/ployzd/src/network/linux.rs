@@ -418,14 +418,11 @@ impl NetworkPlane {
         let subnet = self.machine.subnet.to_string();
         let gateway = self.machine.subnet.gateway().0.to_string();
         let required_options = required_docker_network_options(self.mtu);
-        let ipv6 = host_has_ipv6().then(|| docker_network_ipv6(self.machine.subnet));
+        let ipv6 = bridge_ipv6_allowed().then(|| docker_network_ipv6(self.machine.subnet));
         let request = docker_network_request(self.machine.subnet, &required_options, ipv6.as_ref());
         match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
             Ok(network) => {
                 if docker_network_matches(&network, &subnet, &gateway, &required_options) {
-                    if ipv6.is_some() {
-                        keep_router_advertisements(Path::new(IPV6_CONF))?;
-                    }
                     if !docker_network_ipv6_matches(&network, ipv6.as_ref()) {
                         self.readdress_docker_network(&network, request).await?;
                     }
@@ -472,9 +469,6 @@ impl NetworkPlane {
             }
             Err(error) if is_not_found(&error) => {}
             Err(error) => return Err(error.into()),
-        }
-        if ipv6.is_some() {
-            keep_router_advertisements(Path::new(IPV6_CONF))?;
         }
         self.docker.create_network(request).await?;
         Ok(true)
@@ -569,27 +563,70 @@ impl NetworkPlane {
     }
 }
 
-const IPV6_CONF: &str = "/proc/sys/net/ipv6/conf";
-
 /// Docker turns on IPv6 forwarding for a dual-stack bridge, and a forwarding
-/// interface ignores Router Advertisements unless `accept_ra` is 2. A host that
-/// learns its IPv6 default route from them would lose it when the route expires.
-/// 2 behaves as 1 while forwarding is off, so this changes nothing else.
-fn keep_router_advertisements(conf: &Path) -> io::Result<()> {
-    for interface in std::fs::read_dir(conf)? {
-        let path = interface?.path().join("accept_ra");
-        let result = match std::fs::read_to_string(&path) {
-            Ok(value) if value.trim() == "1" => std::fs::write(&path, "2"),
-            Ok(_) => Ok(()),
-            Err(error) => Err(error),
-        };
-        // A container's veth can go between listing and writing.
-        match result {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
+/// interface ignores Router Advertisements unless its `accept_ra` is 2. A host that
+/// learns its IPv6 route or address from them would lose it when that expires, so
+/// its bridge stays IPv4-only until the operator sets 2, which the next start sees.
+fn bridge_ipv6_allowed() -> bool {
+    if !host_has_ipv6() {
+        return false;
     }
-    Ok(())
+    let listing = |args: &[&str]| {
+        checked_command("ip", args)
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    let exposed = router_advertised_interfaces(
+        &listing(&["-6", "-o", "route", "show", "default"]),
+        &listing(&["-6", "-o", "addr", "show", "scope", "global"]),
+    )
+    .into_iter()
+    .filter(|interface| {
+        std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{interface}/accept_ra"))
+            .is_ok_and(|accept_ra| accept_ra.trim() == "1")
+    })
+    .collect::<Vec<_>>();
+    if exposed.is_empty() {
+        return true;
+    }
+    let settings = exposed
+        .iter()
+        .map(|interface| format!("net.ipv6.conf.{interface}.accept_ra=2"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    eprintln!(
+        "the {DOCKER_NETWORK_NAME} network stays IPv4-only, so apps see IPv6 visitors as its gateway: \
+         {interfaces} learn IPv6 from router advertisements, which IPv6 forwarding would stop. \
+         Run `sysctl -w {settings}`, persist it in /etc/sysctl.d, then `systemctl restart ployz`.",
+        interfaces = exposed.join(", "),
+    );
+    false
+}
+
+/// Interfaces with a default route or a global address from a router advertisement,
+/// read from `ip -6 -o route show default` and `ip -6 -o addr show scope global`.
+fn router_advertised_interfaces(routes: &str, addresses: &str) -> BTreeSet<String> {
+    let routed = routes.lines().filter_map(|line| {
+        let words = line.split_whitespace().collect::<Vec<_>>();
+        let after = |key| {
+            words
+                .iter()
+                .skip_while(|word| **word != key)
+                .nth(1)
+                .copied()
+        };
+        (after("proto") == Some("ra"))
+            .then(|| after("dev").map(str::to_owned))
+            .flatten()
+    });
+    let addressed = addresses.lines().filter_map(|line| {
+        let mut words = line.split_whitespace();
+        let interface = words.nth(1)?;
+        words
+            .any(|word| word == "dynamic")
+            .then(|| interface.to_owned())
+    });
+    routed.chain(addressed).collect()
 }
 
 /// The host can carry IPv6 on a new bridge: the kernel has it and new interfaces
