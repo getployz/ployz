@@ -183,7 +183,7 @@ fn a_service_that_keeps_its_hostname_still_blocks_another_in_the_same_deploy() {
 }
 
 #[test]
-fn a_handover_to_a_service_that_depends_on_the_dropper_keeps_the_declared_order() {
+fn a_handover_to_a_service_that_depends_on_the_dropper_is_refused() {
     let (web, api) = handover_specs();
     let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
     let intent = DeployIntent::apply_all(
@@ -198,13 +198,70 @@ fn a_handover_to_a_service_that_depends_on_the_dropper_keeps_the_declared_order(
             condition: ployz_core::DependencyCondition::ServiceStarted,
         }],
     )]));
-    let plan = preview_deploy(&intent, &snapshot)
-        .expect("a declared dependency on the dropper is not a cycle");
+    let error = preview_deploy(&intent, &snapshot)
+        .expect_err("web would drop the hostname for api's whole rollout");
+    assert_eq!(
+        error.to_string(),
+        "hostname api.example.com is published by app/web and can't move to api in the same Deploy: api depends on web; remove it from web and deploy, then add it to api"
+    );
+}
+
+#[test]
+fn two_services_swapping_hostnames_are_refused() {
+    let web_today = named_web("web.example.com");
+    let mut api_today = custom_web();
+    api_today.name = ServiceName::parse("api").unwrap();
+    let web = custom_web();
+    let mut api = named_web("web.example.com");
+    api.name = ServiceName::parse("api").unwrap();
+    let snapshot = snapshot_with(vec![
+        container('c', '1', &web_today, &service_id('a')),
+        container('d', '1', &api_today, &service_id('b')),
+    ]);
+    let error = plan_ingress([&web, &api], &snapshot)
+        .expect_err("a swap can order only one of its two handovers");
+    assert_eq!(
+        error.to_string(),
+        "hostname api.example.com is published by app/api and can't move to web in the same Deploy: web hands web.example.com to api; remove it from api and deploy, then add it to web"
+    );
+}
+
+#[test]
+fn a_named_deploy_of_the_gainer_alone_says_to_deploy_the_dropper_too() {
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
+    let mut options = PlanOptions::default();
+    options.selected = vec![ServiceAttempt {
+        name: api.name.clone(),
+    }];
+    let intent = DeployIntent::new(
+        Namespace::parse("app").unwrap(),
+        vec![web.clone(), api.clone()],
+        options,
+    );
+    let error = preview_deploy(&intent, &snapshot).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "hostname api.example.com is published by app/web until web deploys: deploy web too"
+    );
+}
+
+#[test]
+fn a_retiring_older_publisher_does_not_hide_a_handover() {
+    let (web, api) = handover_specs();
+    let mut old = custom_web();
+    old.name = ServiceName::parse("old").unwrap();
+    let mut newer = container('c', '1', &custom_web(), &service_id('a'));
+    newer
+        .try_update(|parts| parts.created_at_unix_nanos = 1)
+        .unwrap();
+    let snapshot = snapshot_with(vec![container('e', '1', &old, &service_id('c')), newer]);
+    let plan = plan_ingress([&web, &api], &snapshot)
+        .expect("old retires with this Deploy, so web is the publisher that hands the hostname on");
     assert_eq!(
         plan.dependencies,
-        vec![(web.name.clone(), api.name.clone())]
+        vec![(api.name.clone(), web.name.clone())]
     );
-    assert!(first_operation(&plan, "web") < first_operation(&plan, "api"));
 }
 
 #[test]

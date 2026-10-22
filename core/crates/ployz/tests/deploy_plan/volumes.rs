@@ -1,9 +1,9 @@
 use super::support::*;
 use ployz_core::{
     ContainerKind, CopyRole, DependencyCondition, DockerVolume, DockerVolumeStorageObservation,
-    MachineFailure, MachineStorageObservation, PreDeployHook, PreservedVolume,
-    ProvisionedVolumeMaximumBytes, PruneRefusal, RpcError, RpcErrorCode, ServiceAttempt,
-    ServiceDependency, ServiceName, VolumeObservationFailure,
+    HttpProtocol, IngressHost, MachineFailure, MachineStorageObservation, PortPublication,
+    PreDeployHook, PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal, RpcError,
+    RpcErrorCode, ServiceAttempt, ServiceDependency, ServiceName, VolumeObservationFailure,
 };
 use std::{
     collections::BTreeMap,
@@ -1105,6 +1105,54 @@ fn a_service_that_depends_on_a_blocked_one_is_blocked_too() {
         preview.dependencies
     );
     assert!(preview.depths.is_empty(), "{:?}", preview.depths);
+}
+
+#[test]
+fn a_service_handing_a_hostname_to_a_blocked_one_is_blocked_too() {
+    let publishing = |name: &str| {
+        let mut spec = spec(name);
+        spec.ports = vec![PortPublication::Ingress {
+            hostname: IngressHost::parse("api.example.com").unwrap(),
+            load_balancer_port: NonZeroU16::new(80).unwrap(),
+            container_port: NonZeroU16::new(80).unwrap(),
+            http_protocol: HttpProtocol::Http,
+        }];
+        spec
+    };
+    let web = spec("web");
+    let mut api = publishing("api");
+    add_named_volume(&mut api, "data");
+    make_provisioned(&mut api, "data", 1_073_741_824);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &api],
+        PlanOptions::default(),
+    );
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Slot)], vec![]);
+    snapshot
+        .containers
+        .push(container('c', '1', &publishing("web"), &service_id('a')));
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    assert!(
+        operations(&preview).is_empty(),
+        "web keeps publishing the hostname: {:?}",
+        operations(&preview)
+    );
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| (blocked.service.as_str(), blocked.error.message.as_str()))
+        .collect();
+    assert_eq!(blocked.first().map(|entry| entry.0), Some("api"));
+    assert_eq!(
+        blocked.get(1).copied(),
+        Some((
+            "web",
+            "hands hostname api.example.com to api, which was not attempted"
+        ))
+    );
 }
 
 #[test]
