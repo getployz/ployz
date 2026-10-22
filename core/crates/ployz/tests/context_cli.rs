@@ -1139,7 +1139,7 @@ fn context_config_selection_works_before_between_and_after_commands() {
                 .as_str()
                 .unwrap(),
             format!(
-                "ployz --ployz-config {} server add --context verify",
+                "ployz --ployz-config {} server add --standalone --context verify",
                 path.display()
             ),
             "{json}"
@@ -1228,9 +1228,81 @@ fn context_config_empty_context_names_the_next_step_for_runtime_commands() {
             "{stderr}"
         );
         assert!(
-            stderr.contains("next: ployz") && stderr.contains("server add --context verify"),
+            stderr.contains("next: ployz")
+                && stderr.contains("server add --standalone --context verify"),
             "{stderr}"
         );
         assert!(!stderr.contains("no connections found"), "{stderr}");
     }
+}
+
+#[test]
+fn context_config_management_refuses_explicit_context_before_mutation() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    let config = Config::new(
+        &path,
+        Some("default".into()),
+        ["default", "other"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.into(),
+                    Context {
+                        connections: vec![
+                            Connection::unix(format!("/tmp/{name}-1.sock")).unwrap(),
+                            Connection::unix(format!("/tmp/{name}-2.sock")).unwrap(),
+                        ],
+                    },
+                )
+            })
+            .collect(),
+    );
+    config.save().unwrap();
+    let run = ployz_with(&path, &[]);
+    for args in [
+        &["ctx", "use", "--connection", "2"][..],
+        &["ctx", "rm", "default"],
+        &["ctx", "ls"],
+    ] {
+        let output = run(&[&["-c", "other"], args, &["--json"]].concat());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {json}");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("doesn't use a context"),
+            "{json}"
+        );
+        assert_eq!(Config::load(&path).unwrap(), config, "{args:?}");
+    }
+}
+
+#[test]
+fn context_config_cloud_commands_refuse_root_context_in_the_process() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    let run = ployz_with(&path, &[]);
+    for args in [&["org", "ls"][..], &["config", "ls"]] {
+        let output = run(&[&["-c", "x"], args, &["--json"]].concat());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{json}");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("doesn't use a context"),
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn context_config_status_accepts_a_zero_byte_config() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    fs::write(&path, "").unwrap();
+    let output = ployz_with(&path, &[])(&["status", "--json"]);
+    assert!(output.status.success(), "{output:?}");
 }

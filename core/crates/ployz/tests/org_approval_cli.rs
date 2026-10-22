@@ -579,3 +579,41 @@ fn leaving_the_organization_while_waiting_leaves_the_approval_unchecked_without_
         "{stderr}"
     );
 }
+
+#[test]
+fn context_config_org_removal_hint_ignores_the_context_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.yaml");
+    let cloud = fake_cloud(Arc::default(), true);
+    let execute = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .env_clear()
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env("PLOYZ_CONFIG", &path)
+            .env("PLOYZ_CONTEXT", "b")
+            .env("PLOYZ_TOKEN", "ployz_acme")
+            .env("PLOYZ_CLOUD_URL", &cloud)
+            .output()
+            .unwrap()
+    };
+    let asked = json_of(&execute(&[
+        "org",
+        "rm",
+        "acme",
+        "--confirm",
+        "acme",
+        "--json",
+    ]));
+    let retry = asked["error"]["details"]["retry"].as_str().unwrap();
+    assert!(!retry.contains("--context"), "{retry}");
+    let words = shell_words::split(retry).unwrap();
+    let args = words[1..]
+        .iter()
+        .map(String::as_str)
+        .chain(["--json"])
+        .collect::<Vec<_>>();
+    let approved = execute(&args);
+    assert!(approved.status.success(), "{}", json_of(&approved));
+}

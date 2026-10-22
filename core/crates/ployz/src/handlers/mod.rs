@@ -905,6 +905,36 @@ mod tests {
     }
 
     #[test]
+    fn context_config_recovery_omits_context_for_a_contextless_destination() {
+        let matches = command()
+            .try_get_matches_from(["ployz", "server", "ls", "--context", "b"])
+            .unwrap();
+        for hint in [
+            recovery_command(leaf_matches(&matches), "b", &["org", "ls"]),
+            rerun(leaf_matches(&matches), &["org", "ls"]),
+        ] {
+            assert!(!hint.contains("--context"), "{hint}");
+            command()
+                .try_get_matches_from(shell_words::split(&hint).unwrap())
+                .unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "recovery hint does not parse")]
+    fn context_config_recovery_asserts_dispatch_accepts_the_context() {
+        let matches = command()
+            .try_get_matches_from(["ployz", "server", "ls"])
+            .unwrap();
+        recovery_command(
+            leaf_matches(&matches),
+            "b",
+            &["org", "ls", "--context", "b"],
+        );
+    }
+
+    #[test]
     fn direct_recovery_uses_failed_identity_and_actual_scope_before_committed_json() {
         use crate::ui::progress::{Diagnostic, LogTail};
         use ployz_core::{MachineId, QualifiedService};

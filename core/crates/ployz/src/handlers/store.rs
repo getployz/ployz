@@ -1200,6 +1200,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn context_config_store_only_uses_contexts_declared_by_its_command() {
+        for (words, context) in [
+            (&["service", "rm", "web"][..], None),
+            (&["volume", "rm", "data"], None),
+            (&["set", "web.image=web:2"], None),
+            (&["deploy"], Some("b")),
+        ] {
+            let root = crate::cli::compiled()
+                .mut_arg("context", |arg| arg.default_value("b"))
+                .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
+                .unwrap();
+            let local =
+                ConfigStore::open("sqlite::memory:", SealingKey::new(&[7; 32]).unwrap()).unwrap();
+            let store = Store {
+                backend: Backend::Local(
+                    std::sync::Arc::new(local),
+                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+                ),
+                matches: leaf_matches(&root),
+                words: words.iter().map(|word| (*word).to_owned()).collect(),
+            };
+            assert_eq!(store.context(), context, "{words:?}");
+        }
+    }
+
+    #[test]
     fn a_staged_domain_change_reads_as_a_domain() {
         let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(serde_json::json!({
             "path": "web.managedHostnames", "kind": "update", "canRestore": false,
