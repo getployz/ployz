@@ -1683,21 +1683,18 @@ fn an_agent_renames_a_project() {
 
 #[test]
 fn an_agent_adds_checks_and_removes_domains() {
-    for store in &targets() {
-        let cloud = matches!(store, Target::Cloud { .. });
+    // Only Cloud reserves the Cluster Domain a generated domain needs: the local Store
+    // refuses one (`standalone_refuses_a_generated_domain`).
+    let [_, store] = targets();
+    {
+        let store = &store;
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
 
         let generated = ok(store, &["domain", "add", "web", "--port", "8080"]);
         assert_eq!(generated["domain"]["kind"], json!("generated"));
         assert_eq!(generated["domain"]["prefix"], json!("web"));
-        // Only Cloud holds a Cluster Domain, so only it names the hostname.
-        let hostname = if cloud {
-            json!("web.acme.ployz.app")
-        } else {
-            json!(null)
-        };
-        assert_eq!(generated["domain"]["hostname"], hostname);
+        assert_eq!(generated["domain"]["hostname"], json!("web.acme.ployz.app"));
         assert_eq!(generated["staged"], json!(["web"]));
         assert_eq!(generated["next"], json!("ployz deploy"));
         let again = ok(store, &["domain", "add", "web"]);
@@ -1750,13 +1747,8 @@ fn an_agent_adds_checks_and_removes_domains() {
                 "{edit:?}"
             );
         }
-        // A generated domain reads as its full hostname, under a placeholder until a
-        // Cluster Domain is known.
-        let generated = if cloud {
-            "added web.acme.ployz.app on port 8080"
-        } else {
-            "added web.<cluster domain> on port 8080"
-        };
+        // A generated domain reads as its full hostname.
+        let generated = "added web.acme.ployz.app on port 8080";
         let reads = [
             ok(store, &["diff"]),
             ok(store, &["deploy", "--plan"]),
@@ -1775,7 +1767,7 @@ fn an_agent_adds_checks_and_removes_domains() {
             .is_some_and(|causes| !causes.is_empty());
         assert_eq!(
             (planned["ingress"].is_array(), unchecked),
-            (cloud, !cloud),
+            (true, false),
             "{planned}"
         );
         let unreached = ok(
@@ -1791,33 +1783,6 @@ fn an_agent_adds_checks_and_removes_domains() {
             ) && cause.contains("refused"),
             "{unreached}"
         );
-
-        // A context connection that knows its Server names it, and says why in a few words.
-        if !cloud {
-            let home = tempfile::tempdir().unwrap();
-            let machine = "0123456789abcdef0123456789abcdef";
-            std::fs::write(
-                home.path().join("config.yaml"),
-                format!(
-                    "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: 127.0.0.1:1\n        machine_id: {machine}\n"
-                ),
-            )
-            .unwrap();
-            let output = store
-                .command(home.path())
-                .args(["--json", "deploy", "--plan"])
-                .output()
-                .unwrap();
-            let planned: Value = serde_json::from_slice(&output.stdout).unwrap();
-            let cause = planned["ingress_unchecked"][0].as_str().unwrap_or_default();
-            assert!(
-                cause.starts_with(&format!("Server {machine} isn't answering ("))
-                    && cause.contains("refused")
-                    && !cause.contains("retry")
-                    && !cause.contains("Machine"),
-                "{planned}"
-            );
-        }
 
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];
@@ -1836,6 +1801,144 @@ fn an_agent_adds_checks_and_removes_domains() {
         assert_eq!(removed["domain"]["port"], json!(8080));
         assert_eq!(removed["next"], json!("ployz deploy"));
     }
+}
+
+#[test]
+fn standalone_refuses_a_generated_domain() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let store = &store;
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+
+    // Without Ployz Cloud no Cluster Domain is ever reserved, so a generated domain
+    // could never deploy: it's refused before anything is staged, naming a custom one.
+    for add in [
+        &["domain", "add", "web"][..],
+        &["domain", "add", "web", "--prefix", "shop", "--port", "8080"],
+    ] {
+        let refused = error(store, add);
+        assert_eq!(refused["code"], json!("unsupported"), "{add:?}");
+        assert_eq!(
+            refused["message"],
+            json!(
+                "Generated domains need Ployz Cloud, which reserves the Cluster Domain they live \
+                 under: give web a hostname you own instead"
+            ),
+            "{add:?}"
+        );
+        assert_eq!(
+            refused["details"]["next"],
+            json!("ployz domain add web HOST"),
+            "{add:?}"
+        );
+    }
+    assert_eq!(ok(store, &["get", "web.domains"])["domains"], json!([]));
+    let home = tempfile::tempdir().unwrap();
+    let (code, stderr) = person(store, home.path(), &["domain", "add", "web"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("next: ployz domain add web HOST"),
+        "{stderr}"
+    );
+
+    let custom = ok(store, &["domain", "add", "web", "app.example.com"]);
+    assert_eq!(custom["domain"]["hostname"], json!("app.example.com"));
+
+    // A context connection that knows its Server names it, and says why in a few words.
+    let home = tempfile::tempdir().unwrap();
+    let machine = "0123456789abcdef0123456789abcdef";
+    std::fs::write(
+        home.path().join("config.yaml"),
+        format!(
+            "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: 127.0.0.1:1\n        machine_id: {machine}\n"
+        ),
+    )
+    .unwrap();
+    let output = store
+        .command(home.path())
+        .args(["--json", "deploy", "--plan"])
+        .output()
+        .unwrap();
+    let planned: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let cause = planned["ingress_unchecked"][0].as_str().unwrap_or_default();
+    assert!(
+        cause.starts_with(&format!("Server {machine} isn't answering ("))
+            && cause.contains("refused")
+            && !cause.contains("retry")
+            && !cause.contains("Machine"),
+        "{planned}"
+    );
+}
+
+#[test]
+fn a_standalone_deploy_names_the_generated_domains_to_remove() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let Target::Local(dir) = &store else {
+        unreachable!("a local Store")
+    };
+    let store = &store;
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+    ok(store, &["service", "add", "api", "--image", "api:1"]);
+    // Generated domains staged before the CLI refused them on a local Store.
+    let local = ConfigStore::open(
+        &format!("sqlite:{}", dir.path().join("store.db").display()),
+        SealingKey::from_file(&dir.path().join("store.db.key")).unwrap(),
+    )
+    .unwrap();
+    let who = Actor::system(OrganizationId::parse("local").unwrap());
+    for (service, prefix) in [("web", "web"), ("web", "shop")] {
+        local
+            .write_trusted(
+                &who,
+                &ployz_store::AddDomain {
+                    environment: ployz_store::EnvironmentRef::default(),
+                    service: ployz_core::ServiceName::parse(service).unwrap(),
+                    hostname: None,
+                    prefix: Some(ployz_core::DomainPrefix::parse(prefix).unwrap()),
+                    port: None,
+                },
+                &Trusted::default(),
+            )
+            .unwrap();
+    }
+    drop(local);
+    // A generated domain reads under a placeholder until a Cluster Domain is known.
+    let changes = ok(store, &["diff"])["domain_changes"].clone();
+    assert!(
+        changes
+            .as_array()
+            .unwrap()
+            .contains(&json!({ "path": "web.domains", "change": "added web.<cluster domain>" })),
+        "{changes}"
+    );
+
+    // Every Deploy refuses, even of another Service, and names what removes them.
+    let rm = "ployz domain rm web --project shop --env production \
+              && ployz domain rm shop --project shop --env production";
+    for deploy in [&["deploy"][..], &["deploy", "api"]] {
+        let refused = error(store, deploy);
+        assert_eq!(refused["code"], json!("unsupported"), "{deploy:?}");
+        assert_eq!(
+            refused["message"],
+            json!(
+                "production has generated domains (web, shop), which need the Cluster Domain \
+                 Ployz Cloud reserves at a Deploy: remove them, or deploy through Ployz Cloud"
+            ),
+            "{deploy:?}"
+        );
+        assert_eq!(refused["details"]["domains"], json!(["web", "shop"]));
+        assert_eq!(refused["details"]["next"], json!(rm), "{deploy:?}");
+    }
+
+    ok(store, &["domain", "rm", "web"]);
+    ok(store, &["domain", "rm", "shop"]);
+    let deployed = no_server_answers(store, &["deploy"]);
+    assert_ne!(
+        deployed["error"]["code"],
+        json!("unsupported"),
+        "{deployed}"
+    );
 }
 
 #[test]

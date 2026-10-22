@@ -268,23 +268,37 @@ pub(crate) fn gate(
 }
 
 /// Refuse to deploy `environment`'s generated domains without the Cluster Domain
-/// they expand under: Cloud reserves it at a Deploy.
+/// they expand under: Cloud reserves it at a Deploy. Without Cloud, removing them is
+/// the way on, so the refusal names each and the commands that remove them.
 fn needs_cluster_domain(
     environment: &scope::Environment,
     intent: &SavedEnvironmentIntent,
     cluster_domain: Option<&Hostname>,
 ) -> Result<(), RpcError> {
-    if cluster_domain.is_some() || !domain::has_generated(intent) {
+    let prefixes: Vec<&str> = domain::generated_prefixes(intent).collect();
+    if cluster_domain.is_some() || prefixes.is_empty() {
         return Ok(());
     }
+    let summary = &environment.summary;
+    let remove = prefixes
+        .iter()
+        .map(|prefix| {
+            format!(
+                "ployz domain rm {prefix} --project {} --env {}",
+                summary.project, summary.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" && ");
     Err(RpcError {
         code: RpcErrorCode::Unsupported,
         message: format!(
-            "{} has generated domains, which need the Cluster Domain Ployz Cloud reserves \
-             at a Deploy: deploy it through Ployz Cloud first",
-            environment.summary.name
+            "{} has generated domains ({}), which need the Cluster Domain Ployz Cloud \
+             reserves at a Deploy: remove them, or deploy through Ployz Cloud",
+            summary.name,
+            prefixes.join(", ")
         ),
-        details: json!({}),
+        details: json!({ "domains": prefixes, "next": remove }),
         cause: Vec::new(),
     })
 }
