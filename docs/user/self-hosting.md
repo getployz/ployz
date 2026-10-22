@@ -260,10 +260,15 @@ before it stops.
   settings included, is in `ployz-cloud-self-host_postgres-data`.
 - **Restarting Postgres.** While it's down, pages say **This page couldn't load** and try again
   every few seconds. They come back by themselves within seconds of Postgres starting.
-- **Rate-limit requests in your proxy.** Ployz Cloud doesn't limit most requests itself. If
-  your instance is public, set a per-address request rate limit on `/api/` and `/auth/` in
-  your proxy or tunnel. Leave out `/api/github/webhook`, since GitHub doesn't resend a
-  rejected delivery, and leave room for Servers that share one address.
+- **Rate-limit requests in your proxy.** Ployz Cloud limits only failed sign-ins from the
+  `ployz` CLI, per address. If your instance is public, set a per-address request rate limit
+  on `/api/` and `/auth/` in your proxy or tunnel. Leave out `/api/github/webhook`, since
+  GitHub doesn't resend a rejected delivery, and leave room for Servers that share one address.
+- **Pass each client's own address.** Ployz Cloud takes the client's address from
+  `X-Forwarded-For` when your proxy reaches it from a private or local address, as in the setups
+  above. Caddy and `cloudflared` add that header for you. Otherwise every client shares the
+  proxy's address. Then someone guessing tokens can lock every `ployz` user out for up to an
+  hour.
 - **Adding a GitHub permission later.** Existing installations keep working without it until
   their owner approves the new permissions on GitHub.
 - **No uptime checks yet.** Self-hosted Ployz Cloud doesn't run the uptime checker, so services

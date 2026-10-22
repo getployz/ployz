@@ -1,13 +1,17 @@
 import { it } from "@effect/vitest";
+import * as startServer from "@tanstack/react-start/server";
 import { sql } from "drizzle-orm";
 import { Cause, Effect, Exit } from "effect";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
+import { MANIFEST_HEADER, MANIFEST_REVISION } from "#/modules/commands/commands.server";
 import { ClientAddress, FAILED_AUTHENTICATION_WINDOWS, resolveCaller } from "#/modules/identity/caller.server";
 import { handleAgentSignup } from "#/routes/api/agent/-signup.handler";
-import { AuthLive } from "#/server/auth.server";
+import { handleRunRequest, serveCli } from "#/routes/api/cli/-handlers";
+import { Auth, AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { publicErrorResponse } from "#/server/public-error";
-import { storeTestCloudWith } from "#/test/store-cloud";
+import * as run from "#/server/run.server";
+import { type StoreCloud, storeTestCloudWith } from "#/test/store-cloud";
 
 const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>) => Effect.gen(function* () {
   return yield* body.pipe(Effect.provide(yield* storeTestCloudWith(AuthLive)));
@@ -58,7 +62,7 @@ it.live("answers 429 with Retry-After once an address fails authentication too o
     expect(held.body).toEqual({
       _tag: "PublicError",
       code: "RATE_LIMITED",
-      message: expect.stringMatching(/^Too many failed sign-ins from this address\. Try again in \d+ seconds\.$/),
+      message: expect.stringMatching(/^Too many failed sign-ins from this address\. Try again in (\d+ seconds|1 second)\.$/),
     });
     // The address waits as a whole, so a guess can't land while it does.
     expect((yield* answer(good, guesser)).status).toBe(429);
@@ -88,5 +92,51 @@ it.live("holds an address that keeps failing just under the minute limit for the
     expect(held.status).toBe(429);
     expect(Number(held.retryAfter)).toBeGreaterThan(minute.seconds);
     expect(Number(held.retryAfter)).toBeLessThanOrEqual(hour.seconds);
+    expect(held.body).toMatchObject({
+      message: expect.stringMatching(/^Too many failed sign-ins from this address\. Try again in \d+ minutes\.$/),
+    });
     expect((yield* answer("ployz_elsewhere", "2001:db8:1:3::1")).status).toBe(401);
+  })));
+
+it.live("lets no more guesses from one address be checked than its limit, however many arrive at once", () =>
+  inCloud(Effect.gen(function* () {
+    const answers = yield* Effect.forEach(
+      Array.from({ length: minute.limit * 3 }, (_, call) => call),
+      (call) => answer(`ployz_burst${call}`, "203.0.113.9"),
+      { concurrency: "unbounded" },
+    );
+    const statuses = answers.map((reply) => reply.status);
+    expect(statuses.filter((status) => status === 401)).toHaveLength(minute.limit);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(minute.limit * 2);
+  })));
+
+it.live("holds the client the proxy names, and says how long in Retry-After, over HTTP", () =>
+  inCloud(Effect.gen(function* () {
+    const cloud = yield* Effect.context<StoreCloud | Auth>();
+    const runInCloud = run.makeEffectRunner<StoreCloud | Auth, never>({ runPromiseExit: (program, options) => Effect.runPromiseExitWith(cloud)(program, options) });
+    const runs = vi.spyOn(run, "runAppEffect").mockImplementation(runInCloud as typeof run.runAppEffect);
+    // The socket peer is a local reverse proxy, which names the client in X-Forwarded-For.
+    const peer = vi.spyOn(startServer, "getRequestIP").mockReturnValue("127.0.0.1");
+    yield* Effect.addFinalizer(() => Effect.sync(() => {
+      runs.mockRestore();
+      peer.mockRestore();
+    }));
+
+    const call = (token: string, client: string) => Effect.promise(async () => {
+      const request = new Request("http://localhost:3000/api/cli/run/whoami", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "x-forwarded-for": client },
+        body: "{}",
+      });
+      const response = await serveCli(request, handleRunRequest(request, "whoami"));
+      return { status: response.status, retryAfter: response.headers.get("retry-after"), manifest: response.headers.get(MANIFEST_HEADER) };
+    });
+
+    for (let guess = 0; guess < minute.limit; guess += 1) expect((yield* call(`ployz_guess${guess}`, "198.51.100.20")).status).toBe(401);
+    const held = yield* call("ployz_one-more", "198.51.100.20");
+    expect(held.status).toBe(429);
+    expect(Number(held.retryAfter)).toBeGreaterThan(0);
+    expect(held.manifest).toBe(MANIFEST_REVISION);
+    // The proxy's own address is not the key, so another client behind it is untouched.
+    expect((yield* call("ployz_neighbour", "198.51.100.21")).status).toBe(401);
   })));

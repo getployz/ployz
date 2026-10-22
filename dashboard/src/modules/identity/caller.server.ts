@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { and, arrayContains, eq, gt, isNull, or, sql } from "drizzle-orm";
-import { Context, Effect, Schema } from "effect";
+import { Cause, Context, Effect, Exit, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
 import { member, organizationToken, session } from "#/modules/identity/tables";
@@ -13,10 +13,10 @@ import { Auth } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, RateLimited, Unauthorized } from "#/server/public-error";
 import {
+  admitWithinWindows,
+  forgetRateEvent,
   rateLimitAddress,
   type RateWindow,
-  recordRateEvent,
-  secondsUntilWithinWindows,
 } from "#/modules/machines/waiting/rate-limit.server";
 
 /** The client address of the request being served, as the app trusts it behind its proxy; null outside an HTTP request. */
@@ -34,21 +34,32 @@ export const FAILED_AUTHENTICATION_WINDOWS: ReadonlyArray<RateWindow> = [
  * member there. Anything else is refused. The session must come in the Authorization header, as the CLI sends it:
  * a cookie is what a browser attaches to a cross-site request on its own, so it authenticates nothing here.
  * An address over its failed-authentication limit waits whatever it presents, so a guess can't land while it does.
+ * Each attempt holds a place in the limit while it is checked, so a burst can't all be checked at once; only a
+ * failure keeps it.
  */
 export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (headers: Headers) {
   const address = yield* ClientAddress;
   if (address === null) return yield* callerOf(headers);
-  const key = `failed-auth:${rateLimitAddress(address)}`;
-  const retryAfterSeconds = yield* secondsUntilWithinWindows(key, FAILED_AUTHENTICATION_WINDOWS);
-  if (retryAfterSeconds > 0) {
+  const admission = yield* admitWithinWindows(`failed-auth:${rateLimitAddress(address)}`, FAILED_AUTHENTICATION_WINDOWS);
+  if (!admission.admitted) {
     return yield* new RateLimited({
-      message: `Too many failed sign-ins from this address. Try again in ${retryAfterSeconds} seconds.`,
+      message: `Too many failed sign-ins from this address. Try again in ${waitOf(admission.retryAfterSeconds)}.`,
       userFacing: true,
-      retryAfterSeconds,
+      retryAfterSeconds: admission.retryAfterSeconds,
     });
   }
-  return yield* callerOf(headers).pipe(Effect.tapErrorTag("Unauthorized", () => recordRateEvent(key)));
+  return yield* callerOf(headers).pipe(
+    Effect.onExit((exit) => refused(exit) ? Effect.void : forgetRateEvent(admission.event)),
+  );
 });
+
+const refused = (exit: Exit.Exit<unknown, unknown>) =>
+  Exit.isFailure(exit) && Option.exists(Cause.findErrorOption(exit.cause), (error) => error instanceof Unauthorized);
+
+const waitOf = (seconds: number) => {
+  if (seconds > 60) return `${Math.ceil(seconds / 60)} minutes`;
+  return seconds === 1 ? "1 second" : `${seconds} seconds`;
+};
 
 const callerOf = Effect.fn("Identity.callerOf")(function* (headers: Headers) {
   const bearer = /^Bearer (\S+)$/.exec(headers.get("authorization") ?? "")?.[1];

@@ -1596,4 +1596,18 @@ mod tests {
             "Only a signed-in person can make or revoke tokens; run `ployz login`."
         );
     }
+
+    #[test]
+    fn a_cloud_rate_limit_reads_as_unavailable() {
+        let failure = Failure::from(LoginError::Status {
+            status: 429,
+            body: r#"{"_tag":"PublicError","code":"RATE_LIMITED","message":"Too many failed sign-ins from this address. Try again in 42 seconds."}"#.into(),
+        });
+        let report = failure.report();
+        assert_eq!(report.code, RpcErrorCode::Unavailable);
+        assert_eq!(
+            report.message,
+            "Too many failed sign-ins from this address. Try again in 42 seconds."
+        );
+    }
 }

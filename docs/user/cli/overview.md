@@ -443,6 +443,11 @@ selection flags.
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.
 
+After 20 failed sign-ins in a minute, or 100 in an hour, from one address, Ployz Cloud refuses
+the commands it serves from that address for a while, even one with a working token. The command
+fails with `Too many failed sign-ins from this address. Try again in 55 minutes.` Wait that long,
+and fix what keeps failing first, such as a script that still sends a revoked token.
+
 Add `--json` to any command to get one JSON object instead of text. A stream, such as `ployz logs`,
 prints JSON Lines instead: one object per line. If the command fails before it prints anything,
 that object is `{"error": {...}}`. A stream that fails after it printed names the failure on stderr
