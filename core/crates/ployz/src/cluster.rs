@@ -119,24 +119,28 @@ impl Client {
     /// Replace the channel, and the entry it confirmed, with a freshly confirmed one.
     async fn redial(&mut self) -> Result<(), ConnectError> {
         self.entry = None;
-        self.entry = self.reconnect().await?;
+        self.entry = self.reconnect(None).await?;
         Ok(())
     }
 
     /// [`Self::redial`] for a client shared by reference, as a Deploy's is. Its entry
-    /// stays the Machine it confirmed, which a connection naming its Machine checks again.
+    /// stays the Machine it confirmed, so an endpoint that now reaches another is refused.
     ///
     /// # Errors
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`], when the
     /// entry doesn't answer on the new channel.
     pub(crate) async fn redial_shared(&self) -> Result<(), ConnectError> {
-        self.reconnect().await.map(|_| ())
+        self.reconnect(self.entry).await.map(|_| ())
     }
 
     /// Dial the connection again and confirm its entry on the new channel, which only
-    /// then replaces the shared one. Returns the entry it confirmed.
-    async fn reconnect(&self) -> Result<Option<MachineId>, ConnectError> {
+    /// then replaces the shared one. Returns the entry it confirmed, which must be
+    /// `expected` when both are known.
+    async fn reconnect(
+        &self,
+        expected: Option<MachineId>,
+    ) -> Result<Option<MachineId>, ConnectError> {
         let candidate = Self {
             channel: Arc::new(std::sync::RwLock::new(
                 self.connector.connect(&self.connection).await?,
@@ -144,6 +148,11 @@ impl Client {
             ..self.clone()
         };
         let entry = candidate.confirmed_entry().await?;
+        if let (Some(expected), Some(actual)) = (expected, entry)
+            && expected != actual
+        {
+            return Err(ConnectError::IdentityMismatch { expected, actual });
+        }
         *self
             .channel
             .write()
