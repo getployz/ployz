@@ -872,6 +872,37 @@ mod tests {
     }
 
     #[test]
+    fn a_service_handing_over_a_hostname_never_starts_when_the_one_taking_it_fails() {
+        let mut schedule = Schedule::new(
+            vec![
+                group("api", &[], vec![Step::Parallel(vec![0])]),
+                group("web", &["api"], vec![Step::Parallel(vec![1])]),
+            ],
+            vec![start('1'), start('1')],
+        );
+        assert_eq!(starts(&mut schedule), vec![0]);
+        schedule.apply(Event::Failed(0));
+        assert!(
+            starts(&mut schedule).is_empty(),
+            "web keeps the copies that publish the hostname"
+        );
+        assert!(schedule.finished());
+        assert_eq!(
+            schedule.services(),
+            vec![
+                ServiceOutcome {
+                    service: name("api"),
+                    result: ServiceResult::Old,
+                },
+                ServiceOutcome {
+                    service: name("web"),
+                    result: ServiceResult::NotStarted,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn a_lost_publish_fails_the_deploy() {
         let mut schedule = Schedule::new(
             vec![
