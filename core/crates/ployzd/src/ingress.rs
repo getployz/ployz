@@ -466,8 +466,8 @@ impl CaddyCertificates {
         without(projection, &unloaded)
     }
 
-    /// Serve each refused site without HTTPS and name the refusal in its place, so one site's
-    /// certificate never blocks the rest of the config.
+    /// Leave each refused site out, as if its certificate were still pending, and name the
+    /// refusal in its place, so one site's certificate never blocks the rest of the config.
     fn quarantine(&mut self, projection: &mut IngressProjection) {
         let mut current = BTreeSet::new();
         for site in &mut projection.sites {
@@ -529,7 +529,7 @@ impl CaddyCertificates {
                     tracing::warn!(
                         certificate = %stem,
                         %error,
-                        "Caddy refused a certificate; serving its site without HTTPS"
+                        "Caddy refused a certificate; its site is left out until the material changes"
                     );
                     excluded.insert(stem.clone());
                     self.refused.insert(stem, error);
