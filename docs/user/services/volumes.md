@@ -229,8 +229,9 @@ Without Ployz Cloud, several copies get the same `ployz volume rm data` to start
 the error says that making one of them the writer needs Ployz Cloud. A mid-move volume says only
 that stopping the move needs Ployz Cloud.
 
-A volume that several services mount blocks all of them, and every service that depends on one
-of them, with the same reason. The rest of the deploy still goes ahead.
+Services that share a volume are blocked together: when any volume one of them mounts can't be
+mounted, all of them are blocked with that reason, and so is every service that depends on one of
+them. The rest of the deploy still goes ahead.
 
 ## When your servers show Docker only
 
