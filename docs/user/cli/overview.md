@@ -466,9 +466,10 @@ Scripts can tell failures apart by exit code:
 `ployz exec` exits with your command's own exit code. When the container stops under it,
 because a deploy replaced it or the service was stopped, it exits 1 with
 `The container for web stopped; exec ended.` A `retry:` line follows when another container of the
-service runs. It is the command you ran, with the `-T`, `--context`, `--connect`, `--project` and
-`--env` you typed and its `-- command`, like `retry: ployz exec -T web -- sleep 120`, and running it attaches there. It
-names no container, so it reaches whichever one runs. When `ployz exec` stops before your command does,
+service runs. It is the command you ran: the `-T` you typed, the `--context`, `--connect`,
+`--project` and `--env` you gave as flags or variables, and the `-- command`, like
+`retry: ployz exec -T web -- sleep 120`. Running it attaches there. It names no container, so it
+reaches whichever one runs. When `ployz exec` stops before your command does,
 because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
 command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command
 you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a` and `b` running.

@@ -378,12 +378,18 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// The flags typed on the command line that chose where the command ran. Values from the
-/// environment are left out, since they still apply to a command run from the same shell.
+/// The flags that chose where the command ran, typed or from the environment. A variable may
+/// have been set for that one command (`PLOYZ_ENV=staging ployz exec …`), so the retry spells
+/// it out rather than trust the shell to still hold it.
 fn typed_scope(leaf: &ArgMatches) -> Vec<(&'static str, String)> {
     ["context", "connect", "project", "env"]
         .into_iter()
-        .filter(|id| leaf.value_source(id) == Some(ValueSource::CommandLine))
+        .filter(|id| {
+            matches!(
+                leaf.value_source(id),
+                Some(ValueSource::CommandLine | ValueSource::EnvVariable)
+            )
+        })
         .filter_map(|id| Some((id, leaf.get_one::<String>(id)?.clone())))
         .collect()
 }
@@ -1345,6 +1351,18 @@ mod tests {
                 ("env", "production".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn the_retry_spells_out_scope_that_came_from_the_environment() {
+        // As `PLOYZ_ENV=staging ployz exec …` sets it, for that one command; PATH stands in
+        // because every test process already has it.
+        let path = std::env::var("PATH").unwrap();
+        let leaf = exec_command(Command::new("exec"))
+            .mut_arg("env", |env| env.env("PATH"))
+            .try_get_matches_from(["exec", "web"])
+            .unwrap();
+        assert_eq!(typed_scope(&leaf), [("env", path)]);
     }
 
     #[test]
