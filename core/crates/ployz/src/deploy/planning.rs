@@ -1076,13 +1076,18 @@ fn removal_unobserved(unobserved: &[&MachineObservation]) -> RpcError {
         .collect();
     RpcError {
         code: RpcErrorCode::Unavailable,
-        message: format!(
-            "couldn't check {} for its copies. Deploy again once every Server answers.",
-            names.join(", ")
-        ),
+        message: removal_unobserved_message(&names),
         details: serde_json::json!({ "reason": "removal_unobserved", "servers": names }),
         cause: Vec::new(),
     }
+}
+
+pub(super) fn removal_unobserved_message(names: &[impl AsRef<str>]) -> String {
+    let names: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
+    format!(
+        "couldn't check {} for its copies. Deploy again once every Server answers.",
+        names.join(", ")
+    )
 }
 
 /// Why a Service handing a hostname to a blocked one is blocked too: replacing its copies

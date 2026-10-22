@@ -2315,10 +2315,7 @@ async fn execute_operation<C: MachineOperations>(
                         unreached.iter().map(|id| rows.machine_name(id)).collect();
                     return Err(machine_error(
                         MachineAction::RemoveContainer,
-                        unavailable(format!(
-                            "can't reach the copy on {}. Deploy again once every Server is back.",
-                            names.join(", ")
-                        )),
+                        unavailable(super::planning::removal_unobserved_message(&names)),
                     )
                     .into());
                 }
