@@ -191,7 +191,9 @@ your first server.
 1. Run the same command again. A first start can take several minutes.
 2. Make sure your servers reach each other on UDP 51820, in any firewall your provider runs in
    front of them.
-3. Read the server's logs with `sudo journalctl -u ployz -n 200`.
+3. Read the server's logs with `sudo journalctl -u ployz -n 200`. Only if they say `refusing to
+   change the retained WireGuard interface` or `refusing to replace the existing Docker network`,
+   follow [Ployz stops over a leftover network](#ployz-stops-over-a-leftover-network).
 
 ## A server waits for approval and never shows up
 

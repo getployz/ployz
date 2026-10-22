@@ -165,11 +165,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_timeout_surfaces_the_docker_network_recovery() {
+    fn add_timeout_leaves_the_docker_network_recovery_to_the_journal() {
         let message = helpers::readiness_timeout_message("added Server did not become ready");
 
         assert!(message.contains("added Server did not become ready"));
-        assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
+        assert!(!message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
     }
 
     #[test]

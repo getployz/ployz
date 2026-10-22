@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use clap::ArgMatches;
 use ployz_core::{
-    DOCKER_NETWORK_CONFLICT_RECOVERY, EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left,
-    LocalMachinePhase, MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken,
-    PinnedAddresses, PublicIpDiscovery, RpcErrorCode, TokenRequest, op,
+    EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left, LocalMachinePhase,
+    MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken, PinnedAddresses,
+    PublicIpDiscovery, RpcErrorCode, TokenRequest, op,
 };
 
 use super::parse_endpoints;
@@ -206,9 +206,11 @@ pub(in crate::handlers) async fn leave(client: &mut Client) -> Result<(), Error>
     }
 }
 
+/// The CLI can't see why the daemon isn't ready, so it names where the cause
+/// shows rather than prescribing a recovery for one it never observed.
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {
     format!(
-        "{message}; check `journalctl -u ployz` (a first Corrosion image pull can take several minutes); if ployzd refused a Docker network, safe recovery: {DOCKER_NETWORK_CONFLICT_RECOVERY}"
+        "{message}; check `journalctl -u ployz` (a first Corrosion image pull can take several minutes); if it shows ployzd `refusing to` change a network, follow the safe recovery that line ends with"
     )
 }
 
@@ -282,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn readiness_timeout_names_the_start_delay_and_docker_network_recovery() {
+    fn readiness_timeout_names_the_start_delay_and_where_a_refusal_shows() {
         let message = readiness_timeout_message("initial Server did not become ready");
         assert!(
             message.contains("initial Server did not become ready"),
@@ -290,10 +292,20 @@ mod tests {
         );
         assert!(message.contains("journalctl -u ployz"), "{message}");
         assert!(message.contains("Corrosion"), "{message}");
+        assert!(message.contains("`refusing to`"), "{message}");
+    }
+
+    #[test]
+    fn readiness_timeout_never_claims_a_docker_network_conflict() {
+        // The CLI never observes the daemon's refusal, so it must not prescribe
+        // removing a network the daemon may never have refused (#2972).
+        let message = readiness_timeout_message("initial Server did not become ready");
         assert!(
-            message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY),
+            !message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY),
             "{message}"
         );
+        assert!(!message.contains("docker network rm"), "{message}");
+        assert!(!message.contains("systemctl stop"), "{message}");
     }
 
     fn token_with_hostname(hostname: &str) -> MachineToken {
