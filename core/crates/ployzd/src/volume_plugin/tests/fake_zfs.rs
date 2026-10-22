@@ -446,7 +446,7 @@ case "$*" in
       if [ "$previous" = -o ]; then
         case "$option" in
           refquota=*|keylocation=*|sharesmb=*) ;;
-          *) printf '%s\n' "${{option#*=}}" > "$d/${{option%%=*}}" ;;
+          *) put "$d/${{option%%=*}}" "${{option#*=}}" ;;
         esac
       fi
       previous=$option
@@ -465,9 +465,8 @@ case "$*" in
         {{ printf '%s@%s\t%s\t%s\n' "$fs" "$arg" "$guid" "$((1700000000 + count))"; [ ! -e "$d/snapshots" ] || cat "$d/snapshots"; }} > "$d/snapshots.new"
         mv "$d/snapshots.new" "$d/snapshots"
         # A first receive lands the stream's properties; a lost connection loses them.
-        if [ -e '{readonly_lost}' ]; then echo off > "$d/readonly.new"; else echo on > "$d/readonly.new"; fi
-        mv "$d/readonly.new" "$d/readonly"
-        printf '%s\n' "${{7#refquota=}}" > "$d/refquota"
+        if [ -e '{readonly_lost}' ]; then put "$d/readonly" off; else put "$d/readonly" on; fi
+        put "$d/refquota" "${{7#refquota=}}"
         ;;
       break)
         cat >/dev/null
@@ -475,9 +474,8 @@ case "$*" in
         echo 'cannot receive: connection reset' >&2
         echo 'A resuming stream can be generated on the sending system by running:' >&2
         echo '    zfs send -t token-1' >&2
-        echo 'token-1' > "$d/receive_resume_token"
-        echo off > "$d/readonly.new"
-        mv "$d/readonly.new" "$d/readonly"
+        put "$d/receive_resume_token" token-1
+        put "$d/readonly" off
         exit 1
         ;;
       *) echo "fake zfs receive: unexpected stream $verb" >&2; exit 1 ;;
