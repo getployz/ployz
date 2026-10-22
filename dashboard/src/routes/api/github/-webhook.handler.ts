@@ -151,7 +151,11 @@ export const handleGithubWebhookRequest = Effect.fn(
   if (event === "installation") {
     const decoded = decodeGithubInstallationPayload(payload.value);
     if (EffectResult.isFailure(decoded)) {
-      return new Response("Rejected webhook", { status: 422 });
+      return yield* rejectDelivery({
+        deliveryId,
+        eventKind: "installation",
+        rejection: "malformed",
+      });
     }
     yield* sendInngestEvent(
       createGithubInstallationReceivedEvent({
@@ -165,7 +169,11 @@ export const handleGithubWebhookRequest = Effect.fn(
   if (event === "installation_repositories") {
     const decoded = decodeGithubInstallationRepositoriesPayload(payload.value);
     if (EffectResult.isFailure(decoded)) {
-      return new Response("Rejected webhook", { status: 422 });
+      return yield* rejectDelivery({
+        deliveryId,
+        eventKind: "installation_repositories",
+        rejection: "malformed",
+      });
     }
     yield* sendInngestEvent(
       createGithubInstallationRepositoriesReceivedEvent({
