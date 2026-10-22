@@ -32,8 +32,8 @@ database, so staging gets its own copy of both and its own data. Use your own se
 
 ![The New branch panel set to Everything: each service is Separate](../images/new-branch-panel.png)
 
-Ployz never copies data, so staging's database starts empty. A setup command runs once, before
-`web` first starts, to fill it. To give every new branch of production the same commands, add
+Ployz never copies data, so staging's database starts empty. A setup command runs before `web`
+first starts, to fill it, and again on each deploy until `web` first deploys successfully. To give every new branch of production the same commands, add
 them under **Branch setup** in production's **Settings → Environment**.
 
 From the CLI, add the command when you branch, with `ployz env branch staging --copy web --copy
@@ -170,7 +170,8 @@ It starts with no services or variables, so you add them yourself.
 
 A branch that isn't kept closes after 7 days without a deploy: it comes off your servers, and its
 copies and their data are deleted. It can also close as you sync it: tick **Close staging after
-syncing** in the Sync dialog.
+syncing** in the Sync dialog. A branch that was never deployed, has branches of its own, or is the
+default environment doesn't close on its own.
 
 - **Keep it:** turn on **Keep it after syncing into production** when you create it. Later, open
   the Sync button's ▾ menu and check **Keep staging**.
@@ -274,5 +275,9 @@ goes too.
 
 Only an owner or admin can delete a project. Like an environment, it stays listed until every
 server that ran it has taken it off.
+
+Deleting with `ployz env rm` or `ployz project rm`, or through an agent, asks for approval first
+when it would take something off your servers. See
+[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 
 **Next:** [give every pull request its own copy of your app](preview-environments.md).
