@@ -274,7 +274,7 @@ fn renewal_window_uses_the_policy_fraction() {
 }
 
 #[test]
-fn machine_jitter_stays_inside_the_remaining_third() {
+fn machine_jitter_stays_inside_its_span() {
     let remaining = Duration::from_secs(30 * 86_400);
     let first = machine_jitter(&machine_id("a"), remaining);
     let second = machine_jitter(&machine_id("f"), remaining);
@@ -282,6 +282,35 @@ fn machine_jitter_stays_inside_the_remaining_third() {
     assert!(second < remaining, "{second:?}");
     assert_ne!(first, second);
     assert_eq!(machine_jitter(&machine_id("a"), remaining), first);
+}
+
+#[test]
+fn every_machine_first_tries_to_renew_with_most_of_the_last_third_left() {
+    let day = Duration::from_secs(86_400);
+    let fraction = default_policy().renew_at_lifetime_fraction();
+    for lifetime in [day * 90, day * 6] {
+        let not_before = UNIX_EPOCH;
+        let not_after = not_before + lifetime;
+        let row = row_with_lifetime(not_before, not_after);
+        let window = renewal_window(not_before, not_after, fraction).unwrap();
+        let left_at_window = not_after.duration_since(window).unwrap();
+        let mut dues = BTreeSet::new();
+        for n in 0..1_000 {
+            let machine = MachineId::parse(format!("{n:032x}")).unwrap();
+            let due = super::renew_at(row.material().unwrap(), &machine, fraction).unwrap();
+            assert!(due >= window, "lifetime {lifetime:?}");
+            let left = not_after.duration_since(due).unwrap();
+            assert!(
+                left >= left_at_window.mul_f64(0.9),
+                "lifetime {lifetime:?}: {left:?} left"
+            );
+            dues.insert(due);
+        }
+        assert!(
+            dues.len() > 900,
+            "lifetime {lifetime:?}: Machines still spread out"
+        );
+    }
 }
 
 #[test]
