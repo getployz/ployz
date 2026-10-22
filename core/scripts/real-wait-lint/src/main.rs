@@ -6,8 +6,8 @@
 //!
 //! Flags `sleep` and `sleep_until` calls in test code: `#[cfg(test)]` modules, `tests/`
 //! targets, `#[test]` functions, and the `*-testkit` crates. A `tokio::time` sleep is
-//! virtual, and allowed, inside a `start_paused` test, a function that calls
-//! `tokio::time::pause()`, or a helper whose callers in the same file are all of those.
+//! virtual, and allowed, inside a `start_paused` test, after a `tokio::time::pause()` with
+//! no `resume()` between, or in a helper whose callers in the same file are all paused.
 //! `std::thread::sleep` always blocks for real.
 //!
 //! A wait on the OS with nothing to await (a process exit, a file another process writes)
@@ -15,7 +15,7 @@
 //!
 //! Usage: `real-wait-lint <crate dir>...`
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::{env, fs};
@@ -68,19 +68,16 @@ fn check_crate(dir: &Path, findings: &mut Vec<String>) -> Result<(), String> {
     for root in ["src/lib.rs", "src/main.rs"] {
         roots.push((dir.join(root), all_test));
     }
-    roots.extend(
-        rs_files(&dir.join("src/bin"))
-            .into_iter()
-            .map(|file| (file, all_test)),
-    );
-    let tests = dir.join("tests");
-    roots.extend(rs_files(&tests).into_iter().map(|file| (file, true)));
-    if let Ok(entries) = fs::read_dir(&tests) {
-        for entry in entries.flatten() {
-            let main = entry.path().join("main.rs");
-            if main.is_file() {
-                roots.push((main, true));
-            }
+    for file in entries(&dir.join("src/bin"))? {
+        if file.extension().is_some_and(|ext| ext == "rs") {
+            roots.push((file, all_test));
+        }
+    }
+    for entry in entries(&dir.join("tests"))? {
+        if entry.extension().is_some_and(|ext| ext == "rs") {
+            roots.push((entry, true));
+        } else if entry.join("main.rs").is_file() {
+            roots.push((entry.join("main.rs"), true));
         }
     }
     let mut seen = HashSet::new();
@@ -90,18 +87,22 @@ fn check_crate(dir: &Path, findings: &mut Vec<String>) -> Result<(), String> {
             check_file(&root, &dir, in_test, &mut seen, findings)?;
         }
     }
+    if seen.is_empty() {
+        return Err(format!("{} has no Rust source to scan", dir.display()));
+    }
     Ok(())
 }
 
-fn rs_files(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .collect()
+/// The paths in `dir`; none when it does not exist.
+fn entries(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let error = |error: std::io::Error| format!("{}: {error}", dir.display());
+    match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|entry| entry.map(|entry| entry.path()).map_err(error))
+            .collect(),
+        Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(other) => Err(error(other)),
+    }
 }
 
 /// `mod_dir` is where this file's `mod x;` declarations look for `x.rs`.
@@ -204,19 +205,24 @@ enum Clock {
 struct Sleep {
     line: usize,
     clock: Clock,
+    /// The function's clock was paused here: `start_paused`, or a `pause()` above it with
+    /// no `resume()` between.
+    paused: bool,
 }
 
 struct TestFn {
     name: String,
     is_test: bool,
+    /// Ends on paused time, so a helper it calls may count as paused.
     paused: bool,
+    resumes: bool,
     callees: HashSet<String>,
     sleeps: Vec<Sleep>,
 }
 
 fn analyze(source: &str, file: &syn::File, in_test: bool) -> Analysis {
     let mut items = Items {
-        thread_sleep_imported: imports_thread_sleep(&file.items),
+        imported_sleeps: imported_sleeps(&file.items),
         fns: Vec::new(),
         mods: Vec::new(),
         inline_path: Vec::new(),
@@ -252,7 +258,8 @@ fn analyze(source: &str, file: &syn::File, in_test: bool) -> Analysis {
     let mut findings = Vec::new();
     for test_fn in &fns {
         for sleep in &test_fn.sleeps {
-            let real = sleep.clock == Clock::Thread || !paused.contains(test_fn.name.as_str());
+            let helper_paused = !test_fn.resumes && paused.contains(test_fn.name.as_str());
+            let real = sleep.clock == Clock::Thread || !(sleep.paused || helper_paused);
             match (real, marked(&lines, sleep.line)) {
                 (true, Some(true)) | (false, None) => {}
                 (true, None) => {
@@ -294,7 +301,8 @@ fn marked(lines: &[&str], line: usize) -> Option<bool> {
 }
 
 struct Items {
-    thread_sleep_imported: bool,
+    /// The clock of each sleep a `use` brings in, by the name it is called under.
+    imported_sleeps: HashMap<String, Clock>,
     fns: Vec<TestFn>,
     mods: Vec<ModDecl>,
     inline_path: Vec<String>,
@@ -365,49 +373,70 @@ impl Items {
         if !in_test && test_attr.is_none() && !is_cfg_test(attrs) {
             return;
         }
-        let mut body = Body {
-            thread_sleep_imported: self.thread_sleep_imported,
-            calls_pause: false,
-            callees: HashSet::new(),
-            sleeps: Vec::new(),
-        };
-        body.visit_block(block);
         let start_paused = test_attr.is_some_and(|attr| match &attr.meta {
             syn::Meta::List(list) => compact(list.tokens.clone()).contains("start_paused=true"),
             syn::Meta::Path(_) | syn::Meta::NameValue(_) => false,
         });
+        let mut body = Body {
+            imported_sleeps: &self.imported_sleeps,
+            paused: start_paused,
+            resumes: false,
+            callees: HashSet::new(),
+            sleeps: Vec::new(),
+        };
+        body.visit_block(block);
         self.fns.push(TestFn {
             name: sig.ident.to_string(),
             is_test: test_attr.is_some(),
-            paused: start_paused || body.calls_pause,
+            paused: body.paused,
+            resumes: body.resumes,
             callees: body.callees,
             sleeps: body.sleeps,
         });
     }
 }
 
-struct Body {
-    thread_sleep_imported: bool,
-    calls_pause: bool,
+struct Body<'a> {
+    imported_sleeps: &'a HashMap<String, Clock>,
+    /// Whether the clock is paused at the point the visit has reached.
+    paused: bool,
+    resumes: bool,
     callees: HashSet<String>,
     sleeps: Vec<Sleep>,
 }
 
-impl Body {
-    fn call(&mut self, segments: &[String], span: Span) {
+impl Body<'_> {
+    /// `no_args` tells `tokio::time::pause()` from a test's own `pause(duration)`.
+    fn call(&mut self, segments: &[String], span: Span, no_args: bool) {
         let Some(last) = segments.last() else { return };
-        match last.as_str() {
-            "sleep" | "sleep_until" => {
-                let thread = segments.iter().any(|seg| seg == "thread")
-                    || (segments.len() == 1 && self.thread_sleep_imported);
-                let clock = if thread { Clock::Thread } else { Clock::Tokio };
-                self.sleeps.push(Sleep {
-                    line: span.start().line,
-                    clock,
-                });
+        let clock = match segments {
+            [name] => self.imported_sleeps.get(name).copied().or(matches!(
+                name.as_str(),
+                "sleep" | "sleep_until"
+            )
+            .then_some(Clock::Tokio)),
+            _ if matches!(last.as_str(), "sleep" | "sleep_until") => {
+                Some(if segments.iter().any(|seg| seg == "thread") {
+                    Clock::Thread
+                } else {
+                    Clock::Tokio
+                })
             }
-            "pause" if segments.len() == 1 || segments.iter().any(|seg| seg == "time") => {
-                self.calls_pause = true
+            _ => None,
+        };
+        if let Some(clock) = clock {
+            self.sleeps.push(Sleep {
+                line: span.start().line,
+                clock,
+                paused: self.paused,
+            });
+        }
+        let tokio_time = segments.len() == 1 || segments.iter().any(|seg| seg == "time");
+        match last.as_str() {
+            "pause" if no_args && tokio_time => self.paused = true,
+            "resume" if no_args && tokio_time => {
+                self.paused = false;
+                self.resumes = true;
             }
             _ => {}
         }
@@ -438,7 +467,7 @@ impl Body {
                         && colons == 0
                         && !path.is_empty()
                     {
-                        self.call(&path, last_span);
+                        self.call(&path, last_span, group.stream().is_empty());
                     }
                     path.clear();
                     colons = 0;
@@ -453,7 +482,7 @@ impl Body {
     }
 }
 
-impl<'ast> Visit<'ast> for Body {
+impl<'ast> Visit<'ast> for Body<'_> {
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         if let syn::Expr::Path(expr_path) = &*call.func {
             let segments: Vec<String> = expr_path
@@ -467,7 +496,9 @@ impl<'ast> Visit<'ast> for Body {
                 .segments
                 .last()
                 .map_or_else(|| call.span(), |seg| seg.ident.span());
-            self.call(&segments, span);
+            syn::visit::visit_expr_call(self, call);
+            self.call(&segments, span, call.args.is_empty());
+            return;
         }
         syn::visit::visit_expr_call(self, call);
     }
@@ -482,24 +513,44 @@ impl<'ast> Visit<'ast> for Body {
     }
 }
 
-fn imports_thread_sleep(items: &[syn::Item]) -> bool {
-    fn tree(use_tree: &syn::UseTree, under_thread: bool) -> bool {
+fn imported_sleeps(items: &[syn::Item]) -> HashMap<String, Clock> {
+    fn tree(use_tree: &syn::UseTree, under_thread: bool, out: &mut HashMap<String, Clock>) {
+        let clock = if under_thread {
+            Clock::Thread
+        } else {
+            Clock::Tokio
+        };
+        let is_sleep = |ident: &syn::Ident| ident == "sleep" || ident == "sleep_until";
         match use_tree {
-            syn::UseTree::Path(path) => tree(&path.tree, under_thread || path.ident == "thread"),
-            syn::UseTree::Name(name) => under_thread && name.ident == "sleep",
-            syn::UseTree::Rename(rename) => under_thread && rename.ident == "sleep",
-            syn::UseTree::Group(group) => group.items.iter().any(|item| tree(item, under_thread)),
-            syn::UseTree::Glob(_) => false,
+            syn::UseTree::Path(path) => {
+                tree(&path.tree, under_thread || path.ident == "thread", out)
+            }
+            syn::UseTree::Name(name) if is_sleep(&name.ident) => {
+                out.insert(name.ident.to_string(), clock);
+            }
+            syn::UseTree::Rename(rename) if is_sleep(&rename.ident) => {
+                out.insert(rename.rename.to_string(), clock);
+            }
+            syn::UseTree::Group(group) => {
+                for item in &group.items {
+                    tree(item, under_thread, out);
+                }
+            }
+            syn::UseTree::Name(_) | syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => {}
         }
     }
-    items.iter().any(|item| match item {
-        syn::Item::Use(item_use) => tree(&item_use.tree, false),
-        syn::Item::Mod(module) => module
-            .content
-            .as_ref()
-            .is_some_and(|(_, items)| imports_thread_sleep(items)),
-        _ => false,
-    })
+    let mut out = HashMap::new();
+    for item in items {
+        match item {
+            syn::Item::Use(item_use) => tree(&item_use.tree, false, &mut out),
+            syn::Item::Mod(syn::ItemMod {
+                content: Some((_, items)),
+                ..
+            }) => out.extend(imported_sleeps(items)),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
@@ -678,6 +729,53 @@ async fn waits() {
             lint(source),
             ["5: `// real-wait:` on a sleep that runs on paused time; remove it"]
         );
+    }
+
+    #[test]
+    fn follows_a_renamed_sleep_import() {
+        let source = r#"
+use std::thread::sleep as wait;
+use tokio::time::sleep as nap;
+
+#[tokio::test]
+async fn waits() {
+    wait(Duration::from_millis(5));
+    nap(Duration::from_millis(5)).await;
+}
+"#;
+        assert_eq!(
+            lint(source),
+            [
+                "7: real-clock sleep in test code",
+                "8: real-clock sleep in test code"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_resume_ends_paused_time() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    tokio::time::pause();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::resume();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+}
+"#;
+        assert_eq!(lint(source), ["7: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn a_pause_with_arguments_is_not_tokios() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    let _ = pause(Duration::from_secs(1));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+}
+"#;
+        assert_eq!(lint(source), ["5: real-clock sleep in test code"]);
     }
 
     #[test]
