@@ -255,6 +255,10 @@ pub(crate) struct Head {
     pub(crate) applied: SavedEnvironmentIntent,
     /// Every Deployment in flight, newest first.
     pub(crate) in_flight: Vec<InFlight>,
+    /// The Services a Deployment of unknown outcome since the last applied Deployment
+    /// of every Service may have started: its runner lost track of it, so they may run though Applied State
+    /// lacks them.
+    pub(crate) may_run: Vec<SavedServiceIntent>,
 }
 
 /// What a Deployment in flight puts in place: its target nodes as its Saved revision

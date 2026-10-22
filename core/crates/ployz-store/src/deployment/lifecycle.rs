@@ -672,6 +672,7 @@ pub(crate) fn retry(
         rolls_back: undone(tx, &stored.summary)?,
         removes: Vec::new(),
         retires: Vec::new(),
+        ships: None,
     };
     if let Some(confirmed) = &retry.rolls_back
         && *confirmed != rollback.rolls_back
@@ -723,6 +724,17 @@ pub(crate) fn retry(
         })
         .filter(|_| !rollback.rolls_back.is_empty())
         .collect();
+    rollback.ships = services.is_empty().then(|| {
+        nodes
+            .iter()
+            .filter_map(|node| match node {
+                TargetNode::Service { id, .. } if !node.retires() => Some(id.clone()),
+                TargetNode::Service { .. }
+                | TargetNode::Volume { .. }
+                | TargetNode::Config { .. } => None,
+            })
+            .collect()
+    });
     // A retry builds from what its source did, but sends nothing.
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
         json_text(&super::uploads::ServiceUploads {
@@ -805,6 +817,10 @@ pub(crate) struct Rollback {
     pub(crate) rolls_back: Vec<u64>,
     pub(crate) removes: Vec<VolumeLoss>,
     pub(crate) retires: Vec<ServiceLineageId>,
+    /// The Services it ships, when it ships every one: it then takes off any other
+    /// Service that runs, or may. None for one of some Services, which leaves the
+    /// rest as they are.
+    pub(crate) ships: Option<Vec<ServiceLineageId>>,
 }
 
 /// The Deployments of `deployment`'s Environment after it that may have changed
