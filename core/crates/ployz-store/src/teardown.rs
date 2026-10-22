@@ -243,6 +243,11 @@ pub(crate) fn set_protected(
     if let Some(seen) = &set.seen {
         unchanged(tx, &environment, seen)?;
     }
+    // A removal under way never re-reads protection, so protecting what it takes off
+    // would promise what it can't keep.
+    if set.protected {
+        crate::removal::marked(tx, &environment)?;
+    }
     let kind = if crate::pull_request::of(tx, &summary.id)?.is_some() {
         Some("a PR Environment")
     } else if !tx

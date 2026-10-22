@@ -223,6 +223,9 @@ fn retry_review<'a>(
 ) -> Result<Asked<'a>, RpcError> {
     let summary = deployment::owned(tx, who, source)?.summary;
     let id = summary.environment_id;
+    // Protection is read under the lock a Protect takes, so one that commits first
+    // is the one this retry asks under.
+    scope::lock_all(tx, [id.clone()])?;
     let gate = review::Gate::new(tx, &id, trusted)?;
     let gate = if summary.remove {
         gate
@@ -233,7 +236,6 @@ fn retry_review<'a>(
     if !summary.remove && !gate.asks_retry() && trusted.approval == Approval::NotRequired {
         return Ok(Asked::Nothing);
     }
-    scope::lock_all(tx, [id.clone()])?;
     let environment = scope::load_by_id(tx, &id)?;
     let review = review::review(tx, &environment)?;
     Ok(match summary.remove {
