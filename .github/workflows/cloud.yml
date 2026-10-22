@@ -164,7 +164,7 @@ jobs:
             require.resolve("inngest/connect");
             assert.notEqual(process.getuid(), 0, "runs as a non-root user");
             const detectors = require("@opentelemetry/auto-instrumentations-node").getResourceDetectors().map(d => d.constructor.name);
-            assert.deepEqual(detectors.filter(name => /Alibaba|Aws|Azure|Gcp/.test(name)), [], "probes no cloud metadata server");
+            assert.deepEqual(detectors, ["EnvDetector", "HostDetector", "OSDetector", "ProcessDetector", "ServiceInstanceIdDetector", "ContainerDetector"], "probes no cloud metadata server");
           '
       # The publish job pushes this exact image once every leg has passed.
       - name: Save the image for publishing
