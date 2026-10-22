@@ -40,6 +40,8 @@ pub struct MachineService {
     pub(crate) grants: Arc<crate::management::BuildGrants>,
     pub(crate) endpoint_chooser: Option<crate::network::EndpointChooser>,
     pub(crate) published_routes: tokio::sync::watch::Receiver<crate::ingress::PublishedRoutes>,
+    #[cfg(test)]
+    opened_in_test: BTreeSet<String>,
 }
 
 impl MachineService {
@@ -63,13 +65,21 @@ impl MachineService {
                 crate::ingress::PublishedRoutes::default(),
             )
             .1,
+            #[cfg(test)]
+            opened_in_test: BTreeSet::new(),
         }
     }
 
     // TODO: SL2 records the keys it opened; answer from durable state, since RetainedEnv
     // serves Containers Docker no longer reports.
+    #[cfg(not(test))]
     fn opened_env_keys(&self, _container: &ployz_core::ContainerId) -> BTreeSet<String> {
         BTreeSet::new()
+    }
+
+    #[cfg(test)]
+    fn opened_env_keys(&self, _container: &ployz_core::ContainerId) -> BTreeSet<String> {
+        self.opened_in_test.clone()
     }
 
     pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
