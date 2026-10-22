@@ -1429,8 +1429,11 @@ mod tests {
             ..options
         };
         let written = serde_json::to_value(&runner).unwrap();
-        assert_eq!(written["operator"], "cli");
-        assert_eq!(written["block_unmountable"], true);
+        assert_eq!(written.get("operator"), Some(&serde_json::json!("cli")));
+        assert_eq!(
+            written.get("block_unmountable"),
+            Some(&serde_json::json!(true))
+        );
     }
 
     #[test]
