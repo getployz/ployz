@@ -145,14 +145,17 @@ fn renew_at(
     let remaining = not_after.duration_since(window_start).ok()?;
     Some(saturating_add(
         window_start,
-        machine_jitter(machine_id, remaining),
+        machine_jitter(machine_id, remaining.div_f64(RENEWAL_JITTER_DIVISOR)),
     ))
 }
 
-/// Jitter in `[0, remaining)` from the Machine identity.
+/// Machines spread their first renewal over one tenth of the window, so each keeps the rest to retry before expiry.
+const RENEWAL_JITTER_DIVISOR: f64 = 10.0;
+
+/// Jitter in `[0, span)` from the Machine identity.
 #[must_use]
-pub(crate) fn machine_jitter(machine_id: &MachineId, remaining: Duration) -> Duration {
-    if remaining.is_zero() {
+pub(crate) fn machine_jitter(machine_id: &MachineId, span: Duration) -> Duration {
+    if span.is_zero() {
         return Duration::ZERO;
     }
     let seed = machine_id
@@ -162,7 +165,7 @@ pub(crate) fn machine_jitter(machine_id: &MachineId, remaining: Duration) -> Dur
         .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
         });
-    let nanos = remaining.as_nanos().saturating_mul(u128::from(seed)) / (u128::from(u64::MAX) + 1);
+    let nanos = span.as_nanos().saturating_mul(u128::from(seed)) / (u128::from(u64::MAX) + 1);
     Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
 }
 
