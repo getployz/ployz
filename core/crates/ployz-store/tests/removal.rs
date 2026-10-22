@@ -304,6 +304,7 @@ fn admit_deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
         )
         .unwrap();
@@ -1001,6 +1002,7 @@ fn with_no_server_left_a_removal_applies_at_once() {
             upload: None,
             accept_volume_loss: Vec::new(),
             message: None,
+            prune: false,
         }),
         &none_left,
     ));
@@ -1023,6 +1025,7 @@ fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
         )
         .unwrap();
@@ -1471,16 +1474,39 @@ fn an_agent_rerunning_a_removal_under_way_still_asks_a_human() {
     assert_eq!(left(rerun), [("fix".into(), LeftStatus::Removing)]);
 }
 
+/// Cloud's evidence holding a human's approval of what `asked` refused.
+fn approving(asked: &RpcError, trusted: Trusted) -> Trusted {
+    Trusted {
+        approval: Approval::Approved(
+            serde_json::from_value(asked.details["approval"].clone()).unwrap(),
+        ),
+        ..trusted
+    }
+}
+
 #[test]
-fn a_shutdown_asks_approval_only_when_it_accepts_volume_loss() {
+fn a_shutdown_that_takes_services_off_asks_a_human() {
     let (store, who) = branched();
     set_default(&store, &who, "staging");
     let required = Trusted {
         approval: Approval::Required,
         ..observing(observed())
     };
-    // Its Services go, and no data: nobody is asked, and nothing is marked.
-    let fix = shut_down(&store, &who, ("fix", 3), &[], &required).unwrap();
+    let asked = refusal(shut_down(&store, &who, ("fix", 3), &[], &required));
+    assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+    assert_eq!(
+        asked.message,
+        "A human must approve this first: remove Service web"
+    );
+    assert!(asked.details.get("protected").is_none());
+    let fix = shut_down(
+        &store,
+        &who,
+        ("fix", 3),
+        &[],
+        &approving(&asked, observing(observed())),
+    )
+    .unwrap();
     run(&store, &fix.id, &["web"], Vec::new());
     assert!(due(&store, &who).is_empty());
 
@@ -1492,15 +1518,243 @@ fn a_shutdown_asks_approval_only_when_it_accepts_volume_loss() {
         &required,
     ));
     assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
-    let approved = Trusted {
-        approval: Approval::Approved(
-            serde_json::from_value(asked.details["approval"].clone()).unwrap(),
-        ),
-        ..observing(observed())
-    };
+    let approved = approving(&asked, observing(observed()));
     let shutdown = shut_down(&store, &who, ("production", 4), &["data"], &approved).unwrap();
     assert!(shutdown.remove);
     assert!(due(&store, &who).is_empty());
+}
+
+/// `who` as a person holding every permission, or every one but `environments:protect`.
+fn person(who: &Actor, protects: bool, approval: Approval) -> (Actor, Trusted) {
+    calling(who, protects, (approval, ployz_store::Asks::Destroys))
+}
+
+/// [`person`] calling through a client that asks as `asks` does: `EveryDeploy` for
+/// an agent's token, such as `ployz mcp`'s.
+fn calling(
+    who: &Actor,
+    protects: bool,
+    (approval, asks): (Approval, ployz_store::Asks),
+) -> (Actor, Trusted) {
+    let person = Actor {
+        principal: Some(ployz_store::Principal::parse("linus").unwrap()),
+        ..who.clone()
+    };
+    let permissions = ployz_store::Permission::ALL
+        .iter()
+        .copied()
+        .filter(|held| protects || *held != ployz_store::Permission::EnvironmentsProtect)
+        .collect();
+    let trusted = Trusted {
+        approval,
+        asks,
+        permissions: Some(permissions),
+        ..observing(observed())
+    };
+    (person, trusted)
+}
+
+#[test]
+fn a_member_shutting_down_protected_production_asks_an_admin_even_when_cloud_requires_nothing() {
+    let (store, system) = shop();
+    deploy(&store, &system, "production", 1, &["web", "db"]);
+    protect(&store, &system, "production", true);
+    let (member, trusted) = person(&system, false, Approval::NotRequired);
+
+    let asked = refusal(shut_down(
+        &store,
+        &member,
+        ("production", 2),
+        &["data"],
+        &trusted,
+    ));
+    assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+    assert_eq!(
+        asked.message,
+        "production is Protected; an admin must approve this shutdown."
+    );
+    assert_eq!(asked.details["protected"], json!(true));
+    let approval = asked.details["approval"].as_str().unwrap();
+    let version = asked.details["diff"]["version"].as_str().unwrap();
+    assert!(approval.starts_with(&format!("{version}:")), "{approval}");
+    let kinds: Vec<&str> = asked.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|effect| effect["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"removes_service"), "{kinds:?}");
+
+    let shutdown = shut_down(
+        &store,
+        &member,
+        ("production", 2),
+        &["data"],
+        &approving(&asked, trusted),
+    )
+    .unwrap();
+    assert!(shutdown.remove);
+}
+
+#[test]
+fn an_admin_shutting_down_protected_production_from_ployz_asks_like_a_removal() {
+    let (store, system) = shop();
+    deploy(&store, &system, "production", 1, &["web", "db"]);
+    protect(&store, &system, "production", true);
+    let (admin, trusted) = person(&system, true, Approval::Required);
+
+    let asked = refusal(shut_down(
+        &store,
+        &admin,
+        ("production", 2),
+        &["data"],
+        &trusted,
+    ));
+    assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+    assert!(asked.details.get("protected").is_none());
+    let shutdown = shut_down(
+        &store,
+        &admin,
+        ("production", 2),
+        &["data"],
+        &approving(&asked, trusted),
+    )
+    .unwrap();
+    assert!(shutdown.remove);
+}
+
+#[test]
+fn every_caller_but_cloud_is_asked_before_a_protected_shutdown_takes_anything_off() {
+    use ployz_store::Asks::{Destroys, EveryDeploy};
+    let (store, system) = shop();
+    deploy(&store, &system, "production", 1, &["web", "db"]);
+    protect(&store, &system, "production", true);
+    // As Cloud sends them: a member's sign-in or token, a member's `ployz mcp`
+    // token, an admin's or owner's sign-in or token, and an admin's MCP token.
+    for (protects, approval, asks, protected) in [
+        (false, Approval::Required, Destroys, true),
+        (false, Approval::Required, EveryDeploy, true),
+        (true, Approval::Required, Destroys, false),
+        (true, Approval::Required, EveryDeploy, false),
+    ] {
+        let (caller, trusted) = calling(&system, protects, (approval, asks));
+        let asked = refusal(shut_down(
+            &store,
+            &caller,
+            ("production", 2),
+            &["data"],
+            &trusted,
+        ));
+        assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+        assert_eq!(
+            asked.details.get("protected").is_some(),
+            protected,
+            "{asks:?} {protects}"
+        );
+    }
+    let deployments = store
+        .read(
+            &system,
+            &ployz_store::DeploymentsQuery {
+                environment: at("production"),
+                limit: None,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(deployments.deployments.len(), 1, "only the first deploy");
+}
+
+#[test]
+fn retrying_a_failed_shutdown_asks_again() {
+    let (store, system) = branched();
+    let (owner, trusted) = person(&system, true, Approval::Required);
+    let asked = refusal(shut_down(&store, &owner, ("fix", 3), &[], &trusted));
+    let shutdown = shut_down(
+        &store,
+        &owner,
+        ("fix", 3),
+        &[],
+        &approving(&asked, trusted.clone()),
+    )
+    .unwrap();
+    fail(&store, &shutdown.id, &["web"]);
+
+    let retry = |trusted: &Trusted| {
+        store.write_trusted(
+            &owner,
+            &Admit::Retry(ployz_store::Retry {
+                id: id(4),
+                deployment: shutdown.id.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            trusted,
+        )
+    };
+    let again = refusal(retry(&trusted));
+    assert_eq!(again.code, RpcErrorCode::from("approval_required"));
+    assert_ne!(again.details["approval"], asked.details["approval"]);
+    let retried = retry(&approving(&again, trusted)).unwrap();
+    assert!(retried.remove);
+}
+
+#[test]
+fn an_agent_retrying_a_shutdown_with_no_server_left_still_asks_a_human() {
+    let (store, system) = branched();
+    let (owner, trusted) = person(&system, true, Approval::Required);
+    let asked = refusal(shut_down(&store, &owner, ("fix", 3), &[], &trusted));
+    let shutdown = shut_down(&store, &owner, ("fix", 3), &[], &approving(&asked, trusted)).unwrap();
+    fail(&store, &shutdown.id, &["web"]);
+
+    let (agent, trusted) = calling(
+        &system,
+        true,
+        (Approval::Required, ployz_store::Asks::EveryDeploy),
+    );
+    let serverless = Trusted {
+        servers: Some(0),
+        ..trusted
+    };
+    let retry = |trusted: &Trusted| {
+        store.write_trusted(
+            &agent,
+            &Admit::Retry(ployz_store::Retry {
+                id: id(4),
+                deployment: shutdown.id.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            trusted,
+        )
+    };
+    let again = refusal(retry(&serverless));
+    assert_eq!(again.code, RpcErrorCode::from("approval_required"));
+    let forgotten = retry(&approving(&again, serverless)).unwrap();
+    assert_eq!(forgotten.status, ployz_store::DeploymentStatus::Applied);
+}
+
+#[test]
+fn a_token_for_another_environment_is_refused_before_anyone_is_asked() {
+    let (store, system) = shop();
+    deploy(&store, &system, "production", 1, &["web", "db"]);
+    let (owner, trusted) = person(&system, true, Approval::Required);
+    let staging_only = Trusted {
+        environments: Some([EnvironmentName::parse("staging").unwrap()].into()),
+        ..trusted
+    };
+
+    let refused = refusal(shut_down(
+        &store,
+        &owner,
+        ("production", 2),
+        &[],
+        &staging_only,
+    ));
+    assert_eq!(refused.code, RpcErrorCode::from("forbidden"));
+    assert_eq!(refused.message, "This token can deploy only to staging.");
 }
 
 #[test]
@@ -1734,6 +1988,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
         upload: None,
         accept_volume_loss: Vec::new(),
         message: None,
+        prune: false,
     }))));
     being_removed(write(ployz_store::Command::Publish(Publish {
         id: None,
@@ -1806,4 +2061,26 @@ fn a_project_removal_deletes_no_member_alone() {
             .projects
             .is_empty()
     );
+}
+
+#[test]
+fn an_environment_its_project_is_removing_cannot_be_protected_midway() {
+    let (store, who) = branched();
+    deploy(&store, &who, "staging", 3, &[]);
+    protect(&store, &who, "production", false);
+    let removing = confirmed(&store, &who, accepting_data(None), &observing(observed())).unwrap();
+    assert!(!left(removing).is_empty());
+
+    let refused = refusal(store.write(
+        &who,
+        &SetEnvironmentProtected {
+            environment: at("production"),
+            protected: true,
+            seen: None,
+        },
+    ));
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(refused.message, "production is being removed");
+    // Unprotecting takes nothing away from a removal, so it still goes.
+    protect(&store, &who, "staging", false);
 }

@@ -47,6 +47,7 @@ fn deployment() -> (Arc<ConfigStore>, Actor, DeploymentId) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -60,6 +61,7 @@ async fn cancel_during_initial_connection_returns_before_the_unresponsive_entry(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let running = tokio::spawn(ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         id.clone(),
         RunnerId::parse("connecting").unwrap(),
@@ -90,6 +92,7 @@ async fn cancel_during_image_only_preview_stops_the_rpc_without_admitting_work()
     service.listing_blocked = Some(Arc::clone(&blocked));
     let (address, server) = listening(service).await;
     let running = tokio::spawn(ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         id.clone(),
         RunnerId::parse("previewing").unwrap(),
@@ -119,6 +122,7 @@ async fn taken_over_mid_create() -> (Arc<ConfigStore>, Actor, DeploymentId) {
     let mutations = service.mutating_rpcs();
     let (address, server) = listening(service).await;
     let running = tokio::spawn(ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         id.clone(),
         RunnerId::parse("first").unwrap(),
@@ -144,6 +148,7 @@ async fn taken_over_mid_create() -> (Arc<ConfigStore>, Actor, DeploymentId) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -253,6 +258,7 @@ async fn cancel_during_a_create_records_the_work_it_stopped_cancelled_not_failed
     let mutations = service.mutating_rpcs();
     let (address, server) = listening(service).await;
     let running = tokio::spawn(ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         id.clone(),
         RunnerId::parse("cancelled").unwrap(),
@@ -342,6 +348,7 @@ async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() 
     let unrouted = service.unrouted();
     let (address, server) = listening(service).await;
     let running = tokio::spawn(ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         id.clone(),
         RunnerId::parse("cleaning").unwrap(),

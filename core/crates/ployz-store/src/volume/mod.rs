@@ -499,6 +499,7 @@ mod tests {
                     upload: None,
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
                 &Trusted::default(),
             )

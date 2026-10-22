@@ -557,6 +557,89 @@ fn a_down_machine_keeps_its_answers_while_no_other_copy_serves() {
 }
 
 #[test]
+fn a_running_copy_set_out_keeps_answering_while_its_replacement_owner_is_down() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let remote = MachineId::parse("b".repeat(32)).unwrap();
+    let service = ServiceId::parse("d".repeat(32)).unwrap();
+    let name = ServiceName::parse("api").unwrap();
+    let mut inputs = ProjectionInputs::new(local);
+    let mut old = observation(
+        1,
+        &local,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 2]),
+    );
+    let replacement = observation(
+        2,
+        &remote,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 2, 2]),
+    );
+    inputs.observations = vec![old.clone()];
+    let answers = |inputs: &mut ProjectionInputs| {
+        addresses(plan(&inputs.build(), "api.app.internal.", RecordType::A))
+    };
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 1, 2)]);
+
+    old.try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+        .unwrap();
+    inputs.observations = vec![old, replacement];
+    inputs.down.update(Ok(BTreeSet::from([remote])));
+
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 1, 2)]);
+}
+
+#[test]
+fn an_out_copy_that_exits_and_recovers_keeps_answering_beside_an_exited_in_sibling() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let remote = MachineId::parse("b".repeat(32)).unwrap();
+    let service = ServiceId::parse("d".repeat(32)).unwrap();
+    let name = ServiceName::parse("api").unwrap();
+    let mut inputs = ProjectionInputs::new(local);
+    let mut old = observation(
+        1,
+        &local,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 2]),
+    );
+    let replacement = observation(
+        2,
+        &remote,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        ContainerRuntimeObservation::Exited { code: 1 },
+        Some([10, 210, 2, 2]),
+    );
+    inputs.observations = vec![old.clone()];
+    let answers = |inputs: &mut ProjectionInputs| {
+        addresses(plan(&inputs.build(), "api.app.internal.", RecordType::A))
+    };
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 1, 2)]);
+    old.try_update(|parts| {
+        parts.rotation = Some(CopyRotation::Out);
+        parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+    })
+    .unwrap();
+    inputs.observations = vec![old.clone(), replacement.clone()];
+    answers(&mut inputs);
+    old.try_update(|parts| parts.runtime = running(HealthObservation::Healthy))
+        .unwrap();
+    inputs.observations = vec![old, replacement];
+
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 1, 2)]);
+}
+
+#[test]
 fn only_in_copies_answer() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let service = ServiceId::parse("b".repeat(32)).unwrap();

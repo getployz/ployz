@@ -49,6 +49,28 @@ if [ -e "$root/crashing-$version" ]; then start; fi
 read -r pid < "$root/main-pid"; echo "$pid" ;;
 esac"#;
 
+#[test]
+fn a_channel_that_resolves_to_the_running_release_installs_nothing() {
+    // #2888: `upgrade stable` on a newer beta reinstalled it and restarted the daemon.
+    let version = |value: &str| MachineVersion::parse(value).unwrap();
+    let running = version("0.3.0-beta.7");
+    for channel in [MachineRelease::Stable, MachineRelease::Beta] {
+        assert!(already_installed(&channel, Some(&running), &running));
+        assert!(!already_installed(
+            &channel,
+            Some(&running),
+            &version("0.3.0")
+        ));
+        assert!(!already_installed(&channel, None, &running));
+    }
+    // An exact version reinstalls on request, as a repair.
+    assert!(!already_installed(
+        &MachineRelease::Exact(running.clone()),
+        Some(&running),
+        &running
+    ));
+}
+
 #[tokio::test]
 async fn worker_rejects_nonstandard_paths_before_reading_local_state() {
     let root = tempfile::Builder::new()

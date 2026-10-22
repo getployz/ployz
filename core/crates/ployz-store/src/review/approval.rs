@@ -11,7 +11,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::error;
-use crate::id::{ApprovalDigest, EnvironmentId, Hostname, VolumeName};
+use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname, VolumeName};
 use crate::review::{DiffView, Head, Review, Shipping};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
@@ -140,6 +140,7 @@ pub(crate) fn deployed(head: &Head) -> SavedEnvironmentIntent {
             );
         }
     }
+    add_missing(&mut deployed.services, &head.may_run, |service| &service.id);
     deployed
 }
 
@@ -321,12 +322,18 @@ fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
 }
 
 /// What a write into one Environment must clear. Cloud says who asks; in a Protected
-/// Environment a caller without `environments:protect` asks for every write that
-/// ships, and Cloud's word that nothing is required does not exempt it. Cloud's own
+/// Environment a caller without `environments:protect`, nor a token of someone who
+/// can protect, asks for every write that ships, and Cloud's word that nothing is
+/// required does not exempt it. Cloud's own
 /// writes name no caller, so they never ask here.
+///
+/// A protector's token is `exempt` rather than unasked everywhere: its grant still
+/// decides what it may destroy, and a retry, which may replay what someone else
+/// destroyed, still asks.
 pub(crate) struct Gate<'a> {
     trusted: &'a Trusted,
     protected: bool,
+    exempt: bool,
 }
 
 impl<'a> Gate<'a> {
@@ -335,12 +342,28 @@ impl<'a> Gate<'a> {
         environment: &EnvironmentId,
         trusted: &'a Trusted,
     ) -> Result<Self, RpcError> {
-        let protected = trusted
+        let asks = trusted
             .permissions
             .as_ref()
             .is_some_and(|held| !held.contains(&Permission::EnvironmentsProtect))
             && crate::scope::protected(tx, environment)?;
-        Ok(Self { trusted, protected })
+        // An agent asks on every deploy anyway; its ask stays Protected, so only an
+        // admin answers it.
+        let protector = trusted.protector && trusted.asks != Asks::EveryDeploy;
+        Ok(Self {
+            trusted,
+            protected: asks && !protector,
+            exempt: asks && protector,
+        })
+    }
+
+    /// The gate a Deploy's retry passes: a protector's token asks there too.
+    pub(crate) const fn retrying(self) -> Self {
+        Self {
+            protected: self.protected || self.exempt,
+            exempt: false,
+            ..self
+        }
     }
 
     /// Whether a retry asks a human at all.
@@ -419,6 +442,9 @@ pub(crate) fn approve(
         Shipping::Publish => Asks::Destroys,
         Shipping::Deploy { .. } => gate.trusted.asks,
     };
+    if gate.exempt && !effects.is_empty() {
+        gate.trusted.admit(Permission::ChangesDestroy)?;
+    }
     if asks == Asks::Destroys && (effects.is_empty() || resaves) {
         return Ok(());
     }
@@ -452,11 +478,97 @@ pub(crate) fn approve(
     gate.require(bound, message, (effects, diff))
 }
 
+/// Refuse taking an Environment off the Servers for `taking_off` (a shutdown, or the
+/// retry of a removal) while that destroys `effects`, unless
+/// no approval is required or Cloud holds a human's approval of exactly this. Into a
+/// Protected Environment, a caller who asks there asks even when Cloud requires
+/// nothing, as a Deploy does; an agent asks even when nothing is left to take off,
+/// as its every retry does.
+///
+/// # Errors
+/// `approval_required`, naming the effects, the `version:digest` to approve and the
+/// fresh `diff`, and `protected` when the Environment's protection asked.
+pub(crate) fn approve_shut_down(
+    who: &Actor,
+    taking_off: TakingOff<'_>,
+    review: &Review,
+    effects: &BTreeSet<DestructiveEffect>,
+    gate: &Gate<'_>,
+) -> Result<(), RpcError> {
+    if effects.is_empty() && !gate.asks_retry() {
+        return Ok(());
+    }
+    if !effects.is_empty() {
+        gate.trusted.admit(Permission::ChangesDestroy)?;
+    }
+    let diff = &review.view;
+    let message = gate.message(diff, "shutdown", || {
+        let asked = effects
+            .iter()
+            .map(DestructiveEffect::describe)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("A human must approve this first: {asked}")
+    });
+    let mut bound = bound(who, taking_off.command(), &diff.environment.id, effects);
+    if let (TakingOff::Retry(source), Some(bound)) = (taking_off, bound.as_object_mut()) {
+        bound.insert("retry".to_owned(), json!(source));
+    }
+    gate.require(bound, message, (effects, diff))
+}
+
+/// What takes an Environment off the Servers, as its approval binds it.
+#[derive(Clone, Copy)]
+pub(crate) enum TakingOff<'a> {
+    ShutDown,
+    /// The retry of removal `source`, which one approval admits alone.
+    Retry(&'a DeploymentId),
+}
+
+impl TakingOff<'_> {
+    const fn command(self) -> &'static str {
+        match self {
+            Self::ShutDown => "shut_down",
+            Self::Retry(_) => "retry",
+        }
+    }
+}
+
+/// Refuse cancelling Deployment `deployment`, which someone else admitted, into an
+/// Environment that is Protected for the caller, unless Cloud holds an admin's
+/// approval of exactly this cancel: it stops what they shipped partway. The caller
+/// holds the Environment's lock.
+///
+/// # Errors
+/// `approval_required`, naming the `version:digest` to approve, the fresh `diff`
+/// and `protected`.
+pub(crate) fn approve_cancel(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    deployment: &crate::DeploymentSummary,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let gate = Gate::new(tx, &deployment.environment_id, trusted)?;
+    if !gate.protected {
+        return Ok(());
+    }
+    let environment = crate::scope::load_by_id(tx, &deployment.environment_id)?;
+    let review = super::review(tx, &environment)?;
+    let effects = BTreeSet::new();
+    let mut bound = bound(who, "cancel", &deployment.environment_id, &effects);
+    if let Some(bound) = bound.as_object_mut() {
+        bound.insert("deployment".to_owned(), json!(deployment.id));
+    }
+    let message = gate.message(&review.view, "cancel", String::new);
+    gate.require(bound, message, (&effects, &review.view))
+}
+
 /// Refuse retrying Deployment `source` unless Cloud holds a human's approval of this
-/// retry, when [`Gate::asks_retry`]: a retry ships nothing a review hasn't.
-/// `review` is taken before the retry queues, so its version moves once it does: one
-/// approval admits one retry. The approval binds the Deployments a rollback undoes,
-/// the Volumes it removes and the losses the caller accepted, and says so.
+/// retry, when [`Gate::asks_retry`] or when it takes a deployed Service or a Volume
+/// off. `review` is taken before the retry queues, so its version moves once it
+/// does: one approval admits one retry. The approval binds the Deployments a
+/// rollback undoes, the Services it retires, the Volumes it removes and the losses
+/// the caller accepted, and says so.
 ///
 /// # Errors
 /// `approval_required`, naming the `version:digest` to approve, the `diff` and the
@@ -467,7 +579,27 @@ pub(crate) fn approve_retry(
     (retry, rollback): (&crate::Retry, &crate::deployment::Rollback),
     gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
-    // The Volumes a rollback removes, as a Deploy's card shows them.
+    // The Volumes a rollback removes and the deployed Services it retires, as a
+    // Deploy's card shows them.
+    let deployed = self::deployed(&review.head);
+    let retired = deployed
+        .services
+        .iter()
+        .filter(|service| {
+            rollback.retires.iter().any(|id| id.as_str() == service.id)
+                || (!rollback.rolls_back.is_empty()
+                    && rollback
+                        .ships
+                        .as_ref()
+                        .is_some_and(|ships| ships.iter().all(|id| id.as_str() != service.id)))
+        })
+        .map(|service| DestructiveEffect {
+            kind: DestructiveKind::RemovesService,
+            name: service.slug.clone(),
+            node: service.id.clone(),
+            path: service.slug.clone(),
+            lost_after: None,
+        });
     let effects: BTreeSet<DestructiveEffect> = rollback
         .removes
         .iter()
@@ -478,7 +610,15 @@ pub(crate) fn approve_retry(
             path: format!("volumes.{}", loss.volume.name),
             lost_after: None,
         })
+        .chain(retired)
         .collect();
+    // Beyond where every retry asks, a retry asks only when it takes something off.
+    if !gate.asks_retry() && effects.is_empty() {
+        return Ok(());
+    }
+    if !effects.is_empty() {
+        gate.trusted.admit(Permission::ChangesDestroy)?;
+    }
     let accepted: BTreeSet<&VolumeName> = retry.accept_volume_loss.iter().collect();
     let bound = json!({
         "organization": who.organization,

@@ -873,3 +873,80 @@ fn a_follow_landing_on_a_row_its_own_pair_owns_releases_it() {
         [("production".to_owned(), 0)]
     );
 }
+
+#[test]
+fn a_service_the_parent_removes_and_adds_again_follows_into_a_readable_branch() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: at("production"),
+                service: ServiceName::parse("db").unwrap(),
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "production", 2);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(5)).unwrap(),
+                environment: at("production"),
+                name: ServiceName::parse("db").unwrap(),
+                image: Some("postgres:18".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "production", 3);
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    deploy(&store, &who, "production", 4);
+
+    assert_eq!(
+        incoming(&store, &who, "fix-web"),
+        ["db production", "web.env.PLAIN production"]
+    );
+}
+
+#[test]
+fn a_left_out_service_the_parent_removes_and_undoes_stays_left_out() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: at("production"),
+                service: ServiceName::parse("db").unwrap(),
+            },
+        )
+        .unwrap();
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    deploy(&store, &who, "production", 2);
+    let undo = ployz_store::HistoryPreviewQuery {
+        environment: at("production"),
+        revision: ployz_store::Revision(2),
+        action: ployz_store::HistoryAction::Undo,
+        change: None,
+    };
+    let preview = store.read(&who, &undo).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: at("production"),
+                revision: undo.revision,
+                action: undo.action,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "production", 3);
+
+    assert_eq!(
+        incoming(&store, &who, "fix-web"),
+        ["web.env.PLAIN production"]
+    );
+}

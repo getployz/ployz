@@ -38,7 +38,7 @@ pub(super) fn create_command(command: Command) -> Command {
 
 pub(super) fn put_command(command: Command) -> Command {
     store::scoped(command.about("Write one file into a Config, from --from or stdin; staged"))
-        .arg(positional("config", true))
+        .arg(positional("config", true).help("Config name"))
         .arg(
             positional("file", true)
                 .help("Path inside the Config, like nginx.conf or conf.d/site.conf"),
@@ -74,13 +74,13 @@ pub(super) fn put_command(command: Command) -> Command {
 
 pub(super) fn remove_file_command(command: Command) -> Command {
     store::scoped(command.about("Remove one file from a Config; staged"))
-        .arg(positional("config", true))
-        .arg(positional("file", true))
+        .arg(positional("config", true).help("Config name"))
+        .arg(positional("file", true).help("Path of the file inside the Config"))
 }
 
 pub(super) fn inspect_command(command: Command) -> Command {
     store::scoped(command.about("Show a Config, its files' text and its mounts"))
-        .arg(positional("config", true))
+        .arg(positional("config", true).help("Config name"))
 }
 
 pub(super) fn list_command(command: Command) -> Command {
@@ -89,27 +89,27 @@ pub(super) fn list_command(command: Command) -> Command {
 
 pub(super) fn rename_command(command: Command) -> Command {
     store::scoped(command.about("Rename a Config; its files and mounts stay"))
-        .arg(positional("config", true))
-        .arg(positional("name", true))
+        .arg(positional("config", true).help("Config name"))
+        .arg(positional("name", true).help("Its new name, unique in the Environment"))
 }
 
 pub(super) fn delete_command(command: Command) -> Command {
     store::scoped(command.about("Remove a Config and unmount it everywhere"))
-        .arg(positional("config", true))
+        .arg(positional("config", true).help("Config name"))
 }
 
 pub(super) fn mount_command(command: Command) -> Command {
     store::scoped(command.about("Mount a Config into a Service at a directory"))
-        .arg(positional("service", true))
-        .arg(positional("config", true))
+        .arg(positional("service", true).help("Service name"))
+        .arg(positional("config", true).help("Config name"))
         .arg(positional("dir", false).help("Absolute directory, like /etc/nginx/conf.d"))
         .override_usage("ployz config mount [OPTIONS] <SERVICE> <CONFIG> <DIR>")
 }
 
 pub(super) fn unmount_command(command: Command) -> Command {
     store::scoped(command.about("Unmount a Config from a Service"))
-        .arg(positional("service", true))
-        .arg(positional("config", true))
+        .arg(positional("service", true).help("Service name"))
+        .arg(positional("config", true).help("Config name"))
 }
 
 fn id_flag(name: &'static str, help: &'static str) -> clap::Arg {

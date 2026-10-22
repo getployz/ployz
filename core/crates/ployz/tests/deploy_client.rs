@@ -594,7 +594,8 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
-            | DeployWarning::ImagePortMismatch { .. } => false,
+            | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::NotInStore { .. } => false,
         }),
         "DNS warning must match the CLI body: {:?}",
         preview.warnings
@@ -964,6 +965,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -971,6 +973,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
     let run = |runner: &str| {
         ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             Arc::clone(&store),
             id.clone(),
             RunnerId::parse(runner).unwrap(),
@@ -1015,6 +1018,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         upload: None,
         accept_volume_loss: Vec::new(),
         message: None,
+        prune: false,
     };
     store
         .write_trusted(
@@ -1024,6 +1028,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         )
         .unwrap();
     let running = tokio::spawn(ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         second.clone(),
         RunnerId::parse("cloud-run-3").unwrap(),
@@ -1067,6 +1072,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         )
         .unwrap();
     let never = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         admit.id.clone(),
         RunnerId::parse("cloud-run-4").unwrap(),
@@ -1299,6 +1305,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted::default(),
         )
@@ -1319,6 +1326,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
     let (address, server) = listening(service).await;
 
     let summary = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         id.clone(),
         RunnerId::parse("cloud-run-1").unwrap(),
@@ -1427,6 +1435,7 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
                     upload: None,
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
                 &Trusted::default(),
             )
@@ -1441,6 +1450,7 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
         let (address, server) = listening(service).await;
 
         let summary = ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             Arc::clone(&store),
             id.clone(),
             RunnerId::parse("cloud-run-1").unwrap(),
@@ -1506,6 +1516,38 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
 /// headline Cloud joins from them reads as the crash and not `restarting`.
 #[tokio::test]
 async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_line() {
+    restarting_deploy_names_its_exit_and_last_line(
+        DeployService::new(machine('a', "one")).restart_containers(),
+        Some("token=[redacted]"),
+    )
+    .await;
+}
+
+/// The last line is the one the exited run printed, not the next run's first.
+#[tokio::test]
+async fn failed_deploy_whose_container_restarted_names_the_exited_runs_last_line() {
+    restarting_deploy_names_its_exit_and_last_line(
+        DeployService::new(machine('a', "one")).reboot_containers(),
+        Some("token=[redacted]"),
+    )
+    .await;
+}
+
+/// A run that exited printing nothing has no last line, so no earlier run's line
+/// stands in for it.
+#[tokio::test]
+async fn failed_deploy_whose_last_run_printed_nothing_names_no_line() {
+    restarting_deploy_names_its_exit_and_last_line(
+        DeployService::new(machine('a', "one")).reboot_containers_through_a_silent_run(),
+        None,
+    )
+    .await;
+}
+
+async fn restarting_deploy_names_its_exit_and_last_line(
+    service: DeployService,
+    last_line: Option<&str>,
+) {
     use ployz_store::{
         Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
         DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
@@ -1551,14 +1593,15 @@ async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted::default(),
         )
         .unwrap();
-    let service = DeployService::new(machine('a', "one")).restart_containers();
     let (address, server) = listening(service).await;
 
     let summary = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         id.clone(),
         RunnerId::parse("cloud-run-1").unwrap(),
@@ -1588,13 +1631,18 @@ async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_
         reason,
         "web: The Container exited with code 1 and is restarting"
     );
-    assert_eq!(cause, &["token=[redacted]"]);
+    let last_line: Vec<String> = last_line.into_iter().map(str::to_owned).collect();
+    assert_eq!(cause, &last_line);
     let headline = cause
         .last()
         .map_or_else(|| reason.clone(), |cause| format!("{reason}: {cause}"));
     assert_eq!(
         headline,
-        "web: The Container exited with code 1 and is restarting: token=[redacted]"
+        match last_line.first() {
+            Some(line) =>
+                format!("web: The Container exited with code 1 and is restarting: {line}"),
+            None => "web: The Container exited with code 1 and is restarting".to_owned(),
+        }
     );
     let rows = view
         .nodes
@@ -1611,7 +1659,7 @@ async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_
         rows,
         [(
             "The Container exited with code 1 and is restarting",
-            vec!["token=[redacted]".to_owned()]
+            last_line
         )]
     );
 }
@@ -1655,6 +1703,7 @@ async fn cloud_runner_applies_an_environment_removal() {
     let (address, server) = listening(service).await;
     let run = |id: DeploymentId, runner: &str| {
         ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             Arc::clone(&store),
             id,
             RunnerId::parse(runner).unwrap(),
@@ -1675,6 +1724,7 @@ async fn cloud_runner_applies_an_environment_removal() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted::default(),
         )
@@ -1797,6 +1847,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
                     upload: None,
                     accept_volume_loss: accept,
                     message: None,
+                    prune: false,
                 }),
                 &trusted,
             )
@@ -1805,6 +1856,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
 
     let first = deploy(1, Vec::new(), Trusted::default(), None).unwrap();
     let ran = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         first,
         RunnerId::parse("cloud-run-1").unwrap(),
@@ -1868,6 +1920,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     // A same-named Docker Volume that appeared after the review is never deleted.
     held.lock().unwrap().push(on('b'));
     let ran = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         second,
         RunnerId::parse("cloud-run-2").unwrap(),
@@ -1965,6 +2018,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
                     upload: None,
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
                 &Trusted::default(),
             )
@@ -1991,6 +2045,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
 
         let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
         let summary = ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             Arc::clone(&store),
             id.clone(),
             RunnerId::parse("cloud-run-1").unwrap(),
@@ -2071,6 +2126,7 @@ async fn a_runner_that_cannot_reach_its_server_names_it() {
                         upload: None,
                         accept_volume_loss: Vec::new(),
                         message: None,
+                        prune: false,
                     }),
                     &ployz_store::Trusted::default(),
                 )
@@ -2078,6 +2134,7 @@ async fn a_runner_that_cannot_reach_its_server_names_it() {
             // As Cloud hands them over: the same descriptors the SDK parses.
             let connections = serde_json::from_value(serde_json::json!([connection])).unwrap();
             let summary = ployz::sdk::run_deployment(
+                ployz_core::Operator::Cloud,
                 Arc::clone(&store),
                 id.clone(),
                 RunnerId::parse("cloud-run-1").unwrap(),

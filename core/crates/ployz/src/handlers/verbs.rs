@@ -276,7 +276,7 @@ pub(crate) const DEPLOYMENT_REDEPLOY: Verb = Verb::cloud(
     deploy::redeploy_command,
     deploy::redeploy,
 )
-.docs("deploy/deployments.md")
+.docs("cli/overview.md")
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_SHOW: Verb =
     Verb::cloud("deployment show", Never, deploy::show_command, deploy::show)
@@ -315,12 +315,13 @@ pub(crate) const ENV_BRANCH: Verb = Verb::cloud(
 .needs(Permission::EnvironmentCreate)
 .docs("environments/environments.md");
 pub(crate) const ENV_COPY: Verb =
-    Verb::cloud("env copy", Never, env::copy_command, env::branch::copy);
+    Verb::cloud("env copy", Never, env::copy_command, env::branch::copy).docs("cli/overview.md");
 pub(crate) const ENV_DEFAULT: Verb =
     Verb::cloud("env default", Never, env::default_command, env::default)
-        .needs(Permission::ProjectEdit);
+        .needs(Permission::ProjectEdit)
+        .docs("cli/overview.md");
 pub(crate) const ENV_KEEP: Verb =
-    Verb::cloud("env keep", Never, env::keep_command, env::branch::keep);
+    Verb::cloud("env keep", Never, env::keep_command, env::branch::keep).docs("cli/overview.md");
 pub(crate) const ENV_LS: Verb =
     Verb::cloud("env ls", Never, env::ls_command, env::ls).docs("cli/overview.md");
 pub(crate) const ENV_NEVER_SYNC: Verb = Verb::cloud(
@@ -328,15 +329,18 @@ pub(crate) const ENV_NEVER_SYNC: Verb = Verb::cloud(
     Never,
     env::never_sync_command,
     env::never_sync,
-);
-pub(crate) const ENV_NEW: Verb =
-    Verb::cloud("env new", Never, env::new_command, env::new).needs(Permission::EnvironmentCreate);
+)
+.docs("cli/overview.md");
+pub(crate) const ENV_NEW: Verb = Verb::cloud("env new", Never, env::new_command, env::new)
+    .needs(Permission::EnvironmentCreate)
+    .docs("cli/overview.md");
 pub(crate) const ENV_ON_MERGE: Verb = Verb::cloud(
     "env on-merge",
     Never,
     env::on_merge_command,
     env::pr::on_merge,
-);
+)
+.docs("cli/overview.md");
 pub(crate) const ENV_PR: Verb = Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr)
     .needs(Permission::ProjectEdit)
     .docs("environments/preview-environments.md");
@@ -355,8 +359,9 @@ pub(crate) const ENV_PROTECT: Verb =
 pub(crate) const ENV_RM: Verb = Verb::cloud("env rm", Always, env::rm_command, env::rm)
     .docs("cli/overview.md")
     .needs(Permission::EnvironmentDelete);
-pub(crate) const ENV_SETUP: Verb =
-    Verb::cloud("env setup", Never, env::setup_command, env::setup).needs(Permission::ProjectEdit);
+pub(crate) const ENV_SETUP: Verb = Verb::cloud("env setup", Never, env::setup_command, env::setup)
+    .needs(Permission::ProjectEdit)
+    .docs("cli/overview.md");
 pub(crate) const ENV_SHUTDOWN: Verb = Verb::cloud(
     "env shutdown",
     Always,
@@ -397,18 +402,17 @@ pub(crate) const GITHUB_LS: Verb =
 pub(crate) const GITHUB_TREE: Verb =
     Verb::cloud("github tree", Never, github::tree_command, github::tree).docs("deploy/github.md");
 pub(crate) const HISTORY: Verb =
-    Verb::cloud("history", Never, review::history_command, review::history)
-        .docs("deploy/deployments.md");
+    Verb::cloud("history", Never, review::history_command, review::history).docs("cli/overview.md");
 pub(crate) const HISTORY_RESTORE: Verb = Verb::cloud(
     "history restore",
     Never,
     review::restore_command,
     review::history,
 )
-.docs("deploy/deployments.md");
+.docs("cli/overview.md");
 pub(crate) const HISTORY_UNDO: Verb =
     Verb::cloud("history undo", Never, review::undo_command, review::history)
-        .docs("deploy/deployments.md");
+        .docs("cli/overview.md");
 pub(crate) const LINK: Verb =
     Verb::local("link", Never, link::link_command, link::link).docs("cli/overview.md");
 pub(crate) const LOGIN: Verb =
@@ -706,7 +710,7 @@ pub(crate) const VOLUME_MIRROR: Verb = Verb::cloud(
     volume::run::mirror,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md")
+.docs("services/mirror-a-volume.md")
 .tool(ToolId::VolumeMirror);
 pub(crate) const VOLUME_MIRROR_RM: Verb = Verb::cloud(
     "volume mirror rm",
@@ -715,7 +719,7 @@ pub(crate) const VOLUME_MIRROR_RM: Verb = Verb::cloud(
     volume::run::remove_mirror,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md")
+.docs("services/mirror-a-volume.md")
 .tool(ToolId::VolumeMirrorRemove);
 pub(crate) const VOLUME_MOVE: Verb = Verb::cloud(
     "volume move",
@@ -748,10 +752,11 @@ pub(crate) const VOLUME_RESTORE: Verb = Verb::cloud(
     volume::run::restore,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md")
+.docs("services/restore-a-volume.md")
 .tool(ToolId::VolumeRestore);
 pub(crate) const VOLUME_RM: Verb =
-    Verb::cloud("volume rm", Never, volume::remove_command, volume::remove);
+    Verb::cloud("volume rm", Never, volume::remove_command, volume::remove)
+        .docs("services/volumes.md");
 pub(crate) const VOLUME_RUNS: Verb = Verb::cloud(
     "volume runs",
     Never,
@@ -770,7 +775,7 @@ pub(crate) const VOLUME_SYNC: Verb = Verb::cloud(
     volume::run::sync,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md")
+.docs("services/mirror-a-volume.md")
 .tool(ToolId::VolumeMirror);
 
 pub(crate) const VERBS: &[Verb] = &[

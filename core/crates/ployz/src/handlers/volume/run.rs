@@ -252,6 +252,11 @@ fn removal_words(
     words
 }
 
+/// A size as `volume set --size` reads it back, such as `20GB` or `0.5GB`.
+fn size_word(maximum_bytes: ProvisionedVolumeMaximumBytes) -> String {
+    maximum_bytes.to_string().replace(' ', "")
+}
+
 impl Serialize for Full {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_bool(true)
@@ -360,7 +365,7 @@ pub(crate) fn mirror_command(command: Command) -> Command {
             .args_conflicts_with_subcommands(true)
             .subcommand_negates_reqs(true),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("to", None)
             .value_name("SERVER")
@@ -393,7 +398,7 @@ pub(crate) fn sync_command(command: Command) -> Command {
     store::scoped(command
             .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); the dashboard's Volume page follows the download"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(switch("full", None).help("Copy everything again as a run, for a Mirror that fell behind for good"))
     .arg(wait_flag().requires("full"))
 }
@@ -402,13 +407,14 @@ pub(crate) fn move_command(command: Command) -> Command {
     store::scoped(command
             .about("Move a Volume and its Service onto another Server (Ployz Cloud); the Service stops for the last copy"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("to", None)
             .value_name("SERVER")
             .required(true)
             .help("The Server the Volume moves to; a Move that stopped continues when asked again"),
     )
+    .arg(approval_arg())
     .arg(wait_flag())
 }
 
@@ -416,7 +422,7 @@ pub(crate) fn release_command(command: Command) -> Command {
     store::scoped(command
             .about("Stop what runs on a Volume and start its Service again where it was; a Move past its handover finishes there (Ployz Cloud)"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(approval_arg())
     .arg(wait_flag())
 }
@@ -425,19 +431,20 @@ pub(crate) fn restore_command(command: Command) -> Command {
     store::scoped(command.about(
         "Make a Server's copy of a Volume its writer when no Server holds one (Ployz Cloud)",
     ))
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("from", None)
             .value_name("SERVER")
             .required(true)
             .help("The Server whose copy becomes the writer; it must hold the Volume's only copy"),
     )
+    .arg(approval_arg())
     .arg(wait_flag())
 }
 
 pub(crate) fn runs_command(command: Command) -> Command {
     store::scoped(command.about("List a Volume's runs, or show one (Ployz Cloud)"))
-        .arg(positional("volume", true))
+        .arg(positional("volume", true).help("Volume name"))
         .arg(positional("run", false).help("A run ID, to show that run"))
 }
 
@@ -720,17 +727,32 @@ fn approved(
             Verb::RemoveMirror,
             removal_words(volume, slot, if_old_copy, confirm),
         )
-    } else if asked.ask == RunAsk::Release {
-        (
-            Verb::Release,
-            vec![
-                "volume".to_owned(),
-                "release".to_owned(),
-                volume.to_string(),
-            ],
-        )
     } else {
-        return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
+        // A Protected Environment asks someone who can't protect it before these too.
+        let words = |verb: &str, rest: &[&str]| {
+            ["volume", verb, volume.as_str()]
+                .into_iter()
+                .chain(rest.iter().copied())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        match &asked.ask {
+            RunAsk::Release => (Verb::Release, words("release", &[])),
+            RunAsk::Move { to } => (Verb::Move, words("move", &["--to", to.as_str()])),
+            RunAsk::Restore { from } => {
+                (Verb::Restore, words("restore", &["--from", from.as_str()]))
+            }
+            RunAsk::Resize { maximum_bytes } => (
+                Verb::Resize,
+                words("set", &["--size", size_word(*maximum_bytes).as_str()]),
+            ),
+            RunAsk::Mirror { .. }
+            | RunAsk::Sync { .. }
+            | RunAsk::DeleteMirror { .. }
+            | RunAsk::DeleteOldCopy { .. } => {
+                return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
+            }
+        }
     };
     words.push("--approval".to_owned());
     let retry = |id: &str| {

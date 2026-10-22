@@ -95,7 +95,7 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 | **GitHub, then your servers** | The default. GitHub first when the repository has the workflow, otherwise your servers. |
 | **Your servers, then GitHub** | Your servers first. GitHub only when none of your servers runs builds. |
 | **Your servers only** | Never GitHub, unless a service prefers **GitHub Actions**. |
-| **GitHub only** | Only GitHub, and a build waits for a GitHub runner however long that takes. Uploads from `ployz up` still build on your servers. |
+| **GitHub only** | Only GitHub, and a build waits for a GitHub runner however long that takes. Uploads from `ployz up` still build on your servers, and a service that prefers one of your servers builds on your servers while any of them runs builds. |
 
 ## Prefer a builder for one service
 
@@ -113,8 +113,10 @@ ployz set web.preferredBuilder=machine-1
 ployz set web --patch '{"preferredBuilder":"machine-1"}'
 ```
 
-The service tries that builder first, then follows the build order. A preferred server keeps
-the build on your servers, even with **GitHub only**. **Auto** follows the build order alone.
+The service tries that builder first, then follows the build order. A service that prefers a
+server builds on your servers, even with **GitHub only**, as long as one of them runs builds. It
+goes to GitHub only when none of them does. If the preferred server is gone or doesn't run
+builds, another of your servers takes the build. **Auto** follows the build order alone.
 **Preferred Builder** applies at once, from the next build.
 
 A deploy names the server each service built on. When GitHub came first and couldn't take
@@ -123,8 +125,9 @@ and why.
 
 ## When a build fails
 
-A build moves to the next builder only when a builder can't take it. If a build step fails, on
-GitHub or on your servers, the build fails: moving it wouldn't fix your code. Either way, the
+A build moves to the next builder when a builder can't take it, or when a GitHub run ends early
+for reasons outside your code, such as running out of time or pushing no image. If a build step
+fails, on GitHub or on your servers, the build fails: moving it wouldn't fix your code. Either way, the
 deploy stops before anything changes.
 
 When no builder can take a build, it fails with one of these:

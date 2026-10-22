@@ -15,8 +15,8 @@ done
 PLOYZ_VERSION=${PLOYZ_VERSION:-${VERSION_ARG:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
 FLEET_TOKEN_FILE=${PLOYZ_TEST_ROOT:-}/etc/ployz/fleet-token
-# Unset first, so a name exported by the caller doesn't carry the token into ployz's environment.
-unset FLEET_TOKEN TTY
+# Unset first, so a name exported by the caller doesn't carry the token into ployz's or stty's environment.
+unset FLEET_TOKEN TTY token
 TTY=${PLOYZ_TEST_ROOT:-}/dev/tty
 FLEET_TOKEN=${PLOYZ_FLEET_TOKEN:-}
 unset PLOYZ_FLEET_TOKEN
@@ -86,6 +86,8 @@ resolve_install() {
 }
 
 install_cli() {
+    [ -d "$INSTALL_BIN_DIR" ] ||
+        error "$INSTALL_BIN_DIR is not a directory. Create it first, or set INSTALL_BIN_DIR to a directory that exists."
     tmp_dir=$(mktemp -d)
     trap 'rm -rf "$tmp_dir"' EXIT
     trap 'exit 130' HUP INT TERM
@@ -96,8 +98,15 @@ install_cli() {
         error "Unsupported platform: $(uname -s) $(uname -m)"
     base_url="$PLOYZ_GITHUB_URL/releases/download/v$version"
 
+    # Every release has checksums.txt, so a 404 for it means the release doesn't exist.
+    # A file:// mirror, as verify-release.sh uses, answers 000 when curl succeeds.
+    status=$(curl -sSL -w '%{http_code}' -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt") || status=
+    case "$status" in
+        2??|000) ;;
+        404) error "There's no Ployz release $version. Releases: $PLOYZ_GITHUB_URL/releases" ;;
+        *) error "Failed to download checksums.txt${status:+ (HTTP $status)}" ;;
+    esac
     curl -fsSL -o "$tmp_dir/$archive" "$base_url/$archive" || error "Failed to download $archive"
-    curl -fsSL -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt" || error "Failed to download checksums.txt"
     verify_checksum "$archive" "$tmp_dir/checksums.txt" "$tmp_dir" || error "Checksum verification failed"
     tar -xzf "$tmp_dir/$archive" -C "$tmp_dir" ployz || error "Release archive is incomplete"
     if [ ! -f "$tmp_dir/ployz" ] || [ -L "$tmp_dir/ployz" ] || [ ! -x "$tmp_dir/ployz" ]; then
@@ -128,13 +137,24 @@ is_fleet_token() {
 read_fleet_token() {
     tty_mode=$(stty -g 2>/dev/null < "$TTY") ||
         error "No terminal to read the Fleet Token from. Set PLOYZ_FLEET_TOKEN in the root environment instead, as cloud-init does."
-    trap 'stty "$tty_mode" < "$TTY"; exit 130' HUP INT TERM
+    # A signal that lands just before a read of the terminal waits for Enter, but one during `wait` ends it.
+    # So a child reads the token and hands it back on a pipe whose name is gone before the prompt shows.
+    pipe_dir=$(mktemp -d)
+    mkfifo "$pipe_dir/token"
+    exec 3<> "$pipe_dir/token"
+    rm -r "$pipe_dir"
+    trap 'kill "${!:-}" 2>/dev/null || :; stty "$tty_mode" < "$TTY"' EXIT
+    trap 'exit 130' HUP INT TERM
     stty -echo < "$TTY" || error "Could not turn off echo on the terminal, so the Fleet Token isn't read from it."
     # The prompt waits until echo is off: a token pasted the moment it shows must not echo.
     printf 'Fleet Token (from Servers in Ployz Cloud): ' >> "$TTY"
-    read -r FLEET_TOKEN < "$TTY" || FLEET_TOKEN=
-    stty "$tty_mode" < "$TTY"
-    trap - HUP INT TERM
+    # The child also turns echo back on. bash 5.2 can spin forever on a SIGINT that lands as it starts waiting for a
+    # command, so this shell starts no second wait after the token is read.
+    { read -r token < "$TTY" || token=; printf '%s\n' "$token" >&3; exec stty "$tty_mode" < "$TTY"; } &
+    wait "$!"
+    read -r FLEET_TOKEN <&3
+    exec 3<&-
+    trap - EXIT HUP INT TERM
     printf '\n' >> "$TTY"
 }
 

@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, KnownCopy,
-    MachineId, MachineObservation, Namespace, PlacementConstraint, PreservedVolume,
-    RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
+    BlockedService, CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation,
+    KnownCopy, MachineId, MachineObservation, Namespace, Operator, PlacementConstraint,
+    PreservedVolume, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
     ServicePlacementEligibility, ServiceStorageSpec, ServiceVolume, ServiceVolumeGraph,
     VolumeSource, owned_volume_namespace,
 };
@@ -30,6 +30,10 @@ pub(super) struct VolumePlan<'snapshot> {
     snapshot: &'snapshot DeploySnapshot,
     namespace: Namespace,
     volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
+    /// Deployed Volumes the applied Services mount. A lost one an unselected Service
+    /// mounts leaves this Deploy alone.
+    deployed_volumes: BTreeSet<DockerVolumeName>,
+    operator: Operator,
     assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
 
@@ -64,22 +68,30 @@ impl<'snapshot> VolumePlan<'snapshot> {
     /// Validate all declared definitions before choosing any locations.
     ///
     /// # Errors
-    /// Returns conflicting definitions, incompatible modes, or unresolved locality.
+    /// Returns conflicting definitions, incompatible modes, or an applied Service's
+    /// unresolved locality.
     pub(super) fn new(
         snapshot: &'snapshot DeploySnapshot,
         namespace: &Namespace,
         volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
+        deployed_volumes: &BTreeSet<DockerVolumeName>,
         target: &[RequestedServiceSpec],
         requested: &[RequestedServiceSpec],
+        operator: Operator,
     ) -> Result<Self, PlanError> {
         reject_mixed_volume_modes(&managed_volume_uses(requested))?;
         let plan = Self {
             snapshot,
             namespace: namespace.clone(),
             volume_names,
+            deployed_volumes: managed_volume_uses(requested)
+                .into_keys()
+                .filter(|name| deployed_volumes.contains(name))
+                .collect(),
+            operator,
             assignments: BTreeMap::new(),
         };
-        plan.validate_provisioned_volume_definitions(target)?;
+        plan.validate_provisioned_volume_definitions(target, requested)?;
         Ok(plan)
     }
 
@@ -109,6 +121,14 @@ impl<'snapshot> VolumePlan<'snapshot> {
                     .map(move |volume| (*id, volume))
             })
         })
+    }
+
+    /// Drop every commitment recorded for `service`, which this Deploy does not attempt.
+    pub(super) fn release(&mut self, service: &ServiceName) {
+        for specs in self.assignments.values_mut() {
+            specs.remove(service);
+        }
+        self.assignments.retain(|_, specs| !specs.is_empty());
     }
 
     fn assign(&mut self, machine_id: MachineId, spec: &RequestedServiceSpec) {
@@ -164,7 +184,8 @@ impl<'snapshot> VolumePlan<'snapshot> {
         ) {
             if let Some(name) = managed_volume_name(volume) {
                 let copies = self.copies_without_writer(name);
-                if !copies.is_empty() {
+                // A deployed Volume no member holds left the Cluster with its Server.
+                if !copies.is_empty() || self.deployed_volumes.contains(name) {
                     let authored = self.volume_names.get(name).map_or_else(
                         || Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
                         String::as_str,
@@ -183,6 +204,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                     return Err(PlanError::NoWriter {
                         name: authored.to_owned(),
                         copies,
+                        operator: self.operator,
                     });
                 }
             }
@@ -375,6 +397,7 @@ impl VolumePlan<'_> {
     fn validate_provisioned_volume_definitions(
         &self,
         target: &[RequestedServiceSpec],
+        requested: &[RequestedServiceSpec],
     ) -> Result<(), PlanError> {
         let snapshot = self.snapshot;
         let mut definitions = BTreeMap::new();
@@ -383,8 +406,15 @@ impl VolumePlan<'_> {
             if !spec.volume_graph().has_mounted_provisioned_volume() {
                 continue;
             }
+            // Placement and locality of a Service this Deploy leaves alone must not hold it.
+            let applied = requested.iter().any(|applied| applied.name == spec.name);
             let result = (|| {
-                let candidates = super::placement_candidates(spec, &self.namespace, snapshot)?;
+                let candidates = match super::placement_candidates(spec, &self.namespace, snapshot)
+                {
+                    Ok(candidates) => candidates,
+                    Err(_) if !applied => return Ok(()),
+                    Err(error) => return Err(error),
+                };
                 Self::record_provisioned(&mut definitions, spec, &candidates)?;
                 let mut machines = candidates
                     .into_iter()
@@ -400,12 +430,19 @@ impl VolumePlan<'_> {
                     return Ok(());
                 }
                 self.validate_provisioned_volumes(spec, &machines, snapshot)?;
-                volume_constraints(spec, snapshot, self, &mut machines)?;
+                if applied {
+                    volume_constraints(spec, snapshot, self, &mut machines)?;
+                }
                 Ok(())
             })();
-            result.map_err(|source| {
-                super::service_error(name_errors_with_service, spec.name.as_str(), source)
-            })?;
+            match result {
+                // A Volume nobody can mount blocks only its Service, once that Service is
+                // planned; the other definitions still get checked.
+                Err(PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. }) => {}
+                result => result.map_err(|source| {
+                    super::service_error(name_errors_with_service, spec.name.as_str(), source)
+                })?,
+            }
         }
         Ok(())
     }
@@ -633,6 +670,18 @@ struct SharedVolumeComponent<'volume_use> {
     )>,
 }
 
+impl SharedVolumeComponent<'_> {
+    /// Each Service of the component once, in name order.
+    fn service_names(&self) -> impl Iterator<Item = &ServiceName> {
+        self.volumes
+            .iter()
+            .flat_map(|(_, uses)| uses.iter())
+            .map(|volume_use| &volume_use.service.name)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+    }
+}
+
 fn shared_volume_components<'volume_use>(
     volume_uses: &'volume_use BTreeMap<DockerVolumeName, Vec<ManagedVolumeUse<'volume_use>>>,
 ) -> Vec<SharedVolumeComponent<'volume_use>> {
@@ -669,7 +718,9 @@ fn shares_a_service(
 }
 
 impl VolumePlan<'_> {
-    /// Reserve shared placement and its full mounted commitments together.
+    /// Reserve shared placement and its full mounted commitments together. With
+    /// `options.block_unmountable`, a shared Volume nobody can mount blocks every Service
+    /// of its component instead of failing, and those are returned.
     ///
     /// # Errors
     /// Returns no common legal Machine, conflicting definitions, or endpoint admission failure.
@@ -679,11 +730,12 @@ impl VolumePlan<'_> {
         observed_services: &[ServiceObservation],
         placement: &mut PlacementReservations,
         options: &PlanOptions,
-    ) -> Result<(), PlanError> {
+    ) -> Result<Vec<BlockedService>, PlanError> {
         let snapshot = self.snapshot;
         let volume_uses = managed_volume_uses(requested);
+        let mut blocked = Vec::new();
         for component in shared_volume_components(&volume_uses) {
-            let anchor = shared_component_anchor(
+            let anchor = match shared_component_anchor(
                 &component,
                 snapshot,
                 requested,
@@ -691,10 +743,40 @@ impl VolumePlan<'_> {
                 self,
                 placement,
                 options,
-            )?;
+            ) {
+                Ok(anchor) => anchor,
+                Err(error) if options.block_unmountable => {
+                    let error = unmountable(error)?.into_rpc_error();
+                    blocked.extend(component.service_names().map(|service| BlockedService {
+                        service: service.clone(),
+                        error: error.clone(),
+                    }));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             assign_shared_component(&component, anchor, self);
         }
-        Ok(())
+        Ok(blocked)
+    }
+}
+
+/// The refusal of a Volume nobody can mount, out of the Service context
+/// `shared_component_anchor` gave it.
+///
+/// # Errors
+/// Hands back any other error, which still fails the Deploy.
+fn unmountable(error: PlanError) -> Result<PlanError, PlanError> {
+    let PlanError::Service { service, source } = error else {
+        return Err(error);
+    };
+    if matches!(
+        *source,
+        PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. }
+    ) {
+        Ok(*source)
+    } else {
+        Err(PlanError::Service { service, source })
     }
 }
 

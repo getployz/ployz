@@ -18,8 +18,7 @@ mkdir -p ~/.local/bin
 curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
 ```
 
-Check it with `ployz --version`. Homebrew users can run `brew install getployz/ployz/ployz`
-instead.
+Check it with `ployz --version`.
 
 ## 2. Install the Ployz skill
 

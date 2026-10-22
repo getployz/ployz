@@ -19,11 +19,11 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use ployz_core::{
     AdvertisedEndpoint, AnswerWhen, ConfiguredHealthcheck, ContainerId, ContainerLocator,
-    ContainerNow, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId,
-    EnsureContainerRequest, EnsuredContainer, HealthVerdict, HealthcheckCommand, HealthcheckSpec,
-    HttpHealthcheck, Machine, MachineId, MachineName, MachineRpc, MachineRuntime, NewContainer,
-    ProxyRoutes, QualifiedService, ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RunRotation,
-    RunTarget, WireGuardPublicKey, op, proxy_routes, service_containers,
+    ContainerNow, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation,
+    DeploymentLogId, EnsureContainerRequest, EnsuredContainer, HealthVerdict, HealthcheckCommand,
+    HealthcheckSpec, HttpHealthcheck, Machine, MachineId, MachineName, MachineRpc, MachineRuntime,
+    NewContainer, ProxyRoutes, QualifiedService, ReadRoutesRequest, ResolvedServiceSpec,
+    RoutesRead, RunRotation, RunTarget, WireGuardPublicKey, op, proxy_routes, service_containers,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -286,6 +286,30 @@ impl Fleet {
         .unwrap_or_else(|_| panic!("{container} never published as {rotation:?}"));
     }
 
+    async fn runtime_published(
+        &self,
+        container: ContainerId,
+        observed: impl Fn(&ContainerRuntimeObservation) -> bool,
+    ) {
+        tokio::time::timeout(SETTLE, async {
+            loop {
+                let row = self.store.container(&container).await.unwrap();
+                if row.is_some_and(|row| observed(&row.runtime)) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{container} never published in that runtime"));
+    }
+
+    /// What a proxy routes next from the store's observations, over `current`.
+    async fn proxy_routes(&self, current: &ProxyRoutes) -> ProxyRoutes {
+        let observations = self.store.containers().await.unwrap().observations;
+        proxy_routes(&service_containers(observations), |_| false, current)
+    }
+
     /// A new Pending copy of `name` on `index`, published to the cluster.
     async fn pending(&self, index: usize, key: &str, name: &str, r#gen: u64) -> ContainerId {
         let reply = ensure(
@@ -303,18 +327,38 @@ impl Fleet {
 
     /// A new copy of `name` on `index` brought In, published to the cluster.
     async fn routed(&self, index: usize, key: &str, name: &str, r#gen: u64) -> ContainerId {
-        let id = self.brought_in(index, key, name, r#gen).await;
+        self.routed_as(index, key, spec(name), r#gen).await
+    }
+
+    async fn routed_as(
+        &self,
+        index: usize,
+        key: &str,
+        spec: ResolvedServiceSpec,
+        r#gen: u64,
+    ) -> ContainerId {
+        let id = self.brought_in_as(index, key, spec, r#gen).await;
         self.published(id, Some(CopyRotation::In)).await;
         id
     }
 
     /// A new copy of `name` on `index` brought In, whether or not the cluster has it yet.
     async fn brought_in(&self, index: usize, key: &str, name: &str, r#gen: u64) -> ContainerId {
+        self.brought_in_as(index, key, spec(name), r#gen).await
+    }
+
+    async fn brought_in_as(
+        &self,
+        index: usize,
+        key: &str,
+        spec: ResolvedServiceSpec,
+        r#gen: u64,
+    ) -> ContainerId {
         let node = self.node(index);
         let created = ensure(
             node,
             ContainerWant::Running {
-                container: RunTarget::New(new_copy(key, spec(name), r#gen)),
+                container: RunTarget::New(new_copy(key, spec, r#gen)),
                 rotation: RunRotation::Pending,
             },
         )
@@ -549,6 +593,13 @@ fn spec(name: &str) -> ResolvedServiceSpec {
     let mut spec = spec_with_sources(Vec::new());
     spec.name = ployz_core::ServiceName::parse(name).unwrap();
     spec.update.monitor_millis = Some(0);
+    spec
+}
+
+/// `name` after a Deploy that changed its image, so its copies replace older ones.
+fn redeployed(name: &str) -> ResolvedServiceSpec {
+    let mut spec = spec(name);
+    spec.container.image = "example.test/api:2".to_owned();
     spec
 }
 
@@ -899,7 +950,7 @@ async fn gone_drains_an_out_copy_and_refuses_an_in_copy() {
 #[tokio::test]
 async fn older_copy_and_stale_expect() {
     let fleet = Fleet::start().await;
-    let newer = fleet.routed(1, "new", "api", 2).await;
+    let newer = fleet.routed_as(1, "new", redeployed("api"), 2).await;
     let older = fleet.pending(0, "old", "api", 1).await;
 
     let reply = ensure(
@@ -1264,6 +1315,105 @@ async fn last_in_ignores_a_sibling_on_a_down_machine() {
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
 }
 
+/// The guard reads the acks, the acked sibling exits, and the guard admits Out.
+/// The copy set Out still runs, so a proxy keeps routing it beside its exited
+/// sibling rather than routing the exited sibling alone.
+#[tokio::test]
+async fn a_running_copy_set_out_as_its_acked_sibling_exits_stays_routed() {
+    let fleet = Fleet::start().await;
+    let api = service("api");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    fleet.addressed(0, a, "10.210.1.2").await;
+    let b = fleet.routed(1, "b", "api", 2).await;
+    fleet.addressed(1, b, "10.210.2.2").await;
+    fleet.ack_all(&api, &[a, b]).await;
+    let current = proxy_routes(
+        &service_containers(fleet.store.containers().await.unwrap().observations),
+        |_| false,
+        &ProxyRoutes::new(),
+    );
+    let reading = fleet.cluster.hold_query(SERVICE_ROUTES, 1);
+
+    let (reply, ()) = tokio::join!(
+        ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))),
+        async {
+            reading.wait().await;
+            fleet
+                .node(1)
+                .set_state(b, json!({"Status": "exited", "ExitCode": 1}));
+            tokio::time::timeout(SETTLE, async {
+                while fleet.store.container(&b).await.unwrap().is_none_or(|row| {
+                    !matches!(row.runtime, ContainerRuntimeObservation::Exited { .. })
+                }) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{b} never published as exited"));
+            reading.wait().await;
+        }
+    );
+
+    ensured(&reply);
+    assert!(fleet.node(0).running(a));
+    fleet.published(a, Some(CopyRotation::Out)).await;
+    let routes = proxy_routes(
+        &service_containers(fleet.store.containers().await.unwrap().observations),
+        |_| false,
+        &current,
+    );
+    let routed: BTreeSet<_> = routes[&api]
+        .iter()
+        .map(|serving| serving.as_observation().container_id)
+        .collect();
+    assert_eq!(routed, BTreeSet::from([a, b]));
+}
+
+/// A copy set Out exits, as around a Docker restart, and runs again. A proxy
+/// kept it as the fallback beside its exited In sibling, and still routes it.
+#[tokio::test]
+async fn an_out_copy_that_exits_and_recovers_stays_routed() {
+    let fleet = Fleet::start().await;
+    let api = service("api");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    fleet.addressed(0, a, "10.210.1.2").await;
+    let b = fleet.routed(1, "b", "api", 2).await;
+    fleet.addressed(1, b, "10.210.2.2").await;
+    fleet.ack_all(&api, &[a, b]).await;
+    let current = fleet.proxy_routes(&ProxyRoutes::new()).await;
+    ensured(&ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))).await);
+    fleet.published(a, Some(CopyRotation::Out)).await;
+    fleet
+        .node(1)
+        .set_state(b, json!({"Status": "exited", "ExitCode": 1}));
+    fleet
+        .node(0)
+        .set_state(a, json!({"Status": "exited", "ExitCode": 137}));
+    for id in [a, b] {
+        fleet
+            .runtime_published(id, |runtime| {
+                matches!(runtime, ContainerRuntimeObservation::Exited { .. })
+            })
+            .await;
+    }
+    let while_exited = fleet.proxy_routes(&current).await;
+    fleet.node(0).set_state(
+        a,
+        json!({"Status": "running", "StartedAt": chrono::Utc::now().to_rfc3339()}),
+    );
+    fleet
+        .runtime_published(a, ContainerRuntimeObservation::may_serve)
+        .await;
+
+    let recovered = fleet.proxy_routes(&while_exited).await;
+
+    let routed: BTreeSet<_> = recovered[&api]
+        .iter()
+        .map(|serving| serving.as_observation().container_id)
+        .collect();
+    assert_eq!(routed, BTreeSet::from([a, b]));
+}
+
 /// A Machine membership holds no evidence for is unknown, not Down.
 #[tokio::test]
 async fn stale_evidence_keeps_in_copy_routed() {
@@ -1325,7 +1475,7 @@ async fn older_than_in_relists_local_copies_under_the_turn() {
         ensure(node, into(a, None, Some(CopyRotation::Pending))),
         async {
             before_turn.wait().await;
-            let b = fleet.routed(0, "b", "api", 2).await;
+            let b = fleet.routed_as(0, "b", redeployed("api"), 2).await;
             before_turn.wait().await;
             b
         }
@@ -1697,7 +1847,7 @@ mod rotation_commands {
     #[tokio::test]
     async fn older_than_in_is_refused() {
         let fleet = Fleet::start().await;
-        fleet.routed(2, "new", "api", 3).await;
+        fleet.routed_as(2, "new", redeployed("api"), 3).await;
         let older = fleet.pending(0, "old", "api", 2).await;
         fleet.routed(1, "other", "web", 9).await;
 
@@ -1709,6 +1859,86 @@ mod rotation_commands {
         let same_gen = fleet.pending(0, "same", "api", 3).await;
         let reply = ensure(fleet.node(0), into(same_gen, None, None)).await;
         assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    }
+
+    /// A scale-up keeps the older copy and adds a newer one with the same spec, so
+    /// the newer copy does not supersede it and a restart routes it again. The spec
+    /// carries environment and Config content, which a replicated row leaves out.
+    #[tokio::test]
+    async fn a_held_copy_kept_beside_a_newer_one_comes_back_in() {
+        let mut scaled = spec("api");
+        scaled
+            .container
+            .environment
+            .insert("SECRET".to_owned(), "value".into());
+        for newer_on in [0, 1] {
+            let fleet = Fleet::start().await;
+            let older = fleet.routed_as(0, "old", scaled.clone(), 1).await;
+            fleet.routed_as(newer_on, "new", scaled.clone(), 2).await;
+            let restart = || Some(CopyRotation::Held(run("restart")));
+            ensured(
+                &ensure(
+                    fleet.node(0),
+                    held(older, "restart", Some(CopyRotation::In)),
+                )
+                .await,
+            );
+
+            let reply = ensure(fleet.node(0), into(older, Some(run("restart")), restart())).await;
+
+            assert_eq!(
+                rotation_of(&reply),
+                CopyRotation::In,
+                "newer on {newer_on}: {reply:?}"
+            );
+        }
+    }
+
+    /// A Deploy held the old copy and brought its replacement In: forced, after a limits
+    /// change, or for an environment change another Machine's row cannot show. Its spec
+    /// matches as far as this Machine sees, so only the run tells the old copy it was
+    /// replaced when the Deploy restores it.
+    #[tokio::test]
+    async fn a_copy_its_restoring_run_replaced_stays_out() {
+        for newer_on in [0, 1] {
+            let fleet = Fleet::start().await;
+            let older = fleet.routed(0, "old", "api", 1).await;
+            let deploy = || Some(CopyRotation::Held(run("deploy-2")));
+            ensured(
+                &ensure(
+                    fleet.node(0),
+                    held(older, "deploy-2", Some(CopyRotation::In)),
+                )
+                .await,
+            );
+            let mut replacement = new_copy("new", spec("api"), 2);
+            replacement.deployment_id = Some(run("deploy-2"));
+            let created = ensure(
+                fleet.node(newer_on),
+                ContainerWant::Running {
+                    container: RunTarget::New(replacement),
+                    rotation: RunRotation::Pending,
+                },
+            )
+            .await;
+            let newer = present(&created);
+            let reply = ensure(
+                fleet.node(newer_on),
+                into(newer, None, Some(CopyRotation::Pending)),
+            )
+            .await;
+            assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+            fleet.published(newer, Some(CopyRotation::In)).await;
+
+            let reply = ensure(fleet.node(0), into(older, Some(run("deploy-2")), deploy())).await;
+
+            let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
+            assert!(
+                message.contains(&newer.to_string()),
+                "newer on {newer_on}: {message}"
+            );
+            assert_eq!(fleet.node(0).rotation(older).await, deploy().unwrap());
+        }
     }
 
     #[tokio::test]

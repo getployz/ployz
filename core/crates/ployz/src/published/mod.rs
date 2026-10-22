@@ -176,7 +176,7 @@ impl Setup {
     /// The Cloud the credential acts in, as [`cloud_account::named_cloud`] picks it from
     /// `PLOYZ_TOKEN`, `cloud` (`PLOYZ_CLOUD_URL`) and the sign-in beside `config`.
     pub(crate) fn beside(config: &Path, cloud: Option<String>) -> Self {
-        let token = std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
+        let token = cloud_account::env_token().is_some();
         let named = cloud_account::named_cloud(&CredentialStore::beside(config), token, cloud)
             .ok()
             .flatten();

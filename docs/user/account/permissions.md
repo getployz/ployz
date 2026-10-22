@@ -21,12 +21,14 @@ Organization can do this."
 
 A token acts as you, narrowed by its preset:
 
-- **Full** does everything you can.
+- **Full as you** does everything you can.
 - **Read only** reads and changes nothing.
 - **Deploy** reads what you can read, but stages and deploys changes only in the one environment
-  you name.
+  you name. It can't take anything off your servers: a deploy that removes a service, volume or
+  domain, or `ployz env shutdown`, needs a **Full as you** token.
 
-Give CI a Deploy token for the one environment it ships to. See
+Give CI a Deploy token for the one environment it ships to. An owner's or admin's Deploy token
+deploys into a Protected environment without waiting for another admin. See
 [Make an organization token](../cli/overview.md#make-an-organization-token). An agent you connect
 with `ployz mcp login` gets its own token, and that token can't answer approvals.
 
@@ -45,14 +47,17 @@ decide who can merge. See [Protected environments](../deploy/github.md#protected
 
 ## Answer approvals
 
-Some changes wait for a person before they run:
+Some changes wait for a person before they run. The most common are:
 
 - every deploy an agent starts;
 - anything an agent or the CLI does that would delete a service, volume or domain;
-- a member's request in a Protected environment.
+- a member's request in a Protected environment;
+- removing a server or the organization, taking a project or environment off your servers,
+  turning protection off, and an agent's stop or restart.
 
-A delete from the CLI asks in your terminal first. See
-[Destructive actions ask first](organizations.md#destructive-actions-ask-first). The rest wait under **Waiting on you** in the [Ployz agent](agent-sidebar.md#approve-or-deny-a-deploy).
+A delete from the CLI asks in your terminal first.
+[Destructive actions ask first](organizations.md#destructive-actions-ask-first) has the full
+list. The rest wait under **Waiting on you** in the [Ployz agent](agent-sidebar.md#approve-or-deny-a-deploy).
 Read the card, then click **Approve** or **Deny**. An agent you connected to Ployz Cloud waits the
 same way. See [Approve a deploy](connect-an-agent.md#approve-a-deploy).
 

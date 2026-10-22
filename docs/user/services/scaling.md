@@ -23,7 +23,7 @@ flowchart LR
 
 Ployz gives each server one replica before any server gets a second. A replica that crashes gets
 no traffic until it recovers. A new replica gets none until it passes its
-[health check](settings.md#healthcheck); once it has, it keeps getting traffic if the check fails
+[healthcheck](settings.md#healthcheck); once it has, it keeps getting traffic if the check fails
 later, and the dashboard warns.
 
 **CPU limit** and **Memory limit** in the same section cap what each replica can use. Ployz
@@ -49,23 +49,17 @@ Every server runs builds, runs services and takes web traffic. Turn jobs off to 
 work, for example a build server that keeps builds away from your app, or a database server
 the internet can't reach. **Run builds here**, **Run services here** and **Takes web traffic** are
 on each server's page. The [Ployz agent](../account/agent-sidebar.md) turns web traffic off but
-not on; the CLI does both:
-
-```sh
-# A build server: no services, no web traffic
-ployz server set builder-1 --accepts-services=false --accepts-ingress=false
-
-# Databases and workers: no public traffic
-ployz server set db-1 --accepts-ingress=false
-```
+not on.
 
 For a build server, also turn off **Run builds here** on your other servers. Running replicas
 move on your next deploy, or right away when you click **Drain** on the server's page (see
 [Change what a server does](../servers/manage-servers.md#change-what-a-server-does)). Keep services on for a server that holds a volume: the services that
-use it can only run there. Turning web traffic off drops the server from your generated addresses;
-the switch also stops its web server, while the CLI leaves it serving anyone who reaches the server
-directly until the next deploy. To keep the internet out, also close ports 80 and 443 in its
-firewall.
+use it can only run there.
+
+Turning **Takes web traffic** off drops the server from your generated addresses and stops its web
+server. `ployz server set --accepts-ingress=false` only drops it from your addresses, and leaves it
+serving anyone who reaches the server directly until you remove the server. To keep the internet
+out, also close ports 80 and 443 in its firewall.
 
 ## When a server goes down
 
@@ -90,17 +84,22 @@ To bring services back:
    Use the CLI and name them: a deploy that includes a service whose volume is on the offline
    server fails before it changes anything, and the dashboard's **Deploy** includes every
    service.
-2. When the server comes back, its replicas start again. A replica the deploy in step 1 replaced
-   can answer beside the new ones, with the old version, until your next deploy removes it. See
+2. When the server comes back, its replicas start again. Within a few minutes it takes each
+   replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your
+   next deploy removes it. It takes out only its own replicas, so an extra one on another server
+   keeps answering until that server restarts. If it can't confirm the new replica, the old one
+   answers beside it. See
    [Old and new versions answer at once](../troubleshooting/deployments.md#old-and-new-versions-answer-at-once).
 3. If it's gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone)
-   with **Forget server** on its page or `ployz server forget web-2 --confirm dead`, then
-   restore its databases from your backups.
+   with **Forget server** on its page or `ployz server forget web-2 --confirm dead`. Then bring
+   each of its volumes back from its mirror with **Use mirror** under the volume's **Copies**, see
+   [When its server goes down](volumes.md#when-its-server-goes-down), and the others from your
+   backups.
 
 ## Good to know
 
-- **A service with a volume runs one replica**, on the server that holds the volume. See
-  [Volumes](volumes.md).
+- **A service with a volume runs one replica**, on the volume's server, unless the volume
+  [allows shared writes](volumes.md#share-a-volume).
 - **Nothing scales on its own.** There's no autoscaling: you choose the number of replicas.
 - **Preview environments run one replica** of each service, whatever you set here.
 - **Update your own A records.** If your custom domain's root points at your servers with A

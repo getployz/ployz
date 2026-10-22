@@ -733,6 +733,7 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
         | cloud_enroll::Error::Connect(_)
         | cloud_enroll::Error::Http(_)
         | cloud_enroll::Error::RetrySameCommand { .. }
+        | cloud_enroll::Error::CloudCantReach
         | cloud_enroll::Error::FounderWait => RpcErrorCode::Unavailable,
         cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
         cloud_enroll::Error::TokenRefused => RpcErrorCode::Unauthenticated,
@@ -1019,7 +1020,8 @@ impl From<LoginError> for Failure {
             | LoginError::Status { .. }
             | LoginError::Reply(_)
             | LoginError::Store { .. }
-            | LoginError::TokenBound => None,
+            | LoginError::TokenBound
+            | LoginError::TokenMalformed => None,
         };
         Self::command(error).hint(next.map(|next| Hint::Next(next.into())))
     }
@@ -1042,6 +1044,7 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         | LoginError::Ended
         | LoginError::AwaitingApproval { .. }
         | LoginError::TokenRefused
+        | LoginError::TokenMalformed
         | LoginError::NotMember(_) => RpcErrorCode::Unauthenticated,
         LoginError::UnknownOrganization(_) | LoginError::UnknownCredential(_) => {
             RpcErrorCode::NotFound

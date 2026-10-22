@@ -1,12 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, gt, gte, max, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, gt, gte, max, or, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
 import { insertEnrollmentToken, readJoinStatus } from "#/modules/machines/enrollment.server";
 import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPairing, shareOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
-import { organizationMachine } from "#/modules/machines/tables";
+import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import {
@@ -181,11 +181,38 @@ const openFounderAttempt = Effect.fn("ServerEnrollment.openFounder")(function* (
   return founding;
 });
 
-const releaseDeadClaim = Effect.fn("ServerEnrollment.releaseDeadClaim")(function* (organizationId: string) {
+const WAITING_SERVER_ID = /^[0-9a-f-]{36}$/u;
+
+/** Whether waiting server `id` last enrolled as the Machine that made the founding claim, so its next token resumes the claim. */
+const lastClaimedAs = Effect.fn("ServerEnrollment.lastClaimedAs")(function* (
+  organizationId: string,
+  id: string,
+  claim: { readonly founderClaimMachineId: string; readonly founderPublicKey: string | null },
+) {
   const { drizzle } = yield* Database;
-  const [pairing] = yield* drizzle.select({ founderMachineId: organizationPairing.founderMachineId })
-    .from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
+  const [latest] = yield* drizzle
+    .select({ machineId: machineEnrollmentToken.claimedMachineId, publicKey: machineEnrollmentToken.claimedPublicKey })
+    .from(serverEnrollment)
+    .leftJoin(machineEnrollmentToken, eq(machineEnrollmentToken.id, serverEnrollment.enrollTokenId))
+    .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.waitingServerId, id)))
+    .orderBy(desc(serverEnrollment.requestedAt))
+    .limit(1);
+  return latest !== undefined && latest.machineId === claim.founderClaimMachineId && latest.publicKey === claim.founderPublicKey;
+});
+
+const releaseDeadClaim = Effect.fn("ServerEnrollment.releaseDeadClaim")(function* (organizationId: string, input: EnrollInput) {
+  const { drizzle } = yield* Database;
+  const [pairing] = yield* drizzle.select({
+    founderMachineId: organizationPairing.founderMachineId,
+    founderClaimMachineId: organizationPairing.founderClaimMachineId,
+    founderPublicKey: organizationPairing.founderPublicKey,
+    removalStartedAt: organizationPairing.removalStartedAt,
+  }).from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
   if (pairing === undefined || pairing.founderMachineId !== null) return;
+  // A founder whose Server came up before its enroll failed finishes only on its own claim, since a new claim needs an uninitialized Server.
+  const first = input.first ?? (new Set(input.ids).size === 1 ? input.ids[0] : undefined);
+  if (pairing.removalStartedAt === null && first !== undefined && WAITING_SERVER_ID.test(first)
+    && (yield* lastClaimedAs(organizationId, first, pairing))) return;
   if ((yield* revokeOrganizationPairing(organizationId, { deadClaimOnly: true })).confirmed) return;
   // A first server can't found while the earlier pairing waits on removal, so it ends now rather than failing hours later.
   const database = yield* Database;
@@ -212,7 +239,7 @@ const enrollmentAuthority = Effect.fn("ServerEnrollment.authority")(function* (
     : persisted;
   const founded = pairing !== undefined && pairing.founderMachineId !== null;
   const founding = founded ? undefined : yield* openFounderAttempt(organizationId);
-  const paired = pairing !== undefined && !(mode === "preview" && (yield* isDeadFoundingClaim(pairing)));
+  const paired = pairing !== undefined && !(yield* isDeadFoundingClaim(pairing));
   return { pairing, founded, hasFirst: paired || founding !== undefined };
 });
 
@@ -236,7 +263,7 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
       userFacing: true,
     });
   }
-  const ids = input.ids.filter((id) => /^[0-9a-f-]{36}$/u.test(id));
+  const ids = input.ids.filter((id) => WAITING_SERVER_ID.test(id));
   const plan = planServerEnrollment(
     input,
     ids.length === 0 ? [] : yield* candidatesOf(organizationId, ids, mode === "start"),
@@ -278,7 +305,7 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
-  yield* releaseDeadClaim(organization.id);
+  yield* releaseDeadClaim(organization.id, input);
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockOrganizationEnrollment(organization.id);
     const plan = yield* planEnrollment(organization.id, input, "start");

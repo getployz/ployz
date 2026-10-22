@@ -83,7 +83,7 @@ The unresolved Service ID, Qualified Service (`project/name`), or Service Name u
 _Avoid_: Service Name as identity
 
 **Service Attempt**:
-One Service Name this Deploy will apply from the target. Attempts are implicitly required until a requirement distinction exists. An empty selected list on Plan Options is full reconciliation; a non-empty list is partial. There is no independent prune flag.
+One Service Name this Deploy will apply from the target. Attempts are implicitly required until a requirement distinction exists. An empty selected list on Plan Options is full reconciliation; a non-empty list is partial. How far a full reconciliation removes is the Prune Scope, never the selected list.
 _Avoid_: selected-service list as a prune flag
 
 **Service Template**:
@@ -196,6 +196,10 @@ _Avoid_: Deployment (the record), reconciliation loop
 A bounded membership-command operation that establishes this Machine's running Service Container for every observed eligible Global before the command completes. Unknown eligibility or incomplete placement is a reported outcome; it is not a Cluster-wide Deploy and has no background retry.
 _Avoid_: scheduler, Cluster-wide Deploy
 
+**Unarrived Machine**:
+A registered Machine with no sign, to this observer, that it ever ran: it does not invite RPC, the Entry's Corrosion admin never recorded it, and its row names no daemon version. This observer has no sign it ever held a Service Container either, so Global catch-up reports it and does not wait on it; another observer may know better. It stays in the Cluster until forgotten.
+_Avoid_: claim-only Machine, dead Machine
+
 **Global slot convergence**:
 A bounded client attempt for a dispatched Global slot: establish it when eligible, retire it when definitely ineligible, or hold it unchanged when eligibility is unknown. Its observations and lifecycle actions are separate operations, not one atomic decision.
 _Avoid_: Background maintenance, Cluster-wide reconciler, scheduler
@@ -213,8 +217,12 @@ The Resolved Service Spec carried by the newest observer-visible Service Contain
 _Avoid_: Current service spec, canonical service spec, desired Global state
 
 **Deploy Intent**:
-The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target, including removal of observer-visible Services the target no longer declares. Services in the target that are not applied are unchanged.
+The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target; its Prune Scope says which observer-visible Services the target lacks it removes. Services in the target that are not applied are unchanged.
 It is derived from an Environment's Saved State when a Deploy is admitted, never authored directly. Compose files are not an input.
+
+**Prune Scope**:
+How far a full reconciliation removes what its target lacks. `namespace` removes every observer-visible Service of the resolved user Namespace the target lacks: the direct Deploy's default, and what a Config Store Deploy admitted with prune lowers. `removals` removes only the Deploy's removals: the Services this Config Store held and since dropped, and the runtime names its Services ran as and no longer do; every other running Service is kept and reported as a Deploy Warning. A Config Store lowers a full Deploy as `removals` unless it was admitted with prune, so two Stores driving one Cluster never remove each other's Services. A targeted Deploy has no Prune Scope to apply.
+_Avoid_: prune flag on Service Attempt, ownership of a Service by a Store, orphan
 _Avoid_: leftover filtered Compose project, Compose as an authoring format, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 
 **Config Store**:
@@ -397,7 +405,7 @@ The observer-relative Machine, Service Container, and Docker Volume observations
 _Avoid_: current cluster state, desired state, cluster snapshot, authoritative Cluster completeness
 
 **Prune Refusal**:
-Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. Absence means this Deploy may remove obsolete Services owned by the resolved user Namespace.
+Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. Absence means this Deploy may remove obsolete Services owned by the resolved user Namespace. A Prune Scope of `removals` is one such refusal: the Deploy retires its removals and keeps the rest.
 _Avoid_: prune flag, Cluster-complete snapshot
 
 **Deploy Plan**:
@@ -514,7 +522,7 @@ _Avoid_: Management Address, globally unique container address
 
 **Serving Container**:
 A Service Container whose rotation is `In`, that may serve (running with health `healthy`, `failing` or `not_configured`), and that has a Container Address. The Ingress Proxy Service's own Containers never are one. It is observer-derived eligibility to receive traffic, not a replica identity. A Healthcheck gates the first serve only: a Container that passed once keeps serving while its check fails.
-Rotation is a field on each Container observation, and only the owning Machine writes it: `Pending` (created, never routed), `In` (routed), `Held` (out of routing, kept by one run that alone may bring it back In) or `Out` (out of routing for good; only removal follows). Each proxy, Ingress and Internal DNS, routes the In copies it observes on Machines that are not Down. When every such copy is on a Down Machine, the proxy keeps its current route, minus any copy its owner Held, while a routed copy is out of view or some copy is In or Pending. It empties the route once every copy in view is Held or Out. A proxy with no current route for the Service, as after a restart, routes its In copies on Down Machines too. Only the Ingress Proxy writes a route ack: the exact Container set it routes. A Deploy, drain or user command asks the owner to move a copy, then waits, bounded, on those acks; once per daemon start a Machine sets Out its own In copies that every live proxy routes a newer copy beside. No Serving Pointer, elected publisher or retire loop exists.
+Rotation is a field on each Container observation, and only the owning Machine writes it: `Pending` (created, never routed), `In` (routed), `Held` (out of routing, kept by one run that alone may bring it back In) or `Out` (out of routing for good; only removal follows). Each proxy, Ingress and Internal DNS, routes the In copies it observes on Machines that are not Down. When every such copy is on a Down Machine, the proxy keeps its current route, minus any copy its owner Held, while a routed copy is out of view or some copy is In or Pending. It empties the route once every copy in view is Held or Out. A proxy with no current route for the Service, as after a restart, routes its In copies on Down Machines too. Only the Ingress Proxy writes a route ack: the exact Container set it routes. A Deploy, drain or user command asks the owner to move a copy, then waits, bounded, on those acks; once per daemon start a Machine sets Out each of its own In copies for which a Deploy would make a new Container, judged against the newest copies of the Service that every live proxy routes. It also sets Out a copy that the newest Deploy would keep when the Service has more such routed copies than its replicas, as after a Deploy that started a replacement while the Machine was Down. Every Machine ranks those copies the same way, newest gen first and then by id, and drops only its own copies past the replica count, so a surplus copy on a Machine that is not restarting stays until that Machine restarts or the next Deploy. It compares the full specs as a Deploy does, asking each copy's owner for its spec because a store row keeps no environment or Config content, and trusting that spec only while the owner still reports the copy In at the gen its row shows. Since asking can take minutes, it decides on a fresh read of the store taken once the specs arrive. Copies one Deploy started agree when their specs match apart from the update order the planner resolves per copy. It reads the replica count from the newest copies' spec, which a replicas-only Deploy that starts no copy leaves at the old count, so a Machine returning after such a scale-down still counts the old replicas. A copy a Deploy kept stays In, and so does one an in-place limit update missed while the count fits, one whose newest siblings disagree, and one whose newest sibling's owner does not answer. No Serving Pointer, elected publisher or retire loop exists.
 _Avoid_: replica, endpoint, upstream, Serving Pointer
 
 **Serving Shape**:
@@ -522,7 +530,7 @@ The content identity of the Resolved Service Spec fields whose change requires a
 _Avoid_: current version, desired generation, Service ID as generation
 
 **Published Serving Shape**:
-The Serving Shape of a published observation, whose environment values and Config content are redacted. It hashes Config names in place of content, so Containers from an env-only or Config-only change share a shape ([#1419](https://github.com/getployz/ployz/issues/1419)). Ployz compares shapes to match observed Containers to a wanted spec, in drift checks and Global catch-up. Routing follows each Container's `rotation`, not its shape.
+The Serving Shape of a published observation. A row in the replicated store keeps no environment and empties Config content, so the shape hashes Config names in place of content, and Containers from an env-only or Config-only change share a shape ([#1419](https://github.com/getployz/ployz/issues/1419)). Ployz compares shapes to match observed Containers to a wanted spec, in drift checks and Global catch-up. Routing follows each Container's `rotation`, not its shape.
 _Avoid_: Serving Shape for observation rows
 
 **Public Ingress**:
@@ -582,7 +590,7 @@ The endpoint one observing Machine currently selects for reaching a target Machi
 _Avoid_: Advertised Endpoint, globally current endpoint
 
 **Pinned Address**:
-A Machine's public IP or Advertised Endpoints when its operator chose them at enrollment or with `server set`. Daemon start rediscovers only unpinned addresses. The pin lives on the Machine and is never replicated.
+A Machine's public IP or Advertised Endpoints when its operator chose them at enrollment or with `server set`. Daemon start rediscovers only unpinned addresses. The pin lives on the Machine and is never replicated. A record last written by 0.3.0-beta.6 or earlier reads with both addresses pinned, because those releases never recorded which were chosen.
 _Avoid_: static IP, address override
 
 **Cloud Pairing**:

@@ -65,6 +65,8 @@ pub(crate) trait CaddyAdmin: Send + Sync {
     fn adapt(&self, caddyfile: &str) -> impl Future<Output = Result<String, Error>> + Send;
     /// Load adapted Caddy JSON and wait for acknowledgement.
     fn load(&self, json: &str) -> impl Future<Output = Result<(), Error>> + Send;
+    /// File stems of the certificates the running config loads.
+    fn loaded_certificates(&self) -> impl Future<Output = Result<BTreeSet<String>, Error>> + Send;
 }
 
 struct AdminClient {
@@ -95,6 +97,20 @@ impl AdminClient {
             .body(body)
             .send()
             .await?;
+        Self::body(response).await
+    }
+
+    async fn get(&self, path: &str) -> Result<String, Error> {
+        Self::body(
+            self.client
+                .get(format!("http://localhost{path}"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    async fn body(response: reqwest::Response) -> Result<String, Error> {
         let status = response.status();
         let body = response.text().await?;
         if status != StatusCode::OK {
@@ -124,6 +140,24 @@ impl CaddyAdmin for AdminClient {
         self.post("/load", "application/json", json.to_owned())
             .await?;
         Ok(())
+    }
+
+    async fn loaded_certificates(&self) -> Result<BTreeSet<String>, Error> {
+        // Caddy refuses the path when the running config has no TLS app, so it loads nothing.
+        let files = match self.get("/config/apps/tls/certificates/load_files").await {
+            Ok(files) => files,
+            Err(Error::Admin(_)) => return Ok(BTreeSet::new()),
+            Err(error) => return Err(error),
+        };
+        let prefix = format!("{CONTAINER_CERTS_DIR}/");
+        Ok(serde_json::from_str::<Option<Vec<Value>>>(&files)?
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|file| {
+                let path = file.get("certificate")?.as_str()?;
+                Some(path.strip_prefix(&prefix)?.strip_suffix(".crt")?.to_owned())
+            })
+            .collect())
     }
 }
 
@@ -166,16 +200,16 @@ where
     .await
 }
 
-/// Render and apply one already-derived projection through Caddy.
+/// Render one already-derived projection and load it when Caddy runs, returning the
+/// Caddyfile to persist.
 ///
 /// # Errors
 ///
-/// Returns a filesystem, validation, or acknowledged-load error.
-pub(crate) async fn reconcile<A: CaddyAdmin>(
+/// Returns a validation or acknowledged-load error.
+pub(crate) async fn load<A: CaddyAdmin>(
     projection: &IngressProjection,
-    config_file: &Path,
     admin: Option<&A>,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let caddyfile = render_caddyfile(projection, &timestamp);
     tracing::info!(routes = %route_summary(projection), "ingress config");
@@ -183,11 +217,10 @@ pub(crate) async fn reconcile<A: CaddyAdmin>(
         let json = admin.adapt(&caddyfile).await?;
         admin.load(&json).await?;
     }
-    write_caddyfile(config_file, &caddyfile)?;
-    Ok(())
+    Ok(caddyfile)
 }
 
-fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
+pub(crate) fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
     let directory = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?;
@@ -264,19 +297,19 @@ https:// {{\n\
 \t# A powered-off upstream's Machine never answers the dial; give up fast and retry another.\n\
 \t# A request sent on an idle kept-alive connection to it still waits about 14s for retransmits.\n\
 \ttransport http {{\n\
-\t\tdial_timeout 1s\n\
+\t\tdial_timeout 500ms\n\
 \t}}\n\
 }}\n"
     );
     if projection.sites.iter().any(|site| {
-        site.route(HttpProtocol::Http).is_some()
+        site.proxied(HttpProtocol::Http).is_some()
             || site.challenge().is_some()
-            || (site.route(HttpProtocol::Https).is_some() && site.material().is_some())
+            || site.proxied(HttpProtocol::Https).is_some()
     }) {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
     for site in &projection.sites {
-        let https = site.material().zip(site.route(HttpProtocol::Https));
+        let https = site.https();
         let published = |endpoints| {
             let publication = site
                 .publication
@@ -291,7 +324,7 @@ https:// {{\n\
         };
         // An https-only hostname redirects http to https; the challenge and verify probe stay on http.
         // A challenge-only http site publishes nothing else, so it answers like the catch-all.
-        let http = match (site.route(HttpProtocol::Http), https) {
+        let http = match (site.proxied(HttpProtocol::Http), https) {
             (Some(endpoints), _) => Some((published(endpoints), proxy(endpoints))),
             // The redirect's trace reports the https route it sends visitors to.
             (None, Some((_, endpoints))) => {
@@ -341,7 +374,7 @@ fn route_summary(projection: &IngressProjection) -> String {
     let mut summary = String::new();
     for site in &projection.sites {
         for (protocol, scheme) in [(HttpProtocol::Http, "http"), (HttpProtocol::Https, "https")] {
-            let Some(endpoints) = site.route(protocol) else {
+            let Some(endpoints) = site.proxied(protocol) else {
                 continue;
             };
             let upstreams = endpoints
@@ -467,9 +500,20 @@ fn write_certificate_errors(output: &mut String, sites: &[IngressSite]) {
             continue;
         };
         if !header {
-            output.push_str("\n# Skipped certificate issuance:\n");
+            output.push_str("\n# Certificates not served:\n");
             header = true;
         }
+        // CA error detail can quote what the domain served, so it stays on this comment line.
+        let error: String = error
+            .chars()
+            .map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .collect();
         let _ = writeln!(output, "# - {}: {error}", site.hostname);
     }
 }

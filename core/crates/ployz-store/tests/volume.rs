@@ -13,12 +13,12 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, Batch, BatchCommand, Change, ConfigStore,
-    CreateProject, CreateService, CreateVolume, DataEffect, Deploy, DeploymentId, DeploymentStatus,
-    DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount,
-    NodeStatus, OrganizationId, ProjectId, ProjectName, Publish, Published, RemovalsQuery,
-    RemoveVolume, RenameVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
-    SetVolumeSharedWrites, SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing,
-    VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
+    CreateProject, CreateService, CreateVolume, DataEffect, Deploy, DeploymentId, DeploymentQuery,
+    DeploymentStatus, DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentQuery,
+    EnvironmentRef, Mount, NodeStatus, OrganizationId, Outcome, ProjectId, ProjectName, Publish,
+    Published, RemovalsQuery, RemoveVolume, RenameVolume, Retry, RunEvidence, RunnerId,
+    ServiceLineageId, SetVolumeSharedWrites, SetVolumeStorage, SettingPath, Trusted, VolumeId,
+    VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -152,6 +152,7 @@ fn admit_at(
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
                 message: None,
+                prune: false,
             }),
             &Trusted {
                 volumes: observed,
@@ -315,6 +316,51 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
     }
     assert!(set(managed).unwrap().staged.is_empty());
     assert_eq!(listed(&store, &who)[0].volume.storage, managed);
+}
+
+#[test]
+fn a_deploy_after_one_that_applied_a_managed_volume_marks_it_deployed() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &SetVolumeStorage {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+                storage: VolumeKind::provisioned_default(),
+            },
+        )
+        .unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::NotExecuted("Preparation stopped".into()),
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let failed_before = prepare(&store, 2, &["web"]);
+    assert!(failed_before.intent.deployed_volumes.is_empty());
+    store
+        .record(
+            &id(2),
+            &runner,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    execute(&store, 2, Vec::new());
+
+    admit(&store, &who, 3, &[], None).unwrap();
+    let claimed = store.claim(&id(3), &runner).unwrap();
+
+    assert_eq!(
+        texts(&claimed.intent.deployed_volumes.iter().collect::<Vec<_>>()),
+        [DOCKER_VOLUME]
+    );
+    assert_eq!(claimed.input["volumes"][0]["deployed"], true);
 }
 
 #[test]
@@ -1205,6 +1251,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),
@@ -1404,6 +1451,77 @@ fn a_new_unmounted_volume_is_not_deployed_by_a_deploy_that_succeeded() {
             .iter()
             .any(|change| change.name == "spare")
     );
+}
+
+#[test]
+fn a_deploy_with_a_blocked_service_fails_and_leaves_its_applied_state_alone() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    // The planner found data without a writer: it planned api and blocked web.
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{
+            "index": 0, "machine_id": "a".repeat(32), "service_name": "api",
+            "operation": remove_web(), "status": {"type": "pending"}
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+        "blocked": [{
+            "service": "web",
+            "error": {
+                "code": "conflict",
+                "message": "Volume data has no writer; fsn-2 holds its only copy",
+                "details": {"reason": "no_writer"}
+            }
+        }]
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    execute(&store, 1, Vec::new());
+
+    let view = store.read(&who, &DeploymentQuery { id: id(1) }).unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Failed);
+    assert!(
+        matches!(
+            &view.deployment.outcome,
+            Some(Outcome::Executed { reason: Some(reason), .. })
+                if reason == "web: Volume data has no writer; fsn-2 holds its only copy"
+        ),
+        "{:?}",
+        view.deployment.outcome
+    );
+    let outcomes = outcomes(&store, &who, 1);
+    for expected in [
+        ("api".to_owned(), NodeStatus::Deployed),
+        ("web".to_owned(), NodeStatus::NotAttempted),
+        ("data".to_owned(), NodeStatus::NotAttempted),
+    ] {
+        assert!(outcomes.contains(&expected), "{expected:?} in {outcomes:?}");
+    }
+    // Applied State took api, and still waits for web and the Volume it mounts.
+    let pending: Vec<String> = diff(&store, &who)
+        .changes
+        .iter()
+        .map(|change| change.name.clone())
+        .collect();
+    assert!(pending.contains(&"web".to_owned()), "{pending:?}");
+    assert!(pending.contains(&"data".to_owned()), "{pending:?}");
+    assert!(!pending.contains(&"api".to_owned()), "{pending:?}");
 }
 
 #[test]

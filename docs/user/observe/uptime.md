@@ -59,7 +59,7 @@ answers `not_checked`.
 ## Good to know
 
 - **What gets checked.** The service's generated domain, or its first custom domain when it has
-  none, at its [health check](../deploy/deployments.md#deploy-without-downtime) path, or `/`
+  none, at its [health check](../deploy/zero-downtime.md#keep-your-app-serving-through-a-deploy) path, or `/`
   without one. At the path, any answer below 400 counts as up. At `/`, any answer below 500
   counts, so a 404 still shows the service is up. A service with no public address isn't
   checked, so its **Monitoring** tab starts at its metrics.

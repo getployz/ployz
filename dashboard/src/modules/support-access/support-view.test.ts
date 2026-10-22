@@ -93,6 +93,14 @@ describe("a Deployment for support", () => {
     });
     expect(viewForSupport(deployment, ALL)).toEqual(deployment);
   });
+
+  it("drops the container log of a Service it removes that no node targets, history included", () => {
+    const removing = view({ view: "deployment", nodes: [], untargeted: { cache: [{ ...failed, history: [failed] }] } });
+    expect(viewForSupport(removing, NONE)).toEqual({
+      view: "deployment", nodes: [], untargeted: { cache: [{ ...failed, log: null, history: [{ ...failed, log: null }] }] },
+    });
+    expect(viewForSupport(removing, ALL)).toEqual(removing);
+  });
 });
 
 describe("a refusal for support", () => {

@@ -166,7 +166,7 @@ You'll see `Cloud no longer takes this enrollment token`.
 
 The enrollment token expired or was mistyped, or the organization's servers were forgotten,
 which voids every token made before. A token works for 24 hours. Run
-`ployz server add --command` on your machine for a new one and run its line again.
+`ployz server add --command` on your computer for a new one and run its line again.
 
 ## The server's name is invalid
 
@@ -191,7 +191,9 @@ your first server.
 1. Run the same command again. A first start can take several minutes.
 2. Make sure your servers reach each other on UDP 51820, in any firewall your provider runs in
    front of them.
-3. Read the server's logs with `sudo journalctl -u ployz -n 200`.
+3. Read the server's logs with `sudo journalctl -u ployz -n 200`. Only if they say `refusing to
+   change the retained WireGuard interface` or `refusing to replace the existing Docker network`,
+   follow [Ployz stops over a leftover network](#ployz-stops-over-a-leftover-network).
 
 ## A server waits for approval and never shows up
 
@@ -251,8 +253,9 @@ prepares Docker and ZFS meanwhile.
    installs one.
 12. Once you approve the server, the loop enrolls it and the **this server** line walks through
     `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
-    the same stages Ployz Cloud shows. `Queued to join` means other servers are joining the
-    fleet first. When it reads `Joined`, the running check-in loop turns itself off and deletes
+    the same stages Ployz Cloud shows, where `Queued to join` reads **In line** and `Publishing`
+    reads **Going live**. `Queued to join` means other servers are joining the fleet first. When
+    it reads `Joined`, the running check-in loop turns itself off and deletes
     `/etc/ployz/fleet-token`, or the file you named with `--token-file`.
 13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
     example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
@@ -267,20 +270,19 @@ prepares Docker and ZFS meanwhile.
     `Publishing`, rejection lets enrollment finish, including after a restart. Cloud keeps
     its enrollment token valid and continues answering the attempt until it joins or fails.
     Expiring or revoking a Fleet Token lets an open enrollment finish.
-15. If Cloud selects a ZFS disk, this version logs the selection and builds ZFS on the default
-    disk. Selecting a particular disk on the host is not yet supported.
+15. If Cloud selects a spare disk, the server builds its ZFS pool on that disk.
 16. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
     at most 10 seconds, then closes them. Nothing stays listening after that. A check that arrives
     while `ployz server checkin --install` runs makes it pause for those seconds, and it says so.
     The server tells Cloud what it heard only after it closes the ports. One that restarts while it
-    listens tells Cloud nothing for that check, so its ports read Unknown: check again. **Open**
-    means Cloud reached the port and the server answered. **Closed** means the server listened but
-    Cloud's connection was refused, so a firewall in front of it turns the port away. **Unknown ·
-    port busy** means Ployz couldn't listen on that port in time. Usually another program, such as
-    a web server, already holds it. Find it with `sudo ss -lntup 'sport = :80'`, stop it, and check
-    again. If nothing holds it, a delayed check-in reply or a busy server may have left too little
-    time to listen, so check again. A server running a `ployz` older than this feature leaves every
-    port Unknown.
+    listens tells Cloud nothing for that check, so its ports read **Unknown · server didn't
+    report**: check again. **Open** means Cloud reached the port and the server answered.
+    **Closed** means the server listened but Cloud's connection was refused, so a firewall in front
+    of it turns the port away. **Couldn't listen · port in use** means Ployz couldn't listen on that
+    port in time. Usually another program, such as a web server, already holds it. Find it with
+    `sudo ss -lntup 'sport = :80'`, stop it, and check again. If nothing holds it, a delayed
+    check-in reply or a busy server may have left too little time to listen, so check again. A
+    server running a `ployz` older than this feature leaves every port Unknown.
 
 ## Ployz stops over a leftover network
 
@@ -326,29 +328,34 @@ reported or nothing at all. Adding a server can fail with `This Organization's S
 reached`. A CLI command, or a deployment that couldn't run, says `Server web-1 isn't answering`,
 naming each server it couldn't reach by the name it last reported, or by its ID if Ployz never
 learned one. When a server answered but refused every connection, the error names the server
-tried last, as in `Server web-2, tried last, refused the connection`. A deploy whose ingress check
-couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with what the
-connection said in parentheses. A server that just joined or restarted answers within a minute; try
-again then.
+tried last, as in `Server web-2, tried last, refused the connection`. When its connection finds no
+server answering, `ployz status` lists `Server web-1 isn't answering` under **needs attention**, and
+`ployz deploy --plan` warns first that the deploy can't run until it answers. A deploy whose web
+traffic check couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with
+what the connection said in parentheses. A server that just joined or restarted answers within a
+minute; try again then.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with
    `sudo systemctl start ployz`, and read its logs with `sudo journalctl -u ployz -n 200`.
-3. If your servers' outgoing traffic is filtered, allow https to `relay.ployz.dev`.
+3. If your servers' outgoing traffic is filtered, allow https to `relay.ployz.dev`. When Cloud
+   can't reach your first server, adding it fails with `Cloud can't reach this Server through the
+   relay or directly`. Allow https to `relay.ployz.dev` from the server, and from Cloud if you host
+   it yourself, then try again.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
-5. If the servers run Ployz 0.3.0-beta.6 or earlier, Cloud can't reach them through the relay.
-   Upgrade each one over SSH, as in
-   [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
+5. If the servers run Ployz 0.2 or 0.3.0-beta.6 and earlier, Cloud can't reach them through the relay.
+   Upgrade one over SSH, then the rest from Cloud, as in
+   [Servers on 0.2 or 0.3.0-beta.6 and earlier](../servers/manage-servers.md#servers-on-02-or-030-beta6-and-earlier).
 
-## The CLI says a server runs 0.3.0-beta.6 or earlier
+## The CLI says a server runs 0.2 or 0.3.0-beta.6 and earlier
 
 ```text
-This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
+This Server runs Ployz 0.2 or a 0.3.0 beta up to beta.6, which this release can't reach through the relay.
 ```
 
-Upgrade that server over SSH, as in
-[Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
+Upgrade one server over SSH, then the rest from Cloud, as in
+[Servers on 0.2 or 0.3.0-beta.6 and earlier](../servers/manage-servers.md#servers-on-02-or-030-beta6-and-earlier).
 
 A server that answers but refuses says so instead, with its own reason:
 `Server web-1 couldn't give this command access: Cluster store is not available`. It is running, so
@@ -357,21 +364,18 @@ don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
 ## A server shows Offline
 
 The server's page says **Can't reach web-2**. Services that run only there are down. Stopping Ployz
-with `sudo systemctl stop ployz.socket ployz` doesn't cause this: the server keeps its place in the
-cluster until it reboots or you remove it.
+with `sudo systemctl stop ployz.socket ployz` doesn't cause this: the server keeps its place among
+your servers until it reboots or you remove it.
 
 1. Check at your provider that the server is running, then run `sudo systemctl status ployz` on
    it.
 2. Make sure UDP 51820 is open between your servers.
 3. If the server is gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone),
-   then deploy again. Its page offers **Forget server** while it's offline, or from the CLI:
-
-   ```sh
-   ployz server forget web-2 --confirm dead
-   ```
+   then deploy again. Its page offers **Forget server** while it's offline.
 
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
-   services come back.
+   services come back, and [When its server goes down](../services/volumes.md#when-its-server-goes-down)
+   to bring a volume back from its mirror with **Use mirror** before you deploy.
 
 ## A server's address changed
 
@@ -381,8 +385,15 @@ server comes back from a stop with a new address, the other servers learn it, an
 warning; restart Ployz on it with `sudo systemctl restart ployz` to try again.
 
 An address you chose yourself never changes on its own. That means `--public-ip` or `--wg-endpoint`
-given to `ployz server init`, `ployz server add` or `ployz server set`. To change it, run
+given to `ployz server add` or `ployz server set`. To change it, run
 `ployz server set` again.
+
+A server on 0.3.0-beta.6 or earlier keeps the public IP and network addresses it has when you
+upgrade it to a release after 0.3.0-beta.7. Those older releases didn't record which addresses you
+chose, so Ployz treats both as chosen. From then on the server doesn't pick up a new address on its
+own: after its IP changes, run `ployz server set`. Only resetting the server goes back to automatic
+addresses. A server already upgraded to 0.3.0-beta.7 may have swapped an address you chose for one
+it found; set yours again with `ployz server set`.
 
 If every server's address changed at once, the servers can't reach each other to share the new
 addresses, and each one shows the others as unreachable. [Tell them where one of them
@@ -416,8 +427,27 @@ or may not have changed.` and the command still succeeds. Run it again once both
 ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
 server that still shows as not answering.
 
-Run it from your machine with Ployz Cloud or a context that reaches the other servers, or on one of
-the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
+Run it from your computer with Ployz Cloud, or on one of the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
+
+## Apps see IPv6 visitors as 10.210.x.1
+
+Through a domain, your app's `X-Forwarded-For` should show each visitor's own address. If it
+shows your server's private gateway, such as `10.210.0.1`, for visitors over IPv6, the server's
+container network has no IPv6. `journalctl -u ployz` says why:
+
+- `learn IPv6 from router advertisements`: the server takes its IPv6 route or address from router
+  advertisements, which IPv6 forwarding would stop. Run the `sysctl -w` command the log names, add
+  the same setting to a file in `/etc/sysctl.d/` so it survives a reboot, then run
+  `sudo systemctl restart ployz`.
+- `Docker's ip6tables is off or uses nftables`: Ployz needs Docker's default iptables firewall
+  with `ip6tables` on. Remove `"ip6tables": false` and `"firewall-backend": "nftables"` from
+  `/etc/docker/daemon.json`, restart Docker, then run `sudo systemctl restart ployz`.
+- `the IPv6 mesh fence failed`: the log line gives ip6tables' reason. Ployz tries again at its
+  next start.
+- `could not take IPv6`: the log line gives Docker's reason. Ployz tries again at its next start.
+
+A port a service publishes on the server always shows IPv6 visitors as the gateway. Give the
+service a domain to see their addresses.
 
 ## Services can't resolve each other's names
 

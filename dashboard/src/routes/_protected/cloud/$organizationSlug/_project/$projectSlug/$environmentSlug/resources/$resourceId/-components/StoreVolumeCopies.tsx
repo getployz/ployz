@@ -1,4 +1,5 @@
-import { type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, RefreshCwIcon, Trash2Icon, TriangleAlertIcon, XIcon } from "lucide-react";
 import type { EnvironmentRef, MachineId, MachineName } from "@ployz/sdk";
 import { ConfirmDialog } from "#/components/confirm-dialog";
@@ -13,18 +14,20 @@ import { Spinner } from "#/components/ui/spinner";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { type RoleGate, useRoleGate } from "#/modules/organization/members.queries";
+import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  addableCopies, cardLine, COPY_WORDS, isStale, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
-  type VolumeCopies, type VolumeCopy,
+  addableCopies, cardLine, COPY_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
+  nothingElsewhere, unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
-  appliedMirrors, editPlacement, failover, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
-  placementTargets, type PlacementVolume, type RestorePoint, restorePoints, targetPlacement,
+  appliedMirrors, editPlacement, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
+  placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
@@ -38,6 +41,9 @@ export type CopiesVolume = PlacementVolume & { readonly mounts: readonly { reado
 export type CopyServer = { readonly id: string; readonly name: string; readonly storage: "stateless" | "ready" | "pool" | null };
 
 const STAGED_STATE = { new: "changed", removing: "destructive", primary: "changed" } as const satisfies Record<StagedCopy, string>;
+const LIVE_STATE = {
+  live: "success", read_only: "info", outdated: "warning", lacks: "secondary", silent: "destructive", waiting: "outline",
+} as const satisfies Record<LiveState, string>;
 
 /** Everything the Copies tab reads and writes, gathered once so the header's safety line and the tab agree. */
 export function useVolumeCopies(organizationSlug: string, environment: EnvironmentRef, volume: CopiesVolume) {
@@ -55,7 +61,10 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const copies = members === undefined ? null
     : copiesFromPlacement({ volume, members, row, active: running, statuses: mirror.statuses });
   const accepting = placementServers(lens.machines);
+  const floorless = new Set(lens.machines.filter((machine) => serverSupports(machine, requirements.volumeFloor) === false).map((machine) => machine.id));
   return {
+    organizationSlug,
+    forgetGate: useRoleGate(organizationSlug, "servers:remove", "Only an owner or admin can forget servers."),
     volume,
     members,
     rows,
@@ -65,8 +74,9 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     holders: holdersOf(volume.id, members, lens.status === "observed" ? lens.machines : null, lens.volumeCopies),
     servers: lens.machines.filter((machine) => machine.acceptsServices),
     accepting: members?.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id) ?? [],
+    floorless: members?.filter((member) => floorless.has(member.machine.id)).map((member) => member.machine.id) ?? [],
     upgrade: placementBlockers(lens.machines),
-    seeds: members !== undefined && restoreOpen(lens.machines, observePlacement(members).primary?.id ?? null),
+    restorable: members?.filter((member) => restoreOpen(lens.machines, member.machine.id)).map((member) => member.machine.id) ?? [],
     disabled: placement.pending || restore.pending,
     deploying: row?.deploymentId != null && inFlight.some((deployment) => deployment.id === row.deploymentId),
     stage: placement.stage,
@@ -80,6 +90,8 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
 export type VolumeCopiesData = ReturnType<typeof useVolumeCopies>;
 
 export type CopiesPanelProps = {
+  organizationSlug: string;
+  forgetGate: RoleGate;
   volume: CopiesVolume;
   members: readonly Member[] | undefined;
   rows: readonly PlacementRow[];
@@ -90,9 +102,10 @@ export type CopiesPanelProps = {
   servers: readonly CopyServer[];
   /** Servers that accept Services and run the volume verbs: the only ones a move or a mirror may name. */
   accepting: readonly MachineId[];
+  floorless: readonly MachineId[];
   upgrade: readonly string[];
-  /** Whether the Primary's daemon can seed a restore. */
-  seeds: boolean;
+  /** The Servers whose Ployz can restore a point onto the copy they hold as primary. */
+  restorable: readonly MachineId[];
   disabled: boolean;
   /** A Deploy still runs the Volume's placement: the server refuses edits and deletes until it ends. */
   deploying: boolean;
@@ -108,21 +121,90 @@ export type CopiesPanelProps = {
 
 /** A Volume's copies: the live one, and every place it survives if that Server dies. A mirror opens in detail. */
 export function VolumeCopiesPanel(props: CopiesPanelProps) {
-  const { volume, members, rows, copies, open, onOpen } = props;
+  const { volume, members, rows, copies, accepting, owed, floorless, open, onOpen } = props;
   const now = useMinute() ?? new Date();
   if (members === undefined) return <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>;
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
+  const recovered = recovery(volume, members, row, accepting, owed, floorless);
+  const alert = recovered === null ? null : <RecoveryAlert {...props} recovery={recovered} now={now} />;
   const target = targetPlacement(observePlacement(members), row);
-  if (copies === null || target === null) return <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>;
+  const seed = seedOffer(volume, members, props.restorable, floorless);
+  const needs = props.upgrade.length ? <p className="text-sm text-muted-foreground">Upgrade {props.upgrade.join(", ")} to a newer Ployz</p> : null;
+  if (copies === null || target === null) {
+    if (recovered?.kind !== "restore") return <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>;
+    return <div className="flex flex-col gap-4">
+      {alert}
+      {needs}
+      <Group label="Elsewhere">
+        <Item role="listitem" variant="outline" size="sm">
+          <ItemContent>
+            <ItemTitle>{recovered.mirror.name}</ItemTitle>
+            <ItemDescription>{[COPY_WORDS.mirror, recovered.lostAfter ? lossMoment(recovered.lostAfter, now) : null].filter(Boolean).join(" · ")}</ItemDescription>
+          </ItemContent>
+        </Item>
+      </Group>
+    </div>;
+  }
   const mirror = copies.elsewhere.find((copy): copy is MirrorCopy => copy.kind === "mirror" && copy.id === open);
-  if (mirror !== undefined) return <CopyView {...props} members={members} row={row} copies={copies} copy={mirror} now={now} onBack={() => onOpen(null)} />;
-  return <CopiesView {...props} members={members} row={row} copies={copies} target={target} now={now} />;
+  const resolved = { ...props, members, row, copies, now, seeds: seed.offered, seedRefused: seed.refused };
+  if (mirror !== undefined) return <CopyView {...resolved} copy={mirror} alert={alert} onBack={() => onOpen(null)} />;
+  return <CopiesView {...resolved} target={target} alert={alert} needs={needs} />;
 }
 
-type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies; now: Date };
+function RecoveryAlert({ organizationSlug, forgetGate, volume, disabled, deploying, upgrade, stage, recovery: recovered, now }:
+  CopiesPanelProps & { recovery: Recovery; now: Date }) {
+  const lost = recovered.lostAfter ? `Changes after ${lossMoment(recovered.lostAfter, now)} lost` : "Recent changes lost";
+  const { mirror } = recovered;
+  // Not red: a report that hasn't arrived is no outage, and the row may be the primary's own Server, so nothing is promised.
+  if (recovered.kind === "wait") {
+    return <Alert>
+      <AlertTitle>Waiting for every server's report</AlertTitle>
+      <AlertDescription>Copies shows what you can do once every server has reported.</AlertDescription>
+    </Alert>;
+  }
+  if (recovered.kind === "unreported") {
+    const { server, heard, lack } = recovered;
+    return <Alert>
+      <AlertTitle>{server.name} {heard === "outdated" ? "needs a newer Ployz" : "can't report this copy"}</AlertTitle>
+      <AlertDescription>{`Copies can't tell whether ${server.name} still holds ${volume.name}'s primary. ${lack}`}</AlertDescription>
+    </Alert>;
+  }
+  if (recovered.kind === "forget") {
+    const { down } = recovered;
+    const names = down.map((server) => server.name).join(" and ");
+    const verb = down.length === 1 ? "is" : "are";
+    return <Alert variant="destructive">
+      <AlertTitle>{names} {verb} not answering</AlertTitle>
+      <AlertDescription>
+        {`${lost}. The mirror on ${mirror.name} can take over once ${names} ${verb} forgotten.`}
+        {forgetGate.allowed
+          ? down.map((server) => <Fragment key={server.id}>{" "}
+            <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: server.id }}>Forget {server.name}</Link>
+          </Fragment>)
+          : ` ${forgetGate.reason}`}
+      </AlertDescription>
+    </Alert>;
+  }
+  const { stage: staged } = recovered;
+  return <Alert variant="destructive">
+    <AlertTitle>{volume.name} has no primary</AlertTitle>
+    <AlertDescription>
+      {"refused" in staged ? `${lost}. ${staged.refused}` : `${lost}. Use mirror makes ${mirror.name} the primary at your next deploy.`}
+    </AlertDescription>
+    {"refused" in staged ? null : <AlertAction>
+      <Button variant="outline" size="sm" disabled={disabled || deploying || upgrade.length > 0}
+        onClick={() => stage(staged.placement, staged.mirrors)}>Use mirror</Button>
+    </AlertAction>}
+  </Alert>;
+}
 
-function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now }:
-  Resolved & { target: Placement }) {
+/** `seeds` offers a Restore point; `seedRefused` is the planner's refusal when the Deploy's seed run would refuse it. */
+type Resolved = CopiesPanelProps & {
+  members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies; now: Date; seeds: boolean; seedRefused: string | null;
+};
+
+function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, seedRefused, disabled, deploying, stage, restore, deleteCopy, onOpen, now,
+  alert, needs }: Resolved & { target: Placement; alert: ReactNode; needs: ReactNode }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<OldCopy | null>(null);
   const observed = observePlacement(members);
@@ -130,28 +212,20 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
   const blocked = upgrade.length > 0;
   const locked = disabled || deploying || blocked;
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
-  const offer = failover(observed, row);
   const mirrorOn = placementTargets(volume, members, row, accepting, owed).mirror.filter((server) => server.id !== target.primary);
   const canAdd = !blocked && mirrorOn.length > 0 && addableCopies(copies, ["mirror"]).length > 0;
   const { live } = copies;
-  const liveName = live.server?.name ?? "its server";
 
   return <div className="flex flex-col gap-4">
-    {offer ? <Alert variant="destructive">
-      <AlertTitle>{offer.down.name} is not answering</AlertTitle>
-      <AlertDescription>{offer.lostAfter ? `Changes after ${lossMoment(offer.lostAfter, now)} lost` : "Recent changes lost"}</AlertDescription>
-      {!owed && accepting.includes(offer.mirror.id) ? <AlertAction>
-        <Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button>
-      </AlertAction> : null}
-    </Alert> : null}
-    {upgrade.length ? <p className="text-sm text-muted-foreground">Upgrade {upgrade.join(", ")} to a newer Ployz</p> : null}
+    {alert}
+    {needs}
     <Group label="Live">
       <Item role="listitem" variant="outline" size="sm">
         <ItemContent>
-          <ItemTitle>{live.server?.name ?? "Unknown"}</ItemTitle>
+          <ItemTitle>{live.server?.name ?? "No primary"}</ItemTitle>
           <ItemDescription>{live.busy ? <Busy words={live.busy} /> : live.moveTo ? `Moving to ${live.moveTo.name} · on deploy` : "Primary"}</ItemDescription>
         </ItemContent>
-        <ItemActions><Badge variant="success">Live</Badge></ItemActions>
+        {live.server ? <ItemActions><Badge variant={LIVE_STATE[live.server.state]}>{LIVE_WORDS[live.server.state]}</Badge></ItemActions> : null}
       </Item>
       {live.restore ? <Item role="listitem" variant="outline" size="sm" state="changed" data-staged="restore">
         <ItemContent>
@@ -162,10 +236,11 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
     </Group>
     <Group label="Elsewhere">
       {copies.elsewhere.length === 0
-        ? <p className="text-sm text-muted-foreground">Nothing outside {liveName}. If {liveName} dies, {volume.name} goes with it.</p>
+        ? <p className="text-sm text-muted-foreground">{nothingElsewhere(copies)}</p>
         : copies.elsewhere.map((copy) => <CopyRow key={copy.id} copy={copy} now={now} locked={locked} blocked={blocked}
           onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old" ? () => setDeleting(copy) : null}
-          restore={copy.kind === "old" && seeds ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} />)}
+          restore={copy.kind === "old" ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} seeds={seeds}
+          seedRefused={seedRefused} />)}
     </Group>
     {canAdd ? <Button variant="outline" className="border-dashed" disabled={locked} onClick={() => setAdding(true)}>
       <PlusIcon data-icon="inline-start" />Add copy
@@ -211,8 +286,11 @@ function restoreOffer(volume: CopiesVolume, members: readonly Member[], rows: re
 
 type RestoreOffer = ReturnType<typeof restoreOffer>;
 
-/** One copy away from the live Server. A mirror opens; an old copy restores its point on deploy, or goes at once. */
-function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null }: {
+/**
+ * One copy away from the live Server. A mirror opens; an old copy restores its point on deploy, or goes at once. A
+ * restore already staged reads Staged even while `seeds` offers no new one; otherwise `seedRefused` says why there is none.
+ */
+function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null, seeds = false, seedRefused = null }: {
   copy: VolumeCopy;
   now: Date;
   locked: boolean;
@@ -220,14 +298,18 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null 
   onOpen: () => void;
   onDelete: (() => void) | null;
   restore?: RestoreOffer;
+  seeds?: boolean;
+  seedRefused?: string | null;
 }) {
   const line = cardLine(copy, now);
+  const unheard = unheardReason(copy);
   const title = copy.kind === "offsite" ? copy.bucket : copy.server.name;
   const description = line.spin ? <Busy words={line.words} />
     : copy.staged === "new" ? `${COPY_WORDS[copy.kind]} · on deploy`
     : <>
-      {[line.words, copy.kind === "mirror" ? "15 min" : null].filter(Boolean).join(" · ")}
+      {[line.words, copy.kind === "mirror" && !copy.lastReported ? "15 min" : null].filter(Boolean).join(" · ")}
       {line.age ? <> · <span className={cn(line.stale && "text-warning")}>{line.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{copy.kind === "old" && copy.since ? lossMoment(copy.since, now) : line.age}</span></> : null}
+      {unheard ? ` · ${unheard}` : null}
     </>;
   const badge = copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null;
   const content = <>
@@ -239,7 +321,8 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null 
       {badge}
       {copy.kind === "mirror" ? <ChevronRightIcon className="size-4 text-muted-foreground" /> : null}
       {restore?.staged ? <span className="text-sm text-muted-foreground">Staged</span>
-        : restore ? <Button variant="outline" size="xs" aria-label={`Restore from ${title}`} disabled={restore.disabled} onClick={restore.stage}>Restore</Button> : null}
+        : restore && seeds ? <Button variant="outline" size="xs" aria-label={`Restore from ${title}`} disabled={restore.disabled} onClick={restore.stage}>Restore</Button>
+        : restore && seedRefused !== null ? <span className="text-sm text-muted-foreground">{seedRefused}</span> : null}
       {onDelete && copy.staged === null && copy.busy === null && !blocked
         ? <Button variant="ghost" size="icon-xs" aria-label={`Delete copy on ${title}`} disabled={locked} onClick={onDelete}><XIcon /></Button> : null}
     </ItemActions>
@@ -247,7 +330,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null 
   const state = copy.staged ? STAGED_STATE[copy.staged] : undefined;
   if (copy.kind === "mirror") {
     return <div role="listitem" data-staged={copy.staged ?? undefined}>
-      <Item variant="outline" size="sm" state={state} render={<button type="button" aria-label={`${COPY_WORDS.mirror} on ${title}`} onClick={onOpen} />}
+      <Item variant="outline" size="sm" state={state} render={<button type="button" aria-label={`${copy.lastReported ? `${LAST_REPORTED} mirror` : COPY_WORDS.mirror} on ${title}`} onClick={onOpen} />}
         className="cursor-pointer text-left hover:bg-muted">
         {content}
       </Item>
@@ -306,15 +389,17 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
 }
 
 /** Its staged actions build the same placement the list would; only Details discards them. */
-function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, upgrade, seeds, disabled, deploying, stage, restore, refresh, refreshing,
-  onBack, now }:
-  Resolved & { copy: MirrorCopy; onBack: () => void }) {
+function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, upgrade, seeds, seedRefused, disabled, deploying, stage, restore, refresh, refreshing,
+  alert, onBack, now }:
+  Resolved & { copy: MirrorCopy; alert: ReactNode; onBack: () => void }) {
   const blocked = upgrade.length > 0;
   const observed = observePlacement(members);
   const target = targetPlacement(observed, row);
   const applied = appliedMirrors(observed, row);
-  // A staged mirror is Details' to discard, and a Deploy running the placement holds it.
-  const offered = !blocked && copy.staged === null && !deploying ? target : null;
+  // A staged mirror is Details' to discard, and a Deploy running the placement holds it. A mirror the target holds as its
+  // primary, while Live names another Server, has no edit of its own, nor does one known only from its last report,
+  // which no placement holds.
+  const offered = !blocked && copy.staged === null && !copy.lastReported && !deploying && target?.primary !== copy.server.id ? target : null;
   const movable = placementTargets(volume, members, row, accepting, owed).move.some((machine) => machine.id === copy.server.id);
   const promote = offered !== null && movable ? editPlacement(offered, { kind: "move", to: copy.server.id }) : null;
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
@@ -322,6 +407,8 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
   const live = copies.live.server?.name ?? "the live server";
   const services = [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
   const stale = isStale(copy, now);
+  // Refresh skipped needs a refresh to have been skipped: a mirror with no recorded refresh only says why.
+  const skippedBadge = stale && copy.refreshedAt !== null;
   const shown = refreshing && copy.busy === null ? { ...copy, busy: "Refreshing" } : copy;
   const last = mirrorLast(shown, now);
   const skipped = skippedWords(shown, now);
@@ -329,30 +416,34 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
 
   return <div className="flex flex-col gap-4">
     <Button variant="ghost" size="sm" className="self-start" onClick={onBack}><ChevronLeftIcon data-icon="inline-start" />Copies</Button>
+    {alert}
     <div className="flex min-w-0 items-center gap-2">
       <span className="font-semibold">{COPY_WORDS.mirror}</span>
       <span className={cn("truncate text-muted-foreground", copy.staged === "removing" && "line-through")}>{copy.name}</span>
       {copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null}
     </div>
     <Row title="Server">{copy.server.name}</Row>
-    <Row title="Refresh">Every {MIRROR_ROUND_MINUTES} min · on deploy</Row>
-    <Row title="Last">
+    <Row title="Refresh">
+      {copy.lastReported ? `${LAST_REPORTED} by ${copy.server.name}, which may have removed it since` : `Every ${MIRROR_ROUND_MINUTES} min · on deploy`}
+    </Row>
+    {copy.lastReported ? null : <Row title="Last">
       {last.spin ? <Busy words={last.words} />
         : <span className={cn(last.stale && "text-warning")}>{last.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{last.words}</span>}
-    </Row>
+    </Row>}
     {skipped === null ? null : <Field orientation="responsive">
       <FieldContent><FieldTitle>Status</FieldTitle><FieldDescription>{skipped}</FieldDescription></FieldContent>
-      <Badge variant="warning">Refresh skipped</Badge>
+      {skippedBadge ? <Badge variant="warning">Refresh skipped</Badge> : null}
     </Field>}
     {offer ? <Row title="Restore point">
       <span className="flex items-center gap-2">
         {lossMoment(offer.point.at, now)}
         {offer.staged ? <span className="text-muted-foreground">Staged</span>
-          : seeds ? <Button variant="outline" size="sm" disabled={offer.disabled} onClick={offer.stage}>Restore</Button> : null}
+          : seeds ? <Button variant="outline" size="sm" disabled={offer.disabled} onClick={offer.stage}>Restore</Button>
+          : seedRefused === null ? null : <span className="text-muted-foreground">{seedRefused}</span>}
       </span>
     </Row> : null}
     <div data-slot="copy-actions" className="flex flex-wrap gap-2">
-      {copy.staged === "new" ? null : <Button variant="outline" disabled={disabled || last.spin} onClick={refresh}>
+      {copy.staged === "new" || copy.lastReported ? null : <Button variant="outline" disabled={disabled || last.spin} onClick={refresh}>
         {last.spin ? <Spinner role="presentation" aria-hidden="true" data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}Refresh now
       </Button>}
       {promote ? <Button variant="outline" disabled={locked} onClick={() => stage(promote, applied)}>Make primary</Button> : null}

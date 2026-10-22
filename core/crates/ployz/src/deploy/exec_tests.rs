@@ -96,6 +96,8 @@ enum Reply {
     Settled(ContainerId, HealthVerdict),
     CreatedLater(ContainerId),
     CreatedAfter(ContainerId, std::time::Duration),
+    /// Absent, once `delay` has passed.
+    OkAfter(std::time::Duration),
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
@@ -197,6 +199,16 @@ enum Move {
     Gone(ContainerId),
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Store {
+    /// Holds no rows, as a copy that appears only after the read.
+    Empty,
+    /// Holds a row for every recorded copy, answering Machine or not.
+    Copies,
+    Fails,
+    Silent,
+}
+
 enum Decision {
     Met,
     Write(CopyRotation),
@@ -265,6 +277,9 @@ struct Scripted {
     blipped_entry_reads: Mutex<usize>,
     /// What each proxy last routed, kept by the real rule.
     served: Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>,
+    /// What the entry Machine's store answers.
+    store: Store,
+    store_reads: Mutex<usize>,
     moves: Mutex<Vec<Move>>,
     /// Each live proxy's route once each move was applied.
     listed: Mutex<Vec<BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>>>,
@@ -308,6 +323,8 @@ impl Scripted {
             cut_off_after: None,
             blipped_entry_reads: Mutex::new(0),
             served: Mutex::new(BTreeMap::new()),
+            store: Store::Empty,
+            store_reads: Mutex::new(0),
             moves: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
         }
@@ -519,6 +536,31 @@ impl Scripted {
             .chain(copies.values().map(|copy| copy.machine_id))
             .chain(self.acks.keys().copied())
             .collect()
+    }
+
+    /// The Cluster as a Deploy reads it: every present copy, each on a Machine
+    /// that is Up.
+    fn snapshot(&self) -> crate::deploy::DeploySnapshot {
+        let copies = self.copies.lock().unwrap();
+        let machines = copies
+            .values()
+            .map(|copy| copy.machine_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|id| {
+                ployz_core::MachineObservation::new(machine_record(id), MembershipObservation::Up)
+            })
+            .collect();
+        let containers = copies
+            .iter()
+            .filter(|(_, copy)| copy.present)
+            .map(|(id, copy)| copy.proxied(id))
+            .collect();
+        crate::deploy::DeploySnapshot {
+            machines,
+            containers,
+            ..Default::default()
+        }
     }
 
     /// `advance` counts the read toward a delayed ack. A proxy that acks
@@ -795,6 +837,7 @@ impl Scripted {
                     Reply::Listed(_)
                     | Reply::CreatedLater(_)
                     | Reply::CreatedAfter(..)
+                    | Reply::OkAfter(_)
                     | Reply::Observed(..)
                     | Reply::ObservedIngress(_) => {
                         panic!("scripted restart requires Ok, Settled or Error")
@@ -951,6 +994,7 @@ impl Scripted {
             Reply::Created(id) | Reply::Settled(id, _) | Reply::CreatedLater(id) => Some(*id),
             Reply::CreatedAfter(id, _) => Some(*id),
             Reply::Ok
+            | Reply::OkAfter(_)
             | Reply::Listed(_)
             | Reply::Observed(..)
             | Reply::ObservedIngress(_)
@@ -990,6 +1034,10 @@ impl Scripted {
                 ensured(present(&container_id), healthy)
             }
             Reply::Ok => ensured(ContainerNow::Absent { of }, None),
+            Reply::OkAfter(delay) => {
+                tokio::time::sleep(delay).await;
+                ensured(ContainerNow::Absent { of }, None)
+            }
             Reply::Error(error) => Err(error),
             Reply::Pending => std::future::pending().await,
             Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedIngress(_) => {
@@ -1085,11 +1133,29 @@ impl MachineOperations for Scripted {
             | Reply::Settled(..)
             | Reply::CreatedLater(_)
             | Reply::CreatedAfter(..)
+            | Reply::OkAfter(_)
             | Reply::Observed(..)
             | Reply::ObservedIngress(_)
             | Reply::Pending => {
                 panic!("scripted list requires Listed or Error")
             }
+        }
+    }
+
+    async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {
+        *self.store_reads.lock().unwrap() += 1;
+        match self.store {
+            Store::Empty => Ok(Vec::new()),
+            Store::Copies => Ok(self
+                .copies
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, copy)| copy.present)
+                .map(|(id, copy)| copy.proxied(id))
+                .collect()),
+            Store::Fails => Err(unavailable("the store read failed")),
+            Store::Silent => std::future::pending().await,
         }
     }
 
@@ -1228,7 +1294,8 @@ impl MachineOperations for Scripted {
             | Reply::Created(_)
             | Reply::Settled(..)
             | Reply::CreatedLater(_)
-            | Reply::CreatedAfter(..) => {
+            | Reply::CreatedAfter(..)
+            | Reply::OkAfter(_) => {
                 panic!("scripted inspect requires Observed or Error")
             }
         }
@@ -1289,6 +1356,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         | Reply::Settled(..)
         | Reply::CreatedLater(_)
         | Reply::CreatedAfter(..)
+        | Reply::OkAfter(_)
         | Reply::Observed(..)
         | Reply::ObservedIngress(_)
         | Reply::Pending => {
@@ -1308,6 +1376,8 @@ fn id_of(locator: &ContainerLocator) -> ContainerId {
 mod dispatch;
 #[path = "exec_tests/flip.rs"]
 mod flip;
+#[path = "exec_tests/gen_floor.rs"]
+mod gen_floor;
 #[path = "exec_tests/health.rs"]
 mod health;
 #[path = "exec_tests/hooks.rs"]
@@ -1476,6 +1546,26 @@ fn machine(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
 }
 
+fn machine_record(id: MachineId) -> ployz_core::Machine {
+    let hex = id.to_string().chars().next().unwrap();
+    ployz_core::Machine {
+        id,
+        name: ployz_core::MachineName::parse(format!("machine-{hex}")).unwrap(),
+        subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
+            .parse()
+            .unwrap(),
+        public_key: ployz_core::WireGuardPublicKey([hex as u8; 32]),
+        public_ip: None,
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
+        advertised_endpoints: Vec::new(),
+        runtime: Default::default(),
+        build_concurrency: None,
+    }
+}
+
 fn container(hex: char) -> ContainerId {
     ContainerId::parse(hex.to_string().repeat(64)).unwrap()
 }
@@ -1529,6 +1619,10 @@ fn error(message: &str) -> RpcError {
 
 fn ok(call: Call) -> Step {
     Step(call, Reply::Ok)
+}
+
+fn ok_after(call: Call, delay: std::time::Duration) -> Step {
+    Step(call, Reply::OkAfter(delay))
 }
 
 fn created(call: Call, container_id: &ContainerId) -> Step {

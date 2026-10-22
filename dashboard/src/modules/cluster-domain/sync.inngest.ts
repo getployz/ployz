@@ -22,6 +22,18 @@ type EffectRunner = typeof runInngestEffect;
 const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
 
 /**
+ * The Servers the records name: those that answered, or, when every Server is IPv6 Cloud couldn't check, those. One
+ * checked and silent, or offline, keeps the last good set instead. A probe recorded before `unchecked` existed has none.
+ */
+function recordedServers<Server>(
+  probe: { reachable: Server[]; unreachable: unknown[]; taken: unknown[]; down: unknown[]; unchecked?: Server[]; offline?: unknown[] },
+) {
+  if (probe.reachable.length > 0) return probe.reachable;
+  const checked = probe.unreachable.length + probe.taken.length + probe.down.length + (probe.offline?.length ?? 0);
+  return checked === 0 ? probe.unchecked ?? [] : [];
+}
+
+/**
  * Keeps the Organization's Cluster Domain correct: skip when none is reserved → probe ingress Servers →
  * full-set records PUT when something answered (which renews the lease), then record what the probe found →
  * otherwise record it, then renew the lease → replace the wildcard certificate when missing or near expiry →
@@ -42,7 +54,7 @@ export async function executeSyncClusterDomain(
     runEffect(loadClusterDomain(organizationId).pipe(Effect.map((row) => row?.name ?? null))));
   if (name === null) return { organizationId, skipped: true };
   const probe = await step.run("probe-ingress-servers", () => runEffect(probeIngressServers(organizationId)));
-  const reachable = probe.kind === "probed" ? probe.reachable : [];
+  const reachable = probe.kind === "probed" ? recordedServers(probe) : [];
   // Hosted DNS refuses an empty set, and the last good set is better than none.
   const recordsPut = reachable.length > 0;
   const recordCheck = () => step.run("record-check", () => runEffect(recordClusterDomainCheck(organizationId, probe)));

@@ -4,7 +4,7 @@ import { ForgetServersInput } from "#/modules/machines/forget-servers";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
 import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
-import { ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
+import { DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
@@ -129,7 +129,7 @@ export const OPERATIONS = {
     surfaces: {
       cli: {
         route: "POST servers/:id/drain",
-        body: null,
+        body: DrainServer,
         options: { server: { via: ":id" }, wait: CLI_FOLLOWS, stageOff: { omitted: "The CLI drains only; `volume move` moves a Volume off." } },
       },
       agent: {
@@ -388,7 +388,7 @@ export const OPERATIONS = {
       ui: {
         fn: "resizeVolumeServerFn",
         input: ResizeVolumeInput,
-        ungated: "The human confirms in the page's own dialog.",
+        ungated: "The human confirms in the page's own dialog; in a Protected Environment, someone who can't protect it requests the grow instead.",
         options: {
           volume: { via: "volumeId" },
           environment: { via: "environment" },

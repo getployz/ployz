@@ -292,6 +292,8 @@ async fn a_failed_seed_copy_is_answered_once_and_the_next_call_starts_over() {
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("{failed}"));
     assert!(failure.contains("out of space"), "{failure}");
+    assert!(failure.contains("zfs send -t …"), "{failure}");
+    assert!(!failure.contains("token-1"), "{failure}");
 
     fs::remove_file(test.0.join("props").join("receive-fails")).unwrap();
     let restarted = post(&socket, "/Volume.Seed", seed(77)).await;

@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition, HookContainer,
-    IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
-    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceContainer,
-    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
-    hostname_owners, machine_matches_placement, same_service_mode_kind,
+    BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
+    HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
+    ObservedDataLoss, PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec,
+    RpcError, RpcErrorCode, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason, UpdateOrder,
+    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
+    same_service_mode_kind,
 };
 
 use super::{
@@ -53,6 +54,7 @@ struct Planned {
     preserved_volumes: Vec<PreservedVolume>,
     prune_refusal: Option<PruneRefusal>,
     warnings: Vec<DeployWarning>,
+    blocked: Vec<BlockedService>,
 }
 
 /// An admitted, immutable sequence of Deploy operations and its informational preview.
@@ -605,6 +607,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         depths: super::report::depths(&planned.groups),
         dependencies: super::report::dependencies(&planned.groups),
         placed_on,
+        blocked: planned.blocked,
     };
     DeployPlan {
         operations: planned.operations,
@@ -685,6 +688,16 @@ fn assemble_plan(
         }
     }
     let mut warnings = observation::warnings(&intent.namespace, &requested, &retiring, snapshot);
+    if prune_refusal == Some(PruneRefusal::RemovalsOnly) {
+        warnings.extend(
+            would_remove
+                .iter()
+                .filter(|service| !retiring.contains(service))
+                .map(|service| DeployWarning::NotInStore {
+                    service: service.clone(),
+                }),
+        );
+    }
     warnings.extend(hostname_policy_for(
         &intent.namespace,
         &requested,
@@ -703,29 +716,75 @@ fn assemble_plan(
         snapshot,
         &intent.namespace,
         &intent.volume_names,
+        &intent.deployed_volumes,
         &target,
         &requested,
+        intent.options.operator,
     )?;
     let name_errors_with_service = requested.len() > 1;
     let mut reservations = PlacementReservations::new(snapshot);
-    volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
+    let mut blocked =
+        volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
     let mut budget = ServiceBudget {
         volumes: volume_plan,
         placement: reservations.into_placement(snapshot),
     };
     let mut service_operations = Vec::new();
     let mut ranges = Vec::new();
+    // `requested` places every dependency before its dependents, so a Service whose
+    // dependency is blocked is seen after that dependency was.
     for spec in &requested {
+        if blocked.iter().any(|entry| entry.service == spec.name) {
+            continue;
+        }
+        if let Some(dependency) = intent
+            .dependencies()
+            .get(&spec.name)
+            .into_iter()
+            .flatten()
+            .find(|dependency| {
+                blocked
+                    .iter()
+                    .any(|entry| entry.service == dependency.service)
+            })
+        {
+            blocked.push(BlockedService {
+                service: spec.name.clone(),
+                error: dependency_blocked(&dependency.service),
+            });
+            budget.release(&spec.name);
+            continue;
+        }
         let first = service_operations.len();
-        let operations = plan_one_service(
+        let operations = match plan_one_service(
             spec,
             &intent.namespace,
             snapshot,
             &services,
             &mut budget,
             &intent.options,
-        )
-        .map_err(|source| service_error(name_errors_with_service, spec.name.as_str(), source))?;
+        ) {
+            Ok(operations) => operations,
+            // A Volume nobody can mount stops only the Services that mount it: the rest of
+            // the Deploy goes ahead, and these are reported not attempted (bet 8).
+            Err(error @ (PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. }))
+                if intent.options.block_unmountable =>
+            {
+                blocked.push(BlockedService {
+                    service: spec.name.clone(),
+                    error: error.into_rpc_error(),
+                });
+                budget.release(&spec.name);
+                continue;
+            }
+            Err(source) => {
+                return Err(service_error(
+                    name_errors_with_service,
+                    spec.name.as_str(),
+                    source,
+                ));
+            }
+        };
         if let Some(machine_id) = operations.iter().find_map(|operation| match operation {
             DeployOperation::RunContainer { machine_id, .. }
             | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {
@@ -764,13 +823,16 @@ fn assemble_plan(
         service_operations.extend(operations);
         ranges.push((spec.name.clone(), first..service_operations.len()));
     }
+    // Shared components were blocked before the loop; in `requested` order the first
+    // entry is the earliest root cause, which is the one the Deployment reports.
+    blocked.sort_by_key(|entry| requested.iter().position(|spec| spec.name == entry.service));
     let before_volumes = service_operations.len();
     let volumes = budget.volumes.finish(&mut service_operations)?;
     let mut operations = service_operations;
     let prelude = operations.len() - before_volumes;
     let preserved_volumes = preserved_owned_volumes(&intent.namespace, &target, snapshot);
-    let tail_start = operations.len();
-    operations.extend(removal_operations(&services, &retiring));
+    let (removals, tail) = removal_operations(&services, &retiring, operations.len());
+    operations.extend(removals);
     let mut groups = Vec::new();
     if prelude > 0 {
         groups.extend(service_group(&operations, None, Vec::new(), 0..prelude));
@@ -786,14 +848,17 @@ fn assemble_plan(
             .collect();
         groups.extend(service_group(&operations, Some(name), dependencies, range));
     }
-    if tail_start < operations.len() {
-        let every_service = requested.iter().map(|spec| spec.name.clone()).collect();
-        groups.extend(service_group(
-            &operations,
-            None,
-            every_service,
-            tail_start..operations.len(),
-        ));
+    if !tail.is_empty() {
+        groups.push(ServiceGroup {
+            service: None,
+            dependencies: requested
+                .iter()
+                .map(|spec| spec.name.clone())
+                .filter(|name| !blocked.iter().any(|entry| entry.service == *name))
+                .collect(),
+            steps: tail,
+            publish: false,
+        });
     }
     Ok(Planned {
         operations,
@@ -803,7 +868,18 @@ fn assemble_plan(
         preserved_volumes,
         prune_refusal,
         warnings,
+        blocked,
     })
+}
+
+/// Why a Service that depends on a blocked one is blocked too.
+fn dependency_blocked(dependency: &ServiceName) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!("depends on {dependency}, which was not attempted"),
+        details: serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
+        cause: Vec::new(),
+    }
 }
 
 fn reject_hostname_conflicts(
@@ -860,8 +936,8 @@ fn obsolete_services(
         .collect()
 }
 
-/// Refuse retirement a targeted Deploy can't carry out exactly: of a Service it
-/// also deploys, of one it doesn't select, or in a reserved Namespace.
+/// Refuse retirement a Deploy can't carry out exactly: of a Service it also
+/// deploys, of one a targeted Deploy doesn't select, or in a reserved Namespace.
 fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
     if intent.options.removals.is_empty() {
         return Ok(());
@@ -877,11 +953,12 @@ fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
                 service: service.clone(),
             });
         }
-        if !intent
-            .options
-            .selected
-            .iter()
-            .any(|attempt| attempt.name == *service)
+        if !intent.options.selected.is_empty()
+            && !intent
+                .options
+                .selected
+                .iter()
+                .any(|attempt| attempt.name == *service)
         {
             return Err(PlanError::RemovalNotSelected {
                 service: service.clone(),
@@ -891,22 +968,31 @@ fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
     Ok(())
 }
 
+/// Removals of every copy of each obsolete Service, and the steps that run
+/// them from index `first` on. A Pending copy keeps every proxy on the last
+/// routed copy, so Pending copies go first, one at a time. The rest go Out in
+/// one step: a copy still In that cannot serve keeps every proxy on an Out
+/// sibling, whose own wait then never ends.
 fn removal_operations(
     services: &[ServiceObservation],
     obsolete: &[QualifiedService],
-) -> Vec<DeployOperation> {
+    first: usize,
+) -> (Vec<DeployOperation>, Vec<Step>) {
     let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
-    let mut retiring: Vec<_> = services
+    let (pending, rest): (Vec<_>, Vec<_>) = services
         .iter()
         .filter(|service| obsolete.contains(&service.identity))
         .flat_map(|service| service.containers_for(ContainerAction::Remove))
-        .collect();
-    // A Pending sibling keeps proxies on the last routed copy, whose Out then
-    // never confirms, so Pending copies go first.
-    retiring
-        .sort_by_key(|container| *container.as_observation().rotation() != CopyRotation::Pending);
-    retiring
+        .partition(|container| *container.as_observation().rotation() == CopyRotation::Pending);
+    let serial = first..first + pending.len();
+    let at_once = serial.end..serial.end + rest.len();
+    let mut steps: Vec<Step> = serial.map(Step::Serial).collect();
+    if !at_once.is_empty() {
+        steps.push(Step::Parallel(at_once.collect()));
+    }
+    let operations = pending
         .into_iter()
+        .chain(rest)
         .map(|container| {
             let observation = container.as_observation();
             DeployOperation::RemoveContainer {
@@ -915,7 +1001,8 @@ fn removal_operations(
                 purpose: ployz_core::RemoveContainerPurpose::Retire,
             }
         })
-        .collect()
+        .collect();
+    (operations, steps)
 }
 
 fn order_included<'intent>(
@@ -995,6 +1082,14 @@ fn order_included<'intent>(
 struct ServiceBudget<'snapshot> {
     volumes: VolumePlan<'snapshot>,
     placement: PlacementState,
+}
+
+impl ServiceBudget<'_> {
+    /// Give back everything `service`, which this Deploy does not attempt, had committed.
+    fn release(&mut self, service: &ServiceName) {
+        self.volumes.release(service);
+        self.placement.release(service);
+    }
 }
 
 /// One Service to place, with what the Cluster already runs of it.

@@ -453,7 +453,8 @@ case "$*" in
     while [ -e '{props}/stall-read' ]; do sleep 0.01; done
     read -r verb arg guid || verb=empty
     if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
-    if [ -e '{props}/receive-fails' ]; then cat >/dev/null; echo 'cannot receive: out of space' >&2; exit 1; fi
+    # A resumable receive that fails partway names its resume token, as OpenZFS does.
+    if [ -e '{props}/receive-fails' ]; then cat >/dev/null; printf 'cannot receive: out of space\nA resuming stream can be generated on the sending system by running:\n    zfs send -t token-1\n' >&2; exit 1; fi
     case "$verb" in
       snapshot)
         rm -f "$d/receive_resume_token"
@@ -467,7 +468,10 @@ case "$*" in
         ;;
       break)
         cat >/dev/null
+        # Like OpenZFS, it names the resume token in the command that resumes it.
         echo 'cannot receive: connection reset' >&2
+        echo 'A resuming stream can be generated on the sending system by running:' >&2
+        echo '    zfs send -t token-1' >&2
         echo 'token-1' > "$d/receive_resume_token"
         echo off > "$d/readonly.new"
         mv "$d/readonly.new" "$d/readonly"

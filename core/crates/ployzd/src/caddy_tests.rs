@@ -2,7 +2,7 @@ use super::{CONFIG_FILE, CaddyAdmin, Error, render_caddyfile};
 use crate::{
     corrosion::{CertificateChallenge, CertificateRow},
     ingress::{
-        IngressProjection, apply_caddy,
+        ApplyError, IngressProjection, apply_caddy,
         tests::{renderer_projection, test_material},
     },
 };
@@ -82,7 +82,9 @@ async fn reconcile<A: CaddyAdmin>(
         &service_containers(observations.iter().cloned()),
         certificates,
     );
-    apply_caddy(&projection, config_file, admin).await
+    apply_caddy(&projection, config_file, admin)
+        .await
+        .map_err(|(ApplyError::BeforeServing(error) | ApplyError::AfterServing(error))| error)
 }
 
 #[test]
@@ -145,7 +147,7 @@ fn every_reverse_proxy_balances_by_load_and_dials_briefly() {
     let common = automatic_site_block(&caddyfile, "(common_proxy)");
     assert!(common.contains("lb_policy least_conn"), "{common}");
     assert!(
-        common.contains("transport http { dial_timeout 1s }"),
+        common.contains("transport http { dial_timeout 500ms }"),
         "{common}"
     );
     let proxies = caddyfile
@@ -541,9 +543,7 @@ fn https_site_with_material_pins_tls_paths() {
 
     let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
     assert!(
-        pin.contains("tls /config/caddy/certs/secure.example.com-")
-            && pin.contains(".crt")
-            && pin.contains(".key"),
+        pin.contains("tls /config/caddy/certs/") && pin.contains(".crt") && pin.contains(".key"),
         "{pin}"
     );
     let https = automatic_site_block(&caddyfile, "https://secure.example.com");
@@ -552,7 +552,6 @@ fn https_site_with_material_pins_tls_paths() {
     let http = automatic_site_block(&caddyfile, "http://example.com");
     assert!(http.contains("reverse_proxy 10.210.1.2:80"));
     assert!(!http.contains("tls "));
-    assert!(!caddyfile.contains("tls /config/caddy/certs/example.com"));
 }
 
 #[test]
@@ -824,7 +823,7 @@ fn last_error_is_a_skipped_certificate_comment() {
     );
 
     for diagnostic in [
-        "Skipped certificate issuance",
+        "Certificates not served",
         "secure.example.com resolves to 198.51.100.10",
     ] {
         assert!(caddyfile.contains(diagnostic));
@@ -865,7 +864,7 @@ fn last_error_is_omitted_once_material_exists() {
         &certificates,
     );
 
-    assert!(!caddyfile.contains("Skipped certificate issuance"));
+    assert!(!caddyfile.contains("Certificates not served"));
     assert!(!caddyfile.contains("stale"));
 }
 
@@ -1062,12 +1061,51 @@ async fn failed_load_preserves_the_last_caddyfile() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn certificate_error_text_cannot_add_caddyfile_lines() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    )];
+    let certificates = BTreeMap::from([(
+        CertificateHost::parse("example.com").unwrap(),
+        CertificateRow::decode(
+            r#"{"last_error":"refused\r\n}\nhttp://evil.example {\n\trespond pwned"}"#,
+        )
+        .unwrap(),
+    )]);
+
+    let caddyfile = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &certificates,
+    );
+
+    let injected: Vec<_> = caddyfile
+        .lines()
+        .filter(|line| line.contains("evil.example") || line.contains("pwned"))
+        .collect();
+    assert!(
+        matches!(injected.as_slice(), [line] if line.starts_with("# - example.com: refused")),
+        "{caddyfile}"
+    );
+}
+
 #[tokio::test]
-async fn reconcile_writes_material_and_pins_it_before_load() {
-    let directory =
-        std::env::temp_dir().join(format!("ployz-caddy-cert-test-{}", std::process::id()));
+async fn reconcile_writes_only_pinned_material_and_tolerates_a_stray_directory() {
+    let directory = std::env::temp_dir().join(format!(
+        "ployz-caddy-cert-pinned-test-{}",
+        MachineId::random()
+    ));
     let path = directory.join(CONFIG_FILE);
-    std::fs::create_dir_all(&directory).unwrap();
+    let certs = directory.join("certs");
+    std::fs::create_dir_all(certs.join("stray")).unwrap();
     let machine = Machine {
         labels: Default::default(),
         accepts_builds: true,
@@ -1091,9 +1129,91 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
         Some([10, 210, 1, 2]),
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
+    let row = || {
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            None,
+        )
+    };
+    let certificates = BTreeMap::from([
+        (CertificateHost::parse("secure.example.com").unwrap(), row()),
+        (
+            CertificateHost::parse("removed.example.com").unwrap(),
+            row(),
+        ),
+    ]);
+
+    reconcile(
+        &machine,
+        &observations,
+        &certificates,
+        &path,
+        Some(&FakeAdmin::default()),
+    )
+    .await
+    .unwrap();
+
+    let caddyfile = std::fs::read_to_string(&path).unwrap();
+    let (cert_name, key_name) =
+        pinned_file_names(pinned_tls_line(&caddyfile, "secure.example.com").unwrap());
+    let mut written: Vec<_> = std::fs::read_dir(&certs)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    written.sort();
+    let mut expected = vec![cert_name, key_name, "stray".to_owned()];
+    expected.sort();
+    assert_eq!(written, expected);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn reconcile_writes_material_and_pins_it_before_load() {
+    reconcile_writes_material_for("secure.example.com").await;
+}
+
+#[tokio::test]
+async fn reconcile_writes_material_for_the_longest_valid_hostname() {
+    let label = "b".repeat(63);
+    let hostname = format!("{label}.{label}.{label}.2001-41d0-303-1da9-100--31.sslip.io");
+    assert_eq!(hostname.len(), 227);
+    reconcile_writes_material_for(&hostname).await;
+}
+
+async fn reconcile_writes_material_for(hostname: &str) {
+    let directory = std::env::temp_dir().join(format!(
+        "ployz-caddy-cert-test-{}-{}",
+        std::process::id(),
+        hostname.len()
+    ));
+    let path = directory.join(CONFIG_FILE);
+    std::fs::create_dir_all(&directory).unwrap();
+    let machine = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
+        id: MachineId::parse("a".repeat(32)).unwrap(),
+        name: MachineName::parse("node-a").unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint(
+            format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
+        )],
+        runtime: Default::default(),
+        build_concurrency: None,
+    };
+    let observations = [observation(
+        1,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress(hostname, 8443, HttpProtocol::Https)],
+    )];
     let material = test_material();
     let certificates = BTreeMap::from([(
-        CertificateHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse(hostname).unwrap(),
         CertificateRow::from_parts(
             Some((material.clone(), ployz_core::ClusterRoute::Direct)),
             None,
@@ -1112,8 +1232,9 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
         .unwrap();
 
     let caddyfile = std::fs::read_to_string(&path).unwrap();
-    let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
+    let pin = pinned_tls_line(&caddyfile, hostname).expect("https pin");
     let (cert_name, key_name) = pinned_file_names(pin);
+    assert_eq!((cert_name.len(), key_name.len()), (68, 68), "{cert_name}");
     let cert = certs.join(&cert_name);
     let key = certs.join(&key_name);
     assert_eq!(
@@ -1210,8 +1331,12 @@ fn automatic_site_block(caddyfile: &str, address: &str) -> String {
 }
 
 fn pinned_tls_line<'a>(caddyfile: &'a str, hostname: &str) -> Option<&'a str> {
-    let needle = format!("tls /config/caddy/certs/{hostname}-");
-    caddyfile.lines().find(|line| line.contains(&needle))
+    let header = format!("https://{hostname} {{");
+    caddyfile
+        .lines()
+        .skip_while(|line| *line != header)
+        .take_while(|line| *line != "}")
+        .find(|line| line.starts_with("\ttls /config/caddy/certs/"))
 }
 
 fn pinned_file_names(pin: &str) -> (String, String) {
@@ -1252,6 +1377,10 @@ impl CaddyAdmin for FakeAdmin {
         } else {
             Ok(())
         }
+    }
+
+    async fn loaded_certificates(&self) -> Result<std::collections::BTreeSet<String>, Error> {
+        Ok(std::collections::BTreeSet::new())
     }
 }
 

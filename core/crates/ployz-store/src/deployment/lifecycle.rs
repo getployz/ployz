@@ -82,7 +82,7 @@ pub(crate) fn admit(
             json!({}),
         ));
     }
-    let full = services.is_empty() && !frozen.nodes.iter().any(TargetNode::retires);
+    let full = frozen.full;
     let mut nodes = frozen.nodes.clone();
     inherit(tx, environment, (&intent, &intent), &mut nodes)?;
     let mut targets = services.to_vec();
@@ -94,10 +94,14 @@ pub(crate) fn admit(
         }
     }
     let admitted_at = now();
+    let run = Run {
+        prune: frozen.prune,
+        ..Run::default()
+    };
     let (targets_text, nodes_text, run_text, credentials_text) = (
         json_text(&targets),
         json_text(&nodes),
-        json_text(&Run::default()),
+        json_text(&run),
         json_text(&frozen.credentials),
     );
     let upload_text = upload.as_ref().map(json_text);
@@ -215,6 +219,7 @@ pub(crate) fn admit(
         ),
         preparing: false,
         remove: saved == NOTHING,
+        prune: frozen.prune,
         admitted_by: who.principal.clone(),
         admitted_at,
         started_at: None,
@@ -229,6 +234,36 @@ pub(crate) fn admit(
         ingress: Vec::new(),
     };
     Ok(summary)
+}
+
+/// Record that the user Cloud authenticated admitted Deployment `id`, by the
+/// immutable id that makes it their own when they cancel it ([`admitter`]).
+pub(crate) fn admitted_by_user(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    trusted: &crate::Trusted,
+) -> Result<(), RpcError> {
+    let Some(user) = &trusted.user else {
+        return Ok(());
+    };
+    tx.execute(
+        "UPDATE config_deployment SET admitted_by_user = ?2 WHERE id = ?1",
+        &[id.as_str().into(), user.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// Who admitted Deployment `id`, by the immutable id Cloud authenticated: none for
+/// Cloud's own automation and for one an older Cloud admitted.
+pub(crate) fn admitter(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Option<String>, RpcError> {
+    let rows = tx.query(
+        "SELECT admitted_by_user FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    Ok(row.optional_text(0)?.map(str::to_owned))
 }
 
 /// How a removal of `environment` applies without a runner, if it can: nothing of
@@ -268,8 +303,10 @@ pub(crate) fn forget(
 
 /// Add to `nodes` the teardown of each Service `environment`'s queued Deployment
 /// retires and Saved revision `saved` still lacks, but none of the runtime Services
-/// `saved` runs: superseding it must not leave them running. A node of that Service
-/// becomes its teardown, so the next Deployment to supersede this one takes it over.
+/// `saved` runs: superseding it must not leave them running. Nor one the revision
+/// `shipped` holds or runs: a retry of that revision runs it again. A node of that
+/// Service becomes its teardown, so the next Deployment to supersede this one takes
+/// it over.
 /// Each Service it adds takes along the removed Configs that leave with it:
 /// [`unmounted`] from `shipped`, the revision these nodes ship, over what may run
 /// once the Deployments in flight end.
@@ -280,6 +317,18 @@ fn inherit(
     nodes: &mut Vec<TargetNode>,
 ) -> Result<(), RpcError> {
     let given = nodes.len();
+    let holds = |id: &str| {
+        [saved, shipped]
+            .iter()
+            .flat_map(|intent| &intent.services)
+            .any(|service| service.id == id)
+    };
+    let runs = |runtime: &ServiceName| {
+        [saved, shipped]
+            .iter()
+            .flat_map(|intent| &intent.services)
+            .any(|service| service.config.private_dns == *runtime)
+    };
     let rows = tx.query(
         "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = 'queued'",
         &[environment.as_str().into()],
@@ -293,23 +342,11 @@ fn inherit(
             else {
                 continue;
             };
-            if saved
-                .services
-                .iter()
-                .any(|service| service.id == id.as_str())
-            {
+            if holds(id.as_str()) {
                 continue;
             }
             let runtimes = ServiceRemovals::from_names(
-                removals
-                    .iter()
-                    .filter(|runtime| {
-                        !saved
-                            .services
-                            .iter()
-                            .any(|service| service.config.private_dns == **runtime)
-                    })
-                    .cloned(),
+                removals.iter().filter(|runtime| !runs(runtime)).cloned(),
             );
             if runtimes.is_empty() {
                 continue;
@@ -634,6 +671,8 @@ pub(crate) fn retry(
         number: stored.summary.numbered()?,
         rolls_back: undone(tx, &stored.summary)?,
         removes: Vec::new(),
+        retires: Vec::new(),
+        ships: None,
     };
     if let Some(confirmed) = &retry.rolls_back
         && *confirmed != rollback.rolls_back
@@ -664,6 +703,38 @@ pub(crate) fn retry(
         rollback.removes.clone_from(losses);
     }
     let (services, nodes) = retried(tx, &stored, fresh)?;
+    // A rollback retires each Service it ships that its revision doesn't hold. A
+    // plain retry retires only what its source's review already covered.
+    let revision = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    rollback.retires = nodes
+        .iter()
+        .filter_map(|node| match node {
+            TargetNode::Service { id, .. }
+                if node.retires()
+                    || revision
+                        .services
+                        .iter()
+                        .all(|service| service.id != id.as_str()) =>
+            {
+                Some(id.clone())
+            }
+            TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
+                None
+            }
+        })
+        .filter(|_| !rollback.rolls_back.is_empty())
+        .collect();
+    rollback.ships = services.is_empty().then(|| {
+        nodes
+            .iter()
+            .filter_map(|node| match node {
+                TargetNode::Service { id, .. } if !node.retires() => Some(id.clone()),
+                TargetNode::Service { .. }
+                | TargetNode::Volume { .. }
+                | TargetNode::Config { .. } => None,
+            })
+            .collect()
+    });
     // A retry builds from what its source did, but sends nothing.
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
         json_text(&super::uploads::ServiceUploads {
@@ -731,18 +802,25 @@ pub(crate) fn retry(
         held: false,
         chooses_upload_at_start: false,
         preparing: false,
+        prune: false,
         ..stored.summary
     };
     Ok((summary, rollback))
 }
 
 /// What a redeploy rolls back: the Deployment it ships again, by number, the
-/// newer ones it undoes, and the Volumes it removes with the data each deletes.
+/// newer ones it undoes, the Volumes it removes with the data each deletes, and
+/// the Services it retires.
 #[derive(Clone, Debug)]
 pub(crate) struct Rollback {
     pub(crate) number: u64,
     pub(crate) rolls_back: Vec<u64>,
     pub(crate) removes: Vec<VolumeLoss>,
+    pub(crate) retires: Vec<ServiceLineageId>,
+    /// The Services it ships, when it ships every one: it then takes off any other
+    /// Service that runs, or may. None for one of some Services, which leaves the
+    /// rest as they are.
+    pub(crate) ships: Option<Vec<ServiceLineageId>>,
 }
 
 /// The Deployments of `deployment`'s Environment after it that may have changed
@@ -881,8 +959,11 @@ fn retried(
     let holds = |intent: &SavedEnvironmentIntent, id: &str| {
         intent.services.iter().any(|service| service.id == id)
     };
+    // A full Deployment tears down what Saved dropped too; superseding it runs that
+    // Service again from the retried revision, as it always has.
     for row in &tx.query(
-        "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = 'queued'",
+        "SELECT nodes FROM config_deployment \
+         WHERE environment_id = ?1 AND status = 'queued' AND services != '[]'",
         &[environment.as_str().into()],
     )? {
         let queued: Vec<TargetNode> = row.json(0, "Deployment")?;
@@ -926,11 +1007,17 @@ fn retried(
         // what newer Deployments added and deletes only the losses reviewed afresh.
         let mut nodes = match &fresh {
             Some((applied, losses)) => {
+                let landing = Landing::applied(applied);
+                let retire = dropped(tx, environment, &source, &landing)?;
                 freeze(
                     environment,
                     &source,
-                    &Landing::applied(applied),
-                    Scope::All { losses },
+                    &landing,
+                    Scope::All {
+                        losses,
+                        retire: &retire,
+                        prune: false,
+                    },
                     stored.namespace.clone(),
                     stored.cluster_domain.as_ref(),
                 )?
@@ -950,7 +1037,7 @@ fn retried(
         match node {
             TargetNode::Service {
                 id, name, removals, ..
-            } if !removals.is_empty() => {
+            } if node.retires() => {
                 if latest
                     .services
                     .iter()
@@ -1106,11 +1193,13 @@ pub(crate) fn claim(
     let sources = build::sources_of(tx, &stored)?;
     let saved = held_revision(tx, &stored)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
-    let (services, removals) = stored.lowering();
+    let ships = stored.lowering(&saved);
+    let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
     let lowered = lower(
         &stored.summary.environment_id,
         &saved,
-        (&services, &removals),
+        &deployed,
+        &ships,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),
@@ -1260,11 +1349,13 @@ pub(crate) fn input(
 ) -> Result<Value, RpcError> {
     let saved = held_revision(tx, stored)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
-    let (services, removals) = stored.lowering();
+    let ships = stored.lowering(&saved);
+    let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
     lower(
         &stored.summary.environment_id,
         &saved,
-        (&services, &removals),
+        &deployed,
+        &ships,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),
@@ -1455,6 +1546,7 @@ pub(crate) fn record(
                 });
             let (reason, cause) = real
                 .or_else(|| failure(&outcome, &stored.nodes, &preview.operations))
+                .or_else(|| blocked(&stored.nodes, &preview.blocked))
                 .or_else(|| {
                     success
                         .then(|| undeleted(&stored.nodes, &removed, &preview.operations))
@@ -1525,7 +1617,8 @@ pub(crate) fn record(
                                         && !saved.services.iter().any(|kept| kept.id == *id))
                         }))
             };
-            let status = if success && !nodes.iter().any(unfinished) {
+            // A blocked Service was never attempted, whatever the rest did (bet 8).
+            let status = if success && preview.blocked.is_empty() && !nodes.iter().any(unfinished) {
                 DeploymentStatus::Applied
             } else {
                 DeploymentStatus::Failed
@@ -1723,6 +1816,21 @@ fn failure(
     })
 }
 
+/// Why the first Service the planner blocked was never attempted.
+fn blocked(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Option<Failure> {
+    blocked.first().map(|entry| Failure {
+        reason: format!(
+            "{}: {}",
+            current_name(nodes, &entry.service),
+            entry.error.message
+        )
+        .chars()
+        .take(500)
+        .collect(),
+        cause: entry.error.cause.clone(),
+    })
+}
+
 /// Why a Deploy that succeeded left a removed Volume's data behind, in fixed words:
 /// a provider's error can quote its stderr, so only the operator log carries it.
 fn undeleted(
@@ -1808,7 +1916,7 @@ pub(super) enum Evidence<'run> {
 /// Each target node's Node Outcome from `evidence`. A Service the preview plans
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed and
-/// none ran is Not attempted. A Service that left Saved State with nothing planned
+/// none ran is Not attempted, as is one the planner blocked. A Service that left Saved State with nothing planned
 /// is Removed when the snapshot saw every Machine, else Not attempted; one with
 /// several runtime Services reads the worst of them. A kept Volume follows the
 /// targeted Services mounting it: Deployed once one of them is, whatever the others do. It is Unchanged when Applied State already
@@ -1834,6 +1942,11 @@ pub(super) fn node_outcomes(
         }
     };
     let service = |name: &ServiceName, kept: bool| match evidence {
+        Evidence::Planned { preview, .. } | Evidence::Executed { preview, .. }
+            if preview.blocked.iter().any(|entry| entry.service == *name) =>
+        {
+            NodeStatus::NotAttempted
+        }
         Evidence::Planned { confirmed, .. } if confirmed.contains(name) => landed(kept),
         Evidence::Planned { preview, .. } => {
             if preview

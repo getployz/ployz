@@ -11,7 +11,7 @@ its Git branch. [How builds work](../builds/overview.md) covers what happens in 
 1. Go to **Projects**, click **New project** and choose **GitHub repository**. (To add it to a
    project you already have, click **Create** on that project's canvas instead.) The first time,
    click **Connect GitHub**, pick the account or organization, choose the repositories Ployz may
-   use, and install the Ployz GitHub App. GitHub sends you back to **Settings → GitHub**, which
+   use, and install the Ployz GitHub App. GitHub sends you back to **Organization → GitHub**, which
    lists the account. It says "Repositories appear in a moment" until Ployz has listed them.
    If the app is already installed on that account, for another Ployz organization, click
    **Use existing** instead.
@@ -65,7 +65,7 @@ Pushes reach Ployz only once the GitHub App is installed on owner/repo.
    name.
 3. Deploy the change.
 
-![A service's Source settings: repository, Branch, Add root directory, Auto-deploy and Wait for CI](../images/service-settings-source.png)
+![A service's Source settings: repository, Branch, Root directory, Auto-deploy and Wait for CI](../images/service-settings-source.png)
 
 Each environment has its own settings, so production can follow `main` while staging follows
 `develop`. See [Environments and branches](../environments/environments.md).
@@ -145,7 +145,7 @@ watch paths before you deploy it. For a repository with `apps/web` and `apps/wor
 | `web` | `/apps/web` | `apps/web/**` |
 | `worker` | `/apps/worker` | `apps/worker/**` |
 
-To set the root directory, open **Settings → Source**, click **Add root directory** and enter the
+To set the root directory, open **Settings → Source**, click **Root directory** and enter the
 folder, starting with `/`. The build sees nothing outside that folder, and a Dockerfile path is
 relative to it.
 
@@ -159,12 +159,12 @@ workspace, leave the root directory at `/`. Set a
 
 A GitHub installation belongs to the organization it is connected to, not to the person who
 installed it. Everyone in the organization can pick its repositories, and it stays connected
-when that person leaves. **Settings → GitHub** lists each connected account with its
+when that person leaves. **Organization → GitHub** lists each connected account with its
 repositories, who connected it, and when. Only an owner or admin can connect or disconnect one;
 members see the list.
 
 One installation can be connected to more than one organization. To connect one you already
-installed, click **Use existing** in the repository picker or in **Settings → GitHub** of the
+installed, click **Use existing** in the repository picker or in **Organization → GitHub** of the
 other organization. Ployz connects only GitHub accounts you own: your own user account, or a GitHub
 organization where you are an owner. Collaborating on one of its repositories is not enough. When
 you own several new ones, Ployz asks which to connect.
@@ -203,8 +203,8 @@ ployz github cat acme/web apps/web/package.json
 `--match` matches the whole path from the top of the repository, so `*.toml` finds only files at
 the top, and `**/*.toml` finds them in every folder. Quote the glob so your shell doesn't expand
 it. A listing stops at 500 files. When it's cut short, name a folder or a narrower `--match` to
-see the rest. A folder or file the repository doesn't have fails with `No path` and exit code 1, as
-`github cat` does for a missing file.
+see the rest. A folder or file the repository doesn't have fails with `No path` and exit code 1.
+`github cat` says `No file` for a missing file, also with exit code 1.
 
 `github cat` prints text files up to 64 KiB. For a larger file or a binary one, it says so
 instead of printing it. Pass `--ref` to read a branch, tag or commit other than the default.

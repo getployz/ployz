@@ -39,7 +39,8 @@ pub(super) fn warnings(
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. }
             | DeployWarning::LeftRunning { .. }
-            | DeployWarning::MixedAfterReturn { .. } => continue,
+            | DeployWarning::MixedAfterReturn { .. }
+            | DeployWarning::NotInStore { .. } => continue,
         };
         let Some(machine) = snapshot
             .machines
@@ -76,7 +77,8 @@ pub(super) fn warnings(
         }
     }
     // Its old copies were never observed, so no cleanup report reaches them;
-    // once it is back they can answer beside the new copies.
+    // they keep running until the next Deploy, and serve beside the new copies
+    // unless their Machine restarts and its boot pass confirms the new ones.
     let away: Vec<DeployWarning> = warnings
         .iter()
         .filter_map(|warning| {

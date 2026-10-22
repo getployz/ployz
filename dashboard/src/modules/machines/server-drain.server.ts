@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { DrainReport, DrainScope, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
+import type { DrainReport, DrainScope, MachineName, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schedule, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
@@ -49,7 +49,7 @@ export function latestDrainOf(row: DrainAttemptRow): Effect.Effect<LatestDrain> 
   const missing = (what: string) => Effect.die(new Error(`Drain ${attemptId} is ${row.state} without its ${what}.`));
   switch (row.state) {
     case "pending":
-      return Effect.succeed({ attemptId, state: "pending", requestedAt: row.requestedAt.toISOString() });
+      return Effect.succeed({ attemptId, state: "pending", requestedAt: row.requestedAt.toISOString(), serversSilent: row.serversSilent });
     case "running":
       return row.startedAt === null
         ? missing("start time")
@@ -94,12 +94,13 @@ const enqueueDrain = (row: DrainAttemptRow) =>
   enqueueEvent(createServerDrainRequestedEvent({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
 
 /**
- * Drain on a Server page: any member may, and confirming it is their approval, so a plan that now stops a Service the
- * dialog didn't show as stopping is refused. The admitted Drain's row takes the id
+ * Drain on a Server page: an owner or admin may, and confirming it is their approval, so a plan that now stops a Service
+ * the dialog didn't show as stopping is refused. The admitted Drain's row takes the id
  * the tab minted and is written with its run's event, so the same request again returns it. A click while another
  * Drain is active on the Server returns that one.
  */
 export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (caller: Caller, input: RequestServerDrainInput) {
+  yield* requireAccess(caller, caller.organization.slug, "servers:operate");
   const organizationId = caller.organization.id;
   const database = yield* Database;
   const sameOrActive = Effect.fn(function* () {
@@ -136,6 +137,7 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
       id: input.requestId,
       organizationId,
       machineId: input.machineId,
+      serverName: plan.name || null,
       requestedByUserId: caller.userId,
       targets: [...plan.targets],
       approvalId: gated.approvalId,
@@ -163,6 +165,8 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     readonly targets: readonly QualifiedService[];
     readonly approvalId: string | null;
     readonly planDigest: string;
+    /** The name the caller showed for the Server, which its run keeps; null when it showed none. */
+    readonly serverName: MachineName | null;
   },
 ) {
   const { drizzle } = yield* Database;
@@ -170,6 +174,7 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     id: input.attemptId,
     organizationId: caller.organizationId,
     machineId: input.machineId,
+    serverName: input.serverName || null,
     requestedByUserId: caller.userId,
     targets: [...input.targets],
     approvalId: input.approvalId,
@@ -332,10 +337,11 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
  * (its preflight refused), so the row ends refused. An answer replaces an unknown end (a cancellation that couldn't
  * know what moved) but never another answer, and a Drain with no answer in a day ends lost here.
  *
- * A Cluster that doesn't answer before the claim leaves the row pending, for the run to try again after a wait, until
- * `DRAIN_PENDING_LIMIT_MS` after the request. Past that, a silent Cluster ends the row `not_started` here, so no retry
- * can drain it later, and a try after a wait ends it without asking. A first try past it still drains if the Cluster
- * answers, as a Drain whose turn came late always has.
+ * A Cluster that doesn't answer before the claim leaves the row pending and marks it silent, for the run to try again
+ * after a wait, until `DRAIN_PENDING_LIMIT_MS` after the request. A try that reaches the Cluster unmarks it first, so
+ * a step after that which fails and retries doesn't read as silent. Past the limit, a silent Cluster ends the row
+ * `not_started` here, so no retry can drain it later, and a try after a wait ends it without asking. A first try past
+ * it still drains if the Cluster answers, as a Drain whose turn came late always has.
  */
 export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
   request: DrainRequest,
@@ -368,9 +374,15 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
     Effect.map(Option.some),
     Effect.catchIf((error) => error instanceof ServerDrainUnreachable, () => Effect.succeedNone),
   );
-  // Reading a silent Cluster takes time, so the deadline may pass during the read.
-  if (Option.isNone(reached)) return (yield* expired) ? yield* notStarted : current;
+  if (Option.isNone(reached)) {
+    // Reading a silent Cluster takes time, so the deadline may pass during the read.
+    if (yield* expired) return yield* notStarted;
+    yield* drizzle.update(serverDrainAttempt).set({ serversSilent: true }).where(and(owned, eq(serverDrainAttempt.state, "pending")));
+    return current;
+  }
   const { session, frame } = reached.value;
+  yield* drizzle.update(serverDrainAttempt).set({ serversSilent: false })
+    .where(and(owned, eq(serverDrainAttempt.state, "pending"), eq(serverDrainAttempt.serversSilent, true)));
   const { covered, moves } = yield* stillCovered(request, frame, row?.planDigest ?? null);
   if (!covered) {
     yield* drizzle.update(serverDrainAttempt)

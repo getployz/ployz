@@ -10,8 +10,8 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
-    OpaquePayload, PROTOCOL_MAJOR, RoutesRead, Rpc, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, SelectEndpointRequest, op,
+    OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -39,6 +39,7 @@ pub struct MachineService {
     pub(crate) builds: Arc<crate::build::Runner>,
     pub(crate) grants: Arc<crate::management::BuildGrants>,
     pub(crate) endpoint_chooser: Option<crate::network::EndpointChooser>,
+    pub(crate) published_routes: tokio::sync::watch::Receiver<crate::ingress::PublishedRoutes>,
 }
 
 impl MachineService {
@@ -58,6 +59,10 @@ impl MachineService {
                 .expect("default Build policy"),
             grants: Arc::default(),
             endpoint_chooser: None,
+            published_routes: tokio::sync::watch::channel(
+                crate::ingress::PublishedRoutes::default(),
+            )
+            .1,
         }
     }
 
@@ -506,6 +511,16 @@ impl MachineRpc for MachineService {
         respond(self.observe.metrics(request).await?)
     }
 
+    async fn retained_env(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::RetainedEnv>(request)?;
+        respond(RetainedEnvReply {
+            environment: self.observe.retained_env(request.container_id).await?,
+        })
+    }
+
     async fn tail_logs(
         &self,
         request: Request<OpaquePayload>,
@@ -773,6 +788,16 @@ impl MachineRpc for MachineService {
             down: membership.down,
         })
     }
+
+    async fn read_routed_addresses(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::ReadRoutedAddresses>(request)?;
+        respond(RoutedAddresses {
+            routes: self.published_routes.borrow().addresses.clone(),
+        })
+    }
 }
 
 fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
@@ -803,6 +828,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         LocalMachineError::NotParticipating => respond(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
             respond(unavailable("Cluster store is not available"))
+        }
+        LocalMachineError::ClusterNetworkUnpublished => {
+            respond(unavailable("Cluster network is not published yet"))
         }
         LocalMachineError::ClusterUnavailable => {
             Err(Status::unavailable("Cluster is not available"))
@@ -840,7 +868,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             &error,
         )),
         LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
-        LocalMachineError::StoragePreparation(error) => respond(error),
+        LocalMachineError::StoragePreparation(error) | LocalMachineError::FenceRefused(error) => {
+            respond(error)
+        }
         LocalMachineError::Cleanup(message) => respond(RpcError {
             code: RpcErrorCode::Internal,
             message,

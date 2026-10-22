@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { eq } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { expect } from "vitest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -28,10 +28,10 @@ const hosted: PolarService = {
 /** Acme's production Environment with one goal on `/kept`, on the given plan, with analytics on or off there. */
 const setup = Effect.fn(function* (plan: { polar?: PolarService; analyticsEnabled: boolean }, siteEnabled: boolean) {
   forgetPartitions();
-  const services = yield* Layer.build(yield* storeTestCloud({
+  const services = yield* storeTestCloud({
     ...(plan.polar && { polar: plan.polar }),
     env: { ANALYTICS_ENABLED: String(plan.analyticsEnabled) },
-  }));
+  });
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
   const store = yield* provide(cloudStore);

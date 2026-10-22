@@ -53,12 +53,12 @@ pub type RunningPreparation = Running<PreparedDeploy>;
 
 /// Cancellable Image Build whose progress is retained until read, within a byte budget.
 pub type RunningBuild = Running<BuildOutcome>;
+pub(crate) use logs::{
+    AgentTail, container_env, failed_tail, process_tail, service_tail, tail_frames,
+};
 pub use logs::{
     ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
     LogHistoryStream,
-};
-pub(crate) use logs::{
-    container_env, failed_tail, process_tail, service_tail, tail_excerpt, tail_frames,
 };
 pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
@@ -594,11 +594,12 @@ impl Session {
     /// # Errors
     /// Rejects a closed session. Preparation failures arrive through `finished`.
     pub fn prepare(&self, input: PreparationInput) -> Result<RunningPreparation, RpcError> {
-        self.prepare_with(input, std::collections::BTreeMap::new())
+        self.prepare_with(input, std::collections::BTreeMap::new(), None)
     }
 
     /// [`Self::prepare`], pulling private images with `registry_auth`, which a
-    /// lowering input never carries.
+    /// lowering input never carries. A `runner` plans as that operator and blocks a
+    /// Service whose Volume nothing can mount instead of refusing the Deploy.
     pub(crate) fn prepare_with(
         &self,
         input: PreparationInput,
@@ -606,6 +607,7 @@ impl Session {
             ployz_core::ServiceName,
             ployz_core::RegistryAuth,
         >,
+        runner: Option<ployz_core::Operator>,
     ) -> Result<RunningPreparation, RpcError> {
         let mut client = self.client()?;
         let token = self.inner.cancel.child_token();
@@ -613,6 +615,10 @@ impl Session {
         Ok(Running::spawn(token.clone(), move |reporter| async move {
             let mut captured = capture(input).await?;
             captured.intent.registry_auth = registry_auth;
+            if let Some(operator) = runner {
+                captured.intent.options.operator = operator;
+                captured.intent.options.block_unmountable = true;
+            }
             if token.is_cancelled() {
                 return Err(preparation_error(
                     crate::sdk::prepare::PreparationError::Cancelled,
@@ -1495,3 +1501,7 @@ mod preparation_tests;
 #[cfg(test)]
 #[path = "sdk/volume_switch_tests.rs"]
 mod volume_switch_tests;
+
+#[cfg(test)]
+#[path = "sdk/direct_apply_tests.rs"]
+mod direct_apply_tests;

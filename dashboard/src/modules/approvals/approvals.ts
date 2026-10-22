@@ -1,4 +1,4 @@
-import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, JsonValue } from "@ployz/sdk";
+import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { Caller } from "#/modules/identity/actor";
 import { rollbackConfirm } from "#/modules/config-store/store-deployments";
@@ -7,13 +7,16 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect";
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
 
 /** A stop or restart the dashboard asked for, run as its asker once a protector approves it. */
 export type ServiceApply = { environmentId: string; service: string; verb: "stop" | "restart" };
+
+/** A Volume resize the dashboard asked for, run as its asker once a protector approves it. */
+export type VolumeApply = { volumeId: string; environment: EnvironmentRef; maximum_bytes: number };
 
 /**
  * An ask into the Protected Environment `environment` by someone who can't protect it: someone who can, other than its
@@ -30,7 +33,7 @@ export type Redeploy = { deployment: number; rolls_back: number[] };
  */
 export type ApprovalReview =
   | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy }
-  | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply };
+  | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply | VolumeApply };
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
 
@@ -40,8 +43,8 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
  */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name, project: null };
-  const verb = command === "publish" ? "Save" : command === "retry" ? (rollsBack(review) ? "Roll back" : "Redeploy") : command === "remove" ? "Remove"
-    : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : "Deploy";
+  const verb = command === "publish" ? "Save" : command === "retry" ? (shutsDownAgain(review) ? "Shut down" : rollsBack(review) ? "Roll back" : "Redeploy") : command === "remove" ? "Remove"
+    : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : command === "cancel" ? "Cancel" : "Deploy";
   return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
 }
 
@@ -50,6 +53,9 @@ export function approvalTarget(command: string, review: ApprovalReview) {
   const { verb, name, project } = approvalSubject(command, review);
   return { verb, name: project === null ? name : `${project}/${name}` };
 }
+
+/** A retry the Store refused without a `redeploy` is a removal's: it takes the Environment off again. */
+const shutsDownAgain = (review: ApprovalReview) => "diff" in review && !review.redeploy;
 
 const rollsBack = (review: ApprovalReview) => "diff" in review && (review.redeploy?.rolls_back.length ?? 0) > 0;
 
@@ -65,12 +71,17 @@ export function redeployLine(command: string, review: ApprovalReview) {
 export function approvalBadge(command: string, review: ApprovalReview) {
   const { effects } = review;
   if (command === "publish") return "Deletes on deploy";
-  if (command === "retry") return rollsBack(review) ? "Rolls back" : "Redeploys";
+  if (command === "retry" && !shutsDownAgain(review)) return rollsBack(review) ? "Rolls back" : "Redeploys";
   if (command === "stop") return "Stops service";
   if (command === "restart") return "Restarts service";
   if (command === "unprotect") return "Unprotects";
   if (command === "sync") return "Syncs";
   if (command === "take") return "Takes";
+  if (command === "cancel") return "Cancels deploy";
+  if (command === "move") return "Moves volume";
+  if (command === "restore") return "Restores volume";
+  if (command === "resize") return "Resizes volume";
+  if (command === "release" && effects.length === 0) return "Releases volume";
   if (effects.length === 0) return "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {
     return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
@@ -87,13 +98,18 @@ export function approvalCommand(command: ConfigCommand) {
 const agentShips = (via: Caller["via"], command: ConfigCommand) =>
   via === "agent" && command.command === "admit" && (command.admit === "deploy" || command.admit === "retry");
 
-/** Cloud can't tell a person running `ployz` from an agent running it, so only a dashboard confirm stands as the approval. */
+/**
+ * Cloud can't tell a person running `ployz` from an agent running it, so only a dashboard confirm stands as the approval.
+ * A retry counts, since a shutdown's retry or a rollback takes Services off, and so does a cancel, which a member asks
+ * an admin for in a Protected Environment. The Store decides which of them ask.
+ */
 const askedRemoval = (via: Caller["via"], command: ConfigCommand) =>
-  via !== "dashboard" && (command.command === "remove" || (command.command === "admit" && command.admit === "shut_down"));
+  via !== "dashboard" && (command.command === "remove" || command.command === "cancel"
+    || (command.command === "admit" && (command.admit === "shut_down" || command.admit === "retry")));
 
 /**
  * The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, a Sync or Take (into a Protected
- * Environment), an agent's retry, and a Project or Environment removal or shutdown from `ployz` or an agent.
+ * Environment), a retry, a cancel, and a Project or Environment removal or shutdown from `ployz` or an agent.
  */
 export function asksApproval(via: Caller["via"], command: ConfigCommand) {
   return command.command === "publish" || (command.command === "admit" && command.admit === "deploy")

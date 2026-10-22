@@ -346,6 +346,7 @@ impl Tool for DeployInput {
             upload: None,
             accept_volume_loss: self.accept_volume_loss,
             message: self.message,
+            prune: false,
         }))?;
         let mut next = place(cx.call());
         next.insert("deployment".into(), deployment.number.into());

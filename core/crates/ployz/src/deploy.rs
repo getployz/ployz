@@ -668,12 +668,14 @@ pub enum PlanError {
         service: ServiceName,
     },
     /// Every copy of a Managed Volume is a slot or mid-switch; nothing can mount it.
-    #[error("{}", ployz_core::no_writer_message(.name, .copies))]
+    #[error("{}", ployz_core::no_writer_message(.name, .copies, *.operator))]
     NoWriter {
         /// The Volume without a writer, as its owner named it.
         name: String,
         /// Each copy and its role, in Machine order.
         copies: Vec<ployz_core::KnownCopy>,
+        /// Who runs the Deploy, which decides the way back the message names.
+        operator: ployz_core::Operator,
     },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(

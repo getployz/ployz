@@ -32,8 +32,8 @@ database, so staging gets its own copy of both and its own data. Use your own se
 
 ![The New branch panel set to Everything: each service is Separate](../images/new-branch-panel.png)
 
-Ployz never copies data, so staging's database starts empty. A setup command runs once, before
-`web` first starts, to fill it. To give every new branch of production the same commands, add
+Ployz never copies data, so staging's database starts empty. A setup command runs before `web`
+first starts, to fill it, and again on each deploy until `web` first deploys successfully. To give every new branch of production the same commands, add
 them under **Branch setup** in production's **Settings → Environment**.
 
 From the CLI, add the command when you branch, with `ployz env branch staging --copy web --copy
@@ -170,7 +170,8 @@ It starts with no services or variables, so you add them yourself.
 
 A branch that isn't kept closes after 7 days without a deploy: it comes off your servers, and its
 copies and their data are deleted. It can also close as you sync it: tick **Close staging after
-syncing** in the Sync dialog.
+syncing** in the Sync dialog. A branch that was never deployed, has branches of its own, or is the
+default environment doesn't close on its own.
 
 - **Keep it:** turn on **Keep it after syncing into production** when you create it. Later, open
   the Sync button's ▾ menu and check **Keep staging**.
@@ -209,7 +210,8 @@ A new project's default environment starts Protected, and its header shows a **P
 On a phone, the lock shows without the word.
 In a Protected environment, only an owner or admin can connect a repository, change a service's
 deploy branch, or turn protection off. It can't be deleted until you unprotect it. Deleting the
-whole project still takes it. Environments that existed before Protected shipped start
+whole project still takes it, and while a project is being deleted you can't turn protection on
+for any of its environments. Environments that existed before Protected shipped start
 unprotected.
 
 To change it, open the environment's **Settings → Environment** and flip **Protected**, or run
@@ -218,18 +220,30 @@ disabled. `ployz env ls` shows which are Protected. Branches and preview environ
 Protected. Turning protection off from the CLI or an agent waits for you to approve.
 
 A member can still ask for changes in a Protected environment. Their buttons read **Request
-deploy**, **Request sync**, **Request restart** and **Request stop**, and clicking one shows
+deploy**, **Request sync**, **Request restart** and **Request stop**, and a volume's **Storage
+limit** confirms with **Request grow**. Clicking one shows
 **Requested**. The request waits under **Waiting on you** in the [Agent panel](../account/agent-sidebar.md#approve-or-deny-a-deploy)
 of every owner or admin, with the name of who asked. Once one approves it, it runs as the member
 who asked. The member sees their own request under **Requested**, marked **Waiting on an owner or
 admin.**, and can't approve or deny it. Neither can an owner or admin decide a request they made. A deploy, sync or take from `ployz` or an agent asks
-the same way.
+the same way, and so do `ployz env shutdown` and cancelling a deploy someone else started. So does
+anything from `ployz` or an agent that stops or takes off what a volume serves:
+`ployz volume move`, `restore`, `release` and `mirror rm`, and any resize with `ployz volume set
+--size`. The approval covers only the server it moves to or restores from, or the size it resizes
+from and to, so a resize asks again if the volume's size changed meanwhile. Adding a mirror or
+syncing doesn't ask.
 
 A merge into a Protected environment's deploy branch still deploys. To control who can merge, use
 [GitHub branch protection](../deploy/github.md#protected-environments).
 
 Only an owner or admin can make a **Deploy** token for a Protected environment. A member who tries
-sees "production is Protected; only an owner or admin can make a Deploy token for it."
+sees "production is Protected; only an owner or admin can make a Deploy token for it." The token
+deploys, syncs and takes there without waiting for another admin, and cancels a deploy someone else
+started. A Deploy token can't destroy, so a deploy that would remove something is refused, even
+when an admin already saved the removal. A retry or rollback still waits for an admin, and so does
+every deploy an agent makes with it. The token still can't turn protection off, connect a
+repository or change the deploy branch. If you stop being an owner or admin, the token's deploys
+ask like a member's.
 
 Protected guards what runs through Ployz. An admin can open a shell on a server, and from there
 reach any environment on it.
@@ -261,5 +275,9 @@ goes too.
 
 Only an owner or admin can delete a project. Like an environment, it stays listed until every
 server that ran it has taken it off.
+
+Deleting with `ployz env rm` or `ployz project rm`, or through an agent, asks for approval first
+when it would take something off your servers. See
+[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 
 **Next:** [give every pull request its own copy of your app](preview-environments.md).

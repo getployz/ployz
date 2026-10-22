@@ -124,6 +124,8 @@ struct JoinInner {
     fail_target_inspect: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
     assigned_membership: Mutex<MembershipObservation>,
+    listed: Mutex<Vec<MachineObservation>>,
+    own_id: Mutex<Option<MachineId>>,
 }
 
 impl JoinDaemon {
@@ -163,6 +165,8 @@ impl JoinDaemon {
                 fail_target_inspect: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
                 assigned_membership: Mutex::new(MembershipObservation::Up),
+                listed: Mutex::new(Vec::new()),
+                own_id: Mutex::new(None),
             }),
         }
     }
@@ -228,6 +232,12 @@ impl JoinDaemon {
 
     pub fn revoked_on_publication(self, events: EventLog) -> Self {
         *self.inner.revoked_on_publication.lock().unwrap() = Some(events);
+        self
+    }
+
+    /// Report `id` as this daemon's own, as an entry Machine other than the one being added does.
+    pub fn with_id(self, id: MachineId) -> Self {
+        *self.inner.own_id.lock().unwrap() = Some(id);
         self
     }
 
@@ -304,6 +314,12 @@ impl JoinDaemon {
     /// Set the entry Machine's membership observation for the assigned Machine.
     pub fn with_membership(self, membership: MembershipObservation) -> Self {
         *self.inner.assigned_membership.lock().unwrap() = membership;
+        self
+    }
+
+    /// List `machine` beside the assigned Machine and the visible peers.
+    pub fn listing(self, machine: MachineObservation) -> Self {
+        self.inner.listed.lock().unwrap().push(machine);
         self
     }
 
@@ -532,7 +548,12 @@ impl FakeMachine for JoinDaemon {
         let joined = targeted || self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
-            id: self.inner.registration.assigned_machine.id,
+            id: self
+                .inner
+                .own_id
+                .lock()
+                .unwrap()
+                .unwrap_or(self.inner.registration.assigned_machine.id),
             phase: if joined {
                 LocalMachinePhase::Participating
             } else {
@@ -795,6 +816,7 @@ impl FakeMachine for JoinDaemon {
                 .cloned()
                 .map(up_machine),
         );
+        machines.extend(self.inner.listed.lock().unwrap().iter().cloned());
         rpc_ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
                 network: "10.210.0.0/16".parse().unwrap(),
@@ -938,6 +960,12 @@ impl FakeMachine for JoinDaemon {
             return Err(Status::invalid_argument("expected ReadRoutes"));
         };
         rpc_ok(RoutesRead::default())
+    }
+    async fn read_routed_addresses(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
     }
     async fn pull_image(
         &self,

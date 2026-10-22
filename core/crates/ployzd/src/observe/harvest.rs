@@ -32,8 +32,9 @@ use super::{
     docker_file_age,
     frame::{self, DamageScan},
     layout::{
-        ContainerKind, ContainerMeta, EXITS_FILE, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason,
-        LINKING_FILE, LogFileName, META_FILE, RunExit, SCANNED_FILE, StoreRoot, create_private_dir,
+        ContainerKind, ContainerMeta, ENV_FILE, EXITS_FILE, FIRST_SET_FILE, GAPS_FILE, Gap,
+        GapReason, LINKING_FILE, LogFileName, META_FILE, RetainedEnv, RunExit, SCANNED_FILE,
+        StoreRoot, create_private_dir,
     },
     metrics::{
         sampler,
@@ -947,6 +948,7 @@ impl Harvester {
         };
         let store_dir = self.store.container(&id);
         let Seen::Pending = seen else {
+            keep_env(&id, &store_dir, &inspected);
             if let Some(meta) = container_meta(&inspected) {
                 if let Err(error) = write_meta(&store_dir, &meta) {
                     tracing::warn!(container = %id, %error, "cannot update container metadata");
@@ -968,6 +970,7 @@ impl Harvester {
             tracing::error!(container = %id, %error, "cannot write container metadata");
             return;
         }
+        keep_env(&id, &store_dir, &inspected);
         let max_files = max_files(&inspected);
         let created_nanos = inspected
             .created
@@ -1701,6 +1704,23 @@ fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
     }
 }
 
+// Docker never changes a Container's env, so the first write stands.
+fn keep_env(id: &ContainerId, dir: &Path, inspected: &ContainerInspectResponse) {
+    if dir.join(ENV_FILE).exists() {
+        return;
+    }
+    if let Some(env) = retained_env(inspected)
+        && let Err(error) = env.write(dir)
+    {
+        tracing::warn!(container = %id, %error, "cannot keep the container's env for scrubbing its lines");
+    }
+}
+
+fn retained_env(inspected: &ContainerInspectResponse) -> Option<RetainedEnv> {
+    let config = inspected.config.as_ref()?;
+    RetainedEnv::from_inspected(config.env.as_deref().unwrap_or_default())
+}
+
 fn write_meta(dir: &Path, meta: &ContainerMeta) -> io::Result<()> {
     let json = serde_json::to_vec(meta).map_err(io::Error::other)?;
     crate::filesystem::atomic_write(&dir.join(META_FILE), &json, 0o600)
@@ -1971,7 +1991,7 @@ fn rfc3339_nanos(at: &str) -> Option<i64> {
 mod tests {
     use std::{
         cell::Cell,
-        collections::HashMap,
+        collections::{BTreeMap, HashMap},
         fs,
         io::{self, Write},
         os::unix::fs::MetadataExt,
@@ -2003,7 +2023,8 @@ mod tests {
         observe::{
             frame::{Piece, Stream, tests::frame},
             layout::{
-                ContainerKind, ContainerMeta, Gap, GapReason, LINKING_FILE, LogFileName, StoreRoot,
+                ContainerKind, ContainerMeta, ENV_FILE, Gap, GapReason, LINKING_FILE, LogFileName,
+                RetainedEnv, StoreRoot,
             },
             metrics::segment::Row,
             ship::{self, Outbox},
@@ -2708,6 +2729,10 @@ mod tests {
         fn meta(&self) -> ContainerMeta {
             read_meta(&self.dir()).unwrap().unwrap()
         }
+
+        fn env(&self) -> Option<RetainedEnv> {
+            RetainedEnv::read(&self.dir()).unwrap()
+        }
     }
 
     const WEB: [(&str, &str); 4] = [
@@ -2718,7 +2743,13 @@ mod tests {
     ];
 
     fn managed(max_files: usize) -> Inspected {
+        managed_with_env(max_files, &[])
+    }
+
+    fn managed_with_env(max_files: usize, env: &[&str]) -> Inspected {
         let mut inspected = labelled(&WEB);
+        inspected.config.as_mut().unwrap().env =
+            Some(env.iter().map(|entry| (*entry).to_owned()).collect());
         inspected.created = Some("2025-10-09T08:53:20Z".parse().unwrap());
         inspected.state = Some(ContainerState {
             running: Some(true),
@@ -2781,6 +2812,88 @@ mod tests {
             .map(|gap| (gap.from, gap.reason))
             .collect();
         assert_eq!(gaps, [(T0 + 3, GapReason::NotCaptured)]);
+    }
+
+    // Catches a Log Store that keeps a removed Container's lines but not the env that
+    // scrubs them, and one that drops the env with the Container.
+    #[tokio::test]
+    async fn a_removed_containers_env_stays_with_its_lines() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        assert_eq!(host.env(), None);
+
+        running.harvester.on_inspected(
+            id,
+            managed_with_env(3, &["TOKEN=live-only-sentinel", "PLAIN=from-docker"]),
+        );
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        assert_eq!(host.held(), 1);
+        assert_eq!(
+            fs::metadata(host.dir().join(ENV_FILE)).unwrap().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            host.env().map(RetainedEnv::into_values),
+            Some(BTreeMap::from([
+                ("TOKEN".to_owned(), "live-only-sentinel".to_owned()),
+                ("PLAIN".to_owned(), "from-docker".to_owned()),
+            ]))
+        );
+    }
+
+    // Catches a removed Container that Docker started with no env keeping none, which
+    // withholds its lines instead of showing them.
+    #[tokio::test]
+    async fn a_removed_container_started_without_an_env_keeps_an_empty_one() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        let Inspected::Found(mut inspected) = managed(3) else {
+            unreachable!("managed is found");
+        };
+        inspected.config.as_mut().unwrap().env = None;
+
+        running
+            .harvester
+            .on_inspected(id, Inspected::Found(inspected));
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        assert_eq!(
+            host.env().map(RetainedEnv::into_values),
+            Some(BTreeMap::new())
+        );
+    }
+
+    // Catches a Container whose env.json went missing, as when its first write failed,
+    // never getting it back while Docker still has the Container.
+    #[tokio::test]
+    async fn a_containers_missing_env_is_kept_again_on_its_next_inspect() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running
+            .harvester
+            .on_inspected(id, managed_with_env(3, &["TOKEN=live-only-sentinel"]));
+        fs::remove_file(host.dir().join(ENV_FILE)).unwrap();
+
+        running
+            .harvester
+            .on_inspected(id, managed_with_env(3, &["TOKEN=live-only-sentinel"]));
+
+        assert_eq!(
+            host.env().map(RetainedEnv::into_values),
+            Some(BTreeMap::from([(
+                "TOKEN".to_owned(),
+                "live-only-sentinel".to_owned()
+            )]))
+        );
     }
 
     fn at(nanos: i64) -> String {

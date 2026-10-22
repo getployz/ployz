@@ -3,9 +3,10 @@
 //! A request is one frame, `[u32 BE length][JSON]`. A query answers with one
 //! frame per [`HistoryRow`], a heartbeat each second while it reads, and
 //! [`HistoryRow::End`] last. A metrics request answers with one
-//! [`MetricsAnswer`] frame.
+//! [`MetricsAnswer`] frame, and an env request with one [`EnvAnswer`] frame.
 
 use std::{
+    collections::BTreeMap,
     io,
     sync::{
         Arc,
@@ -15,7 +16,7 @@ use std::{
 };
 
 use ployz_core::{
-    HistoryRow, LogHistoryRequest,
+    ContainerId, HistoryRow, LogHistoryRequest,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,7 @@ use tokio::{
 
 use super::{
     harvest::now_nanos,
-    layout::StoreRoot,
+    layout::{RetainedEnv, StoreRoot},
     metrics::history,
     query::{self, Bounds, Query},
 };
@@ -50,6 +51,18 @@ const METRICS_DEADLINE: Duration = Duration::from_millis(2_500);
 pub(crate) enum Request {
     Query(LogHistoryRequest),
     Metrics(MetricHistoryRequest),
+    /// The env the store kept for one Container.
+    Env(ContainerId),
+}
+
+/// The one frame an env request is answered with.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum EnvAnswer {
+    /// `None` when the store kept no env for the Container.
+    Reply(Option<BTreeMap<String, String>>),
+    /// The store could not be read.
+    Failed(String),
 }
 
 /// The one frame a metrics request is answered with.
@@ -111,6 +124,7 @@ async fn answer(mut stream: UnixStream, reading: Reading) {
         Ok(Request::Metrics(request)) => {
             answer_metrics(stream, reading, request, METRICS_DEADLINE).await
         }
+        Ok(Request::Env(container)) => answer_env(stream, &reading.store, container).await,
         Err(error) => {
             let row = HistoryRow::Error(format!("unreadable history request: {error}"));
             write_row(&mut stream, &row).await
@@ -186,6 +200,25 @@ async fn answer_query(
         within(stall, write_row(&mut stream, row)).await?;
     }
     within(stall, stream.flush()).await
+}
+
+async fn answer_env(
+    mut stream: UnixStream,
+    store: &StoreRoot,
+    container: ContainerId,
+) -> io::Result<()> {
+    let dir = store.container(&container);
+    let read = tokio::task::spawn_blocking(move || RetainedEnv::read(&dir))
+        .await
+        .map_err(io::Error::other)
+        .and_then(std::convert::identity);
+    let answer = match read {
+        Ok(env) => EnvAnswer::Reply(env.map(RetainedEnv::into_values)),
+        Err(error) => EnvAnswer::Failed(error.to_string()),
+    };
+    let bytes = serde_json::to_vec(&answer).map_err(io::Error::other)?;
+    write_frame(&mut stream, &bytes).await?;
+    stream.flush().await
 }
 
 /// Answers within `deadline`, waiting for a reader included. A read past it
@@ -277,10 +310,10 @@ pub(crate) async fn read_frame(
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
     use ployz_core::{
-        HistoryRow, LogHistoryRequest, OpaquePayload,
+        ContainerId, HistoryRow, LogHistoryRequest, OpaquePayload,
         metrics::{
             MetricGap, MetricGapReason, MetricHistoryRequest, MetricPoints, MetricRange,
             MetricScope,
@@ -296,7 +329,7 @@ mod tests {
         observe::{
             ObserveClient,
             harvest::now_nanos,
-            layout::StoreRoot,
+            layout::{RetainedEnv, StoreRoot},
             metrics::history::tests::{SEC, host, near, write},
             query::tests::{Store, T0, line},
         },
@@ -430,6 +463,35 @@ mod tests {
 
         let error = client.metrics(machine_request(now, now)).await.unwrap_err();
         assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        serving.abort();
+    }
+
+    // Catches a store that answers a retained env for a Container it never held one for,
+    // or cannot hand back the one it kept.
+    #[tokio::test]
+    async fn a_retained_env_query_through_the_socket_answers_what_the_store_kept() {
+        let dir = TestDir::new("ployzd-observe-env");
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let store = StoreRoot::under(&dir.0);
+        store.prepare().unwrap();
+        let kept = ContainerId::parse("a".repeat(64)).unwrap();
+        let never = ContainerId::parse("b".repeat(64)).unwrap();
+        let env = RetainedEnv::from_inspected(&["TOKEN=live-only-sentinel".to_owned()]).unwrap();
+        std::fs::create_dir_all(store.container(&kept)).unwrap();
+        env.write(&store.container(&kept)).unwrap();
+        let socket = dir.0.join("observe.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let serving = tokio::spawn(serve(listener, store));
+
+        let client = ObserveClient::new(socket);
+        assert_eq!(
+            client.retained_env(kept).await.unwrap(),
+            Some(BTreeMap::from([(
+                "TOKEN".to_owned(),
+                "live-only-sentinel".to_owned()
+            )]))
+        );
+        assert_eq!(client.retained_env(never).await.unwrap(), None);
         serving.abort();
     }
 

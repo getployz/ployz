@@ -83,24 +83,17 @@ async fn run(
         // a fresh subscription may follow missed changes.
         refresh(&replicated, &publish).await;
         let subscription = tokio::select! {
-            subscription = tokio::time::timeout(
-                REFRESH_INTERVAL,
-                replicated.subscribe_machine_changes(),
-            ) => subscription,
+            subscription = replicated.subscribe_machine_changes() => subscription,
             () = shutdown.cancelled() => return,
         };
         let mut subscription = match subscription {
-            Ok(Ok(subscription)) => subscription,
-            Ok(Err(error)) => {
+            Ok(subscription) => subscription,
+            Err(error) => {
                 tracing::warn!(error = %ployz_core::error_chain::inline(&error), "Machine view subscription failed, retrying");
                 tokio::select! {
                     () = tokio::time::sleep(RETRY_INTERVAL) => continue,
                     () = shutdown.cancelled() => return,
                 }
-            }
-            Err(_) => {
-                tracing::warn!("Machine view subscription snapshot stalled, retrying");
-                continue;
             }
         };
         // A row written between the read above and Corrosion registering the

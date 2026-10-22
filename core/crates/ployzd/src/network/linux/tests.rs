@@ -1,4 +1,5 @@
 use super::*;
+use bollard::models::{ContainerSummary, EndpointSettings};
 
 fn installed_peer(seed: u8) -> Peer {
     let mut peer = Peer::new(Key::new([seed; 32]));
@@ -654,4 +655,167 @@ fn reset_mismatched_device_in_namespace() {
         request.starts_with("GET ") && request.contains("/networks/ployz "),
         "unexpected Docker call: {request}"
     );
+}
+
+fn subnet(value: &str) -> ployz_core::MachineSubnet {
+    ployz_core::MachineSubnet::parse(value).unwrap()
+}
+
+fn inspected(request: &NetworkCreateRequest) -> NetworkInspect {
+    NetworkInspect {
+        name: Some(request.name.clone()),
+        id: Some("owned-network".into()),
+        driver: request.driver.clone(),
+        scope: request.scope.clone(),
+        enable_ipv6: Some(request.enable_ipv6.unwrap_or(false)),
+        ipam: request.ipam.clone(),
+        options: request.options.clone(),
+        labels: request.labels.clone(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn each_machine_bridge_takes_an_ipv6_prefix_from_its_ipv4_subnet() {
+    let ipv6 = docker_network_ipv6(subnet("10.210.3.0/24"));
+    assert_eq!(ipv6.subnet.as_deref(), Some("fdcd:0:ad2:300::/64"));
+    assert_eq!(ipv6.gateway.as_deref(), Some("fdcd:0:ad2:300::1"));
+    assert_ne!(
+        docker_network_ipv6(subnet("10.210.4.0/24")).subnet,
+        ipv6.subnet
+    );
+}
+
+#[test]
+fn a_dual_stack_bridge_matches_itself_and_an_ipv4_only_one_needs_readdressing() {
+    let machine = subnet("10.210.1.0/24");
+    let options = required_docker_network_options(1420);
+    let ipv6 = docker_network_ipv6(machine);
+    let dual = docker_network_request(machine, &options, Some(&ipv6));
+    assert_eq!(dual.enable_ipv6, Some(true));
+    let dual = inspected(&dual);
+    assert!(docker_network_matches(
+        &dual,
+        "10.210.1.0/24",
+        "10.210.1.1",
+        &options
+    ));
+    assert!(docker_network_ipv6_matches(&dual, Some(&ipv6)));
+
+    let ipv4_only = inspected(&docker_network_request(machine, &options, None));
+    assert!(docker_network_matches(
+        &ipv4_only,
+        "10.210.1.0/24",
+        "10.210.1.1",
+        &options
+    ));
+    assert!(!docker_network_ipv6_matches(&ipv4_only, Some(&ipv6)));
+    assert!(docker_network_ipv6_matches(&ipv4_only, None));
+    assert!(!docker_network_ipv6_matches(&dual, None));
+}
+
+#[test]
+fn readdressing_takes_stopped_and_detached_bridge_containers() {
+    use bollard::models::{ContainerSummaryHostConfig, ContainerSummaryNetworkSettings};
+    let container = |id: &str, mode: &str, endpoint: Option<&str>| ContainerSummary {
+        id: Some(id.into()),
+        host_config: Some(ContainerSummaryHostConfig {
+            network_mode: Some(mode.into()),
+            ..Default::default()
+        }),
+        network_settings: Some(ContainerSummaryNetworkSettings {
+            networks: Some(
+                endpoint
+                    .map(|address| {
+                        HashMap::from([(
+                            DOCKER_NETWORK_NAME.to_owned(),
+                            EndpointSettings {
+                                ip_address: Some(address.into()),
+                                ..Default::default()
+                            },
+                        )])
+                    })
+                    .unwrap_or_default(),
+            ),
+        }),
+        ..Default::default()
+    };
+    let member = |id: &str, ipv4: Option<&str>, attached| BridgeMember {
+        id: id.into(),
+        ipv4: ipv4.map(|address| address.parse().unwrap()),
+        attached,
+        pinned: false,
+        ipv6: false,
+    };
+    assert_eq!(
+        bridge_members(&[
+            container("running", "ployz", Some("10.210.1.5")),
+            container("stopped", "ployz", Some("")),
+            container("detached", "ployz", None),
+            container("elsewhere", "bridge", None),
+            container("host", "host", None),
+        ]),
+        [
+            member("detached", None, false),
+            member("running", Some("10.210.1.5"), true),
+            member("stopped", None, true),
+        ]
+    );
+}
+
+#[test]
+fn every_bridge_member_without_a_static_address_takes_one() {
+    let member = |id: &str, ipv4: Option<[u8; 4]>, attached, pinned| BridgeMember {
+        id: id.into(),
+        ipv4: ipv4.map(Ipv4Addr::from),
+        attached,
+        pinned,
+        ipv6: false,
+    };
+    let members = [
+        member("pinned", Some([10, 210, 1, 2]), true, true),
+        member("running", Some([10, 210, 1, 5]), true, false),
+        member("stopped", None, true, false),
+        member("detached", None, false, false),
+        member("unmanaged", Some([10, 210, 1, 9]), true, false),
+    ];
+    let taken = BTreeSet::from([
+        Ipv4Addr::new(10, 210, 1, 2),
+        Ipv4Addr::new(10, 210, 1, 5),
+        Ipv4Addr::new(10, 210, 1, 9),
+    ]);
+    let pinned = addresses(
+        members.iter().filter(|member| member.needs_pin()),
+        taken,
+        MachineSubnet::parse("10.210.1.0/24").unwrap(),
+    )
+    .into_iter()
+    .map(|(member, ipv4)| (member.id.as_str(), ipv4.map(|address| address.octets()[3])))
+    .collect::<Vec<_>>();
+    // Running members keep their addresses, managed or not, so no dynamic address is
+    // left to take a pinned one at boot; the others take free ones past the highest.
+    assert_eq!(
+        pinned,
+        [
+            ("running", Some(5)),
+            ("stopped", Some(10)),
+            ("detached", Some(11)),
+            ("unmanaged", Some(9)),
+        ]
+    );
+}
+
+#[test]
+fn interfaces_that_rely_on_router_advertisements_are_named() {
+    let routes = "default via fe80::1 dev ens3 proto ra metric 1024 expires 1798sec pref medium
+default via 2001:db8::1 dev ens4 proto static metric 1024 onlink pref medium
+";
+    let addresses = "2: ens5    inet6 2001:db8:5::7/64 scope global dynamic mngtmpaddr noprefixroute \\       valid_lft 86393sec preferred_lft 14393sec
+3: ens4    inet6 2001:db8:4::7/64 scope global \\       valid_lft forever preferred_lft forever
+";
+    assert_eq!(
+        router_advertised_interfaces(routes, addresses),
+        BTreeSet::from(["ens3".to_owned(), "ens5".to_owned()])
+    );
+    assert!(router_advertised_interfaces("", "").is_empty());
 }

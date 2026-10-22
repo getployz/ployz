@@ -253,6 +253,17 @@ function rpcCode(cause: unknown) {
   return Option.isSome(rpc) ? rpc.value.code : undefined;
 }
 
+const OlderProtocol = Schema.Union([
+  Schema.Struct({ details: Schema.Struct({ management_protocol: Schema.Literal("older") }) }),
+  // When several connections fail, the older Server's refusal survives only in the message.
+  Schema.Struct({ message: Schema.String.check(Schema.isIncludes("can't reach through the relay")) }),
+]);
+
+/** Whether a connect failed on a Server too old to manage through the relay, which only an upgrade over SSH reaches. */
+export function speaksOlderProtocol(error: PloyzSdkError) {
+  return Schema.is(OlderProtocol)("cause" in error ? error.cause : undefined);
+}
+
 /** The message of the runtime's RPC error a failure carries; undefined for any other failure. */
 export function rpcErrorMessage(error: PloyzSdkError) {
   const rpc = Schema.decodeUnknownOption(Schema.Struct({ message: Schema.String }))("cause" in error ? error.cause : undefined);

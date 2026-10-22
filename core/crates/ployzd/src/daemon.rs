@@ -302,6 +302,8 @@ impl Daemon {
         let running_builds = builds.running_builds();
         builds.follow(local.watch());
         let (endpoint_chooser, endpoint_choices) = tokio::sync::mpsc::channel(8);
+        let (route_publishes, published_routes) =
+            tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
         let machine_api = MachineApi::builder(local.clone())
             .with_endpoint_chooser(endpoint_chooser)
             .with_volume_plugin(plugin.clone())
@@ -315,13 +317,17 @@ impl Daemon {
             .with_optional_containers(containers.clone())
             .with_observe_socket(observe_socket)
             .with_image_ingest(Arc::clone(&ingest))
+            .with_published_routes(published_routes.clone())
             .build();
 
-        let rpc = Server::builder().serve_with_incoming_shutdown(
-            machine_api.clone(),
-            UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
-            shutdown.clone().cancelled_owned(),
-        );
+        let rpc = Server::builder()
+            .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
+            .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
+            .serve_with_incoming_shutdown(
+                machine_api.clone(),
+                UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
+                shutdown.clone().cancelled_owned(),
+            );
         let publisher = run_machine_publisher(
             replicated_store.clone().zip(machine_view.clone()),
             local.clone(),
@@ -341,11 +347,12 @@ impl Daemon {
             management::bind(local_record.management_secret(), &config.management)
                 .await
                 .map_err(io::Error::other)?;
+        let roster = replicated_store.clone();
+        let fence_endpoint = management_endpoint.clone();
+        let fence_relay = config.management.relay_url.clone();
         let socket_path = config.socket.clone();
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
-        let (route_publishes, published_routes) =
-            tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -363,6 +370,7 @@ impl Daemon {
                                 .with_plugin(plugin.clone()),
                             machine_api.clone(),
                             grants,
+                            roster,
                             shutdown.clone(),
                         )
                         .await;
@@ -448,7 +456,7 @@ impl Daemon {
                 }
                 Ok(())
             };
-            let boot_pass = async {
+            let boot_pass_and_fence = async {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
@@ -461,19 +469,33 @@ impl Daemon {
                     return Ok(());
                 };
                 let first_synced = runtime.first_synced();
-                let host = crate::boot_pass::DaemonHost {
+                let machine = crate::machine::LocalMachine::new(local.clone())
+                    .with_containers(Some(runtime))
+                    .with_plugin(plugin.clone())
+                    .with_cluster(Some((replicated.clone(), admin.clone())));
+                let boot = crate::boot_pass::DaemonHost {
                     machine_id: local_id,
-                    machine: crate::machine::LocalMachine::new(local.clone())
-                        .with_containers(Some(runtime))
-                        .with_plugin(plugin.clone())
-                        .with_cluster(Some((replicated.clone(), admin.clone()))),
+                    machine: machine.clone(),
                     replicated,
+                    machines: machines.clone(),
+                    admin: admin.clone(),
+                };
+                let fence = crate::forgotten_fence::FenceDaemon {
+                    machine_id: local_id,
+                    machine,
                     machines,
                     admin,
+                    endpoint: fence_endpoint,
+                    relay: fence_relay,
                 };
                 tokio::select! {
                     () = shutdown.cancelled() => {}
-                    () = crate::boot_pass::run(host, first_synced, published_routes) => {}
+                    () = async {
+                        tokio::join!(
+                            crate::boot_pass::run(boot, first_synced, published_routes),
+                            crate::forgotten_fence::run(&fence, shutdown.clone()),
+                        );
+                    } => {}
                 }
                 Ok(())
             };
@@ -486,7 +508,7 @@ impl Daemon {
                 dns,
                 ingress,
                 certificates,
-                boot_pass,
+                boot_pass_and_fence,
             )
             .map(|_| ())
         });
@@ -702,6 +724,8 @@ async fn serve_machine_api(
 ) -> io::Result<()> {
     match listener {
         Some(listener) => Server::builder()
+            .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
+            .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
             .serve_with_incoming_shutdown(
                 machine_api,
                 TcpListenerStream::new(listener),
@@ -1300,6 +1324,78 @@ mod tests {
         .await
         .unwrap();
 
+        assert_ne!(store.record().id(), old_id);
+        assert_eq!(
+            store.record().phase(),
+            ployz_core::LocalMachinePhase::Uninitialized
+        );
+    }
+
+    /// A reset killed while it clears the data directory, as systemd does when
+    /// the reset outlives the unit's stop timeout, must leave a directory the
+    /// next start still recognises as a reset to finish.
+    #[tokio::test]
+    async fn data_dir_cleanup_that_stops_partway_keeps_the_reset_for_retry() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = TestDir::new("ployzd-partial-reset-cleanup");
+        let data_dir = root.0.join("data");
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        let old_id = store.record().id();
+        for n in 0..8 {
+            let dir = data_dir.join(format!("state-{n}"));
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join("rows"), b"rows").unwrap();
+        }
+        store.begin_reset().unwrap();
+        drop(store);
+        let Opened::Resetting(interrupted) =
+            LocalMachineStore::open_with_admission(&data_dir, data_dir.join(".run")).unwrap()
+        else {
+            panic!("a begun reset must reopen as Resetting");
+        };
+        // Stop the cleanup at an entry the directory lists after the record where
+        // there is one: a cleanup in listing order would already have removed the
+        // record there.
+        let listed: Vec<_> = fs::read_dir(&data_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let state = |name: &&std::ffi::OsString| name.to_string_lossy().starts_with("state-");
+        let stuck = listed
+            .iter()
+            .skip_while(|name| *name != "machine.json")
+            .find(state)
+            .or_else(|| listed.iter().find(state))
+            .map(|name| data_dir.join(name))
+            .unwrap();
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o500)).unwrap();
+        if fs::write(stuck.join("probe"), b"").is_ok() {
+            eprintln!(
+                "skipped: root ignores directory permissions, so nothing can stop the cleanup"
+            );
+            fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
+
+        let result =
+            finish_interrupted_reset(interrupted, async { Ok(()) }, async { Ok(()) }).await;
+
+        assert!(
+            result.is_err(),
+            "the cleanup stopped at {}",
+            stuck.display()
+        );
+        let Opened::Resetting(interrupted) =
+            LocalMachineStore::open_with_admission(&data_dir, data_dir.join(".run")).unwrap()
+        else {
+            panic!("a partly cleared data directory must reopen as Resetting");
+        };
+        assert_eq!(interrupted.record().id(), old_id);
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+        let store = finish_interrupted_reset(interrupted, async { Ok(()) }, async { Ok(()) })
+            .await
+            .unwrap();
         assert_ne!(store.record().id(), old_id);
         assert_eq!(
             store.record().phase(),

@@ -7,7 +7,7 @@ import { WebTrafficDialog } from "./web-traffic-dialog";
 afterEach(cleanup);
 
 const section = (view: Parameters<typeof ServerWebTrafficSection>[0]["view"]) =>
-  render(<ServerWebTrafficSection view={view} onTurnOn={() => {}} onAskOff={() => {}} unavailable={null} />);
+  render(<ServerWebTrafficSection view={view} onTurnOn={() => {}} onAskOff={() => {}} unavailable={null} gate={{ allowed: true, reason: undefined }} />);
 
 it("never says your domains point at a Server with no public IP", () => {
   section({ kind: "on", address: null });

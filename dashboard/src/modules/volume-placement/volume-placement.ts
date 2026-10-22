@@ -3,11 +3,13 @@ import { Option, Schema } from "effect";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
-import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
+import { epochOf, planFromCopies, planSeed } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { type AnsweredMember, type Member, parseDockerVolumeName, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import {
+  type AnsweredMember, heardFrom, type Member, needsFloor, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf,
+} from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
@@ -26,6 +28,10 @@ export type ObservedPlacement = {
   readonly primary: MachineRef | null;
   readonly copies: readonly ObservedCopy[];
   readonly unanswered: readonly MachineRef[];
+  /** The unanswered Servers whose report is on its way. */
+  readonly waiting: readonly MachineRef[];
+  /** Of `unanswered`, the Servers that are up but lack a capability to report their copy. */
+  readonly lacking: readonly MachineRef[];
   /** Every Server in the cluster, answering or not. */
   readonly members: readonly MachineId[];
 };
@@ -105,6 +111,15 @@ export const slotRole = (copy: Extract<VolumeCopy, { kind: "slot" }>): SlotRole 
 const toDate = (seconds: number | undefined) => (seconds === undefined ? null : new Date(seconds * 1000));
 const isRoot = (member: AnsweredMember) => member.view.copy?.kind === "root";
 
+/**
+ * Whether every member's Server answered, if only to say it lacks copies. A Deploy plans only from answers, so a Restore
+ * is offered and staged only while this holds: one staged past a silent Server or a missing report fails its Deploy.
+ */
+export function serversAnswer(members: readonly Member[]) {
+  const { silent, waiting } = unheardOf(members);
+  return silent.length === 0 && !waiting;
+}
+
 export function observePlacement(members: readonly Member[]): ObservedPlacement {
   const answered = members.filter((member): member is AnsweredMember => member.answered);
   const roots = answered.filter(isRoot).sort((a, b) =>
@@ -120,6 +135,8 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
     primary: primary?.machine ?? null,
     copies,
     unanswered: members.filter((member) => !member.answered).map((member) => member.machine),
+    waiting: members.filter((member) => heardFrom(member) === "waiting").map((member) => member.machine),
+    lacking: members.filter((member) => ["lacks", "outdated"].includes(heardFrom(member))).map((member) => member.machine),
     members: members.map((member) => member.machine.id),
   };
 }
@@ -147,6 +164,25 @@ export function detachedCopies(observed: ObservedPlacement): readonly ObservedCo
 export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null): readonly ObservedCopy[] {
   const target = targetPlacement(observed, row);
   return detachedCopies(observed).filter((copy) => copy.server.id !== target?.primary && !target?.mirrors.includes(copy.server.id));
+}
+
+/**
+ * The Server presumed to hold the primary: the one that reports it, else, with none answering, one that didn't. A
+ * Server the Volume records as a mirror comes last, as it holds a mirror, unless it is the staged primary, which an
+ * unfinished move to it leaves recorded. Before it, one whose report is on its way
+ * comes first, though the observer lists it last, then one that is up but lacks a capability, then a silent one: each
+ * before it may still hold the writer. Among those, the staged primary comes first, since a failed move returns there,
+ * else the first listed. Copies names it under Live and the recovery alert reads it. Staging never reads it: an edit,
+ * a move and a restore keep main's holder, so what is staged doesn't turn on whose report arrived first.
+ */
+export function presumedPrimary(observed: ObservedPlacement, row: PlacementRow | null): MachineRef | null {
+  if (observed.primary !== null) return observed.primary;
+  const mirrors = appliedMirrors(observed, row);
+  const holding = (servers: readonly MachineRef[]) =>
+    servers.filter((server) => server.id === row?.staged?.primary || !mirrors.includes(server.id));
+  const pool = [holding(observed.waiting), holding(observed.lacking), holding(observed.unanswered), observed.unanswered]
+    .find((servers) => servers.length > 0) ?? [];
+  return pool.find((server) => server.id === row?.staged?.primary) ?? pool[0] ?? null;
 }
 
 /**
@@ -329,16 +365,94 @@ export function mirrorsAfter(mirrors: readonly MachineId[], change: PlacementCha
   }
 }
 
-/** The primary went silent and a mirror answers: the drawer and the tray offer it. */
-export type Failover = { readonly down: MachineRef; readonly mirror: MachineRef; readonly lostAfter: Date | null };
+export type Recovery =
+  | { readonly kind: "forget"; readonly down: readonly MachineRef[]; readonly mirror: MachineRef; readonly lostAfter: Date | null }
+  /** A member's report is incomplete: not silence, so nothing to forget yet and nothing to stage. */
+  | { readonly kind: "wait"; readonly mirror: MachineRef; readonly lostAfter: Date | null }
+  /** The presumed primary's Server answered without reporting its copy: it is up, so neither Forget nor a restore. */
+  | {
+    readonly kind: "unreported";
+    readonly server: MachineRef;
+    readonly heard: "lacks" | "outdated";
+    readonly lack: string;
+    readonly mirror: MachineRef;
+    readonly lostAfter: Date | null;
+  }
+  | {
+    readonly kind: "restore";
+    readonly mirror: MachineRef;
+    readonly lostAfter: Date | null;
+    readonly stage: { readonly placement: Placement; readonly mirrors: readonly MachineId[] } | { readonly refused: string };
+  };
 
-export function failover(observed: ObservedPlacement, row: PlacementRow | null): Failover | null {
-  const down = observed.unanswered[0];
-  if (observed.primary !== null || down === undefined) return null;
-  const mirrors = appliedMirrors(observed, row);
-  const mirror = observed.copies.find((copy) => copy.kind === "slot" && mirrors.includes(copy.server.id));
-  if (mirror === undefined || row?.staged?.primary === mirror.server.id) return null;
-  return { down, mirror: mirror.server, lostAfter: mirror.newest };
+export function recovery(
+  volume: PlacementVolume,
+  members: readonly Member[],
+  row: PlacementRow | null,
+  accepting: readonly MachineId[],
+  owed: boolean,
+  floorless: readonly MachineId[],
+): Recovery | null {
+  const observed = observePlacement(members);
+  if (observed.primary !== null) return null;
+  const applied = appliedMirrors(observed, row);
+  const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
+  if (copy === undefined) return null;
+  const { server: mirror, newest: lostAfter } = copy;
+  // While any report is on its way, it may come from the writer, whichever Server is presumed primary: wait. Then what
+  // was heard from the presumed primary decides, as Live shows it. Silent: Forget, naming every silent Server, since
+  // each holds the stage back. Lacking a capability: it is up, so say what it lacks.
+  if (observed.waiting.length > 0) return { kind: "wait", mirror, lostAfter };
+  const presumed = presumedPrimary(observed, row);
+  const primary = members.find((member) => member.machine.id === presumed?.id);
+  if (primary !== undefined && !primary.answered) {
+    const heard = heardFrom(primary);
+    if (heard === "silent") {
+      const down = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
+      return { kind: "forget", down, mirror, lostAfter };
+    }
+    if ((heard === "lacks" || heard === "outdated") && primary.lack !== undefined) {
+      return { kind: "unreported", server: primary.machine, heard, lack: primary.lack, mirror, lostAfter };
+    }
+  }
+  if (row?.staged?.primary === mirror.id) return null;
+  return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };
+}
+
+function restoreStage(
+  volume: PlacementVolume, members: readonly Member[], mirror: MachineRef, applied: readonly MachineId[], accepting: readonly MachineId[], owed: boolean,
+  floorless: readonly MachineId[],
+): Extract<Recovery, { kind: "restore" }>["stage"] {
+  if (owed) return { refused: `${volume.name}'s last move hasn't finished.` };
+  if (!accepting.includes(mirror.id)) return { refused: `${mirror.name} doesn't run Services.` };
+  if (floorless.includes(mirror.id)) return { refused: `${RUN_FEATURES.restore} needs a newer Ployz on ${mirror.name}.` };
+  const planned = planFromCopies({ kind: "restore", args: { from: mirror.name }, volumeName: volume.name, orphan: false }, members);
+  if (!planned.ok) return { refused: planned.refusal.message };
+  return { placement: { primary: mirror.id, mirrors: [], deletes: [] }, mirrors: applied };
+}
+
+/** Whether Copies offers a Restore point, and the planner's refusal when the Deploy's seed run would refuse it. */
+export type SeedOffer = { readonly offered: boolean; readonly refused: string | null };
+
+/**
+ * Whether Copies offers a Restore point, as the Deploy's seed run plans it, and the planner's refusal when it would
+ * refuse. As the run's observer reads them, a Server without the generation floor (`floorless`) that holds a copy lacks
+ * what the run needs. Nothing is offered while a Server is silent or its report is on its way, nor unless the primary's
+ * Ployz can restore (`restorable`).
+ */
+export function seedOffer(
+  volume: PlacementVolume, members: readonly Member[], restorable: readonly MachineId[], floorless: readonly MachineId[],
+): SeedOffer {
+  if (!serversAnswer(members)) return { offered: false, refused: null };
+  // The plan reads the copies alone, not where the point goes.
+  const run = { kind: "seed", args: { into: { volumeId: "", dockerVolume: "", name: "" }, guid: "", name: "" } } as const;
+  const observed = members.map((member): Member =>
+    member.answered && floorless.includes(member.machine.id) && needsFloor(run, member.machine, member.view.copy)
+      ? { machine: member.machine, answered: false, lack: `${RUN_FEATURES.seed} is not available on ${member.machine.name}.` }
+      : member);
+  const planned = planSeed({ ...run, volumeName: volume.name, orphan: false }, observed);
+  if (!planned.ok) return { offered: false, refused: planned.refusal.message };
+  return { offered: restorable.includes(planned.source.machine.id), refused: null };
 }
 
 export type PlacementTargets = { readonly move: readonly MachineRef[]; readonly mirror: readonly MachineRef[] };

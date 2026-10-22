@@ -34,6 +34,27 @@ async fn register_rejects_an_uninitialized_machine() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+/// A founder answers RPCs as soon as it restarts Participating, before its
+/// publisher writes the Cluster network: callers must read that as not ready.
+#[tokio::test]
+async fn unpublished_cluster_network_reads_as_unavailable() {
+    let (replicated, server) = fake_cluster::store_without_network().await;
+    let (data_dir, store, founder) = open_store("ployzd-unpublished-network");
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let service = machine_service(store, replicated, None);
+
+    let registered = rpc_register(&service, request("joiner", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap_err();
+    assert_eq!(registered.code, RpcErrorCode::Unavailable, "{registered:?}");
+    let listed = rpc_list_machines(&service).await.unwrap_err();
+    assert_eq!(listed.code, RpcErrorCode::Unavailable, "{listed:?}");
+
+    server.abort();
+    drop(service);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 #[tokio::test]
 async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
     let (data_dir, store, founder) = open_store("ployzd-register-replay");
@@ -241,7 +262,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let marker: ipnet::Ipv4Net = "10.0.0.0/8".parse().unwrap();
     replicated.publish_cluster_network(marker).await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while replicated.cluster_network().await.unwrap() != network {
+        while replicated.cluster_network().await.unwrap() != Some(network) {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     })
@@ -267,6 +288,15 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     republished()
         .await
         .expect("the joined Machine publishes itself");
+    let published = replicated
+        .machine(identity.machine_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !published.runtime.daemon_version.is_empty(),
+        "a self-published row names its daemon version; an empty one reads as Unarrived"
+    );
     // Settle the way a live cluster has: the Machines view holds the served row.
     let mut settled = view.watch();
     tokio::time::timeout(
@@ -306,7 +336,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert_eq!(
         replicated.cluster_network().await.unwrap(),
-        marker,
+        Some(marker),
         "a Machines view change rewrote the Cluster network"
     );
 

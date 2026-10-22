@@ -178,8 +178,9 @@ def main():
     commands.add_parser("ready")
     args = parser.parse_args()
     if args.command == "select":
+        # The merge queue gates a PR on the same checks as its PR run; main runs the rest after the merge.
+        pull_request = os.environ.get("GITHUB_EVENT_NAME") in {"pull_request", "merge_group"}
         # A manual quick run covers every normal check, without release/cluster work.
-        pull_request = os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
         if args.base and set(args.base) != {"0"}:
             paths = changed_paths(args.base, args.head)
             selected, postgres = select(paths, pull_request), store_postgres(paths, pull_request)

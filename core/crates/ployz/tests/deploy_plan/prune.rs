@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::support::*;
-use ployz::deploy::preview_deploy;
+use ployz::deploy::{Step, plan_deploy, preview_deploy};
 use ployz_core::{
-    ContainerKind, ContainerRuntimeObservation, DependencyCondition, DockerVolumeId,
-    MachineFailure, PruneRefusal, QualifiedService, RpcError, RpcErrorCode, ServiceDependency,
-    ServiceName, ServiceRemovals, VolumeObservationFailure,
+    ContainerKind, ContainerRuntimeObservation, DependencyCondition, DeployWarning, DockerVolumeId,
+    MachineFailure, PruneRefusal, PruneScope, QualifiedService, RpcError, RpcErrorCode,
+    ServiceDependency, ServiceName, ServiceRemovals, VolumeObservationFailure,
 };
 
 #[test]
@@ -568,6 +568,100 @@ fn retiring_in_the_reserved_namespace_is_refused() {
 }
 
 /// A targeted Deploy of `target`, applying `selected`, that retires `removals`.
+#[test]
+fn prune_limited_to_removals_retires_them_and_keeps_the_rest_with_a_warning() {
+    let web = spec("web");
+    let api = spec("api");
+    let debug = spec("debug");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![
+            container('e', '1', &web, &service_id('a')),
+            container('a', '1', &api, &service_id('c')),
+            container('d', '1', &debug, &service_id('b')),
+        ],
+        ..Default::default()
+    };
+    let intent = DeployIntent::new(
+        Namespace::parse("app").unwrap(),
+        vec![web],
+        PlanOptions {
+            removals: ServiceRemovals::from_names([ServiceName::parse("api").unwrap()]),
+            prune: PruneScope::Removals,
+            ..PlanOptions::default()
+        },
+    );
+    let plan = preview_deploy(&intent, &snapshot).unwrap();
+    assert_eq!(plan.prune_refusal, Some(PruneRefusal::RemovalsOnly));
+    assert_eq!(
+        plan.would_remove.iter().collect::<BTreeSet<_>>(),
+        [
+            &QualifiedService::parse("app/api").unwrap(),
+            &QualifiedService::parse("app/debug").unwrap()
+        ]
+        .into_iter()
+        .collect()
+    );
+    assert!(removes(&plan, 'a'), "the removal is retired");
+    assert!(
+        !removes(&plan, 'd'),
+        "a Service neither the target nor the removals name is kept"
+    );
+    assert!(!removes(&plan, 'e'));
+    let kept = DeployWarning::NotInStore {
+        service: QualifiedService::parse("app/debug").unwrap(),
+    };
+    assert_eq!(
+        plan.warnings
+            .iter()
+            .filter(|warning| matches!(warning, DeployWarning::NotInStore { .. }))
+            .collect::<Vec<_>>(),
+        [&kept]
+    );
+    assert_eq!(
+        kept.to_string(),
+        "app/debug: running, not in this environment; kept. ployz deploy --prune removes it."
+    );
+}
+
+#[test]
+fn prune_of_the_namespace_removes_a_service_the_removals_do_not_name() {
+    let web = spec("web");
+    let api = spec("api");
+    let debug = spec("debug");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![
+            container('e', '1', &web, &service_id('a')),
+            container('a', '1', &api, &service_id('c')),
+            container('d', '1', &debug, &service_id('b')),
+        ],
+        ..Default::default()
+    };
+    let intent = DeployIntent::new(
+        Namespace::parse("app").unwrap(),
+        vec![web],
+        PlanOptions {
+            removals: ServiceRemovals::from_names([ServiceName::parse("api").unwrap()]),
+            prune: PruneScope::Namespace,
+            ..PlanOptions::default()
+        },
+    );
+    let plan = preview_deploy(&intent, &snapshot).unwrap();
+    assert_eq!(plan.prune_refusal, None);
+    assert!(removes(&plan, 'a'));
+    assert!(removes(&plan, 'd'));
+    assert!(!removes(&plan, 'e'));
+    assert!(
+        !plan
+            .warnings
+            .iter()
+            .any(|warning| matches!(warning, DeployWarning::NotInStore { .. })),
+        "{:?}",
+        plan.warnings
+    );
+}
+
 fn retiring(target: &[RequestedServiceSpec], selected: &[&str], removals: &[&str]) -> DeployIntent {
     let name = |name: &&str| ServiceName::parse(*name).unwrap();
     DeployIntent::new(
@@ -647,4 +741,75 @@ fn a_removal_retires_a_stray_pending_copy_before_any_routed_one() {
         })
         .collect();
     assert_eq!(retired, [container_id('c'), container_id('a')]);
+}
+
+#[test]
+fn a_removal_retires_every_copy_of_a_service_in_one_step() {
+    let debug = spec("debug");
+    let service = service_id('b');
+    let routed = |hex, machine_hex, runtime| {
+        let mut copy = container(hex, machine_hex, &debug, &service);
+        copy.try_update(|parts| {
+            parts.rotation = Some(ployz_core::CopyRotation::In);
+            parts.runtime = runtime;
+        })
+        .unwrap();
+        copy
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![
+            routed('a', '1', ContainerRuntimeObservation::Restarting),
+            routed('c', '2', ContainerRuntimeObservation::Exited { code: 1 }),
+        ],
+        ..Default::default()
+    };
+    let intent =
+        DeployIntent::apply_all(Namespace::parse("app").unwrap(), [], PlanOptions::default());
+
+    let plan = plan_deploy(&intent, &snapshot).unwrap();
+
+    let Some(tail) = plan.groups().last() else {
+        panic!("expected a removal group");
+    };
+    assert_eq!(tail.steps, [Step::Parallel(vec![0, 1])]);
+}
+
+#[test]
+fn a_removal_removes_pending_copies_one_at_a_time_before_the_rest_go_out_together() {
+    let debug = spec("debug");
+    let service = service_id('b');
+    let copy = |hex, machine_hex, rotation| {
+        let mut copy = container(hex, machine_hex, &debug, &service);
+        copy.try_update(|parts| parts.rotation = Some(rotation))
+            .unwrap();
+        copy
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![
+            copy('a', '1', ployz_core::CopyRotation::In),
+            copy('b', '2', ployz_core::CopyRotation::Pending),
+            copy('c', '2', ployz_core::CopyRotation::In),
+            copy('d', '1', ployz_core::CopyRotation::Pending),
+            copy('e', '1', ployz_core::CopyRotation::In),
+        ],
+        ..Default::default()
+    };
+    let intent =
+        DeployIntent::apply_all(Namespace::parse("app").unwrap(), [], PlanOptions::default());
+
+    let plan = plan_deploy(&intent, &snapshot).unwrap();
+
+    let Some(tail) = plan.groups().last() else {
+        panic!("expected a removal group");
+    };
+    assert_eq!(
+        tail.steps,
+        [
+            Step::Serial(0),
+            Step::Serial(1),
+            Step::Parallel(vec![2, 3, 4])
+        ]
+    );
 }

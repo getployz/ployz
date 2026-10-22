@@ -51,7 +51,7 @@ Each general page has one job, and doesn't repeat the others:
 | The basics | How your app is organized and how a change ships. |
 | Quick start | Get one known app running, then point to one next step. |
 | Feature pages | Do the tasks for one feature. |
-| Service settings | One entry per field. The dashboard links here for more information. |
+| Service settings | One entry per field. |
 | Troubleshooting | Fix one symptom at a time. |
 
 End a page with **one** recommended next step when there's an obvious one ("Next: add a
@@ -77,11 +77,12 @@ collection of short entries.
 
 ## Settings reference
 
-[Service settings](services/settings.md) is the page the dashboard links to from its settings.
-One H3 per field, and the heading is the field's **exact dashboard label**, so its link is
+[Service settings](services/settings.md) is the reference for every settings field.
+One H3 per field, and the heading is the field's **exact dashboard label**, so links to it stay
 stable (`services/settings.md#watch-paths`). Under it, one to three sentences: what it does,
 its default, when you'd change it, and a link to the feature page for more. Never rename one
-of these headings without updating the dashboard's link.
+of these headings without updating the links to it, including the `ployz docs` map in
+`core/crates/ployz-store/src/docs.rs`.
 
 ## The CLI
 
@@ -92,8 +93,8 @@ The one exception is something the dashboard can't do yet. Then show the command
 plainly, and keep it short:
 
 ```sh
-# Turning web traffic off is CLI-only for now
-ployz server set db-1 --accepts-ingress=false
+# CLI-only for now: how full is web's volume?
+ployz exec web -- df -h /app/uploads
 ```
 
 Everything else about the CLI lives on the one [CLI](cli/overview.md) page.

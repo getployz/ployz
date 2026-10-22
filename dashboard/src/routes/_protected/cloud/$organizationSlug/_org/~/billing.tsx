@@ -160,7 +160,6 @@ const PLANS: readonly PlanDetails[] = [
       "Everything in Hobby",
       "30 days of logs and metrics",
       "Unlimited members",
-      "Roles and audit log",
       "Public status page",
     ],
     soon: true,

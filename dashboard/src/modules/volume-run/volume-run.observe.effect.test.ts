@@ -13,6 +13,7 @@ import {
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
+  runtimeWatchVolumeFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { Database, type DatabaseService } from "#/server/database.server";
 import { noPairingChanges } from "#/test/organization-runtime";
@@ -195,10 +196,28 @@ it.effect("a Server's release channel query that takes 12 seconds finishes, and 
       machine: { id: machine.id, name: machine.name },
       answered: false,
       lack: "Volume move needs a newer Ployz on box-1. 0.2.0 is out.",
+      outdated: true,
     }]);
     assert.strictEqual(cluster.finished(), 1);
     assert.strictEqual(cluster.interrupted(), 0);
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
+);
+
+it.effect("a Server's lack claims no newer Ployz when its release can't be looked up", () =>
+  Effect.gen(function* () {
+    vi.stubGlobal("fetch", async () => { throw new Error("offline"); });
+    // Past the release pointer cache, so an earlier test's release isn't read back.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    const cluster = yield* lacking;
+    const observing = yield* observeVolumeMembers("org-1", "pg-data", release).pipe(Effect.provide(cluster.layer(Promise.resolve())), Effect.forkChild);
+    (yield* Queue.take(cluster.queries))();
+    assert.deepStrictEqual(yield* Fiber.join(observing), [{
+      machine: { id: machine.id, name: machine.name },
+      answered: false,
+      lack: `Volume move is not in Ployz ${machine.runtime.daemon_version} on box-1.`,
+    }]);
+  }).pipe(Effect.ensuring(Effect.sync(() => { vi.useRealTimers(); vi.unstubAllGlobals(); }))),
 );
 
 it.effect("a Server whose inspect never answers is a member that didn't answer after 10 seconds", () =>
@@ -239,5 +258,39 @@ it.effect("database reads between a plan's Cluster reads are never interrupted a
     const plan = yield* Fiber.join(planning);
     assert.strictEqual(cluster.interrupted(), 0);
     assert.isTrue(plan.ok);
+  }),
+);
+
+/** One Server that never answers its inspect, whose last report in the frame holds `slotRole`'s slot of pg-data. */
+const lastReported = (slotRole: "mirror" | "old_copy") => makeOrganizationRuntimeLayer(
+  () => Effect.succeed({ kind: "ready", generation: "current", connections }),
+  noPairingChanges,
+).pipe(
+  Layer.provide(makePloyzLayer({
+    connect: async () => asTestDouble<Client>()({
+      close: async () => {},
+      volumeSwitch: () => Promise.reject(new Error("box-1 is powered off")),
+      runtime: {
+        watch: async function* (): AsyncGenerator<RuntimeWatchView> {
+          yield runtimeWatchFrameFixture({
+            machines: [runtimeWatchMachineObservationFixture({ machine })],
+            volumes: [runtimeWatchVolumeFixture(machine.id, "pg-data", {
+              storage: { kind: "provisioned", mountpoint: "/p", bound_bytes: 1, used_bytes: 0, role: "slot", slot_role: slotRole },
+            })],
+          });
+        },
+      },
+    }),
+  })),
+  Layer.merge(Layer.succeed(Database, undefined as never)),
+);
+
+it.effect("a silent Server whose last report held a mirror is a member that didn't answer and last held a mirror", () =>
+  Effect.gen(function* () {
+    const ref = { id: machine.id, name: machine.name };
+    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported("mirror"))),
+      [{ machine: ref, answered: false, lastMirror: true }]);
+    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported("old_copy"))),
+      [{ machine: ref, answered: false }]);
   }),
 );

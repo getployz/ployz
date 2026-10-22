@@ -726,6 +726,62 @@ fn a_save_into_protected_production_asks_an_admin_even_when_cloud_requires_nothi
     assert!(publish(&store, &who, "production", true).unwrap().created);
 }
 
+/// Cloud's evidence for a token of someone who can protect, whose grant leaves
+/// `environments:protect` out: an owner's or admin's Deploy token.
+fn protectors_token() -> Trusted {
+    Trusted {
+        protector: true,
+        ..acme_as(false)
+    }
+}
+
+#[test]
+fn a_protectors_token_saves_and_syncs_into_protected_production_unasked() {
+    let (store, system) = shop();
+    let who = person(&system);
+    fix_web(&store, &who);
+    edit(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.FLAG", Some(json!("on")))],
+        false,
+    )
+    .unwrap();
+
+    sync_as(&store, &who, &protectors_token()).unwrap();
+    assert_eq!(production_env(&store, &who), Some(json!("on")));
+    assert!(
+        publish_as(&store, &who, "production", &protectors_token())
+            .unwrap()
+            .created
+    );
+}
+
+#[test]
+fn a_protectors_token_still_cannot_sync_a_repository_into_protected_production() {
+    let (store, system) = shop();
+    let who = person(&system);
+    fix_web(&store, &who);
+    edit(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.repository", Some(json!("acme/docs")))],
+        false,
+    )
+    .unwrap();
+
+    assert_forbidden(
+        sync_as(&store, &who, &protectors_token()),
+        json!({"services": ["web"]}),
+    );
+    assert_eq!(
+        production(&store, &who, "web.repository"),
+        json!("acme/web")
+    );
+}
+
 /// Production's staged `web.env.FLAG`, if any.
 fn production_env(store: &ConfigStore, who: &Actor) -> Option<Value> {
     let query = ployz_store::EnvironmentQuery {

@@ -17,8 +17,8 @@ use ployz_store::tools::cloud::{
     MetricsAnswer, ServerLog, ServerReport, ServerState, ServersAnswer,
 };
 use ployz_store::tools::{
-    CloudQuery, Freshness, LogText, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject,
-    ServerLogsQuery, ServerName, ServerRef, Source, Timestamp,
+    CloudQuery, Freshness, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, ServerLogsQuery,
+    ServerName, ServerRef, Source, Timestamp,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -274,15 +274,17 @@ fn since_nanos(since: Option<Duration>) -> Option<i64> {
 }
 
 /// Read every invited Server, or only `only`, at once. A Server whose read fails is
-/// named unanswered with a note; one with nothing to show has no entry.
-async fn tail_each<F, Fut>(
+/// named unanswered with a note. One that withheld some Containers' lines still answers,
+/// with a note naming them. One with nothing to show has no entry.
+async fn tail_each<F, Fut, T>(
     mut machines: Vec<MachineObservation>,
     only: Option<&ServerRef>,
     read: F,
 ) -> LogsAnswer
 where
     F: Fn(MachineId) -> Fut,
-    Fut: Future<Output = Result<Option<LogText>, RpcError>>,
+    Fut: Future<Output = Result<Option<T>, RpcError>>,
+    T: Into<super::AgentTail>,
 {
     if let Some(only) = only {
         machines.retain(|machine| machine.machine.id == only.machine);
@@ -297,10 +299,20 @@ where
     let mut notes = Vec::new();
     for (machine, read) in invited.iter().zip(reads) {
         match read {
-            Ok(Some(text)) => servers.push(ServerLog {
-                server: machine.machine.name.clone(),
-                text,
-            }),
+            Ok(Some(tail)) => {
+                let super::AgentTail { text, withheld } = tail.into();
+                if !withheld.is_empty() {
+                    notes.push(format!(
+                        "Lines from {} on {} withheld: their env could not be read to scrub Sealed values.",
+                        withheld.join(", "),
+                        machine.machine.name,
+                    ));
+                }
+                servers.push(ServerLog {
+                    server: machine.machine.name.clone(),
+                    text,
+                });
+            }
             Ok(None) => {}
             Err(error) => {
                 unanswered.insert(machine.machine.id);

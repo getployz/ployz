@@ -50,8 +50,10 @@ export function ForgetServersDialog({ organizationSlug, open, onOpenChange }: {
   return (
     <DeletionDialog open={open} onOpenChange={onOpenChange} title="Forget all servers?" place={organizationSlug}
       confirmLabel="Forget servers" pendingLabel="Forgetting"
-      sentence={<>Use this when your servers were deleted. Your projects and settings stay. Volume data on these servers
-        can't be recovered.</>}
+      sentence={<>Use this when your servers were deleted. Your projects and settings stay. Volume data on these servers is
+        lost: no server is left to hold a mirror of it. A forgotten server won't know it was forgotten. If one runs again as
+        it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo ployz-uninstall on
+        it as soon as it boots.</>}
       callbacks={{ load, confirm }} />
   );
 }

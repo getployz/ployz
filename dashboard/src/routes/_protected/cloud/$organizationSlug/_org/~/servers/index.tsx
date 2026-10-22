@@ -37,7 +37,7 @@ export const Route = createFileRoute(
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { token } = Route.useSearch();
-  const { state, servers } = useServers(organizationSlug);
+  const { state, servers, older } = useServers(organizationSlug);
   const upgrades = useServersUpgrade(organizationSlug, servers);
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
@@ -75,7 +75,7 @@ function RouteComponent() {
       {page.kind === "loading" ? (
         <ServersSkeleton />
       ) : page.kind === "unreachable" ? (
-        <ServersUnreachable organizationSlug={organizationSlug} />
+        <ServersUnreachable organizationSlug={organizationSlug} older={older} />
       ) : page.kind === "first-run" ? (
         <FirstRunCard key={organizationSlug} organizationSlug={organizationSlug} arrived={page.intake} />
       ) : (

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
+import type { MachineId, MachineName, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
@@ -208,6 +208,8 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
   readonly channel: ReleaseChannel;
   readonly fromVersion: string;
   readonly inngestRunId: string;
+  /** The name the caller showed for the Server, which its run keeps; null when it showed none. */
+  readonly serverName: MachineName | null;
 }) {
   const line = releaseLine(input.fromVersion);
   // An unreadable pointer leaves the target to the Server's answer.
@@ -217,6 +219,7 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
   yield* drizzle.insert(serverUpgradeAttempt).values({
     organizationId: input.request.organizationId,
     machineId: input.request.machineId,
+    serverName: input.serverName || null,
     attemptId: input.attemptId,
     trigger: input.request.trigger,
     requestedByUserId: input.request.userId,
@@ -496,6 +499,7 @@ const UNCLAIMED = "";
 export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
   input: { readonly machineId: MachineId; readonly channel: string | undefined },
+  serverName?: MachineName,
 ) {
   const channel = yield* organizationReleaseChannel(caller.organizationId);
   if (input.channel !== undefined && input.channel !== channel) {
@@ -526,11 +530,11 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
   const observed = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(Effect.option);
   if (observed._tag === "None") return unavailable("Your servers aren't answering. Try again once they are.");
   if (observed.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
-  const from = observed.value.version;
+  const { version: from, name } = observed.value;
   return (attempt: string) => Effect.gen(function* () {
     const attemptId = machineUpgradeAttemptId(attempt);
     const request = { organizationId: caller.organizationId, machineId: input.machineId, trigger: "manual", userId: caller.userId, attemptId } as const;
-    yield* recordUpgradeAttempt({ request, attemptId, channel, fromVersion: from, inngestRunId: UNCLAIMED });
+    yield* recordUpgradeAttempt({ request, attemptId, channel, fromVersion: from, inngestRunId: UNCLAIMED, serverName: serverName || name });
     yield* enqueueEvent(createCliServerUpgradeRequestedEvent(request));
     return { ok: true, id: attemptId } as const;
   });

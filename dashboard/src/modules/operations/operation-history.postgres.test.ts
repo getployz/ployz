@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import type { MachineId } from "@ployz/sdk";
 import { type SQL, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { describe, expect } from "vitest";
 import { machineRemoveAttempt, serverDrainAttempt } from "#/modules/machines/tables";
 import { operationsOn, settledDrain } from "#/modules/operations/operation-history.server";
@@ -17,7 +17,7 @@ const THIRD = "00000000-0000-4000-8000-00000000d1c3";
 
 const runs = (at: Record<"drain" | "remove" | "upgrade", Date | SQL>) =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(yield* storeTestCloud());
+    const services = yield* storeTestCloud();
     const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
     const { drizzle } = yield* Database.pipe(Effect.provide(services));
     yield* drizzle.insert(serverDrainAttempt).values({ id: THIRD, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, requestedAt: at.drain });
@@ -73,7 +73,7 @@ describe("operationsOn a Server", () => {
   // Catches the upgrade query's limit keeping a different attempt than the merge ranks first, under a collation other than byte order.
   it.live("keeps the attempt the merge ranks first under an ICU numeric collation", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       yield* drizzle.execute(sql`create collation numeric (provider = icu, locale = 'en-u-kn-true')`);
@@ -95,7 +95,7 @@ describe("operationsOn a Server", () => {
 });
 
 const second = (at: number) => new Date(Date.UTC(2026, 9, 20, 12, 0, at));
-type Drain = Pick<typeof serverDrainAttempt.$inferInsert, "id" | "state" | "endCode" | "inngestRunId" | "startedAt" | "endedAt" | "requestedAt">;
+type Drain = Pick<typeof serverDrainAttempt.$inferInsert, "id" | "state" | "endCode" | "inngestRunId" | "startedAt" | "endedAt" | "requestedAt" | "serverName">;
 const failed = (id: string, at: number): Drain => ({ id, state: "failed", endCode: "not_started", endedAt: second(at), requestedAt: second(at) });
 const lost = (id: string, at: number): Drain => ({
   id, state: "unknown", endCode: "lost", inngestRunId: `run-${id}`, startedAt: second(at), endedAt: second(at), requestedAt: second(at),
@@ -104,7 +104,7 @@ const lost = (id: string, at: number): Drain => ({
 /** A Server whose `drains` came first and `later` upgrades followed them, read through `settledDrain`. */
 const drained = (drains: readonly Drain[], later: number) =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(yield* storeTestCloud());
+    const services = yield* storeTestCloud();
     const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
     const { drizzle } = yield* Database.pipe(Effect.provide(services));
     for (const drain of drains) {
@@ -129,6 +129,13 @@ describe("settledDrain", () => {
         .toEqual(expect.objectContaining({ attempt: THIRD, run: "drain machine-1", state: "failed", reason: "The drain never started." }));
       expect(yield* drained([failed(THIRD, 1), lost(FIRST, 2)], 25))
         .toEqual(expect.objectContaining({ attempt: FIRST, state: "unknown", end: "lost" }));
+    }));
+
+  // Catches the settled Drain renamed to the Server's current name while the history keeps the one its run started under.
+  it.live("names the Drain as its run started, as the history does", () =>
+    Effect.gen(function* () {
+      expect(yield* drained([{ ...failed(THIRD, 1), serverName: "box-node-09c8" }], 0))
+        .toEqual(expect.objectContaining({ attempt: THIRD, run: "drain box-node-09c8" }));
     }));
 
   it.live("names none when no Drain has a verdict", () =>

@@ -539,7 +539,7 @@ async fn volume_listing_retains_successes_and_target_failures() {
         capabilities: Default::default(),
     }))
     .await;
-    let mut client = connect_selected_with(
+    let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
             connections: vec![Connection::tcp(address)],
@@ -1169,7 +1169,7 @@ async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
         capabilities: Default::default(),
     }))
     .await;
-    let mut client = connect_selected_with(
+    let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
             connections: vec![Connection::tcp(address)],

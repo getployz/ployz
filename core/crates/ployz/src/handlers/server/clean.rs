@@ -25,7 +25,11 @@ pub(crate) fn command(command: Command) -> Command {
          removes it after the same typed confirmation, asking a human first when the \
          Organization wants that.",
     )
-    .arg(value("namespace", None).value_name("NAMESPACE"))
+    .arg(
+        value("namespace", None)
+            .value_name("NAMESPACE")
+            .help("The Namespace to remove; without it, lists them"),
+    )
     .arg(
         value("confirm", None)
             .value_name("NAMESPACE")

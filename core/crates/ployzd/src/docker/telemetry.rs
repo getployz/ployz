@@ -1,32 +1,45 @@
 //! Docker bridge capacity and host telemetry probes.
 
 use std::{
-    collections::{HashMap, HashSet},
-    net::IpAddr,
+    collections::{BTreeSet, HashMap, HashSet},
+    net::{IpAddr, Ipv4Addr},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use bollard::{models::IpamConfig, query_parameters::ListContainersOptionsBuilder};
 use ipnet::IpNet;
-use ployz_core::{BridgeEndpointCapacity, ByteCapacity, MachineTelemetry};
+use ployz_core::{BridgeEndpointCapacity, ByteCapacity, MachineSubnet, MachineTelemetry};
 
 use super::{Error, LocalDocker};
 use crate::host_capacity::{filesystem_space, memory_capacity};
 
+/// The ployz bridge's capacity, and the addresses its Containers hold.
+pub(super) struct Bridge {
+    pub(super) capacity: BridgeEndpointCapacity,
+    pub(super) subnet: Option<MachineSubnet>,
+    pub(super) taken: BTreeSet<Ipv4Addr>,
+}
+
 impl LocalDocker {
     pub(super) async fn bridge_capacity(&self) -> Result<BridgeEndpointCapacity, Error> {
+        Ok(self.bridge().await?.capacity)
+    }
+
+    pub(super) async fn bridge(&self) -> Result<Bridge, Error> {
         let network = self
             .client
             .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
             .await?;
-        let usable_endpoints = usable_endpoint_count(
-            network
-                .ipam
-                .and_then(|ipam| ipam.config)
-                .as_deref()
-                .ok_or(Error::MissingField("Docker bridge IPAM configuration"))?,
-        )?;
-        let attached_endpoints = self
+        let configs = network
+            .ipam
+            .and_then(|ipam| ipam.config)
+            .ok_or(Error::MissingField("Docker bridge IPAM configuration"))?;
+        let usable_endpoints = usable_endpoint_count(&configs)?;
+        let subnet = configs
+            .iter()
+            .filter_map(|config| config.subnet.as_deref())
+            .find_map(|subnet| MachineSubnet::parse(subnet).ok());
+        let containers = self
             .client
             .list_containers(Some(
                 ListContainersOptionsBuilder::default()
@@ -37,12 +50,12 @@ impl LocalDocker {
                     )]))
                     .build(),
             ))
-            .await?
-            .len() as u64;
-        Ok(BridgeEndpointCapacity::new(
-            usable_endpoints,
-            attached_endpoints,
-        ))
+            .await?;
+        Ok(Bridge {
+            capacity: BridgeEndpointCapacity::new(usable_endpoints, containers.len() as u64),
+            subnet,
+            taken: super::bridge_address::taken(&containers),
+        })
     }
 
     pub(super) async fn telemetry(&self) -> Result<MachineTelemetry, Error> {

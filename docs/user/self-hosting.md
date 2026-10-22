@@ -4,12 +4,8 @@ description: Run the Ployz dashboard on your own infrastructure with Docker Comp
 ---
 
 You can run Ployz Cloud, the dashboard at ployz.dev, on your own server instead of using ours.
-Your apps still run on your servers either way. Self-hosting moves only the dashboard.
-
-> [!NOTE]
-> Eventually Ployz will deploy Ployz Cloud for you, like any other app. That needs templates,
-> which deploy several services together in one step, and Ployz doesn't have them yet. Until
-> then, run Ployz Cloud with Docker Compose, as this page shows.
+Your apps still run on your servers either way. Self-hosting moves only the dashboard, which you
+run with Docker Compose.
 
 ## Should you self-host?
 
@@ -39,16 +35,15 @@ and GitHub releases.
 
 ## Choose where it runs
 
-Run Ployz Cloud on a server that **isn't** one of your Ployz servers. A Ployz server that takes
-web traffic needs ports 80 and 443 for your apps, and the TLS proxy in front of Ployz Cloud
-wants the same two ports. If both run on one server, the proxy wins: your domains show
+Ployz Cloud's TLS proxy and a Ployz server that takes web traffic both need ports 80 and 443.
+If both run on one server, the proxy wins: your domains show
 **Something else answers on port 80 of …** and visitors get an SSL handshake error.
 
 | Your setup | What to do |
 | --- | --- |
 | A separate server for Ployz Cloud | Put Caddy or nginx on it, as in step 3. |
 | One server for everything | Skip the proxy. Publish Ployz Cloud with a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) to `http://localhost:3000`, so ports 80 and 443 stay free for your apps. |
-| A server where only Ployz Cloud's proxy uses 80 and 443 | Turn off web traffic for that server: `ployz server set <name> --accepts-ingress=false`. Your apps then need another server for their domains. |
+| A server where only Ployz Cloud's proxy uses 80 and 443 | On the server's page, turn off **Takes web traffic** under **Web traffic** and confirm **Stop**. Your apps' domains then need another server. |
 
 You need:
 
@@ -88,6 +83,13 @@ Then generate a private key and a client secret on the app's page, and note its 
 **Client ID**, and its slug, the name in its URL `github.com/apps/<slug>`. Ployz Cloud uses the
 app's client ID and secret to ask GitHub which installations the person connecting owns.
 
+**One app for both.** You can skip the OAuth App and sign in with the GitHub App: set
+`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` to the GitHub App's client ID and secret. Then the
+GitHub App needs the account permission Email addresses: Read-only, so it can read private
+emails at sign-in, and both Callback URLs, with `https://cloud.example.com/api/github/callback` first
+and `https://cloud.example.com/api/auth/callback/github` second. GitHub sends a fresh
+installation back to the first Callback URL.
+
 ## 2. Configure
 
 1. Download the compose file and the example settings from the latest
@@ -98,6 +100,9 @@ app's client ID and secret to ask GitHub which installations the person connecti
    curl -fsSLo compose.yml https://github.com/getployz/ployz/releases/latest/download/ployz-cloud-compose.yml
    curl -fsSLo .env https://github.com/getployz/ployz/releases/latest/download/ployz-cloud.env.example
    ```
+
+   `releases/latest` is the newest stable release. To run a prerelease, like a beta, replace
+   `latest/download` with `download/<tag>`, for example `download/v0.3.0-beta.7`.
 
 2. Generate the secrets, one per line:
 
@@ -121,8 +126,10 @@ app's client ID and secret to ask GitHub which installations the person connecti
    | `PLOYZ_HOSTED_DNS_URL` | Optional. `compose.yml` sets `https://dns.ployz.app/` when it is unset |
 
    Leave every `POLAR_*` and `POSTHOG_*` variable unset: that turns off billing and product
-   analytics. If a required value is missing, `web` and `worker` stop with a `ConfigError`.
-   To turn on the [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`.
+   analytics. If a required value is missing or malformed, `web` and `worker` stop at startup,
+   and `docker compose logs web worker` names each variable to fix.
+   To turn on the [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`. To count
+   visits on an environment's [Analytics](observe/analytics.md) page, set `ANALYTICS_ENABLED=true`.
    Email is optional too. Ployz Cloud sends none while `POSTSHIBA_API_KEY`, `POSTSHIBA_TEAM_ID`,
    `POSTSHIBA_CLUSTER_ID`, and `MAIL_FROM` are unset. Set all four to send through
    PostShiba. With only some of them set, `web` and `worker` stop at startup. Each person
@@ -142,8 +149,8 @@ app's client ID and secret to ask GitHub which installations the person connecti
    docker compose up -d
    ```
 
-2. Point your proxy or tunnel at port 3000, or at `WEB_PORT` if you set it. With Caddy on a
-   separate server, the whole config is:
+2. Point your proxy or tunnel at port 3000, or at `WEB_PORT` if you set it. With Caddy on the
+   same server as Ployz Cloud, the whole config is:
 
    ```
    cloud.example.com {
@@ -151,14 +158,22 @@ app's client ID and secret to ask GitHub which installations the person connecti
    }
    ```
 
+   Ployz Cloud listens only on `127.0.0.1`, so other computers can't skip your proxy. If your
+   proxy or `cloudflared` runs in a Docker container on this server, attach it to the
+   `ployz-cloud-self-host_default` network and point it at `http://web:3000`. If your proxy
+   runs on another server, set `WEB_BIND` in `.env` to a private address of this
+   server that only the proxy can reach. Don't set it to `0.0.0.0`: ports that Docker publishes
+   skip firewalls like UFW, so anyone could reach Ployz Cloud over plain http, past your
+   proxy's TLS and rate limits.
+
 3. Run `docker compose ps`. Ployz Cloud is ready when `worker` shows **healthy**.
 
 ## 4. Sign in and add a server
 
 1. Open your address and sign in with GitHub.
-2. Open **Settings → GitHub** and click **Connect GitHub**. GitHub asks you to install the app
-   and to authorize it. The installation belongs to the organization you connect it to, not to
-   your GitHub account, so everyone in that organization can use its repositories.
+2. Open **Organization → GitHub** and click **Connect GitHub**. GitHub asks you to install the
+   app and to authorize it. See [Who owns the connection](deploy/github.md#who-owns-the-connection)
+   for which GitHub accounts you can connect.
 3. [Add a server](servers/add-a-server.md). You need one even if it's the server Ployz Cloud
    runs on: Ployz Cloud is only the dashboard, and your apps run on the servers you add. The
    command the dashboard gives you already points at your address.
@@ -186,13 +201,37 @@ In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 
 ## Upgrade
 
-Download the new release's compose file over `compose.yml`, then:
+Pick the release to move to on the [releases page](https://github.com/getployz/ployz/releases).
+If you run a beta, pick the newest release marked **Pre-release**. Don't use `releases/latest`
+here: it's the newest stable release, so it would move a beta back to an older release. An
+older Ployz Cloud on a newer database passes the migration and health check, then fails every
+request.
+
+Set `VERSION` to that release's tag, then run the rest. It refuses a tag older than the one
+you run now:
 
 ```sh
-curl -fsSLo compose.yml https://github.com/getployz/ployz/releases/latest/download/ployz-cloud-compose.yml
-docker compose pull
-docker compose run --rm web npm run db:migrate
-docker compose up -d
+VERSION=vX.Y.Z
+current=$(docker compose config --images | sed -n 's|^ghcr.io/getployz/ployz-cloud:||p' | head -n 1)
+verdict=$(awk -v from="$current" -v to="$VERSION" '
+  function key(tag, p, n) {
+    if (tag !~ /^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$/) return ""
+    n = split(substr(tag, 2), p, "[.-]")
+    return sprintf("%06d.%06d.%06d.%s.%06d", p[1], p[2], p[3], n > 3 ? "a" p[4] : "z", p[5])
+  }
+  BEGIN {
+    if (key(to) == "") print "Set VERSION to a release tag, like v1.2.3 or v1.2.3-beta.4."
+    else if (key(from) == "") print "Could not read the current release from compose.yml."
+    else if (key(to) < key(from)) print to " is older than " from ". Not downgrading."
+  }')
+if [ -n "$verdict" ]; then
+  echo "$verdict"
+else
+  curl -fsSLo compose.yml "https://github.com/getployz/ployz/releases/download/$VERSION/ployz-cloud-compose.yml" &&
+    docker compose pull &&
+    docker compose run --rm web npm run db:migrate &&
+    docker compose up -d
+fi
 ```
 
 Nothing migrates the database on start, so run the migration on every upgrade.
@@ -210,7 +249,8 @@ before it stops.
 - **Adding a GitHub permission later.** Existing installations keep working without it until
   their owner approves the new permissions on GitHub.
 - **No uptime checks yet.** Self-hosted Ployz Cloud doesn't run the uptime checker, so services
-  show no up or down status and have no Monitoring tab.
+  show no up or down status. Their **Monitoring** tab shows CPU and memory, with no uptime checks
+  or incidents.
 - **Behind Cloudflare?** Your apps' domains need **SSL/TLS** set to **Full (strict)**. See
   [My domain is behind Cloudflare](troubleshooting/app-not-reachable.md#my-domain-is-behind-cloudflare). Your
   apps see the visitor's address, not Cloudflare's.

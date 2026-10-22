@@ -3,6 +3,7 @@ import type { DrainReport, MachineRef, ServiceDrain } from "@ployz/sdk";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LatestDrain } from "#/modules/machines/server-drain";
+import type { RoleGate } from "#/modules/organization/members.queries";
 import { drainView, removeHint, type DrainDialogRow, type DrainRow, type DrainView } from "#/modules/machines/server-drain-view";
 import { DrainDialog } from "./drain-dialog";
 import { RemoveServerHint } from "./remove-server-section";
@@ -31,7 +32,7 @@ const view = (latest: LatestDrain | null, requested: string | null = null) => dr
   serverNames: new Map([[web1.id, web1.name], [web2.id, web2.name]]),
   requested,
 });
-const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boolean; lastToRunServices?: boolean; unavailable?: string | null; staged?: number }) => {
+const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boolean; lastToRunServices?: boolean; unavailable?: string | null; staged?: number; gate?: RoleGate }) => {
   const onDrain = vi.fn();
   const onAcceptsServices = vi.fn();
   render(
@@ -44,6 +45,7 @@ const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boo
       onDrain={onDrain}
       unavailable={input.unavailable ?? null}
       staged={input.staged ?? 0}
+      gate={input.gate ?? { allowed: true, reason: undefined }}
     />,
   );
   return { onDrain, onAcceptsServices };
@@ -69,6 +71,16 @@ describe("Services section", () => {
     expect(onDrain).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("switch"));
     expect(onAcceptsServices).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps Drain and the switch closed to a role that may not operate Servers, and says why", () => {
+    const { onDrain, onAcceptsServices } = rows({ view: view(null), gate: { allowed: false, reason: "Only an owner or admin can change how a server runs." } });
+    const drain = screen.getByRole("button", { name: "Drain" });
+    const toggle = screen.getByRole("switch");
+    fireEvent.click(drain);
+    fireEvent.click(toggle);
+    expect([onDrain.mock.calls.length, onAcceptsServices.mock.calls.length]).toEqual([0, 0]);
+    expect([drain.title, toggle.title]).toEqual(["Only an owner or admin can change how a server runs.", "Only an owner or admin can change how a server runs."]);
   });
 
   it("counts the volumes that move off with the next Deploy, and says nothing when none are", () => {
@@ -98,6 +110,17 @@ describe("Services section", () => {
     expect(screen.getByText("Starting…")).toBeTruthy();
     expect((screen.getByRole("button", { name: /Draining…/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("switch").getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("says a queued Drain waits behind another, and one whose servers don't answer waits for them", () => {
+    rows({ view: { kind: "queued", behind: "web-1" } });
+    expect(screen.getByText("Queued · Waiting on web-1")).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Draining…/ }) as HTMLButtonElement).disabled).toBe(true);
+    cleanup();
+    rows({ view: { kind: "waiting" } });
+    expect(screen.getByText("Waiting for your servers to answer")).toBeTruthy();
+    expect(screen.queryByText(/Queued/)).toBeNull();
+    expect((screen.getByRole("button", { name: /Draining…/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("lists what a running Drain still has to move, and counts it", () => {

@@ -36,12 +36,16 @@ field, so watch the next build after you change it.
 - **The limits are per build.** With **Builds at once** set to 2, builds on the server can use
   twice as much.
 - **Cache sizes are targets.** A big build can briefly go over them.
+- **Without `cache_bytes` or `min_free_bytes`**, Ployz keeps a fifth of the server's Docker disk
+  free.
 
 ## Give builds more time
 
 A build on your servers fails after 30 minutes. To allow more, up to 86400 seconds (a day),
 add a line to `/etc/default/ployz` on the server, then restart Ployz. Above 86400, Ployz won't
-start. Restarting drops any builds waiting on the server, so do it when it isn't building:
+start. To fail a build that waits too long for a free slot, also add
+`PLOYZ_BUILD_QUEUE_TIMEOUT_SECONDS`, with the same limit. Without it, a build waits as long as
+it takes. Restarting drops any builds waiting on the server, so do it when it isn't building:
 
 ```sh
 # Builds may run for 1 hour (3600 seconds)
@@ -60,6 +64,6 @@ ployz server build-cache-clear
 
 It keeps your images and everything else in Docker.
 
-Ployz cleans up old images it built, but never images it pulled for
+After each deploy, Ployz cleans up old images it built, but never images it pulled for
 [Docker image services](../deploy/docker-image.md). Remove those with `docker image prune`
 when you need the space.

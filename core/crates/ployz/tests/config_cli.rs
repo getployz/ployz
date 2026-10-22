@@ -171,6 +171,7 @@ fn dispatch(store: &std::sync::Arc<ConfigStore>, written: &Written) {
         let unreachable = ployz::context::Connection::tcp("127.0.0.1:1".parse().unwrap());
         // Its Deployment ends not executed, or was replaced before it started.
         let _ = runtime.block_on(ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             store,
             id,
             RunnerId::parse("cloud-worker").unwrap(),
@@ -332,7 +333,7 @@ fn serve(
 
 /// What this Cloud's Servers answer when Cloud reads them: `web-1` has one log line
 /// for runtime Service `web` and nothing for any other, `web-2` does not answer for
-/// `worker`, and no Server has a metric reading.
+/// `worker` or for containers, and no Server has a metric reading.
 fn servers_read(body: &[u8]) -> Value {
     let ask: Value = serde_json::from_slice(body).unwrap();
     let seen = json!({ "read_at": 0, "from": "server", "unanswered": [] });
@@ -352,9 +353,19 @@ fn servers_read(body: &[u8]) -> Value {
             };
             json!({ "servers": servers, "seen": seen, "notes": [] })
         }
+        Some("metrics") if ask["ask"]["subject"]["service"] == "worker" => json!({
+            "since": 0, "until": 0, "metrics": [], "oom_kills": 0, "exits": 0, "restarts": 0,
+            "events": [], "notes": ["web-2 did not answer: timed out"],
+            "seen": { "read_at": 0, "from": "server", "unanswered": ["web-2"] },
+        }),
         Some("metrics") => json!({
             "since": 0, "until": 0, "metrics": [], "oom_kills": 0, "exits": 0, "restarts": 0,
             "events": [], "notes": [], "seen": seen,
+        }),
+        Some("containers") => json!({
+            "containers": [],
+            "servers": ["web-1", "web-2"],
+            "seen": { "read_at": 0, "from": "server", "unanswered": ["web-2"] },
         }),
         other => panic!("this Cloud reads no {other:?}"),
     }
@@ -402,6 +413,7 @@ struct Approvals {
     asking: std::sync::Mutex<usize>,
     calls: std::sync::Mutex<Vec<(String, String, Value)>>,
     runs: std::sync::Mutex<Vec<String>>,
+    bodies: std::sync::Mutex<Vec<Value>>,
 }
 
 impl Approvals {
@@ -468,6 +480,10 @@ impl Approvals {
         self.runs.lock().unwrap().clone()
     }
 
+    fn bodies(&self) -> Vec<Value> {
+        self.bodies.lock().unwrap().clone()
+    }
+
     fn run(&self, method: &str, route: &str, body: &[u8], approval: Option<&str>) -> (u16, Value) {
         let carried = approval
             .map(|id| format!(" approved by {id}"))
@@ -477,6 +493,7 @@ impl Approvals {
             .unwrap()
             .push(format!("{method} {route}{carried}"));
         let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        self.bodies.lock().unwrap().push(body.clone());
         let segments: Vec<&str> = route.split('/').collect();
         match (method, segments.as_slice()) {
             ("POST", ["servers", BUSY_SERVER, "drain"]) => (202, json!({ "id": "drn_running" })),
@@ -1286,6 +1303,299 @@ fn a_new_services_diff_and_plan_say_the_image_it_runs() {
         let shown = human(args);
         assert!(shown.starts_with(change), "{args:?}: {shown}");
     }
+}
+
+/// A Store with Service `web` staged, and a home whose context's one Server,
+/// `machine-1`, refuses every connection.
+fn no_server_answering() -> (Target, tempfile::TempDir) {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(
+        &store,
+        &["service", "add", "web", "--image", "nginx:alpine"],
+    );
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.yaml"),
+        "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: 127.0.0.1:1\n        machine_id: 0123456789abcdef0123456789abcdef\n        name: machine-1\n",
+    )
+    .unwrap();
+    (store, home)
+}
+
+/// Run `ployz ARGS` from `home`; returns (stdout, stderr).
+fn run_in(store: &Target, home: &tempfile::TempDir, args: &[&str]) -> (String, String) {
+    let output = store.command(home.path()).args(args).output().unwrap();
+    assert!(output.status.success(), "{args:?}: {output:?}");
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn status_names_the_server_that_isnt_answering() {
+    let (store, home) = no_server_answering();
+    let (status, _) = run_in(&store, &home, &["--json", "status"]);
+    let status: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(
+        status["attention"][0],
+        json!({
+            "reason": "no_server_answers",
+            "message": "Server machine-1 isn't answering. Check that its Ployz daemon is running.",
+            "servers": ["machine-1"],
+        }),
+        "{status}"
+    );
+    let (shown, _) = run_in(&store, &home, &["status"]);
+    assert!(
+        shown.contains("needs attention = Server machine-1 isn't answering."),
+        "{shown}"
+    );
+
+    // With no Server to ask, status has nothing to say about Servers.
+    let unasked = ok(&store, &["status"]);
+    assert_eq!(unasked["attention"], json!([]), "{unasked}");
+}
+
+#[test]
+fn status_leaves_a_local_socket_to_this_servers_row() {
+    let (store, home) = no_server_answering();
+    let socket = home.path().join("missing.sock");
+    std::fs::write(
+        home.path().join("config.yaml"),
+        format!(
+            "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - unix: {}\n        machine_id: 0123456789abcdef0123456789abcdef\n        name: machine-1\n",
+            socket.display()
+        ),
+    )
+    .unwrap();
+    let (status, _) = run_in(&store, &home, &["--json", "status"]);
+    let status: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["attention"], json!([]), "{status}");
+
+    let connect = format!("unix://{}", socket.display());
+    let (status, _) = run_in(&store, &home, &["--json", "status", "--connect", &connect]);
+    let status: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["attention"], json!([]), "{status}");
+}
+
+#[test]
+fn status_leaves_a_local_socket_cloud_hands_out_alone() {
+    let (store, home) = no_server_answering();
+    std::fs::remove_file(home.path().join("config.yaml")).unwrap();
+    let socket = home.path().join("missing.sock");
+    let access = json!({
+        "connections": [{ "machine_id": "0123456789abcdef0123456789abcdef", "unix": socket }],
+        "unreachable": [],
+        "names": { "0123456789abcdef0123456789abcdef": "machine-1" },
+    });
+    let (cloud, _) = server_access(access, std::time::Duration::ZERO);
+    let output = store
+        .command(home.path())
+        .env("PLOYZ_TOKEN", "ployz_alice")
+        .env("PLOYZ_CLOUD_URL", &cloud)
+        .args(["--json", "status"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["attention"], json!([]), "{status}");
+}
+
+/// A Cloud that answers every `/api/cli/server-access` with `access` after `delay`, as
+/// one setting up a holder on each Server first does, and counts the asks.
+fn server_access(
+    access: Value,
+    delay: std::time::Duration,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let access = access.to_string();
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let cloud = format!("http://{}", listener.local_addr().unwrap());
+    let counted = asked.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line.starts_with("POST /api/cli/server-access ") {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            while reader.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            std::thread::sleep(delay);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{access}",
+                access.len()
+            )
+            .unwrap();
+        }
+    });
+    (cloud, asked)
+}
+
+#[test]
+fn status_asks_cloud_for_server_access_once() {
+    let access = json!({ "connections": [{ "tcp": engine() }], "unreachable": [] });
+    // A returning credential, then a first use that waits on Cloud's holder setup.
+    for delay in [0, 7].map(std::time::Duration::from_secs) {
+        let (store, home) = no_server_answering();
+        std::fs::remove_file(home.path().join("config.yaml")).unwrap();
+        let (cloud, asked) = server_access(access.clone(), delay);
+        let output = store
+            .command(home.path())
+            .env("PLOYZ_TOKEN", "ployz_alice")
+            .env("PLOYZ_CLOUD_URL", &cloud)
+            .args(["--json", "status"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{delay:?}: {output:?}");
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{delay:?}: {output:?}"
+        );
+    }
+}
+
+#[test]
+fn status_tries_each_silent_server_once_within_its_bound() {
+    let (store, home) = no_server_answering();
+    // Each accepts and holds the connection, never answering.
+    let silent = || {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = accepted.clone();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                held.push(stream.unwrap());
+            }
+        });
+        (address, accepted)
+    };
+    let (one, two) = (silent(), silent());
+    std::fs::write(
+        home.path().join("config.yaml"),
+        format!(
+            "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: {}\n        machine_id: 0123456789abcdef0123456789abcdef\n        name: machine-1\n      - tcp: {}\n        machine_id: 1123456789abcdef0123456789abcdef\n        name: machine-2\n",
+            one.0, two.0
+        ),
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let (status, _) = run_in(&store, &home, &["--json", "status"]);
+    let elapsed = started.elapsed();
+    let status: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(
+        status["attention"],
+        json!([{
+            "reason": "no_server_answers",
+            "message": "No Server is answering. Check that the Ployz daemon is running on your Servers.",
+            "servers": [],
+        }]),
+        "{status}"
+    );
+    // Each silent Server's 5s connect confirm, and slack for the process.
+    assert!(elapsed < std::time::Duration::from_secs(12), "{elapsed:?}");
+    for (address, accepted) in [one, two] {
+        let accepted = accepted.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(accepted, 1, "{address}: {accepted} connections");
+    }
+}
+
+#[test]
+fn status_keeps_a_down_server_past_a_slow_first_use_and_routes_read() {
+    let (store, home) = no_server_answering();
+    std::fs::remove_file(home.path().join("config.yaml")).unwrap();
+    // web-2 is Down, and web-1 serves one In copy of web, so status reads its routes.
+    let (sent, engine) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut service = engine::DiscoveryService::new(engine::test_description());
+            let mut down = engine::machine('c', "web-2");
+            down.membership = ployz_core::MembershipObservation::Down;
+            service.machines = vec![engine::machine('a', "web-1"), down];
+            service.routes_delay = std::time::Duration::from_secs(9);
+            let copy =
+                ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                    rotation: Some(ployz_core::CopyRotation::In),
+                    r#gen: None,
+                    container_id: ployz_core::ContainerId::parse("1".repeat(64)).unwrap(),
+                    display_name: "web-1".into(),
+                    created_at_unix_nanos: 1,
+                    machine_id: engine::machine_id('a'),
+                    namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
+                    kind: ployz_core::ContainerKind::ServiceContainer,
+                    runtime: ployz_core::ContainerRuntimeObservation::Running {
+                        health: ployz_core::HealthObservation::Healthy,
+                    },
+                    effective_healthcheck: None,
+                    resolved_spec: serde_json::from_value(json!({
+                        "service_id": "b".repeat(32),
+                        "name": "web",
+                        "mode": { "mode": "replicated", "replicas": 1 },
+                        "container": { "image": "nginx:alpine", "pull_policy": "missing" }
+                    }))
+                    .unwrap(),
+                    address: Some(ployz_core::ContainerAddress("10.210.10.2".parse().unwrap())),
+                    labels: Default::default(),
+                    stopped: false,
+                })
+                .unwrap();
+            service.listed_containers.lock().unwrap().push(copy);
+            let (address, server) = engine::serve_discovery(service).await;
+            sent.send(address).unwrap();
+            server.await
+        })
+    });
+    let access = json!({ "connections": [{ "tcp": engine.recv().unwrap() }], "unreachable": [] });
+    // A first use that waits on Cloud's holder setup; together over 15s, each stage
+    // inside its own timeout.
+    let (cloud, asked) = server_access(access, std::time::Duration::from_secs(7));
+    let output = store
+        .command(home.path())
+        .env("PLOYZ_TOKEN", "ployz_alice")
+        .env("PLOYZ_CLOUD_URL", &cloud)
+        .args(["--json", "status"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        status["attention"],
+        json!([{
+            "reason": "machine_down",
+            "message": "Down. Its copies serve again once it's back.",
+            "machine": "web-2",
+        }]),
+        "{status}"
+    );
+    assert_eq!(status.get("warnings"), None, "{status}");
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_plan_warns_the_deploy_cant_run_while_no_server_answers() {
+    let (store, home) = no_server_answering();
+    let warning = "Server machine-1 isn't answering, so this deploy can't run until it does. \
+                   Check that its Ployz daemon is running.";
+    let (planned, _) = run_in(&store, &home, &["--json", "deploy", "--plan"]);
+    let planned: Value = serde_json::from_str(&planned).unwrap();
+    assert_eq!(planned["warnings"], json!([warning]), "{planned}");
+    let (_, said) = run_in(&store, &home, &["deploy", "--plan"]);
+    assert!(said.starts_with(&format!("! {warning}\n")), "{said}");
+
+    // With no Server to ask, the plan has nothing to warn of.
+    let unasked = ok(&store, &["deploy", "--plan"]);
+    assert_eq!(unasked.get("warnings"), None, "{unasked}");
 }
 
 #[test]
@@ -2579,10 +2889,89 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
             json!("not_found")
         );
 
-        // Nothing deployed loses data, so there is nothing to accept, and --yes is no bypass.
+        // Nothing deployed loses data, so there is nothing to accept. --yes answers only
+        // --prune's ask, so the deploy runs and fails for want of a Server.
         let accept = error(store, &["deploy", "--accept-volume-loss", "data"]);
         assert_eq!(accept["code"], json!("invalid_argument"));
-        failed(store, &["deploy", "--yes"], 2);
+        let (code, deployed) = ployz(Some(store), &["deploy", "--yes"]);
+        assert_eq!(code, Some(1), "{deployed}");
+        assert_eq!(deployed["status"], json!("failed"));
+    }
+}
+
+#[test]
+fn deploy_prune_asks_before_removing_what_the_store_does_not_hold() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        // Under --json nothing can ask, so --prune refuses until --yes answers for it.
+        let asked = error(store, &["deploy", "--prune"]);
+        assert_eq!(asked["code"], json!("confirmation_required"), "{asked}");
+        assert_eq!(
+            asked["details"]["retry"],
+            json!("ployz --json deploy --prune --yes"),
+            "{asked}"
+        );
+        assert!(
+            asked["message"]
+                .as_str()
+                .unwrap()
+                .contains("Nothing deployed"),
+            "{asked}"
+        );
+        assert_eq!(ok(store, &["deployment", "ls"])["deployments"], json!([]));
+
+        let deployed = no_server_answers(store, &["deploy", "--prune", "--yes"]);
+        assert_eq!(deployed["prune"], json!(true), "{deployed}");
+        let id = deployed["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            ok(store, &["deployment", "show", &id])["prune"],
+            json!(true)
+        );
+
+        // Without --prune the Deployment keeps what this Store never held, and says so.
+        let kept = no_server_answers(store, &["deploy"]);
+        assert!(kept.get("prune").is_none(), "{kept}");
+    }
+}
+
+#[test]
+fn auto_confirm_in_the_environment_answers_for_deploy() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        let deploy = |auto_confirm: &str, args: &[&str]| -> (Option<i32>, Value) {
+            let home = tempfile::tempdir().unwrap();
+            let output = store
+                .command(home.path())
+                .env("PLOYZ_AUTO_CONFIRM", auto_confirm)
+                .arg("--json")
+                .args(args)
+                .args(UNREACHABLE_SERVER)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let json = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+                panic!("stdout is not one JSON object ({error}): {stdout:?}")
+            });
+            (output.status.code(), json)
+        };
+        // `1` answers yes, as it does for every other --yes.
+        let (code, pruned) = deploy("1", &["deploy", "--prune"]);
+        assert_eq!(code, Some(1), "{pruned}");
+        assert_eq!(pruned["prune"], json!(true), "{pruned}");
+        // A deploy that never asks doesn't mind the answer's spelling.
+        let (code, deployed) = deploy("1", &["deploy"]);
+        assert_eq!(code, Some(1), "{deployed}");
+        assert!(deployed.get("error").is_none(), "{deployed}");
+        // `0` answers no.
+        let (code, asked) = deploy("0", &["deploy", "--prune"]);
+        assert_eq!(code, Some(2), "{asked}");
+        assert_eq!(
+            asked["error"]["code"],
+            json!("confirmation_required"),
+            "{asked}"
+        );
     }
 }
 
@@ -3095,6 +3484,16 @@ fn the_catalog_describes_settings_without_a_store() {
             .unwrap()
             .iter()
             .any(|arg| arg.get("name") == Some(&json!("--patch")))
+    );
+    let project_rm = commands
+        .iter()
+        .find(|entry| entry.get("command") == Some(&json!("project rm")))
+        .unwrap();
+    assert!(
+        project_rm["args"].as_array().unwrap().iter().any(
+            |arg| arg["name"] == json!("NAME") && arg["help"] == json!("The Project to remove")
+        ),
+        "{project_rm}"
     );
     let completion = commands
         .iter()
@@ -3687,7 +4086,7 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
         );
     }
     ok(&linus, &["metrics", "web"]);
-    // Nothing printed, but why a Server did not answer for `worker` still shows.
+    // web-2 did not answer for `worker` and may hold its lines, so that outranks the refusal.
     let home = tempfile::tempdir().unwrap();
     let output = linus
         .command(home.path())
@@ -3701,9 +4100,10 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
             String::from_utf8(output.stderr).unwrap()
         ),
         (
-            Some(1),
+            Some(3),
             String::new(),
-            "web-2 did not answer: timed out\nerror: No Service named nosvc in Environment production\nvalid: web, worker\n".to_owned()
+            "web-2 did not answer: timed out\n! web-2 did not answer; its rows are missing.\n"
+                .to_owned()
         )
     );
     // Lines for `web` already printed, so the refusal for `nosvc` comes after them.
@@ -3726,6 +4126,34 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
                 .to_owned()
         )
     );
+}
+
+#[test]
+fn reading_through_cloud_exits_3_when_a_server_did_not_answer() {
+    let linus = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_linus",
+    };
+    ok(&linus, &["project", "new", "shop"]);
+    ok(&linus, &["service", "add", "worker", "--image", "nginx:1"]);
+    for (args, note) in [
+        (&["logs", "worker"][..], "web-2 did not answer: timed out\n"),
+        (&["metrics", "worker"], "web-2 did not answer: timed out\n"),
+        (&["ps"], ""),
+    ] {
+        let (code, json) = ployz(Some(&linus), args);
+        assert_eq!(code, Some(3), "{args:?}: {json}");
+        let home = tempfile::tempdir().unwrap();
+        let output = linus.command(home.path()).args(args).output().unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(3), "{args:?}: {stderr}");
+        assert!(
+            stderr.ends_with(&format!(
+                "{note}! web-2 did not answer; its rows are missing.\n"
+            )),
+            "{args:?}: {stderr}"
+        );
+    }
 }
 
 /// Run `ployz --json ARGS` in `dir` with a lasting `home`, where directory links live.
@@ -3857,6 +4285,113 @@ fn up_ships_a_directory_without_git() {
         assert_eq!(
             taken["error"]["details"]["next"],
             json!("ployz up --project my-shop")
+        );
+    }
+}
+
+/// `ployz up --project` into a Project whose Services all pull images adds the
+/// directory's uploaded Service and builds it, as in a new Project (#2863). A name
+/// already taken by one of those Services is refused, adding nothing.
+#[test]
+fn up_into_an_existing_project_adds_the_directory_s_service() {
+    let args = [&["up", "--project", "shop"][..], &UNREACHABLE_SERVER].concat();
+    for store in &targets() {
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().canonicalize().unwrap().join("web");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
+        in_dir(store, home.path(), &dir, &["project", "new", "shop"], &[]);
+        in_dir(
+            store,
+            home.path(),
+            &dir,
+            &[
+                "service",
+                "add",
+                "db",
+                "--project",
+                "shop",
+                "--image",
+                "postgres:16-alpine",
+            ],
+            &[],
+        );
+
+        let (code, up) = in_dir(store, home.path(), &dir, &args, &[]);
+        assert_eq!(code, Some(1), "{up}");
+        let (_, services) = in_dir(
+            store,
+            home.path(),
+            &dir,
+            &["service", "ls", "--project", "shop"],
+            &[],
+        );
+        let names: Vec<_> = services["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|service| service["name"].clone())
+            .collect();
+        assert_eq!(names, [json!("db"), json!("web")], "{services}");
+        let (_, method) = in_dir(
+            store,
+            home.path(),
+            &dir,
+            &["get", "web.buildMethod", "--project", "shop"],
+            &[],
+        );
+        assert_eq!(
+            method["settings"][0]["value"],
+            json!("dockerfile"),
+            "{method}"
+        );
+
+        let taken = root.path().canonicalize().unwrap().join("db");
+        std::fs::create_dir(&taken).unwrap();
+        std::fs::write(taken.join("Dockerfile"), "FROM scratch\n").unwrap();
+        let fresh = tempfile::tempdir().unwrap();
+        in_dir(
+            store,
+            fresh.path(),
+            &taken,
+            &["project", "new", "other"],
+            &[],
+        );
+        in_dir(
+            store,
+            fresh.path(),
+            &taken,
+            &[
+                "service",
+                "add",
+                "db",
+                "--project",
+                "other",
+                "--image",
+                "postgres:16-alpine",
+            ],
+            &[],
+        );
+        let (code, refused) = in_dir(
+            store,
+            fresh.path(),
+            &taken,
+            &[&["up", "--project", "other"][..], &UNREACHABLE_SERVER].concat(),
+            &[],
+        );
+        assert_eq!(code, Some(2), "{refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("Nothing would build this directory")),
+            "{refused}"
+        );
+        let (_, status) = in_dir(store, fresh.path(), &taken, &["status"], &[]);
+        assert_ne!(
+            status.pointer("/environment/project"),
+            Some(&json!("other")),
+            "a refused up leaves the directory unlinked: {status}"
         );
     }
 }
@@ -4695,6 +5230,7 @@ fn applied(store: &Target, environment: &str) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             });
             local
                 .write_trusted(&who, &deploy, &Trusted::default())
@@ -5738,6 +6274,7 @@ fn signed_in_a_drain_runs_in_cloud() {
             "GET server-drains/drn_1".to_owned(),
         ]
     );
+    assert_eq!(approvals.bodies()[0], json!({ "server_name": "web-1" }));
 }
 
 #[test]
@@ -5757,6 +6294,10 @@ fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
             format!("POST servers/{CLOUD_SERVER}/upgrade"),
             "GET server-upgrades/upg_1".to_owned(),
         ]
+    );
+    assert_eq!(
+        approvals.bodies()[0],
+        json!({ "channel": "stable", "server_name": "web-1" })
     );
 
     let mismatch = error(&target, &["server", "upgrade", "beta", CLOUD_SERVER]);

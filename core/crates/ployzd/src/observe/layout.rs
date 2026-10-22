@@ -6,6 +6,9 @@
 //!     containers/
 //!       <cid>/                          one per container Ployz ran
 //!         meta.json                     ContainerMeta
+//!         env.json                      RetainedEnv, the env the first
+//!                                       inspect saw, kept to scrub the
+//!                                       lines after Docker forgets it
 //!         gaps.jsonl                    one Gap per line
 //!         exits.jsonl                   one RunExit per line, each run's
 //!                                       exit the harvester saw
@@ -52,6 +55,7 @@
 //! of Docker's files the store already holds.
 
 use std::{
+    collections::BTreeMap,
     fmt, fs, io,
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
@@ -65,6 +69,8 @@ pub const VERSION_DIR: &str = "v1";
 pub const CONTAINERS_DIR: &str = "containers";
 pub const META_FILE: &str = "meta.json";
 pub const META_TEMP_FILE: &str = "meta.tmp";
+pub const ENV_FILE: &str = "env.json";
+pub const ENV_TEMP_FILE: &str = "env.tmp";
 pub const GAPS_FILE: &str = "gaps.jsonl";
 pub const EXITS_FILE: &str = "exits.jsonl";
 pub const EXITS_TEMP_FILE: &str = "exits.tmp";
@@ -326,6 +332,52 @@ pub struct ContainerMeta {
     pub finished_at: Option<String>,
     pub exit_code: Option<i64>,
     pub oom_killed: bool,
+}
+
+/// The env a Container ran with, kept in `env.json` so its lines can still be
+/// scrubbed once Docker no longer answers an inspect for it. Built from one
+/// inspect's `Config.Env`; what of it is kept is decided here alone.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RetainedEnv {
+    values: BTreeMap<String, String>,
+}
+
+impl RetainedEnv {
+    /// `None` when an entry is not `KEY=value`, as the inspect itself reports it.
+    #[must_use]
+    pub fn from_inspected(entries: &[String]) -> Option<Self> {
+        crate::docker::parse_environment(entries).map(|values| Self { values })
+    }
+
+    #[must_use]
+    pub fn into_values(self) -> BTreeMap<String, String> {
+        self.values
+    }
+
+    /// The env kept in `dir`, or `None` when no inspect wrote one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error reading or decoding the file.
+    pub fn read(dir: &Path) -> io::Result<Option<Self>> {
+        match fs::read(dir.join(ENV_FILE)) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(io::Error::other),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Writes the env into `dir`, readable by the daemon alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error writing or renaming the file.
+    pub fn write(&self, dir: &Path) -> io::Result<()> {
+        let json = serde_json::to_vec(self).map_err(io::Error::other)?;
+        crate::filesystem::atomic_write(&dir.join(ENV_FILE), &json, 0o600)
+    }
 }
 
 /// Why a span of a container's output is missing from the store.

@@ -7,31 +7,34 @@ use std::path::{Path, PathBuf};
 /// Pages about writing the docs, not about Ployz.
 const SKIPPED: [&str; 2] = ["README.md", "STYLE.md"];
 
+/// The docs, from this crate. Cargo is told what to watch by this relative
+/// path, not the absolute one, so the build script's inputs read the same in
+/// every worktree and the compiler cache can share this crate between them.
+const DOCS: &str = "../../../docs/user";
+
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it"));
-    let root = manifest.join("../../../docs/user");
+    let root = manifest.join(DOCS);
     let root = root.canonicalize().unwrap_or_else(|error| {
         panic!(
             "the docs tool embeds {}, which this build cannot read ({error}); copy docs/user into the build context",
             root.display()
         )
     });
-    println!("cargo:rerun-if-changed={}", root.display());
+    println!("cargo:rerun-if-changed={DOCS}");
     let mut pages = Vec::new();
     walk(&root, &root, &mut pages);
 
     let mut table = String::from("pub(crate) static PAGES: &[(&str, &str)] = &[\n");
     let mut folders = std::collections::BTreeMap::<&str, Vec<&str>>::new();
     for (path, file) in &pages {
-        println!("cargo:rerun-if-changed={}", file.display());
+        println!("cargo:rerun-if-changed={DOCS}/{path}");
         let source = std::fs::read_to_string(file).expect("a docs page is UTF-8");
         assert!(title(&source).is_some(), "{path} has no front matter title");
-        writeln!(
-            table,
-            "    ({path:?}, include_str!({:?})),",
-            file.display().to_string()
-        )
-        .expect("writing to a String");
+        // The text itself rather than `include_str!` of its absolute path, which
+        // would put the checkout's location in the source and give every
+        // worktree a different compiler-cache key for this crate.
+        writeln!(table, "    ({path:?}, {source:?}),").expect("writing to a String");
         let page = path.strip_suffix(".md").expect("walk keeps .md files");
         let (folder, name) = page.rsplit_once('/').unwrap_or(("", page));
         folders.entry(folder).or_default().push(name);
@@ -63,22 +66,26 @@ fn walk(dir: &Path, root: &Path, pages: &mut Vec<(String, PathBuf)>) {
     entries.sort();
     for file in entries {
         if file.is_dir() {
-            println!("cargo:rerun-if-changed={}", file.display());
+            println!("cargo:rerun-if-changed={DOCS}/{}", relative(&file, root));
             walk(&file, root, pages);
             continue;
         }
         if file.extension().is_none_or(|extension| extension != "md") {
             continue;
         }
-        let path = file
-            .strip_prefix(root)
-            .expect("walked from root")
-            .to_string_lossy()
-            .replace('\\', "/");
+        let path = relative(&file, root);
         if !SKIPPED.contains(&path.as_str()) {
             pages.push((path, file));
         }
     }
+}
+
+/// `file`'s path from `root`, with `/` separators.
+fn relative(file: &Path, root: &Path) -> String {
+    file.strip_prefix(root)
+        .expect("walked from root")
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// The `title:` in a page's front matter.

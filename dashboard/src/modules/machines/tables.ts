@@ -37,6 +37,8 @@ export const machineRemoveAttempt = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
+    /** The name the run's caller showed for the Server, kept after a rename or removal; null when it showed none, and on older rows. */
+    serverName: text("server_name").$type<MachineName>(),
     /** Take the Server out of the Cluster without resetting it (`ployz server rm --no-reset`). */
     noReset: boolean("no_reset").default(false).notNull(),
     approvalId: uuid("approval_id"),
@@ -156,6 +158,8 @@ export const serverDrainAttempt = pgTable(
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
+    /** The name the run's caller showed for the Server, kept after a rename or removal; null when it showed none, and on older rows. */
+    serverName: text("server_name").$type<MachineName>(),
     /** Who clicked Drain; kept when the user is deleted. */
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
     state: text("state").default("pending").notNull().$type<DrainState>(),
@@ -173,6 +177,8 @@ export const serverDrainAttempt = pgTable(
     approvalId: uuid("approval_id"),
     /** The digest of the plan its gate admitted: it runs only while it would destroy exactly that, or nothing. */
     planDigest: text("plan_digest"),
+    /** A try found the servers silent, so the pending row waits for them rather than for another Drain. */
+    serversSilent: boolean("servers_silent").default(false).notNull(),
     requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
     startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
     endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
@@ -388,7 +394,10 @@ export const organizationMachine = pgTable(
 
 /**
  * Server Access: one Server's `cli-<id>` Management Client held for one signed-in device or Organization Token.
- * A revoked row keeps no capability and stays until its Server confirms the Clear.
+ * A row without a capability is a claim while its Set is in flight, so one credential Sets one Server once at a
+ * time. A revoked row keeps no capability and stays until its Server confirms the Clear. `claim` names the request
+ * whose Set or Clear is in flight on the slot, so no two act on it at once and a late one touches nothing; a row
+ * with no claim is open to the next one.
  */
 export const serverAccess = pgTable(
   "server_access",
@@ -400,6 +409,7 @@ export const serverAccess = pgTable(
     credentialKind: text("credential_kind").notNull().$type<"session" | "token">(),
     userId: uuid("user_id").notNull(),
     encryptedCapability: jsonb("encrypted_capability").$type<EncryptedSecretValue>(),
+    claim: text("claim"),
     revokedAt: timestamp("revoked_at", { mode: "date", withTimezone: true }),
     createdAt,
     updatedAt,
@@ -415,7 +425,7 @@ export const serverAccess = pgTable(
     index("server_access_credential_idx").on(table.credentialId),
     check("server_access_credential_kind_check", sql`${table.credentialKind} in ('session', 'token')`),
     check("server_access_revoked_shape_check",
-      sql`(${table.revokedAt} is null) = (${table.encryptedCapability} is not null)`),
+      sql`${table.revokedAt} is null or ${table.encryptedCapability} is null`),
   ],
 );
 

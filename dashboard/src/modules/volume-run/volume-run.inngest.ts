@@ -97,8 +97,7 @@ export async function runVolume(
   if (run.kind === "release" && run.args.plan?.forward !== undefined) {
     return fail(steps, "01-changed", releaseChangedMessage(run.volumeName));
   }
-  const observed: Member[] = await step.run("01-observe", () => runEffect(observeMembers(run, runId)));
-  const members = run.kind === "release" ? await floor(steps, observed) : observed;
+  const members = run.kind === "release" ? await observeRelease(steps) : await step.run("01-observe", () => runEffect(observeMembers(run, runId)));
   if (run.kind === "deploy") throw new NonRetriableError(`run ${run.id} is a Deploy's lane, not a volume run`);
   const plan = planFromCopies(run, members);
   if (!plan.ok) {
@@ -132,10 +131,29 @@ export async function runVolume(
 }
 
 /**
+ * A release plans only once every Server answered, since a silent one may hold a copy it would have to forget. A
+ * partition that stopped the Move often still holds when its release starts, so it waits as a forward release does,
+ * flooring each answer, and plans what it last saw once the waits run out.
+ */
+async function observeRelease(steps: RunSteps): Promise<Member[]> {
+  const { step, runEffect, run, runId } = steps;
+  for (let check = 0; ; check += 1) {
+    const observed: Member[] = await step.run(check === 0 ? "01-observe" : `01-observe-${check}`, () => runEffect(observeMembers(run, runId)));
+    const members = await floor(steps, observed, check);
+    const silent = members.filter((member) => !member.answered);
+    const wait = FORWARD_WAITS[check];
+    if (silent.length === 0 || silent.some((member) => member.lack !== undefined) || wait === undefined) return members;
+    const servers = silent.map((member) => member.machine.name).join(" and ");
+    await step.run(`01-note-${check}`, () => runEffect(noteRun(run, runId, `waiting for ${servers} to answer (check ${check + 1} of ${FORWARD_WAITS.length})`)));
+    await step.sleep(`01-wait-${check}`, `${wait}s`);
+  }
+}
+
+/**
  * A release raises every copy's floor to its own gen before it plans, so the run it took over can switch nothing more.
  * Each reply is the copy as it settled: a cut caught before its flip is still the root, one past it is the slot.
  */
-async function floor({ step, runEffect, run, runId }: RunSteps, members: readonly Member[]): Promise<Member[]> {
+async function floor({ step, runEffect, run, runId }: RunSteps, members: readonly Member[], check: number): Promise<Member[]> {
   const floored: Member[] = [];
   for (const member of members) {
     // An empty Machine with the floor is floored too, so the taken run's late Mirror cannot make a copy there. One
@@ -145,7 +163,7 @@ async function floor({ step, runEffect, run, runId }: RunSteps, members: readonl
       floored.push(member);
       continue;
     }
-    const answer = await step.run(`01-floor-${member.machine.name}`, () => runEffect(setVolumeCopy(run, runId, member.machine, expectOf(member.view.copy), { kind: "floor" })));
+    const answer = await step.run(check === 0 ? `01-floor-${member.machine.name}` : `01-floor-${check}-${member.machine.name}`, () => runEffect(setVolumeCopy(run, runId, member.machine, expectOf(member.view.copy), { kind: "floor" })));
     floored.push({ ...member, view: { ...member.view, copy: answer.copy } });
   }
   return floored;

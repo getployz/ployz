@@ -298,7 +298,7 @@ export const callStore = <C extends StoreCall>(
   userId: string | null,
   asked: C,
   source: StoreSource = { source: "dashboard" },
-  gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions" | "environments"> = { approval: "not_required" },
+  gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions" | "protector" | "environments"> = { approval: "not_required" },
 ) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
@@ -308,7 +308,9 @@ export const callStore = <C extends StoreCall>(
       ? { operation: "write", command: yield* resolvePreferredBuilders(organizationId, asked.command) }
       : asked;
     if (call.operation === "write") yield* guardProtected(gate.permissions, call.command, read);
-    const trusted = { ...yield* gatherTrusted(organizationId, call, read), ...gate };
+    const trusted: ConfigTrusted = { ...yield* gatherTrusted(organizationId, call, read), ...gate };
+    // Who acts by their immutable id: a Deployment is their own by it, never by name, which may repeat.
+    if (userId !== null) trusted.user = userId;
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
     // Cloud sends every user's set, so a write by a user with none named is a defect, never a grant.
     if (userId !== null && gate.permissions === undefined) return yield* Effect.die("A user's Store write names no permissions");

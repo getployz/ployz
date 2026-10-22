@@ -22,11 +22,11 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
-    ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
-    MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
-    PinnedAddresses, PullPolicy, QualifiedService, ResolvedServiceSpec, SelectedEndpoint,
-    StorageChoice, WireGuardPublicKey,
+    AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerAddress, ContainerId,
+    ContainerKind, ContainerObservation, Machine, MachineId, MachineLogService, MachineName,
+    MachineObservation, MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel,
+    Namespace, PinnedAddresses, PullPolicy, QualifiedService, ResolvedServiceSpec,
+    SelectedEndpoint, StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -129,6 +129,21 @@ pub use transport::{
 
 /// Maximum encoded Runtime Watch message size accepted by Cloud and sent by the daemon.
 pub const RUNTIME_WATCH_MESSAGE_SIZE_LIMIT: usize = 64 * 1024 * 1024;
+
+/// The HTTP/2 window each Machine RPC call advertises, at both ends. A keepalive ping
+/// or its answer waits behind a call's unread bytes on a slow link, so one call survives
+/// a link down to this over the client's keepalive timeout: about 17 KB/s. It also caps
+/// one call's throughput at this per round trip: about 80 Mbit/s at 100 ms.
+pub const RPC_STREAM_WINDOW_BYTES: u32 = 1024 * 1024;
+
+/// The HTTP/2 window a whole Machine RPC connection advertises, at both ends. A call its
+/// reader left unread, such as a paused `logs -f`, holds its stream window of this until
+/// read, so it must be larger: three paused calls fit and the next call still gets
+/// through. Calls moving data at once queue up to this ahead of a ping, so together they
+/// survive a link down to about 70 KB/s.
+pub const RPC_CONNECTION_WINDOW_BYTES: u32 = 4 * 1024 * 1024;
+
+const _: () = assert!(RPC_STREAM_WINDOW_BYTES < RPC_CONNECTION_WINDOW_BYTES);
 
 impl OpaquePayload {
     #[must_use]
@@ -348,6 +363,19 @@ pub struct ListContainersRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InspectContainerRequest {
     pub container_id: ContainerId,
+}
+
+/// The env the Log Store kept for a Container, read when Docker no longer answers for it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RetainedEnvRequest {
+    pub container_id: ContainerId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RetainedEnvReply {
+    /// `None` when the store holds no env for the Container; never copied into
+    /// replicated observations.
+    pub environment: Option<BTreeMap<String, String>>,
 }
 
 /// Exactly one update to a labelled Management Client slot: set it or clear it.
@@ -1326,6 +1354,19 @@ pub struct RoutesRead {
     pub down: BTreeSet<MachineId>,
 }
 
+/// Read the address this Machine's proxy routes each copy at.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReadRoutedAddressesRequest {}
+
+/// What this Machine's proxy serves, per Service and copy. `None` when this daemon
+/// can't confirm what its proxy serves, such as before its first load or after it
+/// wrote a config the proxy may or may not have read.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoutedAddresses {
+    #[serde(default)]
+    pub routes: Option<BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>>,
+}
+
 /// A listed Machine whose proxy has not acked the copies a reader waits for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Unacked {
@@ -1470,11 +1511,13 @@ define_responses! {
     BuildGrantInspected(BuildGrantInspected) => "build_grant_inspected";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     RoutesRead(RoutesRead) => "routes_read";
+    RoutedAddresses(RoutedAddresses) => "routed_addresses";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     Left(Left) => "left";
     Forgotten(Forgotten) => "forgotten";
     MetricHistoryReply(MetricHistoryReply) => "metric_history";
+    RetainedEnvReply(RetainedEnvReply) => "retained_env";
     Error(RpcError) => "error";
 }
 

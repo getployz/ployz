@@ -133,6 +133,15 @@ pub(crate) fn switch(name: &'static str, short: Option<char>) -> Arg {
     }
 }
 
+/// `--yes`/`-y`, which `PLOYZ_AUTO_CONFIRM` also answers, as 1/0, yes/no,
+/// true/false or on/off.
+pub(crate) fn yes(help: &'static str) -> Arg {
+    switch("yes", Some('y'))
+        .value_parser(clap::builder::BoolishValueParser::new())
+        .env(env::AUTO_CONFIRM)
+        .help(help)
+}
+
 pub(crate) fn positional(name: &'static str, required: bool) -> Arg {
     Arg::new(name).required(required).action(ArgAction::Set)
 }
@@ -161,10 +170,25 @@ pub(crate) fn log_flags(command: Command) -> Command {
 
 pub(crate) fn machine_policy_flags(command: Command) -> Command {
     command
-        .arg(many("label-add", None).value_name("KEY=VALUE"))
+        .arg(
+            many("label-add", None)
+                .value_name("KEY=VALUE")
+                .help("Set the label KEY to VALUE; repeat for more"),
+        )
         .args(
-            ["accepts-builds", "accepts-services", "accepts-ingress"]
-                .map(|name| value(name, None).value_parser(clap::value_parser!(bool))),
+            [
+                ("accepts-builds", "Whether it runs Builds"),
+                ("accepts-services", "Whether it runs Services' Containers"),
+                (
+                    "accepts-ingress",
+                    "Whether it serves web traffic through the Ingress Proxy",
+                ),
+            ]
+            .map(|(name, help)| {
+                value(name, None)
+                    .value_parser(clap::value_parser!(bool))
+                    .help(help)
+            }),
         )
 }
 
@@ -177,16 +201,30 @@ pub(crate) fn reviewed_version() -> Arg {
 }
 
 /// A review's version is `REVISION:SAVED:TOKEN`, and a data-loss refusal's adds
-/// `:DIGEST`. A Project removal's is `PROJECT:DIGEST`.
+/// `:DIGEST`. Cloud binds a review's version to the copy loss it refused with
+/// `#loss-HASH`, which the server checks. A Project removal's is `PROJECT:DIGEST`.
 fn review_version(version: &str) -> Result<String, &'static str> {
-    let parts: Vec<&str> = version.split(':').collect();
-    match parts.as_slice() {
-        [project, digest]
+    let (reviewed, bound) = match version.split_once("#loss-") {
+        Some((reviewed, hash)) => (reviewed, Some(hash)),
+        None => (version, None),
+    };
+    let base36 = |hash: &str| {
+        !hash.is_empty()
+            && hash
+                .chars()
+                .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
+    };
+    if bound.is_some_and(|hash| !base36(hash)) {
+        return Err(MALFORMED_VERSION);
+    }
+    let parts: Vec<&str> = reviewed.split(':').collect();
+    match (parts.as_slice(), bound) {
+        ([project, digest], None)
             if !digest.is_empty() && ployz_store::ProjectId::parse(*project).is_ok() =>
         {
             Ok(version.to_owned())
         }
-        [revision, saved, token, digests @ ..]
+        ([revision, saved, token, digests @ ..], _)
             if revision.parse::<u64>().is_ok()
                 && saved.parse::<u64>().is_ok()
                 && token.split_once('.').is_some_and(|(deployed, ended)| {
@@ -198,9 +236,12 @@ fn review_version(version: &str) -> Result<String, &'static str> {
         {
             Ok(version.to_owned())
         }
-        _ => Err("Use the version ployz diff --json or a refusal gave, such as 3:1:0.1"),
+        _ => Err(MALFORMED_VERSION),
     }
 }
+
+const MALFORMED_VERSION: &str =
+    "Use the version ployz diff --json or a refusal gave, such as 3:1:0.1";
 
 pub(crate) fn approval() -> Arg {
     value("approval", None).value_name("ID").help(
@@ -219,20 +260,23 @@ pub(crate) fn volume_acceptance() -> Arg {
 }
 
 pub(crate) fn completion(command: Command) -> Command {
-    base(command, "Generate shell completion")
-        .arg(positional("shell", true).value_parser(clap::value_parser!(clap_complete::Shell)))
+    base(command, "Generate shell completion").arg(
+        positional("shell", true)
+            .value_parser(clap::value_parser!(clap_complete::Shell))
+            .help("The shell to generate it for"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    /// Every command and global flag `--help` shows, without its one-line description.
+    /// Every command and argument `--help` shows, without its one-line description.
     fn undescribed(command: &clap::Command, path: &str, blank: &mut Vec<String>) {
         if command.get_about().is_none() {
             blank.push(path.to_owned());
         }
-        for arg in command.get_arguments().filter(|arg| arg.is_global_set()) {
+        for arg in command.get_arguments() {
             if !arg.is_hide_set() && arg.get_help().is_none() {
-                blank.push(format!("{path} --{}", arg.get_id()));
+                blank.push(format!("{path} {}", arg.get_id()));
             }
         }
         for sub in command.get_subcommands() {
@@ -241,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn every_command_and_global_flag_has_a_description() {
+    fn every_command_and_argument_has_a_description() {
         let mut blank = Vec::new();
         let published = crate::published::Published::parse(include_bytes!(
             "../../tests/fixtures/published-manifest.json"
@@ -258,7 +302,13 @@ mod tests {
     #[test]
     fn expect_version_takes_a_review_or_refusal_version_only() {
         let project = "9a79b1a9-3c26-40dc-8cd0-3e5567c6daca:3764cac4355a8215";
-        for good in ["3:1:0.1", "3:0:0.12:ab12cd", project] {
+        for good in [
+            "3:1:0.1",
+            "3:0:0.12:ab12cd",
+            project,
+            "5:1:0.1#loss-fzfjky",
+            "3:0:0.12:ab12cd#loss-0",
+        ] {
             assert_eq!(super::review_version(good).as_deref(), Ok(good));
         }
         for bad in [
@@ -274,6 +324,13 @@ mod tests {
             "16:1:0.0/extra",
             "16:1:0",
             "3:0:0.12:ab12cd!",
+            "5:1:0.1#loss-",
+            "5:1:0.1#loss-FZ",
+            "5:1:0.1#loss-fz; rm -rf /",
+            "5:1:0.1#other-fzfjky",
+            "5:1:0.1#loss-a#loss-b",
+            "#loss-fzfjky",
+            "9a79b1a9-3c26-40dc-8cd0-3e5567c6daca:3764cac4355a8215#loss-fzfjky",
         ] {
             assert!(super::review_version(bad).is_err(), "{bad}");
         }

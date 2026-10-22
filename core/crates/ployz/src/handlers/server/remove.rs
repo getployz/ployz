@@ -276,11 +276,11 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             },
             async |approval| match removal {
                 Removal::Reset => {
-                    cloud_account::start_removal(credential, &selected.id, &confirmation, approval)
+                    cloud_account::start_removal(credential, &selected, &confirmation, approval)
                         .await
                 }
                 Removal::Forget => {
-                    cloud_account::start_forget(credential, &selected.id, approval).await
+                    cloud_account::start_forget(credential, &selected, approval).await
                 }
             },
         )?),
@@ -289,6 +289,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     runtime.block_on(async {
         let mut reset_failure = None;
         let mut cloud_released = None;
+        let mut cloud_kept = None;
 
         // TODO: do not reroute away from the current entry before removal.
         if let (Some(credential), Some(id)) = (&cloud, &run) {
@@ -297,6 +298,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
             }
+            cloud_kept = Some(matches!(removed.release, Release::Kept { .. }));
             cloud_released = Some(removed.release == Release::Released);
         } else if removal == Removal::Forget {
             client
@@ -333,11 +335,44 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             },
             selected.name
         ));
+        if removal == Removal::Forget {
+            // A Server reachable now may restore its own row, so only a dead one is told
+            // about the self-fence (#2927); it is best effort, so the operator step stays.
+            let server = &selected.name;
+            crate::ui::warn(if dead {
+                format!(
+                    "Server {server} isn't told it was forgotten. If it runs again as it is, its \
+                     services start again on its own copy of each Volume, and Ployz never brings back \
+                     what they write there. When it boots, run sudo ployz-uninstall on it to stop them \
+                     and keep every Volume copy on its disk. As a best effort, if {server} and at least \
+                     one other Server ran 0.3.1 or later while it was still connected, and the Server \
+                     that forgot it runs 0.3.1 or later, it does that itself up to about 15 minutes \
+                     after its network returns. Adding it back with ployz server add --reset keeps its \
+                     writer copies read-only but can delete its mirrors, so don't while one may be a \
+                     Volume's last copy. Wipe its disk only if you need nothing on it."
+                )
+            } else {
+                format!(
+                    "Server {server} still runs and doesn't know it was forgotten, so its services keep \
+                     running there. Run sudo ployz-uninstall on it to stop them and keep every Volume \
+                     copy on its disk. Adding it back with ployz server add --reset can delete its \
+                     mirrors, so don't while one may be a Volume's last copy."
+                )
+            });
+        }
         if cloud_released == Some(true) {
             crate::ui::stream("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.");
             crate::ui::hint(&Hint::Next("ployz server add".into()));
         }
-        if let Some(reason) = &reset_failure {
+        if let Some(reason) = &reset_failure
+            && cloud_kept == Some(false)
+        {
+            // Cloud lets go only of a Server the Cluster already forgot, so only its reset is in doubt.
+            crate::ui::warn(crate::ui::then_sentence(
+                &format!("Cloud let go of Server {}, but {reason}", selected.name),
+                "Reset does not erase volume data.",
+            ));
+        } else if let Some(reason) = &reset_failure {
             crate::ui::warn(crate::ui::then_sentence(
                 &crate::ui::with_reason(
                     format_args!("Server {} was not fully cleaned up or reset", selected.name),
@@ -368,6 +403,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             "data_loss": observed.data_loss,
             "under_replicated": replicated_services,
             "cloud_released": cloud_released,
+            "cloud_kept": cloud_kept,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
         }))?;
         let config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;

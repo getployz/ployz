@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
@@ -22,7 +22,7 @@ import { environmentProtected } from "#/modules/config-store/store-lookup.server
 import { protectorOnly } from "#/modules/config-store/protected.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
-import { admitRun, planVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { admitRun, planVolumeRun, type VolumeRunPlan } from "#/modules/volume-run/volume-run.server";
 import { Conflict, Forbidden, NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";
 
@@ -92,8 +92,11 @@ const holding = <A, E, R>(caller: Caller, call: OperationCall, requires: Permiss
     return carried === null ? yield* run : refused(carried);
   });
 
-/** Null when no Server of the Organization has `machineId`. */
-export const drainServer = (caller: Caller, machineId: MachineId, call: OperationCall) =>
+/**
+ * Null when no Server of the Organization has `machineId`. Its run keeps `serverName`, the name the caller showed, else
+ * the Server's name in the frame it planned from.
+ */
+export const drainServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName) =>
   holding(caller, call, OPERATIONS["server.drain"].requires, undefined, Effect.gen(function* () {
     const plan = yield* planDrain(caller.organization.id, machineId);
     if (plan === null) return null;
@@ -101,16 +104,18 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
       const gated = yield* gate(caller, call, plan);
       if (!gated.ok) return refused(gated.refusal);
       return (attemptId: string) => requestCliServerDrain(actor(caller), {
-        attemptId, machineId, targets: plan.targets, approvalId: gated.approvalId, planDigest: operationDigest(plan),
+        attemptId, machineId, targets: plan.targets, approvalId: gated.approvalId, planDigest: operationDigest(plan), serverName: serverName || plan.name,
       })
         .pipe(Effect.map((id) => ({ ok: true, id }) as const));
     }));
   }));
 
-export const upgradeServer = (caller: Caller, input: { readonly machineId: MachineId; readonly channel: string | undefined }, call: OperationCall) =>
+export const upgradeServer = (
+  caller: Caller, input: { readonly machineId: MachineId; readonly channel: string | undefined }, call: OperationCall, serverName?: MachineName,
+) =>
   holding(caller, call, OPERATIONS["server.upgrade"].requires, undefined,
     admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, Effect.gen(function* () {
-      return (yield* unasked(caller, call, { command: "upgrade", subject: `server:${input.machineId}` })) ?? (yield* planCliServerUpgrade(actor(caller), input));
+      return (yield* unasked(caller, call, { command: "upgrade", subject: `server:${input.machineId}` })) ?? (yield* planCliServerUpgrade(actor(caller), input, serverName));
     })));
 
 export const setServer = (caller: Caller, machineId: MachineId, change: ServerPolicyChange, call: OperationCall) =>
@@ -140,12 +145,13 @@ export const cleanNamespace = (caller: Caller, namespace: string, call: Operatio
   })));
 
 /** Resets Server `machineId`, deleting exactly the Data Loss the caller `confirmed`. Null when no Server has `machineId`. */
-export const removeServer = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[], call: OperationCall) =>
-  removal(caller, machineId, confirmed, call);
+export const removeServer = (
+  caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[], call: OperationCall, serverName?: MachineName,
+) => removal(caller, machineId, confirmed, call, serverName);
 
 /** Takes Server `machineId` out of the Cluster without a reset, for a Server that is gone. Null when no Server has `machineId`. */
-export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall) =>
-  removal(caller, machineId, null, call);
+export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName) =>
+  removal(caller, machineId, null, call, serverName);
 
 /** The dashboard's Forget of Server `machineId`: only a Caller who may remove Servers; answers the removal's id. */
 export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, key: string) =>
@@ -158,7 +164,10 @@ export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, 
     return yield* new Conflict({ userFacing: true, message: admission.refusal.message });
   });
 
-const removal = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall) =>
+/** Its run keeps `serverName`, the name the caller showed, else the Server's name in the frame it planned from. */
+const removal = (
+  caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall, serverName: MachineName | undefined,
+) =>
   holding(caller, call, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
     const noReset = confirmed === null;
     // A removal its approval already started answers only the one who could start it.
@@ -180,11 +189,28 @@ const removal = (caller: Caller, machineId: MachineId, confirmed: readonly DataL
         organizationId: caller.organization.id,
         requestedByUserId: caller.userId,
         machineId,
+        serverName: serverName || plan.name,
         approvalId: gated.approvalId,
         ...(noReset ? { confirmDataLoss: [], noReset: true } : { confirmDataLoss: [...confirmed] }),
       }).pipe(Effect.map((started) => ({ ok: true, id: started.id }) as const));
     }));
   }));
+
+/**
+ * The ask a Volume Run makes: in a Protected Environment, one that interrupts or takes off what runs there, by someone
+ * who can't protect it, waits for someone who can, as a stop or restart does.
+ */
+const guardedVolume = Effect.fn("Operations.guardedVolume")(function* (
+  caller: Caller,
+  { asked, guard, volume, environment, input }: Pick<Extract<VolumeRunPlan, { ok: true }>, "asked" | "guard" | "volume" | "environment" | "input">,
+) {
+  if (guard === null || protectorOnly(caller, environment.name) === null) return asked;
+  if (!(yield* environmentProtected(caller.organization.id, environment.project, volume.environmentId))) return asked;
+  const protectedAsk = { ...guard, protected: environment.name } satisfies OperationAsked;
+  // The dashboard's grow waits as a request, and runs as its asker once someone who can protect it approves.
+  if (caller.via !== "dashboard" || input.kind !== "resize") return protectedAsk;
+  return { ...protectedAsk, apply: { volumeId: input.volumeId, environment: input.environment, maximum_bytes: input.args.maximum_bytes } } satisfies OperationAsked;
+});
 
 /** A Volume Run whose id is its attempt, so a replayed request reads back the run it started. */
 export const runVolume = (
@@ -195,8 +221,9 @@ export const runVolume = (
   holding(caller, call, VOLUME_OPERATIONS[input.kind].requires, input.environment.environment, admitOperation(caller.organization.id, { tool: VOLUME_OPERATIONS[input.kind].idempotency, key: call.key, body: input }, Effect.gen(function* () {
     const planned = yield* planVolumeRun(caller.organization.id, input);
     if (!planned.ok) return refused(planned.refusal);
-    if (planned.asked !== null) {
-      const gated = yield* gate(caller, call, planned.asked);
+    const asked = yield* guardedVolume(caller, planned);
+    if (asked !== null) {
+      const gated = yield* gate(caller, call, asked);
       if (!gated.ok) return refused(gated.refusal);
     } else {
       const carried = yield* unasked(caller, call, { command: input.kind, subject: `volume:${input.volumeId}` });

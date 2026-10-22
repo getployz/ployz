@@ -196,6 +196,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Inspect", post(capacity::inspect))
         .route("/Storage.Prepare", post(capacity::prepare))
         .route("/Storage.Demote", post(departure::demote))
+        .route("/Storage.Seal", post(departure::seal))
         .route("/Volume.Inspect", post(inspect::inspect))
         .route("/Volume.Seed", post(seed::seed_volume))
         .route("/Volume.Size.Set", post(size::set_volume_size))

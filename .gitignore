@@ -5,6 +5,8 @@ node_modules/
 !/docs/agents/**
 !/docs/user/
 !/docs/user/**
+!/docs/readme/
+!/docs/readme/**
 /.claude/*
 !/.claude/skills/
 !/.claude/settings.json

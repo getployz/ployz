@@ -1,13 +1,17 @@
 use ployz_core::{
-    ContainerObservation, ContainerRuntimeObservation, CopyRotation, DEFAULT_HEALTH_MONITOR,
-    DependencyHealthFailure, DeploymentLogId, ExecutionError, HEALTH_POLL_INTERVAL,
-    HealthExpectation, HealthObservation, HealthPoll, HealthcheckSpec, OperationPhase,
-    QualifiedService, classify_health, health_deadline_for, healthcheck_deadline, observed_health,
+    ContainerObservation, ContainerRuntimeObservation, CopyRotation, DependencyHealthFailure,
+    DeploymentLogId, ExecutionError, HEALTH_POLL_INTERVAL, HealthExpectation, HealthObservation,
+    HealthPoll, HealthcheckSpec, OperationPhase, QualifiedService, classify_health,
+    health_deadline_for, healthcheck_deadline, observed_health,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::{MachineOperations, Progress};
+
+/// A dependency reading unhealthy or restarting can recover, so the dependent's Deploy
+/// waits this long before it fails.
+const RUNTIME_FAILURE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(super) async fn wait_healthy<C: MachineOperations>(
     client: &C,
@@ -84,9 +88,9 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
                     observed.resolved_spec.container.healthcheck,
                     Some(HealthcheckSpec::Http(_))
                 ) {
-                    health_deadline.unwrap_or(DEFAULT_HEALTH_MONITOR)
+                    health_deadline.unwrap_or(RUNTIME_FAILURE_GRACE)
                 } else {
-                    DEFAULT_HEALTH_MONITOR
+                    RUNTIME_FAILURE_GRACE
                 },
                 health_deadline,
                 HealthExpectation::Healthy,

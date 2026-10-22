@@ -249,7 +249,7 @@ impl LocalMachineStore {
     }
 
     fn refresh_runtime(&mut self) -> Result<(), StoreError> {
-        let runtime = local_runtime();
+        let runtime = local_runtime(&self.data_dir);
         let stale = match &self.record.body {
             LocalMachineBody::Joining { machine, .. }
             | LocalMachineBody::Participating { machine, .. } => machine.runtime != runtime,
@@ -375,7 +375,7 @@ impl LocalMachineStore {
             public_key: self.record.wireguard_private_key.public_key(),
             public_ip,
             advertised_endpoints,
-            runtime: local_runtime(),
+            runtime: local_runtime(&self.data_dir),
             build_concurrency: None,
         };
         Ok(LocalMachineBody::Participating {
@@ -402,7 +402,7 @@ impl LocalMachineStore {
         if machine.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
-        machine.runtime = local_runtime();
+        machine.runtime = local_runtime(&self.data_dir);
         Ok(LocalMachineBody::Joining {
             machine,
             bootstrap: visible_peers,
@@ -611,12 +611,15 @@ impl LocalMachineStore {
         if persisted != self.record {
             return Err(StoreError::OwnershipLost(self.data_dir.clone()));
         }
-        if !self.data_dir.join(super::PREPARE_DIR_NAME).exists() {
-            return fs::remove_dir_all(&self.data_dir).map_err(StoreError::Io);
-        }
+        // The record goes last. A cleanup that stops partway, as one killed at the
+        // unit's stop timeout does, leaves a directory that still opens as
+        // Resetting, so the next start finishes the reset instead of refusing an
+        // unowned directory.
         for entry in fs::read_dir(&self.data_dir)? {
             let entry = entry?;
-            if entry.file_name() == super::PREPARE_DIR_NAME {
+            let name = entry.file_name();
+            if name == STATE_FILE_NAME || name == LOCK_FILE_NAME || name == super::PREPARE_DIR_NAME
+            {
                 continue;
             }
             if entry.file_type()?.is_dir() {
@@ -625,7 +628,13 @@ impl LocalMachineStore {
                 fs::remove_file(entry.path())?;
             }
         }
-        Ok(())
+        File::open(&self.data_dir)?.sync_all()?;
+        fs::remove_file(self.data_dir.join(STATE_FILE_NAME))?;
+        if self.data_dir.join(super::PREPARE_DIR_NAME).exists() {
+            fs::remove_file(self.data_dir.join(LOCK_FILE_NAME))?;
+            return Ok(());
+        }
+        fs::remove_dir_all(&self.data_dir).map_err(StoreError::Io)
     }
 }
 
@@ -970,12 +979,12 @@ mod rediscover_tests {
         assert_eq!(store.record().machine(), Some(&before));
     }
 
-    #[test]
-    fn a_record_written_before_pins_existed_reads_as_unpinned() {
-        let (dir, store) = founded(PinnedAddresses {
-            public_ip: true,
-            advertised_endpoints: true,
-        });
+    /// A record as `daemon_version` left it, with nothing pinned on disk.
+    fn rewritten_without_pins(
+        dir: &tempfile::TempDir,
+        store: LocalMachineStore,
+        daemon_version: &str,
+    ) -> LocalMachineStore {
         drop(store);
         let path = dir.path().join("data").join(STATE_FILE_NAME);
         let mut json: serde_json::Value =
@@ -986,14 +995,43 @@ mod rediscover_tests {
                 .remove("pinned_addresses")
                 .is_some()
         );
+        *json
+            .pointer_mut("/body/machine/runtime/daemon_version")
+            .unwrap() = daemon_version.into();
         std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+        LocalMachineStore::open(dir.path().join("data")).unwrap()
+    }
 
-        let mut store = LocalMachineStore::open(dir.path().join("data")).unwrap();
+    #[test]
+    fn addresses_from_before_pins_existed_survive_rediscovery() {
+        let (dir, store) = founded(PinnedAddresses::default());
+        let mut store = rewritten_without_pins(&dir, store, "0.3.0-beta.6");
 
         assert_eq!(
-            store.record().pinned_addresses(),
-            PinnedAddresses::default()
+            store.rediscover(moved_host()).unwrap(),
+            Rediscovered::Unchanged
         );
+        let store = reopened(&dir, store);
+        let machine = store.record().machine().unwrap();
+        assert_eq!(machine.public_ip, Some(ip(OLD_IP)));
+        assert_eq!(
+            machine.advertised_endpoints,
+            endpoints(&["10.0.0.4", OLD_IP])
+        );
+        assert_eq!(
+            store.record().pinned_addresses(),
+            PinnedAddresses {
+                public_ip: true,
+                advertised_endpoints: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_pinning_daemons_record_without_pins_is_rediscovered() {
+        let (dir, store) = founded(PinnedAddresses::default());
+        let mut store = rewritten_without_pins(&dir, store, "0.3.0-beta.7");
+
         assert!(matches!(
             store.rediscover(moved_host()).unwrap(),
             Rediscovered::Updated(_)

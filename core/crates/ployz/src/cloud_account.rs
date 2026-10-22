@@ -62,13 +62,28 @@ pub(crate) async fn credential(
     token: Option<String>,
     cloud: Option<String>,
 ) -> Result<Credential, LoginError> {
-    let Some(token) = token.filter(|token| !token.is_empty()) else {
+    let Some(token) = pasted(token) else {
         return cloud_login::signed_in(store).await.map(Credential::Device);
     };
+    if reqwest::header::HeaderValue::from_str(&token).is_err() {
+        return Err(LoginError::TokenMalformed);
+    }
     Ok(Credential::Token {
         cloud: named_cloud(store, true, cloud)?.unwrap_or_else(|| cloud_origin(DEFAULT_CLOUD)),
         token: Secret::new(token),
     })
+}
+
+/// `PLOYZ_TOKEN` as set, without the whitespace a paste into a CI secret or
+/// `.env` file leaves around it; a token never holds any.
+pub(crate) fn env_token() -> Option<String> {
+    pasted(std::env::var(crate::cli::env::TOKEN).ok())
+}
+
+fn pasted(token: Option<String>) -> Option<String> {
+    token
+        .map(|token| token.trim().to_owned())
+        .filter(|token| !token.is_empty())
 }
 
 /// The Cloud [`credential`] acts in, when anything names one: with a token, `cloud`
@@ -105,11 +120,10 @@ pub(crate) fn named_cloud(
 ///
 /// Returns the stored sign-in's [`LoginError`] when there is no token.
 pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, LoginError> {
-    use crate::cli::env;
     credential(
         store,
-        std::env::var(env::TOKEN).ok(),
-        std::env::var(env::CLOUD_URL).ok(),
+        env_token(),
+        std::env::var(crate::cli::env::CLOUD_URL).ok(),
     )
     .await
 }
@@ -909,7 +923,7 @@ pub(crate) async fn remove_organization(
 /// What Cloud's removal of a Server did.
 #[derive(Debug, Deserialize)]
 pub(crate) struct CloudRemoval {
-    /// Why the reset didn't finish, if it didn't: Cloud then keeps its hold.
+    /// Why the reset didn't finish, if it didn't: Cloud keeps its hold on the last Server, else drops the row.
     pub(crate) reset_warning: Option<String>,
     pub(crate) release: Release,
 }
@@ -938,7 +952,8 @@ const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// Have Cloud remove Server `machine` of the credential's Organization, resetting it
 /// and accepting exactly `confirmation`'s Data Loss. It is the same durable removal the
 /// dashboard starts, which Cloud runs under its own connection; [`follow_removal`]
-/// waits for it. `approval` is the id of the human's approval, when Cloud asked for one.
+/// waits for it. The run keeps `machine`'s name, the one the CLI showed. `approval` is
+/// the id of the human's approval, when Cloud asked for one.
 ///
 /// # Errors
 ///
@@ -946,15 +961,15 @@ const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// when the confirmation misses fresh Data Loss, `approval_required`), or a Cloud failure.
 pub(crate) async fn start_removal(
     credential: &Credential,
-    machine: &MachineId,
+    machine: &ployz_core::Machine,
     confirmation: &ployz_core::DataLossConfirmation,
     approval: Option<&str>,
 ) -> Result<String, StoreCallError> {
     start_run(
         credential,
         Method::DELETE,
-        &format!("servers/{machine}"),
-        &serde_json::json!({ "confirm_data_loss": confirmation }),
+        &format!("servers/{}", machine.id),
+        &serde_json::json!({ "confirm_data_loss": confirmation, "server_name": machine.name }),
         approval,
     )
     .await
@@ -962,8 +977,8 @@ pub(crate) async fn start_removal(
 
 /// Have Cloud forget Server `machine` of the credential's Organization: take it out of
 /// the Cluster without a reset. Cloud runs it as the same durable removal
-/// [`follow_removal`] waits for. `approval` is the id of the human's approval, when
-/// Cloud asked for one.
+/// [`follow_removal`] waits for, and it keeps `machine`'s name, the one the CLI
+/// showed. `approval` is the id of the human's approval, when Cloud asked for one.
 ///
 /// # Errors
 ///
@@ -971,14 +986,14 @@ pub(crate) async fn start_removal(
 /// `approval_required`), or a Cloud failure.
 pub(crate) async fn start_forget(
     credential: &Credential,
-    machine: &MachineId,
+    machine: &ployz_core::Machine,
     approval: Option<&str>,
 ) -> Result<String, StoreCallError> {
     start_run(
         credential,
         Method::POST,
-        &format!("servers/{machine}/forget"),
-        &serde_json::json!({}),
+        &format!("servers/{}/forget", machine.id),
+        &serde_json::json!({ "server_name": machine.name }),
         approval,
     )
     .await
@@ -1004,18 +1019,41 @@ pub(crate) async fn follow_removal(
         &doing,
         Some(deadline),
     )
-    .await?
+    .await
     {
-        Some(RemovalRun::Succeeded(removal)) => Ok(removal),
-        None => Err(StoreCallError::Refused(RpcError {
-            code: ployz_core::RpcErrorCode::Unavailable,
-            message: format!(
-                "Cloud is still removing Server {name}; it finishes on its own. \
-                 The dashboard's Servers page shows when it's done."
-            ),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        })),
+        Ok(Some(RemovalRun::Succeeded(removal))) => Ok(removal),
+        Ok(None) => Err(StoreCallError::Refused(removal_unsettled(name))),
+        Err(StoreCallError::Refused(refused))
+            if refused.details.get("unfinished") == Some(&serde_json::Value::Bool(true)) =>
+        {
+            // Any step after the reset was sent may be the one that ran out: the Server may
+            // have reset and Cloud dropped it, or neither.
+            Err(StoreCallError::Refused(RpcError {
+                code: ployz_core::RpcErrorCode::Unavailable,
+                message: format!(
+                    "Cloud's removal of Server {name} didn't finish: it ran out of retries. If \
+                     the Server is gone but `ployz server ls` still lists it, forget it."
+                ),
+                details: serde_json::json!({ "next": "ployz server ls" }),
+                cause: vec![refused.message],
+            }))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Stopped watching a removal that is still running. It may yet fail unfinished, as
+/// [`follow_removal`] says when it does. No `next`: nothing is to run while it runs.
+fn removal_unsettled(name: &MachineName) -> RpcError {
+    RpcError {
+        code: ployz_core::RpcErrorCode::Unavailable,
+        message: format!(
+            "Cloud is still removing Server {name}; it finishes on its own. \
+             The dashboard's Servers page shows when it's done. If it fails and the Server \
+             is gone but `ployz server ls` still lists it, forget it."
+        ),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -1230,7 +1268,7 @@ pub(crate) const SIGN_IN_PAST_TOKEN: &str = "unset PLOYZ_TOKEN && ployz login";
 /// Cloud can't know a token caller is a shell with `PLOYZ_TOKEN` set, so its
 /// `ployz login` step becomes one that works while the token is.
 fn past_token(mut refused: RpcError) -> RpcError {
-    let token = std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
+    let token = env_token().is_some();
     if token
         && let Some(next) = refused.details.get_mut("next")
         && next == "ployz login"
@@ -1328,6 +1366,29 @@ fn answer<T: DeserializeOwned>(
 mod tests {
     use super::*;
     use crate::cloud_login::tests::fake_cloud;
+
+    #[test]
+    fn a_removal_the_cli_stopped_waiting_on_says_when_to_forget_but_not_to_now() {
+        let name = MachineName::parse("web-2").unwrap();
+        let unsettled = removal_unsettled(&name);
+        assert!(
+            unsettled
+                .message
+                .contains("Cloud is still removing Server web-2"),
+            "{}",
+            unsettled.message
+        );
+        // A Server Cloud already dropped isn't found by forget, so only a listed one is sent there.
+        assert!(
+            unsettled
+                .message
+                .contains("is gone but `ployz server ls` still lists it"),
+            "{}",
+            unsettled.message
+        );
+        // The removal still runs, so forgetting now would only find it in progress.
+        assert_eq!(unsettled.details.get("next"), None);
+    }
 
     #[test]
     fn a_name_that_is_not_text_costs_only_that_name() {
@@ -1465,6 +1526,37 @@ mod tests {
             .unwrap();
         assert_eq!(chosen.cloud(), "http://cloud.test");
         assert!(named_cloud(&store, false, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn ployz_token_drops_the_whitespace_a_paste_leaves_around_it() {
+        let (_dir, store) = signed_in_store("http://cloud.test");
+        for pasted in [
+            "ployz_secret\n",
+            "ployz_secret\r\n",
+            " ployz_secret ",
+            "\tployz_secret",
+        ] {
+            let chosen = credential(&store, Some(pasted.to_owned()), None)
+                .await
+                .unwrap();
+            assert_eq!(chosen.bearer(), "ployz_secret", "{pasted:?}");
+        }
+        let chosen = credential(&store, Some(" \n".to_owned()), None)
+            .await
+            .unwrap();
+        assert!(matches!(chosen, Credential::Device(_)));
+    }
+
+    #[tokio::test]
+    async fn ployz_token_no_header_can_carry_is_refused_without_printing_it() {
+        let (_dir, store) = signed_in_store("http://cloud.test");
+        let error = credential(&store, Some("ployz_sec\nret".to_owned()), None)
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(error, LoginError::TokenMalformed), "{error:?}");
+        assert!(!error.to_string().contains("ployz_sec"), "{error}");
     }
 
     #[tokio::test]

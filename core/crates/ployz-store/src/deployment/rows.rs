@@ -465,7 +465,17 @@ impl Failure {
                     | HealthFailure::TimedOut { .. }
                     | HealthFailure::Runtime { .. } => vec![failure.to_string()],
                 };
-                if let HealthFailure::Runtime { .. } = failure {
+                // Only a Container that stopped on its own ends with its last line. A
+                // running one's check result is the cause; what it printed while Ployz
+                // stopped it is not.
+                if let HealthFailure::Runtime {
+                    observation:
+                        ContainerRuntimeObservation::Restarting
+                        | ContainerRuntimeObservation::Exited { .. }
+                        | ContainerRuntimeObservation::Dead,
+                    ..
+                } = failure
+                {
                     cause.extend(last_run.as_ref().and_then(|run| run.last_line.clone()));
                 }
                 (reason, cause)
@@ -945,22 +955,17 @@ pub(crate) fn servers(
         .collect()
 }
 
-/// Each node's rows. A mounted Volume's or Config's rows read the Deployment's Saved
-/// State, which is left in `saved` for the caller to reuse.
-pub(super) fn of_nodes(
+/// Each runtime Service's rows, by the Machine they ran on.
+pub(super) fn by_service(
     tx: &mut dyn Tx,
     stored: &Stored,
-    saved: &mut Option<SavedEnvironmentIntent>,
-) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
+) -> Result<BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>, RpcError> {
     let found = tx.query(
         "SELECT service, server, state, started, finished, machine, history \
          FROM config_deployment_row \
          WHERE deployment_id = ?1 ORDER BY service, server, machine",
         &[stored.summary.id.as_str().into()],
     )?;
-    if found.is_empty() {
-        return Ok(BTreeMap::new());
-    }
     let lost = matches!(
         stored.summary.status,
         DeploymentStatus::Unknown | DeploymentStatus::Cancelled
@@ -987,6 +992,44 @@ pub(super) fn of_nodes(
                     history: history(row, 6)?,
                 },
             );
+    }
+    Ok(by_service)
+}
+
+/// The rows of the runtime Services the Deployment's preview plans to remove as
+/// obsolete and no node targets: Services this Store doesn't hold, which a full
+/// reconciliation removes. Empty without a preview.
+pub(super) fn untargeted(
+    stored: &Stored,
+    by_service: &BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>,
+) -> BTreeMap<ServiceName, Vec<ServerRow>> {
+    let Some(preview) = &stored.run.preview else {
+        return BTreeMap::new();
+    };
+    let targeted: BTreeSet<&ServiceName> =
+        stored.nodes.iter().flat_map(TargetNode::runtimes).collect();
+    preview
+        .would_remove
+        .iter()
+        .map(|obsolete| &obsolete.name)
+        .filter(|service| !targeted.contains(service))
+        .filter_map(|service| {
+            let rows = by_service.get(service)?;
+            Some((service.clone(), rows.values().cloned().collect()))
+        })
+        .collect()
+}
+
+/// Each node's rows. A mounted Volume's or Config's rows read the Deployment's Saved
+/// State, which is left in `saved` for the caller to reuse.
+pub(super) fn of_nodes(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    by_service: &BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>,
+    saved: &mut Option<SavedEnvironmentIntent>,
+) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
+    if by_service.is_empty() {
+        return Ok(BTreeMap::new());
     }
     let mut nodes = BTreeMap::new();
     for node in &stored.nodes {
@@ -1079,8 +1122,9 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, HookFailure,
-        MachineAction, OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
+        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, HealthObservation,
+        HookFailure, LastHealthCheck, LastRun, MachineAction, OperationPhase, OperationRow,
+        OperationStatus, RpcError, RpcErrorCode,
     };
 
     use super::{Failure, RowPhase, RowState};
@@ -1365,6 +1409,52 @@ mod tests {
         assert_eq!(
             reason(ContainerRuntimeObservation::Dead),
             "The Container stopped"
+        );
+    }
+
+    fn checked(observation: ContainerRuntimeObservation, last_line: &str) -> Failure {
+        Failure::of(
+            &ExecutionError::Health {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                failure: HealthFailure::Runtime {
+                    observation,
+                    last_check: Some(LastHealthCheck::exited(127, "sh: pg_isready: not found")),
+                },
+                out_of_memory: None,
+                last_run: Some(LastRun {
+                    exit_code: None,
+                    last_line: Some(last_line.to_owned()),
+                }),
+            },
+            &[],
+        )
+    }
+
+    #[test]
+    fn a_running_container_s_failed_check_is_the_deepest_cause() {
+        // What the app printed while Ployz stopped it is not why its check failed (#2841).
+        let failed = checked(
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unhealthy,
+            },
+            "[notice] 1#1: signal 29 (SIGIO) received",
+        );
+        assert_eq!(failed.reason, "The Container failed its health check");
+        assert_eq!(
+            failed.cause,
+            ["running (health: unhealthy); last check exited 127: sh: pg_isready: not found"]
+        );
+    }
+
+    #[test]
+    fn a_container_that_stopped_ends_with_its_last_line() {
+        let failed = checked(
+            ContainerRuntimeObservation::Restarting,
+            "panic: no DATABASE_URL",
+        );
+        assert_eq!(
+            failed.cause.last().map(String::as_str),
+            Some("panic: no DATABASE_URL")
         );
     }
 

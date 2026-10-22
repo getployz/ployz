@@ -163,6 +163,97 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     assert!(!snapshot.is_observer_complete());
 }
 
+#[tokio::test(start_paused = true)]
+async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
+    use ployz_core::{
+        ContainerList, InspectTelemetry, LocalMachinePhase, MachineDetails, RpcRequestBody,
+        RpcResponse, TelemetryObservation,
+    };
+
+    let live = machine('a');
+    let silent = machine('b');
+    let answering = live.machine.clone();
+    let (client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: tonic::Request<OpaquePayload>| {
+            let answering = answering.clone();
+            async move {
+                let target = rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).cloned();
+                let body = rpc.into_inner().decode_request().unwrap().body;
+                if target.is_some_and(|target| target != answering.id.as_str()) {
+                    std::future::pending::<()>().await;
+                }
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "fixture answers only the Deploy Snapshot reads"
+                )]
+                let response = match body {
+                    RpcRequestBody::DescribeContract(_) => {
+                        RpcResponse::from(ployz_core::ContractDescription {
+                            machine_id: answering.id,
+                            protocol_major: ployz_core::PROTOCOL_MAJOR,
+                            daemon_version: "fixture".into(),
+                            capabilities: Default::default(),
+                        })
+                    }
+                    RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
+                        containers: Vec::new(),
+                    }),
+                    RpcRequestBody::ListVolumes(_) => RpcResponse::from(VolumeInventory {
+                        volumes: Vec::new(),
+                        failures: Vec::new(),
+                    }),
+                    RpcRequestBody::Inspect(inspect) => {
+                        assert_eq!(inspect.telemetry, InspectTelemetry::BridgeCapacity);
+                        RpcResponse::from(MachineDetails {
+                            id: answering.id,
+                            phase: LocalMachinePhase::Participating,
+                            public_key: answering.public_key,
+                            advertised_endpoints: Vec::new(),
+                            machine: Some(answering),
+                            store_version: Default::default(),
+                            rtts: Vec::new(),
+                            management_clients: Vec::new(),
+                            telemetry: Some(TelemetryObservation::BridgeCapacity {
+                                bridge: BridgeEndpointCapacity::new(10, 0),
+                            }),
+                            storage: None,
+                            upgrade: None,
+                            token: None,
+                        })
+                    }
+                    other => panic!("unexpected Deploy Snapshot RPC: {other:?}"),
+                };
+                Ok(tonic::Response::new(response.encode().unwrap()))
+            }
+        })
+        .await;
+
+    let started = tokio::time::Instant::now();
+    let snapshot = client
+        .deploy_snapshot(vec![live.clone(), silent.clone()])
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    server.abort();
+
+    assert!(
+        elapsed >= TARGET_RPC_TIMEOUT && elapsed < 2 * TARGET_RPC_TIMEOUT,
+        "one silent Machine costs one read deadline, not one per phase: {elapsed:?}"
+    );
+    assert_eq!(
+        snapshot
+            .container_failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .collect::<Vec<_>>(),
+        vec![silent.machine.id]
+    );
+    assert_eq!(
+        snapshot.capacity.unwrap().into_keys().collect::<Vec<_>>(),
+        vec![live.machine.id]
+    );
+}
+
 #[test]
 fn targeted_volume_inventory_rejects_unsafe_routing_evidence() {
     let target = machine_id('a');

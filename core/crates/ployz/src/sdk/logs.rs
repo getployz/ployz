@@ -1,10 +1,10 @@
 //! On-demand Container log transport for SDK readers.
 use futures_util::future::join_all;
 use ployz_core::{
-    ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LiveLogTarget,
-    LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata, LogsOptions,
-    MachineId, MachineLogService, MachineTarget, OpaquePayload, RpcError, RpcErrorCode,
-    TailLogsRequest, log_level, op,
+    ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LastRun,
+    LiveLogTarget, LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata,
+    LogsOptions, MachineId, MachineLogService, MachineTarget, OpaquePayload, RpcError,
+    RpcErrorCode, TailLogsRequest, log_level, op,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +15,7 @@ use ts_rs::TS;
 
 use super::{Session, invalid_argument};
 use crate::connect::{Client, ConnectError};
-use ployz_core::InspectContainerRequest;
+use ployz_core::{InspectContainerRequest, RetainedEnvRequest};
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 
 pub(super) const ROW_DEADLINE: Duration = Duration::from_secs(10);
@@ -385,29 +385,74 @@ const TAIL_FETCH: u16 = 200;
 const TAIL_KEEP: u16 = 10;
 
 /// The last lines of failed Container `container` on `machine`, scrubbed of
-/// `sealed`. Unread, they are unanswered.
+/// `sealed`, and the last run they show. Unread, they are unanswered.
 pub(crate) async fn failed_tail(
     client: &Client,
     machine: MachineId,
     container: ContainerId,
     sealed: &SealedValues,
-) -> LogText {
+) -> (LogText, LastRun) {
     match tail_frames(client, machine, container).await {
-        Some(tail) => tail_excerpt(tail.frames, sealed),
-        None => LogText::Withheld {
-            why: Withheld::Unanswered,
-        },
+        Some(tail) => tail.scrubbed(sealed),
+        None => (
+            LogText::Withheld {
+                why: Withheld::Unanswered,
+            },
+            LastRun::default(),
+        ),
     }
 }
 
-/// A failed Container's raw last lines, and the code of its newest stored exit.
+/// A failed Container's raw last lines, oldest first, and its newest stored exit.
 pub(crate) struct Tail {
-    pub(crate) frames: Vec<String>,
-    pub(crate) exit_code: Option<i64>,
+    frames: Vec<String>,
+    exit: Option<Exit>,
+}
+
+/// A stored exit, how many of the tail's newest lines the next run printed after it,
+/// and, when the exit before it was read, how many lines came after that one.
+#[derive(Clone, Copy)]
+struct Exit {
+    code: Option<i64>,
+    lines_after: usize,
+    run_from: Option<usize>,
+}
+
+impl Tail {
+    pub(crate) fn exit_code(&self) -> Option<i64> {
+        self.exit.and_then(|exit| exit.code)
+    }
+
+    /// The tail scrubbed of `sealed`, and the run its newest exit ended: that code and
+    /// the last line that run printed, not one the run before or after it printed.
+    pub(crate) fn scrubbed(self, sealed: &SealedValues) -> (LogText, LastRun) {
+        let total = self.frames.len();
+        let (from, to) = self.exit.map_or((0, total), |exit| {
+            (
+                exit.run_from.map_or(0, |after| total.saturating_sub(after)),
+                total.saturating_sub(exit.lines_after),
+            )
+        });
+        let run = self
+            .frames
+            .get(from..to)
+            .unwrap_or_default()
+            .iter()
+            .cloned();
+        let last_line = match tail_excerpt(run, sealed) {
+            LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
+            LogText::Withheld { .. } => None,
+        };
+        let run = LastRun {
+            exit_code: self.exit_code(),
+            last_line,
+        };
+        (tail_excerpt(self.frames, sealed), run)
+    }
 }
 
 /// The raw last lines of failed Container `container` on `machine`, for
-/// [`tail_excerpt`] once what to scrub them of is known. None when unread in time.
+/// [`Tail::scrubbed`] once what to scrub them of is known. None when unread in time.
 pub(crate) async fn tail_frames(
     client: &Client,
     machine: MachineId,
@@ -419,16 +464,16 @@ pub(crate) async fn tail_frames(
             container_id: Some(container),
             ..LogHistoryRequest::default()
         };
-        let (newest, exit_code) = newest_lines(client, &target, selector, TAIL_FETCH).await?;
+        let (newest, exit) = newest_lines(client, &target, selector, TAIL_FETCH).await?;
         Ok::<_, RpcError>(Tail {
             frames: frames(newest.into_iter().map(|(_, text)| text)),
-            exit_code,
+            exit,
         })
     };
     tokio::time::timeout(TAIL_READ, read).await.ok()?.ok()
 }
 
-pub(crate) fn tail_excerpt(frames: Vec<String>, sealed: &SealedValues) -> LogText {
+fn tail_excerpt(frames: impl IntoIterator<Item = String>, sealed: &SealedValues) -> LogText {
     LogText::Shown(LogExcerpt::scrub(
         frames,
         sealed,
@@ -439,33 +484,53 @@ pub(crate) fn tail_excerpt(frames: Vec<String>, sealed: &SealedValues) -> LogTex
 /// How long reading one Machine's lines for an agent may take, env included.
 const SERVICE_TAIL_READ: Duration = Duration::from_secs(10);
 
+/// One Machine's lines for an agent.
+#[derive(Debug)]
+pub(crate) struct AgentTail {
+    pub(crate) text: LogText,
+    /// Each Container whose lines `text` leaves out because its env could not be read to
+    /// scrub them, labelled as `ployz logs` prints it.
+    pub(crate) withheld: Vec<String>,
+}
+
+impl From<LogText> for AgentTail {
+    fn from(text: LogText) -> Self {
+        Self {
+            text,
+            withheld: Vec::new(),
+        }
+    }
+}
+
 /// The newest `cap` lines `selector` picks from `machine`'s Log Store, across every
 /// Container that wrote them, scrubbed of each Container's values for the `sealed` names
 /// as its Machine reports them, or of every env value when `sealed` is None. The env is
 /// read here and never leaves, and not at all when `sealed` names nothing. A Container
-/// whose env cannot be read, as after a redeploy removed it, has its lines left out; they
-/// are withheld only when no Container's env can be read. None when `selector` picks no
-/// lines there. The error says why the Machine did not answer in time.
+/// whose env cannot be read, as after a redeploy removed it, has its lines left out and
+/// is named in [`AgentTail::withheld`]; the text is withheld when no Container's env can
+/// be read. None when `selector` picks no lines there. The error says why the Machine
+/// did not answer in time.
 pub(crate) async fn service_tail(
     client: &Client,
     machine: MachineId,
     selector: LogHistoryRequest,
     cap: LineCap,
     sealed: Option<&BTreeSet<String>>,
-) -> Result<Option<LogText>, RpcError> {
+) -> Result<Option<AgentTail>, RpcError> {
     let target = MachineTarget::from(&machine);
     let read = async {
+        let service = selector.service.clone();
         let (newest, _) = newest_lines(client, &target, selector, LineCap::MAX).await?;
         if newest.is_empty() {
             return Ok(None);
         }
         if sealed.is_some_and(BTreeSet::is_empty) {
             let frames = frames(newest.into_iter().map(|(_, text)| text));
-            return Ok(Some(LogText::Shown(LogExcerpt::scrub(
+            return Ok(Some(AgentTail::from(LogText::Shown(LogExcerpt::scrub(
                 frames,
                 &SealedValues::none(),
                 cap,
-            ))));
+            )))));
         }
         let mut containers: Vec<ContainerId> = Vec::new();
         for (container, _) in &newest {
@@ -481,8 +546,17 @@ pub(crate) async fn service_tail(
         .await;
         let mut values = SealedValues::none();
         let mut readable = Vec::new();
+        let mut withheld = Vec::new();
         for (container, env) in containers.iter().zip(envs) {
-            let Some(env) = env else { continue };
+            let Some(env) = env else {
+                let id = crate::ui::short_id(container.as_str());
+                withheld.push(
+                    service
+                        .as_ref()
+                        .map_or_else(|| id.to_owned(), |service| format!("{service}/{id}")),
+                );
+                continue;
+            };
             values.extend(
                 env.into_iter()
                     .filter(|(name, _)| sealed.is_none_or(|sealed| sealed.contains(name))),
@@ -490,8 +564,11 @@ pub(crate) async fn service_tail(
             readable.push(*container);
         }
         if readable.is_empty() {
-            return Ok(Some(LogText::Withheld {
-                why: Withheld::NoSecretContext,
+            return Ok(Some(AgentTail {
+                text: LogText::Withheld {
+                    why: Withheld::NoSecretContext,
+                },
+                withheld,
             }));
         }
         let frames = frames(
@@ -500,9 +577,10 @@ pub(crate) async fn service_tail(
                 .filter(|(container, _)| readable.contains(container))
                 .map(|(_, text)| text),
         );
-        Ok(Some(LogText::Shown(LogExcerpt::scrub(
-            frames, &values, cap,
-        ))))
+        Ok(Some(AgentTail {
+            text: LogText::Shown(LogExcerpt::scrub(frames, &values, cap)),
+            withheld,
+        }))
     };
     in_time("its Log Store", read).await
 }
@@ -579,22 +657,40 @@ fn unavailable(message: String) -> RpcError {
     }
 }
 
+/// The env that scrubs a Container's lines: Docker's, or the one its Machine's
+/// Log Store kept once the Machine answers that the Container is gone. `None`
+/// when neither answers, which withholds the lines.
 pub(crate) async fn container_env(
     client: &Client,
     machine: MachineId,
     container: ContainerId,
 ) -> Option<BTreeMap<String, String>> {
-    client
+    let target = MachineTarget::from(&machine);
+    let inspected = client
         .invoke::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: container,
             },
-            &MachineTarget::from(&machine),
+            &target,
+            Some(TAIL_READ),
+        )
+        .await;
+    match inspected {
+        Ok(details) => return details.environment,
+        Err(error) if error.code == RpcErrorCode::NotFound => {}
+        Err(_) => return None,
+    }
+    client
+        .invoke::<op::RetainedEnv>(
+            RetainedEnvRequest {
+                container_id: container,
+            },
+            &target,
             Some(TAIL_READ),
         )
         .await
         .ok()
-        .and_then(|details| details.environment)
+        .and_then(|reply| reply.environment)
 }
 
 /// The newest `fetch` lines `selector` picks, newest first, and the code of the newest
@@ -604,7 +700,7 @@ async fn newest_lines(
     target: &MachineTarget,
     selector: LogHistoryRequest,
     fetch: u16,
-) -> Result<(Vec<(ContainerId, Vec<u8>)>, Option<i64>), RpcError> {
+) -> Result<(Vec<(ContainerId, Vec<u8>)>, Option<Exit>), RpcError> {
     let mut newest = Vec::new();
     let mut exit = None;
     let mut cursor = None;
@@ -641,9 +737,18 @@ async fn newest_lines(
                         cause: Vec::new(),
                     });
                 }
-                HistoryRow::Exit { exit_code, .. } => {
-                    exit.get_or_insert(exit_code);
-                }
+                HistoryRow::Exit { exit_code, .. } => match &mut exit {
+                    None => {
+                        exit = Some(Exit {
+                            code: exit_code,
+                            lines_after: newest.len(),
+                            run_from: None,
+                        });
+                    }
+                    Some(newer) => {
+                        newer.run_from.get_or_insert(newest.len());
+                    }
+                },
                 HistoryRow::Container(_) | HistoryRow::Gap { .. } | HistoryRow::Heartbeat => {}
             }
         }
@@ -652,7 +757,7 @@ async fn newest_lines(
         }
     }
     newest.truncate(usize::from(fetch));
-    Ok((newest, exit.flatten()))
+    Ok((newest, exit))
 }
 
 /// Newest-first lines as frames in the order they were written.

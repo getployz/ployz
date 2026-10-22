@@ -22,7 +22,7 @@ use super::{ApiClient, ReplicatedStore};
 
 #[derive(Clone)]
 struct ClusterKv {
-    network: String,
+    network: Option<String>,
     machines: BTreeMap<String, String>,
     containers: BTreeMap<String, (String, String)>,
     volumes: BTreeMap<(String, String), String>,
@@ -50,7 +50,7 @@ impl ClusterKv {
         let (machine_changes, _) = broadcast::channel(16);
         let (certificate_changes, _) = broadcast::channel(16);
         Self {
-            network: "10.210.0.0/16".into(),
+            network: Some("10.210.0.0/16".into()),
             machines: BTreeMap::new(),
             containers: BTreeMap::new(),
             volumes: BTreeMap::new(),
@@ -87,10 +87,21 @@ pub(crate) async fn store_with_subscriptions() -> (ReplicatedStore, tokio::task:
     bind(true).await
 }
 
+/// A store the founder's publisher has not yet written the Cluster network to.
+pub(crate) async fn store_without_network() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    let mut kv = ClusterKv::new(false);
+    kv.network = None;
+    serve(kv).await
+}
+
 async fn bind(with_subscriptions: bool) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    serve(ClusterKv::new(with_subscriptions)).await
+}
+
+async fn serve(kv: ClusterKv) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let kv = Arc::new(Mutex::new(ClusterKv::new(with_subscriptions)));
+    let kv = Arc::new(Mutex::new(kv));
     let server = tokio::spawn(async move {
         axum::serve(listener, router(kv)).await.unwrap();
     });
@@ -383,9 +394,10 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
             )
         }
         "SELECT value FROM cluster WHERE key = ?" => events(&["value"], Vec::new()),
-        "SELECT value FROM cluster WHERE key = 'network'" => {
-            events(&["value"], vec![vec![json!(kv.network)]])
-        }
+        "SELECT value FROM cluster WHERE key = 'network'" => events(
+            &["value"],
+            kv.network.iter().map(|network| vec![json!(network)]),
+        ),
         "SELECT machine_id, service_id, containers FROM ingress_routes" => events(
             &["machine_id", "service_id", "containers"],
             kv.ingress_routes
@@ -430,7 +442,7 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
             query
                 if query.starts_with("INSERT INTO cluster (key, value) VALUES ('network', ?)") =>
             {
-                text_param(&statement.params, 0).clone_into(&mut kv.network);
+                kv.network = Some(text_param(&statement.params, 0).to_owned());
             }
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
                 kv.volumes.insert(

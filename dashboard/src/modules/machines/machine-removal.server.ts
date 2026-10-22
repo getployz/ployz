@@ -105,6 +105,13 @@ export const completeMachineRemoveAttemptActivity = Effect.fn(
 )((input: Parameters<typeof completeMachineRemoveAttempt>[0]) =>
   completeMachineRemoveAttempt(input));
 
+/** Why a Server Cloud reaches only through itself can't be removed while `others` are listed, and what unblocks it. */
+function carriedOnlyBy(name: string, others: readonly string[]) {
+  const listed = others.join(", ");
+  return `${name} can't carry its own removal, and Ployz Cloud can't reach ${listed} to carry it. `
+    + `Bring ${others.length === 1 ? listed : "one of them"} back online, or forget the Servers that are gone, then retry. No changes made.`;
+}
+
 /**
  * Resets the Server under Cloud's own connection. A step retry sends the same removal again, and the SDK runs every
  * guard again while the Server is listed; one already gone by its Machine ID answers removed, its reset unconfirmed,
@@ -121,7 +128,9 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     const forgetOnly = attempt.noReset || left !== null;
     const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
-    const session = yield* runtime.open(attempt.organizationId);
+    // The Engine refuses to remove the Server it was entered by while another is listed, so Cloud enters by another.
+    const avoiding = yield* runtime.open(attempt.organizationId, { avoiding: attempt.machineId });
+    const session = avoiding.status === "connected" ? avoiding : yield* runtime.open(attempt.organizationId, { only: attempt.machineId });
     if (access.kind !== "ready" || session.status !== "connected") {
       return yield* new MachineRemovalProviderFailure({
         operation: "open organization runtime",
@@ -145,6 +154,15 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
       return { kind: "refused", failureCode: "server_lacks", message: sdkFailureMessage(lack, servers), generation: access.generation } as const;
     }
     const machine = attempt.machineId;
+    // Entered by the target itself. Without a frame, the other paired Servers stand in for the ones the Engine lists.
+    const others = Option.isSome(frame)
+      ? servers.flatMap((server) => server.id === machine ? [] : [server.name])
+      : access.connections.flatMap((connection) =>
+        connection.machine_id === undefined || connection.machine_id === machine ? [] : [connection.name ?? connection.machine_id]);
+    if (!forgetOnly && avoiding.status !== "connected" && others.length > 0) {
+      const name = servers.find((server) => server.id === machine)?.name ?? machine;
+      return { kind: "refused", failureCode: "conflict", message: carriedOnlyBy(name, others), generation: access.generation } as const;
+    }
     const owned = yield* markOwnedMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId });
     if (!owned) return { kind: "superseded" } as const;
     const outcome = yield* asRemoveMachineOutcome(forgetOnly
@@ -186,22 +204,28 @@ export const releaseLeavingLanesActivity = (input: {
   organizationId: string; machineId: MachineId; name: string | null; writes: readonly string[];
 }) => releaseLanesOff(input.organizationId, { id: input.machineId, name: input.name }, input.writes);
 
+/** The SDK's reset warning for a Server the Cluster had already forgotten (ployz `RESET_UNCONFIRMED`). */
+const RESET_UNCONFIRMED = "its reset couldn't be confirmed: it was already gone from the Cluster";
+
 /**
  * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep
  * Cloud's key, so Cloud keeps its row and its pairing. Otherwise `dropRemovedServer` drops the Server's row of the
  * witnessed pairing. When a reset took that pairing's last Server, the Store lets go of everything that ran, and then
- * Cloud forgets the pairing. A Server taken out without a reset loses its row but never lets go of the Cluster.
+ * Cloud forgets the pairing. A Server taken out without a reset loses its row but never lets go of the Cluster. A Server
+ * the Cluster had already forgotten is listed nowhere else, so its row goes while other Servers keep the pairing; as
+ * the last, Cloud keeps its hold.
  */
 export const releaseServerActivity = Effect.fn("MachineRemoval.release")(function* (input: {
   organizationId: string; machineId: MachineId; generation: string; resetWarning: string | null; noReset: boolean;
 }) {
-  if (input.resetWarning !== null) {
-    return {
-      kind: "kept",
-      reason: `its reset didn't finish (${input.resetWarning}), so it may still hold Cloud's key.`,
-    } satisfies ServerRelease;
-  }
-  const dropped = yield* dropRemovedServer({ ...input, removal: input.noReset ? "membership" : "reset" });
+  const kept = {
+    kind: "kept",
+    reason: `its reset didn't finish (${input.resetWarning}), so it may still hold Cloud's key.`,
+  } satisfies ServerRelease;
+  const unconfirmed = input.resetWarning === RESET_UNCONFIRMED;
+  if (input.resetWarning !== null && !unconfirmed) return kept;
+  const dropped = yield* dropRemovedServer({ ...input, removal: input.noReset ? "membership" : unconfirmed ? "unconfirmed" : "reset" });
+  if (dropped.kind === "unconfirmed_last") return kept;
   if (dropped.kind !== "last") return dropped;
   // The Store lets go first, while the pairing still fences a replacement: if this fails, nothing more is deleted and
   // the step retries; a replay finding the pairing gone skips it.
@@ -329,6 +353,7 @@ export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
       organizationId: organization.id,
       requestedByUserId: actor.userId,
       machineId: input.machineId,
+      serverName: plan.name,
       confirmDataLoss: [...input.confirmDataLoss],
     });
   },

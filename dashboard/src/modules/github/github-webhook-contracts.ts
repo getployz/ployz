@@ -75,15 +75,8 @@ const githubInstallationPayloadSchema = Schema.Struct({
     login: nonEmptyStringSchema,
   }),
 });
-const githubInstallationRepositorySchema = Schema.Struct({
-  id: githubIdSchema,
-  name: nonEmptyStringSchema,
-  full_name: nonEmptyStringSchema,
-  private: Schema.Boolean,
-  default_branch: nonEmptyStringSchema,
-  html_url: nonEmptyStringSchema,
-  updated_at: githubTimestampSchema,
-});
+// GitHub sends no default branch, URL or timestamp here, so a cache entry comes from the sync instead.
+const githubInstallationRepositorySchema = Schema.Struct({ id: githubIdSchema });
 const githubInstallationRepositoriesPayloadSchema = Schema.Struct({
   action: Schema.Literals(["added", "removed"]),
   installation: Schema.Struct({ id: githubIdSchema }),
