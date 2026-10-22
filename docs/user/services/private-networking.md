@@ -54,7 +54,7 @@ carry on, but a connection a service holds open to it over TCP can close, and th
 reconnect.
 
 The private network also stays connected while Ployz stops, restarts or upgrades on a server.
-Your running services keep reaching services on the other servers. The first upgrade to 0.3.0
+Your running services keep reaching services on the other servers. The first upgrade to 0.3.1
 on a server with IPv6 enabled is the exception: Ployz adds IPv6 to the server's container
 network, so its containers drop off the network for about two seconds. They keep running, but
 connections open to them at that moment can close, and some can come back at a different private
