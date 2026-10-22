@@ -674,7 +674,8 @@ impl ReplicatedStore {
             .await
     }
 
-    /// Record why a hostname has no certificate and when the Cluster may try again.
+    /// Record why a hostname has no certificate, or why its renewal failed, and when the Cluster may
+    /// try again.
     ///
     /// # Errors
     ///
@@ -682,16 +683,43 @@ impl ReplicatedStore {
     pub async fn record_certificate_failure(
         &self,
         hostname: &IngressHost,
+        tried: Option<&CertificateMaterial>,
         last_error: impl Into<String>,
         clock: IssuanceClock,
     ) -> Result<(), Error> {
         let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
-        if latest.material().is_some() {
-            return Ok(());
-        }
-        self.upsert_certificate(&key, &latest.with_backoff(last_error, clock))
+        let Some(tried) = tried else {
+            if latest.material().is_some() {
+                return Ok(());
+            }
+            return self
+                .upsert_certificate(&key, &latest.with_backoff(last_error, clock))
+                .await;
+        };
+        // A failed renewal keeps serving its material and backs off like a first order. Only the
+        // failure fields change, and only over the ACME material that failed, so a renewal, a
+        // publication or another Machine's challenge landing after the read survives.
+        let failed: serde_json::Value =
+            serde_json::from_str(&latest.with_backoff(last_error, clock).encode()?)?;
+        let field = |name: &str| failed.get(name).cloned().unwrap_or_default();
+        self.api
+            .execute([Statement::new(
+                "UPDATE certificates SET body = json_set(body, \
+                   '$.last_error', ?, '$.next_attempt_at', ?, '$.failures', ?, '$.last_failure', ?) \
+                 WHERE hostname = ? \
+                 AND json_extract(body, '$.certificate') = ? \
+                 AND NOT coalesce(json_extract(body, '$.published'), 0)",
+                [
+                    field("last_error"),
+                    field("next_attempt_at"),
+                    field("failures"),
+                    field("last_failure"),
+                    json!(key.as_str()),
+                    json!(tried.certificate()),
+                ],
+            )])
             .await
     }
 
