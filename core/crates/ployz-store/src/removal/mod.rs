@@ -724,8 +724,8 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
     ))
 }
 
-/// Ask a human once for everything a removal deletes, bound to `command`: `remove`
-/// or `shut_down`, so an approval for one never runs the other.
+/// Ask a human once for everything a removal deletes, bound to `command`, so an
+/// approval for a removal never runs a shutdown.
 pub(crate) fn gate(
     who: &Actor,
     command: &str,

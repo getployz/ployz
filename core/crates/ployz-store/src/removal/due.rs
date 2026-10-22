@@ -656,7 +656,7 @@ fn unobserved(
 }
 
 /// Take an Environment off the Servers and keep it: a Server's shutdown. It
-/// writes no mark, and asks a human only when it deletes Volume data.
+/// writes no mark, and asks a human as a Deploy that removes the same would.
 pub(crate) fn shut_down(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -693,22 +693,16 @@ pub(crate) fn shut_down(
             trusted.volumes.as_ref(),
         )?,
     };
-    if forget.is_none() && !admit.accept_volume_loss.is_empty() {
+    if forget.is_none() {
         let deployed = approval::deployed(&review.head);
         let cluster_domains = if crate::domain::has_generated(&deployed) {
             deployment::cluster_domains(tx, id, &review.head)?
         } else {
             Default::default()
         };
-        super::gate(
-            who,
-            "shut_down",
-            &Target::Environment(id.clone()),
-            &review.view.version,
-            approval::destructive_effects(&deployed, &empty, &cluster_domains),
-            &trusted.approval,
-            || json!(review.view),
-        )?;
+        let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
+        let gate = approval::Gate::new(tx, id, trusted)?;
+        approval::approve_shut_down(who, &review, &effects, &gate)?;
     }
     let frozen = deployment::freeze(
         id,

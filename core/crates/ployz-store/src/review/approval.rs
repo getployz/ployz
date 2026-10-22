@@ -452,6 +452,39 @@ pub(crate) fn approve(
     gate.require(bound, message, (effects, diff))
 }
 
+/// Refuse taking an Environment off the Servers while that destroys `effects`, unless
+/// no approval is required or Cloud holds a human's approval of exactly this. Into a
+/// Protected Environment, a caller who asks there asks even when Cloud requires
+/// nothing, as a Deploy does.
+///
+/// # Errors
+/// `approval_required`, naming the effects, the `version:digest` to approve and the
+/// fresh `diff`, and `protected` when the Environment's protection asked.
+pub(crate) fn approve_shut_down(
+    who: &Actor,
+    review: &Review,
+    effects: &BTreeSet<DestructiveEffect>,
+    gate: &Gate<'_>,
+) -> Result<(), RpcError> {
+    if effects.is_empty() && !gate.protected {
+        return Ok(());
+    }
+    if !effects.is_empty() {
+        gate.trusted.admit(Permission::ChangesDestroy)?;
+    }
+    let diff = &review.view;
+    let message = gate.message(diff, "shutdown", || {
+        let asked = effects
+            .iter()
+            .map(DestructiveEffect::describe)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("A human must approve this first: {asked}")
+    });
+    let bound = bound(who, "shut_down", &diff.environment.id, effects);
+    gate.require(bound, message, (effects, diff))
+}
+
 /// Refuse retrying Deployment `source` unless Cloud holds a human's approval of this
 /// retry, when [`Gate::asks_retry`]: a retry ships nothing a review hasn't.
 /// `review` is taken before the retry queues, so its version moves once it does: one
