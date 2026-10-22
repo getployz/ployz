@@ -823,6 +823,9 @@ fn assemble_plan(
         service_operations.extend(operations);
         ranges.push((spec.name.clone(), first..service_operations.len()));
     }
+    // Shared components were blocked before the loop; in `requested` order the first
+    // entry is the earliest root cause, which is the one the Deployment reports.
+    blocked.sort_by_key(|entry| requested.iter().position(|spec| spec.name == entry.service));
     let before_volumes = service_operations.len();
     let volumes = budget.volumes.finish(&mut service_operations)?;
     let mut operations = service_operations;

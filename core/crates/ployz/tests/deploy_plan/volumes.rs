@@ -1340,6 +1340,44 @@ fn a_blocked_service_keeps_the_endpoint_its_old_hook_was_credited_for() {
 }
 
 #[test]
+fn blocked_services_are_reported_in_deploy_order() {
+    let (_, db) = web_and_db();
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "shared");
+        make_provisioned(spec, "shared", 1_073_741_824);
+    }
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &api, &worker],
+        PlanOptions::default(),
+    );
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Slot)], vec![]);
+    let Some(Ok(second)) = snapshot.storage_capacity.get_mut(&machine_id('2')) else {
+        panic!("fixture capacity for second")
+    };
+    second.copies.insert(
+        app_volume("shared"),
+        ployz_core::ProvisionedCopy {
+            role: CopyRole::Slot,
+            maximum_bytes: maximum_bytes(1_073_741_824),
+            used_bytes: 0,
+            slot_role: None,
+        },
+    );
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| blocked.service.as_str())
+        .collect();
+    assert_eq!(blocked, ["db", "api", "worker"]);
+}
+
+#[test]
 fn a_shared_volume_without_a_writer_blocks_only_the_services_that_share_it() {
     let other = spec("other");
     let mut api = spec("api");
