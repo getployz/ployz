@@ -548,9 +548,10 @@ where
         && let Some(requested) = ingress
     {
         let incomplete = |error: crate::deploy::ApplyError| {
-            ingress_incomplete(super::ingress_hints(Error::from(error), |args| {
-                super::rerun(matches, args)
-            }))
+            ingress_incomplete(
+                command,
+                super::ingress_hints(Error::from(error), |args| super::rerun(matches, args)),
+            )
         };
         // An interrupted Apply may have completed mutations. Do not replay it.
         match crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await
@@ -567,8 +568,14 @@ where
     let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
-    let capability = set_cloud_management_client(matches, &mut ready).await
-        .map_err(|error| error.context("Server initialized; Cloud Pairing publication incomplete. Rerun the same ployz server add command without --reset, keeping all other options."))?;
+    let capability = set_cloud_management_client(matches, &mut ready)
+        .await
+        .map_err(|error| {
+            error.context(format!(
+                "Server initialized; Cloud Pairing publication incomplete. {}.",
+                command.again()
+            ))
+        })?;
     cloud_enroll::publish(
         command,
         &cloud_enroll::callback_url(cloud_url),
@@ -602,10 +609,10 @@ async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Err
 }
 
 /// The first Server is enrolled but its Ingress Proxy deploy failed.
-pub(crate) fn ingress_incomplete(error: Error) -> Error {
+pub(crate) fn ingress_incomplete(command: EnrollCommand, error: Error) -> Error {
     let headline =
         super::ingress_headline("Server initialized; Ingress deployment incomplete", &error);
-    error.context(format!("{headline} Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it."))
+    error.context(format!("{headline} {}, to reconcile it.", command.again()))
 }
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved

@@ -33,6 +33,18 @@ pub(crate) enum Command {
 }
 
 impl Command {
+    /// The step that recovers an enrollment the Server half finished, as a sentence.
+    pub(crate) fn again(self) -> &'static str {
+        match self {
+            Self::ServerAdd => {
+                "Rerun the same ployz server add command without --reset, keeping all other options"
+            }
+            Self::ServerEnroll => {
+                "Run ployz server enroll again, or use Enroll in Servers > Waiting to join"
+            }
+        }
+    }
+
     fn retry(self) -> &'static str {
         match self {
             Self::ServerAdd => {
