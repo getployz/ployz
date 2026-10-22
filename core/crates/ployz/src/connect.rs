@@ -7,6 +7,7 @@ use management::{connect_management, dial_tunnel};
 
 use std::{
     borrow::Cow,
+    collections::BTreeMap,
     future::Future,
     io,
     path::{Path, PathBuf},
@@ -17,6 +18,7 @@ use std::{
     time::Duration,
 };
 
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, FramingError, MachineId, MachineTarget, ResolvedServiceSpec, Retry,
@@ -546,7 +548,13 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
     request
 }
 
-/// Walk every connection and keep the first whose daemon answers.
+/// How long a connection may go unconfirmed before the next one is dialled beside
+/// it. A down Server holds its dial for the whole connect bound, 15 s through Cloud
+/// and the SSH timeout over SSH; a daemon that answers confirms well inside this.
+const ENTRY_STAGGER: Duration = Duration::from_secs(1);
+
+/// Walk every connection and keep the first whose daemon answers. Each connection
+/// starts when the one before it fails or stays silent for [`ENTRY_STAGGER`].
 ///
 /// A tunnel or lazy channel is not enough. Confirmation is one-shot so a down
 /// daemon cannot stall the walk or consume unary retries.
@@ -560,14 +568,42 @@ pub async fn connect_selected_with(
     selected: SelectedConnections,
     connector: Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
+    let mut failures = BTreeMap::new();
+    {
+        let (source, connector) = (&selected.source, &connector);
+        let mut queued =
+            selected
+                .connections
+                .iter()
+                .enumerate()
+                .map(|(index, connection)| async move {
+                    (index, connect_one(connection, source, connector).await)
+                });
+        let mut dialing = FuturesUnordered::new();
+        dialing.extend(queued.next());
+        while !dialing.is_empty() {
+            tokio::select! {
+                Some((index, outcome)) = dialing.next() => match outcome {
+                    Ok(client) => return Ok(client),
+                    Err(error) => {
+                        failures.insert(index, error);
+                        dialing.extend(queued.next());
+                    }
+                },
+                () = tokio::time::sleep(ENTRY_STAGGER), if queued.len() > 0 => {
+                    dialing.extend(queued.next());
+                }
+            }
+        }
+    }
     let mut last_error = None;
     let mut server = None;
     let mut retry = Retry::Never;
     let mut reached = false;
-    for (index, connection) in selected.connections.iter().enumerate() {
-        match connect_one(connection, &selected.source, &connector).await {
-            Ok(client) => return Ok(client),
-            Err(error)
+    let failed = selected.connections.iter().zip(failures.into_values());
+    for (index, (connection, error)) in failed.enumerate() {
+        match error {
+            error
                 if matches!(error, ConnectError::SshClientMissing)
                     && !reached
                     && selected
@@ -578,7 +614,7 @@ pub async fn connect_selected_with(
             {
                 return Err(error);
             }
-            Err(error) => {
+            error => {
                 if error.retry() != Retry::Never {
                     retry = Retry::AfterRestart;
                 }
