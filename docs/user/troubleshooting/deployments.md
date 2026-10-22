@@ -509,11 +509,12 @@ the old replica keeps serving there, and a restart routes it again. Deploy the s
 
 `cause: connection to the daemon closed` or `cause: stream closed because of a broken pipe`
 
-Ployz restarted on the server your deploy connects through, as it does during an upgrade. The
-deploy fails, usually within seconds (2–12 s in our tests) and within about a minute at most. It
-exits 1, and the deployment reads Failed. Deploy again,
-or redeploy the failed deployment, and Ployz finishes the switch and removes what the failed deploy
-left behind:
+Ployz restarted on the server your deploy connects through, as it does during an upgrade or after
+a crash. The deploy connects to it again for up to a minute. If the restart didn't cut off a step's
+answer, the deploy carries on and finishes. If it did, as for a replica being created at that
+moment, the deploy removes the new replicas, exits 1 within about a minute, and the deployment
+reads Failed. Deploy again, or redeploy the failed deployment, and Ployz finishes the switch and
+removes anything the failed deploy left behind:
 
 ```sh
 ployz deploy
