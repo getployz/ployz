@@ -623,13 +623,19 @@ server during the download stops the pull and keeps the mirror. It also pulls on
 volume wrote since the mirror's last refresh, so the mirror of a volume that wrote nothing since
 pulls nothing and stays.
 
-A forgotten server doesn't know it was removed. If it comes back, its services may still be
-running on its copy of a volume. When you've restored that volume on another server, the next
-move, mirror, sync or release of that volume marks the returning copy old, makes it read-only and
-stops there; run it again. If a service on the returning server still has the copy open, the copy
-turns read-only but the run fails; run it again once that service stops. Anything written to the old copy in between is lost. Ployz no longer lists a forgotten server, so
-`ployz server rm` can't reach it: run `sudo ployz-uninstall` on a server you don't mean to keep. It
-stops the services Ployz runs there; Docker, your images and your volume data stay on the disk.
+A forgotten server doesn't know it was removed, and neither your other servers nor Ployz Cloud
+can reach it to tell it. If it runs again as it is, it starts its services on its own copy of each
+volume and they keep writing there. Ployz can't make that copy read-only, and a later move, mirror,
+sync or release of the volume doesn't reach it. Ployz never brings back what they write there,
+and if you've restored the volume on another server, the two copies drift apart.
+
+So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
+on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along
+with Docker and your images. Adding it back later, with `ployz server add` and `--reset`, makes its
+copies read-only and keeps their data but can delete its mirrors, even after an uninstall. So don't
+add it back while a mirror there may be the last copy of a volume. Wipe or reinstall its disk only
+if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
+reach it. `ployz server forget` prints this warning each time it forgets servers.
 
 To add a forgotten server back, run `ployz server add` for it with `--reset`. It resets the server
 first, as `ployz server rm` would have, and asks before it does; `--yes` skips the question.

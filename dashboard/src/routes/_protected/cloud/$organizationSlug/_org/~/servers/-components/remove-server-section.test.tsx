@@ -18,10 +18,10 @@ const machine: RuntimeMachineRecord = {
   poolCommittableBytes: null, membership: "down", observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
 };
 
-async function renderOffline() {
+async function renderOffline(last = false) {
   vi.spyOn(runtime, "useClusterReleased").mockReturnValue(() => {});
   const root = createRootRoute({
-    component: () => <RemoveServerSection machine={machine} organizationSlug="ada" last={false} offline hint={null} gate={{ allowed: true, reason: undefined }} />,
+    component: () => <RemoveServerSection machine={machine} organizationSlug="ada" last={last} offline hint={null} gate={{ allowed: true, reason: undefined }} />,
   });
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
   render(<QueryClientProvider client={new QueryClient()}><RouterProvider router={router} /></QueryClientProvider>);
@@ -38,4 +38,15 @@ it("says a mirrored volume comes back from its mirror, and only a volume with no
     "A volume with a mirror on another server comes back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere are lost.",
   );
   expect(dialog.textContent).not.toContain("can't be recovered");
+  expect(dialog.textContent).toContain(
+    "web-1 won't know it was forgotten. If it runs again as it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo ployz-uninstall on it as soon as it boots.",
+  );
+});
+
+it("warns that the last server, once forgotten, keeps writing to its own copies if it runs again", async () => {
+  fireEvent.click(await renderOffline(true));
+  const dialog = await screen.findByRole("alertdialog", { name: "Forget all servers?" });
+  expect(dialog.textContent).toContain(
+    "A forgotten server won't know it was forgotten. If one runs again as it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo ployz-uninstall on it as soon as it boots.",
+  );
 });
