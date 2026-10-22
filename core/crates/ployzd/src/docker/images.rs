@@ -74,6 +74,9 @@ impl ContainerRuntime {
     /// call ran out. A `docker info` that fails or stalls past [`DISK_READ_BOUND`]
     /// leaves `error` as it is.
     pub(crate) async fn pull_failure(&self, error: Error) -> Error {
+        if pulled(&error).is_none() {
+            return error;
+        }
         let free = tokio::time::timeout(DISK_READ_BOUND, self.docker.client.info())
             .await
             .ok()
@@ -198,26 +201,34 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
         .collect()
 }
 
-/// A pull is the full disk, with Docker's error as its cause, when Docker says the
-/// device is out of space, or when containerd failed writing a layer with `free`
-/// under [`DISK_FULL_FREE_BYTES`]: it then fails with whatever call ran out. A
-/// registry pull's error and a peer pull's alike; any other failure, a registry's
-/// answer among them, stays itself. A not-found answer stays itself whatever its
-/// text says, so the CLI names the missing image.
-fn pull_failure(error: Error, free: Option<(String, u64)>) -> Error {
+/// What a failed pull printed, and whether a failed layer write in it may be read as
+/// a full disk; none for an error no full disk explains, a registry's not-found
+/// answer among them, whatever its text says, so the CLI names the missing image.
+/// A peer pull cut short also fails its layer commit, so there only ENOSPC counts.
+fn pulled(error: &Error) -> Option<(String, bool)> {
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "only a failed pull can be a full disk"
     )]
-    let message = match &error {
+    match error {
         Error::ImagePull(docker) if !crate::docker_image::is_not_found(docker) => {
-            docker.to_string()
+            Some((docker.to_string(), true))
         }
-        Error::PeerPull(printed) => printed.clone(),
-        _ => return error,
+        Error::PeerPull(printed) => Some((printed.clone(), false)),
+        _ => None,
+    }
+}
+
+/// A registry or peer pull is the full disk, with Docker's error as its cause, when
+/// Docker says the device is out of space, or when containerd failed writing a
+/// registry layer with `free` under [`DISK_FULL_FREE_BYTES`]: it then fails with
+/// whatever call ran out. Any other failure stays itself.
+fn pull_failure(error: Error, free: Option<(String, u64)>) -> Error {
+    let Some((message, layer_rule)) = pulled(&error) else {
+        return error;
     };
     let out_of_space = message.contains(OUT_OF_SPACE);
-    let layer_write = LAYER_WRITES.iter().any(|write| message.contains(write));
+    let layer_write = layer_rule && LAYER_WRITES.iter().any(|write| message.contains(write));
     match free {
         Some((docker_root, free_bytes))
             if out_of_space || (layer_write && free_bytes < DISK_FULL_FREE_BYTES) =>
@@ -441,6 +452,34 @@ mod tests {
         let failure = failed_peer_pull("manifest unknown", 0);
         assert_eq!(failure.reason, "pull image failed");
         assert_eq!(failure.cause, ["peer image pull failed: manifest unknown"]);
+    }
+
+    /// A peer's stream cut short fails the layer commit on a nearly full disk too:
+    /// only ENOSPC names the disk for a peer pull.
+    #[test]
+    fn a_peer_pull_cut_short_on_a_nearly_full_disk_stays_itself() {
+        let cut =
+            "failed commit on ref \"layer-sha256:759e\": commit failed: unexpected commit digest";
+        let failure = failed_peer_pull(cut, 800_000_000);
+        assert_eq!(failure.reason, "pull image failed");
+        assert_eq!(failure.cause, [format!("peer image pull failed: {cut}")]);
+    }
+
+    #[test]
+    fn a_peer_pull_on_a_full_disk_answers_the_disk_it_ran_out_on() {
+        let error = pull_failure(
+            Error::PeerPull(PEER_EXTRACT.into()),
+            Some(("/var/lib/docker".into(), 0)),
+        );
+        let answered = ployz_core::RpcError::from(&error);
+        assert_eq!(answered.code, ployz_core::RpcErrorCode::Internal);
+        assert_eq!(
+            answered.disk_full(),
+            Some(DiskFull {
+                docker_root: "/var/lib/docker".into(),
+                free_bytes: 0,
+            })
+        );
     }
 
     #[test]
