@@ -231,6 +231,36 @@ pub(crate) fn admit(
     Ok(summary)
 }
 
+/// Record that the user Cloud authenticated admitted Deployment `id`, by the
+/// immutable id that makes it their own when they cancel it ([`admitter`]).
+pub(crate) fn admitted_by_user(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    trusted: &crate::Trusted,
+) -> Result<(), RpcError> {
+    let Some(user) = &trusted.user else {
+        return Ok(());
+    };
+    tx.execute(
+        "UPDATE config_deployment SET admitted_by_user = ?2 WHERE id = ?1",
+        &[id.as_str().into(), user.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// Who admitted Deployment `id`, by the immutable id Cloud authenticated: none for
+/// Cloud's own automation and for one an older Cloud admitted.
+pub(crate) fn admitter(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Option<String>, RpcError> {
+    let rows = tx.query(
+        "SELECT admitted_by_user FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    Ok(row.optional_text(0)?.map(str::to_owned))
+}
+
 /// How a removal of `environment` applies without a runner, if it can: nothing of
 /// it ever ran on a Server, or Cloud counted no Server left to run it. Zero
 /// enrolled Servers isn't runtime absence: that removal completes only in

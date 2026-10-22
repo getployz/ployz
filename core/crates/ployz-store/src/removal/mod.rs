@@ -833,7 +833,13 @@ pub(crate) fn cancel(
     let environment = deployment::owned(tx, who, id)?.summary.environment_id;
     crate::scope::lock_all(tx, [environment])?;
     let summary = deployment::owned(tx, who, id)?.summary;
-    let theirs = summary.admitted_by.is_none() || summary.admitted_by != who.principal;
+    // Their own by the immutable id Cloud authenticated, since a name may repeat. A
+    // Deployment an older Cloud admitted holds none, nor does a caller an older Cloud
+    // sends, so those still go by name.
+    let theirs = match (deployment::admitter(tx, id)?, &trusted.user) {
+        (Some(admitter), Some(user)) => admitter != *user,
+        _ => summary.admitted_by.is_none() || summary.admitted_by != who.principal,
+    };
     let stops = matches!(
         summary.status,
         DeploymentStatus::WaitingForCi | DeploymentStatus::Queued | DeploymentStatus::Running

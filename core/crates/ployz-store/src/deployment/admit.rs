@@ -164,6 +164,7 @@ pub(crate) fn admit(
         Admit::Retry(retry) => {
             let asked = retry_review(tx, who, &retry.deployment, trusted)?;
             let (retried, rollback) = deployment::retry(tx, who, retry, trusted)?;
+            deployment::admitted_by_user(tx, &retried.id, trusted)?;
             let forget = match retried.remove {
                 true => deployment::forgettable(tx, &retried.environment_id, trusted)?,
                 false => None,
@@ -360,6 +361,7 @@ fn deploy(
         saved,
         &frozen,
     )?;
+    deployment::admitted_by_user(tx, &summary.id, trusted)?;
     // What merges landed and this Deploy ships no longer waits for a push.
     let shipped = match admit.services.is_empty() {
         true => Shipped::All(&saved_intent),

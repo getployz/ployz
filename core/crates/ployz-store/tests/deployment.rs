@@ -5938,6 +5938,14 @@ fn member(approval: Approval, asks: Asks) -> Trusted {
     }
 }
 
+/// `trusted` for the user Cloud authenticated as `user`, by their immutable id.
+fn signed_in(user: &str, trusted: Trusted) -> Trusted {
+    Trusted {
+        user: Some(user.to_owned()),
+        ..trusted
+    }
+}
+
 fn as_person(who: &Actor, name: &str) -> Actor {
     Actor {
         principal: Some(Principal::parse(name).unwrap()),
@@ -6065,10 +6073,15 @@ fn cancelling_someone_elses_deployment_in_protected_production_asks_an_admin() {
         &store,
         &linus,
         2,
-        &protector(Approval::NotRequired, Asks::Destroys),
+        &signed_in("u-linus", protector(Approval::NotRequired, Asks::Destroys)),
     )
     .unwrap();
-    cancel_as(&linus, 2, &member(Approval::NotRequired, Asks::Destroys)).unwrap();
+    cancel_as(
+        &linus,
+        2,
+        &signed_in("u-linus", member(Approval::NotRequired, Asks::Destroys)),
+    )
+    .unwrap();
     deploy_trusted(
         &store,
         &linus,
@@ -6091,4 +6104,66 @@ fn cancelling_someone_elses_deployment_in_protected_production_asks_an_admin() {
     assert_eq!(stopping.status, DeploymentStatus::Cancelling);
     let again = cancel_as(&linus, 4, &member(Approval::Required, Asks::Destroys)).unwrap();
     assert_eq!(again.status, DeploymentStatus::Cancelling);
+}
+
+#[test]
+fn a_member_named_like_the_admitter_still_asks_before_cancelling_their_deployment() {
+    let (store, system) = shop();
+    let linus = as_person(&system, "linus");
+    deploy_trusted(
+        &store,
+        &linus,
+        1,
+        &signed_in("u-linus", protector(Approval::NotRequired, Asks::Destroys)),
+    )
+    .unwrap();
+
+    // Another member who calls themselves linus too.
+    let namesake = signed_in("u-other", member(Approval::Required, Asks::Destroys));
+    let refused = store
+        .write_trusted(&linus, &Cancel { deployment: id(1) }, &namesake)
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(refused.details["protected"], json!(true));
+    assert_eq!(status(&store, &system, 1), DeploymentStatus::Queued);
+}
+
+#[test]
+fn a_deployment_admitted_without_a_user_id_is_someones_own_by_name() {
+    // As one an older Cloud admitted, or one from before the id: its row holds none.
+    let (store, system) = shop();
+    let (grace, linus) = (as_person(&system, "grace"), as_person(&system, "linus"));
+    deploy_trusted(
+        &store,
+        &linus,
+        1,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+
+    // Linus cancels his own by name, though Cloud sends his id now.
+    let mine = signed_in("u-linus", member(Approval::Required, Asks::Destroys));
+    store
+        .write_trusted(&linus, &Cancel { deployment: id(1) }, &mine)
+        .unwrap();
+    // Grace's is someone else's to him, with his id sent or not.
+    deploy_trusted(
+        &store,
+        &grace,
+        2,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    let refused = store
+        .write_trusted(&linus, &Cancel { deployment: id(2) }, &mine)
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let refused = store
+        .write_trusted(
+            &linus,
+            &Cancel { deployment: id(2) },
+            &member(Approval::Required, Asks::Destroys),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
 }
