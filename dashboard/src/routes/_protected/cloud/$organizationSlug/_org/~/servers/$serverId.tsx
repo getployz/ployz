@@ -17,7 +17,7 @@ import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
 import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries";
-import { useRoleGate } from "#/modules/organization/members.queries";
+import { organizationMembersQueryOptions, useRoleGate } from "#/modules/organization/members.queries";
 import { drainDialogRows, drainLeftRows, removeHint } from "#/modules/machines/server-drain-view";
 import { useServerDrain } from "#/modules/machines/server-drain.hooks";
 import { latestServerDrainsQueryOptions } from "#/modules/machines/server-drain.queries";
@@ -56,6 +56,7 @@ export const Route = createFileRoute(
     latestServerDrainsQueryOptions(params.organizationSlug),
     latestServerWebTrafficQueryOptions(params.organizationSlug),
     volumePlacementsQueryOptions(params.organizationSlug),
+    organizationMembersQueryOptions(params.organizationSlug),
   ),
   component: RouteComponent,
 });
