@@ -265,6 +265,10 @@ ployz up --project my-app --env staging
 
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
 
+Ployz ignores spaces and newlines around `PLOYZ_TOKEN`, as a paste into a secret or `.env` file
+often leaves. A value that is still not a token, too long or with a newline inside it, fails with
+`PLOYZ_TOKEN is not a token`, and Ployz never prints it.
+
 A token acts as you in this organization, narrowed by its preset:
 
 | Preset | What it can do |

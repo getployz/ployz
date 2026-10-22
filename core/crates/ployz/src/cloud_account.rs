@@ -62,13 +62,28 @@ pub(crate) async fn credential(
     token: Option<String>,
     cloud: Option<String>,
 ) -> Result<Credential, LoginError> {
-    let Some(token) = token.filter(|token| !token.is_empty()) else {
+    let Some(token) = pasted(token) else {
         return cloud_login::signed_in(store).await.map(Credential::Device);
     };
+    if reqwest::header::HeaderValue::from_str(&token).is_err() {
+        return Err(LoginError::TokenMalformed);
+    }
     Ok(Credential::Token {
         cloud: named_cloud(store, true, cloud)?.unwrap_or_else(|| cloud_origin(DEFAULT_CLOUD)),
         token: Secret::new(token),
     })
+}
+
+/// `PLOYZ_TOKEN` as set, without the whitespace a paste into a CI secret or
+/// `.env` file leaves around it; a token never holds any.
+pub(crate) fn env_token() -> Option<String> {
+    pasted(std::env::var(crate::cli::env::TOKEN).ok())
+}
+
+fn pasted(token: Option<String>) -> Option<String> {
+    token
+        .map(|token| token.trim().to_owned())
+        .filter(|token| !token.is_empty())
 }
 
 /// The Cloud [`credential`] acts in, when anything names one: with a token, `cloud`
@@ -105,11 +120,10 @@ pub(crate) fn named_cloud(
 ///
 /// Returns the stored sign-in's [`LoginError`] when there is no token.
 pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, LoginError> {
-    use crate::cli::env;
     credential(
         store,
-        std::env::var(env::TOKEN).ok(),
-        std::env::var(env::CLOUD_URL).ok(),
+        env_token(),
+        std::env::var(crate::cli::env::CLOUD_URL).ok(),
     )
     .await
 }
@@ -1258,7 +1272,7 @@ pub(crate) const SIGN_IN_PAST_TOKEN: &str = "unset PLOYZ_TOKEN && ployz login";
 /// Cloud can't know a token caller is a shell with `PLOYZ_TOKEN` set, so its
 /// `ployz login` step becomes one that works while the token is.
 fn past_token(mut refused: RpcError) -> RpcError {
-    let token = std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
+    let token = env_token().is_some();
     if token
         && let Some(next) = refused.details.get_mut("next")
         && next == "ployz login"
@@ -1340,6 +1354,9 @@ fn answer<T: DeserializeOwned>(
         (status, _) if status.is_success() => cloud_login::decode(body.to_vec()),
         (StatusCode::UNAUTHORIZED, Credential::Device(_)) => Err(LoginError::Ended),
         (StatusCode::UNAUTHORIZED, Credential::Token { .. }) => Err(LoginError::TokenRefused),
+        (StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE, Credential::Token { .. }) => {
+            Err(LoginError::TokenMalformed)
+        }
         // Cloud refuses a member's call in the RPC error vocabulary (`claim_required`);
         // only a bare 403 means the sign-in left its Organization.
         (StatusCode::FORBIDDEN, Credential::Device(signed_in)) if refusal(body).is_none() => {
@@ -1516,6 +1533,49 @@ mod tests {
             .unwrap();
         assert_eq!(chosen.cloud(), "http://cloud.test");
         assert!(named_cloud(&store, false, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn ployz_token_drops_the_whitespace_a_paste_leaves_around_it() {
+        let (_dir, store) = signed_in_store("http://cloud.test");
+        for pasted in [
+            "ployz_secret\n",
+            "ployz_secret\r\n",
+            " ployz_secret ",
+            "\tployz_secret",
+        ] {
+            let chosen = credential(&store, Some(pasted.to_owned()), None)
+                .await
+                .unwrap();
+            assert_eq!(chosen.bearer(), "ployz_secret", "{pasted:?}");
+        }
+        let chosen = credential(&store, Some(" \n".to_owned()), None)
+            .await
+            .unwrap();
+        assert!(matches!(chosen, Credential::Device(_)));
+    }
+
+    #[tokio::test]
+    async fn ployz_token_no_header_can_carry_is_refused_without_printing_it() {
+        let (_dir, store) = signed_in_store("http://cloud.test");
+        let error = credential(&store, Some("ployz_sec\nret".to_owned()), None)
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(error, LoginError::TokenMalformed), "{error:?}");
+        assert!(!error.to_string().contains("ployz_sec"), "{error}");
+    }
+
+    #[test]
+    fn a_431_names_ployz_token_as_malformed() {
+        let token = Credential::Token {
+            cloud: "http://cloud.test".to_owned(),
+            token: Secret::new("ployz_secret".to_owned()),
+        };
+        let error =
+            answer::<serde_json::Value>(&token, StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE, b"")
+                .unwrap_err();
+        assert!(matches!(error, LoginError::TokenMalformed), "{error:?}");
     }
 
     #[tokio::test]

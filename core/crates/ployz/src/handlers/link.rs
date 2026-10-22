@@ -329,7 +329,7 @@ fn acting_organization(config: &Path) -> Result<Option<Organization>, Error> {
     }
     // ponytail: an Organization Token's Organization is only known to Cloud, so a link
     // is not checked against it; ask `GET organizations` here if tokens meet links.
-    if std::env::var(env::TOKEN).is_ok_and(|token| !token.is_empty()) {
+    if crate::cloud_account::env_token().is_some() {
         return Ok(None);
     }
     Ok(CredentialStore::beside(config).organization()?)
@@ -1034,7 +1034,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     if let Some(context) = matches.get_one::<String>("context") {
         return Ok(via("context", Some(context.clone())));
     }
-    let token = std::env::var(env::TOKEN).is_ok_and(|token| !token.is_empty());
+    let token = crate::cloud_account::env_token().is_some();
     if token || CredentialStore::beside(config).organization()?.is_some() {
         return Ok(via("cloud", None));
     }

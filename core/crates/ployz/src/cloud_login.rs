@@ -76,6 +76,10 @@ pub(crate) enum LoginError {
         "Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"
     )]
     TokenRefused,
+    #[error(
+        "PLOYZ_TOKEN is not a token: it is too long or holds a newline or other character a token never has. Copy it again from where it was made."
+    )]
+    TokenMalformed,
     #[error("this sign-in's Organization {0} is no longer one of yours")]
     NotMember(String),
     #[error("PLOYZ_TOKEN acts only in the Organization it was made in")]

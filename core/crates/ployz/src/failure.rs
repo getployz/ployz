@@ -1019,7 +1019,8 @@ impl From<LoginError> for Failure {
             | LoginError::Status { .. }
             | LoginError::Reply(_)
             | LoginError::Store { .. }
-            | LoginError::TokenBound => None,
+            | LoginError::TokenBound
+            | LoginError::TokenMalformed => None,
         };
         Self::command(error).hint(next.map(|next| Hint::Next(next.into())))
     }
@@ -1042,6 +1043,7 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         | LoginError::Ended
         | LoginError::AwaitingApproval { .. }
         | LoginError::TokenRefused
+        | LoginError::TokenMalformed
         | LoginError::NotMember(_) => RpcErrorCode::Unauthenticated,
         LoginError::UnknownOrganization(_) | LoginError::UnknownCredential(_) => {
             RpcErrorCode::NotFound
