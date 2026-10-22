@@ -41,6 +41,12 @@ variable that isn't there, doesn't either: the deploy leaves that variable out t
 leaves the reference empty in a config file, along with any reference that reads it, and the
 deployment's page and `ployz deploy` name each one.
 
+A deploy removes only the services you removed from the environment, such as with
+`ployz service rm`. It keeps any other service running in the environment, and `ployz deploy` and
+`ployz deployment show` name each one, such as `postgres: running, not in this environment; kept`.
+To remove those too, run `ployz deploy --prune`. It asks first. In a script or with `--json`, add
+`--yes`, or it stops with `confirmation_required` and deploys nothing. Their volumes and data stay.
+
 **Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
 records your changes and optional message without deploying them. Ployz shows **Saved, not
 deployed**. Your
@@ -79,14 +85,6 @@ commit with nothing staged, use the CLI:
 ```sh
 ployz deploy
 ```
-
-A deploy removes only the services you removed, such as with `ployz service rm`. When more than
-one person, or more than one Ployz Cloud organization, deploys to the same servers, a deploy keeps
-every service running there that it doesn't know about, and names each one, for example
-`api: running, not in this Store; kept`. The deployment's page and `ployz deployment show` list
-them too. To take those services off the servers as well, run `ployz deploy --prune`. It asks
-first; in a script, or with `--json`, add `--yes`, or it stops with `confirmation_required` and
-deploys nothing.
 
 ## Saved history
 

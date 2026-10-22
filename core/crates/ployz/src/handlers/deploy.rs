@@ -225,12 +225,12 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
 /// admission, and admission is what `--prune` changes.
 fn confirm_prune() -> Result<(), Error> {
     ui::confirm(
-        "Also remove every Service running in the Environment that this Store doesn't hold?",
+        "Also remove every service running in this environment that isn't one of its services?",
         || {
             Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
-                "deploy --prune removes every Service running in the Environment that this \
-                 Store doesn't hold, and needs confirmation. Nothing deployed.",
+                "deploy --prune removes every service running in this environment that isn't one of \
+                 its services, and needs confirmation. Nothing deployed.",
                 serde_json::json!({ "prune": true }),
             )
             .hint(Hint::Retry(super::typed_with(&["--yes"])))
@@ -1448,7 +1448,7 @@ pub(super) fn say_view(view: &DeploymentView) {
     }
     if view.deployment.prune {
         crate::ui::stream(format_args!(
-            "  Prune: also removes every Service running in the Environment that this Store doesn't hold"
+            "  Prune: also removes every service running in this environment that isn't one of its services"
         ));
     }
     for warning in view.preview.iter().flat_map(|preview| &preview.warnings) {
