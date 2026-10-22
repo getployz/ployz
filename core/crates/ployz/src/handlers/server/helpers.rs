@@ -101,28 +101,27 @@ pub(in crate::handlers) fn requested_name(
     };
     MachineName::parse(requested.as_str())
         .map(Some)
-        .map_err(|error| match MachineName::from_hostname(requested) {
-            Some(suggested) => Error::caused(
-                RpcErrorCode::InvalidArgument,
-                format!("{requested:?} is not a Server name. Try --name {suggested}."),
-                error,
-            ),
-            None => error.into(),
+        .map_err(|error| {
+            let failure = Error::from(error);
+            match MachineName::from_hostname(requested) {
+                Some(suggested) => failure.hint(Hint::Closest(suggested.into())),
+                None => failure,
+            }
         })
 }
 
+/// The requested name, or the hostname's normalised form, said on stderr. A hostname with
+/// nothing usable falls back to a name from the Machine ID, so a retry asks under the same name.
 pub(in crate::handlers) fn machine_name(
     requested: Option<MachineName>,
     token: &MachineToken,
 ) -> MachineName {
-    requested.unwrap_or_else(|| hostname_machine_name(&token.runtime.hostname))
-}
-
-/// The Machine Name a Server takes from its hostname when none was asked for, said on stderr.
-pub(crate) fn hostname_machine_name(hostname: &str) -> MachineName {
+    if let Some(name) = requested {
+        return name;
+    }
+    let hostname = &token.runtime.hostname;
     let name = MachineName::from_hostname(hostname).unwrap_or_else(|| {
-        let suffix = uuid::Uuid::new_v4().simple().to_string();
-        MachineName::parse(format!("server-{}", &suffix[..8]))
+        MachineName::parse(format!("server-{}", &token.id.as_str()[..8]))
             .expect("server- and hex digits make a DNS label")
     });
     crate::ui::note(format_args!(
@@ -328,11 +327,16 @@ mod tests {
     }
 
     #[test]
-    fn an_unusable_hostname_falls_back_to_a_generated_name() {
+    fn an_unusable_hostname_falls_back_to_a_name_from_the_machine_id() {
         for hostname in ["", "___"] {
-            let name = machine_name(None, &token_with_hostname(hostname));
-            let suffix = name.as_str().strip_prefix("server-").unwrap();
-            assert_eq!(suffix.len(), 8, "{name}");
+            let token = token_with_hostname(hostname);
+            let expected = format!("server-{}", &token.id.as_str()[..8]);
+            assert_eq!(machine_name(None, &token).as_str(), expected);
+            assert_eq!(
+                machine_name(None, &token).as_str(),
+                expected,
+                "a retry keeps it"
+            );
         }
     }
 
@@ -346,20 +350,21 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_requested_name_is_refused_with_its_normalised_form() {
+    fn an_invalid_requested_name_is_refused_with_its_normalised_form_as_a_hint() {
         let matches = |name: &str| {
             clap::Command::new("add")
                 .arg(clap::Arg::new("name").long("name"))
                 .get_matches_from(["add", "--name", name])
         };
+        let refused = requested_name(&matches("HP-WIN11")).unwrap_err();
         assert_eq!(
-            crate::ui::chain_text(&requested_name(&matches("HP-WIN11")).unwrap_err()),
-            "\"HP-WIN11\" is not a Server name. Try --name hp-win11: invalid Machine Name \"HP-WIN11\": a 1-63 character lowercase DNS label"
+            refused.to_string(),
+            "invalid Machine Name \"HP-WIN11\": a 1-63 character lowercase DNS label"
         );
-        assert_eq!(
-            requested_name(&matches("___")).unwrap_err().to_string(),
-            "invalid Machine Name \"___\": a 1-63 character lowercase DNS label"
-        );
+        assert_eq!(refused.report().code, RpcErrorCode::InvalidArgument);
+        assert_eq!(refused.hints(), [Hint::Closest("hp-win11".into())]);
+        let refused = requested_name(&matches("___")).unwrap_err();
+        assert!(refused.hints().is_empty());
         assert_eq!(
             requested_name(&matches("web-1")).unwrap().unwrap().as_str(),
             "web-1"
