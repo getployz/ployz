@@ -147,11 +147,21 @@ pub(crate) async fn run<H: FenceHost>(host: &H, shutdown: CancellationToken) {
             }
         }
         let asked = host.ask(&due).await;
+        let names = |answer: Option<ForgottenAnswer>| -> Vec<&MachineName> {
+            asked
+                .iter()
+                .filter(|asked| asked.answer == answer)
+                .map(|asked| &asked.peer)
+                .collect()
+        };
+        // One line per round at info: the journal shows a check ran even when it fences nothing.
+        tracing::info!(
+            listed = ?names(Some(ForgottenAnswer::Listed)),
+            forgotten = ?names(Some(ForgottenAnswer::Forgotten)),
+            unanswered = ?names(None),
+            "asked peers Corrosion no longer hears whether this Machine was forgotten"
+        );
         let Verdict::Fence { told_by } = verdict(&asked) else {
-            tracing::debug!(
-                ?asked,
-                "silent peers were asked and none says this Machine was forgotten"
-            );
             continue;
         };
         tracing::warn!(%told_by, "this Machine was forgotten by its Cluster; fencing and keeping every Volume copy");
