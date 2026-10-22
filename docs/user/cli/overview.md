@@ -435,9 +435,8 @@ because a deploy replaced it or the service was stopped, it exits 1 with
 service runs, and running it again attaches there. When `ployz exec` stops before your command does,
 because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
 command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command
-you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a` and `b` running;
-run them with `exec` in the shell, or as the command itself. With a TTY, Ctrl-C reaches the
-command as a keypress first.
+you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a` and `b` running.
+With a TTY, Ctrl-C reaches the command as a keypress first.
 
 A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
 `service add` and other changes exit 1 with `Cloud ... stopped answering after it got this
