@@ -66,6 +66,12 @@ impl MachineService {
         }
     }
 
+    /// Env keys this Machine opened from Sealed ciphertext for `container`. No Machine
+    /// opens Sealed values yet, so there are none.
+    fn opened_env_keys(&self, _container: &ployz_core::ContainerId) -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
     pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
         self.local = self.local.with_management_client(remote);
         self
@@ -341,6 +347,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::InspectContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
@@ -351,7 +358,15 @@ impl MachineRpc for MachineService {
             .inspect_managed_details(&request.container_id, &machine_id)
             .await
         {
-            Ok(details) => respond(details),
+            Ok(mut details) => {
+                if operator {
+                    withhold_opened(
+                        &mut details.environment,
+                        &self.opened_env_keys(&request.container_id),
+                    );
+                }
+                respond(details)
+            }
             Err(error) => respond(RpcError::from(&error)),
         }
     }
@@ -515,10 +530,14 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::RetainedEnv>(request)?;
-        respond(RetainedEnvReply {
-            environment: self.observe.retained_env(request.container_id).await?,
-        })
+        let opened = self.opened_env_keys(&request.container_id);
+        let mut environment = self.observe.retained_env(request.container_id).await?;
+        if operator {
+            withhold_opened(&mut environment, &opened);
+        }
+        respond(RetainedEnvReply { environment })
     }
 
     async fn tail_logs(
@@ -988,6 +1007,21 @@ fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Statu
         .decode_request()
         .map(|request| request.body)
         .map_err(invalid_request)
+}
+
+/// Whether `request` came from an `Operator` Management Client.
+fn from_operator<T>(request: &Request<T>) -> bool {
+    request
+        .metadata()
+        .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
+}
+
+/// Drop every `opened` key, so an `Operator` caller never reads back a value this
+/// Machine opened from Sealed ciphertext.
+fn withhold_opened(environment: &mut Option<BTreeMap<String, String>>, opened: &BTreeSet<String>) {
+    if let Some(environment) = environment {
+        environment.retain(|key, _| !opened.contains(key));
+    }
 }
 
 #[allow(clippy::result_large_err)]

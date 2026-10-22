@@ -1,6 +1,6 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, store_error};
+use super::{MachineService, store_error, withhold_opened};
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
@@ -10,10 +10,28 @@ use ployz_core::{
     RuntimeWatchRequest, ServiceId, op,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 use tonic::{Code, Request};
+
+#[test]
+fn an_operator_reads_every_env_key_but_the_opened_ones() {
+    let opened = BTreeSet::from(["DATABASE_URL".to_owned()]);
+    let mut environment = Some(BTreeMap::from([
+        ("DATABASE_URL".to_owned(), "postgres://secret".to_owned()),
+        ("PORT".to_owned(), "8080".to_owned()),
+    ]));
+    withhold_opened(&mut environment, &opened);
+    assert_eq!(
+        environment,
+        Some(BTreeMap::from([("PORT".to_owned(), "8080".to_owned())]))
+    );
+
+    let mut unknown = None;
+    withhold_opened(&mut unknown, &opened);
+    assert_eq!(unknown, None);
+}
 
 #[test]
 fn out_of_order_machine_transitions_are_conflicts() {
