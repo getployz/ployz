@@ -11,7 +11,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::error;
-use crate::id::{ApprovalDigest, EnvironmentId, Hostname, VolumeName};
+use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname, VolumeName};
 use crate::review::{DiffView, Head, Review, Shipping};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
@@ -452,8 +452,8 @@ pub(crate) fn approve(
     gate.require(bound, message, (effects, diff))
 }
 
-/// Refuse taking an Environment off the Servers for `command` (`shut_down`, or the
-/// `retry` of a removal) while that destroys `effects`, unless
+/// Refuse taking an Environment off the Servers for `taking_off` (a shutdown, or the
+/// retry of a removal) while that destroys `effects`, unless
 /// no approval is required or Cloud holds a human's approval of exactly this. Into a
 /// Protected Environment, a caller who asks there asks even when Cloud requires
 /// nothing, as a Deploy does; an agent asks even when nothing is left to take off,
@@ -464,7 +464,7 @@ pub(crate) fn approve(
 /// fresh `diff`, and `protected` when the Environment's protection asked.
 pub(crate) fn approve_shut_down(
     who: &Actor,
-    command: &str,
+    taking_off: TakingOff<'_>,
     review: &Review,
     effects: &BTreeSet<DestructiveEffect>,
     gate: &Gate<'_>,
@@ -484,13 +484,34 @@ pub(crate) fn approve_shut_down(
             .join(", ");
         format!("A human must approve this first: {asked}")
     });
-    let bound = bound(who, command, &diff.environment.id, effects);
+    let mut bound = bound(who, taking_off.command(), &diff.environment.id, effects);
+    if let (TakingOff::Retry(source), Some(bound)) = (taking_off, bound.as_object_mut()) {
+        bound.insert("retry".to_owned(), json!(source));
+    }
     gate.require(bound, message, (effects, diff))
+}
+
+/// What takes an Environment off the Servers, as its approval binds it.
+#[derive(Clone, Copy)]
+pub(crate) enum TakingOff<'a> {
+    ShutDown,
+    /// The retry of removal `source`, which one approval admits alone.
+    Retry(&'a DeploymentId),
+}
+
+impl TakingOff<'_> {
+    const fn command(self) -> &'static str {
+        match self {
+            Self::ShutDown => "shut_down",
+            Self::Retry(_) => "retry",
+        }
+    }
 }
 
 /// Refuse cancelling Deployment `deployment`, which someone else admitted, into an
 /// Environment that is Protected for the caller, unless Cloud holds an admin's
-/// approval of exactly this cancel: it stops what they shipped partway.
+/// approval of exactly this cancel: it stops what they shipped partway. The caller
+/// holds the Environment's lock.
 ///
 /// # Errors
 /// `approval_required`, naming the `version:digest` to approve, the fresh `diff`
@@ -505,7 +526,6 @@ pub(crate) fn approve_cancel(
     if !gate.protected {
         return Ok(());
     }
-    crate::scope::lock_all(tx, [deployment.environment_id.clone()])?;
     let environment = crate::scope::load_by_id(tx, &deployment.environment_id)?;
     let review = super::review(tx, &environment)?;
     let effects = BTreeSet::new();

@@ -655,13 +655,13 @@ fn unobserved(
     ))
 }
 
-/// Ask a human, for `command`, before `environment` comes off the Servers as
+/// Ask a human, for `taking_off`, before `environment` comes off the Servers as
 /// `review` saw it, as a Deploy that removes the same would ask.
 pub(crate) fn ask_taking_off(
     tx: &mut dyn Tx,
     who: &Actor,
     (environment, review): (&Environment, &crate::review::Review),
-    command: &str,
+    taking_off: approval::TakingOff<'_>,
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let id = &environment.summary.id;
@@ -674,7 +674,7 @@ pub(crate) fn ask_taking_off(
     let empty = scope::empty(&environment.working.environment_slug);
     let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
     let gate = approval::Gate::new(tx, id, trusted)?;
-    approval::approve_shut_down(who, command, review, &effects, &gate)
+    approval::approve_shut_down(who, taking_off, review, &effects, &gate)
 }
 
 /// Take an Environment off the Servers and keep it: a Server's shutdown. It
@@ -717,7 +717,13 @@ pub(crate) fn shut_down(
         )?,
     };
     if forget.is_none() {
-        ask_taking_off(tx, who, (&environment, &review), "shut_down", trusted)?;
+        ask_taking_off(
+            tx,
+            who,
+            (&environment, &review),
+            approval::TakingOff::ShutDown,
+            trusted,
+        )?;
     }
     let frozen = deployment::freeze(
         id,

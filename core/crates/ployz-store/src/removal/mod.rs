@@ -828,9 +828,17 @@ pub(crate) fn cancel(
     id: &DeploymentId,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
+    // Read it, and the Environment's protection, under the lock the cancel writes
+    // under, so neither can change between the ask and the cancel.
+    let environment = deployment::owned(tx, who, id)?.summary.environment_id;
+    crate::scope::lock_all(tx, [environment])?;
     let summary = deployment::owned(tx, who, id)?.summary;
     let theirs = summary.admitted_by.is_none() || summary.admitted_by != who.principal;
-    if theirs && summary.in_flight {
+    let stops = matches!(
+        summary.status,
+        DeploymentStatus::WaitingForCi | DeploymentStatus::Queued | DeploymentStatus::Running
+    );
+    if theirs && stops {
         approval::approve_cancel(tx, who, &summary, trusted)?;
     }
     let cancelled = deployment::cancel(tx, who, id)?;

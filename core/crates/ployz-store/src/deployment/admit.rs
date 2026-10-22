@@ -176,7 +176,7 @@ pub(crate) fn admit(
                             tx,
                             who,
                             (&environment, &review),
-                            "retry",
+                            review::TakingOff::Retry(&retry.deployment),
                             trusted,
                         )?;
                     }
