@@ -331,7 +331,17 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let tty = options.tty;
             let detach = options.detach;
-            let mut session = open_exec(client, &service, container.as_ref(), options).await?;
+            let mut session = match open_exec(client, &service, container.as_ref(), options).await {
+                Ok(session) => session,
+                Err(error) => {
+                    if let OperatorError::NotRunningOnAnswered { gaps, names, .. } = &error {
+                        crate::ui::Gaps::of(gaps)
+                            .named(names.iter().map(|(id, name)| (*id, name)))
+                            .warn();
+                    }
+                    return Err(error.into());
+                }
+            };
             let _raw = tty.then(RawTerminal::enable).transpose()?;
             if tty {
                 send_terminal_size(&session.input).await?;

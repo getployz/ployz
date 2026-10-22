@@ -4,30 +4,45 @@ use std::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use futures_util::stream;
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    ContainerSelector, FanoutSelector, HealthObservation, HookContainer, LogBody, LogMetadata,
-    LogOrigin, MachineId, MachineName, MembershipObservation, Namespace, ResolvedServiceSpec,
-    RestartPolicy, ServiceContainer, ServiceId, ServiceName, ServiceSelector,
+    ContainerId, ContainerKind, ContainerObservation, ContainerObservationParts, ContainerRef,
+    ContainerRuntimeObservation, ContainerSelector, FanoutSelector, HealthObservation,
+    HookContainer, LogBody, LogMetadata, LogOrigin, MachineId, MachineName, MembershipObservation,
+    Namespace, ResolvedServiceSpec, RestartPolicy, ServiceContainer, ServiceId, ServiceName,
+    ServiceSelector,
 };
 
 use super::*;
 
-#[tokio::test(start_paused = true)]
-async fn exec_on_a_server_that_answers_does_not_wait_on_a_silent_one() {
+const MACHINE_ONE: u8 = 1;
+
+/// A Cluster where machine-1 holds `containers` and machine-2 holds none, and
+/// answers only when `second_answers`.
+async fn exec_cluster(
+    containers: Vec<ContainerObservation>,
+    second_answers: bool,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
     use ployz_core::{ContainerList, MachineList, RpcRequestBody, RpcResponse};
-    let answering = machine_observation(1, "machine-1");
-    let machines = vec![answering.clone(), machine_observation(2, "machine-2")];
-    let answering = answering.machine.id;
-    let (mut client, server) = crate::connect::test_support::rpc_exec_routes(
+    let first = machine_observation(MACHINE_ONE, "machine-1");
+    let first_id = first.machine.id;
+    let machines = vec![first, machine_observation(2, "machine-2")];
+    crate::connect::test_support::rpc_routes(
         move |rpc: tonic::Request<OpaquePayload>| {
             let machines = machines.clone();
+            let containers = containers.clone();
             async move {
-                let target = rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).cloned();
-                if target.is_some_and(|target| target != answering.as_str()) {
+                let on_first = match rpc.metadata().get(ployz_core::ONE_TARGET_HEADER) {
+                    Some(target) => target == first_id.as_str(),
+                    None => true,
+                };
+                if !on_first && !second_answers {
                     std::future::pending::<()>().await;
                 }
                 #[expect(
@@ -40,40 +55,140 @@ async fn exec_on_a_server_that_answers_does_not_wait_on_a_silent_one() {
                         machines,
                     }),
                     RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
-                        containers: vec![container_on(
-                            &"a".repeat(64),
-                            "api",
-                            ServiceId::parse("1".repeat(32)).unwrap(),
-                            ContainerKind::ServiceContainer,
-                            answering,
-                            "api",
-                        )],
+                        containers: if on_first { containers } else { Vec::new() },
                     }),
                     other => panic!("unexpected exec lookup RPC: {other:?}"),
                 };
                 Ok(tonic::Response::new(response.encode().unwrap()))
             }
         },
+        &[ployz_core::op::Exec::PATH],
         |_| async { Ok(tonic::Response::new(stream::empty())) },
     )
-    .await;
+    .await
+}
 
+fn api_on_machine_one(runtime: ContainerRuntimeObservation) -> ContainerObservation {
+    let mut parts = ContainerObservationParts::from(container_on(
+        &"a".repeat(64),
+        "api",
+        ServiceId::parse("1".repeat(32)).unwrap(),
+        ContainerKind::ServiceContainer,
+        machine_observation(MACHINE_ONE, "machine-1").machine.id,
+        "api",
+    ));
+    parts.runtime = runtime;
+    ContainerObservation::try_from(parts).unwrap()
+}
+
+fn running() -> ContainerRuntimeObservation {
+    ContainerRuntimeObservation::Running {
+        health: HealthObservation::Healthy,
+    }
+}
+
+/// Opens exec on `service`, returning the outcome and how long discovery waited.
+async fn timed_exec(
+    client: &mut Client,
+    service: &str,
+    container: Option<&str>,
+) -> (Result<ExecSession, OperatorError>, Duration) {
     let started = tokio::time::Instant::now();
     let session = open_exec(
-        &mut client,
-        &ServiceSelector::parse("app/api").unwrap(),
-        None,
+        client,
+        &ServiceSelector::parse(service).unwrap(),
+        container.map(container_selector).as_ref(),
         exec_options(Vec::new(), ExecMode::Attached { tty: false }),
     )
     .await;
-    let waited = started.elapsed();
+    (session, started.elapsed())
+}
+
+#[tokio::test(start_paused = true)]
+async fn exec_on_a_server_that_answers_does_not_wait_on_a_silent_one() {
+    let (mut client, server) = exec_cluster(vec![api_on_machine_one(running())], false).await;
+    let (session, waited) = timed_exec(&mut client, "app/api", None).await;
     server.abort();
 
     let session = session.expect("exec opens on the Server that answered");
-    assert_eq!(session.target.machine_id, answering);
+    assert_eq!(
+        session.target.machine_id,
+        machine_observation(MACHINE_ONE, "machine-1").machine.id
+    );
     assert!(
         waited < crate::connect::TARGET_RPC_TIMEOUT,
         "waited {waited:?} on the silent Server"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn exec_by_bare_name_or_container_waits_for_a_silent_server() {
+    for (service, container) in [("api", None), ("app/api", Some("api"))] {
+        let (mut client, server) = exec_cluster(vec![api_on_machine_one(running())], false).await;
+        let (session, waited) = timed_exec(&mut client, service, container).await;
+        server.abort();
+
+        let session = session.expect("exec opens once the silent Server is given up");
+        assert_eq!(
+            session.target.machine_id,
+            machine_observation(MACHINE_ONE, "machine-1").machine.id
+        );
+        assert!(
+            waited >= crate::connect::TARGET_RPC_TIMEOUT,
+            "{service} {container:?} opened after {waited:?}, before the silent Server could answer"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn exec_without_a_running_container_names_the_servers_that_did_not_answer() {
+    for containers in [
+        vec![api_on_machine_one(ContainerRuntimeObservation::Exited {
+            code: 1,
+        })],
+        Vec::new(),
+    ] {
+        let found = !containers.is_empty();
+        let (mut client, server) = exec_cluster(containers, false).await;
+        let (session, _) = timed_exec(&mut client, "app/api", None).await;
+        server.abort();
+
+        let Err(error) = session else {
+            panic!("exec opened with no running container (found: {found})");
+        };
+        assert_eq!(
+            error.to_string(),
+            "No running container of \"api\" on the Servers that answered; machine-2 did not answer.",
+            "found: {found}"
+        );
+        let OperatorError::NotRunningOnAnswered { gaps, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(
+            gaps.failures
+                .iter()
+                .map(|failure| failure.machine_id)
+                .collect::<Vec<_>>(),
+            [machine_observation(2, "machine-2").machine.id],
+            "found: {found}"
+        );
+        let failure = crate::failure::Failure::from(error);
+        assert_eq!(failure.report().code, ployz_core::RpcErrorCode::Unavailable);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn exec_with_every_server_answering_keeps_the_no_running_service_error() {
+    let (mut client, server) = exec_cluster(Vec::new(), true).await;
+    let (session, _) = timed_exec(&mut client, "app/api", None).await;
+    server.abort();
+
+    let Err(error) = session else {
+        panic!("exec opened with no container");
+    };
+    assert_eq!(
+        error.to_string(),
+        "No running Service \"api\"; ployz ps lists what's running"
     );
 }
 

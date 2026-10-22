@@ -108,45 +108,18 @@ where
     connected_client(service).await
 }
 
-/// One fake Machine answering unary calls with `unary` and its log streams with `stream`.
+/// The log routes, served as streams.
+pub(crate) const LOG_ROUTES: &[&str] = &[
+    ployz_core::op::TailLogs::PATH,
+    ployz_core::op::LogHistory::PATH,
+];
+
+/// One fake Machine answering the calls on `streams` with `stream`, and every
+/// other call with `unary`.
 pub(crate) async fn rpc_routes<U, UFut, F, Fut, S>(
     unary: U,
+    streams: &'static [&'static str],
     stream: F,
-) -> (
-    Client,
-    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-)
-where
-    U: Fn(Request<OpaquePayload>) -> UFut + Clone + Send + Sync + 'static,
-    UFut: Future<Output = Result<Response<OpaquePayload>, Status>> + Send + 'static,
-    F: Fn(Request<OpaquePayload>) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<Response<S>, Status>> + Send + 'static,
-    S: Stream<Item = Result<OpaquePayload, Status>> + Send + 'static,
-{
-    let unary = tower::service_fn(unary);
-    let stream = tower::service_fn(stream);
-    let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
-        let unary = unary.clone();
-        let stream = stream.clone();
-        async move {
-            let path = request.uri().path();
-            let mut grpc = tonic::server::Grpc::new(ProstCodec::default());
-            Ok::<_, Infallible>(
-                if path.ends_with("/TailLogs") || path.ends_with("/LogHistory") {
-                    grpc.server_streaming(stream, request).await
-                } else {
-                    grpc.unary(unary, request).await
-                },
-            )
-        }
-    });
-    connected_client(service).await
-}
-
-/// One fake Machine answering unary calls with `unary` and Exec streams with `exec`.
-pub(crate) async fn rpc_exec_routes<U, UFut, F, Fut, S>(
-    unary: U,
-    exec: F,
 ) -> (
     Client,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
@@ -159,14 +132,15 @@ where
     S: Stream<Item = Result<OpaquePayload, Status>> + Send + 'static,
 {
     let unary = tower::service_fn(unary);
-    let exec = tower::service_fn(exec);
+    let stream = tower::service_fn(stream);
     let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
         let unary = unary.clone();
-        let exec = exec.clone();
+        let stream = stream.clone();
         async move {
             let mut grpc = tonic::server::Grpc::new(ProstCodec::default());
-            Ok::<_, Infallible>(if request.uri().path() == ployz_core::op::Exec::PATH {
-                grpc.streaming(exec, request).await
+            // A server stream is a bidi stream whose client sends one message.
+            Ok::<_, Infallible>(if streams.contains(&request.uri().path()) {
+                grpc.streaming(stream, request).await
             } else {
                 grpc.unary(unary, request).await
             })

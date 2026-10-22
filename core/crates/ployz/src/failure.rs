@@ -616,6 +616,7 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::NoServices
         | OperatorError::NoDeploymentContainers => RpcErrorCode::NotFound,
         OperatorError::StreamClosed
+        | OperatorError::NotRunningOnAnswered { .. }
         | OperatorError::ExecContainerStopped { .. }
         | OperatorError::NoServableContainer
         | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,
