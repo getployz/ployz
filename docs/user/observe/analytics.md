@@ -36,7 +36,7 @@ Below come the top **Pages**, **Sources**, **Entry pages**, **Campaigns** (`utm_
 to flip the filter to every other page, and the cross to clear it.
 
 A dashed stretch of the chart is a partial day. That is today, whose visits are still arriving, or a
-day on which some visits could not be counted.
+day on which some visitors could not be counted.
 
 ## API
 
