@@ -53,10 +53,13 @@ with `approval_required`, anything it would remove, and a link to your organizat
 2. Read what the deploy does, and click **Approve** or **Deny**.
 3. Tell your agent to try again. It sends the call with the approval, and the deploy goes ahead.
 
+A service stop or restart, a server drain, removal or forget, removing a project or environment,
+and moving or releasing a volume wait the same way.
+
 Until you answer, trying again only asks again, and nothing changes. A denied approval stays
 denied. Only you approve, in the dashboard. The agent can't approve its own request, and
 `ployz org approval approve` refuses it too with `forbidden`, before it asks for the
-Organization's name, with or without a terminal and in `--json`.
+organization's slug, with or without a terminal and in `--json`.
 
 ## Disconnect
 
