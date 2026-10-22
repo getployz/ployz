@@ -283,6 +283,9 @@ struct Scripted {
     moves: Mutex<Vec<Move>>,
     /// Each live proxy's route once each move was applied.
     listed: Mutex<Vec<BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>>>,
+    /// What dialing the entry again answers; none when this client can't.
+    redial: Option<Result<(), RpcError>>,
+    redials: Mutex<usize>,
 }
 
 impl Scripted {
@@ -327,6 +330,8 @@ impl Scripted {
             store_reads: Mutex::new(0),
             moves: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
+            redial: None,
+            redials: Mutex::new(0),
         }
     }
 
@@ -1093,6 +1098,12 @@ fn edge_refusal(refused: ployz_core::RotationRefusal) -> ContainerRefusal {
 }
 
 impl MachineOperations for Scripted {
+    async fn redial(&self) -> Option<Result<(), RpcError>> {
+        let answer = self.redial.clone()?;
+        *self.redials.lock().unwrap() += 1;
+        Some(answer)
+    }
+
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
@@ -1664,6 +1675,11 @@ fn failed(call: Call, message: &str) -> Step {
     Step(call, Reply::Error(error(message)))
 }
 
+/// A client that can't dial its entry again.
+async fn no_redial() -> Option<Result<(), RpcError>> {
+    None
+}
+
 fn unavailable(message: &str) -> RpcError {
     RpcError {
         code: RpcErrorCode::Unavailable,
@@ -1848,10 +1864,14 @@ async fn a_lost_answer_outlasts_a_resend_that_never_reached_the_server() {
         )
     };
     let mut replies = vec![unreached(), lost()];
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        let reply = replies.pop().unwrap_or_else(unreached);
-        async move { Err::<(), _>(reply) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            let reply = replies.pop().unwrap_or_else(unreached);
+            async move { Err::<(), _>(reply) }
+        },
+        no_redial,
+    )
     .await
     .unwrap_err();
     assert!(error.reply_lost(), "{error:?}");
@@ -1897,20 +1917,28 @@ async fn a_lost_answer_never_hides_a_closed_session_or_a_refused_key() {
 
     let started = tokio::time::Instant::now();
     let mut replies = vec![closed, lost.clone()];
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        let reply = replies.pop().expect("no resend after a closed session");
-        async move { Err::<(), _>(reply) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            let reply = replies.pop().expect("no resend after a closed session");
+            async move { Err::<(), _>(reply) }
+        },
+        no_redial,
+    )
     .await
     .unwrap_err();
     assert!(error.reply_lost(), "{error:?}");
     assert!(started.elapsed() < RESTART_WAIT, "{:?}", started.elapsed());
 
     let mut replies = vec![refused_key, lost];
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        let reply = replies.pop().expect("no resend after a refused key");
-        async move { Err::<(), _>(reply) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            let reply = replies.pop().expect("no resend after a refused key");
+            async move { Err::<(), _>(reply) }
+        },
+        no_redial,
+    )
     .await
     .unwrap_err();
     assert!(error.message.contains("Permission denied"), "{error:?}");
