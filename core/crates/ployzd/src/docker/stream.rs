@@ -22,6 +22,9 @@ use crate::logs::{
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 const EXEC_OUTPUT_IDLE: Duration = Duration::from_millis(100);
+/// How long the command of an exec whose client went away has to exit after
+/// SIGTERM before SIGKILL, as `docker stop` gives a container.
+const ABANDONED_EXEC_GRACE: Duration = Duration::from_secs(10);
 
 impl ContainerRuntime {
     pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
@@ -204,6 +207,7 @@ async fn forward_attached_exec(
         StreamEnded,
         ProcessExited(Option<i64>),
         Failed(bollard::errors::Error),
+        ClientGone,
     }
 
     let process_exited = wait_for_exec_exit(docker, exec_id);
@@ -215,6 +219,7 @@ async fn forward_attached_exec(
                 Ok(exit_code) => break Ok(Completion::ProcessExited(exit_code)),
                 Err(error) => break Ok(Completion::Failed(error)),
             },
+            () = sender.closed() => break Ok(Completion::ClientGone),
             next = output.next() => match next {
                 Some(Ok(output)) => {
                     if let Err(error) = send_exec(sender, exec_output(output, tty)).await {
@@ -240,7 +245,50 @@ async fn forward_attached_exec(
         Completion::ProcessExited(exit_code) => {
             finish_exec_output(output, tty, sender, exit_code).await
         }
+        Completion::ClientGone => {
+            stop_abandoned_exec(docker, exec_id).await;
+            Ok(())
+        }
     }
+}
+
+/// Stop the command of an exec whose client went away, as an interrupted
+/// `ployz exec` with a TTY already does. Docker has no call to signal an exec,
+/// but reports its process, which runs in this daemon's PID namespace on a
+/// Server and in the testkit. The pidfd keeps the signals on that process even
+/// once it exits and its PID is reused.
+async fn stop_abandoned_exec(docker: &bollard::Docker, exec_id: &str) {
+    let Some(process) = exec_process(docker, exec_id).await else {
+        return;
+    };
+    if rustix::process::pidfd_send_signal(&process, rustix::process::Signal::TERM).is_err() {
+        return;
+    }
+    if tokio::time::timeout(ABANDONED_EXEC_GRACE, wait_for_exec_exit(docker, exec_id))
+        .await
+        .is_err()
+    {
+        let _ = rustix::process::pidfd_send_signal(&process, rustix::process::Signal::KILL);
+    }
+}
+
+/// A pidfd for the running process of exec `exec_id`, checked to still be it
+/// once the pidfd holds it.
+async fn exec_process(docker: &bollard::Docker, exec_id: &str) -> Option<rustix::fd::OwnedFd> {
+    let running = |inspected: bollard::models::ExecInspectResponse| {
+        inspected
+            .running
+            .unwrap_or(false)
+            .then_some(inspected.pid)
+            .flatten()
+    };
+    let pid = running(docker.inspect_exec(exec_id).await.ok()?)?;
+    let process = rustix::process::pidfd_open(
+        rustix::process::Pid::from_raw(i32::try_from(pid).ok()?)?,
+        rustix::process::PidfdFlags::empty(),
+    )
+    .ok()?;
+    (running(docker.inspect_exec(exec_id).await.ok()?) == Some(pid)).then_some(process)
 }
 
 async fn finish_exec_output(
