@@ -767,9 +767,11 @@ fn assemble_plan(
             Ok(operations) => operations,
             // A Volume nobody can mount stops only the Services that mount it: the rest of
             // the Deploy goes ahead, and these are reported not attempted (bet 8).
-            Err(error @ (PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. }))
-                if intent.options.block_unmountable =>
-            {
+            Err(
+                error @ (PlanError::NoWriter { .. }
+                | PlanError::CopiesUnknown { .. }
+                | PlanError::VolumeServerTakesNoServices { .. }),
+            ) if intent.options.block_unmountable => {
                 blocked.push(BlockedService {
                     service: spec.name.clone(),
                     error: error.into_rpc_error(),

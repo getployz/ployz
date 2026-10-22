@@ -677,6 +677,18 @@ pub enum PlanError {
         /// Who runs the Deploy, which decides the way back the message names.
         operator: ployz_core::Operator,
     },
+    /// The Volume's writer is on a Machine that accepts no services, as after a drain.
+    #[error(
+        "{service} can't start: its Volume {volume} is on {machine}, which doesn't run services. Turn them back on with ployz server set {machine} --accepts-services=true"
+    )]
+    VolumeServerTakesNoServices {
+        /// The Service that mounts the Volume.
+        service: ServiceName,
+        /// The Volume, as its owner named it.
+        volume: String,
+        /// The Machine holding the Volume's writer.
+        machine: MachineName,
+    },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(
         "{machine} did not answer, so Volume {name}'s copies are unknown. Bring {machine} back, or deploy the other services by name"
@@ -799,6 +811,12 @@ impl PlanError {
             error @ Self::NoWriter { .. } => {
                 ployz_core::SwitchError::NoWriter.rpc_error(error.to_string())
             }
+            error @ Self::VolumeServerTakesNoServices { .. } => RpcError {
+                code: RpcErrorCode::Conflict,
+                message: error.to_string(),
+                details: serde_json::json!({ "reason": "volume_server_takes_no_services" }),
+                cause: Vec::new(),
+            },
             error @ Self::CopiesUnknown { .. } => RpcError {
                 code: RpcErrorCode::Unavailable,
                 message: error.to_string(),
