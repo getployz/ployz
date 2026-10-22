@@ -13,7 +13,7 @@ use crate::{
     ByteQuantity, ConfigFileName, ConfigMount, ConfigName, ConfigSpec, ConfiguredHealthcheck,
     ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckCommand,
     HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost, Namespace, Operator, PlanOptions,
-    PortPublication, PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource,
+    PortPublication, PreDeployCommand, PreDeployHook, PruneScope, PullPolicy, RawVolumeSource,
     RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceConfigGraph, ServiceContainerSpec,
     ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceRemovals, ServiceVolume,
     ServiceVolumeGraph, UpdateConfig, VolumeDriver,
@@ -56,10 +56,14 @@ pub struct LowerDeploymentInput {
     pub lineages: BTreeMap<String, String>,
     /// Omitted preserves partial-deploy behavior; empty reconciles the complete target.
     pub selected: Option<Vec<ServiceAttempt>>,
-    /// Services this targeted Deploy retires, each also in `selected`. Written only
-    /// when there are some.
+    /// Services this Deploy retires, each also in `selected` when it names any.
+    /// Written only when there are some.
     #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
     pub removals: ServiceRemovals,
+    /// What a full Deploy removes beyond `removals`. Written only when limited, so
+    /// inputs from before it read the same.
+    #[serde(default, skip_serializing_if = "PruneScope::is_namespace")]
+    pub prune: PruneScope,
     /// The Cluster Domain generated domains were expanded under, when any were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_domain: Option<IngressHost>,
@@ -467,6 +471,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             removals: input.removals,
             operator: Operator::default(),
             block_unmountable: false,
+            prune: input.prune,
         },
     )
     .with_dependencies(dependencies)

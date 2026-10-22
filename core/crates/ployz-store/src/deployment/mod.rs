@@ -38,7 +38,7 @@ use ployz_core::config::{
 };
 use ployz_core::{
     ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DeployWarning,
-    DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace, RpcError,
+    DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace, PruneScope, RpcError,
     ServiceAttempt, ServiceName, ServiceOutcome, ServiceRemovals, VolumeRemoval,
     VolumeRemovalOutcome,
 };
@@ -164,6 +164,12 @@ pub struct DeploymentSummary {
     /// Whether it removes the Environment from the Servers: it ships the empty
     /// Environment ([`NOTHING`]) and deletes the data it accepted.
     pub remove: bool,
+    /// Whether it also removes every Service running in its Namespace that this
+    /// Store never held: another Store's, or one deployed directly. Without it, a
+    /// full Deploy removes only the Services this Store dropped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub prune: bool,
     /// Who admitted it, as Cloud authenticated them; none when the Store's own
     /// automation did, or the hidden local Store.
     pub admitted_by: Option<Principal>,
@@ -761,6 +767,11 @@ impl DeployedNode {
 /// What admission freezes, besides the Saved revision.
 pub(crate) struct Frozen {
     pub(crate) nodes: Vec<TargetNode>,
+    /// Whether it ships every Service: nodes alone can't say, since a full
+    /// Deployment tears down what Saved dropped too.
+    pub(crate) full: bool,
+    /// Whether it also removes every Service of the Namespace this Store never held.
+    pub(crate) prune: bool,
     pub(crate) namespace: Namespace,
     /// Sealed registry credentials by runtime Service, fixed at admission.
     pub(crate) credentials: BTreeMap<ServiceName, EncryptedSecretValue>,
@@ -805,6 +816,11 @@ struct Run {
     warnings: Vec<DeploymentWarning>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ingress: Vec<IngressRepair>,
+    /// Chosen at admission, not evidence: whether a full Deployment also removes
+    /// every Service of the Namespace this Store never held. Kept here so a Store
+    /// from before it reads the row unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    prune: bool,
 }
 
 impl Run {
@@ -838,28 +854,41 @@ pub(crate) struct Stored {
 }
 
 impl Stored {
-    /// What it lowers: the Saved Services it ships, then the runtime Services it
-    /// tears down. A full Deploy lowers neither: it prunes every Service its Saved
-    /// revision lacks.
-    pub(crate) fn lowering(&self) -> (Vec<ServiceName>, ServiceRemovals) {
-        if self.summary.services.is_empty() {
-            return (Vec::new(), ServiceRemovals::default());
-        }
+    /// What it lowers: the Saved Services it ships and the runtime Services it
+    /// tears down. A full Deploy ships every Service of `saved`, its revision, and
+    /// tears down each node `saved` lacks: one frozen before teardowns were, as
+    /// the runtime Service it ran as then.
+    pub(crate) fn lowering(&self, saved: &SavedEnvironmentIntent) -> Ships {
+        let full = self.summary.services.is_empty();
         let mut shipped = Vec::new();
         let mut removals = ServiceRemovals::default();
         for node in &self.nodes {
             if let TargetNode::Service {
+                id,
                 name,
+                runtime,
                 removals: gone,
-                ..
             } = node
             {
-                if gone.is_empty() {
-                    shipped.push(name);
-                } else {
+                if !gone.is_empty() {
                     removals.extend(gone.iter().cloned());
+                } else if full
+                    && !saved
+                        .services
+                        .iter()
+                        .any(|service| service.id == id.as_str())
+                {
+                    removals.extend([runtime.clone()]);
+                } else {
+                    shipped.push(name);
                 }
             }
+        }
+        if full {
+            return Ships::All {
+                removals,
+                prune: self.run.prune,
+            };
         }
         let services = self
             .summary
@@ -868,7 +897,7 @@ impl Stored {
             .filter(|service| shipped.contains(service))
             .cloned()
             .collect();
-        (services, removals)
+        Ships::Named { services, removals }
     }
 }
 
@@ -1075,6 +1104,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             chooses_upload_at_start: chooses_upload_at_start(status, service_uploads.as_ref()),
             preparing: preparing(status, &run),
             remove: row.number::<Revision>(4, "revision")? == NOTHING,
+            prune: run.prune,
             admitted_by: row.parse_optional(13, "identity")?,
             admitted_at: row.int(14)?,
             started_at: row.optional_int(15)?,

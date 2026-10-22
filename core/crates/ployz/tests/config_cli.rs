@@ -2897,6 +2897,42 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
 }
 
 #[test]
+fn deploy_prune_asks_before_removing_what_the_store_does_not_hold() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        // Under --json nothing can ask, so --prune refuses until --yes answers for it.
+        let asked = error(store, &["deploy", "--prune"]);
+        assert_eq!(asked["code"], json!("confirmation_required"), "{asked}");
+        assert_eq!(
+            asked["details"]["retry"],
+            json!("ployz --json deploy --prune --yes"),
+            "{asked}"
+        );
+        assert!(
+            asked["message"]
+                .as_str()
+                .unwrap()
+                .contains("Nothing deployed"),
+            "{asked}"
+        );
+        assert_eq!(ok(store, &["deployment", "ls"])["deployments"], json!([]));
+
+        let deployed = no_server_answers(store, &["deploy", "--prune", "--yes"]);
+        assert_eq!(deployed["prune"], json!(true), "{deployed}");
+        let id = deployed["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            ok(store, &["deployment", "show", &id])["prune"],
+            json!(true)
+        );
+
+        // Without --prune the Deployment keeps what this Store never held, and says so.
+        let kept = no_server_answers(store, &["deploy"]);
+        assert!(kept.get("prune").is_none(), "{kept}");
+    }
+}
+
+#[test]
 fn an_agent_allows_shared_writes_before_a_second_writer() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
@@ -5151,6 +5187,7 @@ fn applied(store: &Target, environment: &str) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             });
             local
                 .write_trusted(&who, &deploy, &Trusted::default())

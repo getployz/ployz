@@ -688,6 +688,16 @@ fn assemble_plan(
         }
     }
     let mut warnings = observation::warnings(&intent.namespace, &requested, &retiring, snapshot);
+    if prune_refusal == Some(PruneRefusal::RemovalsOnly) {
+        warnings.extend(
+            would_remove
+                .iter()
+                .filter(|service| !retiring.contains(service))
+                .map(|service| DeployWarning::NotInStore {
+                    service: service.clone(),
+                }),
+        );
+    }
     warnings.extend(hostname_policy_for(
         &intent.namespace,
         &requested,
@@ -920,8 +930,8 @@ fn obsolete_services(
         .collect()
 }
 
-/// Refuse retirement a targeted Deploy can't carry out exactly: of a Service it
-/// also deploys, of one it doesn't select, or in a reserved Namespace.
+/// Refuse retirement a Deploy can't carry out exactly: of a Service it also
+/// deploys, of one a targeted Deploy doesn't select, or in a reserved Namespace.
 fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
     if intent.options.removals.is_empty() {
         return Ok(());
@@ -937,11 +947,12 @@ fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
                 service: service.clone(),
             });
         }
-        if !intent
-            .options
-            .selected
-            .iter()
-            .any(|attempt| attempt.name == *service)
+        if !intent.options.selected.is_empty()
+            && !intent
+                .options
+                .selected
+                .iter()
+                .any(|attempt| attempt.name == *service)
         {
             return Err(PlanError::RemovalNotSelected {
                 service: service.clone(),

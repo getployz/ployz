@@ -13,6 +13,7 @@ use ts_rs::TS;
 use crate::automation::Shipped;
 use crate::deployment::{self, DeploymentSummary, TargetNode, UploadedSource};
 use crate::domain;
+use crate::error;
 use crate::id::{DeploymentId, Hostname, VolumeName};
 use crate::registry;
 use crate::review;
@@ -80,6 +81,12 @@ pub struct Deploy {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub message: Option<String>,
+    /// Also remove every Service running in the Namespace that this Store never
+    /// held: another Store's, or one deployed directly. Only with every Service;
+    /// without it a Deploy removes only the Services this Store dropped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub prune: bool,
 }
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
@@ -291,6 +298,12 @@ fn deploy(
         .cluster_domain
         .as_ref()
         .map(|cluster| &cluster.name);
+    if admit.prune && !admit.services.is_empty() {
+        return Err(error::invalid(
+            "A Deploy of named Services can't prune: deploy every Service to prune",
+            json!({ "services": admit.services }),
+        ));
+    }
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
@@ -331,11 +344,29 @@ fn deploy(
         review.saved.as_ref(),
         (admit.message.as_deref(), &losses),
     )?;
+    let landing = deployment::Landing::of(&review.head);
+    let retire = match admit.services.is_empty() {
+        true => deployment::dropped(tx, id, &saved_intent, &landing)?,
+        false => Vec::new(),
+    };
+    let scope = match admit.services.is_empty() {
+        true => deployment::Scope::All {
+            losses: &losses,
+            retire: &retire,
+            prune: admit.prune,
+        },
+        false => deployment::Scope::Narrow {
+            services: &admit.services,
+            retire: &[],
+            losses: &[],
+            every_saved: false,
+        },
+    };
     let mut frozen = deployment::freeze(
         id,
         &saved_intent,
-        &deployment::Landing::of(&review.head),
-        deployment::Scope::of(&admit.services, &losses),
+        &landing,
+        scope,
         namespace,
         cluster_domain,
     )?;

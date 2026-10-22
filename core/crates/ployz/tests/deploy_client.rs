@@ -594,7 +594,8 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
-            | DeployWarning::ImagePortMismatch { .. } => false,
+            | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::NotInStore { .. } => false,
         }),
         "DNS warning must match the CLI body: {:?}",
         preview.warnings
@@ -964,6 +965,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -1016,6 +1018,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         upload: None,
         accept_volume_loss: Vec::new(),
         message: None,
+        prune: false,
     };
     store
         .write_trusted(
@@ -1302,6 +1305,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted::default(),
         )
@@ -1431,6 +1435,7 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
                     upload: None,
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
                 &Trusted::default(),
             )
@@ -1588,6 +1593,7 @@ async fn restarting_deploy_names_its_exit_and_last_line(
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted::default(),
         )
@@ -1718,6 +1724,7 @@ async fn cloud_runner_applies_an_environment_removal() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted::default(),
         )
@@ -1840,6 +1847,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
                     upload: None,
                     accept_volume_loss: accept,
                     message: None,
+                    prune: false,
                 }),
                 &trusted,
             )
@@ -2010,6 +2018,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
                     upload: None,
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
                 &Trusted::default(),
             )
@@ -2117,6 +2126,7 @@ async fn a_runner_that_cannot_reach_its_server_names_it() {
                         upload: None,
                         accept_volume_loss: Vec::new(),
                         message: None,
+                        prune: false,
                     }),
                     &ployz_store::Trusted::default(),
                 )

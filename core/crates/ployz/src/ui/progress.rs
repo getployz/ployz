@@ -672,7 +672,8 @@ fn left_running(row: &Row, frame: &Frame) -> usize {
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. }
-            | DeployWarning::MixedAfterReturn { .. } => None,
+            | DeployWarning::MixedAfterReturn { .. }
+            | DeployWarning::NotInStore { .. } => None,
         })
         .collect::<BTreeSet<_>>()
         .len()
@@ -1002,7 +1003,8 @@ fn notices(frame: &Frame) -> Vec<String> {
                     | DeployWarning::SkippedDependencyHealth { .. }
                     | DeployWarning::ImagePortMismatch { .. }
                     | DeployWarning::LeftRunning { .. }
-                    | DeployWarning::MixedAfterReturn { .. } => None,
+                    | DeployWarning::MixedAfterReturn { .. }
+                    | DeployWarning::NotInStore { .. } => None,
                 })
                 .collect::<BTreeSet<_>>();
             Some(format!(

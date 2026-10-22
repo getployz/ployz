@@ -82,7 +82,7 @@ pub(crate) fn admit(
             json!({}),
         ));
     }
-    let full = services.is_empty() && !frozen.nodes.iter().any(TargetNode::retires);
+    let full = frozen.full;
     let mut nodes = frozen.nodes.clone();
     inherit(tx, environment, (&intent, &intent), &mut nodes)?;
     let mut targets = services.to_vec();
@@ -94,10 +94,14 @@ pub(crate) fn admit(
         }
     }
     let admitted_at = now();
+    let run = Run {
+        prune: frozen.prune,
+        ..Run::default()
+    };
     let (targets_text, nodes_text, run_text, credentials_text) = (
         json_text(&targets),
         json_text(&nodes),
-        json_text(&Run::default()),
+        json_text(&run),
         json_text(&frozen.credentials),
     );
     let upload_text = upload.as_ref().map(json_text);
@@ -215,6 +219,7 @@ pub(crate) fn admit(
         ),
         preparing: false,
         remove: saved == NOTHING,
+        prune: frozen.prune,
         admitted_by: who.principal.clone(),
         admitted_at,
         started_at: None,
@@ -743,7 +748,12 @@ pub(crate) fn retry(
                 i64::try_from(number)
                     .map_err(|_| error::corrupt("Deployment number"))?
                     .into(),
-                json_text(&Run::default()).as_str().into(),
+                json_text(&Run {
+                    prune: stored.run.prune,
+                    ..Run::default()
+                })
+                .as_str()
+                .into(),
                 source.as_str().into(),
                 admitted_at.into(),
                 who.principal.as_ref().map(Principal::as_str).into(),
@@ -935,8 +945,11 @@ fn retried(
     let holds = |intent: &SavedEnvironmentIntent, id: &str| {
         intent.services.iter().any(|service| service.id == id)
     };
+    // A full Deployment tears down what Saved dropped too; superseding it runs that
+    // Service again from the retried revision, as it always has.
     for row in &tx.query(
-        "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = 'queued'",
+        "SELECT nodes FROM config_deployment \
+         WHERE environment_id = ?1 AND status = 'queued' AND services != '[]'",
         &[environment.as_str().into()],
     )? {
         let queued: Vec<TargetNode> = row.json(0, "Deployment")?;
@@ -980,11 +993,17 @@ fn retried(
         // what newer Deployments added and deletes only the losses reviewed afresh.
         let mut nodes = match &fresh {
             Some((applied, losses)) => {
+                let landing = Landing::applied(applied);
+                let retire = dropped(tx, environment, &source, &landing)?;
                 freeze(
                     environment,
                     &source,
-                    &Landing::applied(applied),
-                    Scope::All { losses },
+                    &landing,
+                    Scope::All {
+                        losses,
+                        retire: &retire,
+                        prune: stored.run.prune,
+                    },
                     stored.namespace.clone(),
                     stored.cluster_domain.as_ref(),
                 )?
@@ -1160,13 +1179,13 @@ pub(crate) fn claim(
     let sources = build::sources_of(tx, &stored)?;
     let saved = held_revision(tx, &stored)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
-    let (services, removals) = stored.lowering();
+    let ships = stored.lowering(&saved);
     let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
     let lowered = lower(
         &stored.summary.environment_id,
         &saved,
         &deployed,
-        (&services, &removals),
+        &ships,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),
@@ -1316,13 +1335,13 @@ pub(crate) fn input(
 ) -> Result<Value, RpcError> {
     let saved = held_revision(tx, stored)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
-    let (services, removals) = stored.lowering();
+    let ships = stored.lowering(&saved);
     let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
     lower(
         &stored.summary.environment_id,
         &saved,
         &deployed,
-        (&services, &removals),
+        &ships,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),

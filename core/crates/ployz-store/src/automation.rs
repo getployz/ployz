@@ -1007,12 +1007,20 @@ pub(crate) fn auto_admit(
     let landing = deployment::Landing::of(&head);
     let full = services.is_empty() && retire.is_empty();
     let losses = consented(&landing.dropped(&saved.intent), saved, &namespace, trusted)?;
+    let dropped = match full {
+        true => deployment::dropped(tx, id, &saved.intent, &landing)?,
+        false => Vec::new(),
+    };
     let mut frozen = deployment::freeze(
         id,
         &saved.intent,
         &landing,
         if full {
-            deployment::Scope::All { losses: &losses }
+            deployment::Scope::All {
+                losses: &losses,
+                retire: &dropped,
+                prune: false,
+            }
         } else {
             deployment::Scope::Narrow {
                 services,

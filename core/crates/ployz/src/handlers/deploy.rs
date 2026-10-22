@@ -48,6 +48,19 @@ pub(super) fn deploy_command(command: Command) -> Command {
                 .conflicts_with_all(["service", "plan", "upload", "events", "detach"])
                 .help("Save everything staged for the next deploy instead of deploying it"),
         )
+        .arg(
+            switch("prune", None)
+                .conflicts_with_all(["service", "plan", "skip-deploy"])
+                .help(
+                    "Also remove every Service running in the Environment that this Store \
+                     doesn't hold; asks first",
+                ),
+        )
+        .arg(
+            switch("yes", Some('y'))
+                .env(crate::cli::env::AUTO_CONFIRM)
+                .help("Prune without asking"),
+        )
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
         .arg(
@@ -171,8 +184,12 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let upload = source.as_deref().and_then(Path::to_str);
     let message = matches.get_one::<String>("message").map(String::as_str);
     let skip = matches.get_flag("skip-deploy");
+    let prune = matches.get_flag("prune");
+    let yes = matches.get_flag("yes");
     let store = store(root)?
         .args(skip.then_some("--skip-deploy"))
+        .args(prune.then_some("--prune"))
+        .args((prune && yes).then_some("--yes"))
         .args(names.iter().copied())
         .args(upload.into_iter().flat_map(|source| ["--upload", source]))
         .args(
@@ -187,6 +204,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     if matches.get_flag("plan") {
         return plan(matches, &store, services);
     }
+    if prune && !yes {
+        confirm_prune()?;
+    }
     let events = open_events(matches)?;
     let request = Request {
         environment: environment(matches)?,
@@ -195,8 +215,28 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         source,
         accept: super::teardown::accepted(matches)?,
         message: matches.get_one::<String>("message").cloned(),
+        prune,
     };
     upload_and_ship(matches, &store, request, events)?.finish()
+}
+
+/// Ask before `deploy --prune` removes what this Store never held. The prompt can't
+/// name those Services: the Deploy Preview that finds them is computed only after
+/// admission, and admission is what `--prune` changes.
+fn confirm_prune() -> Result<(), Error> {
+    ui::confirm(
+        "Also remove every Service running in the Environment that this Store doesn't hold?",
+        || {
+            Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                "deploy --prune removes every Service running in the Environment that this \
+                 Store doesn't hold, and needs confirmation. Nothing deployed.",
+                serde_json::json!({ "prune": true }),
+            )
+            .hint(Hint::Retry(super::typed_with(&["--yes"])))
+        },
+        "Cancelled. Nothing deployed.",
+    )
 }
 
 /// `deploy --skip-deploy`: save everything staged for the next deploy.
@@ -241,6 +281,8 @@ pub(super) struct Request {
     pub(super) source: Option<PathBuf>,
     pub(super) accept: Vec<VolumeName>,
     pub(super) message: Option<String>,
+    /// Also remove every Service running in the Environment that this Store never held.
+    pub(super) prune: bool,
 }
 
 /// Upload `request.source`, admit the Deployment, then run or follow it.
@@ -257,6 +299,7 @@ pub(super) fn upload_and_ship(
         source,
         accept,
         message,
+        prune,
     } = request;
     refuse_local_detach(matches, store)?;
     let listing = source
@@ -284,6 +327,7 @@ pub(super) fn upload_and_ship(
             upload,
             accept_volume_loss: accept,
             message,
+            prune,
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
     execute(matches, store, &admitted, source.as_deref(), events)
@@ -1401,6 +1445,16 @@ pub(super) fn say_view(view: &DeploymentView) {
     ));
     if let Some(provenance) = provenance(&view.deployment) {
         crate::ui::stream(format_args!("  {provenance}"));
+    }
+    if view.deployment.prune {
+        crate::ui::stream(format_args!(
+            "  Prune: also removes every Service running in the Environment that this Store doesn't hold"
+        ));
+    }
+    for warning in view.preview.iter().flat_map(|preview| &preview.warnings) {
+        if let ployz_core::DeployWarning::NotInStore { .. } = warning {
+            crate::ui::stream(format_args!("  ! {warning}"));
+        }
     }
     if let Some(
         ployz_store::Outcome::NotExecuted { reason, cause, .. }

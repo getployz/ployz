@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::{DeployOutcome, DeployPreview, ExecutionError, QualifiedService, ServiceName};
+use ployz_core::{
+    DeployOutcome, DeployPreview, ExecutionError, PruneScope, QualifiedService, ServiceName,
+};
 use serde_json::{Value, json};
 
 use super::{Retire, Scope, TargetNode};
@@ -124,6 +126,17 @@ fn deploy(
     n: u8,
     services: &[&str],
 ) -> Result<DeploymentSummary, ployz_core::RpcError> {
+    admit(store, who, n, services, false)
+}
+
+/// A Deploy of `services`, pruning the whole Namespace when `prune`.
+fn admit(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    services: &[&str],
+    prune: bool,
+) -> Result<DeploymentSummary, ployz_core::RpcError> {
     store.write(
         who,
         &Admit::Deploy(Deploy {
@@ -134,6 +147,7 @@ fn deploy(
             upload: None,
             accept_volume_loss: Vec::new(),
             message: None,
+            prune,
         }),
     )
 }
@@ -245,6 +259,84 @@ fn applied(store: &ConfigStore, who: &Actor) -> Vec<String> {
         .into_iter()
         .map(|service| service.slug)
         .collect()
+}
+
+#[test]
+fn a_full_deploy_tears_down_what_saved_state_dropped_and_keeps_the_rest() {
+    let (store, who) = retiring_api();
+    let admitted = deploy(&store, &who, 3, &[]).unwrap();
+    assert_eq!(admitted.services, []);
+    assert!(!admitted.prune);
+    let api_node = nodes(&store, &admitted.id)
+        .into_iter()
+        .find(|node| node.id() == api().as_str())
+        .expect("the dropped Service is a node");
+    assert_eq!(
+        api_node,
+        TargetNode::Service {
+            id: api(),
+            name: name("api"),
+            runtime: name("api"),
+            removals: ployz_core::ServiceRemovals::from_names([name("api")]),
+        }
+    );
+    let claimed = store.claim(&admitted.id, &runner()).unwrap();
+    assert!(claimed.intent.options.selected.is_empty());
+    assert_eq!(
+        claimed.intent.options.removals,
+        ployz_core::ServiceRemovals::from_names([name("api")])
+    );
+    assert_eq!(claimed.intent.options.prune, PruneScope::Removals);
+    assert!(claimed.input.to_string().contains("\"removals\":[\"api\"]"));
+    assert!(claimed.input.to_string().contains("\"prune\":\"removals\""));
+    assert_eq!(
+        run(
+            &store,
+            &admitted.id,
+            preview(&["web", "api"], true),
+            &["web", "api"]
+        ),
+        DeploymentStatus::Applied
+    );
+    let outcomes = outcomes(&store, &who, &admitted.id);
+    assert!(
+        outcomes.contains(&("api".to_owned(), NodeStatus::Removed)),
+        "{outcomes:?}"
+    );
+    assert!(
+        outcomes.contains(&("web".to_owned(), NodeStatus::Deployed)),
+        "{outcomes:?}"
+    );
+    assert_eq!(applied(&store, &who), ["web"]);
+}
+
+#[test]
+fn a_full_deploy_with_prune_removes_the_whole_namespace() {
+    let (store, who) = retiring_api();
+    let admitted = admit(&store, &who, 3, &[], true).unwrap();
+    assert_eq!(admitted.services, []);
+    assert!(admitted.prune);
+    let claimed = store.claim(&admitted.id, &runner()).unwrap();
+    assert!(claimed.intent.options.selected.is_empty());
+    assert_eq!(
+        claimed.intent.options.removals,
+        ployz_core::ServiceRemovals::from_names([name("api")])
+    );
+    assert_eq!(claimed.intent.options.prune, PruneScope::Namespace);
+    assert!(!claimed.input.to_string().contains("\"prune\""));
+    // The choice outlives a read of the row.
+    assert!(
+        store
+            .read(
+                &who,
+                &crate::DeploymentQuery {
+                    id: admitted.id.clone()
+                }
+            )
+            .unwrap()
+            .deployment
+            .prune
+    );
 }
 
 #[test]

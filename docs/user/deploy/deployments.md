@@ -80,6 +80,14 @@ commit with nothing staged, use the CLI:
 ployz deploy
 ```
 
+A deploy removes only the services you removed, such as with `ployz service rm`. When more than
+one person, or more than one Ployz Cloud organization, deploys to the same servers, a deploy keeps
+every service running there that it doesn't know about, and names each one, for example
+`api: running, not in this Store; kept`. The deployment's page and `ployz deployment show` list
+them too. To take those services off the servers as well, run `ployz deploy --prune`. It asks
+first; in a script, or with `--json`, add `--yes`, or it stops with `confirmation_required` and
+deploys nothing.
+
 ## Saved history
 
 Open **Deployments** in the sidebar, then **Versions**, to see this environment's saved versions.
