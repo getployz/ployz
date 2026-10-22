@@ -542,3 +542,40 @@ async fn a_restart_that_fails_a_copy_exits_partial() {
     let error = outcome.finish().unwrap_err();
     assert_eq!(error.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
 }
+
+#[test]
+fn a_stop_signal_docker_would_refuse_is_refused_before_any_server() {
+    for command in ["stop", "restart"] {
+        let signal = |signal: &str| {
+            crate::cli::command()
+                .try_get_matches_from(["ployz", "service", command, "api", "--signal", signal])
+        };
+        for refused in ["NOPE", "SIGNOPE", "0", "65", "TERM9", ""] {
+            let error = signal(refused).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{refused}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("a signal name like SIGTERM or SIGINT, or a number"),
+                "{error}"
+            );
+        }
+        for taken in [
+            "SIGTERM",
+            "SIGINT",
+            "term",
+            "KILL",
+            "sigusr1",
+            "9",
+            "15",
+            "SIGRTMIN+3",
+            "RTMAX-1",
+        ] {
+            assert!(signal(taken).is_ok(), "{taken}");
+        }
+    }
+}
