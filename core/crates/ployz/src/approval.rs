@@ -322,15 +322,22 @@ pub(crate) fn settle(
     }
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
-    crate::ui::note(where_to_approve(
-        credential,
-        &asked.id,
-        asked.organization.as_deref(),
-    ));
-    crate::ui::hint(&crate::ui::Hint::Next(format!(
-        "ployz org approval approve {}",
-        asked.id
-    )));
+    if asked.for_someone_else() {
+        crate::ui::note(format!(
+            "An owner or admin who didn't ask must approve {} in Ployz Cloud.",
+            asked.id
+        ));
+    } else {
+        crate::ui::note(where_to_approve(
+            credential,
+            &asked.id,
+            asked.organization.as_deref(),
+        ));
+        crate::ui::hint(&crate::ui::Hint::Next(format!(
+            "ployz org approval approve {}",
+            asked.id
+        )));
+    }
     crate::ui::note_inline("Waiting for approval in Ployz Cloud… ");
     let settled = runtime.block_on(async {
         tokio::select! {
