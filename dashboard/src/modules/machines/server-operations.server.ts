@@ -181,6 +181,9 @@ type Copy = RuntimeWatchView["volumes"][number];
 const builderCache = /^buildx_buildkit_ployz-[0-9]+_state$/;
 const oldCopy = ({ storage }: Copy) =>
   storage.kind === "provisioned" && storage.role === "slot" && (storage.slot_role ?? "mirror") === "old_copy";
+/** A writer, or a mirror; a root mid-switch may be a pull that never finished. */
+const keeps = ({ storage }: Copy) =>
+  storage.kind === "provisioned" && (storage.role === "slot" ? (storage.slot_role ?? "mirror") === "mirror" : storage.role !== "switching");
 
 /**
  * What forgetting `machineId` loses, from one frame: each Docker volume on it, since its identity is its Machine's, and
@@ -189,7 +192,7 @@ const oldCopy = ({ storage }: Copy) =>
  */
 export function forgetLoses(frame: RuntimeWatchView, machineId: string): DataLossIdentity[] {
   const kept = new Set(frame.volumes
-    .filter((copy) => copy.id.machine_id !== machineId && copy.storage.kind === "provisioned" && !oldCopy(copy))
+    .filter((copy) => copy.id.machine_id !== machineId && keeps(copy))
     .map(({ id }) => id.name));
   return frame.volumes
     .filter((copy) => copy.id.machine_id === machineId && !builderCache.test(copy.id.name)

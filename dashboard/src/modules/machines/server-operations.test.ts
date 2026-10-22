@@ -172,9 +172,11 @@ describe("forgetLoses", () => {
       { machine: there, name: "older-daemon-mirror", role: "slot" },
       { machine: here, name: "moved", role: "writer" },
       { machine: elsewhere, name: "moved", role: "writer" },
+      { machine: here, name: "switching-elsewhere", role: "writer" },
+      { machine: there, name: "switching-elsewhere", role: "switching" },
       { machine: here, name: "old-copy-elsewhere", role: "writer" },
       { machine: there, name: "old-copy-elsewhere", role: "slot", slot: "old_copy" },
-    ]))).toEqual(["here/docker", "here/mid-switch", "here/old-copy-elsewhere", "here/only", "here/unreported"]);
+    ]))).toEqual(["here/docker", "here/mid-switch", "here/old-copy-elsewhere", "here/only", "here/switching-elsewhere", "here/unreported"]);
   });
 
   it("loses nothing for a mirror of a writer elsewhere, an Old copy, or a Volume on another Server", () => {
