@@ -66,8 +66,8 @@ impl MachineService {
         }
     }
 
-    /// Env keys this Machine opened from Sealed ciphertext for `container`. No Machine
-    /// opens Sealed values yet, so there are none.
+    // TODO: SL2 records the keys it opened; answer from durable state, since RetainedEnv
+    // serves Containers Docker no longer reports.
     fn opened_env_keys(&self, _container: &ployz_core::ContainerId) -> BTreeSet<String> {
         BTreeSet::new()
     }
@@ -532,10 +532,12 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::RetainedEnv>(request)?;
-        let opened = self.opened_env_keys(&request.container_id);
         let mut environment = self.observe.retained_env(request.container_id).await?;
         if operator {
-            withhold_opened(&mut environment, &opened);
+            withhold_opened(
+                &mut environment,
+                &self.opened_env_keys(&request.container_id),
+            );
         }
         respond(RetainedEnvReply { environment })
     }
@@ -1009,15 +1011,12 @@ fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Statu
         .map_err(invalid_request)
 }
 
-/// Whether `request` came from an `Operator` Management Client.
 fn from_operator<T>(request: &Request<T>) -> bool {
     request
         .metadata()
         .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
 }
 
-/// Drop every `opened` key, so an `Operator` caller never reads back a value this
-/// Machine opened from Sealed ciphertext.
 fn withhold_opened(environment: &mut Option<BTreeMap<String, String>>, opened: &BTreeSet<String>) {
     if let Some(environment) = environment {
         environment.retain(|key, _| !opened.contains(key));

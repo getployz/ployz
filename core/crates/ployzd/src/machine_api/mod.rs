@@ -264,14 +264,12 @@ impl Service<http::Request<Body>> for MachineApi {
     }
 }
 
-/// A route `scope` may not call, refused before it is served or forwarded.
 #[derive(Debug, thiserror::Error)]
 #[error("{capability} needs Full access")]
 struct NeedsFullAccess {
     capability: &'static str,
 }
 
-/// The refusal for calling `path` with `scope`, or `None` when `scope` may call it.
 fn refuse_scope(path: &str, scope: ManagementScope) -> Option<http::Response<Body>> {
     if ployz_core::scope_of(path).is_none_or(|needed| scope >= needed) {
         return None;

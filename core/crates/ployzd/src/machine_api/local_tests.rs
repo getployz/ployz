@@ -2681,7 +2681,6 @@ mod ensure_container {
             .unwrap();
 
         let unknown = ContainerId::parse("a".repeat(64)).unwrap();
-        // A forwarded request an Operator client sent is refused here as at its entry.
         for (id, from_operator, code) in [
             (unknown, false, Code::NotFound),
             (stray, false, Code::InvalidArgument),

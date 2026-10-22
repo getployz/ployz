@@ -104,6 +104,8 @@ macro_rules! rpc_catalog {
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.
                 MACHINE_STORAGE_OBSERVATION_CAPABILITY: ("ployz.machine.storage-observation.v1", Always),
+                /// The daemon refuses each RPC its caller's Management Scope does not reach.
+                MANAGEMENT_SCOPE_CAPABILITY: ("ployz.management.scope.v1", Always),
             }
         }
     };

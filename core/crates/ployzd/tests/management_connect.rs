@@ -521,9 +521,8 @@ async fn the_cloud_slot_drives_the_machine_but_never_execs_or_tunnels() {
             .contains("ployz.container.exec.v1 needs Full access"),
         "{refused:?}"
     );
-    if let Err(status) = exec(cli_channel).await {
-        assert_ne!(status.code(), tonic::Code::PermissionDenied, "{status:?}");
-    }
+    let status = exec(cli_channel).await.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unavailable, "{status:?}");
 
     let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target = echo.local_addr().unwrap().to_string();
