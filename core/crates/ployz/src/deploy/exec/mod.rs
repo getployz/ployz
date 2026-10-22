@@ -1974,8 +1974,8 @@ impl<'a> Rows<'a> {
     }
 
     /// The Machines this Deploy did not observe that hold a copy of `service` in the
-    /// entry Machine's store. Every proxy reads that copy too, so while it is In, one
-    /// sent Out beside it stays routed and its removal never confirms.
+    /// entry Machine's store. Every proxy reads that copy too, so while it is In or
+    /// Pending, one sent Out beside it stays routed and its removal never confirms.
     async fn unreached<C: MachineOperations>(
         &self,
         client: &C,
@@ -1987,7 +1987,9 @@ impl<'a> Rows<'a> {
             .await?
             .iter()
             .filter(|copy| {
-                copy.identity() == *service && self.unobserved.contains(&copy.machine_id)
+                copy.identity() == *service
+                    && self.unobserved.contains(&copy.machine_id)
+                    && copy.rotation().keeps_route()
             })
             .map(|copy| copy.machine_id)
             .collect())

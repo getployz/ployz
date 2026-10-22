@@ -1168,6 +1168,54 @@ async fn a_removal_with_a_copy_on_an_unobserved_server_names_it_and_takes_no_cop
     client.assert_done();
 }
 
+/// Proxies drop a Service's route once no copy is In or Pending, so a copy already
+/// Out on an unobserved Server doesn't hold up the removal.
+#[tokio::test(start_paused = true)]
+async fn a_removal_finishes_when_the_copy_on_an_unobserved_server_is_out() {
+    let (live, away) = (machine('1'), machine('3'));
+    let (here, there) = (container('a'), container('b'));
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![DeployOperation::RemoveContainer {
+            machine_id: live,
+            container_id: here,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+        }],
+        test_namespace(),
+    )
+    .with_machine_names(&[live, away])
+    .with_unobserved(&[away]);
+    let client = Scripted {
+        down: BTreeSet::from([away]),
+        store: Store::Copies,
+        ..Scripted::new(vec![
+            observed(Call::Inspect(live, here), running()),
+            ok(Call::Remove(live, here)),
+        ])
+    }
+    .with_copy(&live, &here, CopyRotation::In)
+    .with_copy(&away, &there, CopyRotation::Out)
+    .routing(&api());
+
+    let outcome = super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        client.moves(),
+        [Move::To(here, CopyRotation::Out), Move::Gone(here)]
+    );
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn stop_error_restores_the_healthy_held_copy() {
     let machine = machine('1');
