@@ -114,8 +114,10 @@ GitHub webhooks ───────► web       ├─► Postgres (ployz_clo
                         worker ◄───┤─► Inngest :8288 API / :8289 Connect ─► Redis
 ```
 
-The image is `linux/amd64`. Put a TLS proxy in front of web's `WEB_PORT`; Inngest's
-UI is bound to `127.0.0.1:8288` for operator use only.
+The image is `linux/amd64`. Put a TLS proxy in front of web's `WEB_PORT`. Web is
+published on `WEB_BIND` (default `127.0.0.1`) because Docker-published ports skip UFW;
+a proxy on another host needs a private `WEB_BIND`, never `0.0.0.0`. Inngest's UI is
+bound to `127.0.0.1:8288` for operator use only.
 
 ### 1. Create the GitHub apps
 
@@ -193,8 +195,11 @@ only attached to a GitHub account already linked in Cloud.
 
 ### Upgrade
 
-Replace `compose.yml` with the new release's asset (or bump
-`PLOYZ_CLOUD_VERSION`), then:
+Replace `compose.yml` with the asset from `releases/download/<tag>/` (or bump
+`PLOYZ_CLOUD_VERSION`), never `releases/latest`: that is the newest stable
+release and silently downgrades a prerelease install. Nothing guards the schema,
+so an image older than the database migrates as a no-op, turns healthy, and fails
+at request time. The user docs' upgrade snippet refuses a downgrade. Then:
 
 ```sh
 docker compose pull

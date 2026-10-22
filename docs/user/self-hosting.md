@@ -106,6 +106,9 @@ installation back to the first Callback URL.
    curl -fsSLo .env https://github.com/getployz/ployz/releases/latest/download/ployz-cloud.env.example
    ```
 
+   `releases/latest` is the newest stable release. To run a prerelease, like a beta, replace
+   `latest/download` with `download/<tag>`, for example `download/v0.3.0-beta.7`.
+
 2. Generate the secrets, one per line:
 
    ```sh
@@ -149,14 +152,20 @@ installation back to the first Callback URL.
    docker compose up -d
    ```
 
-2. Point your proxy or tunnel at port 3000, or at `WEB_PORT` if you set it. With Caddy on a
-   separate server, the whole config is:
+2. Point your proxy or tunnel at port 3000, or at `WEB_PORT` if you set it. With Caddy on the
+   same server as Ployz Cloud, the whole config is:
 
    ```
    cloud.example.com {
      reverse_proxy localhost:3000
    }
    ```
+
+   Ployz Cloud listens only on `127.0.0.1`, so nothing outside the server can skip your proxy.
+   If your proxy runs on another server, set `WEB_BIND` in `.env` to a private address of this
+   server that only the proxy can reach. Don't set it to `0.0.0.0`: ports that Docker publishes
+   skip firewalls like UFW, so anyone could reach Ployz Cloud over plain http, past your
+   proxy's TLS and rate limits.
 
 3. Run `docker compose ps`. Ployz Cloud is ready when `worker` shows **healthy**.
 
@@ -193,14 +202,29 @@ In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 
 ## Upgrade
 
-Download the new release's compose file over `compose.yml`, then:
+Pick the release to move to on the [releases page](https://github.com/getployz/ployz/releases):
+the newest one on your channel. If you run a beta, pick the newest release marked
+**Pre-release**. Don't use `releases/latest` here: it's the newest stable release, so it would
+move a beta back to an older release. An older Ployz Cloud on a newer database passes the
+migration and health check, then fails every request.
+
+Set `VERSION` to that release's tag, then run:
 
 ```sh
-curl -fsSLo compose.yml https://github.com/getployz/ployz/releases/latest/download/ployz-cloud-compose.yml
-docker compose pull
-docker compose run --rm web npm run db:migrate
-docker compose up -d
+VERSION=v0.3.0-beta.8
+current=$(sed -n 's|.*ghcr.io/getployz/ployz-cloud:||p' compose.yml)
+oldest=$(printf '%s\n' "$current" "$VERSION" | tr - '~' | sort -V | head -n 1 | tr '~' -)
+if [ "$oldest" = "$current" ]; then
+  curl -fsSLo compose.yml "https://github.com/getployz/ployz/releases/download/$VERSION/ployz-cloud-compose.yml" &&
+    docker compose pull &&
+    docker compose run --rm web npm run db:migrate &&
+    docker compose up -d
+else
+  echo "$VERSION is older than $current. Not downgrading."
+fi
 ```
+
+The check refuses a tag older than the one in your `compose.yml`.
 
 Nothing migrates the database on start, so run the migration on every upgrade.
 `docker compose up -d` can take up to 30 minutes: `worker` finishes the work it's running
