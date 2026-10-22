@@ -2161,6 +2161,21 @@ fn root_help_ends_with_the_catalog_pointer() {
     );
 }
 
+#[test]
+fn explaining_a_setting_name_alone_points_at_the_setting() {
+    let output = human_output(&["explain", "mounts"], &[]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("mounts.replicas"), "{stdout}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("mounts is also a Setting; `ployz explain SERVICE.mounts` describes it."),
+        "{stderr}"
+    );
+    let output = human_output(&["explain", "web"], &[]);
+    assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_store_url_that_is_not_unicode_is_a_usage_error() {

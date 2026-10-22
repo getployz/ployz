@@ -310,6 +310,17 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
     let node = SettingPath::parse(path).map(|path| NodeName::parse(&path.to_string()));
     if let Ok(Ok(NodeName::Service(service))) = node {
         let listing = listing(&service)?;
+        let setting = format!("{service}.{service}");
+        if listing
+            .settings
+            .iter()
+            .chain([&listing.domains])
+            .any(|one| one.path == setting)
+        {
+            ui::note(format_args!(
+                "{service} is also a Setting; `ployz explain SERVICE.{service}` describes it."
+            ));
+        }
         return ui::list(&listing, &listing.table());
     }
     let explained = catalog::explain(path)?;
