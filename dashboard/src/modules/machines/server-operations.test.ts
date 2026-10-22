@@ -177,13 +177,26 @@ describe("forgetLoses", () => {
     ]))).toEqual(["here/docker", "here/mid-switch", "here/old-copy-elsewhere", "here/only", "here/unreported"]);
   });
 
-  it("loses nothing for a copy the Server holds only as a slot, or a Volume on another Server", () => {
+  it("loses nothing for a mirror of a writer elsewhere, an Old copy, or a Volume on another Server", () => {
     expect(names(copies([
       { machine: here, name: "a-mirror", role: "slot", slot: "mirror" },
       { machine: there, name: "a-mirror", role: "writer" },
       { machine: here, name: "an-old-copy", role: "slot", slot: "old_copy" },
       { machine: there, name: "theirs", role: "writer" },
     ]))).toEqual([]);
+  });
+
+  it("loses the last mirror of a Volume whose writer is gone", () => {
+    expect(names(copies([{ machine: here, name: "orphan", role: "slot", slot: "mirror" }]))).toEqual(["here/orphan"]);
+  });
+
+  it("loses a Docker volume even when another Server has one of the same name", () => {
+    expect(names(copies([
+      { machine: here, name: "data", plain: true },
+      { machine: there, name: "data", plain: true },
+      { machine: here, name: "managed-on-other", plain: true },
+      { machine: there, name: "managed-on-other", role: "writer" },
+    ]))).toEqual(["here/data", "here/managed-on-other"]);
   });
 });
 

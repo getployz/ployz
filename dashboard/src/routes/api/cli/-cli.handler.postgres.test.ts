@@ -1939,6 +1939,7 @@ const leftBehindClusterOf = (cluster: LeftBehind) => Layer.succeed(OrganizationR
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
         machines: cluster.observesFra1 ? [{ machine: { id: fra1, name: "fra-1" } }] : [],
+        volumes: [],
         services: [{
           identity: "left-behind/web",
           service_id: "web",
@@ -2342,6 +2343,7 @@ const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRu
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
         machines: [{ machine: { id: fra1, name: "fra-1" } }],
+        volumes: [],
         services: plan.destroys
           ? [{
             identity: `${plan.namespace}/web`,
@@ -2515,6 +2517,7 @@ const renamedCluster = Layer.succeed(OrganizationRuntime, {
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
         machines: [runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture(fra1, "new"), membership: "up" })],
+        volumes: [],
         services: [],
       })),
       dataLossIfNamespaceDestroyed: () => Effect.succeed({ data_loss: [] }),

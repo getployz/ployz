@@ -177,17 +177,21 @@ export function volumeLabels(owners: readonly VolumeOwner[]): ReadonlyMap<string
 }
 
 type Copy = RuntimeWatchView["volumes"][number];
-const survives = ({ storage }: Copy) => storage.kind !== "provisioned"
-  || storage.role !== "slot" || (storage.slot_role ?? "mirror") === "mirror";
+const oldCopy = ({ storage }: Copy) =>
+  storage.kind === "provisioned" && storage.role === "slot" && (storage.slot_role ?? "mirror") === "old_copy";
 
 /**
- * What forgetting `machineId` loses, from one frame: each Volume it holds that no other Server holds as a writer or a
- * mirror. A slot there is a copy of a Volume held elsewhere, and an Old copy elsewhere is older than what is lost.
+ * What forgetting `machineId` loses, from one frame: each Docker volume on it, since its identity is its Machine's, and
+ * each Managed volume copy on it that no other Server holds as a writer or a mirror. An Old copy is older than the
+ * Volume it was cut from, so it neither counts as lost nor keeps one.
  */
 export function forgetLoses(frame: RuntimeWatchView, machineId: string): DataLossIdentity[] {
-  const kept = new Set(frame.volumes.filter((copy) => copy.id.machine_id !== machineId && survives(copy)).map(({ id }) => id.name));
+  const kept = new Set(frame.volumes
+    .filter((copy) => copy.id.machine_id !== machineId && copy.storage.kind === "provisioned" && !oldCopy(copy))
+    .map(({ id }) => id.name));
   return frame.volumes
-    .filter(({ id, storage }) => id.machine_id === machineId && !(storage.kind === "provisioned" && storage.role === "slot") && !kept.has(id.name))
+    .filter((copy) => copy.id.machine_id === machineId
+      && (copy.storage.kind !== "provisioned" || (!oldCopy(copy) && !kept.has(copy.id.name))))
     .map(({ id }) => ({ kind: "docker_volume" as const, id }))
     .sort((a, b) => byName(volumeName(a), volumeName(b)));
 }
