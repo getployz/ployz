@@ -1128,6 +1128,7 @@ async fn reconcile_writes_material_for(hostname: &str) {
     let caddyfile = std::fs::read_to_string(&path).unwrap();
     let pin = pinned_tls_line(&caddyfile, hostname).expect("https pin");
     let (cert_name, key_name) = pinned_file_names(pin);
+    assert_eq!((cert_name.len(), key_name.len()), (68, 68), "{cert_name}");
     let cert = certs.join(&cert_name);
     let key = certs.join(&key_name);
     assert_eq!(

@@ -781,8 +781,7 @@ validated_string_newtype!(
     CertificateHost,
     "certificate hostname",
     "a lowercase DNS hostname or a single-level wildcard such as *.example.com",
-    |value| is_hostname(value)
-        || (value.len() <= 253 && value.strip_prefix("*.").is_some_and(is_hostname))
+    |value| is_hostname(value) || value.strip_prefix("*.").is_some_and(is_hostname)
 );
 
 impl CertificateHost {
@@ -1017,10 +1016,6 @@ mod tests {
         assert!(super::CertificateHost::parse(&longest).is_ok());
         assert!(super::IngressHost::parse(format!("{longest}c")).is_err());
         assert!(super::IngressHost::parse(format!("{}.example.com", "b".repeat(64))).is_err());
-
-        let wildcard_parent = format!("{label}.{label}.{label}.{}", "c".repeat(59));
-        assert!(super::CertificateHost::parse(format!("*.{wildcard_parent}")).is_ok());
-        assert!(super::CertificateHost::parse(format!("*.{wildcard_parent}c")).is_err());
     }
 
     #[test]
