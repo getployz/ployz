@@ -1166,6 +1166,16 @@ mod tests {
         assert!(inspects(&failure(&view, command)).is_empty());
     }
 
+    #[test]
+    fn a_failed_named_deploy_retries_the_services_it_named() {
+        let mut view = view();
+        view.deployment.services = vec![ServiceName::parse("web").unwrap()];
+        assert!(
+            hints(&failure(&view, command))
+                .contains(&"retry: ployz deploy web --project shop --env production".to_owned())
+        );
+    }
+
     fn hints(failure: &Failure) -> Vec<String> {
         failure
             .hints()
