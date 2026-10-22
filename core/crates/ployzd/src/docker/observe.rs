@@ -483,7 +483,7 @@ fn observe_copies(
     }
 }
 
-fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
+pub(crate) fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
     let mut parts = observation.clone().into_parts();
     parts.resolved_spec = published_spec(parts.resolved_spec);
     ContainerObservation::try_from(parts)

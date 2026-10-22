@@ -172,11 +172,11 @@ impl SealedRecord {
     }
 }
 
-/// How one Container's log lines may leave this Machine.
+/// How text one Container printed may leave this Machine.
 pub(crate) enum Lines {
     Shown,
     Scrubbed(SealedForms),
-    /// The values to hide could not be learned, so no line is shown.
+    /// The values to hide could not be learned, so no text is shown.
     Withheld,
 }
 
@@ -184,20 +184,29 @@ impl Lines {
     /// From the Container's record, opened with the Sealing Key in `key_dir`.
     pub(crate) fn new(
         container: ContainerId,
-        record: Result<Option<SealedRecord>, Status>,
+        record: Result<Option<SealedRecord>, impl std::fmt::Display>,
         key_dir: Option<&Path>,
     ) -> Self {
         let forms = match record {
             Ok(None) => return Self::Shown,
             Ok(Some(record)) => record.secrets(key_dir).map_err(|error| error.to_string()),
-            Err(status) => Err(status.message().to_owned()),
+            Err(error) => Err(error.to_string()),
         };
         match forms {
             Ok(secrets) => Self::Scrubbed(SealedForms::compile(&secrets)),
             Err(error) => {
-                tracing::warn!(%container, %error, "withholding log lines whose Sealed values cannot be learned");
+                tracing::warn!(%container, %error, "withholding text whose Sealed values cannot be learned");
                 Self::Withheld
             }
+        }
+    }
+
+    /// `text` with each opened value hidden, or nothing when it is withheld.
+    pub(crate) fn text(&self, text: &str) -> Option<String> {
+        match self {
+            Self::Shown => Some(text.to_owned()),
+            Self::Scrubbed(forms) => Some(forms.scrub(text, &mut 0)),
+            Self::Withheld => None,
         }
     }
 
@@ -368,21 +377,20 @@ fn load(key_dir: Option<&Path>) -> Result<SealingKey, OpenError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use ployz_core::Template;
+pub(crate) mod test_support {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{logs::JournalError, observe::layout::RetainedEnv, test_dir::TestDir};
+    use crate::test_dir::TestDir;
 
-    struct Cluster {
-        dir: TestDir,
+    pub(crate) struct Cluster {
+        pub(crate) dir: TestDir,
         key: SealingKey,
-        identity: SealedIdentity,
+        pub(crate) identity: SealedIdentity,
     }
 
     impl Cluster {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let dir = TestDir::new("sealed-env");
             std::fs::create_dir_all(&dir.0).unwrap();
             let key = SealingKey::generate();
@@ -398,7 +406,7 @@ mod tests {
             }
         }
 
-        fn seal(&self, key: &str, scope: SealedScope, plaintext: &str) -> SealedValue {
+        pub(crate) fn seal(&self, key: &str, scope: SealedScope, plaintext: &str) -> SealedValue {
             let mut value = SealedValue {
                 sealed: ployz_core::Ciphertext::from_bytes(vec![0; 48]),
                 scope,
@@ -410,10 +418,20 @@ mod tests {
             value
         }
 
-        fn open(&self, env: BTreeMap<String, EnvValue>) -> Result<OpenedEnv, OpenError> {
+        pub(crate) fn open(&self, env: BTreeMap<String, EnvValue>) -> Result<OpenedEnv, OpenError> {
             open(env, Some(&self.identity), Some(&self.dir.0))
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::Template;
+    use uuid::Uuid;
+
+    use super::test_support::Cluster;
+    use super::*;
+    use crate::{logs::JournalError, observe::layout::RetainedEnv, test_dir::TestDir};
 
     fn own() -> SealedScope {
         SealedScope::Service(Uuid::from_u128(2))
@@ -705,7 +723,7 @@ mod tests {
         std::fs::create_dir_all(&empty.0).unwrap();
         let empty_dir = empty.0.clone();
         let rows = history(vec![Ok(line(1, "hunter2-secret"))], move |id| {
-            Lines::new(id, Ok(Some(record.clone())), Some(&empty_dir))
+            Lines::new(id, Ok::<_, Status>(Some(record.clone())), Some(&empty_dir))
         })
         .await;
         assert!(rows.is_empty());
