@@ -409,6 +409,7 @@ pub(crate) fn move_command(command: Command) -> Command {
             .required(true)
             .help("The Server the Volume moves to; a Move that stopped continues when asked again"),
     )
+    .arg(approval_arg())
     .arg(wait_flag())
 }
 
@@ -432,6 +433,7 @@ pub(crate) fn restore_command(command: Command) -> Command {
             .required(true)
             .help("The Server whose copy becomes the writer; it must hold the Volume's only copy"),
     )
+    .arg(approval_arg())
     .arg(wait_flag())
 }
 
@@ -720,17 +722,29 @@ fn approved(
             Verb::RemoveMirror,
             removal_words(volume, slot, if_old_copy, confirm),
         )
-    } else if asked.ask == RunAsk::Release {
-        (
-            Verb::Release,
-            vec![
-                "volume".to_owned(),
-                "release".to_owned(),
-                volume.to_string(),
-            ],
-        )
     } else {
-        return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
+        // A Protected Environment asks someone who can't protect it before these too.
+        let words = |verb: &str, rest: &[&str]| {
+            ["volume", verb, volume.as_str()]
+                .into_iter()
+                .chain(rest.iter().copied())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        match &asked.ask {
+            RunAsk::Release => (Verb::Release, words("release", &[])),
+            RunAsk::Move { to } => (Verb::Move, words("move", &["--to", to.as_str()])),
+            RunAsk::Restore { from } => {
+                (Verb::Restore, words("restore", &["--from", from.as_str()]))
+            }
+            RunAsk::Mirror { .. }
+            | RunAsk::Sync { .. }
+            | RunAsk::DeleteMirror { .. }
+            | RunAsk::DeleteOldCopy { .. }
+            | RunAsk::Resize { .. } => {
+                return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
+            }
+        }
     };
     words.push("--approval".to_owned());
     let retry = |id: &str| {

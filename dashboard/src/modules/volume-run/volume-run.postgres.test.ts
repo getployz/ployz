@@ -70,6 +70,7 @@ import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVol
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
+import { FULL_GRANT } from "#/modules/identity/token-grant";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
@@ -206,6 +207,8 @@ describe("volume runs", () => {
   let storeEvents: SystemEvent[];
   let storeRefuse: ((event: SystemEvent) => InstanceType<typeof RpcError> | null) | null;
   let storeInFlight: { id: string; number: number | null }[];
+  /** Whether the Store reads production as Protected. */
+  let storeProtected: boolean;
   /** The nodes every Deployment the Store reads back targets. */
   let deployNodes: Array<{ type: "volume" | "service"; id: string; name: string; outcome: "pending"; rows: [] }>;
 
@@ -510,6 +513,7 @@ describe("volume runs", () => {
               return answer;
             }
             if (query.query === "deployments") return { in_flight: storeInFlight };
+            if (query.query === "environments") return { environments: [{ id: "env-1", name: "production", protected: storeProtected }] };
             if (query.query === "deployment") {
               return { id: query.id, status: "running", namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" }, nodes: deployNodes };
             }
@@ -618,6 +622,7 @@ describe("volume runs", () => {
     storeEvents = [];
     storeRefuse = null;
     storeInFlight = [];
+    storeProtected = false;
     deployNodes = [{ type: "service", id: "svc-web", name: "web", outcome: "pending", rows: [] }, { type: "volume", id: volumeId, name: "data", outcome: "pending", rows: [] }];
     machines = [
       { name: "fsn-1", pool: true, copy: writerCopy() },
@@ -3562,6 +3567,98 @@ describe("volume runs", () => {
       expect(await request({ kind: "release", args: {} })).toMatchObject({ ok: true, run: { kind: "release", state: "requested" } });
 
       expect(await rows()).toMatchObject([{ id: run.id, state: "cancelled", message: "volume release took this run over" }, { kind: "release", state: "requested" }]);
+    });
+  });
+
+  describe("in a Protected Environment", () => {
+    const protectorId = "00000000-0000-4000-8000-000000000e03";
+    const protector: Caller = { ...caller, userId: protectorId, via: "dashboard" };
+    const member: Caller = { ...caller, role: "member", via: "cli" };
+    const askers: ReadonlyArray<[string, Caller]> = [
+      ["a member", member],
+      ["a member's token", { ...member, credential: { kind: "token", id: "token-1", grant: FULL_GRANT } }],
+      ["a member's agent", { ...member, via: "agent" }],
+    ];
+    const as = (who: Caller, input: VolumeRunInput, approvalId: string | null = null) =>
+      runEffect(runVolume(who, { volumeId, environment, ...input }, { key: null, approvalId }));
+    const askedOf = (admitted: Awaited<ReturnType<typeof as>>) => {
+      if (admitted.ok || admitted.refusal.code !== "approval_required") throw new Error(`expected an ask, got ${JSON.stringify(admitted)}`);
+      // SAFETY: an approval_required refusal carries the digest and id of the approval it recorded.
+      return admitted.refusal.details as { approval: string; approval_id: string };
+    };
+    const review = async (id: string) =>
+      (await harness.pool.query<{ review: unknown }>("select review from operation_approvals where id = $1", [id])).rows[0]?.review;
+
+    beforeEach(async () => {
+      storeProtected = true;
+      await harness.pool.query(`insert into "user" (id, email, name) values ('${protectorId}', 'owner@example.com', 'Owner')`);
+    });
+
+    it.each(askers)("%s's Move asks someone who can protect it, writes no run until they approve, then runs once", async (_, asker) => {
+      const move: VolumeRunInput = { kind: "move", args: { to: "fsn-2" } };
+
+      const admitted = await as(asker, move);
+      const { approval, approval_id } = askedOf(admitted);
+
+      expect(admitted).toMatchObject({ refusal: { details: { protected: { environment: "production" } } } });
+      expect(await rows()).toEqual([]);
+      expect(await review(approval_id)).toMatchObject({ protected: { environment: "production" } });
+      expect(await runEffect(decideApproval({ ...asker, via: "dashboard" }, approval_id, { approve: { digest: approval } })))
+        .toMatchObject({ ok: false });
+      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+      expect(await as(asker, move, approval_id)).toMatchObject({ ok: true });
+      expect(await rows()).toMatchObject([{ kind: "move" }]);
+    });
+
+    it("a Release asks someone who can protect it, not any approver", async () => {
+      const { approval_id } = askedOf(await as(member, { kind: "release", args: {} }));
+
+      expect(await review(approval_id)).toMatchObject({ protected: { environment: "production" } });
+    });
+
+    it("an approved Move to one Server moves to no other", async () => {
+      machines = [...machines, { name: "fsn-3", pool: true, copy: null }];
+      const { approval, approval_id } = askedOf(await as(member, { kind: "move", args: { to: "fsn-2" } }));
+      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+
+      expect(await as(member, { kind: "move", args: { to: "fsn-3" } }, approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+      expect(await review(approval_id)).toMatchObject({ operation: { preview: { to: { name: "fsn-2" } } } });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("a Restore names the Server it restores from", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: null }, { name: "fsn-2", pool: true, copy: slotCopy(base) }];
+
+      const { approval_id } = askedOf(await as(member, { kind: "restore", args: { from: "fsn-2" } }));
+
+      expect(await review(approval_id)).toMatchObject({ operation: { preview: { from: { name: "fsn-2" } } }, protected: { environment: "production" } });
+    });
+
+    it("a member can't decide another member's Release", async () => {
+      const { approval, approval_id } = askedOf(await as(member, { kind: "release", args: {} }));
+      const peer: Caller = { ...member, userId: protectorId, via: "dashboard" };
+
+      expect(await runEffect(decideApproval(peer, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: false });
+    });
+
+    it("a member seals an older second primary unasked, as Ployz's own sync would", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 3) }, { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5) }];
+
+      expect(await as(member, { kind: "sync", args: { full: true } })).toMatchObject({ ok: true });
+      await harness.pool.query("truncate table volume_run cascade");
+      expect(await as(member, { kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
+    });
+
+    it("someone who can protect it moves unasked, and a member still mirrors unasked", async () => {
+      expect(await as({ ...caller, via: "cli" }, { kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
+      await harness.pool.query("truncate table volume_run cascade");
+      expect(await as(member, { kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
+    });
+
+    it("an unprotected Environment lets a member move unasked", async () => {
+      storeProtected = false;
+
+      expect(await as(member, { kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
     });
   });
 

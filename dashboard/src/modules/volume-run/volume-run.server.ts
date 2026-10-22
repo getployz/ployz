@@ -24,7 +24,7 @@ import type { OperationVerb } from "#/modules/approvals/approvals";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import type { JsonValue } from "#/db/tables";
+import type { JsonObject, JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modules/inngest/events";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -341,7 +341,7 @@ export const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
   return row;
 });
 
-type ResolvedVolume = Effect.Success<ReturnType<typeof resolveVolume>>;
+type ResolvedVolume = Omit<Effect.Success<ReturnType<typeof resolveVolume>>, "environment">;
 
 export const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   organizationId: string,
@@ -356,6 +356,7 @@ export const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   if (owned === undefined) return yield* new NotFound({ message: `${summary.project}/${summary.name} has no Namespace yet.` });
   return {
     environmentId: summary.id,
+    environment: { project: summary.project, name: summary.name },
     volumeName: volume.name,
     dockerVolume: dockerVolumeName(owned.namespace, volume.id),
     refquotaBytes: volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : 0,
@@ -472,12 +473,56 @@ const VERBS = {
   deploy: null,
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
+/**
+ * The verb a run asks under in a Protected Environment, for one by someone who can't protect it that interrupts or takes
+ * off what runs there: a move stops its Service for the last copy, a restore drops writes.
+ */
+const PROTECTED_VERBS = {
+  ...VERBS,
+  move: "move",
+  restore: "restore",
+} satisfies Record<VolumeRunKind, OperationVerb | null>;
+
+/**
+ * The phases that interrupt or take off what runs. A mirror, a sync, a seed and a resize leave it running. A demote seals
+ * an older second primary, which Ployz's own sync does unasked too.
+ */
+const INTERRUPTS: ReadonlySet<string> = new Set(["move", "landed", "restore", "release", "delete_mirror"]);
+
+/** The Server a guarded phase moves to or restores from, so its approval covers no other. */
+function phaseServer(phase: PlannedPhase): JsonObject {
+  const named = (member: AnsweredMember) => ({ machine: member.machine.id, name: member.machine.name });
+  switch (phase.kind) {
+    case "move":
+    case "landed":
+      return { to: named(phase.target) };
+    case "restore":
+      return { from: named(phase.from) };
+    case "delete_mirror":
+    case "release":
+    case "mirror":
+    case "sync":
+    case "demote":
+    case "seed":
+    case "resize":
+      return {};
+  }
+}
+
 type PlanRequest = { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput;
 
-/** `input` is the request to insert: a Release carries the plan its approval showed. */
-export type VolumeRunPlan =
-  | { readonly ok: true; readonly volume: ResolvedVolume; readonly asked: OperationAsked | null; readonly input: PlanRequest }
+/**
+ * `input` is the request to insert: a Release carries the plan its approval showed. `guard` is the ask a Protected
+ * Environment makes of someone who can't protect it, when the run interrupts what runs there.
+ */
+type ClusterPlan =
+  | { readonly ok: true; readonly volume: ResolvedVolume; readonly asked: OperationAsked | null; readonly guard: OperationAsked | null; readonly input: PlanRequest }
   | { readonly ok: false; readonly refusal: StoreRefusal };
+
+/** A plan as `planVolumeRun` answers it, naming the Environment the Volume is in. */
+export type VolumeRunPlan =
+  | (Extract<ClusterPlan, { ok: true }> & { readonly environment: { readonly project: string; readonly name: string } })
+  | Extract<ClusterPlan, { ok: false }>;
 
 const unanswered: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
 
@@ -489,7 +534,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   organizationId: string,
   input: PlanRequest,
 ) {
-  const volume = yield* resolveVolume(organizationId, input.environment, input.volumeId);
+  const { environment, ...volume } = yield* resolveVolume(organizationId, input.environment, input.volumeId);
   if (input.kind === "seed") {
     const refusal = yield* seedLandingRefusal(organizationId, input.environment, input.volumeId, input.args.into.volumeId);
     if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
@@ -506,7 +551,8 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     const refusal = yield* shrinkWhileDeploying(organizationId, input.environment, volume.volumeName, input.args.maximum_bytes);
     if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
   }
-  return yield* planOnCluster(organizationId, volume, input, pending);
+  const planned = yield* planOnCluster(organizationId, volume, input, pending);
+  return planned.ok ? { ...planned, environment } : planned;
 });
 
 /**
@@ -542,30 +588,30 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   pending: Owed | null,
 ) {
   const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input.kind === "resize" ? { ...input, recordedBytes: volume.recordedBytes } : input));
-  if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
+  if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
   const resolved = input.kind === "delete_mirror"
     ? { ...input, args: withSlotMachine(input.args, members.value.map((member) => member.machine)) }
     : input;
-  if (pending !== null && refusedWhileOwed(resolved, pending)) return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies VolumeRunPlan;
+  if (pending !== null && refusedWhileOwed(resolved, pending)) return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies ClusterPlan;
   if (pending !== null && input.kind === "delete_mirror" && members.value.some((member) => member.machine.id !== pending.current && roleOf(member) === "cutting")) {
     const forward = planForwardRelease(volume.volumeName, yield* owedTarget(pending, members.value), members.value);
-    if (forward.kind === "blocked") return { ok: false, refusal: { code: "conflict", message: forward.message, details: null } } satisfies VolumeRunPlan;
+    if (forward.kind === "blocked") return { ok: false, refusal: { code: "conflict", message: forward.message, details: null } } satisfies ClusterPlan;
   }
   const planInput: PlanInput = input.kind === "resize"
     ? { ...input, volumeName: volume.volumeName, orphan: false, recordedBytes: volume.recordedBytes, refquotaBytes: volume.refquotaBytes }
     : { ...input, volumeName: volume.volumeName, orphan: false };
   const planned = planFromCopies(planInput, members.value);
   if (!planned.ok) {
-    return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies VolumeRunPlan;
+    return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies ClusterPlan;
   }
   const verb = VERBS[input.kind];
   const { phase } = planned;
   if (phase.kind === "landed") {
     const source = yield* answered(keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)));
-    if (Option.isNone(source)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
+    if (Option.isNone(source)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
     if (source.value === null) {
-      return { ok: false, refusal: storeRefusal(alreadyOn(volume.volumeName, phase.target.machine.name)) } satisfies VolumeRunPlan;
+      return { ok: false, refusal: storeRefusal(alreadyOn(volume.volumeName, phase.target.machine.name)) } satisfies ClusterPlan;
     }
   }
   const from = phase.kind === "release" ? phase.from : null;
@@ -576,17 +622,20 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     : Option.some(null);
   const release = releasePlan(from, source);
   const effects = phaseEffects(volume, phase, release.forgets);
-  const asked: OperationAsked | null = verb === null ? null : {
+  const askedAs = (verb: OperationVerb): OperationAsked => ({
     subject: `volume:${input.volumeId}`,
     verb,
     name: volume.volumeName,
-    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node) },
+    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...phaseServer(phase) },
     effects,
-  };
+  });
+  const asked = verb === null ? null : askedAs(verb);
+  const guarding = PROTECTED_VERBS[input.kind];
+  const guard = asked ?? (guarding !== null && INTERRUPTS.has(phase.kind) ? askedAs(guarding) : null);
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
   const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : resolved;
-  return { ok: true, volume, asked, input: pinned } satisfies VolumeRunPlan;
-}, Effect.catchTag("ClusterOutOfTime", () => Effect.succeed({ ok: false, refusal: unanswered } satisfies VolumeRunPlan)), withClusterBudget(PLAN_CLUSTER_BUDGET_MS));
+  return { ok: true, volume, asked, guard, input: pinned } satisfies ClusterPlan;
+}, Effect.catchTag("ClusterOutOfTime", () => Effect.succeed({ ok: false, refusal: unanswered } satisfies ClusterPlan)), withClusterBudget(PLAN_CLUSTER_BUDGET_MS));
 
 const owedTarget = Effect.fn("VolumeRun.owedTarget")(function* (pending: Owed, members: readonly Member[]) {
   return members.find((member) => member.machine.id === pending.current)?.machine
@@ -599,7 +648,7 @@ const owedTarget = Effect.fn("VolumeRun.owedTarget")(function* (pending: Owed, m
 const planForward = Effect.fn("VolumeRun.planForward")(function* (volume: ResolvedVolume, input: PlanRequest, pending: Owed, members: readonly Member[]) {
   const to = yield* owedTarget(pending, members);
   const forward = planForwardRelease(volume.volumeName, to, members);
-  if (forward.kind === "blocked") return { ok: false, refusal: { code: "conflict", message: forward.message, details: null } } satisfies VolumeRunPlan;
+  if (forward.kind === "blocked") return { ok: false, refusal: { code: "conflict", message: forward.message, details: null } } satisfies ClusterPlan;
   const asked: OperationAsked = {
     subject: `volume:${input.volumeId}`,
     verb: "release",
@@ -608,7 +657,7 @@ const planForward = Effect.fn("VolumeRun.planForward")(function* (volume: Resolv
     effects: [],
   };
   const plan = { sources: [], forgets: [], forward: { after: pending.id, to: pending.current, removeOn: forward.removeOn.map((machine) => machine.id) } };
-  return { ok: true, volume, asked, input: { ...input, kind: "release", args: { plan } } } satisfies VolumeRunPlan;
+  return { ok: true, volume, asked, guard: asked, input: { ...input, kind: "release", args: { plan } } } satisfies ClusterPlan;
 });
 
 export type RequestOptions = {
