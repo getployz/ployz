@@ -415,6 +415,8 @@ fn usage_errors_exit_2() {
         ],
         &["completion", "--json", "bash"],
         &["exec", "--json", "api"],
+        &["login", "--cloud-url", "ftp://x"],
+        &["server", "add", "root@"],
     ] {
         let (code, stderr) = run_human(args);
         assert_eq!(code, Some(2), "{args:?}: {stderr}");
