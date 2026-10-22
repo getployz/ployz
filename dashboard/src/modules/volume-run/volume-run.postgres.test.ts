@@ -3623,7 +3623,7 @@ describe("volume runs", () => {
       await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
 
       expect(await as(member, { kind: "move", args: { to: "fsn-3" } }, approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
-      expect(await review(approval_id)).toMatchObject({ operation: { name: "data to fsn-2", preview: { to: { name: "fsn-2" } } } });
+      expect(await review(approval_id)).toMatchObject({ operation: { name: "data to fsn-2", preview: { to: "fsn-2" } } });
       expect(await rows()).toEqual([]);
     });
 
@@ -3632,7 +3632,7 @@ describe("volume runs", () => {
 
       const { approval_id } = askedOf(await as(member, { kind: "restore", args: { from: "fsn-2" } }));
 
-      expect(await review(approval_id)).toMatchObject({ operation: { preview: { from: { name: "fsn-2" } } }, protected: { environment: "production" } });
+      expect(await review(approval_id)).toMatchObject({ operation: { name: "data from fsn-2", preview: { from: "fsn-2" } }, protected: { environment: "production" } });
     });
 
     it("a member can't decide another member's Release", async () => {
@@ -3642,10 +3642,19 @@ describe("volume runs", () => {
       expect(await runEffect(decideApproval(peer, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: false });
     });
 
-    it("a member's Move asks even when its first step seals an older second primary", async () => {
-      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 3) }, { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5) }, { name: "fsn-3", pool: true, copy: null }];
+    it("a member's Move asks even when its first step seals an older second primary, and its approval covers that Server only", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy(base, 3) },
+        { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5) },
+        { name: "fsn-3", pool: true, copy: null },
+        { name: "fsn-4", pool: true, copy: null },
+      ];
+      const { approval, approval_id } = askedOf(await as(member, { kind: "move", args: { to: "fsn-3" } }));
+      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
 
-      expect(await as(member, { kind: "move", args: { to: "fsn-3" } })).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+      expect(await as(member, { kind: "move", args: { to: "fsn-4" } }, approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+      expect(await rows()).toEqual([]);
+      expect(await as(member, { kind: "move", args: { to: "fsn-3" } }, approval_id)).toMatchObject({ ok: true });
     });
 
     it("a member seals an older second primary unasked, as Ployz's own sync would", async () => {

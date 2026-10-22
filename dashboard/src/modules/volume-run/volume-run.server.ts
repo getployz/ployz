@@ -487,22 +487,23 @@ const PROTECTED_VERBS = {
   resize: "resize",
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
-/** The Server a guarded phase moves to or restores from, or the sizes it resizes from and to, so its approval covers no other. */
-function phaseServer(phase: PlannedPhase): JsonObject {
-  const named = (member: AnsweredMember) => ({ machine: member.machine.id, name: member.machine.name });
-  switch (phase.kind) {
+/**
+ * What a guarded run was asked to do, as its approval binds it: the Server it moves to or restores from, or the sizes it
+ * resizes from and to. It comes from the request, not the step admission plans first, so an approval holds whichever
+ * step the worker reaches and covers no other Server or size.
+ */
+function requestPreview(volume: ResolvedVolume, input: VolumeRunInput): JsonObject {
+  switch (input.kind) {
     case "move":
-    case "landed":
-      return { to: named(phase.target) };
+      return { to: input.args.to };
     case "restore":
-      return { from: named(phase.from) };
+      return { from: input.args.from };
     case "resize":
-      return { recorded_bytes: phase.from, maximum_bytes: phase.to };
-    case "delete_mirror":
-    case "release":
+      return { recorded_bytes: volume.recordedBytes, maximum_bytes: input.args.maximum_bytes };
     case "mirror":
     case "sync":
-    case "demote":
+    case "delete_mirror":
+    case "release":
     case "seed":
       return {};
   }
@@ -516,7 +517,9 @@ function requestName(volume: ResolvedVolume, input: VolumeRunInput): string {
     case "restore":
       return `${volume.volumeName} from ${input.args.from}`;
     case "resize":
-      return `${volume.volumeName} from ${gb(volume.recordedBytes)} to ${gb(input.args.maximum_bytes)}`;
+      return volume.recordedBytes === 0
+        ? `${volume.volumeName} to ${gb(input.args.maximum_bytes)}`
+        : `${volume.volumeName} from ${gb(volume.recordedBytes)} to ${gb(input.args.maximum_bytes)}`;
     case "mirror":
     case "sync":
     case "delete_mirror":
@@ -643,7 +646,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     subject: `volume:${input.volumeId}`,
     verb,
     name: requestName(volume, input),
-    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...phaseServer(phase) },
+    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...requestPreview(volume, input) },
     effects,
   });
   const asked = verb === null ? null : askedAs(verb);
