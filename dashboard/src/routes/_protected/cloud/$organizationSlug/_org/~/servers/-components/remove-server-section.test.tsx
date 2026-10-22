@@ -38,4 +38,7 @@ it("says a mirrored volume comes back from its mirror, and only a volume with no
     "A volume with a mirror on another server comes back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere are lost.",
   );
   expect(dialog.textContent).not.toContain("can't be recovered");
+  expect(dialog.textContent).toContain(
+    "It won't know it was forgotten. Wipe its disk before it runs again: as it is, it keeps writing to its old copies, and those writes are lost.",
+  );
 });

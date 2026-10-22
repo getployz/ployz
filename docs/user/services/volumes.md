@@ -110,7 +110,8 @@ take over once web-1 is forgotten. Under **Live**, web-1 reads **Not answering**
 1. Wait if web-1 is coming back. When it answers again, its services start and nothing is lost.
 2. If it's gone for good, an owner or admin
    [forgets it](../servers/manage-servers.md#forget-a-server-that-is-gone) on its server page.
-   Copies links there.
+   Copies links there. Wipe web-1's disk before it runs again: as it is, it keeps writing to
+   its old copy, and those writes are lost.
 3. Back under **Copies**, click **Use mirror**. It stages the mirror as the primary and says
    which changes are lost: the writes since the mirror's last refresh. The button shows only
    while the mirror is the volume's last copy. If an old copy from an earlier move also remains,

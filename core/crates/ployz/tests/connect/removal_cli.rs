@@ -550,6 +550,16 @@ async fn a_server_cloud_manages_is_forgotten_through_cloud() {
         "{result}"
     );
     assert_eq!(result.get("next"), Some(&json!(null)), "{result}");
+    // Nothing reaches a forgotten Server, so the operator must stop it coming back as it is.
+    assert_eq!(
+        result.get("warnings"),
+        Some(&json!([
+            "Server two doesn't know it was forgotten. Wipe or reinstall its disk before it \
+             runs again. If it comes back as it is, its services keep writing to its old copy \
+             of each Volume, and those writes are lost: run sudo ployz-uninstall on it at once."
+        ])),
+        "{result}"
+    );
 }
 
 #[tokio::test]
