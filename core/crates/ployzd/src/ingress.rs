@@ -455,6 +455,17 @@ struct CaddyCertificates {
 }
 
 impl CaddyCertificates {
+    /// `projection` without the certificates Caddy has not loaded.
+    fn loaded_only(&self, projection: &IngressProjection) -> IngressProjection {
+        let unloaded = projection
+            .sites
+            .iter()
+            .filter_map(pinned_stem)
+            .filter(|stem| !self.accepted.contains(stem))
+            .collect();
+        without(projection, &unloaded)
+    }
+
     /// Serve each refused site without HTTPS and name the refusal in its place, so one site's
     /// certificate never blocks the rest of the config.
     fn quarantine(&mut self, projection: &mut IngressProjection) {
@@ -646,12 +657,17 @@ where
                                 let result = if last_input.as_ref() == Some(&input) {
                                     Ok(())
                                 } else {
-                                    let applied = apply_caddy(
-                                        &input.projection,
-                                        &config_file,
-                                        admin.as_ref(),
-                                    )
-                                    .await;
+                                    // Caddy starts from a file written without its admin, so
+                                    // that file pins only certificates this Caddy has loaded.
+                                    let validated;
+                                    let applying = if admin.is_some() {
+                                        &input.projection
+                                    } else {
+                                        validated = certificates.loaded_only(&input.projection);
+                                        &validated
+                                    };
+                                    let applied =
+                                        apply_caddy(applying, &config_file, admin.as_ref()).await;
                                     if let (Err(ApplyError::BeforeServing(_)), Some(admin)) =
                                         (&applied, admin.as_ref())
                                         && certificates.find_refused(&input.projection, admin).await
