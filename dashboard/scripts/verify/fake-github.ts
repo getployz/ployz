@@ -212,7 +212,9 @@ export async function run() {
         if (input.action === "added") hidden.delete(r.id);
         else hidden.add(r.id);
       }
-      const repositories = changed.map((r) => repositoryJson(target, r));
+      const repositories = changed.map((r) => ({
+        id: r.id, node_id: `R_${r.id}`, name: r.name, full_name: fullName(target, r), private: r.private,
+      }));
       return webhook("installation_repositories", {
         action: input.action, sender: sender(from), installation: installationJson(target), repository_selection: "selected",
         repositories_added: input.action === "added" ? repositories : [], repositories_removed: input.action === "removed" ? repositories : [],

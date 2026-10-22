@@ -3,12 +3,31 @@ import { Result } from "effect";
 import {
   canonicalizeGithubChangedPaths,
   decodeGithubCheckSuitePayload,
+  decodeGithubInstallationRepositoriesPayload,
   decodeGithubPullRequestPayload,
   decodeGithubPushPayload,
   matchGithubWatchPaths,
 } from "#/modules/github/github-webhook-contracts";
 
 describe("GitHub webhook contracts", () => {
+  it("decodes installation_repositories in the shape GitHub sends, keeping only each repository's id", () => {
+    const decoded = decodeGithubInstallationRepositoriesPayload({
+      action: "added",
+      installation: { id: 7 },
+      repository_selection: "selected",
+      repositories_added: [
+        { id: 4243, node_id: "R_4243", name: "docs", full_name: "acme/docs", private: true },
+      ],
+      repositories_removed: [],
+      requester: null,
+      sender: { id: 9001, login: "ada" },
+    });
+
+    expect(Result.isSuccess(decoded)).toBe(true);
+    if (Result.isFailure(decoded)) return;
+    expect(decoded.success.repositories_added).toEqual([{ id: 4243 }]);
+  });
+
   it("decodes a branch push into a normalized, privacy-minimal contract", () => {
     const decoded = decodeGithubPushPayload({
       installation: { id: 17 },
