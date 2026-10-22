@@ -1147,11 +1147,9 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
                 .value_parser(clap::value_parser!(u32).range(1..))
                 .help("MTU of this Server's WireGuard interface"),
         )
-        .arg(
-            switch("yes", Some('y'))
-                .env(env::AUTO_CONFIRM)
-                .help("Don't ask: reset an initialized Server, and take --storage none unless given"),
-        )
+        .arg(crate::cli::yes(
+            "Don't ask: reset an initialized Server, and take --storage none unless given",
+        ))
 }
 
 #[cfg(test)]

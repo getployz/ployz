@@ -303,8 +303,10 @@ pub(crate) fn forget(
 
 /// Add to `nodes` the teardown of each Service `environment`'s queued Deployment
 /// retires and Saved revision `saved` still lacks, but none of the runtime Services
-/// `saved` runs: superseding it must not leave them running. A node of that Service
-/// becomes its teardown, so the next Deployment to supersede this one takes it over.
+/// `saved` runs: superseding it must not leave them running. Nor one the revision
+/// `shipped` holds or runs: a retry of that revision runs it again. A node of that
+/// Service becomes its teardown, so the next Deployment to supersede this one takes
+/// it over.
 /// Each Service it adds takes along the removed Configs that leave with it:
 /// [`unmounted`] from `shipped`, the revision these nodes ship, over what may run
 /// once the Deployments in flight end.
@@ -315,6 +317,18 @@ fn inherit(
     nodes: &mut Vec<TargetNode>,
 ) -> Result<(), RpcError> {
     let given = nodes.len();
+    let holds = |id: &str| {
+        [saved, shipped]
+            .iter()
+            .flat_map(|intent| &intent.services)
+            .any(|service| service.id == id)
+    };
+    let runs = |runtime: &ServiceName| {
+        [saved, shipped]
+            .iter()
+            .flat_map(|intent| &intent.services)
+            .any(|service| service.config.private_dns == *runtime)
+    };
     let rows = tx.query(
         "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = 'queued'",
         &[environment.as_str().into()],
@@ -328,23 +342,11 @@ fn inherit(
             else {
                 continue;
             };
-            if saved
-                .services
-                .iter()
-                .any(|service| service.id == id.as_str())
-            {
+            if holds(id.as_str()) {
                 continue;
             }
             let runtimes = ServiceRemovals::from_names(
-                removals
-                    .iter()
-                    .filter(|runtime| {
-                        !saved
-                            .services
-                            .iter()
-                            .any(|service| service.config.private_dns == **runtime)
-                    })
-                    .cloned(),
+                removals.iter().filter(|runtime| !runs(runtime)).cloned(),
             );
             if runtimes.is_empty() {
                 continue;
@@ -748,12 +750,7 @@ pub(crate) fn retry(
                 i64::try_from(number)
                     .map_err(|_| error::corrupt("Deployment number"))?
                     .into(),
-                json_text(&Run {
-                    prune: stored.run.prune,
-                    ..Run::default()
-                })
-                .as_str()
-                .into(),
+                json_text(&Run::default()).as_str().into(),
                 source.as_str().into(),
                 admitted_at.into(),
                 who.principal.as_ref().map(Principal::as_str).into(),
@@ -793,6 +790,7 @@ pub(crate) fn retry(
         held: false,
         chooses_upload_at_start: false,
         preparing: false,
+        prune: false,
         ..stored.summary
     };
     Ok((summary, rollback))
@@ -1002,7 +1000,7 @@ fn retried(
                     Scope::All {
                         losses,
                         retire: &retire,
-                        prune: stored.run.prune,
+                        prune: false,
                     },
                     stored.namespace.clone(),
                     stored.cluster_domain.as_ref(),

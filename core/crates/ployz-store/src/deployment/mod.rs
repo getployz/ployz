@@ -857,7 +857,8 @@ impl Stored {
     /// What it lowers: the Saved Services it ships and the runtime Services it
     /// tears down. A full Deploy ships every Service of `saved`, its revision, and
     /// tears down each node `saved` lacks: one frozen before teardowns were, as
-    /// the runtime Service it ran as then.
+    /// the runtime Service it ran as then, unless a Service of `saved` runs as it
+    /// now and so replaces it.
     pub(crate) fn lowering(&self, saved: &SavedEnvironmentIntent) -> Ships {
         let full = self.summary.services.is_empty();
         let mut shipped = Vec::new();
@@ -878,7 +879,13 @@ impl Stored {
                         .iter()
                         .any(|service| service.id == id.as_str())
                 {
-                    removals.extend([runtime.clone()]);
+                    if !saved
+                        .services
+                        .iter()
+                        .any(|service| service.config.private_dns == *runtime)
+                    {
+                        removals.extend([runtime.clone()]);
+                    }
                 } else {
                     shipped.push(name);
                 }

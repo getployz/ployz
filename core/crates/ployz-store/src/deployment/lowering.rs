@@ -137,19 +137,42 @@ pub(crate) fn retirements(
 }
 
 /// What a full Deployment of `saved` tears down: each Service `landing` may run
-/// and `saved` dropped, by [`retirements`].
+/// and `saved` dropped, and each a Deployment that started and ended short of
+/// Applied put in place and `saved` lacks, by [`retirements`].
 pub(crate) fn dropped(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
     landing: &Landing<'_>,
 ) -> Result<Vec<Retire>, RpcError> {
-    let removed = landing
+    let mut removed = landing
         .dropped(saved)
         .services
         .iter()
         .map(|service| parse_stored(&service.id))
         .collect::<Result<BTreeSet<ServiceLineageId>, _>>()?;
+    let in_flight = in_flight_sql();
+    let rows = tx.query(
+        &format!(
+            "SELECT nodes FROM config_deployment \
+             WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
+             AND status != 'applied' AND NOT {in_flight}"
+        ),
+        &[environment.as_str().into()],
+    )?;
+    for row in &rows {
+        let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
+        for node in nodes {
+            if let TargetNode::Service { id, .. } = node
+                && !saved
+                    .services
+                    .iter()
+                    .any(|service| service.id == id.as_str())
+            {
+                removed.insert(id);
+            }
+        }
+    }
     retirements(tx, environment, saved, &removed)
 }
 
@@ -275,11 +298,19 @@ pub(crate) fn freeze(
                 .find(|gone| gone.id.as_str() == service.id)
                 .map_or_else(|| TargetNode::service(service), TargetNode::retire)
         };
+        // A teardown of a Service nothing may run is one a failed attempt left behind.
+        let left_behind = retire.iter().filter(|gone| {
+            !dropped
+                .services
+                .iter()
+                .any(|service| service.id == gone.id.as_str())
+        });
         saved
             .services
             .iter()
             .map(TargetNode::service)
             .chain(dropped.services.iter().map(tearing_down))
+            .chain(left_behind.map(TargetNode::retire))
             .collect::<Result<_, _>>()?
     } else {
         services

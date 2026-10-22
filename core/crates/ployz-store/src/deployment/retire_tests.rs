@@ -53,18 +53,7 @@ fn retiring_api() -> (ConfigStore, Actor) {
         )
         .unwrap();
     for (n, service) in [(3, "web"), (4, "api")] {
-        store
-            .write(
-                &who,
-                &CreateService {
-                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
-                    environment: EnvironmentRef::default(),
-                    name: name(service),
-                    image: Some("nginx:1".into()),
-                    template: None,
-                },
-            )
-            .unwrap();
+        add_service(&store, &who, n, service);
     }
     store
         .write(
@@ -96,18 +85,43 @@ fn retiring_api() -> (ConfigStore, Actor) {
     store
         .record(&deployment(1), &runner(), succeeded(&["web", "api"]))
         .unwrap();
+    remove_service(&store, &who, "api");
+    publish(&store, &who);
+    (store, who)
+}
+
+/// A new Service lineage `n` named `service`, staged.
+fn add_service(store: &ConfigStore, who: &Actor, n: u8, service: &str) {
     store
         .write(
-            &who,
-            &RemoveService {
+            who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(n)).unwrap(),
                 environment: EnvironmentRef::default(),
-                service: name("api"),
+                name: name(service),
+                image: Some("nginx:1".into()),
+                template: None,
             },
         )
         .unwrap();
+}
+
+fn remove_service(store: &ConfigStore, who: &Actor, service: &str) {
     store
         .write(
-            &who,
+            who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: name(service),
+            },
+        )
+        .unwrap();
+}
+
+fn publish(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
             &Command::Publish(Publish {
                 id: None,
                 environment: EnvironmentRef::default(),
@@ -117,7 +131,6 @@ fn retiring_api() -> (ConfigStore, Actor) {
             }),
         )
         .unwrap();
-    (store, who)
 }
 
 fn deploy(
@@ -184,7 +197,11 @@ fn retire_api(store: &ConfigStore, who: &Actor, services: &[&str]) -> Deployment
 }
 
 fn operation(service: &str) -> Value {
-    let container = if service == "web" { "a" } else { "b" };
+    let container = match service {
+        "web" => "a",
+        "api" => "b",
+        _ => "c",
+    };
     json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": container.repeat(64)})
 }
 
@@ -213,6 +230,48 @@ fn succeeded(services: &[&str]) -> RunEvidence {
         outcome: Box::new(outcome),
         removed: Vec::new(),
     }
+}
+
+/// The run executed `completed`, then failed at `failed`.
+fn failed_at(completed: &[&str], failed: &str) -> RunEvidence {
+    let outcome: DeployOutcome<ExecutionError> = serde_json::from_value(json!({
+        "type": "failed",
+        "completed": completed.iter().map(|service| operation(service)).collect::<Vec<_>>(),
+        "failed": {"type": "operation", "operation": operation(failed), "error": {
+            "type": "machine", "action": "RemoveContainer",
+            "error": {"code": "internal", "message": "busy", "details": {}}
+        }},
+        "unexecuted": []
+    }))
+    .unwrap();
+    RunEvidence::Executed {
+        progress: Vec::new(),
+        outcome: Box::new(outcome),
+        removed: Vec::new(),
+    }
+}
+
+fn redeploy(store: &ConfigStore, who: &Actor, n: u8, source: &DeploymentId) {
+    store
+        .write(
+            who,
+            &Admit::Retry(Retry {
+                id: deployment(n),
+                deployment: source.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+        )
+        .unwrap();
+}
+
+fn status(store: &ConfigStore, who: &Actor, id: &DeploymentId) -> DeploymentStatus {
+    store
+        .read(who, &crate::DeploymentQuery { id: id.clone() })
+        .unwrap()
+        .deployment
+        .status
 }
 
 /// Run Deployment `id` to its end on `preview`, executing `ran`.
@@ -337,6 +396,109 @@ fn a_full_deploy_with_prune_removes_the_whole_namespace() {
             .deployment
             .prune
     );
+}
+
+#[test]
+fn a_full_deploy_replaces_a_dropped_service_whose_name_a_new_one_took() {
+    let (store, who) = retiring_api();
+    add_service(&store, &who, 6, "api");
+    publish(&store, &who);
+    let admitted = deploy(&store, &who, 3, &[]).unwrap();
+    let claimed = store.claim(&admitted.id, &runner()).unwrap();
+    assert!(
+        claimed
+            .intent
+            .target
+            .iter()
+            .any(|spec| spec.name == name("api"))
+    );
+    assert!(
+        claimed.intent.options.removals.is_empty(),
+        "{:?}",
+        claimed.intent.options.removals
+    );
+}
+
+#[test]
+fn redeploying_a_full_deployment_runs_the_service_a_queued_full_deployment_removes() {
+    let (store, who) = retiring_api();
+    let queued = deploy(&store, &who, 3, &[]).unwrap();
+    assert!(nodes(&store, &queued.id).iter().any(TargetNode::retires));
+    redeploy(&store, &who, 4, &deployment(1));
+    assert_eq!(
+        status(&store, &who, &queued.id),
+        DeploymentStatus::Superseded
+    );
+    let claimed = store.claim(&deployment(4), &runner()).unwrap();
+    assert!(
+        claimed
+            .intent
+            .target
+            .iter()
+            .any(|spec| spec.name == name("api"))
+    );
+    assert!(
+        claimed.intent.options.removals.is_empty(),
+        "{:?}",
+        claimed.intent.options.removals
+    );
+}
+
+#[test]
+fn a_full_deploy_tears_down_a_service_that_failed_to_start_once_saved_state_drops_it() {
+    let (store, who) = retiring_api();
+    add_service(&store, &who, 6, "jobs");
+    publish(&store, &who);
+    let attempt = deploy(&store, &who, 3, &[]).unwrap();
+    store.claim(&attempt.id, &runner()).unwrap();
+    store
+        .record(
+            &attempt.id,
+            &runner(),
+            RunEvidence::Prepared(preview(&["web", "jobs", "api"], true)),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .record(&attempt.id, &runner(), failed_at(&["web", "api"], "jobs"))
+            .unwrap()
+            .status,
+        DeploymentStatus::Failed
+    );
+    assert_eq!(applied(&store, &who), ["web"]);
+    remove_service(&store, &who, "jobs");
+    publish(&store, &who);
+    let admitted = deploy(&store, &who, 4, &[]).unwrap();
+    let claimed = store.claim(&admitted.id, &runner()).unwrap();
+    assert_eq!(
+        claimed.intent.options.removals,
+        ployz_core::ServiceRemovals::from_names([name("jobs")])
+    );
+}
+
+#[test]
+fn a_redeploy_never_prunes() {
+    let (store, who) = retiring_api();
+    let pruned = admit(&store, &who, 3, &[], true).unwrap();
+    assert_eq!(
+        run(
+            &store,
+            &pruned.id,
+            preview(&["web", "api"], true),
+            &["web", "api"]
+        ),
+        DeploymentStatus::Applied
+    );
+    redeploy(&store, &who, 4, &pruned.id);
+    assert!(
+        !store
+            .read(&who, &crate::DeploymentQuery { id: deployment(4) })
+            .unwrap()
+            .deployment
+            .prune
+    );
+    let claimed = store.claim(&deployment(4), &runner()).unwrap();
+    assert_eq!(claimed.intent.options.prune, PruneScope::Removals);
 }
 
 #[test]

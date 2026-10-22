@@ -2933,6 +2933,46 @@ fn deploy_prune_asks_before_removing_what_the_store_does_not_hold() {
 }
 
 #[test]
+fn auto_confirm_in_the_environment_answers_for_deploy() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        let deploy = |auto_confirm: &str, args: &[&str]| -> (Option<i32>, Value) {
+            let home = tempfile::tempdir().unwrap();
+            let output = store
+                .command(home.path())
+                .env("PLOYZ_AUTO_CONFIRM", auto_confirm)
+                .arg("--json")
+                .args(args)
+                .args(UNREACHABLE_SERVER)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let json = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+                panic!("stdout is not one JSON object ({error}): {stdout:?}")
+            });
+            (output.status.code(), json)
+        };
+        // `1` answers yes, as it does for every other --yes.
+        let (code, pruned) = deploy("1", &["deploy", "--prune"]);
+        assert_eq!(code, Some(1), "{pruned}");
+        assert_eq!(pruned["prune"], json!(true), "{pruned}");
+        // A deploy that never asks doesn't mind the answer's spelling.
+        let (code, deployed) = deploy("1", &["deploy"]);
+        assert_eq!(code, Some(1), "{deployed}");
+        assert!(deployed.get("error").is_none(), "{deployed}");
+        // `0` answers no.
+        let (code, asked) = deploy("0", &["deploy", "--prune"]);
+        assert_eq!(code, Some(2), "{asked}");
+        assert_eq!(
+            asked["error"]["code"],
+            json!("confirmation_required"),
+            "{asked}"
+        );
+    }
+}
+
+#[test]
 fn an_agent_allows_shared_writes_before_a_second_writer() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

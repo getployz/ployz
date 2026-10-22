@@ -231,6 +231,8 @@ their recorded outcomes.
 ## Redeploy or cancel a deployment
 
 - **Redeploy**, on any finished deployment, ships that deployment's commit and settings again.
+  It never prunes, even when the deployment it ships again did: services that aren't the
+  environment's are kept and named, as by a deploy without `--prune`.
   Your staged changes, volume changes included, wait for your next deploy, and **Copies wait
   for Deploy** beside the button says so when volume changes are staged. To ship a fix, change it
   and deploy instead. A deployment whose restore failed can't be redeployed, because it would mount

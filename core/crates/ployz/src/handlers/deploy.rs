@@ -56,11 +56,7 @@ pub(super) fn deploy_command(command: Command) -> Command {
                      doesn't hold; asks first",
                 ),
         )
-        .arg(
-            switch("yes", Some('y'))
-                .env(crate::cli::env::AUTO_CONFIRM)
-                .help("Prune without asking"),
-        )
+        .arg(crate::cli::yes("Prune without asking"))
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
         .arg(
@@ -141,11 +137,7 @@ pub(super) fn redeploy_command(command: Command) -> Command {
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(
-        switch("yes", Some('y'))
-            .env(crate::cli::env::AUTO_CONFIRM)
-            .help("Roll back without asking"),
-    )
+    .arg(crate::cli::yes("Roll back without asking"))
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE
@@ -1369,6 +1361,22 @@ fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<Vec<u64>, Er
     Ok(view.rolls_back)
 }
 
+/// What a Deployment admitted with `prune` says of it: that it prunes, and when
+/// the Servers refused the prune, why. Nothing for one admitted without.
+fn prune_lines(prune: bool, preview: Option<&ployz_core::DeployPreview>) -> Vec<String> {
+    if !prune {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        "  Prune: also removes every service running in this environment that isn't one of its services"
+            .to_owned(),
+    ];
+    if let Some(refusal) = preview.and_then(|preview| preview.prune_refusal.as_ref()) {
+        lines.push(format!("  Prune skipped: {refusal}"));
+    }
+    lines
+}
+
 /// `#5 and #6`, the Deployments a redeploy undoes; none when it undoes nothing.
 fn rolls_back(numbers: &[u64]) -> Option<String> {
     let (last, rest) = numbers.split_last()?;
@@ -1446,10 +1454,8 @@ pub(super) fn say_view(view: &DeploymentView) {
     if let Some(provenance) = provenance(&view.deployment) {
         crate::ui::stream(format_args!("  {provenance}"));
     }
-    if view.deployment.prune {
-        crate::ui::stream(format_args!(
-            "  Prune: also removes every service running in this environment that isn't one of its services"
-        ));
+    for line in prune_lines(view.deployment.prune, view.preview.as_ref()) {
+        crate::ui::stream(format_args!("{line}"));
     }
     for warning in view.preview.iter().flat_map(|preview| &preview.warnings) {
         if let ployz_core::DeployWarning::NotInStore { .. } = warning {
@@ -1553,10 +1559,33 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::{
-        Tone, open_events, provenance, service_outcome_lines, ships_all, status_tone, status_word,
-        undecided, untargeted_lines,
+        Tone, open_events, provenance, prune_lines, service_outcome_lines, ships_all, status_tone,
+        status_word, undecided, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
+
+    #[test]
+    fn a_pruning_deployment_says_when_the_servers_refused_its_prune() {
+        let refused: ployz_core::DeployPreview = serde_json::from_value(serde_json::json!({
+            "namespace": "shop-production", "operations": [], "warnings": [],
+            "would_remove": [], "preserved_volumes": [], "prune_refusal": "incomplete_snapshot"
+        }))
+        .unwrap();
+        let lines = prune_lines(true, Some(&refused));
+        let [prunes, skipped] = lines.as_slice() else {
+            panic!("{lines:?}");
+        };
+        assert!(prunes.starts_with("  Prune:"), "{lines:?}");
+        assert_eq!(
+            *skipped,
+            format!(
+                "  Prune skipped: {}",
+                ployz_core::PruneRefusal::IncompleteSnapshot
+            )
+        );
+        assert_eq!(prune_lines(true, None).len(), 1);
+        assert!(prune_lines(false, Some(&refused)).is_empty());
+    }
 
     #[test]
     fn the_plan_says_what_the_servers_decide_in_plain_words() {
