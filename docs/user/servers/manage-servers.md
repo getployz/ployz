@@ -423,7 +423,8 @@ When a server's release can't serve a feature, the feature names that server:
   that server's release is behind your channel's. When Ployz can't tell, it says only what is
   missing: "Mirror removal is not in Ployz 0.3.0 on web-2."
   A volume move onto a server on 0.3.0-beta.6 is refused before any data moves: that release can
-  take the volume, but can't put the moved service back in web traffic.
+  take the volume, but can't put the moved service back in web traffic. A move that already reached
+  such a server waits at "Starting" until you upgrade it, then finishes.
 - **Drain** in Ployz Cloud names the servers to upgrade before it changes anything:
   "Drains need a newer Ployz on web-1".
 - **Upgrade** off Ployz 0.2.4 that stops partway while the old Ployz keeps running looks like it's

@@ -74,6 +74,7 @@ it.effect("a Cluster that never sends a frame fails as one to wait out once the 
 const volume = { environmentId: "e1", volumeName: "data", dockerVolume: "production_data", refquotaBytes: 0, recordedBytes: 0 };
 const release = { volumeId: "v1", environment: { project: "web", environment: "production" }, kind: "release", args: {} } as const;
 const move = { volumeId: "v1", environment: { project: "web", environment: "production" }, kind: "move", args: { to: "box-1" } } as const;
+const moveAway = { ...move, args: { to: "box-2" } } as const;
 const unanswered = { ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } } as const;
 
 // One Server holding only a mirror: a release reads the members, then which slot keeps the Service.
@@ -238,11 +239,17 @@ it.effect("a Move onto a Server whose Ployz can't route the moved copy names its
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
 );
 
-it.effect("a Move onto a Server whose Ployz routes the moved copy reads its copy", () =>
+it.effect("a Move reads the copy of its destination when that Server routes the moved copy or lists no capabilities, and of a source that can't", () =>
   Effect.gen(function* () {
-    const cluster = yield* lacking([requirements.volumeMove.capability, requirements.volumeFloor.capability, requirements.volumeSize.capability], null);
-    const [member] = yield* observeVolumeMembers("org-1", "pg-data", move).pipe(Effect.provide(cluster.layer(Promise.resolve())));
-    assert.strictEqual(member?.answered, true);
+    const read = (capabilities: readonly string[], run: typeof move | typeof moveAway) => Effect.gen(function* () {
+      const cluster = yield* lacking(capabilities, null);
+      const [member] = yield* observeVolumeMembers("org-1", "pg-data", run).pipe(Effect.provide(cluster.layer(Promise.resolve())));
+      return member?.answered;
+    });
+    const beta6 = [requirements.volumeMove.capability, requirements.volumeFloor.capability];
+    assert.strictEqual(yield* read([...beta6, requirements.volumeSize.capability], move), true);
+    assert.strictEqual(yield* read([], move), true);
+    assert.strictEqual(yield* read(beta6, moveAway), true);
   }),
 );
 
