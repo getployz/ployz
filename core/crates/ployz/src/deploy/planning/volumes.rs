@@ -68,7 +68,8 @@ impl<'snapshot> VolumePlan<'snapshot> {
     /// Validate all declared definitions before choosing any locations.
     ///
     /// # Errors
-    /// Returns conflicting definitions, incompatible modes, or unresolved locality.
+    /// Returns conflicting definitions, incompatible modes, or an applied Service's
+    /// unresolved locality.
     pub(super) fn new(
         snapshot: &'snapshot DeploySnapshot,
         namespace: &Namespace,
@@ -90,7 +91,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
             operator,
             assignments: BTreeMap::new(),
         };
-        plan.validate_provisioned_volume_definitions(target)?;
+        plan.validate_provisioned_volume_definitions(target, requested)?;
         Ok(plan)
     }
 
@@ -396,6 +397,7 @@ impl VolumePlan<'_> {
     fn validate_provisioned_volume_definitions(
         &self,
         target: &[RequestedServiceSpec],
+        requested: &[RequestedServiceSpec],
     ) -> Result<(), PlanError> {
         let snapshot = self.snapshot;
         let mut definitions = BTreeMap::new();
@@ -404,8 +406,15 @@ impl VolumePlan<'_> {
             if !spec.volume_graph().has_mounted_provisioned_volume() {
                 continue;
             }
+            // Placement and locality of a Service this Deploy leaves alone must not hold it.
+            let applied = requested.iter().any(|applied| applied.name == spec.name);
             let result = (|| {
-                let candidates = super::placement_candidates(spec, &self.namespace, snapshot)?;
+                let candidates = match super::placement_candidates(spec, &self.namespace, snapshot)
+                {
+                    Ok(candidates) => candidates,
+                    Err(_) if !applied => return Ok(()),
+                    Err(error) => return Err(error),
+                };
                 Self::record_provisioned(&mut definitions, spec, &candidates)?;
                 let mut machines = candidates
                     .into_iter()
@@ -421,7 +430,9 @@ impl VolumePlan<'_> {
                     return Ok(());
                 }
                 self.validate_provisioned_volumes(spec, &machines, snapshot)?;
-                volume_constraints(spec, snapshot, self, &mut machines)?;
+                if applied {
+                    volume_constraints(spec, snapshot, self, &mut machines)?;
+                }
                 Ok(())
             })();
             match result {
