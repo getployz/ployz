@@ -297,7 +297,7 @@ export const nameLostVolumes = Effect.fn("ServerOperations.nameLostVolumes")(fun
   return lost.map(({ id: { name: docker } }): LostVolumeName => {
     const owner = owners.get(docker);
     if (owner !== undefined) return { docker, name: owner.volume, detail: `${owner.project}/${owner.environment}` };
-    return ANONYMOUS_VOLUME.test(docker) ? { docker, name: "Anonymous Docker volume", detail: docker.slice(0, 12) } : { docker, name: docker };
+    return ANONYMOUS_VOLUME.test(docker) ? { docker, name: "Anonymous volume", detail: docker.slice(0, 12) } : { docker, name: docker };
   });
 });
 

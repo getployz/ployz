@@ -57,7 +57,7 @@ it.live("a Server removal's ask names each Volume it deletes as Ployz names it, 
   ]);
 }), 60_000);
 
-it.live("names each Volume a removal loses by its Volume and Environment, and an anonymous Docker volume as one", () => Effect.gen(function* () {
+it.live("names each Volume a removal loses by its Volume and Environment, and an anonymous Docker volume as anonymous", () => Effect.gen(function* () {
   const services = yield* storeTestCloud();
   yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
   const store = yield* cloudStore.pipe(Effect.provide(services));
@@ -81,7 +81,7 @@ it.live("names each Volume a removal loses by its Volume and Environment, and an
 
   expect(yield* nameLostVolumes(ORGANIZATION, lost).pipe(Effect.provide(services))).toEqual([
     { docker, name: "pg-data", detail: "shop/production" },
-    { docker: anonymous, name: "Anonymous Docker volume", detail: "68ab0a2eb28f" },
+    { docker: anonymous, name: "Anonymous volume", detail: "68ab0a2eb28f" },
     { docker: "my-cache", name: "my-cache" },
   ]);
 }), 60_000);
