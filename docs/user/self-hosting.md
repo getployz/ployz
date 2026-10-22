@@ -88,6 +88,12 @@ Then generate a private key and a client secret on the app's page, and note its 
 **Client ID**, and its slug, the name in its URL `github.com/apps/<slug>`. Ployz Cloud uses the
 app's client ID and secret to ask GitHub which installations the person connecting owns.
 
+**One app for both.** You can skip the OAuth App and sign in with the GitHub App: set
+`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` to the GitHub App's client ID and secret. Then the
+GitHub App needs both Callback URLs, with `https://cloud.example.com/api/github/callback` first
+and `https://cloud.example.com/api/auth/callback/github` second. GitHub sends a fresh
+installation back to the first Callback URL.
+
 ## 2. Configure
 
 1. Download the compose file and the example settings from the latest
