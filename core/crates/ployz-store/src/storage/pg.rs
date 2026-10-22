@@ -62,14 +62,24 @@ impl Postgres {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop();
-        let mut client = match idle {
-            Some(client) if !client.is_closed() => client,
-            _ => self
-                .config
-                .connect(self.tls.clone())
-                .map_err(storage_error)?,
+        let (mut client, reused) = match idle {
+            Some(client) if !client.is_closed() => (client, true),
+            _ => (self.connect()?, false),
         };
-        let result = run(&mut client, write, work);
+        let result = match run(&mut client, write, work) {
+            Ok(result) => result,
+            // A restart closes every idle connection unnoticed until its next use: BEGIN is
+            // that use, and nothing ran, so drop them all and start on a fresh one.
+            Err((_, work)) if reused && client.is_closed() => {
+                self.idle
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+                client = self.connect()?;
+                run(&mut client, write, work).unwrap_or_else(|(error, _)| Err(storage_error(error)))
+            }
+            Err((error, _)) => Err(storage_error(error)),
+        };
         if !client.is_closed() {
             let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
             if idle.len() < IDLE {
@@ -78,26 +88,43 @@ impl Postgres {
         }
         result
     }
+
+    fn connect(&self) -> Result<Client, RpcError> {
+        self.config.connect(self.tls.clone()).map_err(storage_error)
+    }
 }
 
 /// Writers run read-committed and lock the rows they change (see `scope::lock`);
 /// readers see one snapshot.
-fn run<T>(
-    client: &mut Client,
-    write: bool,
-    work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
-) -> Result<T, RpcError> {
+fn begin(client: &mut Client, write: bool) -> Result<postgres::Transaction<'_>, postgres::Error> {
     let isolation = if write {
         IsolationLevel::ReadCommitted
     } else {
         IsolationLevel::RepeatableRead
     };
-    let mut transaction = client
+    client
         .build_transaction()
         .isolation_level(isolation)
         .read_only(!write)
         .start()
-        .map_err(storage_error)?;
+}
+
+/// `work` in a transaction on `client`; a BEGIN that fails hands `work` back unrun.
+fn run<T, W: FnOnce(&mut dyn Tx) -> Result<T, RpcError>>(
+    client: &mut Client,
+    write: bool,
+    work: W,
+) -> Result<Result<T, RpcError>, (postgres::Error, W)> {
+    match begin(client, write) {
+        Ok(transaction) => Ok(finish(transaction, work)),
+        Err(error) => Err((error, work)),
+    }
+}
+
+fn finish<T>(
+    mut transaction: postgres::Transaction<'_>,
+    work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
+) -> Result<T, RpcError> {
     // Per transaction, not as startup options: PgBouncer refuses those.
     let millis = TIMEOUT.as_millis();
     transaction
