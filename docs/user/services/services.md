@@ -33,7 +33,8 @@ the services that need it.
 
 Click a service on the canvas to open its panel. **Deployments** lists its
 [deployments](../deploy/deployments.md), **Variables** holds its [variables](variables.md),
-**Logs** shows what it [prints](../observe/logs.md), and **Settings** holds the rest, from its
+**Logs** shows what it [prints](../observe/logs.md), **Monitoring** shows its
+[metrics](../observe/metrics.md), and **Settings** holds the rest, from its
 source to its restart policy: [Service settings](settings.md) explains each field.
 
 ## Rename a service
@@ -75,7 +76,9 @@ server after the service is deleted.
 ## Restart, stop or open a shell
 
 Open the service and click **⋮** next to its name. A running service offers **Restart** and
-**Stop**. A stopped one offers **Start**, and shows a **Start** button in its header too.
+**Stop**. A stopped one offers **Start**, and shows a **Start** button in its header too. In a
+[Protected environment](../environments/environments.md#protect-an-environment), a member sees
+**Request restart** and **Request stop**, which ask an owner or admin.
 
 - **Restart** goes one container at a time, across every server, so the others keep serving.
   The header counts them, like **Restarting 4/12**. If a container doesn't come back, the restart
