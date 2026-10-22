@@ -382,6 +382,12 @@ pub struct DeploymentView {
     /// oldest first: what redeploying it rolls back. Empty when it rolls nothing back.
     #[serde(default)]
     pub rolls_back: Vec<u64>,
+    /// Rows for runtime Services its preview removes as obsolete and no node targets,
+    /// by runtime name: Services this Store doesn't hold, which a full reconciliation
+    /// removes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(as = "Option<BTreeMap<ServiceName, Vec<ServerRow>>>", optional)]
+    pub untargeted: BTreeMap<ServiceName, Vec<ServerRow>>,
 }
 
 /// What a Deployment did to one of its target nodes.

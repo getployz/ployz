@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::{DeployOutcome, DeployPreview, ExecutionError, ServiceName};
+use ployz_core::{DeployOutcome, DeployPreview, ExecutionError, QualifiedService, ServiceName};
 use serde_json::{Value, json};
 
 use super::{Retire, Scope, TargetNode};
@@ -512,4 +512,55 @@ fn reading_a_deployment_loads_saved_state_only_for_what_its_rows_mount() {
     );
     assert!(read.nodes.iter().any(|node| !node.rows.is_empty()));
     assert_eq!(saved_reads(&store, &who, &deployment(2)), 1);
+}
+
+/// Deployment 2 records a completed row for runtime `cache`, which no node targets,
+/// under a preview that does or doesn't list `cache` as obsolete.
+fn read_with_a_cache_row(obsolete: bool) -> super::DeploymentView {
+    let (store, who) = retiring_api();
+    deploy(&store, &who, 2, &[]).unwrap();
+    store.claim(&deployment(2), &runner()).unwrap();
+    let mut plan = preview(&["web", "cache"], true);
+    if obsolete {
+        plan.would_remove
+            .push(QualifiedService::new(plan.namespace.clone(), name("cache")));
+    }
+    store
+        .record(&deployment(2), &runner(), RunEvidence::Prepared(plan))
+        .unwrap();
+    let snapshot: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{
+        "index": 1, "machine_id": "a".repeat(32), "machine_name": "alpha", "service_name": "cache",
+        "operation": operation("cache"), "status": {"type": "completed"}
+    }]))
+    .unwrap();
+    store
+        .record(
+            &deployment(2),
+            &runner(),
+            RunEvidence::Progress(crate::RowTracker::default().changes(&snapshot)),
+        )
+        .unwrap();
+    store
+        .read(&who, &crate::DeploymentQuery { id: deployment(2) })
+        .unwrap()
+}
+
+#[test]
+fn a_service_the_store_never_held_keeps_its_rows_outside_every_node() {
+    let read = read_with_a_cache_row(true);
+    assert!(!read.nodes.iter().any(|node| node.node.name() == "cache"));
+    let rows: Vec<_> = read
+        .untargeted
+        .get(&name("cache"))
+        .unwrap()
+        .iter()
+        .map(|row| (row.server.as_str(), &row.state))
+        .collect();
+    assert_eq!(rows, [("alpha", &crate::RowState::Completed)]);
+}
+
+#[test]
+fn an_untargeted_row_the_plan_does_not_remove_is_not_shown_as_removed() {
+    let read = read_with_a_cache_row(false);
+    assert!(read.untargeted.is_empty());
 }
