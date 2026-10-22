@@ -1645,7 +1645,12 @@ fn next_deploy_relocates_after_policy_edits_but_preserves_volume_locality() {
             VolumeSnapshot::try_from_observations([observed_volume(machine_id('1'), "data")])
                 .unwrap();
         let failure = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap_err();
-        assert!(failure.to_string().contains("app_data"));
+        let expected = if revoke_role {
+            "Volume data is on first, which doesn't run services"
+        } else {
+            "app_data"
+        };
+        assert!(failure.to_string().contains(expected), "{failure}");
     }
 }
 

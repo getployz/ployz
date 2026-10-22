@@ -1065,6 +1065,75 @@ fn a_full_deploy_blocks_only_the_service_whose_volume_has_no_writer() {
     assert_eq!(preview.placed_on.keys().collect::<Vec<_>>(), [&web.name]);
 }
 
+/// db runs on `second`, which holds its Volume and no longer accepts services, as after
+/// `ployz server drain second`.
+fn drained_volume_snapshot(db: &RequestedServiceSpec) -> DeploySnapshot {
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    snapshot
+        .machines
+        .get_mut(1)
+        .unwrap()
+        .machine
+        .accepts_services = false;
+    snapshot.containers = vec![container('a', '2', db, &service_id('a'))];
+    snapshot
+}
+
+#[test]
+fn a_volume_on_a_server_that_accepts_no_services_blocks_only_its_service() {
+    let (web, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &drained_volume_snapshot(&db)).unwrap();
+
+    let planned: Vec<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(
+        planned,
+        std::slice::from_ref(&web.name),
+        "{:?}",
+        operations(&preview)
+    );
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, db.name);
+    assert_eq!(blocked.error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        blocked.error.details.get("reason").unwrap(),
+        "volume_server_takes_no_services"
+    );
+    assert_eq!(
+        blocked.error.message,
+        "Volume data is on second, which doesn't run services. Turn them back on with ployz \
+         server set second --accepts-services=true"
+    );
+}
+
+#[test]
+fn a_direct_preview_names_the_volume_its_server_and_the_way_back() {
+    let (_, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db],
+        PlanOptions::default(),
+    );
+
+    let error = preview_deploy(&intent, &drained_volume_snapshot(&db)).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Volume data is on second, which doesn't run services. Turn them back on with ployz \
+         server set second --accepts-services=true"
+    );
+}
+
 #[test]
 fn a_service_that_depends_on_a_blocked_one_is_blocked_too() {
     let (web, db) = web_and_db();

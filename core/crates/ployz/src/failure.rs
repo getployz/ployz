@@ -644,6 +644,7 @@ fn plan_code(error: &PlanError) -> RpcErrorCode {
         | PlanError::ExistingPlainVolume { .. }
         | PlanError::ExistingProvisionedVolumeMismatch { .. }
         | PlanError::NoWriter { .. }
+        | PlanError::VolumeServerTakesNoServices { .. }
         | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
         PlanError::CapacityUnknown
         | PlanError::CopiesUnknown { .. }

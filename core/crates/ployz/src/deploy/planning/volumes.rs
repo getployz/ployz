@@ -10,8 +10,8 @@ use ployz_core::{
     BlockedService, CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation,
     KnownCopy, MachineId, MachineObservation, Namespace, Operator, PlacementConstraint,
     PreservedVolume, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
-    ServicePlacementEligibility, ServiceStorageSpec, ServiceVolume, ServiceVolumeGraph,
-    VolumeSource, owned_volume_namespace,
+    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServiceStorageSpec,
+    ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
 };
 
 use crate::deploy::{
@@ -186,10 +186,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                 let copies = self.copies_without_writer(name);
                 // A deployed Volume no member holds left the Cluster with its Server.
                 if !copies.is_empty() || self.deployed_volumes.contains(name) {
-                    let authored = self.volume_names.get(name).map_or_else(
-                        || Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
-                        String::as_str,
-                    );
+                    let authored = self.authored(name);
                     if let Some(silent) = self.snapshot.machines.iter().find(|machine| {
                         !matches!(
                             self.snapshot.storage_capacity.get(&machine.machine.id),
@@ -213,6 +210,14 @@ impl<'snapshot> VolumePlan<'snapshot> {
             }
         }
         Ok(VolumeLocality::Absent)
+    }
+
+    /// `name` as the Volume's owner wrote it.
+    fn authored<'name>(&'name self, name: &'name DockerVolumeName) -> &'name str {
+        self.volume_names.get(name).map_or_else(
+            || Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
+            String::as_str,
+        )
     }
 
     /// The role a Machine's storage gives `name`. A Machine that reports no copies, or
@@ -438,7 +443,11 @@ impl VolumePlan<'_> {
             match result {
                 // A Volume nobody can mount blocks only its Service, once that Service is
                 // planned; the other definitions still get checked.
-                Err(PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. }) => {}
+                Err(
+                    PlanError::NoWriter { .. }
+                    | PlanError::CopiesUnknown { .. }
+                    | PlanError::VolumeServerTakesNoServices { .. },
+                ) => {}
                 result => result.map_err(|source| {
                     super::service_error(name_errors_with_service, spec.name.as_str(), source)
                 })?,
@@ -994,9 +1003,11 @@ fn volume_constraints<'spec>(
         if matches!(spec.mode, ServiceMode::Replicated { .. }) {
             match plan.locality(volume)? {
                 VolumeLocality::Located { first, others } => {
-                    machines.retain(|machine| {
-                        machine.machine.id == first || others.contains(&machine.machine.id)
-                    });
+                    let located = |id: MachineId| id == first || others.contains(&id);
+                    if let Some(error) = refused_location(spec, snapshot, plan, volume, located) {
+                        return Err(error);
+                    }
+                    machines.retain(|machine| located(machine.machine.id));
                 }
                 VolumeLocality::Absent => missing_volumes.push(volume),
             }
@@ -1024,6 +1035,42 @@ fn volume_constraints<'spec>(
         ));
     }
     Ok((mounted_volumes, missing_volumes))
+}
+
+/// The refusal for a Volume whose every location is an up Machine that accepts no
+/// services: the Service can run nowhere else, and nothing new starts there.
+fn refused_location(
+    spec: &RequestedServiceSpec,
+    snapshot: &DeploySnapshot,
+    plan: &VolumePlan<'_>,
+    volume: &ServiceVolume,
+    located: impl Fn(MachineId) -> bool,
+) -> Option<PlanError> {
+    let name = managed_volume_name(volume)?;
+    let mut locations = snapshot
+        .machines
+        .iter()
+        .filter(|machine| located(machine.machine.id))
+        .peekable();
+    let first = locations.peek()?.machine.name.clone();
+    locations
+        .all(|machine| {
+            machine.membership != ployz_core::MembershipObservation::Down
+                && matches!(
+                    spec.placement_eligibility_in_namespace(
+                        &plan.namespace,
+                        &machine.machine,
+                        machine.storage.as_ref()
+                    ),
+                    ServicePlacementEligibility::Ineligible(
+                        ServicePlacementIneligibleReason::WorkNotAccepted
+                    )
+                )
+        })
+        .then(|| PlanError::VolumeServerTakesNoServices {
+            volume: plan.authored(name).to_owned(),
+            machine: first,
+        })
 }
 
 fn no_eligible_shared(
