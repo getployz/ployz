@@ -561,7 +561,8 @@ doesn't exist and for a private image you have no access to.
 
 **Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
 
-The server ran out of disk space while it downloaded an image. A deploy downloads every image it
+The server ran out of disk space while it downloaded an image, from its registry or from another
+server that already had it. A deploy downloads every image it
 needs before it changes any service, so none of the deploy's services changed and the versions
 already running keep running. The cause line under it is Docker's own error.
 
