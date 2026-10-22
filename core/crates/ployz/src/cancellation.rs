@@ -11,7 +11,8 @@ use tokio_util::sync::CancellationToken;
 /// prompt reads keys, and for good once a command listens for Ctrl-C itself.
 static DIES: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 static GRACEFUL: AtomicBool = AtomicBool::new(false);
-/// How many [`SigtermCancels`] guards are alive; SIGTERM cancels only while one is.
+/// How many [`SigtermCancels`] guards are alive; SIGTERM and SIGHUP cancel only
+/// while one is.
 static SIGTERM_CANCELS: AtomicUsize = AtomicUsize::new(0);
 
 /// Subscribe to Ctrl-C for async-only commands already running on Tokio.
@@ -41,8 +42,8 @@ pub(crate) fn on_ctrl_c() -> CancellationToken {
 
 /// Ctrl-C for the rest of the process, usable from synchronous code before any
 /// runtime polls. The listener is never torn down, so a late signal always has a
-/// reader and every caller shares one token. It also hears SIGTERM, but only a
-/// [`SigtermCancels`] turns that into a cancel; otherwise SIGTERM still ends the
+/// reader and every caller shares one token. It also hears SIGTERM and SIGHUP, but
+/// only a [`SigtermCancels`] turns them into a cancel; otherwise they still end the
 /// process, since a caller may stop reading the token once its wait is over.
 pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     static TOKEN: std::sync::Mutex<Option<CancellationToken>> = std::sync::Mutex::new(None);
@@ -52,17 +53,18 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     if let Some(token) = token.as_ref() {
         return Ok(token.clone());
     }
-    let mut signals = signal_hook::iterator::Signals::new([
-        signal_hook::consts::SIGINT,
-        signal_hook::consts::SIGTERM,
-    ])?;
+    let mut heard = vec![signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM];
+    if !hangup_ignored() {
+        heard.push(signal_hook::consts::SIGHUP);
+    }
+    let mut signals = signal_hook::iterator::Signals::new(heard)?;
     let cancelled = CancellationToken::new();
     let cancel = cancelled.clone();
     std::thread::Builder::new()
         .name("ployz-interrupt".into())
         .spawn(move || {
             for signal in signals.forever() {
-                if signal == signal_hook::consts::SIGTERM
+                if signal != signal_hook::consts::SIGINT
                     && SIGTERM_CANCELS.load(Ordering::SeqCst) == 0
                 {
                     let _ = signal_hook::low_level::emulate_default_handler(signal);
@@ -74,19 +76,43 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     Ok(token.insert(cancelled).clone())
 }
 
-/// [`interrupted`], with SIGTERM cancelling it like Ctrl-C until the guard
-/// drops. Hold it only while the token is read, as a deploy does while it
+/// Whether SIGHUP must keep the disposition the process started with: ignored,
+/// as `nohup` asks, a listener would replace the ignore. Linux says which
+/// signals are ignored. Where that can't be read, and off Linux where no safe
+/// call tells, SIGHUP keeps the disposition it started with, as before.
+fn hangup_ignored() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("SigIgn:"))
+                    .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+            })
+            .is_none_or(|mask| mask & (1 << (signal_hook::consts::SIGHUP - 1)) != 0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+/// [`interrupted`], with SIGTERM and SIGHUP cancelling it like Ctrl-C until the
+/// guard drops. Hold it only while the token is read, as a deploy does while it
 /// follows and settles its owned work: CI runners, `timeout`, systemd and
-/// container stops send SIGTERM, and the work must settle, not be orphaned.
+/// container stops send SIGTERM, a closed terminal or dropped SSH session sends
+/// SIGHUP, and the work must settle, not be orphaned.
 pub(crate) fn interrupted_or_terminated() -> std::io::Result<(CancellationToken, SigtermCancels)> {
     let token = interrupted()?;
     SIGTERM_CANCELS.fetch_add(1, Ordering::SeqCst);
     Ok((token, SigtermCancels(())))
 }
 
-/// While alive, SIGTERM cancels the [`interrupted`] token instead of ending the
-/// process.
-#[must_use = "SIGTERM ends the process again once this drops"]
+/// While alive, SIGTERM and SIGHUP cancel the [`interrupted`] token instead of
+/// ending the process.
+#[must_use = "SIGTERM and SIGHUP end the process again once this drops"]
 pub(crate) struct SigtermCancels(());
 
 impl Drop for SigtermCancels {
@@ -170,6 +196,75 @@ mod tests {
         let (_token, sigterm) = super::interrupted_or_terminated().unwrap();
         drop(sigterm);
         signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
+        std::thread::sleep(Duration::from_secs(5));
+    }
+
+    // A closed terminal or a dropped SSH session sends SIGHUP.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sighup_cancels_like_ctrl_c_while_a_deploy_holds_it() {
+        let (token, _sigterm) = super::interrupted_or_terminated().unwrap();
+        signal_hook::low_level::raise(signal_hook::consts::SIGHUP).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !token.is_cancelled() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "SIGHUP did not cancel"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn sighup_still_ends_the_process_outside_a_deploy() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "cancellation::tests::listener_without_a_guard_raises_sighup",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(signal_hook::consts::SIGHUP));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_deploy_under_nohup_keeps_running_through_a_hangup() {
+        let status = std::process::Command::new("nohup")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "cancellation::tests::a_hangup_under_nohup_cancels_nothing",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .current_dir(std::env::temp_dir())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+    }
+
+    #[test]
+    #[ignore = "child of a_deploy_under_nohup_keeps_running_through_a_hangup"]
+    fn a_hangup_under_nohup_cancels_nothing() {
+        let (token, _sigterm) = super::interrupted_or_terminated().unwrap();
+        signal_hook::low_level::raise(signal_hook::consts::SIGHUP).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!token.is_cancelled(), "nohup asked to ignore SIGHUP");
+    }
+
+    #[test]
+    #[ignore = "child of sighup_still_ends_the_process_outside_a_deploy"]
+    fn listener_without_a_guard_raises_sighup() {
+        let (_token, sigterm) = super::interrupted_or_terminated().unwrap();
+        drop(sigterm);
+        signal_hook::low_level::raise(signal_hook::consts::SIGHUP).unwrap();
         std::thread::sleep(Duration::from_secs(5));
     }
 }
