@@ -403,6 +403,32 @@ async fn publishing_a_sealing_public_key_never_replaces_the_clusters() {
     task.abort();
 }
 
+#[tokio::test]
+async fn the_sealing_readers_report_the_clusters_key_and_its_recovery_marker() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(store.sealing_public_key().await.unwrap(), None);
+    assert_eq!(store.sealing_awaits_recovery().await.unwrap(), None);
+
+    let published = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let awaited = ployz_core::SealingPublicKey::from_bytes([4; 32]);
+    store.publish_sealing_public_key(published).await.unwrap();
+    store
+        .api()
+        .execute([Statement::new(
+            "INSERT INTO cluster (key, value) VALUES ('sealing_awaits_recovery', ?)",
+            [json!(awaited.to_string())],
+        )])
+        .await
+        .unwrap();
+
+    assert_eq!(store.sealing_public_key().await.unwrap(), Some(published));
+    assert_eq!(
+        store.sealing_awaits_recovery().await.unwrap(),
+        Some(awaited)
+    );
+    task.abort();
+}
+
 fn participating_record() -> (Machine, LocalMachineRecord) {
     let machine: Machine = serde_json::from_value(json!({
         "id": "b".repeat(32),
