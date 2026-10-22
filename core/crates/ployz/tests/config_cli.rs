@@ -4307,6 +4307,12 @@ fn up_into_an_existing_project_adds_the_directory_s_service() {
                 .is_some_and(|message| message.starts_with("Nothing would build this directory")),
             "{refused}"
         );
+        let (_, status) = in_dir(store, fresh.path(), &taken, &["status"], &[]);
+        assert_ne!(
+            status.pointer("/environment/project"),
+            Some(&json!("other")),
+            "a refused up leaves the directory unlinked: {status}"
+        );
     }
 }
 

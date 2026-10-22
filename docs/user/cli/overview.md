@@ -265,8 +265,9 @@ ployz up --project my-app --env staging
 
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
 If no service in that project already builds from an upload, `ployz up` adds one named after
-the directory and builds it, as it does in a new project. If a service that pulls an image or
-builds from Git already has that name, it stops before it changes anything and says so.
+the directory and builds it, as it does in a new project. It stops and says why, adding no
+service and linking nothing, when a service builds from Git (run `ployz deploy` to ship it) or
+when a service that pulls an image already has the directory's name.
 
 A token acts as you in this organization, narrowed by its preset:
 

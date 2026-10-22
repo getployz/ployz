@@ -74,12 +74,14 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         None => found_project(&store, &name, scope.environment)?,
     };
     let listed = store.read(&ServicesQuery { environment })?;
+    // Refuse before linking, so a refused directory stays as it was.
+    let added = service_for_upload(&listed.services, name)?;
     let linked = super::link::record_unless_linked(&config, listed.environment.clone())?;
     let environment = EnvironmentRef {
         project: Some(listed.environment.project.clone()),
         environment: Some(listed.environment.name.clone()),
     };
-    if let Some(name) = service_for_upload(&listed.services, name)? {
+    if let Some(name) = added {
         add_service(&store, &environment, name, &directory)?;
     }
     let identity = super::link::identity(&store)?;
@@ -252,8 +254,9 @@ fn add_service(
 }
 
 /// The Service to add so the upload builds: none when one already builds from an
-/// upload or has no source yet, else `name`. A Service already named `name` that
-/// pulls an image or builds from Git is refused, since the upload would build nothing.
+/// upload or has no source yet, else `name`. An Environment with a Git Service, or a
+/// Service already named `name`, is refused: the upload would build nothing, and a new
+/// Service would deploy a second copy of an app Git already ships.
 fn service_for_upload(
     services: &[ServiceListing],
     name: ServiceName,
@@ -264,9 +267,18 @@ fn service_for_upload(
     {
         return Ok(None);
     }
+    if let Some(git) = services
+        .iter()
+        .find(|listed| listed.source == SourceKind::Git)
+    {
+        return Err(Error::usage(format!(
+            "Nothing would build this directory: Service {} builds from Git, and no Service builds from an upload. Run ployz deploy to ship from Git, or add a Service with `ployz service add <name>` and no --image, then run ployz up again.",
+            git.service.name
+        )));
+    }
     if services.iter().any(|listed| listed.service.name == name) {
         return Err(Error::usage(format!(
-            "Nothing would build this directory: Service {name} pulls an image or builds from Git, and no Service builds from an upload. Add one with `ployz service add <name>` and no --image, then run ployz up again."
+            "Nothing would build this directory: Service {name} pulls an image, and no Service builds from an upload. Add one with `ployz service add <name>` and no --image, then run ployz up again."
         )));
     }
     Ok(Some(name))
@@ -348,10 +360,8 @@ mod tests {
             service_for_upload(&[listed("db", SourceKind::Image)], name()).unwrap(),
             Some(name())
         );
-        assert_eq!(
-            service_for_upload(&[listed("api", SourceKind::Git)], name()).unwrap(),
-            Some(name())
-        );
+        // A Git Service already ships this app; a second, uploaded copy is refused.
+        assert!(service_for_upload(&[listed("api", SourceKind::Git)], name()).is_err());
         for source in [SourceKind::Uploaded, SourceKind::Empty] {
             let services = [listed("db", SourceKind::Image), listed("web", source)];
             assert_eq!(service_for_upload(&services, name()).unwrap(), None);
