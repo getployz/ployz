@@ -103,9 +103,13 @@ The move stopped before it copied anything, so there is nothing to release. Your
 data has unfinished cuts on web-1 and web-3, so release cannot finish it on web-2; ployz server rm web-1, then ployz server rm web-3, then ployz volume release data
 ```
 
-Earlier moves left unfinished copies on more than one server. Ployz keeps the newest one. Run the
-lines it prints in order. They remove each server it names, then release or move again. Removing a
-mirror is refused with the same lines.
+Earlier moves left unfinished copies on other servers, and they block the move from finishing on
+`web-2`. Run the lines it prints in order. They remove each server it names, then release.
+Removing a mirror is refused with the same lines.
+
+When no move is owed a finish, a release with unfinished copies on more than one server says it
+"cannot pick a writer" instead. It keeps the newest copy, and its lines remove each server whose
+copy it can't keep, then release or move again.
 
 ## Release says another copy is still a writer
 
@@ -170,8 +174,12 @@ moves of the volume are open again.
 data finishes on web-2, which did not answer. Bring web-2 back or forget it with ployz server forget web-2 --confirm dead. Restore from web-1's copy: ployz volume restore data --from web-1
 ```
 
-`web-2` still owes the move its finish, but it is silent or holds no copy. Bring `web-2` back and
-deploy again. If it's gone for good, forget it, then run the `ployz volume restore` line.
+`web-2` still owes the move its finish, but it is silent. Bring `web-2` back and deploy again. If
+it's gone for good, forget it, then run the `ployz volume restore` line.
+
+If `web-2` answers but holds no copy, the deploy says "data finishes on web-2, which holds no copy
+to start" instead. Remove `web-2` with the `ployz server rm` line it prints, then run the
+`ployz volume restore` line.
 
 ## A move to another server says the volume already has a copy
 
