@@ -78,7 +78,13 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let hostname = matches
         .get_one::<String>("host")
-        .map(|host| Hostname::parse_custom(host).map_err(Error::from))
+        .map(|host| {
+            let value = host.trim();
+            let value = value.strip_suffix('.').unwrap_or(value);
+            Hostname::parse(value)
+                .or_else(|_| Hostname::parse_custom(host))
+                .map_err(Error::from)
+        })
         .transpose()?;
     let prefix = matches
         .get_one::<String>("prefix")

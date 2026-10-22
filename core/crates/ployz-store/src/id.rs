@@ -254,7 +254,24 @@ impl Hostname {
                 "A hostname label is too long. Use at most 63 ASCII characters per label after IDNA conversion.",
             ));
         }
-        if value.parse::<std::net::IpAddr>().is_ok() {
+        if value.split('.').any(str::is_empty) {
+            return Err(invalid(
+                "A hostname cannot contain an empty label. Use one dot between labels.",
+            ));
+        }
+        if value
+            .split('.')
+            .any(|label| label.starts_with('-') || label.ends_with('-'))
+        {
+            return Err(invalid(
+                "A hostname label cannot start or end with a hyphen. Use hyphens only inside labels.",
+            ));
+        }
+        if value
+            .rsplit('.')
+            .next()
+            .is_some_and(|label| label.bytes().all(|byte| byte.is_ascii_digit()))
+        {
             return Err(invalid(
                 "An IP address cannot be a custom domain. Enter a hostname you own.",
             ));

@@ -371,13 +371,30 @@ pub(crate) fn add_domain(
             json!({}),
         ));
     }
-    if let Some(hostname) = &add.hostname {
-        Hostname::parse_custom(hostname.as_str())?;
-    }
     let mut environment = scope::lock(tx, who, &add.environment)?;
     // Hostnames under the Cluster Domain are Ployz's to hand out, never custom.
     let cluster = cluster_of(tx, &environment, trusted)?;
     let own = environment.service(&add.service)?;
+    if let (Some(hostname), Some(cluster)) = (&add.hostname, &cluster) {
+        let (hostname, cluster) = (hostname.as_str(), cluster.as_str());
+        if hostname == cluster || hostname.ends_with(&format!(".{cluster}")) {
+            return Err(error::invalid(
+                format!(
+                    "{hostname} is under {cluster}, which Ployz generates domains in: use a domain of your own"
+                ),
+                json!({ "cluster_domain": cluster }),
+            ));
+        }
+    }
+    if let Some(hostname) = &add.hostname
+        && !own
+            .config
+            .routes
+            .iter()
+            .any(|route| route.hostname == hostname.as_str())
+    {
+        Hostname::parse_custom(hostname.as_str())?;
+    }
     let (own, own_prefixes) = (
         own.id.clone(),
         own.config
@@ -389,17 +406,6 @@ pub(crate) fn add_domain(
     let taken = taken_prefixes(tx, who, &environment, &own, (trusted, cluster.as_ref()))?;
     if let Some(prefix) = &add.prefix {
         refuse_taken(tx, who, &taken, prefix.as_str())?;
-    }
-    if let (Some(hostname), Some(cluster)) = (&add.hostname, &cluster) {
-        let (hostname, cluster) = (hostname.as_str(), cluster.as_str());
-        if hostname == cluster || hostname.ends_with(&format!(".{cluster}")) {
-            return Err(error::invalid(
-                format!(
-                    "{hostname} is under {cluster}, which Ployz generates domains in: use a domain of your own"
-                ),
-                json!({ "cluster_domain": cluster }),
-            ));
-        }
     }
     if let Some(hostname) = &add.hostname {
         crate::names::refuse_taken(
