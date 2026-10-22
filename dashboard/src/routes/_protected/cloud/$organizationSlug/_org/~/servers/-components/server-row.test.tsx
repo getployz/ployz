@@ -4,6 +4,7 @@ import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } fr
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { serverStatus } from "#/modules/machines/server-status";
+import { organizationKeys } from "#/modules/organization/organization-state.queries";
 import type { Server } from "#/modules/machines/use-servers";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
@@ -23,11 +24,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function server(input: { membership?: RuntimeMachineRecord["membership"]; services?: string[]; storage?: RuntimeMachineRecord["storage"]; acceptsBuilds?: boolean; acceptsServices?: boolean } = {}): Server {
+function server(input: { membership?: RuntimeMachineRecord["membership"]; services?: string[]; storage?: RuntimeMachineRecord["storage"]; acceptsBuilds?: boolean; acceptsServices?: boolean; sealing?: RuntimeMachineRecord["sealing"] } = {}): Server {
   const machine: RuntimeMachineRecord = {
     id: "1".repeat(32), name: "fsn-1", publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: input.acceptsBuilds ?? false,
     acceptsServices: input.acceptsServices ?? true, storage: input.storage === undefined ? "pool" : input.storage, buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0,
-    daemonVersion: "0.3.0-beta.2", capabilities: [], poolCommittableBytes: null, sealing: null, membership: input.membership ?? "up", observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
+    daemonVersion: "0.3.0-beta.2", capabilities: [], poolCommittableBytes: null, sealing: input.sealing ?? null, membership: input.membership ?? "up", observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
   };
   const services = (input.services ?? []).map((name) => ({
     identity: `shop/${name}`, name, namespace: "shop", machineIds: new Set([machine.id]), global: false, runningOn: new Set([machine.id]),
@@ -35,10 +36,12 @@ function server(input: { membership?: RuntimeMachineRecord["membership"]; servic
   return { machine, name: machine.name, status: serverStatus(machine), services };
 }
 
-async function row(shown: Server, upgrade: ServerUpgradeLine = null) {
+async function row(shown: Server, upgrade: ServerUpgradeLine = null, sealedVariables = false) {
   const root = createRootRoute({ component: () => <ServerRow organizationSlug="acme" server={shown} upgrade={upgrade} stale={false} /> });
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
-  render(<QueryClientProvider client={new QueryClient()}><RouterProvider router={router} /></QueryClientProvider>);
+  const queryClient = new QueryClient();
+  queryClient.setQueryData(organizationKeys.state("acme"), { sealedVariables });
+  render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
   return screen.findByRole("link");
 }
 
@@ -70,6 +73,17 @@ it("names the state that needs someone", async () => {
   expect((await row(server({ services: ["api"] }), { kind: "upgrading", target: "0.3.0" })).textContent).toBe("fsn-1apiUpgrading");
   cleanup();
   expect((await row(server({ services: ["api"] }), { kind: "behind", release: "0.3.0", canUpgrade: true })).textContent).toBe("fsn-1apiOnline");
+});
+
+it("says a Server needs access only where this Cloud seals variables and the Server lacks its Cluster's Sealing Key", async () => {
+  const lacking = server({ services: ["api"], sealing: { kind: "needs_access" } });
+  expect((await row(lacking, null, true)).textContent).toBe("fsn-1apiNeeds accessOnline");
+  cleanup();
+  expect((await row(lacking)).textContent).toBe("fsn-1apiOnline");
+  cleanup();
+  expect((await row(server({ services: ["api"], sealing: { kind: "held", public_key: `${"A".repeat(43)}=` } }), null, true)).textContent).toBe("fsn-1apiOnline");
+  cleanup();
+  expect((await row(server({ services: ["api"] }), null, true)).textContent).toBe("fsn-1apiOnline");
 });
 
 it("lets a running upgrade explain the Server, and offline outrank a failed one", () => {

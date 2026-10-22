@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { cn } from "#/lib/utils";
+import { useSealedVariables } from "#/modules/machines/sealed-variables.queries";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { Server } from "#/modules/machines/use-servers";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
@@ -63,6 +64,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
 }) {
   const { word, dot, tone } = STATES[serverRowState(server.status, upgrade)];
   const names = serviceNames(server);
+  const needsAccess = useSealedVariables(organizationSlug) && server.machine.sealing?.kind === "needs_access";
   return (
     <Link
       to="/cloud/$organizationSlug/~/servers/$serverId"
@@ -81,6 +83,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
           </>
         )}
         {STORAGE[server.machine.storage ?? "unknown"]}
+        {needsAccess ? <Badge variant="warning">Needs access</Badge> : null}
       </span>
       <ServerMeters organizationSlug={organizationSlug} server={server} />
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>
