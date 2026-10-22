@@ -105,6 +105,13 @@ export const completeMachineRemoveAttemptActivity = Effect.fn(
 )((input: Parameters<typeof completeMachineRemoveAttempt>[0]) =>
   completeMachineRemoveAttempt(input));
 
+/** Why a Server Cloud reaches only through itself can't be removed while `others` are listed, and what unblocks it. */
+function carriedOnlyBy(name: string, others: readonly string[]) {
+  const listed = others.join(", ");
+  return `${name} can't carry its own removal, and Ployz Cloud can't reach ${listed} to carry it. `
+    + `Bring ${others.length === 1 ? listed : "one of them"} back online, or forget the Servers that are gone, then retry. No changes made.`;
+}
+
 /**
  * Resets the Server under Cloud's own connection. A step retry sends the same removal again, and the SDK runs every
  * guard again while the Server is listed; one already gone by its Machine ID answers removed, its reset unconfirmed,
@@ -121,7 +128,9 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     const forgetOnly = attempt.noReset || left !== null;
     const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
-    const session = yield* runtime.open(attempt.organizationId);
+    // The Engine refuses to remove the Server it was entered by while another is listed, so Cloud enters by another.
+    const avoiding = yield* runtime.open(attempt.organizationId, { avoiding: attempt.machineId });
+    const session = avoiding.status === "connected" ? avoiding : yield* runtime.open(attempt.organizationId);
     if (access.kind !== "ready" || session.status !== "connected") {
       return yield* new MachineRemovalProviderFailure({
         operation: "open organization runtime",
@@ -145,6 +154,11 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
       return { kind: "refused", failureCode: "server_lacks", message: sdkFailureMessage(lack, servers), generation: access.generation } as const;
     }
     const machine = attempt.machineId;
+    const others = servers.filter((server) => server.id !== machine);
+    if (!forgetOnly && avoiding.status !== "connected" && others.length > 0) {
+      const name = servers.find((server) => server.id === machine)?.name ?? machine;
+      return { kind: "refused", failureCode: "conflict", message: carriedOnlyBy(name, others.map((server) => server.name)), generation: access.generation } as const;
+    }
     const owned = yield* markOwnedMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId });
     if (!owned) return { kind: "superseded" } as const;
     const outcome = yield* asRemoveMachineOutcome(forgetOnly

@@ -350,8 +350,8 @@ it.effect("dials only the requested saved Machine and refuses an unknown Machine
     })));
     yield* Effect.scoped(Effect.gen(function* () {
       const service = yield* OrganizationRuntime;
-      assert.strictEqual((yield* service.open("org-1", intended)).status, "connected");
-      assert.deepStrictEqual(yield* service.open("org-1", unknown), { status: "no_connection" });
+      assert.strictEqual((yield* service.open("org-1", { only: intended })).status, "connected");
+      assert.deepStrictEqual(yield* service.open("org-1", { only: unknown }), { status: "no_connection" });
       assert.deepStrictEqual(dialed, [[candidate]]);
     })).pipe(Effect.provide(runtime));
   }),

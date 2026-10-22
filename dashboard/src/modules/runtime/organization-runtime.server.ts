@@ -101,11 +101,14 @@ export type ScopedRuntimeClientSession =
       readonly error: PloyzProviderError | null;
     };
 
+/** Which paired Servers a session may enter by: only one, or any but one. Without it, any. */
+export type RuntimeEntry = { readonly only: MachineId } | { readonly avoiding: MachineId };
+
 export interface OrganizationRuntimeService {
   readonly cancel: (organizationId: string, generation: string) => Effect.Effect<void>;
   readonly open: (
     organizationId: string,
-    machineId?: MachineId,
+    entry?: RuntimeEntry,
   ) => Effect.Effect<ScopedRuntimeClientSession, Error, Scope.Scope>;
 }
 
@@ -255,7 +258,7 @@ export function makeOrganizationRuntimeLayer(
       };
       return {
         cancel,
-        open: Effect.fn("OrganizationRuntime.open")(function* (organizationId: string, machineId?: MachineId) {
+        open: Effect.fn("OrganizationRuntime.open")(function* (organizationId: string, entry?: RuntimeEntry) {
           const parent = yield* Effect.scope;
           const scope = yield* Scope.fork(parent);
           const cancelled = yield* Deferred.make<void>();
@@ -283,10 +286,12 @@ export function makeOrganizationRuntimeLayer(
               yield* close(session);
               return noConnection;
             }
-            const connections = machineId === undefined
+            const connections = entry === undefined
               ? access.connections
-              : access.connections.filter((connection) => connection.machine_id === machineId);
-            if (machineId !== undefined && connections.length === 0) return noConnection;
+              : access.connections.filter((connection) => "only" in entry
+                ? connection.machine_id === entry.only
+                : connection.machine_id !== entry.avoiding);
+            if (entry !== undefined && connections.length === 0) return noConnection;
             if (connections.length === 0) {
               return { status: "unreachable" as const, error: null };
             }

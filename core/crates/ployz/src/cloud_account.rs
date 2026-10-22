@@ -1034,7 +1034,7 @@ pub(crate) async fn follow_removal(
                     "Cloud's removal of Server {name} didn't finish: it ran out of retries. If \
                      the Server is gone but `ployz server ls` still lists it, forget it."
                 ),
-                details: forget_next(name),
+                details: serde_json::json!({ "next": "ployz server ls" }),
                 cause: vec![refused.message],
             }))
         }
@@ -1055,10 +1055,6 @@ fn removal_unsettled(name: &MachineName) -> RpcError {
         details: serde_json::Value::Null,
         cause: Vec::new(),
     }
-}
-
-fn forget_next(name: &MachineName) -> serde_json::Value {
-    serde_json::json!({ "next": format!("ployz server forget {name}") })
 }
 
 /// Call `/api/cli/<path>`, answered as its reply or as Cloud's refusal, verbatim.
