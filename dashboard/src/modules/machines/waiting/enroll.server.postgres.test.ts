@@ -571,14 +571,17 @@ it("ends open attempts when the pairing is removed", async () => {
   expect(await checkin(a)).toEqual({ kind: "wait", retryAfter: 10 });
 });
 
-it("ends open attempts when Cloud forgets an emptied pairing", async () => {
+it("ends open attempts and drops the Sealing public key when Cloud forgets an emptied pairing", async () => {
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
   await run(enroll([a]));
   await claimAsFounder(a, "1".repeat(32));
   const { seen } = await run(seeCluster(adaOrg));
+  await harness.pool.query("insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1, $2, $3)",
+    [adaOrg, seen.generation, Buffer.alloc(32, 1).toString("base64")]);
   expect(await run(forgetEmptiedPairing(adaOrg, seen.generation ?? ""))).toEqual({ kind: "released" });
   expect((await attempts()).map((row) => [row.state, row.ended_at !== null])).toEqual([["cancelled", true]]);
+  expect((await harness.pool.query("select 1 from cluster_sealing_key where organization_id = $1", [adaOrg])).rows).toEqual([]);
 });
 
 it("fails an attempt whose enroll token was removed under it", async () => {

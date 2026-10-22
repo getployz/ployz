@@ -40,7 +40,7 @@ export function foundingClaimFresh(pairing: { founderMachineId: string | null; c
 }
 
 /** The current pairing's generation, which its Machines carry as their cluster key; none while unpaired or being removed. */
-export const currentGeneration = Effect.fn("MachineConnections.generation")(function* (organizationId: string) {
+const currentGeneration = Effect.fn("MachineConnections.generation")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const [pairing] = yield* drizzle.select({
     encryptedPairingSecret: organizationPairing.encryptedPairingSecret,

@@ -14,8 +14,7 @@ import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { asStage, forwardTo, openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hasFirstServer, startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
-import { currentGeneration } from "#/modules/machines/connections.server";
-import { clusterSealingKey, organizationMachine } from "#/modules/machines/tables";
+import { organizationMachine } from "#/modules/machines/tables";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
@@ -211,45 +210,11 @@ const admit = Effect.fn("Checkin.admit")(function* (
       .where(and(key, eq(waitingServer.fleetTokenId, token.id), existing.rejectedAt === null ? isNull(waitingServer.rejectedAt) : undefined))
       .returning({ id: waitingServer.id, probe: waitingServer.probe });
   if (row === undefined) return OWNERSHIP_CHANGED;
-  yield* afterDatabaseCommit(recordSealing(token.organizationId, row.id, request).pipe(
-    Effect.catch((error) => Effect.logError("A Server's Sealing Key report was not recorded.", error)),
-  ));
   const answer = yield* answerAttempt(row.id, request, report);
   if (answer.kind !== "wait") return answer;
   // Handed out only with a wait, so an Enroll answer doesn't stamp a handout the host never sees.
   const probe = yield* handOutProbe(row.id, decodeStoredProbe(row.probe), observedIp, request.checkinKey);
   return probe === null ? answer : { ...answer, probe };
-});
-
-const recordSealing = Effect.fn("Checkin.recordSealing")(function* (
-  organizationId: string,
-  waitingServerId: string,
-  request: CheckinRequest,
-) {
-  const { sealing, attempt } = request;
-  if (sealing === undefined || attempt === undefined) return;
-  const { drizzle } = yield* Database;
-  const [enrolled] = yield* drizzle.select({ id: serverEnrollment.id, stage: serverEnrollment.stage }).from(serverEnrollment).where(and(
-    eq(sql`${serverEnrollment.id}::text`, attempt.attemptId),
-    eq(serverEnrollment.waitingServerId, waitingServerId),
-  ));
-  if (enrolled === undefined || !joinCommitted(enrolled, { reportedAttemptId: attempt.attemptId, reportedStage: attempt.stage })) return;
-  const annotations = { organizationId, attemptId: enrolled.id };
-  if (sealing.kind === "needs_access") {
-    return yield* Effect.logWarning("A Server joined without its Cluster's Sealing Key.").pipe(Effect.annotateLogs(annotations));
-  }
-  const clusterKey = yield* currentGeneration(organizationId);
-  if (clusterKey === null) return;
-  yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey: sealing.publicKey }).onConflictDoNothing();
-  const [recorded] = yield* drizzle.select({ publicKey: clusterSealingKey.publicKey }).from(clusterSealingKey).where(and(
-    eq(clusterSealingKey.organizationId, organizationId),
-    eq(clusterSealingKey.clusterKey, clusterKey),
-  ));
-  if (recorded !== undefined && recorded.publicKey !== sealing.publicKey) {
-    yield* Effect.logError("A Server reported a Sealing Key unlike the one its Cluster first reported.").pipe(
-      Effect.annotateLogs({ ...annotations, recorded: recorded.publicKey, reported: sealing.publicKey }),
-    );
-  }
 });
 
 const WAIT: CheckinResponse = { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS };

@@ -178,7 +178,6 @@ struct Scripted {
     mid_post: bool,
     first: EnrollStage,
     installer: Option<std::path::PathBuf>,
-    sealing: Option<ployz_core::Sealing>,
 }
 
 impl Scripted {
@@ -196,7 +195,6 @@ impl Scripted {
             mid_post: false,
             first: EnrollStage::Installing,
             installer: None,
-            sealing: None,
         }
     }
 
@@ -293,10 +291,6 @@ impl Host for Scripted {
 
     async fn participating(&self) -> Option<String> {
         self.participating.then(|| "web-1".to_owned())
-    }
-
-    async fn sealing(&self) -> Option<ployz_core::Sealing> {
-        self.sealing
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -402,72 +396,6 @@ async fn cloud_hears_every_stage_in_order_and_the_loop_ends_enrolled() {
     );
     assert!(!fixture.paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 1);
-}
-
-fn held() -> ployz_core::Sealing {
-    ployz_core::Sealing::Held {
-        public_key: ployz_core::SealingPublicKey::from_bytes([5; 32]),
-    }
-}
-
-fn sealings(cloud: &Cloud) -> Vec<Value> {
-    cloud
-        .bodies
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|body| body.get("sealing").cloned())
-        .collect()
-}
-
-#[tokio::test]
-async fn a_joined_machine_reports_its_sealing_key_once_after_the_join() {
-    let fixture = Fixture::new("ready");
-    let cloud = Arc::new(Cloud::answering(vec![instruction("zfs")]).await);
-    let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
-    host.sealing = Some(held());
-
-    let end = run(
-        &host,
-        &mut fixture.client(&cloud),
-        &fixture.key,
-        &fixture.paths,
-    )
-    .await;
-
-    assert!(matches!(end, CheckinEnd::Enrolled));
-    let bodies = cloud.bodies.lock().unwrap().clone();
-    let last = bodies.last().unwrap();
-    assert_eq!(
-        last["sealing"],
-        serde_json::json!({ "kind": "held", "publicKey": ployz_core::SealingPublicKey::from_bytes([5; 32]).to_string() })
-    );
-    assert_eq!(sealings(&cloud).len(), 1);
-}
-
-#[tokio::test]
-async fn a_resumed_join_reports_a_machine_that_needs_access() {
-    let fixture = Fixture::new("ready");
-    let cloud = Arc::new(Cloud::answering(vec![]).await);
-    previous(&fixture, Seen::Enroll, EnrollStage::Publishing);
-    let mut host = Scripted::new(&cloud, vec![], Ok(()));
-    host.participating = true;
-    host.sealing = Some(ployz_core::Sealing::NeedsAccess);
-
-    let next = pass(
-        &host,
-        &mut fixture.client(&cloud),
-        &fixture.key,
-        &fixture.paths,
-        Utc::now(),
-    )
-    .await;
-
-    assert_eq!(next, Next::Enrolled);
-    assert_eq!(
-        sealings(&cloud),
-        [serde_json::json!({ "kind": "needs_access" })]
-    );
 }
 
 #[tokio::test]

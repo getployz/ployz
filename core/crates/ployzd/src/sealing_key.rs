@@ -9,6 +9,7 @@ use hpke::{
 use ployz_core::{SealedSealingKey, SealingPublicKey, WireGuardPublicKey};
 use rand_core::{OsRng, TryRngCore as _};
 use thiserror::Error;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::network::WireGuardPrivateKey;
 
@@ -36,7 +37,10 @@ pub struct SealError;
 impl SealingKey {
     pub(crate) fn generate() -> Self {
         let (private, _) = Kem::gen_keypair(&mut OsRng.unwrap_err());
-        Self(private.to_bytes().into())
+        let mut bytes = private.to_bytes();
+        let key = Self(bytes.into());
+        bytes.as_mut_slice().zeroize();
+        key
     }
 
     pub(crate) fn public_key(&self) -> SealingPublicKey {
@@ -44,8 +48,8 @@ impl SealingKey {
     }
 
     pub(crate) fn load(data_dir: &Path) -> io::Result<Option<Self>> {
-        match fs::read(data_dir.join(FILE_NAME)) {
-            Ok(bytes) => <[u8; 32]>::try_from(bytes)
+        match fs::read(data_dir.join(FILE_NAME)).map(Zeroizing::new) {
+            Ok(bytes) => <[u8; 32]>::try_from(bytes.as_slice())
                 .map(|bytes| Some(Self(bytes)))
                 .map_err(|_| {
                     io::Error::new(io::ErrorKind::InvalidData, "Sealing Key is not 32 bytes")
@@ -100,16 +104,18 @@ impl SealingKey {
             .map_err(|_| OpenError::Malformed)?;
         let recipient = <Kem as hpke::Kem>::PrivateKey::from_bytes(wireguard.as_bytes())
             .expect("an X25519 private key is any 32 bytes");
-        let opened = hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
-            &OpModeR::Base,
-            &recipient,
-            &encapped,
-            INFO,
-            ciphertext,
-            &[],
-        )
-        .map_err(|_| OpenError::Unopenable)?;
-        <[u8; 32]>::try_from(opened)
+        let opened = Zeroizing::new(
+            hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
+                &OpModeR::Base,
+                &recipient,
+                &encapped,
+                INFO,
+                ciphertext,
+                &[],
+            )
+            .map_err(|_| OpenError::Unopenable)?,
+        );
+        <[u8; 32]>::try_from(opened.as_slice())
             .map(Self)
             .map_err(|_| OpenError::Malformed)
     }
@@ -117,6 +123,12 @@ impl SealingKey {
     fn private(&self) -> <Kem as hpke::Kem>::PrivateKey {
         <Kem as hpke::Kem>::PrivateKey::from_bytes(&self.0)
             .expect("an X25519 private key is any 32 bytes")
+    }
+}
+
+impl Drop for SealingKey {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 

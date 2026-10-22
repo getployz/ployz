@@ -455,7 +455,9 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     "INSERT INTO cluster (key, value) VALUES ('sealing_public_key', ?)",
                 ) =>
             {
-                kv.sealing_public_key = Some(text_param(&statement.params, 0).to_owned());
+                if kv.sealing_public_key.is_none() {
+                    kv.sealing_public_key = Some(text_param(&statement.params, 0).to_owned());
+                }
             }
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
                 kv.volumes.insert(

@@ -139,7 +139,6 @@ pub(super) async fn attempt<H: Host>(
                 tracing::warn!(%message, "Enrollment committed; follow-up failed");
                 crate::ui::note(format!("Enrolled, but follow-up failed: {message}"));
             }
-            report_sealing(host, client, key, report, &attempt).await;
             status.message = committed.follow_up;
             status.answer = Seen::Joined;
             status.attempt = Some(attempt);
@@ -174,34 +173,6 @@ pub(super) async fn attempt<H: Host>(
     }
 }
 
-async fn report_sealing<H: Host>(
-    host: &H,
-    client: &CheckinClient,
-    key: &CheckinKey,
-    report: &Report<'_>,
-    attempt: &Attempt,
-) {
-    let Some(sealing) = host.sealing().await else {
-        return;
-    };
-    let request = CheckinRequest {
-        protocol_version: wire::PROTOCOL_VERSION,
-        checkin_key: key.public_hex(),
-        cli_version: env!("CARGO_PKG_VERSION"),
-        report: report.report,
-        prep: Some(report.prep),
-        attempt: Some(attempt),
-        probe: None,
-        sealing: Some(sealing.into()),
-    };
-    if let client::Reply::Unreachable(_, why)
-    | client::Reply::Throttled(_, why)
-    | client::Reply::NotCloud(why) = client.post(key, &request).await
-    {
-        crate::ui::note(format!("Could not report the Sealing Key: {why}"));
-    }
-}
-
 async fn heartbeat(
     client: &CheckinClient,
     key: &CheckinKey,
@@ -221,7 +192,6 @@ async fn heartbeat(
         prep: Some(report.prep),
         attempt: Some(attempt),
         probe: None,
-        sealing: None,
     };
     match client.post(key, &request).await {
         client::Reply::Answer(Answer::Stop(StopReason::Rejected, message))

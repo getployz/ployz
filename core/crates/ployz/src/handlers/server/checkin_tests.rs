@@ -249,10 +249,6 @@ impl Host for Chosen {
         None
     }
 
-    async fn sealing(&self) -> Option<ployz_core::Sealing> {
-        None
-    }
-
     async fn discard_zfs_build(&self) -> Result<(), String> {
         unreachable!("the check-in never enrolls here")
     }
@@ -334,10 +330,6 @@ impl Host for Stopper {
     }
 
     async fn participating(&self) -> Option<String> {
-        None
-    }
-
-    async fn sealing(&self) -> Option<ployz_core::Sealing> {
         None
     }
 

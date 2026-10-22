@@ -70,10 +70,6 @@ export const CheckinRequest = Schema.Struct({
     bindFailed: Schema.Array(Schema.String),
   })),
   prep: Schema.optionalKey(Prep),
-  sealing: Schema.optionalKey(Schema.Union([
-    Schema.Struct({ kind: Schema.Literal("held"), publicKey: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9+/]{43}=$/)) }),
-    Schema.Struct({ kind: Schema.Literal("needs_access") }),
-  ])),
 });
 export type CheckinRequest = typeof CheckinRequest.Type;
 

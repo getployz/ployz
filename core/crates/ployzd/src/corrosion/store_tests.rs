@@ -382,6 +382,30 @@ async fn publisher_publishes_the_founders_sealing_public_key() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+#[tokio::test]
+async fn publishing_a_sealing_public_key_never_replaces_the_clusters() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let first = ployz_core::SealingPublicKey::from_bytes([1; 32]);
+    store.publish_sealing_public_key(first).await.unwrap();
+    store
+        .publish_sealing_public_key(ployz_core::SealingPublicKey::from_bytes([2; 32]))
+        .await
+        .unwrap();
+
+    let rows = store
+        .api()
+        .query(Statement::new(
+            "SELECT value FROM cluster WHERE key = 'sealing_public_key'",
+            [],
+        ))
+        .await
+        .unwrap()
+        .rows(["value"])
+        .unwrap();
+    assert_eq!(rows, [[json!(first.to_string())]]);
+    task.abort();
+}
+
 fn participating_record() -> (Machine, LocalMachineRecord) {
     let machine: Machine = serde_json::from_value(json!({
         "id": "b".repeat(32),

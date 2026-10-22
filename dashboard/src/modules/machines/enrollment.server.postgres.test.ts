@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
+import { inspect } from "node:util";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot, RuntimeWatchView } from "@ployz/sdk";
@@ -1109,6 +1110,63 @@ describe("organization enrollment coordinator", () => {
     await harness.pool.query("delete from organization_pairing where organization_id = $1", [organizationId]);
     expect(await fake.coordinator.connections()).toEqual({ kind: "missing" });
     expect(await fake.coordinator.tryRevokePairing(organizationId)).toBe(false);
+  });
+
+  const sealingKeys = () => harness.pool.query<{ cluster_key: string; public_key: string }>(
+    "select cluster_key, public_key from cluster_sealing_key where organization_id = $1", [organizationId],
+  ).then((result) => result.rows);
+  const held = (letter: string) => ({ kind: "held" as const, publicKey: `${letter.repeat(43)}=` });
+  /** Effect's default logger writes every level through `console.log`, naming the level before the message. */
+  const logged = (level: "WARN" | "ERROR", text: string) => {
+    const spy = vi.spyOn(console, "log");
+    return {
+      count: () => spy.mock.calls.map((args) => inspect(args, { depth: null })).filter((line) => line.includes(` ${level} `) && line.includes(text)).length,
+      [Symbol.dispose]: () => spy.mockRestore(),
+    };
+  };
+
+  it("keeps the first Sealing Key its pairing reports and logs a different one as an error", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    expect(await fake.coordinator.completeFounding({ ...founder, sealing: held("A") })).toMatchObject({ success: { machineId: founder.machineId } });
+    expect(await fake.coordinator.completeFounding({ ...founder, sealing: held("A") })).toMatchObject({ success: { machineId: founder.machineId } });
+    const recorded = [{ cluster_key: hashEnrollmentToken(founder.pairingCredential), public_key: held("A").publicKey }];
+    expect(await sealingKeys()).toEqual(recorded);
+
+    await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+    const joiner = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+    await fake.coordinator.publish({ ...joiner, capability: "ployz1:joining" });
+    using errors = logged("ERROR", "unlike the one its Cluster first reported");
+    expect(await fake.coordinator.completeFounding({ ...joiner, sealing: held("B") })).toMatchObject({ success: { machineId: joiner.machineId } });
+    expect(await sealingKeys()).toEqual(recorded);
+    expect(errors.count()).toBe(1);
+  });
+
+  it("records no Sealing Key for a Server that joined without one, and warns", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    using warnings = logged("WARN", "joined without its Cluster's Sealing Key");
+    expect(await fake.coordinator.completeFounding({ ...founder, sealing: { kind: "needs_access" } }))
+      .toMatchObject({ success: { machineId: founder.machineId } });
+    expect(await sealingKeys()).toEqual([]);
+    expect(warnings.count()).toBe(1);
+  });
+
+  it("drops the Sealing Key of a completion its Organization re-paired under", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await readyFounder(fake);
+    await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+    const joiner = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+    await fake.coordinator.publish({ ...joiner, capability: "ployz1:joining" });
+    fake.connection.beforeConnect = async () => {
+      await harness.pool.query("update organization_pairing set encrypted_pairing_secret = $1::jsonb where organization_id = $2", [
+        JSON.stringify(enrollmentSettings.encryption.encrypt("ppair_replacement")), organizationId,
+      ]);
+    };
+    expect(await fake.coordinator.completeFounding({ ...joiner, sealing: held("B") })).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await sealingKeys()).toEqual([]);
   });
 
   it("retains an unconfirmed founding claim while reset disables Cloud access", async () => {

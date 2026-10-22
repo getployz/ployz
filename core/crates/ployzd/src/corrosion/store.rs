@@ -286,7 +286,7 @@ impl ReplicatedStore {
     pub async fn publish_sealing_public_key(&self, key: SealingPublicKey) -> Result<(), Error> {
         self.api
             .execute([Statement::new(
-                "INSERT INTO cluster (key, value) VALUES ('sealing_public_key', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                "INSERT INTO cluster (key, value) VALUES ('sealing_public_key', ?) ON CONFLICT (key) DO NOTHING",
                 [json!(key.to_string())],
             )])
             .await?;

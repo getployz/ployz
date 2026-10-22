@@ -373,7 +373,8 @@ where
         &capability,
     )
     .await?;
-    cloud_enroll::callback(callback_url, token, assigned.id, &pairing.secret).await?;
+    let sealing = sealing(&mut ready).await?;
+    cloud_enroll::callback(callback_url, token, assigned.id, &pairing.secret, sealing).await?;
     ui::stream(format_args!("Joined Server {}.", assigned.name));
     // The join is committed; a catch-up failure makes it partial.
     Ok(ui::emit_committed(
@@ -529,14 +530,24 @@ where
         &capability,
     )
     .await?;
+    let sealing = sealing(&mut ready).await?;
     cloud_enroll::callback(
         &cloud_enroll::callback_url(cloud_url),
         token,
         machine.id,
         &pairing.secret,
+        sealing,
     )
     .await?;
     Ok(ui::emit(&founder_result(&machine, founding)))
+}
+
+/// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.
+async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Error> {
+    Ok(client
+        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .await?
+        .sealing)
 }
 
 /// The first Server is enrolled but its Ingress Proxy deploy failed.

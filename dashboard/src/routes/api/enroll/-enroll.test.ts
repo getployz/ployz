@@ -367,6 +367,22 @@ describe("machine enrollment routes", () => {
     expect(mocks.completeFounding).not.toHaveBeenCalled();
   });
 
+  it("carries the Server's Sealing state to completion and refuses a malformed one", async () => {
+    mocks.completeFounding.mockReturnValue(Effect.succeed({ machineId }));
+    const completion = { machineId, pairingCredential: "ppair_secret" };
+    const accepted: JsonValue[] = [{ kind: "held", publicKey: `${"A".repeat(43)}=` }, { kind: "needs_access" }];
+    for (const sealing of accepted) {
+      expect((await callback({ ...completion, sealing })).status).toBe(200);
+      expect(mocks.completeFounding).toHaveBeenLastCalledWith({ token, ...completion, sealing });
+    }
+    mocks.completeFounding.mockClear();
+    const malformed: JsonValue[] = [{ kind: "held", publicKey: "short" }, { kind: "held" }, { kind: "lost" }];
+    for (const sealing of malformed) {
+      expect((await callback({ ...completion, sealing })).status).toBe(422);
+    }
+    expect(mocks.completeFounding).not.toHaveBeenCalled();
+  });
+
   it("rejects prefixed or extra callback bodies", async () => {
     for (const response of [
       await callback({

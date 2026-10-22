@@ -102,7 +102,6 @@ pub(crate) trait Host {
     async fn discard_zfs_build(&self) -> Result<(), String>;
     /// The name this Server holds in the cluster it already participates in.
     async fn participating(&self) -> Option<String>;
-    async fn sealing(&self) -> Option<ployz_core::Sealing>;
 }
 
 pub(crate) struct System {
@@ -203,10 +202,6 @@ impl Host for System {
                 .machine
                 .map_or_else(|| self.hostname(), |machine| machine.name.to_string())
         })
-    }
-
-    async fn sealing(&self) -> Option<ployz_core::Sealing> {
-        local_machine(PROBE_TIMEOUT).await?.sealing
     }
 }
 
@@ -812,10 +807,6 @@ async fn check_in<H: Host>(
     report.blockers.extend(stale);
     report.blockers.extend(member);
     status.blockers.clone_from(&report.blockers);
-    let sealing = match status.attempt {
-        Some(_) => host.sealing().await.map(wire::Sealing::from),
-        None => None,
-    };
     let request = CheckinRequest {
         protocol_version: wire::PROTOCOL_VERSION,
         checkin_key: key.public_hex(),
@@ -824,7 +815,6 @@ async fn check_in<H: Host>(
         prep: Some(prep),
         attempt: status.attempt.as_ref(),
         probe: probes.report().await,
-        sealing,
     };
     let sent = tokio::time::Instant::now();
     let reply = client.post(key, &request).await;
