@@ -186,6 +186,17 @@ fn the_in_process_store_has_no_volume_runs() {
 }
 
 #[test]
+fn a_volume_size_below_the_floor_is_refused() {
+    for verb in [["volume", "add"], ["volume", "set"]] {
+        let size = |size: &str| parsed(&["ployz", verb[0], verb[1], "data", "--size", size]);
+        let refused = size("0.0001GB").unwrap_err().to_string();
+        assert!(refused.contains("at least 0.1GB"), "{refused}");
+        assert!(size("0.09").is_err());
+        assert!(size("0.1GB").is_ok());
+    }
+}
+
+#[test]
 fn a_deployed_volume_resizes_only_with_ployz_cloud() {
     let root = parsed(&[
         "ployz",
