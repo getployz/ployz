@@ -85,6 +85,17 @@ describe("copiesFromPlacement", () => {
     expect(summary(copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "pulling")]))).toEqual(["mirror web-2 - Refreshing"]);
   });
 
+  it("ages a mirror whose pull landed while its Server still reports that pull", () => {
+    const snapshotAt = new Date(1_790_000_000 * 1000);
+    const now = new Date(snapshotAt.getTime() + 2 * 3_600_000);
+    const matchedAt = new Date(now.getTime() - 5 * 60_000).toISOString();
+    const landed = { ...member("web-2", "mirror"), view: { copy: { ...COPIES.mirror, pull: { target: COPIES.mirror.newest.name, failure: null } } } };
+    const model = copies(row(["web-2"]), [member("web-1", "writer"), landed], null, [status("web-2", { okAt: matchedAt, matchedAt })]);
+    const [mirror] = model.elsewhere;
+    expect(mirror).toMatchObject({ kind: "mirror", busy: null, skipped: null });
+    expect(mirror && cardLine(mirror, now)).toMatchObject({ spin: false, age: "5 minutes ago" });
+  });
+
   it("ages a mirror whose Server is silent from the last sync that found it current, and marks it skipped", () => {
     const now = new Date("2026-10-09T03:02:00.000Z");
     const seen = status("web-2", { okAt: "2026-10-09T00:00:00.000Z", matchedAt: "2026-10-09T00:00:00.000Z" });
