@@ -8,7 +8,8 @@ taken on each deploy and every 15 minutes. An old copy keeps the last point it h
 point makes a new volume with that point's files and moves your service onto it. The original
 volume stays until you delete it.
 
-Restore works on managed volumes in Ployz Cloud. Every server with storage needs a newer Ployz
+Restoring a point works on managed volumes in Ployz Cloud. [Restoring a volume in place](#restore-a-volume-in-place)
+also works without it. Every server with storage needs a newer Ployz
 first. Until then the points list without **Restore**. A volume with no mirror and no old copy has no points. Add a mirror
 with **Add copy** under the volume's **Copies**. See [Mirror a volume](mirror-a-volume.md).
 
@@ -59,6 +60,13 @@ can run the same restore. In a
 [Protected environment](../environments/environments.md#protect-an-environment), a restore from a
 member, or from a token or an agent without `environments:protect`, waits for an owner or admin to
 approve it.
+
+Without Ployz Cloud, the CLI runs the restore itself, with the same checks. It refuses while any
+server doesn't answer, and while another server holds a copy. Without Cloud, `ployz server rm` is
+the way to drop another copy. It prints
+`Restored data on web-2 from <time>; writes after that time are lost.` and exits once the copy is
+the writer. Run again, it says the writer is already there. See
+[When a volume has no writer](volumes.md#when-a-volume-has-no-writer).
 
 ## Good to know
 
