@@ -5938,6 +5938,14 @@ fn member(approval: Approval, asks: Asks) -> Trusted {
     }
 }
 
+/// `trusted` for the user Cloud authenticated as `user`, by their immutable id.
+fn signed_in(user: &str, trusted: Trusted) -> Trusted {
+    Trusted {
+        user: Some(user.to_owned()),
+        ..trusted
+    }
+}
+
 fn as_person(who: &Actor, name: &str) -> Actor {
     Actor {
         principal: Some(Principal::parse(name).unwrap()),
@@ -6065,10 +6073,15 @@ fn cancelling_someone_elses_deployment_in_protected_production_asks_an_admin() {
         &store,
         &linus,
         2,
-        &protector(Approval::NotRequired, Asks::Destroys),
+        &signed_in("u-linus", protector(Approval::NotRequired, Asks::Destroys)),
     )
     .unwrap();
-    cancel_as(&linus, 2, &member(Approval::NotRequired, Asks::Destroys)).unwrap();
+    cancel_as(
+        &linus,
+        2,
+        &signed_in("u-linus", member(Approval::NotRequired, Asks::Destroys)),
+    )
+    .unwrap();
     deploy_trusted(
         &store,
         &linus,
@@ -6091,4 +6104,26 @@ fn cancelling_someone_elses_deployment_in_protected_production_asks_an_admin() {
     assert_eq!(stopping.status, DeploymentStatus::Cancelling);
     let again = cancel_as(&linus, 4, &member(Approval::Required, Asks::Destroys)).unwrap();
     assert_eq!(again.status, DeploymentStatus::Cancelling);
+}
+
+#[test]
+fn a_member_named_like_the_admitter_still_asks_before_cancelling_their_deployment() {
+    let (store, system) = shop();
+    let linus = as_person(&system, "linus");
+    deploy_trusted(
+        &store,
+        &linus,
+        1,
+        &signed_in("u-linus", protector(Approval::NotRequired, Asks::Destroys)),
+    )
+    .unwrap();
+
+    // Another member who calls themselves linus too.
+    let namesake = signed_in("u-other", member(Approval::Required, Asks::Destroys));
+    let refused = store
+        .write_trusted(&linus, &Cancel { deployment: id(1) }, &namesake)
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(refused.details["protected"], json!(true));
+    assert_eq!(status(&store, &system, 1), DeploymentStatus::Queued);
 }
