@@ -1047,6 +1047,19 @@ impl Client {
         machines: &[MachineObservation],
         environment: EnvironmentValues,
     ) -> Result<LiveServices<RpcError>, ConnectError> {
+        self.live_services_until(machines, environment, |_| false)
+            .await
+    }
+
+    /// [`Self::live_services_from`], returning early once `found` holds for the
+    /// answers so far. An early result lists neither failures nor omissions for the
+    /// Machines yet to answer, so only what `found` checked is complete.
+    pub(crate) async fn live_services_until(
+        &self,
+        machines: &[MachineObservation],
+        environment: EnvironmentValues,
+        found: impl Fn(&LiveServices<RpcError>) -> bool,
+    ) -> Result<LiveServices<RpcError>, ConnectError> {
         let mut tasks = JoinSet::new();
         let mut omissions = Vec::new();
         for machine in machines {
@@ -1073,6 +1086,11 @@ impl Client {
                 Ok(Err(failure)) => result.failures.push(failure),
                 Err(error) => return Err(error.into()),
             }
+            let live = derive_live_services(result);
+            if found(&live) {
+                return Ok(live);
+            }
+            result = live.containers;
         }
         Ok(derive_live_services(result))
     }

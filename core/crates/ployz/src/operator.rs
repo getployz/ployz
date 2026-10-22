@@ -450,8 +450,21 @@ pub async fn open_exec(
     options: ExecOptions,
 ) -> Result<ExecSession, OperatorError> {
     let machines = client.machines().await?;
+    // A bare name may also match another Namespace's Service on a Server yet to answer.
+    let exact = QualifiedService::parse(service_selector.as_str()).is_ok();
     let live = client
-        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .live_services_until(&machines, EnvironmentValues::Redacted, |live| {
+            exact
+                && container_selector.is_none()
+                && select_service(&live.services(), service_selector).is_ok_and(|service| {
+                    service.containers.iter().any(|container| {
+                        matches!(
+                            container.as_observation().runtime,
+                            ployz_core::ContainerRuntimeObservation::Running { .. }
+                        )
+                    })
+                })
+        })
         .await?;
     let services = live.services();
     let selected = select_service(&services, service_selector)
