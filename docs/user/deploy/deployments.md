@@ -34,7 +34,9 @@ Ployz opens the new deployment's page. A deploy covers the whole environment, no
 changed: every GitHub service moves to the newest commit on its Git branch, and if you've added
 or lost a server, replicas spread over the servers you have now (if a service's volume was on a
 lost server, see [When a server goes down](../services/scaling.md#when-a-server-goes-down)).
-Everything else keeps running as it is. A secret that is **Not set** never stops a deploy: the
+Everything else keeps running as it is. Deploying only some services, such as with
+`ployz deploy web`, also deploys the saved changes of the services they reference, and the
+deployment's page lists them. A secret that is **Not set** never stops a deploy: the
 deploy skips it, and any variable that references it, and warns. A
 [broken reference](../services/variables.md#reference-another-services-variable), to a service or
 variable that isn't there, doesn't either: the deploy leaves that variable out the same way, or
@@ -54,12 +56,13 @@ next deploy takes them along, including one started by a push to GitHub; unsaved
 behind. Saving again with no changes creates no new version. The CLI calls this
 `ployz deploy --skip-deploy`, and accepts `--message`.
 
-To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
+To undo, open a change's **⋮** menu and choose **Discard**, or open **⋮** in the bottom bar and
+choose **Discard all changes**.
 **Discard all changes** returns everything to your latest saved version, including a staged
 rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
 version. When part of your latest saved version is not deployed, for example because its deploy failed,
 the bottom bar shows **Save #4 not deployed** with **Deploy** instead of a change count. While a
-deploy of it is queued or running, for example `ployz deploy web` deploying only web, the bar shows
+deploy of it is queued or running, for example `ployz deploy web` deploying web and the services it references, the bar shows
 that deploy's status instead, **Queued**, **Preparing** or **Deploying · Save #4**, with **Deploy
 next** for the rest. A deploy still waiting for CI isn't queued yet, so the bar keeps **Save #4 not
 deployed**. Neither its **⋮** menu nor Details offers **Discard all** then, since nothing is left to
@@ -91,7 +94,7 @@ ployz deploy
 
 An environment runs one deployment at a time. While one runs, **Deploy** reads **Deploy next**
 and yours waits as **Queued**. If you deploy again while one is waiting, the newest one takes its
-place.
+place, and the one it replaced reads **Superseded**.
 
 A deploy started outside that queue can still reach a service after a newer deploy did. It fails for that service and leaves the newer version serving.
 See [A newer deploy is already serving](../troubleshooting/deployments.md#a-newer-deploy-is-already-serving).
@@ -119,12 +122,16 @@ its new containers printed. A failed deployment opens on the card that failed.
 
 | Status | What it means |
 | --- | --- |
+| **Waiting for CI** | Held until the push's checks pass. See [Wait for CI](github.md#wait-for-ci). |
+| **CI failed** | A check failed, so the commit doesn't deploy. |
 | **Queued** | Waiting for another deployment, or for GitHub Actions to build it |
 | **Preparing** | Started: Ployz unpacks its upload, builds and plans. `ployz deployment ls` says `preparing`. |
 | **Deploying** | Rolling out |
 | **Deployed** | Every change applied |
 | **Failed** | Something stopped it. A service marked **Not attempted** never started: it waited on a failed service, or mounts a [volume with no writer](../services/volumes.md#when-a-volume-has-no-writer), or depends on one that does. |
+| **Cancelling** | A cancel is on its way. |
 | **Cancelled** | Someone cancelled it. A service it stopped partway reads **Cancelled**, not **Failed**. |
+| **Superseded** | A newer deployment took its place while it was queued. |
 | **Unknown** | Ployz can't tell what applied. Redeploy it. |
 
 If a deployment fails, see [My deploy failed partway](../troubleshooting/deployments.md#my-deploy-failed-partway).
