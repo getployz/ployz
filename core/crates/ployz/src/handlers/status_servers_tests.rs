@@ -573,26 +573,36 @@ fn a_pending_copy_that_restarts_is_left_over_not_short() {
 
     assert_eq!(
         messages(&check),
-        ["1 copy left by a deploy that did not finish takes no traffic. machine-1 restarting."]
+        ["1 copy no deploy brought into routing takes no traffic. machine-1 restarting."]
     );
 }
 
 #[test]
 fn status_names_a_copy_a_failed_deploy_left_running_beside_the_serving_one() {
-    let [one, ..] = machines();
+    let [one, two, three] = machines();
     let unhealthy = ContainerRuntimeObservation::Running {
         health: HealthObservation::Unhealthy,
     };
-    let check = judged_copies(vec![
-        web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1),
-        web_copy(&one, '2', CopyRotation::Pending, unhealthy, 1, 2),
-    ]);
+    let check = judged_deploying(
+        Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listed_copies(vec![
+                    web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1),
+                    web_copy(&one, '2', CopyRotation::Pending, unhealthy, 1, 2),
+                ]),
+                reads: Vec::new(),
+                routed: BTreeMap::new(),
+            },
+        },
+        &[("web", "web")],
+    );
 
     assert_eq!(
         serde_json::to_value(&check.attention).unwrap(),
         json!([{
             "reason": "copies_left_pending",
-            "message": "1 copy left by a deploy that did not finish takes no traffic. machine-1 running, unhealthy.",
+            "message": "1 copy no deploy brought into routing takes no traffic. machine-1 running, unhealthy.",
             "next": "ployz deploy web",
             "service": "app/web",
             "copies": [{
@@ -604,6 +614,47 @@ fn status_names_a_copy_a_failed_deploy_left_running_beside_the_serving_one() {
         }])
     );
     assert!(warned(&check).is_empty());
+}
+
+fn left_pending_hint(deployed: &[(&str, &str)], authored: &[&str]) -> Vec<Option<String>> {
+    let [one, two, three] = machines();
+    let check = judged_authoring(
+        Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listed_copies(vec![
+                    web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1),
+                    web_copy(&one, '2', CopyRotation::Pending, healthy(), 1, 2),
+                ]),
+                reads: Vec::new(),
+                routed: BTreeMap::new(),
+            },
+        },
+        deployed,
+        authored,
+    );
+    check
+        .attention
+        .into_iter()
+        .filter(|attention| attention.reason == "copies_left_pending")
+        .map(|attention| attention.next)
+        .collect()
+}
+
+#[test]
+fn a_left_pending_copy_points_at_the_service_by_its_authored_name() {
+    assert_eq!(
+        left_pending_hint(&[("site", "web")], &["site"]),
+        [Some("ployz deploy site".to_owned())]
+    );
+}
+
+#[test]
+fn a_left_pending_copy_of_a_removed_service_points_at_a_whole_deploy() {
+    assert_eq!(
+        left_pending_hint(&[("web", "web")], &[]),
+        [Some("ployz deploy".to_owned())]
+    );
 }
 
 #[test]
@@ -1016,7 +1067,7 @@ fn the_count_comes_from_the_newest_kept_copy_not_from_a_failed_deploy() {
         messages(&check),
         [
             "Serving 2 of 4 copies. machine-1 restarting, machine-3 restarting.",
-            "2 copies left by a deploy that did not finish take no traffic. machine-2 running, healthy, machine-3 running, healthy."
+            "2 copies no deploy brought into routing take no traffic. machine-2 running, healthy, machine-3 running, healthy."
         ]
     );
 }

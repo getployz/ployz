@@ -1,6 +1,6 @@
 //! The Server check of `ployz status`: no Server answering its one connection, each Down
-//! Machine, each Service serving fewer copies than it should or none at all, each copy a
-//! deploy left Pending, and each live
+//! Machine, each Service serving fewer copies than it should or none at all, each copy no
+//! deploy brought into routing, and each live
 //! Machine whose proxy lacks a Service's In copies or still routes its Out or Held ones. What the check
 //! could not see is a warning, never an all-clear.
 
@@ -421,7 +421,7 @@ fn judge(
         }
     }
     for service in services {
-        let left = check.left_pending(&service, &down, &next);
+        let left = check.left_pending(&service, &down, deployed, authored, &next);
         if let Some(short) = check.not_serving(service, &down, complete, now, &next) {
             check.attention.push(short);
         }
@@ -843,13 +843,15 @@ impl Check {
                 .any(|unseen| !matches!(unseen, Unseen::RollingOut(_)))
     }
 
-    /// Outside a rollout, a Pending copy is one a deploy created and never brought In: its
-    /// reply was lost or its cleanup failed. It takes no traffic, and the next deploy of its
-    /// Service removes it.
+    /// Outside a rollout, a Pending copy is one no deploy brought In: a deploy whose reply was
+    /// lost or whose cleanup failed left it, or a Move of a stopped Service started it. It
+    /// takes no traffic, and the next deploy of its Service settles it.
     fn left_pending(
         &self,
         service: &ServiceObservation,
         down: &BTreeSet<MachineId>,
+        deployed: &BTreeMap<ServiceName, ServiceName>,
+        authored: Option<&BTreeSet<ServiceName>>,
         next: impl Fn(&[&str]) -> String,
     ) -> Option<Attention> {
         let mut left: Vec<&ContainerObservation> = service
@@ -878,15 +880,26 @@ impl Check {
             1 => ("copy", "takes"),
             _ => ("copies", "take"),
         };
+        let runtime = &service.identity.name;
+        let name = deployed
+            .iter()
+            .find(|(_, deployed)| *deployed == runtime)
+            .map_or(runtime, |(name, _)| name);
+        // A Service gone from Working State deploys only as part of a whole deploy.
+        let hint = if authored.is_some_and(|authored| !authored.contains(name)) {
+            next(&["deploy"])
+        } else {
+            next(&["deploy", name.as_str()])
+        };
         Some(Attention {
             reason: "copies_left_pending".to_owned(),
             message: format!(
-                "{} {copies} left by a deploy that did not finish {take} no traffic. {}.",
+                "{} {copies} no deploy brought into routing {take} no traffic. {}.",
                 left.len(),
                 states.join(", ")
             ),
             deployment: None,
-            next: Some(next(&["deploy", service.identity.name.as_str()])),
+            next: Some(hint),
             subject: Some(Subject::LeftPending {
                 service: service.identity.clone(),
                 copies: left.into_iter().map(|copy| self.copy(copy)).collect(),

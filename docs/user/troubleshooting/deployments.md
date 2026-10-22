@@ -380,7 +380,7 @@ it. It says so instead of blaming the step: `db: The connection to Server web-1 
 pull image, so it may have happened anyway`, with `cause: connection lost`. Your image and your
 change are fine, so the deploy doesn't point you at them. A step that created or started a
 replica may have left the new replica running beside the old one. It takes no traffic, and
-`ployz status` names it as `1 copy left by a deploy that did not finish takes no traffic`. The
+`ployz status` names it as `1 copy no deploy brought into routing takes no traffic`. The
 next deploy removes it.
 
 ## My upload or log stream fails on a slow connection
