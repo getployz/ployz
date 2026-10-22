@@ -204,7 +204,7 @@ pub(crate) fn admit(
 enum Asked<'a> {
     /// A removal's retry takes its Environment off the Servers again, so it asks as
     /// a shutdown does, about what the Environment runs now.
-    Removal(scope::Environment, review::Review),
+    Removal(Box<scope::Environment>, review::Review),
     /// Any other retry that may ask: the review it approves.
     Retry(review::Review, review::Gate<'a>),
     Nothing,
@@ -229,7 +229,7 @@ fn retry_review<'a>(
     let environment = scope::load_by_id(tx, &id)?;
     let review = review::review(tx, &environment)?;
     Ok(match summary.remove {
-        true => Asked::Removal(environment, review),
+        true => Asked::Removal(Box::new(environment), review),
         false => Asked::Retry(review, gate),
     })
 }
