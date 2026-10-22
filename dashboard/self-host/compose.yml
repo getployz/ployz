@@ -1,4 +1,4 @@
-# Self-hosted Ployz Cloud. Setup and upgrades: dashboard/README.md → Self-host.
+# Self-hosted Ployz Cloud. Setup and upgrades: https://ployz.dev/docs/self-hosting.
 # Release assets pin the image tag; from a checkout, set PLOYZ_CLOUD_VERSION.
 # Keep the default name for existing volumes. Set COMPOSE_PROJECT_NAME for another install.
 name: ployz-cloud-self-host

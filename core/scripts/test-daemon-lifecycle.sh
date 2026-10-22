@@ -17,8 +17,8 @@ export DOCKER_ROOT
 cat > "$TMP/bin/docker" <<'EOF'
 #!/bin/sh
 echo "docker $*" >> "$LOG"
-[ ! -e "$PLOYZ_RUN_DIR/worker" ] && [ ! -e "$PLOYZ_RUN_DIR/daemon" ] && [ ! -e "$PLOYZ_RUN_DIR/dns" ] || {
-    echo "unsafe cleanup: active upgrade worker, daemon or dns" | tee -a "$LOG" >&2
+[ ! -e "$PLOYZ_RUN_DIR/checkin" ] && [ ! -e "$PLOYZ_RUN_DIR/worker" ] && [ ! -e "$PLOYZ_RUN_DIR/daemon" ] && [ ! -e "$PLOYZ_RUN_DIR/dns" ] || {
+    echo "unsafe cleanup: active check-in, upgrade worker, daemon or dns" | tee -a "$LOG" >&2
     exit 1
 }
 if flock -n "$PLOYZ_RUN_DIR/.install.lock" true; then
@@ -52,6 +52,9 @@ case "$*" in
             *'ployz-upgrade-*.service')
                 [ ! -e "$PLOYZ_RUN_DIR/worker" ] || echo 'ployz-upgrade-test.service loaded active running Upgrade'
                 ;;
+            *'ployz-checkin.service')
+                [ ! -e "$PLOYZ_RUN_DIR/checkin" ] || echo 'ployz-checkin.service loaded active running Check-in'
+                ;;
             *'ployz.service')
                 [ ! -e "$PLOYZ_RUN_DIR/daemon" ] || echo 'ployz.service loaded active running Daemon'
                 ;;
@@ -62,6 +65,10 @@ case "$*" in
                 [ ! -e "$PLOYZ_RUN_DIR/dns" ] || echo 'ployz-dns.service loaded active running Internal DNS'
                 ;;
         esac
+        ;;
+    'stop ployz-checkin.service')
+        [ "$SCENARIO" != checkin-stop-failure ] || exit 1
+        rm -f "$PLOYZ_RUN_DIR/checkin"
         ;;
     'stop ployz-upgrade-test.service')
         [ "$SCENARIO" != worker-stop-failure ] || exit 1
@@ -107,11 +114,12 @@ run_uninstall() {
         PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" bash "$ROOT/scripts/uninstall.sh"
 }
 
-for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure active late absent worker-stop-failure list-failure daemon-stop-failure wireguard-delete-failure busy; do
+for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure active late absent checkin-stop-failure worker-stop-failure list-failure daemon-stop-failure wireguard-delete-failure busy; do
     : > "$LOG"
     mkdir -p "$TMP/state" "$TMP/run"
     touch "$TMP/state/receipt" "$TMP/run/socket"
-    if [ "$SCENARIO" != absent ]; then touch "$TMP/run/worker" "$TMP/run/daemon" "$TMP/run/dns"; fi
+    if [ "$SCENARIO" != absent ]; then touch "$TMP/run/checkin" "$TMP/run/worker" "$TMP/run/daemon" "$TMP/run/dns"; fi
+    touch "$TMP/systemd/ployz-checkin.service"
     touch "$TMP/runtime-systemd/ployz-dns.service" "$TMP/runtime-systemd/ployz-observe.service"
     touch "$TMP/install/ployzd" "$TMP/install/ployz-uninstall" "$TMP/install/ployz-corrosion"
     printf 'CLI retained\n' > "$TMP/install/ployz"
@@ -137,7 +145,7 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     result=0
     run_uninstall || result=$?
     case "$SCENARIO" in
-        worker-stop-failure|list-failure) ;;
+        checkin-stop-failure|worker-stop-failure|list-failure) ;;
         *) [ "$(sudo stat -c %u "$TMP/run")" = 0 ] || {
             echo "runtime directory is not root-controlled" >&2
             exit 1
@@ -157,6 +165,11 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     fi
     if [ "$result" -eq 0 ]; then
         case "$SCENARIO" in *failure|busy) echo "unexpected uninstall success: $SCENARIO" >&2; exit 1 ;; esac
+        [ ! -e "$TMP/systemd/ployz-checkin.service" ]
+        if [ "$SCENARIO" != absent ]; then
+            grep -Fxq 'systemctl stop ployz-checkin.service' "$LOG"
+        fi
+        grep -Eq '^systemctl disable .*ployz-checkin.service' "$LOG"
         [ ! -e "$TMP/install/ployzd" ]
         [ ! -e "$TMP/install/ployz-uninstall" ]
         [ ! -e "$TMP/runtime-systemd/ployz-dns.service" ]
@@ -190,6 +203,16 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     [ -e "$TMP/install/ployz-corrosion" ]
     [ -f "$TMP/docker" ] && [ -f "$TMP/images" ] && [ -f "$TMP/volumes" ] && [ -f "$TMP/docker-config" ]
     sudo rm -rf "$TMP/run" "$TMP/state"
+done
+
+for flag in --help -h; do
+    : > "$LOG"
+    output=$(PLOYZ_AUTO_CONFIRM=false bash "$ROOT/scripts/uninstall.sh" "$flag" </dev/null)
+    if [[ "$output" != *"Usage:"* || "$output" == *"Uninstall cancelled"* ]]; then
+        echo "uninstall $flag did not print help" >&2
+        exit 1
+    fi
+    [ ! -s "$LOG" ]
 done
 
 echo "destructive daemon uninstall contract passed"

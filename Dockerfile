@@ -47,7 +47,8 @@ WORKDIR /app
 COPY --from=dashboard /app/dashboard/.output .output
 COPY --from=dashboard /app/dashboard/node_modules node_modules
 # The app's packaged SDK is the runtime copy; replace pnpm's source-tree link.
-RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk
+RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk \
+    && touch .env
 COPY dashboard/package.json dashboard/drizzle.config.ts dashboard/drizzle.analytics.config.ts ./
 COPY dashboard/drizzle/ drizzle/
 # Load the OpenTelemetry SDK before the app; it reads Railway's OTEL_* variables.

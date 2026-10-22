@@ -8,7 +8,8 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY dashboard/.output .output
 COPY dashboard/node_modules node_modules
-RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk
+RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk \
+    && touch .env
 COPY dashboard/package.json dashboard/drizzle.config.ts dashboard/drizzle.analytics.config.ts ./
 COPY dashboard/drizzle/ drizzle/
 CMD ["node", "--experimental-loader=@opentelemetry/instrumentation/hook.mjs", "--import", "@opentelemetry/auto-instrumentations-node/register", ".output/server/index.mjs"]

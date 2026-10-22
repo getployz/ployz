@@ -33,6 +33,18 @@ stop_loaded_units() {
 }
 
 main() {
+    case "${1:-}" in
+        --help|-h)
+            cat <<'EOF'
+Usage: ployz-uninstall [--help|-h]
+
+Remove Ployz state and managed containers from this Machine.
+Retain Docker, images, named volumes, and Docker configuration.
+Run with sudo or as root. Set PLOYZ_AUTO_CONFIRM=true to skip confirmation.
+EOF
+            return
+            ;;
+    esac
     [ "$EUID" -eq 0 ] || error "Run this uninstaller with sudo or as root"
     safe_owned_directory "$PLOYZ_DATA_DIR" || error "Refusing unsafe data directory: $PLOYZ_DATA_DIR"
     safe_owned_directory "$PLOYZ_RUN_DIR" || error "Refusing unsafe run directory: $PLOYZ_RUN_DIR"
@@ -42,6 +54,7 @@ main() {
         return
     fi
 
+    stop_loaded_units ployz-checkin.service
     stop_loaded_units 'ployz-upgrade-*.service'
     # Share MutationGate's flock so installation cannot race destructive cleanup.
     umask 077
@@ -97,8 +110,9 @@ main() {
     fi
 
     systemctl stop ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
-    systemctl disable ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service ployz-observe.service 2>/dev/null || true
-    rm -f "$INSTALL_SYSTEMD_DIR/ployz.service" \
+    systemctl disable ployz-checkin.service ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service ployz-observe.service 2>/dev/null || true
+    rm -f "$INSTALL_SYSTEMD_DIR/ployz-checkin.service" \
+        "$INSTALL_SYSTEMD_DIR/ployz.service" \
         "$INSTALL_SYSTEMD_DIR/ployz.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-observe.service" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
