@@ -62,8 +62,8 @@ choose **Discard all changes**.
 rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
 version. When part of your latest saved version is not deployed, for example because its deploy failed,
 the bottom bar shows **Save #4 not deployed** with **Deploy** instead of a change count. While a
-deploy of it is queued or running, for example `ployz deploy web` deploying web and the services it references, the bar shows
-that deploy's status instead, **Queued**, **Preparing** or **Deploying · Save #4**, with **Deploy
+deploy of it is queued or running, for example `ployz deploy web` deploying web and the services
+it references, the bar shows that deploy's status instead, **Queued**, **Preparing** or **Deploying · Save #4**, with **Deploy
 next** for the rest. A deploy still waiting for CI isn't queued yet, so the bar keeps **Save #4 not
 deployed**. Neither its **⋮** menu nor Details offers **Discard all** then, since nothing is left to
 discard.
@@ -83,8 +83,8 @@ goes back to your latest saved version.
 
 The dashboard's **Deploy** needs a staged change. To ship the same commit and settings again,
 click **Redeploy** on the newest deployment; see
-[History and rollback](history-and-rollback.md#redeploy-or-cancel-a-deployment). To move GitHub services to their branch's latest
-commit with nothing staged, use the CLI:
+[History and rollback](history-and-rollback.md#redeploy-or-cancel-a-deployment). To move GitHub
+services to their branch's latest commit with nothing staged, use the CLI:
 
 ```sh
 ployz deploy
