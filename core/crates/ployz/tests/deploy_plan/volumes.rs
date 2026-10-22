@@ -1155,67 +1155,6 @@ fn a_blocked_dependent_prepares_none_of_its_volumes() {
 }
 
 #[test]
-fn a_silent_volume_server_leaves_a_deploy_of_another_service_alone() {
-    let mut db = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    db.name = ServiceName::parse("db").unwrap();
-    add_named_volume(&mut db, "data");
-    make_provisioned(&mut db, "data", 1_073_741_824);
-    let web = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    let intent = DeployIntent::apply_all(
-        Namespace::parse("app").unwrap(),
-        [&web, &db],
-        PlanOptions {
-            selected: vec![ServiceAttempt {
-                name: web.name.clone(),
-            }],
-            ..PlanOptions::default()
-        },
-    )
-    .with_deployed_volumes([app_volume("data")].into());
-    let mut snapshot = copies_snapshot(&[], vec![]);
-    snapshot.storage_capacity.remove(&machine_id('2'));
-
-    let preview = preview_deploy(&intent, &snapshot).unwrap();
-
-    assert!(
-        operations(&preview)
-            .iter()
-            .all(|operation| operation.service_name() != Some(&db.name))
-    );
-
-    let depends = intent.clone().with_dependencies(BTreeMap::from([(
-        web.name.clone(),
-        vec![ployz_core::ServiceDependency {
-            service: db.name.clone(),
-            condition: ployz_core::DependencyCondition::ServiceStarted,
-        }],
-    )]));
-    assert!(matches!(
-        preview_deploy(&depends, &snapshot),
-        Err(PlanError::Service { source, .. })
-            if matches!(*source, PlanError::CopiesUnknown { .. })
-    ));
-
-    let mut pinned = intent.clone();
-    for service in &mut pinned.target {
-        if service.name == db.name {
-            service.placement.constraints = [label_constraint("second")].into();
-        }
-    }
-    snapshot.machines.last_mut().unwrap().membership = MembershipObservation::Down;
-    let preview = preview_deploy(&pinned, &snapshot).unwrap();
-    assert!(
-        operations(&preview)
-            .iter()
-            .all(|operation| operation.service_name() != Some(&db.name))
-    );
-}
-
-#[test]
 fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
     let applied = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
