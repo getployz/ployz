@@ -7,9 +7,10 @@ Uncloud's Caddy terminates TLS. np1 also runs other projects; these files touch 
 
 | File | Purpose |
 |---|---|
-| `compose.prod.yaml` | web, worker, inngest, redis-inngest, site, tools-api, uptime, uptime-agent-eu, hosted-dns |
+| `compose.prod.yaml` | web, worker, inngest, redis-inngest, site, site-rebuild, tools-api, uptime, uptime-agent-eu, hosted-dns |
 | `compose.staging.yaml` | staging web, worker, inngest, redis-inngest, postgres |
 | `hosted-dns.Dockerfile` | builds getployz/hosted-dns (Railway used Railpack) |
+| `site-rebuild/` | the hourly site rebuild sidecar: `Dockerfile`, `rebuild.sh`, `crontab` |
 
 The relay (relay.ployz.dev) has its own compose file and is not covered here.
 
@@ -63,9 +64,33 @@ that image:
   HTTPS forwarder.
 - `dns.ployz.app` and `staging.ployz.dev` are DNS-only, so Caddy sees the client directly.
 
+## Site rebuild
+
+`ployz-site-rebuild` replaces Railway's hourly `site-rebuild` cron. It runs `site-rebuild/rebuild.sh` at minute 0
+(supercronic). The script rebuilds the site with `--no-cache` from the source snapshot in
+`/root/ployz/site-rebuild/src`, so the latest docs from getployz/ployz and any article whose date has come get
+published. It redeploys `ployz-site` only when the built pages changed, by writing `SITE_TAG` to `/root/ployz/.env`,
+which `compose.prod.yaml` reads. It keeps the three newest rebuilt images.
+
+The snapshot is a copy of one ployz-site commit, because np1 has no read access to that private repo. To ship a newer
+commit, replace the snapshot from a checkout:
+
+    git -C ployz-site archive <sha> | ssh np1 'rm -rf /root/ployz/site-rebuild/src/* && tar -x -C /root/ployz/site-rebuild/src && echo <sha> > /root/ployz/site-rebuild/src.commit'
+
 ## Logs
 
-    ssh np1 docker logs --since 1h $(docker ps -q --filter name=ployz-web-)
-
 Uncloud's default `local` log driver drops a container's logs when the container is replaced, and that happens on
-every deploy.
+every deploy. np1's alloy collects every container's output and writes it to VictoriaLogs, keeping it for 7 days, with
+the labels `service` (the Uncloud service name), `container`, `container_id` and `stream`. Those logs outlive the
+container. To read them on np1:
+
+    ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -q --filter label=uncloud.service.name=victorialogs))
+    vl() { docker run --rm --network uncloud curlimages/curl:8.11.1 -sS "http://$ip:9428/select/logsql/query" --data-urlencode "query=$1"; }
+    vl '_time:1h service:="ployz-web"'                          # one service
+    vl '_time:24h container:="ployz-web-oaov"'                  # one container, including replaced ones
+    vl '_time:24h service:="ployz-web" | stats by (container) count()'
+
+`:=` matches exactly: `service:ployz-site` would also match `ployz-site-rebuild`. The service names are ployz-web,
+ployz-worker, ployz-inngest, ployz-redis-inngest, ployz-site, ployz-site-rebuild, ployz-tools-api, ployz-uptime,
+ployz-uptime-agent-eu, ployz-hosted-dns and ployz-relay (staging: ployz-staging-*). For a running container,
+`docker logs $(docker ps -q --filter label=uncloud.service.name=<service>)` also works.

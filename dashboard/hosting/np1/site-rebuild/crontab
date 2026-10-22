@@ -1,0 +1,2 @@
+# Railway ran site-rebuild at minute 0 of every hour.
+0 * * * * /usr/local/bin/rebuild.sh
