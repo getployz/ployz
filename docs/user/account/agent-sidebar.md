@@ -16,7 +16,7 @@ and volumes, add and change domains, check a domain and list the DNS records it 
 review what's staged, restore or undo a saved version, save without deploying, and deploy. It can list an
 environment's deployments, follow one to its end, redeploy a failed, cancelled or unknown one, start
 a queued one now, and cancel one, like the
-[deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
+[deployment page](../deploy/history-and-rollback.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
 
 The agent never sees or sends a secret's value. It can ask Ployz to give a variable a new

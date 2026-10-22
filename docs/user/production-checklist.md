@@ -20,7 +20,7 @@ list. Each item links to the page that does it.
   Or keep your hosted database and [point your app at it](services/databases.md#use-a-managed-database-instead).
 - **Add a health check.** Without one, a new replica gets traffic about a second after it starts,
   ready or not. A crash after that second doesn't fail the deploy, and `ployz status` names the
-  replica. See [Deploy without downtime](deploy/deployments.md#deploy-without-downtime).
+  replica. See [Deploy without downtime](deploy/zero-downtime.md#keep-your-app-serving-through-a-deploy).
 - **Run two replicas on two servers.** With one replica on one server, one failure takes your
   app down. [Add a second server](servers/add-a-server.md), then
   [run more replicas](services/scaling.md#run-more-replicas). A service with a volume runs one
@@ -50,10 +50,10 @@ list. Each item links to the page that does it.
   [When a server goes down](services/scaling.md#when-a-server-goes-down).
 - **No automatic rollbacks.** A failed deploy doesn't undo itself. To go back, click **Redeploy**
   on an earlier deployment; it ships that deployment's commit and settings. See
-  [Redeploy or cancel a deployment](deploy/deployments.md#redeploy-or-cancel-a-deployment). The
+  [Redeploy or cancel a deployment](deploy/history-and-rollback.md#redeploy-or-cancel-a-deployment). The
   rollback lasts until your next push or deploy, so to keep it, revert the commit in Git. To roll
   back settings only, use **Roll back to #N** in **Deployments** > **Versions**; see
-  [Saved history](deploy/deployments.md#saved-history).
+  [Undo or roll back a saved version](deploy/history-and-rollback.md#undo-or-roll-back-a-saved-version).
 - **No Docker Compose files.** Add each container as its own service.
 - **No autoscaling.** You choose the number of replicas.
 - **Three roles.** An organization has owners, admins and members, with no finer permissions. See

@@ -75,6 +75,22 @@ cancellation and waits for owned work and cleanup to settle. Server enrollment t
 already committed remains committed; follow the recovery hint if Global catch-up or
 ingress work was interrupted.
 
+## My deploy failed partway
+
+**Failed**, with some services on the new version and others on the old one
+
+Where a new replica didn't come up, the old ones keep serving. Ployz doesn't roll back. A service
+that already switched keeps the new version, services that depend on the failed one stay as they
+were, and services that don't depend on it may have switched already.
+
+> [!WARNING]
+> Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your
+> database keeps the change while the old version of your app runs against it.
+
+- Fix the cause with the entries below, and deploy again.
+- To try the fix in a [branch](../environments/environments.md) first, click
+  **Fix it on a branch** on the deployment's page.
+
 ## My build failed
 
 `Build failed. web: …`
@@ -100,7 +116,7 @@ or a command's exit code and output.
 - **Listen on `0.0.0.0`**, not `127.0.0.1`. See
   [This app didn't respond](app-not-reachable.md#this-app-didnt-respond).
 - **Answer with a 2xx status, not a redirect** to `https://` or `/login`. See
-  [Deployments](../deploy/deployments.md).
+  [Deploy without downtime](../deploy/zero-downtime.md#keep-your-app-serving-through-a-deploy).
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
@@ -566,6 +582,27 @@ while another deployment is still running, yours waits, and which upload each se
 known only once that one ends. When yours starts, its page and `ployz deployment show` show the
 upload it runs, which can differ from the one it showed while it waited. To ship the code in your
 directory instead, run `ployz up`.
+
+## A volume change didn't finish when my deploy failed
+
+**Not reached** beside a volume change in **Details**, `Restore failed. Restore again.`, or
+`the restore waits for the next Deploy.`
+
+A failed deploy drops the volume change it failed on. Volume changes it never got to go back to
+your staged changes, and **Details** marks them **Not reached**. Deploy again to run them. What
+the dropped change leaves behind depends on how far it got:
+
+- A move that failed before the handover leaves the volume on its old server, with all its data.
+  Stage the move again when you're ready.
+- A move that failed after the handover is not undone. The volume belongs to the new server, and
+  your service stays down until the move finishes there. The move stays in your changes, so
+  deploy again to finish it. See [When a move stops](../services/move-a-volume.md#when-a-move-stops).
+- A restore that failed is taken back. Your services mount the old volume again, and the new
+  volume goes away. If Ployz can't take it back when the deploy fails, your next deploy fails with
+  `Restore failed. Restore again.` and takes it back then. Restore again once you fix the cause.
+  Redeploying that deployment is refused.
+- A deploy that shipped a restore it couldn't claim fails before it copies anything, with
+  `the restore waits for the next Deploy.` The restore stays staged, so deploy again.
 
 ## Deploy asks me to confirm it deletes data
 
