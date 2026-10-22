@@ -611,6 +611,8 @@ impl ContainerRuntime {
             return Ok(());
         }
         let mut unprobed = Vec::new();
+        // One whose image runs a probe keeps None and is inspected each sync until a
+        // Deploy replaces it, a cost only 0.2.4 copies of a HEALTHCHECK image pay.
         for container_id in self.specs.without_healthcheck(unstamped).await? {
             // A Container Docker cannot inspect now is left for the next sync.
             let Ok(inspected) = decode_raw_inspect(

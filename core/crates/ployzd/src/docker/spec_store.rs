@@ -343,7 +343,10 @@ impl ConfigOperation<'_> {
                 else {
                     continue;
                 };
-                let mut spec: ResolvedServiceSpec = serde_json::from_str(&encoded)?;
+                // Listing skips a spec it cannot decode; it must not stop the others.
+                let Ok(mut spec) = serde_json::from_str::<ResolvedServiceSpec>(&encoded) else {
+                    continue;
+                };
                 if spec.adopt_unprobed() {
                     transaction.execute(
                         "UPDATE containers SET service_spec = ?2 WHERE id = ?1",
