@@ -6407,3 +6407,52 @@ fn rolling_back_to_a_deploy_of_some_services_leaves_the_others_running_unasked()
     let rolled = rollback_to(&store, &who, (4, 2)).unwrap();
     assert_eq!(rolled.status, DeploymentStatus::Queued);
 }
+
+#[test]
+fn a_deploy_queued_behind_one_that_is_later_lost_asks_about_its_services_when_admitted() {
+    // A plain retry asks only what its source's review asked, so that review has
+    // to have counted a Deployment that was running then and is lost by the retry.
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .write(
+            &who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("cron").unwrap(),
+            },
+        )
+        .unwrap();
+
+    let refused = deploy_trusted(
+        &store,
+        &who,
+        3,
+        &protector(Approval::Required, Asks::Destroys),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let removes: Vec<&str> = refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|effect| effect["kind"] == "removes_service")
+        .map(|effect| effect["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(removes, ["cron"]);
+}
