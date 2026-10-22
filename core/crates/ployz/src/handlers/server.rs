@@ -812,6 +812,9 @@ async fn apply_update(
     recovery: ArgMatches,
 ) -> Result<(), Error> {
     let accepts_ingress = update.accepts_ingress;
+    let public_ip_removed = update.public_ip == PublicIpUpdate::Remove;
+    // Setting or clearing the public IP pins it, so daemon start no longer looks one up.
+    let public_ip_pinned = update.public_ip != PublicIpUpdate::Keep;
     let updated = client
         .invoke_answered::<op::UpdateMachine>(
             UpdateMachineRequest { update },
@@ -855,11 +858,25 @@ async fn apply_update(
         (Err((_, error)), _) => return Err(error.into()),
     };
     crate::ui::stream(format_args!("Updated Server {}.", machine.name));
+    let next =
+        public_ip_removed.then(|| format!("ployz server set {} --public-ip IP", machine.name));
+    if let Some(next) = &next {
+        crate::ui::stream(format_args!(
+            "Server {} advertises no public IP now, and Ployz won't look one up.",
+            machine.name
+        ));
+        crate::ui::hint(&Hint::Next(next.clone()));
+    }
     // The update is committed; starting the Ingress Proxy for a new ingress role is a
     // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
     // advertising the Server at its next sync, and `server rm` stops the proxy.
     if accepts_ingress != Some(true) {
-        return crate::ui::emit(&json!({ "server": server_json(&machine), "endpoint": seeding }));
+        return crate::ui::emit(&json!({
+            "server": server_json(&machine),
+            "endpoint": seeding,
+            "public_ip_pinned": public_ip_pinned,
+            "next": next,
+        }));
     }
     let followed = async {
         crate::cluster::wait_for_role(
@@ -882,6 +899,8 @@ async fn apply_update(
         json!({
             "server": server_json(&machine),
             "endpoint": seeding,
+            "public_ip_pinned": public_ip_pinned,
+            "next": next,
             "ingress": followed.as_ref().ok().and_then(Option::as_ref),
         }),
         followed.map(drop).map_err(|error| {
@@ -911,11 +930,7 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let public_ip = match matches.get_one::<String>("public-ip").map(String::as_str) {
         None => PublicIpUpdate::Keep,
         Some("") | Some("none") => PublicIpUpdate::Remove,
-        Some(value) => PublicIpUpdate::Set(
-            value
-                .parse::<IpAddr>()
-                .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?,
-        ),
+        Some(value) => PublicIpUpdate::Set(helpers::public_ip(value)?),
     };
     let build_concurrency = match matches
         .get_one::<String>("build-concurrency")
@@ -1219,6 +1234,56 @@ mod tests {
         assert_eq!(pinned(&["--public-ip=none"]), pins(true, false));
         assert_eq!(pinned(&["--public-ip=192.0.2.9"]), pins(true, false));
         assert_eq!(pinned(&["--wg-endpoint=192.0.2.1"]), pins(false, true));
+    }
+
+    #[test]
+    fn a_public_ip_nobody_can_reach_is_refused() {
+        let set = |ip: &str| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "set", "node-a", "--public-ip", ip])
+                .unwrap();
+            parse_update(leaf_matches(&matches)).map(|update| update.public_ip)
+        };
+        let add = |ip: &str| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "add", "root@node-a", "--public-ip", ip])
+                .unwrap();
+            helpers::token_request(leaf_matches(&matches)).map(|_| ())
+        };
+        for unreachable in [
+            "0.0.0.0",
+            "::",
+            "127.0.0.1",
+            "::1",
+            "169.254.1.1",
+            "fe80::1",
+            "224.0.0.1",
+            "ff02::1",
+            "255.255.255.255",
+            "::ffff:127.0.0.1",
+        ] {
+            let refused = set(unreachable).unwrap_err();
+            assert_eq!(
+                refused.report().code,
+                RpcErrorCode::InvalidArgument,
+                "{unreachable}"
+            );
+            assert!(refused.to_string().contains(unreachable), "{refused}");
+            assert!(add(unreachable).is_err(), "{unreachable}");
+        }
+        for allowed in [
+            "203.0.113.9",
+            "2001:db8::9",
+            "10.0.0.5",
+            "192.168.1.2",
+            "fd00::5",
+        ] {
+            assert_eq!(
+                set(allowed).unwrap(),
+                PublicIpUpdate::Set(allowed.parse().unwrap())
+            );
+            assert!(add(allowed).is_ok(), "{allowed}");
+        }
     }
 
     #[test]
