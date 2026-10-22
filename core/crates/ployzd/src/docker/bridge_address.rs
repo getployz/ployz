@@ -29,7 +29,8 @@ pub(crate) fn pin(mut endpoint: EndpointSettings, ipv4: Option<Ipv4Addr>) -> End
 }
 
 /// What a Container's current endpoint asks Docker for, so it rejoins with the same
-/// aliases, links and options. The addresses Docker assigned are dropped.
+/// aliases, links, options and MAC address. The addresses Docker assigned are
+/// dropped.
 pub(crate) fn reconnect(current: EndpointSettings) -> EndpointSettings {
     EndpointSettings {
         ipam_config: current.ipam_config,
@@ -37,6 +38,7 @@ pub(crate) fn reconnect(current: EndpointSettings) -> EndpointSettings {
         aliases: current.aliases,
         driver_opts: current.driver_opts,
         gw_priority: current.gw_priority,
+        mac_address: current.mac_address.filter(|mac| !mac.is_empty()),
         ..Default::default()
     }
 }
@@ -144,6 +146,7 @@ mod tests {
     fn a_container_rejoins_with_its_own_aliases_and_options_at_its_pin() {
         let current: EndpointSettings = serde_json::from_value(serde_json::json!({
             "Aliases": ["db"],
+            "MacAddress": "02:42:ac:11:00:09",
             "DriverOpts": { "com.docker.network.endpoint.sysctls": "x" },
             "IPAMConfig": { "IPv6Address": "fdcd::9" },
             "IPAddress": "10.210.3.9",
@@ -154,6 +157,10 @@ mod tests {
         let rejoined = serde_json::to_value(pin(reconnect(current), Some(address(9)))).unwrap();
         let at = |pointer: &str| rejoined.pointer(pointer).cloned();
         assert_eq!(at("/Aliases"), Some(serde_json::json!(["db"])));
+        assert_eq!(
+            at("/MacAddress"),
+            Some(serde_json::json!("02:42:ac:11:00:09"))
+        );
         assert_eq!(
             at("/DriverOpts/com.docker.network.endpoint.sysctls"),
             Some(serde_json::json!("x"))
