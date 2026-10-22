@@ -1,4 +1,5 @@
 use super::*;
+use bollard::models::EndpointResource;
 
 fn installed_peer(seed: u8) -> Peer {
     let mut peer = Peer::new(Key::new([seed; 32]));
@@ -654,4 +655,127 @@ fn reset_mismatched_device_in_namespace() {
         request.starts_with("GET ") && request.contains("/networks/ployz "),
         "unexpected Docker call: {request}"
     );
+}
+
+fn subnet(value: &str) -> ployz_core::MachineSubnet {
+    ployz_core::MachineSubnet::parse(value).unwrap()
+}
+
+fn inspected(
+    request: &NetworkCreateRequest,
+    attached: HashMap<String, EndpointResource>,
+) -> NetworkInspect {
+    NetworkInspect {
+        name: Some(request.name.clone()),
+        id: Some("owned-network".into()),
+        driver: request.driver.clone(),
+        scope: request.scope.clone(),
+        enable_ipv6: Some(request.enable_ipv6.unwrap_or(false)),
+        ipam: request.ipam.clone(),
+        options: request.options.clone(),
+        labels: request.labels.clone(),
+        containers: Some(attached),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn each_machine_bridge_takes_an_ipv6_prefix_from_its_ipv4_subnet() {
+    let ipv6 = docker_network_ipv6(subnet("10.210.3.0/24"));
+    assert_eq!(ipv6.subnet.as_deref(), Some("fdcd:0:ad2:300::/64"));
+    assert_eq!(ipv6.gateway.as_deref(), Some("fdcd:0:ad2:300::1"));
+    assert_ne!(
+        docker_network_ipv6(subnet("10.210.4.0/24")).subnet,
+        ipv6.subnet
+    );
+}
+
+#[test]
+fn a_dual_stack_bridge_matches_itself_and_an_ipv4_only_one_needs_readdressing() {
+    let machine = subnet("10.210.1.0/24");
+    let options = required_docker_network_options(1420);
+    let ipv6 = docker_network_ipv6(machine);
+    let dual = docker_network_request(machine, &options, Some(&ipv6));
+    assert_eq!(dual.enable_ipv6, Some(true));
+    let dual = inspected(&dual, HashMap::new());
+    assert!(docker_network_matches(
+        &dual,
+        "10.210.1.0/24",
+        "10.210.1.1",
+        &options
+    ));
+    assert!(docker_network_ipv6_matches(&dual, Some(&ipv6)));
+
+    let ipv4_only = inspected(
+        &docker_network_request(machine, &options, None),
+        HashMap::new(),
+    );
+    assert!(docker_network_matches(
+        &ipv4_only,
+        "10.210.1.0/24",
+        "10.210.1.1",
+        &options
+    ));
+    assert!(!docker_network_ipv6_matches(&ipv4_only, Some(&ipv6)));
+    assert!(docker_network_ipv6_matches(&ipv4_only, None));
+    assert!(!docker_network_ipv6_matches(&dual, None));
+}
+
+#[test]
+fn readdressing_reconnects_every_attached_container_at_its_ipv4_address() {
+    let endpoint = |ipv4: Option<&str>| EndpointResource {
+        ipv4_address: ipv4.map(Into::into),
+        ..Default::default()
+    };
+    let network = inspected(
+        &docker_network_request(
+            subnet("10.210.1.0/24"),
+            &required_docker_network_options(1420),
+            None,
+        ),
+        HashMap::from([
+            ("b".repeat(64), endpoint(Some("10.210.1.7/24"))),
+            ("a".repeat(64), endpoint(Some("10.210.1.5/24"))),
+            ("c".repeat(64), endpoint(None)),
+        ]),
+    );
+    assert_eq!(
+        attached_endpoints(&network),
+        [
+            ("a".repeat(64), Some("10.210.1.5".to_owned())),
+            ("b".repeat(64), Some("10.210.1.7".to_owned())),
+            ("c".repeat(64), None),
+        ]
+    );
+}
+
+#[test]
+fn interfaces_that_take_router_advertisements_keep_taking_them_once_forwarding() {
+    let conf = tempfile::tempdir().unwrap();
+    for (interface, accept_ra) in [
+        ("ens3", "1"),
+        ("default", "1"),
+        ("eth1", "0"),
+        ("eth2", "2"),
+    ] {
+        std::fs::create_dir(conf.path().join(interface)).unwrap();
+        std::fs::write(
+            conf.path().join(interface).join("accept_ra"),
+            format!("{accept_ra}\n"),
+        )
+        .unwrap();
+    }
+
+    keep_router_advertisements(conf.path()).unwrap();
+
+    let accept_ra = |interface: &str| {
+        std::fs::read_to_string(conf.path().join(interface).join("accept_ra"))
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    assert_eq!(accept_ra("ens3"), "2");
+    assert_eq!(accept_ra("default"), "2");
+    assert_eq!(accept_ra("eth1"), "0");
+    assert_eq!(accept_ra("eth2"), "2");
 }

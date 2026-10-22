@@ -70,11 +70,30 @@ pub fn apply_firewall_rules(
         delete_rule("iptables", "mangle", "FORWARD", rule)?;
     }
     let mut ipv6_document = filter_document("ip6tables", &management_policy(management_address))?;
+    // Without Docker's ip6tables there is no DOCKER-USER chain and no NAT66 either.
+    if command_succeeds("ip6tables", &["-t", "filter", "-S", "DOCKER-USER"]) {
+        let moves = move_to_top(
+            "ip6tables",
+            "filter",
+            "DOCKER-USER",
+            &container_mesh_fence(),
+        )?;
+        if !moves.is_empty() {
+            ipv6_document.push_str(&format!("*filter\n{moves}COMMIT\n"));
+        }
+    }
     ipv6_document.push_str(&build_forward_document(
         "ip6tables",
         &ipv6_build_forwarding(),
     )?);
     restore("ip6tables", &ipv6_document)
+}
+
+/// Docker's NAT66 would rewrite a container's IPv6 into the mesh to this Machine's
+/// management address, which every peer trusts. Container IPv4 into the mesh keeps
+/// its own source and reaches only containers, so it stays open.
+fn container_mesh_fence() -> String {
+    format!("-i {DOCKER_NETWORK_NAME} -o {WIREGUARD_INTERFACE_NAME} -j DROP")
 }
 
 /// Build steps route to the internet, never into the Machine's services, across
@@ -438,6 +457,11 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     for rule in LOOSE_BUILD_FORWARDING {
         attempt(delete_rule("iptables", "mangle", "FORWARD", rule));
     }
+    if command_succeeds("ip6tables", &["-t", "filter", "-S", "DOCKER-USER"]) {
+        let fence = container_mesh_fence();
+        let fence = fence.split(' ').collect::<Vec<_>>();
+        attempt(delete_rule("ip6tables", "filter", "DOCKER-USER", &fence));
+    }
     for program in ["iptables", "ip6tables"] {
         attempt(remove_chain(
             program,
@@ -609,6 +633,11 @@ mod tests {
                 "-d 168.63.129.16/32 -j DROP",
             ]
         );
+    }
+
+    #[test]
+    fn containers_never_reach_the_mesh_over_ipv6() {
+        assert_eq!(container_mesh_fence(), "-i ployz -o ployz-wg -j DROP");
     }
 
     #[test]
