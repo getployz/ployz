@@ -4,6 +4,7 @@ use super::{EnrollPlan, LocalMachine, LocalMachineError, LocalMachineStore, Reco
 use crate::corrosion::{AdminClient, MachineView, fake_cluster, run_machine_publisher};
 use crate::sealing_key::SealingKey;
 
+mod backfill;
 mod harness;
 mod policy;
 use harness::*;

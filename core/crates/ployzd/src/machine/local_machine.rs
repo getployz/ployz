@@ -53,6 +53,8 @@ mod container;
 pub(crate) use container::CutRefusal;
 mod management_client;
 mod push_target;
+mod sealing;
+pub(crate) use sealing::Error as SealingError;
 mod upgrade;
 
 #[derive(Clone)]
@@ -145,6 +147,8 @@ pub enum Error {
     Upgrade(#[from] crate::installer::upgrade::Error),
     #[error(transparent)]
     Seal(#[from] crate::sealing_key::SealError),
+    #[error(transparent)]
+    Sealing(#[from] SealingError),
 }
 
 impl LocalMachine {

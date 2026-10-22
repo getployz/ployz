@@ -2,17 +2,18 @@ use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName,
     DESCRIBE_CONTRACT_CAPABILITY, ENROLL_MACHINE_CAPABILITY, ENSURE_CONTAINER_CAPABILITY,
     ENSURE_IMAGE_INGEST_CAPABILITY, EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY,
-    INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, LEAVE_MACHINE_CAPABILITY,
-    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
-    LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    MANAGEMENT_SCOPE_CAPABILITY, METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY,
-    PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
-    PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTED_ADDRESSES_CAPABILITY,
-    READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
-    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
-    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
+    GENERATE_SEALING_KEY_CAPABILITY, INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY,
+    INSPECT_MACHINE_CAPABILITY, INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY,
+    INSTALL_SEALING_KEY_CAPABILITY, LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
+    LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY,
+    LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MANAGEMENT_SCOPE_CAPABILITY,
+    METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY,
+    PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY,
+    REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY,
+    RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
+    SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
+    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
     TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
     VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, op,
 };
@@ -95,6 +96,9 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.serving.routed-addresses.v1",
         ),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
+        (GENERATE_SEALING_KEY_CAPABILITY, "ployz.sealing.generate.v1"),
+        (SHARE_SEALING_KEY_CAPABILITY, "ployz.sealing.share.v1"),
+        (INSTALL_SEALING_KEY_CAPABILITY, "ployz.sealing.install.v1"),
         (LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1"),
         (FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1"),
         (
@@ -131,6 +135,9 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
             "ployz.machine.upgrade.request.v1",
+            "ployz.sealing.generate.v1",
+            "ployz.sealing.share.v1",
+            "ployz.sealing.install.v1",
             "ployz.machine.leave.v1",
             "ployz.machine.forget.v1",
             "ployz.certificates.policy.v1",
@@ -224,6 +231,18 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         op::RequestMachineUpgrade::PATH,
         "/ployz.rpc.v1.MachineRpc/RequestMachineUpgrade"
     );
+    assert_eq!(
+        op::GenerateSealingKey::PATH,
+        "/ployz.rpc.v1.MachineRpc/GenerateSealingKey"
+    );
+    assert_eq!(
+        op::ShareSealingKey::PATH,
+        "/ployz.rpc.v1.MachineRpc/ShareSealingKey"
+    );
+    assert_eq!(
+        op::InstallSealingKey::PATH,
+        "/ployz.rpc.v1.MachineRpc/InstallSealingKey"
+    );
 }
 
 /// Capabilities every Machine in the field serves. Serving rotation cut off daemons
@@ -305,6 +324,18 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.management.scope.v1",
         "gated: an older daemon serves an Operator caller as Full, so a path that sends a Sealed value first checks every Machine in the Cluster advertises it, and refuses otherwise",
+    ),
+    (
+        "ployz.sealing.generate.v1",
+        "gated: the Sealing Key backfill reads each Machine's contract first and never picks a generator that lacks it",
+    ),
+    (
+        "ployz.sealing.share.v1",
+        "gated: the backfill seals from a holder advertising it, and reports a Cluster whose holders all lack it",
+    ),
+    (
+        "ployz.sealing.install.v1",
+        "gated: the backfill skips a Machine that lacks it and reports it as skipped",
     ),
 ];
 
