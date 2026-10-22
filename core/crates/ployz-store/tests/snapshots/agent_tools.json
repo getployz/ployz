@@ -920,7 +920,7 @@
       "read_only": true
     },
     {
-      "description": "Give a Service a public domain: a generated one under the cluster domain, or a hostname the member owns. Staged until the next Deploy. A custom hostname comes back with the DNS records the member must create. This call asks no human.",
+      "description": "Give a Service a public domain: a hostname the member owns, or with Ployz Cloud a generated one under the cluster domain. Staged until the next Deploy. A custom hostname comes back with the DNS records the member must create. This call asks no human.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
@@ -949,7 +949,7 @@
             "type": "integer"
           },
           "prefix": {
-            "description": "Prefix for a generated domain, PREFIX.cluster-domain. Omit both prefix and hostname for a free one.",
+            "description": "Prefix for a generated domain, PREFIX.cluster-domain; needs Ployz Cloud. Omit both prefix and hostname for a free one.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
