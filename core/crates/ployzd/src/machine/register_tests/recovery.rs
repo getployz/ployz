@@ -42,7 +42,7 @@ async fn seeded(
     std::path::PathBuf,
     tokio::task::JoinHandle<()>,
 ) {
-    let (replicated, server) = fake_cluster::store().await;
+    let (replicated, server) = fake_cluster::store_with_subscriptions().await;
     let data_dir = std::env::temp_dir().join(format!(
         "ployzd-recover-{}",
         ployz_core::MachineId::random()
@@ -147,25 +147,28 @@ async fn the_published_row_follows_what_the_machine_holds_of_the_sealing_key() {
     let shutdown = tokio_util::sync::CancellationToken::new();
     let view = crate::corrosion::MachineView::start(replicated.clone(), shutdown.clone());
     let publisher = tokio::spawn(crate::corrosion::run_machine_publisher(
-        Some((replicated.clone(), view)),
+        Some((replicated.clone(), view.clone())),
         local.owner().clone(),
         crate::corrosion::LiveRuntime::unobserved(),
         shutdown.clone(),
     ));
     let published = |expected: Option<Sealing>| {
-        let replicated = replicated.clone();
+        let mut machines = view.watch();
         async move {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    let row = replicated.machine(id.as_str()).await.unwrap();
-                    if row.is_some_and(|machine| machine.runtime.sealing == expected) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                machines.wait_for(|snapshot| {
+                    snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot
+                            .observations
+                            .iter()
+                            .any(|machine| machine.id == id && machine.runtime.sealing == expected)
+                    })
+                }),
+            )
             .await
-            .unwrap_or_else(|_| panic!("{expected:?} was never published"));
+            .unwrap_or_else(|_| panic!("{expected:?} was never published"))
+            .unwrap();
         }
     };
 

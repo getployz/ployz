@@ -426,16 +426,9 @@ async fn a_founder_awaiting_recovery_names_its_key_before_the_network_and_holds_
         shutdown.clone(),
     ));
 
-    let awaited = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            match cluster.network_and_awaited_key() {
-                (Some(_), awaited) => break awaited,
-                (None, _) => tokio::time::sleep(Duration::from_millis(5)).await,
-            }
-        }
-    })
-    .await
-    .expect("the founder never published its Cluster network");
+    let awaited = tokio::time::timeout(Duration::from_secs(5), cluster.awaited_key_at_network())
+        .await
+        .expect("the founder never published its Cluster network");
 
     assert_eq!(awaited, Some(expected.to_string()));
     assert_eq!(
