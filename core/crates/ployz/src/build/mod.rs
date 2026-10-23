@@ -31,6 +31,10 @@ pub use local::LocalImage;
 mod reuse;
 pub(crate) use reuse::{holder, image_stores, runs_everywhere};
 
+/// Why a Build that reads a Sealed value cannot run anywhere but a Server Builder.
+pub(crate) const SEALED_BUILDS_RUN_ON_SERVER: &str =
+    "Builds that read a sealed value run on your server.";
+
 /// How one Service's checked-out source becomes an image.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuildSpec {
@@ -77,6 +81,9 @@ pub enum Error {
     RemoteBuild { outcome: Box<RemoteBuildFailure> },
     #[error("invalid Build: {0}")]
     Invalid(String),
+    /// The Build reads Sealed values, which only a Server Builder opens.
+    #[error("{0}")]
+    Sealed(String),
     #[error("Could not build {service}.")]
     Build {
         service: ServiceName,
@@ -128,6 +135,8 @@ struct CapturedTarget {
     target: ployz_build::Target,
     build_method: BuildMethod,
     retained_tag: String,
+    /// Names of the Sealed values the Build reads.
+    sealed: Vec<String>,
     inputs: BuildInputs,
 }
 
@@ -275,6 +284,7 @@ fn capture_target(
         placement: service.placement.clone(),
         build_method,
         retained_tag,
+        sealed: sealed.into_keys().collect(),
         inputs,
     })
 }
