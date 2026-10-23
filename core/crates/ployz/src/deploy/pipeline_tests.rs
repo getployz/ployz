@@ -48,7 +48,7 @@ fn deploy_warning_display_is_the_cli_line_body() {
     );
     assert_eq!(
         DeployWarning::ObserverRelativeHostnameConflict.to_string(),
-        "Ployz couldn't fully observe every Server, so it couldn't fully check for hostname conflicts. Deploy again once all Servers answer."
+        "Some Server observations are incomplete, so hostname conflicts weren't fully checked. Resolve the observation warnings, then deploy again."
     );
     assert_eq!(
         serde_json::to_value(DeployWarning::ObserverRelativeHostnameConflict).unwrap(),
