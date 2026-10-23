@@ -103,6 +103,18 @@ fn skip_interface(name: &str) -> bool {
         })
 }
 
+fn public_ip_lookups(_ipv4_route: bool) -> &'static [&'static str] {
+    &[
+        "https://api.ipify.org",
+        "https://ipinfo.io/ip",
+        "http://ip-api.com/line/?fields=query",
+    ]
+}
+
+fn own_public_ip(found: IpAddr, _ipv4_route: bool) -> Option<IpAddr> {
+    Some(found)
+}
+
 async fn discover_public_ip() -> Option<IpAddr> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -138,5 +150,24 @@ mod tests {
             routable_addresses(interfaces),
             ["192.0.2.8".parse::<IpAddr>().unwrap()]
         );
+    }
+
+    #[test]
+    fn a_server_without_an_ipv4_route_asks_only_for_its_ipv6_address() {
+        assert!(
+            public_ip_lookups(false)
+                .iter()
+                .all(|url| url.contains("api6."))
+        );
+        assert!(public_ip_lookups(true).contains(&"https://api.ipify.org"));
+    }
+
+    #[test]
+    fn an_ipv4_answer_without_an_ipv4_route_is_a_nat64_gateways() {
+        let gateway: IpAddr = "203.0.113.7".parse().unwrap();
+        let own: IpAddr = "2001:db8::10".parse().unwrap();
+        assert_eq!(own_public_ip(gateway, false), None);
+        assert_eq!(own_public_ip(own, false), Some(own));
+        assert_eq!(own_public_ip(gateway, true), Some(gateway));
     }
 }
