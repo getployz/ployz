@@ -913,7 +913,10 @@ fn railpack_delivers_a_sealed_value_to_a_build_step_and_keeps_it_out_of_the_imag
         match progress {
             Progress::Output(bytes) => reported.push_str(&String::from_utf8_lossy(&bytes)),
             Progress::StepOutput { text, .. } => reported.push_str(&text),
-            other => {
+            other @ (Progress::Stage(_)
+            | Progress::Step(_)
+            | Progress::Timing { .. }
+            | Progress::Target { .. }) => {
                 let _ = writeln!(reported, "{other:?}");
             }
         }
