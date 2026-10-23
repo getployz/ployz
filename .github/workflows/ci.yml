@@ -219,8 +219,10 @@ jobs:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
         run: bash scripts/test-missing-ssh-client.sh
       # Merge queue runs only: it mostly catches drift in the newest Docker release, and costs 2 minutes per run.
+      # It reports without gating: a new Docker release, or Docker Hub, must not block every merge.
       - name: Decode the latest Docker's local log files as docker logs prints them
         if: matrix.group == 'daemon' && matrix.half == 1 && github.event_name == 'merge_group'
+        continue-on-error: true
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
         run: |
