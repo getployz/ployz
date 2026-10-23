@@ -446,6 +446,64 @@ async fn a_drain_reports_only_the_moves_off_its_own_server() {
     assert!(report.complete());
 }
 
+fn web_3_failed() -> MoveFailure {
+    let Move { from, to, .. } = a_move_off_web_3();
+    MoveFailure::ReadImage {
+        from,
+        to,
+        detail: "web-3 did not answer".into(),
+    }
+}
+
+#[tokio::test]
+async fn another_server_s_failed_move_after_this_server_s_copy_moved_is_left_to_its_drain() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Failed {
+            moves: one_move(),
+            failure: web_3_failed(),
+        }]
+        .into(),
+        copies: [Ok(vec![left_on_server(CopyRotation::In)])].into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(outcomes(&report), [entry("web", moved())]);
+    assert!(report.complete());
+}
+
+#[tokio::test]
+async fn another_server_s_failed_move_that_kept_this_server_s_copy_is_reported() {
+    let failed = || DrainOutcome::Failed {
+        moves: Vec::new(),
+        failure: web_3_failed(),
+    };
+    // The copy here never moved, or the Drain couldn't list what was here.
+    for copies in [
+        Ok(vec![left_on_server(CopyRotation::In)]),
+        Err(RpcError {
+            code: ployz_core::RpcErrorCode::Unavailable,
+            message: "the listing failed".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        }),
+    ] {
+        let mut client = Scripted {
+            observations: [Ok(vec![qualified("web")])].into(),
+            convergences: [Converged::Failed {
+                moves: Vec::new(),
+                failure: web_3_failed(),
+            }]
+            .into(),
+            copies: [copies].into(),
+            ..Scripted::default()
+        };
+        let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+        assert_eq!(outcomes(&report), [entry("web", failed())]);
+        assert!(!report.complete());
+    }
+}
+
 #[tokio::test]
 async fn another_server_s_old_copy_left_running_is_still_reported() {
     let proxies = Unconfirmed::Proxies {
