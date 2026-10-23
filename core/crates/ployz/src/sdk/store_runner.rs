@@ -643,7 +643,8 @@ impl Run {
                     Vec::new()
                 };
                 if self.status().await.ok() != Some(DeploymentStatus::Cancelling) {
-                    self.fill_ingress(session, prepared.preview.machine_names()).await;
+                    self.fill_ingress(session, prepared.preview.machine_names())
+                        .await;
                 }
                 self.record(RunEvidence::Executed {
                     progress,
@@ -665,12 +666,18 @@ impl Run {
         let filled = match session.client() {
             Ok(mut client) => {
                 let server = client.server();
+                let known = client
+                    .connection()
+                    .machine_id()
+                    .copied()
+                    .or_else(|| client.entry_machine())
+                    .and_then(|id| machine_names.get_key_value(&id));
                 let stop = CancellationToken::new();
                 self.renewing(crate::ingress::fill_slots(&mut client, &stop), || {
                     stop.cancel()
                 })
                 .await
-                .map_err(|failure| crate::ingress::unchecked(&failure, server, machine_names))
+                .map_err(|failure| crate::ingress::unchecked(&failure, server, known))
             }
             Err(error) => Err(crate::ui::row(&error)),
         };

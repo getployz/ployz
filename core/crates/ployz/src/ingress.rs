@@ -1,13 +1,13 @@
 //! Ingress Proxy identity and deployment boundaries.
 
-use std::{collections::{BTreeMap, BTreeSet}, future::Future};
+use std::{collections::BTreeSet, future::Future};
 
 use futures_util::future::join_all;
 use ployz_core::{
-    ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerWant, MachineId, MachineName,
-    DeployOutcome, EnvironmentValues, FailedOperation, HealthFailure, MachineObservation,
-    PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError, RunRotation, RunTarget,
-    caddy_service_spec,
+    ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerWant,
+    DeployOutcome, EnvironmentValues, FailedOperation, HealthFailure, MachineId, MachineName,
+    MachineObservation, PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError,
+    RunRotation, RunTarget, caddy_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use serde::{Deserialize, Serialize};
@@ -165,7 +165,7 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, F
 pub(crate) fn unchecked(
     failure: &Failure,
     server: Option<String>,
-    _machine_names: &BTreeMap<MachineId, MachineName>,
+    known: Option<(&MachineId, &MachineName)>,
 ) -> String {
     let Some(connect) = failure.connect_error() else {
         return crate::ui::row(failure);
@@ -175,8 +175,12 @@ pub(crate) fn unchecked(
     } else {
         None
     };
+    let name = |server: String| match known {
+        Some((id, machine_name)) if server == id.to_string() => machine_name.to_string(),
+        Some(_) | None => server,
+    };
     let unanswered = connect.unreached() || connect.unreplied();
-    match (named, server) {
+    match (named.map(&name), server.map(name)) {
         (Some(server), _) | (None, Some(server)) if unanswered => {
             match ployz_core::error_chain::causes(failure).pop() {
                 Some(why) => format!("Server {server} isn't answering ({why})"),
@@ -410,11 +414,11 @@ mod tests {
             crate::connect::TransportError::budget_expired("no reply"),
         ));
         assert_eq!(
-            unchecked(&silent, Some("box-node-09c8".into()), &BTreeMap::new()),
+            unchecked(&silent, Some("box-node-09c8".into()), None),
             "Server box-node-09c8 isn't answering (no reply)"
         );
         // Unnamed, it keeps the whole line.
-        assert_eq!(unchecked(&silent, None, &BTreeMap::new()), crate::ui::row(&silent));
+        assert_eq!(unchecked(&silent, None, None), crate::ui::row(&silent));
 
         let answered = Failure::from(ConnectError::Remote(RpcError {
             code: RpcErrorCode::Internal,
@@ -423,7 +427,7 @@ mod tests {
             cause: Vec::new(),
         }));
         assert_eq!(
-            unchecked(&answered, Some("box-node-09c8".into()), &BTreeMap::new()),
+            unchecked(&answered, Some("box-node-09c8".into()), None),
             "Docker is down (on Server box-node-09c8)"
         );
 
@@ -432,7 +436,7 @@ mod tests {
             "Docker Hub didn't answer".into(),
         ));
         assert_eq!(
-            unchecked(&local, Some("box-node-09c8".into()), &BTreeMap::new()),
+            unchecked(&local, Some("box-node-09c8".into()), None),
             crate::ui::row(&local)
         );
 
@@ -449,7 +453,7 @@ mod tests {
             )))),
         });
         assert_eq!(
-            unchecked(&refused, Some("other".into()), &BTreeMap::new()),
+            unchecked(&refused, Some("other".into()), None),
             "Server web-2 isn't answering (connection refused)"
         );
 
@@ -465,14 +469,28 @@ mod tests {
                 std::io::ErrorKind::ConnectionRefused,
             )))),
         });
-        let names = BTreeMap::from([(machine_id, MachineName::parse("machine-1").unwrap())]);
+        let machine_name = MachineName::parse("machine-1").unwrap();
         assert_eq!(
-            unchecked(&raw, Some(machine_id.to_string()), &names),
+            unchecked(
+                &raw,
+                Some(machine_id.to_string()),
+                Some((&machine_id, &machine_name))
+            ),
             "Server machine-1 isn't answering (connection refused)"
         );
         assert_eq!(
-            unchecked(&raw, Some(machine_id.to_string()), &BTreeMap::new()),
+            unchecked(&raw, Some(machine_id.to_string()), None),
             format!("Server {machine_id} isn't answering (connection refused)")
+        );
+        let id_shaped_name = "2".repeat(32);
+        let other_name = MachineName::parse("machine-2").unwrap();
+        assert_eq!(
+            unchecked(
+                &silent,
+                Some(id_shaped_name.clone()),
+                Some((&machine_id, &other_name)),
+            ),
+            format!("Server {id_shaped_name} isn't answering (no reply)")
         );
     }
 
