@@ -1790,6 +1790,52 @@ fn removing_a_referenced_service_stages_and_prints_the_broken_reference() {
 }
 
 #[test]
+fn a_broken_reference_in_an_invisible_file_name_prints_escaped() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "host=${{ redis.PLOYZ_PRIVATE_DOMAIN }}").unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "redis", "--image", "redis:7"]);
+    ok(&store, &["service", "add", "sentry", "--image", "sentry:1"]);
+    ok(
+        &store,
+        &["config", "add", "app", "--mount", "sentry:/etc/app"],
+    );
+    ok(
+        &store,
+        &["config", "put", "app", "a\u{202E}b.txt", "--from", from],
+    );
+    ok(&store, &["deploy", "--skip-deploy"]);
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
+    };
+    // The name shows as stored, and the fix command still pastes to that file.
+    let line = r"app/a\u{202e}b.txt references redis, which was removed; deploys skip it until you change it: ployz config put app $'a\xe2\x80\xaeb.txt' --from PATH";
+    let removed = human(&["service", "rm", "redis"]);
+    assert!(removed.contains(line), "{removed}");
+    let diff = human(&["diff"]);
+    assert!(diff.contains(line), "{diff}");
+    let status = human(&["status"]);
+    assert!(
+        status.contains(r"app/a\u{202e}b.txt references redis"),
+        "{status}"
+    );
+    for shown in [removed, diff, status] {
+        assert!(!shown.contains('\u{202E}'), "{shown}");
+    }
+    let json = ok(&store, &["status"]);
+    assert_eq!(
+        json["attention"][0]["message"],
+        json!("app/a\u{202E}b.txt references redis, which was removed"),
+        "{json}"
+    );
+}
+
+#[test]
 fn an_agent_renames_a_project() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
