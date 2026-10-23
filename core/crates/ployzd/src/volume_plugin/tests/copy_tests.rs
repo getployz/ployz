@@ -1650,54 +1650,70 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
         ("stall-exit", "snapshot w-1-1 77\n".to_owned()),
         ("stall-read", "x".repeat(1 << 20)),
     ] {
-        let source = Source::start(Some(BOUND), &stream).await;
-        let test = TestDir::new();
-        fs::write(test.0.join("root"), "").unwrap();
-        fs::write(test.0.join("mirror"), "").unwrap();
-        fs::create_dir_all(test.0.join("props")).unwrap();
-        fs::write(test.0.join("props").join(marker), "").unwrap();
-        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
-        // A name no other test's child runs as, so a receive killed before its first line,
-        // which leaves no receive-pid, can still be found among this process's children.
-        let program = format!("zfsstall{}", std::process::id());
-        let zfs_named = test.0.join(&program);
-        std::os::unix::fs::symlink(&zfs, &zfs_named).unwrap();
-        let mut storage = VolumeStorage::with_programs(zpool, zfs_named);
-        storage.send_port = source.port;
-        storage.receive_stall = Duration::from_millis(200);
-        let stream = ployz_core::SendStream {
-            name: "data".parse().unwrap(),
-            source: ployz_core::SendSource::Full {
-                target: "w-1-1".parse().unwrap(),
-            },
-        };
+        // On a loaded host the request itself can stall before any receive starts; that
+        // attempt shows nothing about reaping, so it runs again.
+        let mut reached = false;
+        for _ in 0..5 {
+            let source = Source::start(Some(BOUND), &stream).await;
+            let test = TestDir::new();
+            fs::write(test.0.join("root"), "").unwrap();
+            fs::write(test.0.join("mirror"), "").unwrap();
+            fs::create_dir_all(test.0.join("props")).unwrap();
+            fs::write(test.0.join("props").join(marker), "").unwrap();
+            let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+            // A name no other test's child runs as. A receive killed before it writes its
+            // pid never reached `exec sleep`, so it is still found among this process's
+            // children by that name.
+            let program = format!("zfsstall{}", std::process::id());
+            let zfs_named = test.0.join(&program);
+            std::os::unix::fs::symlink(&zfs, &zfs_named).unwrap();
+            let mut storage = VolumeStorage::with_programs(zpool, zfs_named);
+            storage.send_port = source.port;
+            storage.receive_stall = Duration::from_millis(200);
+            let stream = ployz_core::SendStream {
+                name: "data".parse().unwrap(),
+                source: ployz_core::SendSource::Full {
+                    target: "w-1-1".parse().unwrap(),
+                },
+            };
 
-        let received = storage
-            .receive(
-                ployz_core::ManagementAddress("::1".parse().unwrap()),
-                &stream,
-                SLOT_FS,
-                BOUND,
-                "test",
-                ployz_core::VolumeGen::default(),
-                &Stop::unowned(),
-            )
-            .await;
-        // No await between the answer and the check: a child only killed on drop is
-        // still a zombie here, and so still listed in /proc.
-        let left = match fs::read_to_string(test.0.join("props/receive-pid")) {
-            Ok(pid) => vec![pid.trim().parse().unwrap()]
-                .into_iter()
-                .filter(|pid| alive(*pid))
-                .collect(),
-            // On a loaded host the stall can kill the receive before its shell writes the
-            // pid; it never reached the `exec sleep`, so it still runs as `program`.
-            Err(_) => children_named(&program),
-        };
-        assert!(received.is_err(), "{marker}");
+            let received = storage
+                .receive(
+                    ployz_core::ManagementAddress("::1".parse().unwrap()),
+                    &stream,
+                    SLOT_FS,
+                    BOUND,
+                    "test",
+                    ployz_core::VolumeGen::default(),
+                    &Stop::unowned(),
+                )
+                .await;
+            // No await between the answer and the check: a child only killed on drop is
+            // still a zombie here, and so still listed in /proc. The pid file may be
+            // missing or empty when the stall killed the shell before it wrote it.
+            let mut left = children_named(&program);
+            left.extend(
+                fs::read_to_string(test.0.join("props/receive-pid"))
+                    .ok()
+                    .and_then(|pid| pid.trim().parse().ok())
+                    .filter(|pid| alive(*pid)),
+            );
+            let Err(failure) = received else {
+                panic!("{marker}: a stalled receive succeeded")
+            };
+            assert!(
+                left.is_empty(),
+                "{marker}: the receive answered before its child {left:?} was reaped"
+            );
+            // Only the pump names `zfs receive into`, after the child was spawned.
+            if failure.to_string().contains("zfs receive into") {
+                reached = true;
+                break;
+            }
+        }
         assert!(
-            left.is_empty(),
-            "{marker}: the receive answered before its child {left:?} was reaped"
+            reached,
+            "{marker}: no attempt got as far as starting the receive"
         );
     }
 }
