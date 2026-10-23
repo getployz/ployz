@@ -1119,11 +1119,14 @@ fn a_fresh_joiner_admits_the_issuers_devices_and_a_replay_keeps_its_own() {
     let old_issuer_dir = TestDir::new("ployzd-join-old-issuer");
     let mut old_store = LocalMachineStore::open(&old_issuer_dir.0).unwrap();
     let mut old_issued = issued;
-    old_issued["assigned_machine"] = serde_json::to_value(sample_machine(
-        old_store.record().id(),
-        old_store.record().private_key().public_key(),
-    ))
-    .unwrap();
+    old_issued.as_object_mut().unwrap().insert(
+        "assigned_machine".into(),
+        serde_json::to_value(sample_machine(
+            old_store.record().id(),
+            old_store.record().private_key().public_key(),
+        ))
+        .unwrap(),
+    );
     old_issued.as_object_mut().unwrap().remove("devices");
     old_store
         .enroll(member(serde_json::from_value(old_issued).unwrap()))
