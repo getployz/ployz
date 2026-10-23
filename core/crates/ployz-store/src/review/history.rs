@@ -159,17 +159,18 @@ pub(crate) fn history(
             environment.working = intent.clone();
             // The first revision is what it created, against an empty Environment.
             let empty = crate::scope::empty(environment.summary.name.as_str());
-            let mut baseline = previous
-                .as_ref()
-                .map_or(&empty, |(_, baseline)| baseline)
-                .clone();
+            let mut baseline = std::borrow::Cow::Borrowed(
+                previous.as_ref().map_or(&empty, |(_, baseline)| baseline),
+            );
             let changed: Vec<(String, String)> = row
                 .optional_text(5)?
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(|_| error::corrupt("Saved value changes"))?
                 .unwrap_or_default();
-            unscrub_changes(&mut baseline, &environment.working, &changed);
+            if !changed.is_empty() {
+                unscrub_changes(baseline.to_mut(), &environment.working, &changed);
+            }
             let changes = review::saved_comparison(&environment, &baseline)?;
             revisions.push(SavedRevision {
                 revision,
@@ -234,6 +235,8 @@ fn unscrub_changes(
         else {
             continue;
         };
+        // The comparison counts a differing fingerprint as a changed value but never
+        // shows one, so this marks the row without revealing anything.
         if was.value == now.value && was.value_fingerprint == now.value_fingerprint {
             was.value_fingerprint = format!("{}:before", now.value_fingerprint);
         }

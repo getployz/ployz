@@ -44,8 +44,8 @@ deleted since, or one inside a Service that comes back, comes back **Sealed** an
 toast names those variables, the Service shows **· N not set**, and its Variables tab offers
 **Set value** on each. Deploys leave a Not set variable out of the container until you set it.
 A variable that was ever sealed can't come back as plain text. A version that only set sealed
-values still lists each variable it changed, shown **Sealed** without its value, but has nothing
-to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History does not recover deleted Volume data or undo private-image credential rotations.
+values lists each variable it changed, shown **Sealed** or **Not set** without its value, though one saved
+before Ployz 0.3.4 may show none. It has nothing to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History does not recover deleted Volume data or undo private-image credential rotations.
 An accepted deployment and its redeploys keep their original snapshot while you edit the draft.
 
 ## Redeploy or cancel a deployment
