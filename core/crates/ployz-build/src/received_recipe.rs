@@ -18,6 +18,7 @@ use std::{
 pub fn validate_capture(
     root: &Path,
     definition: &Definition,
+    sealed: SealedFiles,
 ) -> Result<Vec<crate::Railpack>, InputError> {
     let root = root
         .canonicalize()
@@ -238,17 +239,16 @@ pub fn validate_capture(
         for value in mapping(secrets)?.values() {
             let secret = mapping(value)?;
             only(secret, &["file"], "secret")?;
-            contained(
+            secret_file(
                 root,
                 Path::new(text(
                     secret.get("file").ok_or("Build secret is not captured")?,
                 )?),
-                "private",
-                true,
+                sealed,
             )?;
         }
     }
-    let railpack = railpack(root, definition, services)?;
+    let railpack = railpack(root, definition, services, sealed)?;
     let config_path = root.join("private/docker/config.json");
     let mut config: serde_json::Value = serde_json::from_slice(
         &fs::read(&config_path).map_err(|_| "Build registry configuration is missing")?,
@@ -277,6 +277,7 @@ fn railpack(
     root: &Path,
     definition: &Definition,
     services: &Mapping,
+    sealed: SealedFiles,
 ) -> Result<Vec<crate::Railpack>, InputError> {
     let bytes = match fs::read(root.join("private/railpack.json")) {
         Ok(bytes) => bytes,
@@ -303,7 +304,7 @@ fn railpack(
             if !crate::valid_name(name) || recipe.variables.contains_key(name) {
                 return Err("Railpack sealed variables require distinct valid names".into());
             }
-            contained(root, &crate::sealed_file(name), "private", true)?;
+            secret_file(root, &crate::sealed_file(name), sealed)?;
         }
         let service = mapping(
             services
@@ -320,6 +321,26 @@ fn railpack(
         }
     }
     Ok(recipes)
+}
+
+/// Whether the files a recipe's secrets name are already on this host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SealedFiles {
+    /// The Builder opened its Sealed values: every secret file must exist.
+    Opened,
+    /// Captured but not yet opened: a Sealed value's file is checked by name only.
+    Pending,
+}
+
+fn secret_file(root: &Path, path: &Path, sealed: SealedFiles) -> Result<(), InputError> {
+    match path.strip_prefix(crate::sealed::DIRECTORY) {
+        Ok(name) if sealed == SealedFiles::Pending => name
+            .to_str()
+            .filter(|name| crate::valid_name(name))
+            .map(|_| ())
+            .ok_or_else(|| "Build secret is not a sealed value's file".into()),
+        _ => contained(root, path, "private", true),
+    }
 }
 
 fn contained(root: &Path, path: &Path, area: &str, file: bool) -> Result<(), InputError> {
@@ -521,19 +542,19 @@ mod tests {
                 serde_json::to_vec(&vec![recipe]).unwrap(),
             )
             .unwrap();
-            assert!(validate_capture(&root, &definition).is_err());
+            assert!(validate_capture(&root, &definition, SealedFiles::Opened).is_err());
         }
         fs::write(
             root.join("private/railpack.json"),
             serde_json::to_vec(&vec![valid]).unwrap(),
         )
         .unwrap();
-        validate_capture(&root, &definition).unwrap();
+        validate_capture(&root, &definition, SealedFiles::Opened).unwrap();
         #[cfg(unix)]
         {
             let alias = root.with_extension("alias");
             std::os::unix::fs::symlink(&root, &alias).unwrap();
-            validate_capture(&alias, &definition).unwrap();
+            validate_capture(&alias, &definition, SealedFiles::Opened).unwrap();
             fs::remove_file(alias).unwrap();
             fs::create_dir(root.join("outside")).unwrap();
             std::os::unix::fs::symlink(root.join("outside"), root.join("source/escape")).unwrap();
@@ -548,7 +569,7 @@ mod tests {
                 serde_json::to_vec(&vec![escaping]).unwrap(),
             )
             .unwrap();
-            assert!(validate_capture(&root, &definition).is_err());
+            assert!(validate_capture(&root, &definition, SealedFiles::Opened).is_err());
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -581,12 +602,13 @@ mod tests {
         )
         .unwrap();
         assert!(
-            validate_capture(&root, &definition).is_err(),
+            validate_capture(&root, &definition, SealedFiles::Opened).is_err(),
             "missing opened file"
         );
+        validate_capture(&root, &definition, SealedFiles::Pending).unwrap();
         fs::create_dir(root.join("private/sealed")).unwrap();
         fs::write(root.join(crate::sealed_file("NPM_TOKEN")), "opened").unwrap();
-        validate_capture(&root, &definition).unwrap();
+        validate_capture(&root, &definition, SealedFiles::Opened).unwrap();
         // A Railpack recipe names it through `sealed`.
         fs::write(
             root.join("compose.yaml"),
@@ -607,7 +629,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                validate_capture(&root, &definition).is_ok(),
+                validate_capture(&root, &definition, SealedFiles::Opened).is_ok(),
                 ok,
                 "{sealed} {variables}"
             );
@@ -645,7 +667,7 @@ mod tests {
                 "services:\n  api:\n    build:\n      context: SSH://git@example.test/repo#0123456789abcdef0123456789abcdef01234567\n      ssh: [{}]\n", if ssh.is_empty() { String::new() } else { format!("'{ssh}'") }
             )).unwrap();
             assert_eq!(
-                validate_capture(&root, &definition).is_ok(),
+                validate_capture(&root, &definition, SealedFiles::Opened).is_ok(),
                 ssh == "default=private/key",
                 "{ssh}"
             );

@@ -266,6 +266,7 @@ mod tests {
                     no_cache: false,
                     pull: false,
                 },
+                ployz_build::remote::SealedFiles::Opened,
             )
             .unwrap();
         }

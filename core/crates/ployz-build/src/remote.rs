@@ -5,7 +5,7 @@ use crate::{BuiltImage, Output, Progress, Stage, Target};
 use ployz_core::{MachineId, OpaquePayload};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub use crate::received_recipe::{validate_capture, validate_remote_context};
+pub use crate::received_recipe::{SealedFiles, validate_capture, validate_remote_context};
 pub use crate::upload::{AdmittedUpload, Upload, upload};
 
 /// Whether a completed image reports a well-formed Linux platform. Worker

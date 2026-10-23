@@ -1,6 +1,7 @@
 //! Admission and lifetime of one connection-scoped remote Build.
 
 mod queue;
+mod sealed;
 pub(crate) use queue::Runner;
 
 use crate::logs::RpcStream;
@@ -10,6 +11,8 @@ use ployz_build::{
 };
 use ployz_core::{BuildConcurrency, MachineId, OpaquePayload};
 use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -39,12 +42,21 @@ pub(crate) fn start(
     local: crate::machine::LocalMachine,
     requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     runner: std::sync::Arc<Runner>,
+    sealing_key_dir: Option<PathBuf>,
 ) -> RpcStream {
     let (events, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
         let shutdown = runner.shutdown.clone();
         let state = Arc::new(AttemptState::default());
-        let outcome = attempt(local, requests, &events, runner, state.clone()).await;
+        let outcome = attempt(
+            local,
+            requests,
+            &events,
+            runner,
+            state.clone(),
+            sealing_key_dir,
+        )
+        .await;
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -109,6 +121,7 @@ async fn attempt(
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     runner: Arc<Runner>,
     state: Arc<AttemptState>,
+    sealing_key_dir: Option<PathBuf>,
 ) -> Outcome {
     let start = tokio::time::timeout(Duration::from_secs(10), requests.next()).await;
     let request = match start {
@@ -233,6 +246,7 @@ async fn attempt(
                     installation,
                 },
                 policy,
+                sealing_key_dir.as_deref(),
                 &output,
                 &observed,
             ),
@@ -322,6 +336,7 @@ fn receive_and_execute(
     mut source: mpsc::Receiver<OpaquePayload>,
     admission: ExecutionAdmission,
     policy: HostPolicy,
+    sealing_key_dir: Option<&Path>,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     state: &AttemptState,
 ) -> Outcome {
@@ -354,7 +369,15 @@ fn receive_and_execute(
             break;
         }
     }
-    let progress = |progress| {
+    let sealed = match upload.private_file(sealed::RECORD) {
+        Ok(None) => None,
+        Ok(Some(record)) => match sealed::open(&record, sealing_key_dir) {
+            Ok(opened) => Some(opened),
+            Err(message) => return failed(Stage::Preparation, message),
+        },
+        Err(error) => return failed(Stage::Upload, ployz_core::error_chain::inline(&error)),
+    };
+    let send = |progress| {
         state
             .evidence
             .lock()
@@ -378,6 +401,15 @@ fn receive_and_execute(
             std::thread::sleep(Duration::from_millis(10));
         }
     };
+    let progress = |progress| match &sealed {
+        Some(opened) => {
+            let progress = opened.scrub.progress(progress);
+            if !matches!(&progress, Progress::Output(bytes) if bytes.is_empty()) {
+                send(progress);
+            }
+        }
+        None => send(progress),
+    };
     progress(Progress::Stage(Stage::Upload));
     // Keep bytes on the Machines. Reuse the Docker peer-pull bridge because
     // Buildx cannot reliably encode IPv6 registry keys in its TOML config.
@@ -396,13 +428,17 @@ fn receive_and_execute(
         context.source.port = proxy.port;
         proxies.push(proxy);
     }
+    let none = BTreeMap::new();
     let result = upload.execute(
         &definition,
         Some(&policy.docker),
-        &Default::default(),
+        sealed.as_ref().map_or(&none, |opened| &opened.values),
         &progress,
     );
-    match result {
+    if let Some(tail) = sealed.as_ref().and_then(|opened| opened.scrub.finish()) {
+        send(tail);
+    }
+    let outcome = match result {
         Ok(completed) => {
             if !definition.retained_tags.is_empty() {
                 *state.retained.lock().expect("Build retention lock") = Some(RetainedBuild {
@@ -420,6 +456,10 @@ fn receive_and_execute(
             }
         }
         Err(error) => failure(error.stage(), error),
+    };
+    match &sealed {
+        Some(opened) => opened.scrub.outcome(outcome),
+        None => outcome,
     }
 }
 

@@ -94,8 +94,12 @@ impl CapturedBuild {
             no_cache: false,
             pull: false,
         };
-        let railpack = ployz_build::remote::validate_capture(root, &definition)
-            .map_err(|error| invalid(error.to_string()))?;
+        let railpack = ployz_build::remote::validate_capture(
+            root,
+            &definition,
+            ployz_build::remote::SealedFiles::Opened,
+        )
+        .map_err(|error| invalid(error.to_string()))?;
         let mut environment = BTreeMap::from([
             (
                 "PATH".to_owned(),
