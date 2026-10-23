@@ -339,6 +339,18 @@ impl ReplicatedStore {
         .await
     }
 
+    /// The Sealing public key the Cluster awaits from recovery, unless a
+    /// published key superseded the marker.
+    ///
+    /// # Errors
+    /// Returns an error when either read fails.
+    pub async fn awaited_sealing_key(&self) -> Result<Option<SealingPublicKey>, Error> {
+        match self.sealing_public_key().await? {
+            Some(_) => Ok(None),
+            None => self.sealing_awaits_recovery().await,
+        }
+    }
+
     async fn sealing_cluster_key(
         &self,
         key: &str,

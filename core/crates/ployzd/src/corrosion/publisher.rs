@@ -104,6 +104,7 @@ pub async fn run_machine_publisher(
         |(_, view)| view.watch(),
     );
     let replicated = cluster.map(|(replicated, _)| replicated);
+    let mut published_sealing = None;
     if let Some(replicated) = &replicated {
         let target = match local.record().body() {
             LocalMachineBody::Joining {
@@ -148,7 +149,9 @@ pub async fn run_machine_publisher(
                     error = ployz_core::error_chain::inline(&error),
                 );
             }
-            let overlay = live.mark_seen(*sealing.borrow_and_update());
+            let observed = *sealing.borrow_and_update();
+            published_sealing = awaiting_recovery(replicated, observed).await;
+            let overlay = live.mark_seen(published_sealing);
             if let Some(ployz_core::Sealing::Held { public_key }) = overlay.sealing
                 && let Err(error) = replicated.publish_sealing_public_key(public_key).await
             {
@@ -178,7 +181,7 @@ pub async fn run_machine_publisher(
                 Ok(()) = records.changed() => break,
                 Ok(()) = machines.changed() => {
                     let snapshot = machines.borrow_and_update().clone();
-                    let overlay = live.current(*sealing.borrow());
+                    let overlay = live.current(published_sealing);
                     if let Some(replicated) = &replicated
                         && row_is_stale(replicated, &snapshot, &records, overlay).await
                     {
@@ -189,6 +192,28 @@ pub async fn run_machine_publisher(
                     return Ok(());
                 }
             }
+        }
+    }
+}
+
+/// A Machine without the Sealing Key reports the key its Cluster awaits from
+/// recovery, so Cloud can tell a lost key from a missing grant.
+async fn awaiting_recovery(
+    replicated: &ReplicatedStore,
+    observed: Option<ployz_core::Sealing>,
+) -> Option<ployz_core::Sealing> {
+    if !matches!(observed, Some(ployz_core::Sealing::NeedsAccess)) {
+        return observed;
+    }
+    match replicated.awaited_sealing_key().await {
+        Ok(Some(public_key)) => Some(ployz_core::Sealing::AwaitsRecovery { public_key }),
+        Ok(None) => observed,
+        Err(error) => {
+            eprintln!(
+                "failed to read whether the Cluster awaits recovery: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
+            None
         }
     }
 }

@@ -157,7 +157,10 @@ async fn the_published_row_follows_what_the_machine_holds_of_the_sealing_key() {
         }
     };
 
-    published(Some(Sealing::NeedsAccess)).await;
+    published(Some(Sealing::AwaitsRecovery {
+        public_key: key.public_key(),
+    }))
+    .await;
     recover(&local, &code, None).await.unwrap();
     published(Some(Sealing::Held {
         public_key: key.public_key(),

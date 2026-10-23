@@ -466,12 +466,7 @@ impl LocalMachine {
         let Ok(replicated) = self.replicated() else {
             return Some(ployz_core::Sealing::NeedsAccess);
         };
-        let awaited = match replicated.sealing_public_key().await {
-            Ok(Some(_)) => Ok(None),
-            Ok(None) => replicated.sealing_awaits_recovery().await,
-            Err(error) => Err(error),
-        };
-        match awaited {
+        match replicated.awaited_sealing_key().await {
             Ok(Some(public_key)) => Some(ployz_core::Sealing::AwaitsRecovery { public_key }),
             Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
             Err(error) => {
