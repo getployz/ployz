@@ -32,8 +32,9 @@ ployz metrics web
 ```
 
 Ployz prints one row per metric. **NOW** is the newest reading, and **AVG** and **PEAK** cover
-the last hour. Add `--since` for another range, such as `--since 6h`, `--since 7d` or an RFC 3339
-timestamp. Add `--json` for the full reply.
+the last hour. NOW shows a dash when the newest reading is more than a few samples old. Add
+`--since` for another range, such as `--since 6h`, `--since 7d` or an RFC 3339 timestamp. Add
+`--json` for the full reply.
 
 A service's numbers add up all of its replicas, on every server that runs one.
 
@@ -76,6 +77,11 @@ ployz metrics --server web-1
 A server shows its CPU, memory, network per interface, and how its disk space splits between
 volumes, mirrors, logs and metrics, and everything else. Managed volumes report their usage every
 minute.
+
+When the server answered but its newest reading is more than a few samples old, Ployz says so
+below the table, as in `machine-1 answered, but its newest reading is about 1h old`. Its clock
+may run behind, or it stopped taking readings. Check its clock with `timedatectl` on the server.
+The `server_metrics` tool carries the same note.
 
 ## Ask an agent
 

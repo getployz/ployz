@@ -404,12 +404,23 @@ fn summarize(
         u32::try_from(markers.iter().filter(|marker| kind(&marker.kind)).count())
             .unwrap_or(u32::MAX)
     };
+    let name = |machine_id: MachineId| {
+        names
+            .get(&machine_id)
+            .map_or_else(|| machine_id.to_string(), ToString::to_string)
+    };
     let mut notes = crate::cli::metrics::gap_notes(history);
+    notes.extend(crate::cli::metrics::behind_notes(
+        history,
+        until_nanos,
+        name,
+    ));
     notes.extend(history.unanswered.iter().map(|failure| {
-        let name = names
-            .get(&failure.machine_id)
-            .map_or_else(|| failure.machine_id.to_string(), ToString::to_string);
-        format!("{name} did not answer: {}", failure.error.message)
+        format!(
+            "{} did not answer: {}",
+            name(failure.machine_id),
+            failure.error.message
+        )
     }));
     let unanswered = history
         .unanswered

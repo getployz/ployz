@@ -4,8 +4,12 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use ployz_core::metrics::{
-    DiskBreakdown, HostPoint, MarkerKind, MetricGapReason, MetricMarker, MetricPoints, ServicePoint,
+use ployz_core::{
+    MachineId,
+    metrics::{
+        DiskBreakdown, HostPoint, MarkerKind, MetricGapReason, MetricMarker, MetricPoints,
+        ServicePoint,
+    },
 };
 
 use ployz_store::tools::cloud::MetricRow;
@@ -113,9 +117,7 @@ pub(crate) fn report(history: &MetricHistory, subject: &str, window: Window<'_>)
 /// Each metric in `history` read at `until_nanos`; empty when no Server
 /// reported a reading.
 pub(crate) fn rows(history: &MetricHistory, until_nanos: i64) -> Vec<MetricRow> {
-    let fresh_since = history.step_nanos.map_or(i64::MAX, |step| {
-        until_nanos.saturating_sub(FRESH_STEPS * step)
-    });
+    let fresh_since = fresh_since(history, until_nanos).unwrap_or(i64::MAX);
     match &history.points {
         MetricPoints::Service(points) if !points.is_empty() => service_metrics()
             .iter()
@@ -127,6 +129,14 @@ pub(crate) fn rows(history: &MetricHistory, until_nanos: i64) -> Vec<MetricRow> 
             .collect(),
         MetricPoints::Service(_) | MetricPoints::Machine(_) => Vec::new(),
     }
+}
+
+/// The oldest bucket start still current at `until_nanos`; absent when no
+/// Server answered.
+fn fresh_since(history: &MetricHistory, until_nanos: i64) -> Option<i64> {
+    history
+        .step_nanos
+        .map(|step| until_nanos.saturating_sub(FRESH_STEPS * step))
 }
 
 trait Bucket {
@@ -364,6 +374,41 @@ pub(crate) fn gap_notes(history: &MetricHistory) -> Vec<String> {
                     u64::try_from(nanos).unwrap_or_default()
                 ))
             )
+        })
+        .collect()
+}
+
+/// One note per Server that answered with readings yet none current, so its
+/// dash under NOW is not read as a Server that stopped sending. Its clock
+/// may run behind: the reply carries no clock of its own to tell. Service
+/// readings stop wherever a replica left, so only Server readings count.
+pub(crate) fn behind_notes(
+    history: &MetricHistory,
+    until_nanos: i64,
+    name: impl Fn(MachineId) -> String,
+) -> Vec<String> {
+    let Some(fresh_since) = fresh_since(history, until_nanos) else {
+        return Vec::new();
+    };
+    history
+        .machines
+        .iter()
+        .filter_map(|machine| {
+            let MetricPoints::Machine(points) = &machine.value.points else {
+                return None;
+            };
+            let newest = points.last()?.ts;
+            (newest < fresh_since).then(|| {
+                let ended = newest.saturating_add(machine.value.step_nanos);
+                format!(
+                    "{} answered, but its newest reading is about {} old. \
+                     Its clock may be behind, or it stopped taking readings.",
+                    name(machine.machine_id),
+                    span(Duration::from_nanos(
+                        u64::try_from(until_nanos.saturating_sub(ended)).unwrap_or_default()
+                    ))
+                )
+            })
         })
         .collect()
 }

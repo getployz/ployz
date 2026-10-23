@@ -15,7 +15,7 @@ use super::{
 use crate::{
     cli::{
         base,
-        metrics::{Window, report},
+        metrics::{Window, behind_notes, report},
         positional, value,
     },
     sdk::{MetricSubject, metric_history},
@@ -115,7 +115,7 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
                     .map(|observed| (observed.machine.id, &observed.machine.name)),
             );
             gaps.extend(&history.unanswered, &[]);
-            let shown = report(
+            let mut shown = report(
                 &history,
                 &name,
                 Window {
@@ -123,6 +123,17 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
                     until_nanos,
                 },
             );
+            shown
+                .notes
+                .extend(behind_notes(&history, until_nanos, |machine_id| {
+                    machines
+                        .iter()
+                        .find(|observed| observed.machine.id == machine_id)
+                        .map_or_else(
+                            || machine_id.to_string(),
+                            |observed| observed.machine.name.to_string(),
+                        )
+                }));
             if let Some(refusal) = unknown
                 && shown.table.is_empty()
                 && gaps.outcome().is_ok()

@@ -25,8 +25,8 @@ status only when someone should look.
 
 When the list is wide enough, each row also shows how much of the server's CPU and memory is in
 use right now. The meters stay empty until the server sends a reading, and an offline server shows
-none. A dash means the server sent no recent reading for that meter. The server's page has disk
-and the full picture.
+none. A dash means no recent reading reached Ployz for that meter: the server sent none, or its
+clock runs behind, so its readings look old. The server's page has disk and the full picture.
 
 A server that can hold [managed volumes](../services/volumes.md) shows nothing about storage.
 **Docker only** means it was added with **Docker only** storage, or fell back to it because it
@@ -154,7 +154,8 @@ Click a server. Its page shows its status and public IP address, then:
 
 - **Resources**: meters for CPU, memory and disk now, then charts of CPU, memory and network over
   the range you pick, from **1h** to **30d**. The meters and the values above each chart always
-  show the last few minutes, whatever the range; a dash means the server sent no recent reading.
+  show the last few minutes, whatever the range; a dash means no recent reading, either because the
+  server sent none or because its clock runs behind.
   Network shows each interface in its own color, out as a solid line and in as a dashed one. The
   disk bar splits used space into **Volumes**, **Mirrors**, **Logs and metrics** and **Other**,
   then **Free**. Space the server couldn't attribute to one of those shows as **Used**. A stretch
