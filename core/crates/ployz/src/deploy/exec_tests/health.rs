@@ -709,39 +709,6 @@ async fn a_restored_copy_killed_for_memory_under_an_unchanged_limit_names_it() {
     restored_oom_limit(16).await;
 }
 
-/// A Server removed before the deploy's copy began answers that it is being removed,
-/// and the deploy names that rather than any Container (#2924). A Conflict, so the
-/// deploy made nothing to clean up.
-#[tokio::test]
-async fn a_server_removed_before_its_copy_began_is_named() {
-    let machine = machine('1');
-    let plan = vec![run(
-        &machine,
-        spec(Some(0), Some(healthcheck()), None),
-        false,
-    )];
-    let client = Scripted::new(vec![Step(
-        Call::Run(machine, ContainerKind::ServiceContainer),
-        Reply::Error(RpcError::departing(&leaving())),
-    )]);
-
-    let DeployOutcome::Failed {
-        failed: FailedOperation::Operation { error, .. },
-        ..
-    } = execute_with(&plan, &client, &CancellationToken::new()).await
-    else {
-        panic!("the deploy should fail");
-    };
-
-    let failure = ployz_store::Failure::of(&error, &[]);
-    assert_eq!(
-        failure.reason,
-        "Server lc-3 was removed while the deploy ran"
-    );
-    assert!(failure.cause.is_empty(), "{failure:?}");
-    client.assert_done();
-}
-
 /// A start that failed while its Server was being removed gets exactly the cleanup
 /// any failed start gets: the slot is discarded, so a copy the Leave never took is
 /// not left running should the Leave fail. The failure keeps its code and message,

@@ -141,14 +141,13 @@ pub enum Error {
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
-    /// A Leave is removing this Machine from the Cluster. With no `source`, the call
-    /// was refused on entry and did nothing. With one, the call ran, failed with
-    /// `source`, and the Leave explains it: its answer is `source`'s, marked.
+    /// A Leave was removing this Machine from the Cluster as the call failed with
+    /// `source`, so its answer is `source`'s, marked with the Server.
     #[error("Server {server} is being removed from the Cluster")]
     Departing {
         server: MachineName,
         #[source]
-        source: Option<Box<Error>>,
+        source: Box<Error>,
     },
     #[error("at least one Machine update is required")]
     EmptyUpdate,

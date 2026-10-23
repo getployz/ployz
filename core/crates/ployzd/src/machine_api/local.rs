@@ -905,15 +905,10 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
 #[allow(clippy::result_large_err)]
 fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
     match error {
-        LocalMachineError::Departing {
-            server,
-            source: None,
-        } => Ok(RpcError::departing(&server)),
         // A source that fails the call outright has no details to mark.
-        LocalMachineError::Departing {
-            server,
-            source: Some(source),
-        } => Ok(local_failure(*source)?.overlapping_leave(&server)),
+        LocalMachineError::Departing { server, source } => {
+            Ok(local_failure(*source)?.overlapping_leave(&server))
+        }
         LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::ManagementRevoked => Err(ployz_core::rpc::caused_status(
             tonic::Code::Unauthenticated,

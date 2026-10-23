@@ -1765,19 +1765,6 @@ impl RpcError {
         }
     }
 
-    /// A leaving Server's refusal of a call it never began. Read back by
-    /// [`Self::departure`]. A Conflict, so nothing resends it.
-    #[must_use]
-    pub fn departing(server: &crate::MachineName) -> Self {
-        Self {
-            code: RpcErrorCode::Conflict,
-            message: format!("Server {server} is being removed from the Cluster"),
-            details: Value::Null,
-            cause: Vec::new(),
-        }
-        .overlapping_leave(server)
-    }
-
     /// `self` from a call that failed while a Leave was removing `server`, so its copy
     /// was the Leave's to stop. Code, message and every other detail stay as they were.
     /// Read back by [`Self::departure`]. Details that aren't an object are kept unmarked.
@@ -2163,19 +2150,14 @@ mod rpc_error_wire {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// A Leave's mark names its Server and leaves the rest of the failure as it was, a
-    /// bare refusal carries only the mark, and an unmarked Conflict reads back none.
+    /// A Leave's mark names its Server and leaves the rest of the failure as it was,
+    /// and an unmarked Conflict reads back none.
     #[test]
     fn a_leave_marks_a_failure_without_changing_it() {
         let server = crate::MachineName::parse("lc-3").unwrap();
         let departure = Departure {
             server: server.clone(),
         };
-
-        let bare = RpcError::departing(&server);
-        assert_eq!(bare.code, RpcErrorCode::Conflict);
-        assert_eq!(bare.details, json!({ "departing": { "server": "lc-3" } }));
-        assert_eq!(bare.departure(), Some(departure.clone()));
 
         let failed = RpcError {
             code: RpcErrorCode::NotFound,

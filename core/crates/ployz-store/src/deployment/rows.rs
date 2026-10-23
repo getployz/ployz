@@ -1342,19 +1342,6 @@ mod tests {
     #[test]
     fn a_failure_a_leave_overlapped_names_the_removed_server() {
         let server = ployz_core::MachineName::parse("web-2").unwrap();
-        let refused = Failure::of(
-            &ExecutionError::Machine {
-                action: MachineAction::CreateContainer,
-                error: RpcError::departing(&server),
-            },
-            &[],
-        );
-        assert_eq!(
-            refused.reason,
-            "Server web-2 was removed while the deploy ran"
-        );
-        assert!(refused.cause.is_empty(), "{refused:?}");
-
         let failed = Failure::of(
             &ExecutionError::Machine {
                 action: MachineAction::CreateContainer,
