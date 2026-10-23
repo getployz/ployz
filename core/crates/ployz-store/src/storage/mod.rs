@@ -10,7 +10,7 @@ mod pg;
 mod sqlite;
 
 pub use convert::Converted;
-use ployz_core::RpcError;
+use ployz_core::{RpcError, RpcErrorCode};
 
 use crate::error;
 
@@ -216,7 +216,9 @@ impl Storage {
         work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
         match self {
-            Self::Sqlite(sqlite) => sqlite.transaction(true, work),
+            Self::Sqlite(sqlite) => sqlite
+                .transaction(true, work)
+                .map_err(|failed| newer_store(sqlite, failed, "write")),
             Self::Postgres(postgres) => postgres.transaction(true, work),
         }
     }
@@ -227,10 +229,51 @@ impl Storage {
         work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
         match self {
-            Self::Sqlite(sqlite) => sqlite.transaction(false, work),
+            Self::Sqlite(sqlite) => sqlite
+                .transaction(false, work)
+                .map_err(|failed| newer_store(sqlite, failed, "read")),
             Self::Postgres(postgres) => postgres.transaction(false, work),
         }
     }
+}
+
+/// A local Store's own failure, said in words when a newer Ployz migrated its database:
+/// this binary still opens it, and its SQL may break on what those migrations changed.
+/// The failure stays the cause. Not on Postgres, where versions of Cloud share one
+/// database through a rolling deploy and a CLI upgrade fixes nothing.
+fn newer_store(sqlite: &sqlite::Sqlite, failed: RpcError, verb: &str) -> RpcError {
+    if failed.code != RpcErrorCode::Internal {
+        return failed;
+    }
+    let Ok(applied) = sqlite.transaction(false, |tx| {
+        tx.query("SELECT name FROM config_migration ORDER BY name", &[])
+    }) else {
+        return failed;
+    };
+    let newer = applied
+        .iter()
+        .filter_map(|row| row.text(0).ok())
+        .filter(|name| MIGRATIONS.iter().all(|(known, _)| known != name))
+        .collect::<Vec<_>>();
+    if newer.is_empty() {
+        return failed;
+    }
+    let version = env!("CARGO_PKG_VERSION");
+    let install = if version.contains('-') {
+        "curl -fsSL https://ployz.sh | sh -s -- beta"
+    } else {
+        "curl -fsSL https://ployz.sh | sh"
+    };
+    let mut refused = error::unsupported(
+        format!(
+            "A newer Ployz upgraded this Config Store, and ployz {version} could not {verb} it."
+        ),
+        serde_json::json!({ "next": install, "migrations": newer }),
+    );
+    refused.cause = std::iter::once(failed.message)
+        .chain(failed.cause)
+        .collect();
+    refused
 }
 
 /// Run `work` inside a savepoint: when it fails, everything it wrote is undone and
@@ -487,7 +530,124 @@ fn migrate(
 
 #[cfg(test)]
 mod mixed_version_tests {
-    use super::Storage;
+    use ployz_core::{RpcError, RpcErrorCode};
+
+    use super::{Step, Storage};
+    use crate::error;
+
+    /// A newer Ployz's migration that older SQL breaks on, as 0021's `listed` broke
+    /// 0.3.0-beta.6's: every insert must now fill `future`.
+    const REQUIRED_COLUMN: &[(&str, Step)] = &[(
+        "9999_required_column",
+        Step::Sql(
+            "CREATE TABLE new_config_create (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, \
+             command TEXT NOT NULL, written TEXT NOT NULL, future TEXT NOT NULL); \
+             INSERT INTO new_config_create SELECT id, organization_id, command, written, '' \
+             FROM config_create; \
+             DROP TABLE config_create; \
+             ALTER TABLE new_config_create RENAME TO config_create;",
+        ),
+    )];
+
+    /// A newer Ployz's migration that drops a column older SQL still reads.
+    const DROPPED_COLUMN: &[(&str, Step)] = &[(
+        "9999_dropped_column",
+        Step::Sql("ALTER TABLE config_create DROP COLUMN written;"),
+    )];
+
+    /// A Store opened by this Ployz on a database `newer` migrated past it.
+    fn older_store(newer: &[(&str, Step)]) -> (tempfile::TempDir, Storage) {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}", dir.path().join("store.db").display());
+        drop(Storage::open(&url).unwrap());
+        drop(Storage::open_with(&url, newer).unwrap());
+        let (older, _) = Storage::open(&url).unwrap();
+        (dir, older)
+    }
+
+    fn create(storage: &Storage, command: Option<&str>) -> Result<usize, RpcError> {
+        storage.write(|tx| {
+            tx.execute(
+                "INSERT INTO config_create (id, organization_id, command, written) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                &["c1".into(), "o1".into(), command.into(), "{}".into()],
+            )
+        })
+    }
+
+    #[test]
+    fn a_write_a_newer_migration_broke_says_a_newer_ployz_upgraded_the_store() {
+        let (_dir, older) = older_store(REQUIRED_COLUMN);
+        let refused = create(&older, Some("project.new")).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unsupported);
+        assert!(
+            refused.message.contains("newer Ployz"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(
+            refused.details.get("migrations").unwrap(),
+            &serde_json::json!(["9999_required_column"])
+        );
+        assert!(
+            refused
+                .details
+                .get("next")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .starts_with("curl -fsSL https://ployz.sh | sh"),
+            "{}",
+            refused.details
+        );
+        assert_eq!(
+            refused.cause,
+            ["Config Store storage failed: NOT NULL constraint failed: config_create.future"]
+        );
+    }
+
+    #[test]
+    fn a_read_a_newer_migration_broke_says_so_too() {
+        let (_dir, older) = older_store(DROPPED_COLUMN);
+        let refused = older
+            .read(|tx| tx.query("SELECT written FROM config_create", &[]))
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unsupported);
+        assert_eq!(
+            refused.details.get("migrations").unwrap(),
+            &serde_json::json!(["9999_dropped_column"])
+        );
+    }
+
+    /// A domain refusal is the Store's answer, whatever migrated the database.
+    #[test]
+    fn a_refusal_on_a_newer_store_stays_the_refusal() {
+        let (_dir, older) = older_store(REQUIRED_COLUMN);
+        let refused = older
+            .write(|_| {
+                Err::<(), _>(error::not_found(
+                    "No Project named shop",
+                    serde_json::Value::Null,
+                ))
+            })
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::NotFound);
+        assert_eq!(refused.message, "No Project named shop");
+    }
+
+    #[test]
+    fn a_store_no_newer_ployz_migrated_reports_a_constraint_failure_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}", dir.path().join("store.db").display());
+        let (current, _) = Storage::open(&url).unwrap();
+        let failed = create(&current, None).unwrap_err();
+        assert_eq!(failed.code, RpcErrorCode::Internal);
+        assert_eq!(
+            failed.message,
+            "Config Store storage failed: NOT NULL constraint failed: config_create.command"
+        );
+        assert!(failed.cause.is_empty());
+    }
 
     /// A Cloud from before 0024 still running beside one that migrated their shared
     /// database: its Store opens it, skipping the migration it doesn't know, and every

@@ -28,6 +28,18 @@ OpenSSL 3, which current Linux releases include, or [minisign](https://jedisct1.
 On macOS, run `brew install minisign` first. Without either, it stops with
 `Cannot verify the release signature: install OpenSSL 3 or minisign, then rerun`.
 
+A newer ployz may upgrade the configuration it keeps on your computer. An older ployz can still
+read it, but a change it can't write stops with a line like this, the error it hit, and the install
+line to run:
+
+```text
+error: A newer Ployz upgraded this Config Store, and ployz 0.3.3 could not write it.
+```
+
+Install the newer ployz again on that computer, from the channel you installed it from. With
+`--json`, the error's code is `unsupported`, and `details.migrations` names the upgrades this ployz
+doesn't know.
+
 ## Sign in
 
 1. Run `ployz login`. It prints a code and opens your browser.
