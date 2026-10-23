@@ -243,15 +243,24 @@ until [ -f node_modules/.vite/deps/_metadata.json ]; do
   sleep 0.5
 done
 # reap.sh starts a dead watchdog again with the timeout recorded here, under this lock, so it never starts one with
-# a timeout this replaces. A lock still held after 5 s is one a killed reaper left.
-for _ in $(seq 50); do mkdir "$run/idle.lock" 2>/dev/null && break; sleep 0.1; done
+# a timeout this replaces. Each holder records its pid in the lock; a lock whose holder has exited, or that names
+# none after 5 s, is one a killed process left.
+tries=0
+until mkdir "$run/idle.lock" 2>/dev/null; do
+  owner=$(cat "$run/idle.lock/owner" 2>/dev/null) tries=$((tries + 1))
+  if { [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; } || { [ -z "$owner" ] && [ "$tries" -ge 50 ]; }; then
+    rm -rf "$run/idle.lock"; tries=0
+  fi
+  sleep 0.1
+done
+echo $$ > "$run/idle.lock/owner"
 if [ -f "$run/idle.pid" ]; then kill -TERM -- "-$(cat "$run/idle.pid")" 2>/dev/null || true; rm -f "$run/idle.pid"; fi
 echo "${VERIFY_IDLE_TIMEOUT:-900}" > "$run/idle-timeout"
 if [ "${VERIFY_IDLE_TIMEOUT:-900}" != 0 ]; then
   setsid nohup "$dash/scripts/verify/idle.sh" "$port" > "$run/idle.log" 2>&1 < /dev/null &
   echo $! > "$run/idle.pid"
 fi
-rmdir "$run/idle.lock" 2>/dev/null || true
+rm -rf "$run/idle.lock"
 base=http://localhost:$port
 curl -s -o /dev/null -H "Cookie: better-auth.session_token=$cookie" "$base/cloud/$org/shop/production" || true
 grep -sh 'stale main@' "$run/sdk.log" >&2 || true

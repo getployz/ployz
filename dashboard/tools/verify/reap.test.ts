@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -227,6 +227,58 @@ describe("scripts/verify/reap.sh", () => {
     expect(docker.removed()).toEqual([]);
   });
 
+  describe("up.sh's watchdog lock", () => {
+    const up = readFileSync(resolve(import.meta.dirname, "../../scripts/verify/up.sh"), "utf8");
+    const start = up.indexOf("tries=0\n");
+    const end = up.indexOf('echo $$ > "$run/idle.lock/owner"\n');
+    /** up.sh's own lines that take the lock, run against `run`, with a `sleep` that counts each wait in `run/waits`. */
+    const acquire = (run: string) => {
+      const bin = join(run, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "sleep"), `#!/usr/bin/env bash\necho >> "${run}/waits"\n/bin/sleep 0.01\n`);
+      chmodSync(join(bin, "sleep"), 0o755);
+      return spawn("bash", ["-c", `run=${JSON.stringify(run)}\n${up.slice(start, end)}echo $$ > "$run/idle.lock/owner"`], {
+        env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+      });
+    };
+    const waits = (run: string) => existsSync(join(run, "waits")) ? readFileSync(join(run, "waits"), "utf8").length : 0;
+
+    function locked(owner: number) {
+      const run = mkdtempSync(join(tmpdir(), "verify-lock-"));
+      mkdirSync(join(run, "idle.lock"));
+      writeFileSync(join(run, "idle.lock", "owner"), `${owner}\n`);
+      return run;
+    }
+
+    it("waits while a live process holds the lock, and takes it once released", async () => {
+      expect(start).toBeGreaterThan(-1);
+      const run = locked(process.pid);
+      const taking = acquire(run);
+      children.push(taking);
+      let exited = false;
+      taking.on("exit", () => {
+        exited = true;
+      });
+
+      // Past the 50 waits after which an earlier up.sh took the lock regardless.
+      await vi.waitFor(() => expect(waits(run)).toBeGreaterThan(60), { timeout: 10_000 });
+      expect(exited).toBe(false);
+      expect(readFileSync(join(run, "idle.lock", "owner"), "utf8").trim()).toBe(`${process.pid}`);
+      rmSync(join(run, "idle.lock"), { recursive: true });
+
+      await vi.waitFor(() => expect(exited).toBe(true));
+      expect(readFileSync(join(run, "idle.lock", "owner"), "utf8").trim()).toBe(`${taking.pid}`);
+    });
+
+    it("takes a lock whose holder has exited", async () => {
+      const run = locked(DEAD);
+      const taking = acquire(run);
+      children.push(taking);
+
+      await vi.waitFor(() => expect(readFileSync(join(run, "idle.lock", "owner"), "utf8").trim()).toBe(`${taking.pid}`));
+    });
+  });
+
   it("runs before up.sh starts its own containers", () => {
     const up = readFileSync(resolve(import.meta.dirname, "../../scripts/verify/up.sh"), "utf8");
 
@@ -235,6 +287,6 @@ describe("scripts/verify/reap.sh", () => {
     // reap.sh restarts a watchdog under this lock, so up.sh replaces its own and records its timeout holding it.
     expect(up.indexOf('mkdir "$run/idle.lock"')).toBeGreaterThan(-1);
     expect(up.indexOf('mkdir "$run/idle.lock"')).toBeLessThan(up.indexOf('> "$run/idle-timeout"'));
-    expect(up.indexOf('rmdir "$run/idle.lock"')).toBeGreaterThan(up.indexOf("$run/idle.pid\"\nfi"));
+    expect(up.lastIndexOf('rm -rf "$run/idle.lock"')).toBeGreaterThan(up.indexOf("$run/idle.pid\"\nfi"));
   });
 });

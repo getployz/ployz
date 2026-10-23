@@ -35,11 +35,13 @@ visible() {
     if [ -e "$path" ] && [ ! -x "$path" ]; then return 1; fi
   done
 }
-# Starts the idle watchdog of checkout $1 again, under the lock up.sh holds while it replaces the watchdog.
+# Starts the idle watchdog of checkout $1 again, under the lock up.sh holds while it replaces the watchdog. A lock
+# another holds, even one a killed process left, means no restart: up.sh clears that one.
 rewatch() {
   local wt=$1 run=$1/dashboard/.verify/run port timeout
   command -v setsid >/dev/null || return 0
   mkdir "$run/idle.lock" 2>/dev/null || return 0
+  echo $$ > "$run/idle.lock/owner"
   port=$(sed -n 's/^PORT=//p' "$run/env" 2>/dev/null)
   timeout=$(cat "$run/idle-timeout" 2>/dev/null)
   if [ -n "$port" ] && [ -n "$timeout" ] && [ "$timeout" != 0 ] && [ -f "$run/idle.pid" ] \
@@ -49,7 +51,7 @@ rewatch() {
     echo $! > "$run/idle.pid"
     echo "reap: started the idle watchdog of $wt again"
   fi
-  rmdir "$run/idle.lock" 2>/dev/null
+  rm -rf "$run/idle.lock"
   return 0
 }
 # By id, never name: a checkout's up.sh may replace its container under the same name while this runs.
