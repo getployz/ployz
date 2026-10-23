@@ -463,7 +463,7 @@ async fn cloud_removal(
 ) -> Result<Credential, Error> {
     if hold == CloudHold::Last && removal == Removal::Forget {
         return Err(Error::conflict(format!(
-            "Server {} is the last Server and Cloud manages it. Stop its Ployz daemon before forgetting every Server, or remove it to reset it. No changes made.",
+            "Server {} is the last Server and Cloud manages it. Stop its Ployz daemon and socket (systemctl stop ployz.socket ployz) before forgetting every Server, or remove it to reset it. No changes made.",
             selected.name
         ))
         .hint(Hint::Next("ployz server forget".into())));

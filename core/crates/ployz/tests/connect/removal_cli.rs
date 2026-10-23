@@ -337,12 +337,11 @@ async fn forgetting_the_last_cloud_managed_server_names_the_daemon_to_stop() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(error.pointer("/error/code"), Some(&json!("conflict")));
-    assert!(
-        error
-            .pointer("/error/message")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| message.contains("Stop its Ployz daemon")),
-        "{error}"
+    assert_eq!(
+        error.pointer("/error/message"),
+        Some(&json!(
+            "Server one is the last Server and Cloud manages it. Stop its Ployz daemon and socket (systemctl stop ployz.socket ployz) before forgetting every Server, or remove it to reset it. No changes made."
+        ))
     );
     assert!(service.removed_machines.lock().unwrap().is_empty());
 }

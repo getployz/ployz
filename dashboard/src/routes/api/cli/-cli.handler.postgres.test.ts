@@ -83,6 +83,7 @@ const encryption = makeSecretEncryption("fixture-server-access-encryption-123456
 function fakeServers() {
   const servers = new Map<string, {
     online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string>; closeHangs?: boolean;
+    dialError?: Error;
     /** The next Set waits for this before it reaches the Server, as one held up on the wire would. */
     holdSet?: Promise<void>;
     /** The next Set stages its key, as a daemon does, then holds its reply until this settles. */
@@ -101,6 +102,7 @@ function fakeServers() {
       aborts.watch(options.signal);
       const [connection] = options.connections;
       const server = connection && "machine_id" in connection ? servers.get(connection.machine_id ?? "") : undefined;
+      if (server?.dialError) throw server.dialError;
       if (server?.online === "hangs") return new Promise<never>(() => undefined);
       if (server === undefined || !server.online) {
         throw new RpcError({ code: "internal", message: "All 1 connections failed", details: null, unanswered: true });
@@ -879,6 +881,32 @@ it.live(
       }).pipe(Effect.provide(layer));
     }),
   60_000,
+);
+
+it.live(
+  "Server access lists a cancelled unanswered dial as unreachable, not refused",
+  () => Effect.gen(function* () {
+    const fake = fakeServers();
+    const layer = yield* cliLayer(fake.layer);
+    yield* Effect.gen(function* () {
+      const alice = yield* signUp("alice");
+      const machine = ids.machineId("00000000000000000000000000001249");
+      yield* enroll(alice.organization.id, machine, true);
+      const server = { online: true, slots: new Map<string, string>(), dialError: new RpcError({
+        code: "unavailable", message: "connection cancelled", details: null, unanswered: true,
+      }) };
+      fake.servers.set(machine, server);
+
+      const unanswered = (yield* cli("POST", "server-access", alice)).json;
+      assert.deepStrictEqual(unanswered.unreachable, [machine]);
+      assert.deepStrictEqual(unanswered.refused, []);
+
+      server.dialError = new RpcError({ code: "unavailable", message: "connection cancelled", details: null });
+      const refused = (yield* cli("POST", "server-access", alice)).json;
+      assert.deepStrictEqual(refused.unreachable, []);
+      assert.deepStrictEqual(refused.refused, [{ machine_id: machine, message: "connection cancelled" }]);
+    }).pipe(Effect.provide(layer));
+  }),
 );
 
 it.live(
