@@ -42,6 +42,13 @@ const STORAGE = {
   unknown: <Badge variant="outline">Volume support unknown</Badge>,
 };
 
+/** Named on the row only when a Server lacks its Cluster's Sealing Key. */
+const SEALING = {
+  held: null,
+  needs_access: <Badge variant="warning">Needs access</Badge>,
+  awaits_recovery: <Badge variant="warning">Needs recovery</Badge>,
+};
+
 /** The list's column template, shared by its rows and its skeleton so both line up. */
 export const SERVER_ROW_GRID = cn(
   "grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-1 px-3 py-2.5 text-sm",
@@ -64,7 +71,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
 }) {
   const { word, dot, tone } = STATES[serverRowState(server.status, upgrade)];
   const names = serviceNames(server);
-  const needsAccess = useSealedVariables(organizationSlug) && server.machine.sealing?.kind === "needs_access";
+  const sealing = useSealedVariables(organizationSlug) ? server.machine.sealing : null;
   return (
     <Link
       to="/cloud/$organizationSlug/~/servers/$serverId"
@@ -83,7 +90,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
           </>
         )}
         {STORAGE[server.machine.storage ?? "unknown"]}
-        {needsAccess ? <Badge variant="warning">Needs access</Badge> : null}
+        {sealing ? SEALING[sealing.kind] : null}
       </span>
       <ServerMeters organizationSlug={organizationSlug} server={server} />
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>

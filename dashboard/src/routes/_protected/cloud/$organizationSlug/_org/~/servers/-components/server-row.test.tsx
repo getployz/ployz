@@ -86,6 +86,13 @@ it("says a Server needs access only where this Cloud seals variables and the Ser
   expect((await row(server({ services: ["api"] }), null, true)).textContent).toBe("fsn-1apiOnline");
 });
 
+it("says a Server needs recovery where its Cluster's Sealing Key awaits a recovery code", async () => {
+  const awaiting = server({ services: ["api"], sealing: { kind: "awaits_recovery", public_key: `${"A".repeat(43)}=` } });
+  expect((await row(awaiting, null, true)).textContent).toBe("fsn-1apiNeeds recoveryOnline");
+  cleanup();
+  expect((await row(awaiting)).textContent).toBe("fsn-1apiOnline");
+});
+
 it("lets a running upgrade explain the Server, and offline outrank a failed one", () => {
   const failed: ServerUpgradeLine = { kind: "failed", target: "0.3.0", nothingChanged: true, details: null, canRetry: true };
   expect(serverRowState("offline", { kind: "upgrading", target: "0.3.0" })).toBe("upgrading");

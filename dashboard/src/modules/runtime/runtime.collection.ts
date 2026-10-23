@@ -42,6 +42,7 @@ export type RuntimeContainerRecord = typeof runtimeContainerRecordSchema.Type;
 export const runtimeSealingSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("held"), public_key: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("needs_access") }),
+  Schema.Struct({ kind: Schema.Literal("awaits_recovery"), public_key: Schema.String }),
 ]);
 
 /** A Machine as the watched entry Machine reported it. `membership` is an open
