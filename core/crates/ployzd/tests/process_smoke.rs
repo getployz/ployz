@@ -438,6 +438,7 @@ fn join(path: &Path) {
                             visible_peers: vec![peer],
                             target_versions: [("actor".into(), 1)].into(),
                             sealing_key: None,
+                            devices: Vec::new(),
                         },
                     },
                     wireguard_mtu: None,

@@ -130,6 +130,10 @@ pub enum Error {
     ManagementRevoked,
     #[error("only Cloud manages slots")]
     OnlyCloudManagesSlots,
+    #[error("device- slots change only through `ployz devices`")]
+    DeviceSlot,
+    #[error("only an approved Device manages Devices")]
+    NeedsFullScope,
     #[error("Machine is not participating")]
     NotParticipating,
     #[error("Cluster store is not available")]
@@ -732,6 +736,7 @@ impl LocalMachine {
             replicated.machines().await?.observations,
             replicated.version().await?,
             sealing_key,
+            self.record().devices().collect(),
         ))
     }
 
@@ -1093,6 +1098,7 @@ fn registered(
     machines: Vec<Machine>,
     target_versions: BTreeMap<String, i64>,
     sealing_key: Option<ployz_core::SealedSealingKey>,
+    devices: Vec<ployz_core::DeviceKey>,
 ) -> Registered {
     let assigned_id = assigned_machine.id;
     Registered {
@@ -1103,6 +1109,7 @@ fn registered(
             .collect(),
         target_versions,
         sealing_key,
+        devices,
     }
 }
 

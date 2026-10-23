@@ -57,6 +57,7 @@ macro_rules! rpc_catalog {
                 RecoverSealingKey: (recover_sealing_key, "RecoverSealingKey", RecoverSealingKeyRequest, "recover_sealing_key", SealingKeyRecovered, RECOVER_SEALING_KEY_CAPABILITY, "ployz.sealing.recover.v1", Always, Full),
                 Register: (register, "Register", RegisterRequest, "register", Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always, Operator),
                 SetManagementClient: (set_management_client, "SetManagementClient", SetManagementClientRequest, "set_management_client", SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always, Operator),
+                SetDevice: (set_device, "SetDevice", SetDeviceRequest, "set_device", DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
                 SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
                 SelectEndpoint: (select_endpoint, "SelectEndpoint", SelectEndpointRequest, "select_endpoint", EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always, Operator),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always, Operator),

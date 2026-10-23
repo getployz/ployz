@@ -10,9 +10,9 @@ use std::{
 };
 
 use ployz_core::{
-    EnrollAs, EnrollRequest, LocalMachinePhase, Machine, MachineId, MachineNow, MachineUpdate,
-    MachineUpdateError, ManagementClientLabel, PinnedAddresses, PublicIpUpdate, RecoverySeed,
-    Registered, SelectedEndpoint, apply_machine_update,
+    DeviceCode, DeviceKey, EnrollAs, EnrollRequest, LocalMachinePhase, Machine, MachineId,
+    MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel, PinnedAddresses,
+    PublicIpUpdate, RecoverySeed, Registered, SelectedEndpoint, apply_machine_update,
 };
 use reqwest::Url;
 use thiserror::Error;
@@ -54,6 +54,7 @@ pub(crate) struct PreparedReset {
 pub(crate) struct Installation {
     body: LocalMachineBody,
     sealing_key: Option<SealingKey>,
+    devices: Vec<DeviceKey>,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
 }
@@ -342,23 +343,26 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key) = match role {
+        let (body, sealing_key, devices) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
                 initial_policy,
                 public_ip,
                 advertised_endpoints,
-            } => self.founder(
-                name,
-                FoundingCluster {
-                    network: cluster_network,
-                    recovery,
-                },
-                initial_policy,
-                public_ip,
-                advertised_endpoints,
-            )?,
+            } => {
+                let (body, sealing_key) = self.founder(
+                    name,
+                    FoundingCluster {
+                        network: cluster_network,
+                        recovery,
+                    },
+                    initial_policy,
+                    public_ip,
+                    advertised_endpoints,
+                )?;
+                (body, sealing_key, Vec::new())
+            }
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
             }
@@ -376,6 +380,7 @@ impl LocalMachineStore {
             Installation {
                 body,
                 sealing_key,
+                devices,
                 wireguard_mtu,
                 pinned,
             },
@@ -422,12 +427,13 @@ impl LocalMachineStore {
     fn member(
         &self,
         registration: Registered,
-    ) -> Result<(LocalMachineBody, Option<SealingKey>), StoreError> {
+    ) -> Result<(LocalMachineBody, Option<SealingKey>, Vec<DeviceKey>), StoreError> {
         let Registered {
             assigned_machine: mut machine,
             visible_peers,
             target_versions,
             sealing_key,
+            devices,
         } = registration;
         if self.record.id() != machine.id {
             return Err(StoreError::IdentityMismatch);
@@ -452,6 +458,7 @@ impl LocalMachineStore {
                 min_store_version: target_versions,
             },
             sealing_key,
+            devices,
         ))
     }
 
@@ -461,6 +468,16 @@ impl LocalMachineStore {
         installed.body = installation.body;
         installed.wireguard_mtu = installation.wireguard_mtu;
         installed.pinned_addresses = installation.pinned;
+        installed
+            .management_clients
+            .extend(installation.devices.into_iter().map(|key| {
+                (
+                    key.label(),
+                    ManagementClientSlot::Live(LiveSlot::Active {
+                        accepted: *key.as_bytes(),
+                    }),
+                )
+            }));
         self.set_sealing_key(installation.sealing_key.as_ref())?;
         save(&self.data_dir, &installed)?;
         self.record = installed;
@@ -634,6 +651,40 @@ impl LocalMachineStore {
                 ManagementClientSlot::Live(LiveSlot::Active { accepted: remote }),
             );
         })
+    }
+
+    /// Admit `key` as an accepted client in the slot its [`DeviceCode`] names, in one
+    /// write. Returns `false`, without a write, when the slot already holds exactly it.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn approve_device(&mut self, key: DeviceKey) -> Result<bool, StoreError> {
+        let label = key.label();
+        let slot = ManagementClientSlot::Live(LiveSlot::Active {
+            accepted: *key.as_bytes(),
+        });
+        if self.record.management_clients.get(&label) == Some(&slot) {
+            return Ok(false);
+        }
+        self.persist_management_clients(|clients| {
+            clients.insert(label, slot);
+        })?;
+        Ok(true)
+    }
+
+    /// Clear the Device slot `code` names. Returns `false` when it holds no live key.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn remove_device(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
+        let label = code.label();
+        let live = self
+            .record
+            .management_clients
+            .get(&label)
+            .is_some_and(|slot| slot.live().is_some());
+        self.clear_management_client(&label)?;
+        Ok(live)
     }
 
     /// Replace the push target in one write. An unchanged target skips the write.

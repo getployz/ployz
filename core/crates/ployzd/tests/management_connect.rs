@@ -25,10 +25,10 @@ use ployz::{
     context::Connection,
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerId, DescribeContractRequest, EnrollAs, EnrollRequest, ExecConfig,
-    ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN, MachineId, MachineName,
-    MachineRpcClient, ManagementCapability, ManagementClientLabel, ManagementIdentity,
-    RpcErrorCode, SetManagementClientRequest, op,
+    AdvertisedEndpoint, ContainerId, DescribeContractRequest, DeviceKey, EnrollAs, EnrollRequest,
+    ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN, MachineId,
+    MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, ManagementIdentity,
+    RpcErrorCode, SetDeviceRequest, SetManagementClientRequest, op,
 };
 use ployzd::{
     corrosion::ReplicatedStore,
@@ -460,7 +460,7 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_cloud_slot_drives_the_machine_but_never_execs_or_tunnels() {
+async fn only_a_device_execs_or_tunnels() {
     let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
     let (_dir, owner, local) = participating_in("127.0.0.0/16").await;
     let set = |label: ManagementClientLabel| {
@@ -481,6 +481,15 @@ async fn the_cloud_slot_drives_the_machine_but_never_execs_or_tunnels() {
     };
     let cloud_capability = set(cloud()).await;
     let cli_capability = set(ManagementClientLabel::parse("cli-device").unwrap()).await;
+    let device = SecretKey::generate();
+    local
+        .set_device(SetDeviceRequest::Approve {
+            key: DeviceKey::from_bytes(*device.public().as_bytes()),
+        })
+        .await
+        .unwrap();
+    let device_capability =
+        ManagementCapability::new(*cloud_capability.machine(), device.to_bytes());
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
@@ -512,32 +521,40 @@ async fn the_cloud_slot_drives_the_machine_but_never_execs_or_tunnels() {
         .connect(&connection(&cli_capability))
         .await
         .unwrap();
+    let device_channel = connector
+        .connect(&connection(&device_capability))
+        .await
+        .unwrap();
 
     activate(cloud_channel.clone()).await;
-    let refused = exec(cloud_channel).await.unwrap_err();
-    assert_eq!(refused.code(), tonic::Code::PermissionDenied, "{refused:?}");
-    assert!(
-        refused
-            .message()
-            .contains("ployz.container.exec.v1 needs Full access"),
-        "{refused:?}"
-    );
-    let status = exec(cli_channel).await.unwrap_err();
+    for channel in [cloud_channel, cli_channel] {
+        let refused = exec(channel).await.unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::PermissionDenied, "{refused:?}");
+        assert!(
+            refused
+                .message()
+                .contains("ployz.container.exec.v1 needs Full access"),
+            "{refused:?}"
+        );
+    }
+    let status = exec(device_channel).await.unwrap_err();
     assert_eq!(status.code(), tonic::Code::Unavailable, "{status:?}");
 
     let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target = echo.local_addr().unwrap().to_string();
-    match connector
-        .dial_proxy(&connection(&cloud_capability), "tcp", &target)
-        .await
-    {
-        Err(ConnectError::Attempt(message)) => {
-            assert!(message.contains("tunnels need Full access"), "{message}");
+    for capability in [&cloud_capability, &cli_capability] {
+        match connector
+            .dial_proxy(&connection(capability), "tcp", &target)
+            .await
+        {
+            Err(ConnectError::Attempt(message)) => {
+                assert!(message.contains("tunnels need Full access"), "{message}");
+            }
+            other => panic!("an Operator tunnel must be refused, got {:?}", other.err()),
         }
-        other => panic!("a cloud tunnel must be refused, got {:?}", other.err()),
     }
     connector
-        .dial_proxy(&connection(&cli_capability), "tcp", &target)
+        .dial_proxy(&connection(&device_capability), "tcp", &target)
         .await
         .unwrap();
 
@@ -940,13 +957,16 @@ async fn tunnel_contract() {
     let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
     // Loopback stands in for the Cluster network, so an echo server is a "container".
     let (_dir, owner, local) = participating_in("127.0.0.0/16").await;
-    let cli = ManagementClientLabel::parse("cli-device").unwrap();
-    let capability = local
-        .set_management_client(SetManagementClientRequest::Set { label: cli.clone() })
+    let device = SecretKey::generate();
+    let key = DeviceKey::from_bytes(*device.public().as_bytes());
+    local
+        .set_device(SetDeviceRequest::Approve { key })
         .await
-        .unwrap()
-        .capability
         .unwrap();
+    let capability = ManagementCapability::new(
+        local.record().management_secret().public_key(),
+        device.to_bytes(),
+    );
     let endpoint = management::bind(
         local.record().management_secret(),
         &ManagementConfig {
@@ -987,13 +1007,6 @@ async fn tunnel_contract() {
         async move { connector.dial_proxy(managed, "tcp", &address).await }
     };
 
-    // A pending candidate may only negotiate; a tunnel is operational.
-    match dial(target.clone()).await {
-        Err(ConnectError::ClientRefused) => {}
-        other => panic!("a pending key must be refused, got {:?}", other.err()),
-    }
-    activate(connector.connect(&managed).await.unwrap()).await;
-
     let mut tunnel = dial(target.clone()).await.unwrap();
     let payload = [0_u8, 0xff, b'\n', 7];
     tunnel.write_all(&payload).await.unwrap();
@@ -1015,9 +1028,9 @@ async fn tunnel_contract() {
         }
     }
 
-    // Clearing the key ends the open tunnel and refuses new ones as cleared.
+    // Removing the Device ends the open tunnel and refuses new ones as cleared.
     local
-        .set_management_client(SetManagementClientRequest::Clear { label: cli })
+        .set_device(SetDeviceRequest::Remove { code: key.code() })
         .await
         .unwrap();
     let mut rest = Vec::new();

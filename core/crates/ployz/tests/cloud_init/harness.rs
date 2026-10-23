@@ -983,6 +983,7 @@ pub fn registration() -> Registered {
         visible_peers: Vec::new(),
         target_versions: Default::default(),
         sealing_key: None,
+        devices: Vec::new(),
     }
 }
 
