@@ -92,6 +92,12 @@ const decodeServerLacks = Schema.decodeUnknownOption(
 const decodeTaggedFailure = Schema.decodeUnknownOption(
   Schema.Struct({ _tag: Schema.String }),
 );
+const decodeErrorCode = Schema.decodeUnknownOption(
+  Schema.Struct({ code: Schema.String }),
+);
+const decodeNestedCause = Schema.decodeUnknownOption(
+  Schema.Struct({ cause: Schema.Unknown }),
+);
 const decodeValidationIssues = Schema.decodeUnknownOption(
   Schema.Array(Schema.Struct({ message: Schema.String })),
 );
@@ -114,15 +120,28 @@ function publicCategory(cause: unknown): PublicErrorCategory {
 }
 
 function isExpectedFailure(cause: unknown): boolean {
-  if (
-    Option.isSome(decodePublicFailure(cause)) ||
-    Option.isSome(decodeTaggedFailure(cause))
-  ) {
-    return true;
+  return publicCategory(cause) !== "internal";
+}
+
+const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,63}$/u;
+const SQLSTATE = /^[0-9A-Z]{5}$/u;
+
+/**
+ * A typed failure that answers 500, named by its tags and SQLSTATE alone: its fields, such as a failed query's params,
+ * can hold secrets, and so can a tag or code that isn't shaped like one.
+ */
+function typedFailureSummary(cause: unknown): string {
+  const tags: string[] = [];
+  let code: string | undefined;
+  for (let at: unknown = cause, depth = 0; at !== undefined && depth < 8; depth += 1) {
+    const tagged = decodeTaggedFailure(at);
+    if (Option.isSome(tagged)) tags.push(IDENTIFIER.test(tagged.value._tag) ? tagged.value._tag : "?");
+    const found = Option.getOrUndefined(decodeErrorCode(at))?.code;
+    if (found !== undefined && SQLSTATE.test(found)) code ??= found;
+    const next = Option.getOrUndefined(decodeNestedCause(at))?.cause;
+    at = Cause.isCause(next) ? Cause.squash(next) : next;
   }
-  return isTanStackValidationError(
-    cause instanceof Error ? cause.message : undefined,
-  );
+  return code === undefined ? tags.join(" > ") : `${tags.join(" > ")} (${code})`;
 }
 
 type PublicErrorReport = (
@@ -158,7 +177,8 @@ function reportUnexpectedCause(
     }
     if (reported) return;
   }
-  if (!isExpectedFailure(cause)) report("defect", cause);
+  if (isExpectedFailure(cause)) return;
+  report("defect", Option.isSome(decodeTaggedFailure(cause)) ? typedFailureSummary(cause) : cause);
 }
 
 function userFacingMessage(cause: unknown, fallback: string): string {

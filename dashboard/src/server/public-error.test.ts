@@ -1,5 +1,8 @@
+import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import { Cause, Data } from "effect";
+import { SqlError, UnknownError } from "effect/unstable/sql/SqlError";
 import { describe, expect, it, vi } from "vitest";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import {
   Conflict,
   encodePublicBoundaryError,
@@ -15,6 +18,23 @@ class DatabaseFailure extends Data.TaggedError("DatabaseFailure")<{
   readonly providerBody: string;
   readonly secret: string;
 }> {}
+
+class CollectionReadFailure extends Data.TaggedError("CollectionReadFailure")<{
+  readonly cause: unknown;
+}> {
+  readonly publicErrorCategory = "internal" as const;
+}
+
+class MailRejected extends Data.TaggedError("MailRejected")<{
+  readonly code: string;
+  readonly cause: unknown;
+}> {}
+
+const failedQuery = () => new EffectDrizzleQueryError({
+  query: "insert into machine_enrollment_token (token_hash) values ($1)",
+  params: ["secret-param"],
+  cause: Cause.fail(new SqlError({ reason: new UnknownError({ cause: { code: "P0001", message: "secret-message" } }) })),
+});
 
 class ValidationFailure extends Data.TaggedError("Validation")<{
   readonly message: string;
@@ -89,19 +109,78 @@ describe("encodePublicError", () => {
     });
   });
 
-  it("does not report expected typed failures", () => {
+  it("does not report a refusal with a public category", () => {
     const report = vi.fn();
 
-    publicErrorResponse(
-      new DatabaseFailure({
-        cause: new Error("offline"),
-        providerBody: "provider-token",
-        secret: "application-secret",
-      }),
+    const response = publicErrorResponse(new Conflict({ message: "Taken." }), { report });
+
+    expect(report).not.toHaveBeenCalled();
+    expect(response.status).toBe(409);
+  });
+
+  it("reports a failed query once by its tags and SQLSTATE, never the row it wrote, and still answers 500", async () => {
+    const report = vi.fn();
+    const failedQuery = new EffectDrizzleQueryError({
+      query: "insert into machine_enrollment_token (token_hash) values ($1)",
+      params: ["secret-param"],
+      cause: Cause.fail(new SqlError({ reason: new UnknownError({ cause: { code: "P0001", message: "secret-message" } }) })),
+    });
+
+    const response = publicErrorResponse(failedQuery, { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith("defect", "EffectDrizzleQueryError > SqlError > UnknownError (P0001)");
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      _tag: "PublicError",
+      code: "INTERNAL",
+      message: "The request could not be completed.",
+    });
+  });
+
+  it("does not report a request the validator refused", async () => {
+    const report = vi.fn();
+
+    const response = publicErrorResponse(new Error(JSON.stringify([{ message: "Expected a string" }])), { report });
+
+    expect(report).not.toHaveBeenCalled();
+    expect(response.status).toBe(422);
+  });
+
+  it("reports a failure with the internal category once by its tags, and still answers 500", async () => {
+    const report = vi.fn();
+    const failedRead = new CollectionReadFailure({ cause: failedQuery() });
+
+    const response = publicErrorResponse(failedRead, { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      "defect",
+      "CollectionReadFailure > EffectDrizzleQueryError > SqlError > UnknownError (P0001)",
+    );
+    expect(response.status).toBe(500);
+  });
+
+  it("names a failure only by identifier tags and a SQLSTATE, whichever wrapper carries its own code", () => {
+    const report = vi.fn();
+    const leaky = { _tag: "row secret-param", code: "secret-param", cause: failedQuery() };
+
+    publicErrorResponse(new MailRejected({ code: "mailbox_full", cause: leaky }), { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      "defect",
+      "MailRejected > ? > EffectDrizzleQueryError > SqlError > UnknownError (P0001)",
+    );
+  });
+
+  it("reports a Store refusal that escaped unmapped, since it answers 500", () => {
+    const report = vi.fn();
+
+    const response = publicErrorResponse(
+      new StoreRefused({ code: "not_found", message: "No Environment named secret-env", details: null }),
       { report },
     );
 
-    expect(report).not.toHaveBeenCalled();
+    expect(report).toHaveBeenCalledExactlyOnceWith("defect", "StoreRefused");
+    expect(response.status).toBe(500);
   });
 
   it("reports full defect and interruption causes separately while redacting transport", async () => {
