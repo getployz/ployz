@@ -270,7 +270,7 @@ const Reply = Schema.Struct({
   state: Schema.optionalKey(Schema.String),
   code: Schema.optionalKey(Schema.String),
   key: Schema.optionalKey(Schema.String),
-  expiresAt: Schema.optionalKey(Schema.String),
+  expires_at: Schema.optionalKey(Schema.String),
   revoking: Schema.optionalKey(Schema.Array(Schema.Struct({
     id: Schema.String, kind: Schema.String, unconfirmed: Schema.Array(Schema.String),
   }))),
@@ -2929,18 +2929,18 @@ it.live(
         const requested = yield* cli("POST", "device-requests", alice, { key: deviceKey });
         assert.strictEqual(requested.status, 200, requested.text);
         assert.strictEqual(requested.json.code, "mmg42klgyq");
-        const first = Date.parse(requested.json.expiresAt ?? assert.fail("no expiry"));
+        const first = Date.parse(requested.json.expires_at ?? assert.fail("no expiry"));
         assert.closeTo(first - Date.now(), 24 * 60 * 60 * 1000, 60_000);
 
         // Reading leaves it, and a code as a person types it reads the same row.
         const read = yield* cli("GET", "device-requests/mmg42klgyq", alice);
         assert.strictEqual(read.status, 200, read.text);
-        assert.deepStrictEqual(JSON.parse(read.text), { code: "mmg42klgyq", key: deviceKey, expiresAt: requested.json.expiresAt });
+        assert.deepStrictEqual(JSON.parse(read.text), { code: "mmg42klgyq", key: deviceKey, expires_at: requested.json.expires_at });
         assert.deepStrictEqual(JSON.parse((yield* cli("GET", "device-requests/%20MMG42KLGYQ%20", alice)).text), JSON.parse(read.text));
 
         const again = yield* cli("POST", "device-requests", alice, { key: deviceKey });
         assert.strictEqual(again.status, 200, again.text);
-        assert.isAbove(Date.parse(again.json.expiresAt ?? assert.fail("no expiry")), first);
+        assert.isAbove(Date.parse(again.json.expires_at ?? assert.fail("no expiry")), first);
 
         // Another key at the code is refused while it lives, and takes the code once it has expired.
         yield* drizzle.update(deviceRequest).set({ key: "f".repeat(64) }).where(eq(deviceRequest.organizationId, alice.organization.id));

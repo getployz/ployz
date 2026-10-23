@@ -1,4 +1,4 @@
-//! `ployz devices`: the people's keys every Machine admits at Full scope. Cloud relays a
+//! `ployz device`: the people's keys every Machine admits at Full scope. Cloud relays a
 //! Device's key to the approver, who checks it against the code the Device printed.
 
 use std::collections::BTreeMap;
@@ -27,14 +27,14 @@ pub(crate) fn group(command: Command) -> Command {
 pub(crate) fn request_command(command: Command) -> Command {
     command
         .about("Ask to approve this device")
-        .after_help(concat!("Examples:\n", "  ployz devices request"))
+        .after_help(concat!("Examples:\n", "  ployz device request"))
 }
 
 pub(crate) fn approve_command(command: Command) -> Command {
     command
         .about("Approve a device on every server")
-        .after_help(concat!("Examples:\n", "  ployz devices approve mmg42klgyq"))
-        .arg(positional("code", true).help("The code ployz devices request printed"))
+        .after_help(concat!("Examples:\n", "  ployz device approve mmg42klgyq"))
+        .arg(positional("code", true).help("The code ployz device request printed"))
 }
 
 pub(crate) fn list_command(command: Command) -> Command {
@@ -44,8 +44,8 @@ pub(crate) fn list_command(command: Command) -> Command {
 pub(crate) fn remove_command(command: Command) -> Command {
     command
         .about("Remove a device from every server")
-        .after_help(concat!("Examples:\n", "  ployz devices remove mmg42klgyq"))
-        .arg(positional("code", true).help("The device's code, from ployz devices list"))
+        .after_help(concat!("Examples:\n", "  ployz device rm mmg42klgyq"))
+        .arg(positional("code", true).help("The device's code, from ployz device ls"))
 }
 
 pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
@@ -60,7 +60,7 @@ pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
     ui::finish(&requested, || {
         ui::stream(code.as_str());
         ui::note(format_args!(
-            "Approve it from an approved device, or over SSH on a server:\n  ployz devices approve {code}"
+            "Approve it from an approved device, or over SSH on a server:\n  ployz device approve {code}"
         ));
     })
 }
@@ -102,7 +102,7 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
         let roster = roster(&answers);
         let mut table = Table::new(
             ["DEVICE", "SERVERS", "MISSING ON"],
-            "No devices. Approve one with ployz devices approve <code>.",
+            "No devices. Approve one with ployz device approve <code>.",
         );
         for device in &roster {
             let on = format!("{} of {}", device.machines.len(), answers.len());
@@ -140,7 +140,6 @@ fn typed_code(leaf: &ArgMatches) -> Result<DeviceCode, Error> {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(rename_all(deserialize = "camelCase"))]
 struct Requested {
     code: DeviceCode,
     expires_at: String,
@@ -239,7 +238,7 @@ pub(super) fn needs_device(error: &str) -> bool {
 }
 
 pub(super) fn request_hint() -> Hint {
-    Hint::Next("ployz devices request".into())
+    Hint::Next("ployz device request".into())
 }
 
 /// `error`, pointing at a Device request where a Machine refused it for scope.
@@ -420,7 +419,7 @@ pub(crate) mod key {
         Write { path: PathBuf, source: io::Error },
         #[error("{path} is readable by other users. Run: chmod 600 {path}")]
         Exposed { path: PathBuf },
-        #[error("{path} isn't a device key. Delete it and run ployz devices request")]
+        #[error("{path} isn't a device key. Delete it and run ployz device request")]
         Malformed { path: PathBuf },
     }
 
@@ -493,5 +492,5 @@ pub(crate) mod key {
 }
 
 #[cfg(test)]
-#[path = "devices_tests.rs"]
+#[path = "device_tests.rs"]
 mod tests;

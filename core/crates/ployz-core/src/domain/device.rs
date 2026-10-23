@@ -187,15 +187,20 @@ mod tests {
     fn code_is_the_first_fifty_bits_of_the_key_digest() {
         let key = DeviceKey::from_bytes([7; 32]);
         let digest = Sha256::digest([7; 32]);
-        let bits: String = digest[..7]
+        let bits: Vec<usize> = digest
             .iter()
-            .map(|byte| format!("{byte:08b}"))
+            .flat_map(|byte| {
+                (0..8)
+                    .rev()
+                    .map(move |shift| usize::from(byte >> shift & 1))
+            })
+            .take(50)
             .collect();
-        let expected: String = bits.as_bytes()[..50]
+        let expected: String = bits
             .chunks(5)
             .map(|chunk| {
-                BASE32[usize::from_str_radix(std::str::from_utf8(chunk).unwrap(), 2).unwrap()]
-                    as char
+                let digit = chunk.iter().fold(0, |value, bit| value << 1 | bit);
+                char::from(*BASE32.get(digit).unwrap())
             })
             .collect();
         assert_eq!(key.code().as_str(), expected);
