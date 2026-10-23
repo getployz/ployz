@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { and, arrayContains, eq, gt, isNull, or, sql } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Cause, Context, Effect, Exit, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
 import { member, organizationToken, session } from "#/modules/identity/tables";
@@ -11,15 +11,58 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
-import { Forbidden, Unauthorized } from "#/server/public-error";
+import { Forbidden, RateLimited, Unauthorized } from "#/server/public-error";
+import {
+  admitWithinWindows,
+  forgetRateEvent,
+  rateLimitAddress,
+  type RateWindow,
+} from "#/modules/machines/waiting/rate-limit.server";
+
+/** The client address of the request being served, as the app trusts it behind its proxy; null outside an HTTP request. */
+export const ClientAddress = Context.Reference<string | null>("ployz/ClientAddress", { defaultValue: () => null });
+
+/** How many failed authentications one address gets before it waits. Successes never count. */
+export const FAILED_AUTHENTICATION_WINDOWS: ReadonlyArray<RateWindow> = [
+  { seconds: 60, limit: 20 },
+  { seconds: 60 * 60, limit: 100 },
+];
 
 /**
  * The one place a `ployz` API request becomes a Caller. An Organization Token acts in its own Organization while
  * it is unexpired and its maker is still a member; a session acts in its active Organization while its user is a
  * member there. Anything else is refused. The session must come in the Authorization header, as the CLI sends it:
  * a cookie is what a browser attaches to a cross-site request on its own, so it authenticates nothing here.
+ * An address over its failed-authentication limit waits whatever it presents, so a guess can't land while it does.
+ * Each attempt holds a place in the limit while it is checked, so a burst can't all be checked at once; only a
+ * failure keeps it, even when the attempt is interrupted.
  */
 export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (headers: Headers) {
+  const address = yield* ClientAddress;
+  if (address === null) return yield* callerOf(headers);
+  return yield* Effect.acquireUseRelease(
+    admitWithinWindows(`failed-auth:${rateLimitAddress(address)}`, FAILED_AUTHENTICATION_WINDOWS),
+    (admission) => Effect.gen(function* () {
+      if (admission.admitted) return yield* callerOf(headers);
+      return yield* new RateLimited({
+        message: `Too many failed sign-ins from this address. Try again in ${waitOf(admission.retryAfterSeconds)}.`,
+        userFacing: true,
+        retryAfterSeconds: admission.retryAfterSeconds,
+      });
+    }),
+    (admission, exit) => admission.admitted && !refused(exit) ? forgetRateEvent(admission.event) : Effect.void,
+  );
+});
+
+const refused = (exit: Exit.Exit<unknown, unknown>) =>
+  Exit.isFailure(exit) && Option.exists(Cause.findErrorOption(exit.cause), (error) => error instanceof Unauthorized);
+
+const waitOf = (seconds: number) => {
+  if (seconds > 60) return `${Math.ceil(seconds / 60)} minutes`;
+  return seconds === 1 ? "1 second" : `${seconds} seconds`;
+};
+
+const callerOf = Effect.fn("Identity.callerOf")(function* (headers: Headers) {
   const bearer = /^Bearer (\S+)$/.exec(headers.get("authorization") ?? "")?.[1];
   if (bearer?.startsWith(ORGANIZATION_TOKEN_PREFIX) === true) return yield* tokenCaller(bearer, headers);
   const auth = yield* Auth;

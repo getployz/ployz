@@ -1,17 +1,29 @@
+import { getRequestIP } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
 import { asRecord } from "#/lib/json";
 import { runCommand, MANIFEST_HEADER, MANIFEST_REVISION } from "#/modules/commands/commands.server";
 import { refusal } from "#/modules/config-store/config-store.server";
 import type { Caller } from "#/modules/identity/actor";
-import { resolveCaller } from "#/modules/identity/caller.server";
+import { ClientAddress, resolveCaller } from "#/modules/identity/caller.server";
 import { REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
+import { observedIp } from "#/routes/api/checkin/-handler";
+import { AppConfig } from "#/server/config.server";
 import { Forbidden, publicErrorResponse, Validation } from "#/server/public-error";
 import type { AppServices } from "#/server/runtime.server";
 import { runAppEffect } from "#/server/run.server";
 
+/** Serves `reply` knowing the client address the request came from, which the Caller's failed-authentication limit keys on. */
+export function fromClient<A, E, R>(request: Request, reply: Effect.Effect<A, E, R>) {
+  const peer = getRequestIP();
+  return Effect.gen(function* () {
+    const { auth } = yield* AppConfig;
+    return yield* Effect.provideService(reply, ClientAddress, observedIp(request.headers, auth.clientIpHeaders, peer));
+  });
+}
+
 /** Runs one `/api/cli` call; every reply, a failure too, names the manifest revision. */
 export async function serveCli<E>(request: Request, reply: Effect.Effect<Response, E, AppServices>) {
-  const response = await runAppEffect(reply, { signal: request.signal }).catch(publicErrorResponse);
+  const response = await runAppEffect(fromClient(request, reply), { signal: request.signal }).catch(publicErrorResponse);
   const headers = new Headers(response.headers);
   headers.set(MANIFEST_HEADER, MANIFEST_REVISION);
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
