@@ -120,22 +120,24 @@ function publicCategory(cause: unknown): PublicErrorCategory {
 }
 
 function isExpectedFailure(cause: unknown): boolean {
-  return Option.isSome(decodePublicFailure(cause)) || isTanStackValidationError(
-    cause instanceof Error ? cause.message : undefined,
-  );
+  return publicCategory(cause) !== "internal";
 }
 
+const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,63}$/u;
+const SQLSTATE = /^[0-9A-Z]{5}$/u;
+
 /**
- * A typed failure with no public category, named by its tags and error code alone: its fields, such as a failed
- * query's params, can hold secrets.
+ * A typed failure that answers 500, named by its tags and SQLSTATE alone: its fields, such as a failed query's params,
+ * can hold secrets, and so can a tag or code that isn't shaped like one.
  */
 function typedFailureSummary(cause: unknown): string {
   const tags: string[] = [];
   let code: string | undefined;
   for (let at: unknown = cause, depth = 0; at !== undefined && depth < 8; depth += 1) {
     const tagged = decodeTaggedFailure(at);
-    if (Option.isSome(tagged)) tags.push(tagged.value._tag);
-    code ??= Option.getOrUndefined(decodeErrorCode(at))?.code;
+    if (Option.isSome(tagged)) tags.push(IDENTIFIER.test(tagged.value._tag) ? tagged.value._tag : "?");
+    const found = Option.getOrUndefined(decodeErrorCode(at))?.code;
+    if (found !== undefined && SQLSTATE.test(found)) code ??= found;
     const next = Option.getOrUndefined(decodeNestedCause(at))?.cause;
     at = Cause.isCause(next) ? Cause.squash(next) : next;
   }
