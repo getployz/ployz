@@ -4,7 +4,7 @@ import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field
 import { warmSealing } from "#/modules/variables/seal.client";
 
 /**
- * While sealing is ready: the sealed variables, which the text never holds and a save never removes, and a Sealed
+ * While sealing is ready, or a new key is ticked: the sealed variables, which the text never holds and a save never removes, and a Sealed
  * choice for each new key.
  */
 export function ServiceVariablesRawEditorSealed({ sealedKeys, newKeys, sealing, problems, onSealingChange }: {

@@ -96,7 +96,7 @@ export function ServiceVariablesRawEditor({
   onApply: (diff: RawEditorDiff) => Persistable;
   variables: VariableRecord[];
   valueTargets?: ReferenceTarget[];
-  /** Whether the Organization seals (`useSealing`'s cached state): only ready offers Sealed for new keys. */
+  /** Whether the Organization seals (`useSealing`'s cached state): ready offers Sealed for new keys. Display only. */
   sealing?: "off" | "no_server" | "ready";
 }) {
   const sealedVariables = variables.filter(
@@ -213,11 +213,10 @@ export function ServiceVariablesRawEditor({
       return;
     }
 
-    if (ready && entries.some((entry) => editor.sealing.includes(entry.key) && !taken.has(entry.key) && sealedValueProblem(entry.key, entry.value) !== null)) return;
+    if (entries.some((entry) => editor.sealing.includes(entry.key) && !taken.has(entry.key) && sealedValueProblem(entry.key, entry.value) !== null)) return;
+    // A ticked key goes Sealed whatever the cached state says: the write's fresh read seals it, sends it legacy, or refuses.
     const plain = diffVariables(entries, editableVariables);
-    const diff = ready
-      ? { ...plain, creates: plain.creates.map((create) => editor.sealing.includes(create.key) ? { ...create, sealed: true } : create) }
-      : plain;
+    const diff = { ...plain, creates: plain.creates.map((create) => editor.sealing.includes(create.key) ? { ...create, sealed: true } : create) };
     if (
       diff.creates.length === 0 &&
       diff.updates.length === 0 &&
@@ -246,7 +245,9 @@ export function ServiceVariablesRawEditor({
   }
 
   const ready = sealing === "ready";
-  const parsed = ready ? parseForMode(editor.mode === "env" ? editor.envText : editor.jsonText, editor.mode) : null;
+  // Ticks outlive a cached state that leaves ready, so they stay in view until untick or submit.
+  const offered = ready || editor.sealing.length > 0;
+  const parsed = offered ? parseForMode(editor.mode === "env" ? editor.envText : editor.jsonText, editor.mode) : null;
   const taken = new Set(variables.map((variable) => variable.key));
   const newKeys = parsed && Result.isSuccess(parsed)
     ? [...new Set(parsed.success.flatMap((entry) => taken.has(entry.key) ? [] : [entry.key]))] : [];
@@ -271,7 +272,7 @@ export function ServiceVariablesRawEditor({
         </DialogHeader>
 
         <ServiceVariablesRawEditorAlerts
-          sealedCount={ready ? 0 : sealedCount}
+          sealedCount={offered ? 0 : sealedCount}
           parseError={editor.parseError}
           submitError={editor.submitError}
           duplicateKeys={duplicateKeys}
@@ -305,7 +306,7 @@ export function ServiceVariablesRawEditor({
           }}
         />
 
-        {ready ? (
+        {offered ? (
           <ServiceVariablesRawEditorSealed
             sealedKeys={sealedVariables.map((variable) => variable.key)}
             newKeys={newKeys}

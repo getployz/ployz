@@ -53,7 +53,7 @@ const LOG_LEVEL: VariableRecord = { id: "LOG_LEVEL", serviceId: "web", key: "LOG
 
 /** The Service tab's wiring: the raw editor's Apply through the real variables writer, over a Store writer that records each edit. */
 function StoreHarness({ sealing, edits, prepare }: {
-  sealing: "off" | "ready";
+  sealing: "off" | "no_server" | "ready";
   edits: StoreEdit[];
   prepare: Sealing["prepare"];
 }) {
@@ -102,6 +102,22 @@ it("names each sealed variable, and seals the new keys ticked Sealed, across ENV
     { op: "set", path: "web.env.REGION", value: "fsn1" },
   ]);
   expect(prepare).toHaveBeenCalledWith([{ key: "TOKEN", value: "tok_live_123456", target: expect.anything() }]);
+});
+
+it.each(["no_server", "off"] as const)("a key ticked Sealed still goes Sealed once the cached state turns %s", async (later) => {
+  const edits: StoreEdit[] = [];
+  const prepare = vi.fn(async (items: readonly SealItem[]) => items.map((item) => item.value));
+  const { rerender } = render(<StoreHarness sealing="ready" edits={edits} prepare={prepare} />);
+  fireEvent.change(env(), { target: { value: "LOG_LEVEL=info\nTOKEN=tok_live_123456" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Seal TOKEN" }));
+  rerender(<StoreHarness sealing={later} edits={edits} prepare={prepare} />);
+  expect(screen.getByRole("checkbox", { name: "Seal TOKEN" }).getAttribute("aria-checked")).toBe("true");
+  fireEvent.click(screen.getByRole("button", { name: "Update variables" }));
+
+  expect(edits).toHaveLength(1);
+  expect(JSON.stringify(edits[0]?.changes)).not.toContain("tok_live_123456");
+  // The write's fresh read decides: here off, so trunk's legacy secret.
+  expect(await edits[0]?.prepare?.()).toEqual([{ op: "set", path: "web.env.TOKEN", value: { secret: "tok_live_123456" } }]);
 });
 
 it("holds a value it can't seal, saying why", () => {
