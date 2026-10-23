@@ -484,6 +484,7 @@ impl Items {
             resumes: false,
             diverged: false,
             loops: Vec::new(),
+            returns: None,
             callees: Vec::new(),
             sleeps: Vec::new(),
         };
@@ -504,6 +505,8 @@ impl Items {
 /// Where control leaves a loop: its `break`s, and its `continue`s back to the top.
 struct Loop {
     label: Option<String>,
+    /// A labeled block: only a `break` naming it leaves it.
+    block: bool,
     /// Paused at every `break` seen so far; `None` before the first.
     breaks: Option<bool>,
     /// Paused at every `continue` seen so far; `None` before the first.
@@ -526,8 +529,11 @@ struct Body {
     /// The path being visited has returned, broken out or panicked, so no later code in
     /// its block runs on it.
     diverged: bool,
-    /// The loops around the code being visited, innermost last.
+    /// The loops and labeled blocks around the code being visited, innermost last.
     loops: Vec<Loop>,
+    /// Paused at every `return` from an async block awaited in place, while visiting one:
+    /// its returns end the block, not the function. `Some(None)` before the first.
+    returns: Option<Option<bool>>,
     callees: Vec<Call>,
     sleeps: Vec<Sleep>,
 }
@@ -547,8 +553,9 @@ impl Body {
     /// later or never, and its `return`s and `break`s don't leave the code around it.
     fn deferred(&mut self, visit: impl FnOnce(&mut Self)) {
         let loops = std::mem::take(&mut self.loops);
+        let returns = self.returns.take();
         self.may_not_run(visit);
-        self.loops = loops;
+        (self.loops, self.returns) = (loops, returns);
     }
 
     /// Visits one way through a branch, starting from `paused`. `None` when it diverged.
@@ -584,6 +591,7 @@ impl Body {
         let iterate = |body: &mut Self, paused: bool| {
             body.loops.push(Loop {
                 label: label.map(|label| label.name.ident.to_string()),
+                block: false,
                 breaks: None,
                 continues: None,
             });
@@ -623,7 +631,7 @@ impl Body {
                     .rev()
                     .find(|target| target.label.as_deref() == Some(name.as_str()))
             }
-            None => self.loops.last_mut(),
+            None => self.loops.iter_mut().rev().find(|target| !target.block),
         };
         if let Some(target) = target {
             let ways = if continues {
@@ -777,11 +785,26 @@ impl<'ast> Visit<'ast> for Body {
         }
         self.visit_expr(&expr.expr);
         let start = self.paused;
-        let ways: Vec<_> = expr
-            .arms
-            .iter()
-            .map(|arm| self.branch(start, |body| body.visit_arm(arm)))
-            .collect();
+        // A failed guard has run before the next arm is tried.
+        let mut next = start;
+        let mut ways = Vec::new();
+        for arm in &expr.arms {
+            let mut tried = next;
+            ways.push(self.branch(next, |body| {
+                let in_test = body.in_test;
+                for attr in &arm.attrs {
+                    body.visit_attribute(attr);
+                }
+                body.visit_pat(&arm.pat);
+                if let Some((_, guard)) = &arm.guard {
+                    body.visit_expr(guard);
+                    tried = body.paused;
+                }
+                body.visit_expr(&arm.body);
+                body.in_test = in_test;
+            }));
+            next = next && tried;
+        }
         self.join(start, ways);
     }
 
@@ -846,7 +869,31 @@ impl<'ast> Visit<'ast> for Body {
 
     fn visit_expr_return(&mut self, expr: &'ast syn::ExprReturn) {
         syn::visit::visit_expr_return(self, expr);
+        if let Some(returns) = &mut self.returns {
+            *returns = Some(returns.unwrap_or(true) && self.paused);
+        }
         self.diverged = true;
+    }
+
+    /// A labeled block ends where it falls through, or at a `break` naming it.
+    fn visit_expr_block(&mut self, expr: &'ast syn::ExprBlock) {
+        let Some(label) = &expr.label else {
+            syn::visit::visit_expr_block(self, expr);
+            return;
+        };
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        let start = self.paused;
+        self.loops.push(Loop {
+            label: Some(label.name.ident.to_string()),
+            block: true,
+            breaks: None,
+            continues: None,
+        });
+        let end = self.branch(start, |body| body.visit_block(&expr.block));
+        let breaks = self.loops.pop().expect("pushed above").breaks;
+        self.join(start, [end, breaks]);
     }
 
     fn visit_expr_closure(&mut self, expr: &'ast syn::ExprClosure) {
@@ -871,10 +918,13 @@ impl<'ast> Visit<'ast> for Body {
             self.visit_attribute(attr);
         }
         let loops = std::mem::take(&mut self.loops);
-        self.visit_block(&block.block);
-        self.loops = loops;
+        let returns = self.returns.replace(None);
+        let start = self.paused;
+        let end = self.branch(start, |body| body.visit_block(&block.block));
         // A `return` in it ends the block, not the function.
-        self.diverged = false;
+        let exits = self.returns.take().flatten();
+        (self.loops, self.returns) = (loops, returns);
+        self.join(start, [end, exits]);
     }
 
     fn visit_field_value(&mut self, field: &'ast syn::FieldValue) {
