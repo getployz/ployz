@@ -388,15 +388,20 @@ pub(crate) fn no_service(
     environment: &EnvironmentName,
     working: &SavedEnvironmentIntent,
 ) -> RpcError {
-    let names = working
-        .services
-        .iter()
-        .map(|service| service.slug.as_str())
-        .collect::<Vec<_>>();
+    let names = working.services.iter().map(|service| service.slug.as_str());
+    no_service_among(service, environment, names)
+}
+
+/// No Service named `service` in `environment`, naming the close ones of `names`.
+pub(crate) fn no_service_among<'name>(
+    service: &ServiceName,
+    environment: &EnvironmentName,
+    names: impl Iterator<Item = &'name str> + Clone,
+) -> RpcError {
     error::choices(
         format!("No Service named {service} in Environment {environment}"),
         service.as_str(),
-        names.iter().copied(),
+        names,
     )
 }
 

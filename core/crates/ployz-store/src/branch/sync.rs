@@ -502,7 +502,7 @@ pub(crate) fn sealing_targets(
             };
             let service = receiving(&into, &row, &refuse)?;
             let service = Uuid::parse_str(&service.id)
-                .map_err(|_| refuse("this Service has no ID a sealed value binds to"))?;
+                .map_err(|_| refuse(crate::sealing_targets::UNBOUND))?;
             Ok(crate::sealing_targets::SyncSealingTarget {
                 asked: asked.clone(),
                 row,

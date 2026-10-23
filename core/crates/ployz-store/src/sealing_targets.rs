@@ -5,6 +5,7 @@
 use ployz_core::config::RowId;
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -12,7 +13,7 @@ use crate::branch::RowRef;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::variables::VariableKey;
-use crate::{Actor, branch};
+use crate::{Actor, branch, error};
 
 /// Where the secrets of one write land, asked before the CLI seals them.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -60,10 +61,40 @@ pub enum SealingTargetsView {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SealingService {
     pub name: ServiceName,
-    /// The Service's own ID in this Environment, not its lineage.
-    #[ts(type = "string")]
-    pub service: Uuid,
+    /// The Service's own ID in this Environment, not its lineage; `None` when it has
+    /// none a sealed value binds to.
+    #[ts(type = "string | null")]
+    pub service: Option<Uuid>,
 }
+
+impl SealingService {
+    /// The ID that a new secret `key` of Service `name` binds to, among the
+    /// `services` of `environment`.
+    ///
+    /// # Errors
+    /// `not_found` when no Service has that name, and `invalid_argument` when it has
+    /// no ID, as the Store refuses them.
+    pub fn bind(
+        services: &[Self],
+        environment: &EnvironmentSummary,
+        name: &ServiceName,
+        key: &str,
+    ) -> Result<Uuid, RpcError> {
+        let Some(service) = services.iter().find(|service| &service.name == name) else {
+            let names = services.iter().map(|service| service.name.as_str());
+            return Err(scope::no_service_among(name, &environment.name, names));
+        };
+        service.service.ok_or_else(|| {
+            error::invalid(
+                format!("{name}.env.{key}: {UNBOUND}"),
+                json!({ "variable": key }),
+            )
+        })
+    }
+}
+
+/// Why a Service can't take a sealed value: it has no ID one binds to.
+pub(crate) const UNBOUND: &str = "this Service has no ID a sealed value binds to";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SyncSealingTarget {
@@ -104,13 +135,14 @@ pub(crate) fn targets(
                 .working
                 .services
                 .iter()
-                .filter_map(|service| {
-                    Some(SealingService {
-                        name: ServiceName::parse(service.slug.as_str()).ok()?,
-                        service: Uuid::parse_str(&service.id).ok()?,
+                .map(|service| {
+                    Ok(SealingService {
+                        name: ServiceName::parse(service.slug.as_str())
+                            .map_err(|_| error::corrupt("Service name"))?,
+                        service: Uuid::parse_str(&service.id).ok(),
                     })
                 })
-                .collect();
+                .collect::<Result<_, RpcError>>()?;
             Ok(SealingTargetsView::Edit {
                 organization,
                 environment: environment.summary,
