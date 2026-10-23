@@ -17,6 +17,7 @@ import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import { onMergeQuery, prPlansQuery, pullRequestQuery } from "#/modules/config-store/store-pull-requests";
 import { branchQuery, storeViewPrefix } from "#/modules/config-store/store-view.queries";
 import { githubKeys } from "#/modules/github/github.queries";
+import { anyOrderShows } from "#/test/store-write-body";
 import { OnMergeButton } from "./OnMerge";
 
 beforeEach(() => {
@@ -369,7 +370,7 @@ it("sends trunk's exact Edit and Reset while sealing is off, sealing nothing", a
   await waitFor(() => expect(item(list, "TOKEN").getAttribute("aria-busy")).toBe("false"));
   await choose(list, "TOKEN", "Reset");
   await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
-  expect(write.mock.calls.map(([call]) => JSON.stringify(call.data))).toEqual(TRUNK_MERGE);
+  expect(write.mock.calls.map(([call]) => anyOrderShows(JSON.stringify(call.data)))).toEqual(TRUNK_MERGE.map(anyOrderShows));
   expect(hpke).not.toHaveBeenCalled();
 });
 

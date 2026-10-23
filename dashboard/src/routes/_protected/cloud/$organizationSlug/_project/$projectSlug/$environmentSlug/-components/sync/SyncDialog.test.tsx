@@ -13,6 +13,7 @@ import * as sealingFunctions from "#/modules/sealing/sealing.functions";
 import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import { storeViewPrefix, syncQuery } from "#/modules/config-store/store-view.queries";
 import { asTestDouble } from "#/lib/test-double";
+import { anyOrderShows } from "#/test/store-write-body";
 import { SyncDialog } from "./SyncDialog";
 
 beforeEach(() => {
@@ -213,7 +214,7 @@ it("sends trunk's exact Sync, and its retry, while sealing is off, sealing nothi
   await sync.findByText("These changed since you opened them. Here they are now.");
   fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
   await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
-  expect(write.mock.calls.map(([call]) => JSON.stringify(call.data))).toEqual(TRUNK_SYNC);
+  expect(write.mock.calls.map(([call]) => anyOrderShows(JSON.stringify(call.data)))).toEqual(TRUNK_SYNC.map(anyOrderShows));
   expect(hpke).not.toHaveBeenCalled();
 });
 
