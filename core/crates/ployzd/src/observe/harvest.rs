@@ -583,6 +583,7 @@ impl Harvester {
         let stop_signal = found.and_then(stop_signal);
         for exit in exits {
             let marker = exit.settle(state, stop_signal);
+            self.keep_exit(&marker);
             self.record(marker);
         }
     }
@@ -606,9 +607,9 @@ impl Harvester {
         }
     }
 
-    /// Records an exit or OOM kill once, and keeps the exit for history once:
-    /// a forgotten container's `die` or `oom` can come again in a resumed
-    /// stream, and its exit settled again from less evidence.
+    /// Records an exit or OOM kill once: a forgotten container's `die` or
+    /// `oom` can come again in a resumed stream, and its exit settled again
+    /// from less evidence.
     fn record(&mut self, marker: MetricMarker) {
         let Some(key) = Key::of(&marker) else {
             if let Err(error) = segment::append(&self.store, &[Row::Marker(marker.clone())]) {
@@ -618,7 +619,6 @@ impl Harvester {
         };
         match self.settlements.get(&key) {
             Ok(Settlement::New) => {
-                self.keep_exit(&marker);
                 let unfinished = Unfinished {
                     marker,
                     appended: false,
@@ -2012,10 +2012,10 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::{
-        DamageCursor, EXITS_FILE, GAPS_FILE, Harvester, Inspected, Link, Newest, SETTLED_LIMIT,
-        Settlements, Synced, UNFINISHED_FOR_NANOS, container_meta, foreign_log_driver,
-        judge_first_set, link_exact, read_meta, read_resume_from, record_damage, settle_removed,
-        sync_container, write_meta,
+        DamageCursor, GAPS_FILE, Harvester, Inspected, Link, Newest, SETTLED_LIMIT, Settlements,
+        Synced, UNFINISHED_FOR_NANOS, container_meta, foreign_log_driver, judge_first_set,
+        link_exact, read_meta, read_resume_from, record_damage, settle_removed, sync_container,
+        write_meta,
     };
     use crate::{
         machine::{LocalMachineBody, LocalMachineRecord},
@@ -3049,6 +3049,35 @@ mod tests {
             .harvester
             .on_inspected(id, inspected(&running_after(7, 6)));
 
+        assert_eq!(
+            history_exits(&host),
+            [(T0 + 3, Some(137), true), (T0 + 6, Some(137), true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn history_shows_an_exit_settled_again_once_with_the_oom_kill_it_learned() {
+        let host = host().with_machine();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let service = ("ployz.service.id", SERVICE_ID);
+        let die = event("die", T0 + 5, &[service, ("exitCode", "137")]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running
+            .harvester
+            .on_inspected(id, inspected(&self::running(1)));
+        running.harvester.on_docker_event(die.clone());
+        running.settle_exits(|| Inspected::Unanswered);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_docker_event(die);
+        running.settle_exits(|| inspected(&exited(1, 5, 137, true)));
+
+        assert_eq!(history_exits(&host), [(T0 + 5, Some(137), true)]);
+    }
+
+    /// Each exit row a page of the Log Store's history holds.
+    fn history_exits(host: &Host) -> Vec<(i64, Option<i64>, bool)> {
         let query = super::super::query::Query::new(ployz_core::LogHistoryRequest {
             namespace: Some("default".into()),
             limit: 100,
@@ -3062,8 +3091,7 @@ mod tests {
             &std::sync::atomic::AtomicBool::new(false),
         )
         .unwrap();
-        let exits: Vec<_> = page
-            .rows
+        page.rows
             .iter()
             .filter_map(|row| {
                 let ployz_core::HistoryRow::Exit {
@@ -3077,11 +3105,7 @@ mod tests {
                 };
                 Some((*ts, *exit_code, *oom_killed))
             })
-            .collect();
-        assert_eq!(
-            exits,
-            [(T0 + 3, Some(137), true), (T0 + 6, Some(137), true)]
-        );
+            .collect()
     }
 
     #[tokio::test]
@@ -4201,25 +4225,6 @@ mod tests {
         running.settle_exits(|| Inspected::Gone);
         assert_eq!(queued(&host), first);
         assert_eq!(host.markers().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_die_delivered_again_keeps_its_exit_for_history_once() {
-        let host = host().with_machine();
-        let exits = host.store.container(&host.id()).join(EXITS_FILE);
-        fs::create_dir_all(exits.parent().unwrap()).unwrap();
-        let die = event(
-            "die",
-            T0 + 1,
-            &[("ployz.service.id", SERVICE_ID), ("exitCode", "1")],
-        );
-        let mut running = host.harvester();
-        running.harvester.on_docker_event(die.clone());
-        running.settle_exits(|| Inspected::Gone);
-        let mut running = host.harvester();
-        running.harvester.on_docker_event(die);
-        running.settle_exits(|| Inspected::Gone);
-        assert_eq!(fs::read_to_string(&exits).unwrap().lines().count(), 1);
     }
 
     #[tokio::test]

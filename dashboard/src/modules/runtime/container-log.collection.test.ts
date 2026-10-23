@@ -27,13 +27,18 @@ it("the Log Store's read of a timestamp group replaces the live tail's, and a re
   await collection.cleanup();
 });
 
-it("a Store page that repeats a container's exit lands it once", async () => {
-  const collection = createCollection(localOnlyCollectionOptions({ id: "log-exit-repeat-test", getKey: (row: ContainerLogRow) => row.id }));
-  await collection.preload();
-  const exit = projectLogExit({ machineId: "server", machineName: "Server", containerId: "a", serviceName: "api", timestampNanos: "5", exitCode: 1, oomKilled: false });
-  mergeContainerHistory(collection, [row("a", "4", 0, "store"), exit, exit], new Set());
-  expect([...collection.values()].map(kept => kept.id).sort()).toEqual([exit.id, "store/server/a/4/0"]);
-  await collection.cleanup();
+it("a Store page that repeats a container's exit lands it once, as the copy that saw an OOM kill", async () => {
+  const exit = { machineId: "server", machineName: "Server", containerId: "a", serviceName: "api", timestampNanos: "5", exitCode: 137 };
+  const killed = projectLogExit({ ...exit, oomKilled: true });
+  const exited = projectLogExit({ ...exit, oomKilled: false });
+  for (const copies of [[exited, exited], [exited, killed], [killed, exited]]) {
+    const collection = createCollection(localOnlyCollectionOptions({ id: "log-exit-repeat-test", getKey: (row: ContainerLogRow) => row.id }));
+    await collection.preload();
+    mergeContainerHistory(collection, [row("a", "4", 0, "store"), ...copies], new Set());
+    expect([...collection.values()].map(kept => kept.id).sort()).toEqual([exited.id, "store/server/a/4/0"]);
+    expect(collection.get(exited.id)).toMatchObject({ message: (copies.includes(killed) ? killed : exited).message });
+    await collection.cleanup();
+  }
 });
 
 it("keeps only the newest lines past the limit, and a batch with repeats lands once", async () => {
