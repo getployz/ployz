@@ -242,13 +242,16 @@ until [ -f node_modules/.vite/deps/_metadata.json ]; do
   [ "$SECONDS" -lt "$deadline" ] || { echo "up.sh: vite has not finished bundling dependencies after 5 minutes (see $run/vite.log)" >&2; exit 1; }
   sleep 0.5
 done
+# reap.sh starts a dead watchdog again with the timeout recorded here, under this lock, so it never starts one with
+# a timeout this replaces. A lock still held after 5 s is one a killed reaper left.
+for _ in $(seq 50); do mkdir "$run/idle.lock" 2>/dev/null && break; sleep 0.1; done
 if [ -f "$run/idle.pid" ]; then kill -TERM -- "-$(cat "$run/idle.pid")" 2>/dev/null || true; rm -f "$run/idle.pid"; fi
-# reap.sh starts a dead watchdog again with this timeout, not whatever its own caller chose.
 echo "${VERIFY_IDLE_TIMEOUT:-900}" > "$run/idle-timeout"
 if [ "${VERIFY_IDLE_TIMEOUT:-900}" != 0 ]; then
   setsid nohup "$dash/scripts/verify/idle.sh" "$port" > "$run/idle.log" 2>&1 < /dev/null &
   echo $! > "$run/idle.pid"
 fi
+rmdir "$run/idle.lock" 2>/dev/null || true
 base=http://localhost:$port
 curl -s -o /dev/null -H "Cookie: better-auth.session_token=$cookie" "$base/cloud/$org/shop/production" || true
 grep -sh 'stale main@' "$run/sdk.log" >&2 || true
