@@ -189,6 +189,19 @@ fn a_failed_replica_keeps_its_service_active_while_others_still_run() {
     assert_eq!(row.detail, None);
 }
 
+#[test]
+fn a_rollback_does_not_count_new_copies_that_are_going_away() {
+    let groups = [group("web", &[])];
+    let frame = graph_frame(
+        &groups,
+        &[("web", &["failed", "compensating", "compensating"])],
+    );
+    assert_eq!(
+        lines(&frame),
+        ["depth 0", "  ⠋ web  rolling back (1 failed)"]
+    );
+}
+
 fn group(service: &str, dependencies: &[&str]) -> ServiceGroup {
     ServiceGroup {
         service: Some(ServiceName::parse(service).unwrap()),

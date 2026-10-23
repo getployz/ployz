@@ -436,18 +436,40 @@ async fn forward_exec(
     output: &mut crate::operator::ExecOutput,
     detach: bool,
 ) -> Result<i32, Error> {
+    let mut written = ExecWriter::default();
+    let (mut stdout, mut stderr) = (crate::ui::stdout_bytes(), std::io::stderr());
     while let Some(payload) = output.next().await {
-        match ExecResponseFrame::decode(&payload?)? {
+        let frame = match payload.map(|payload| ExecResponseFrame::decode(&payload)) {
+            Ok(Ok(frame)) => frame,
+            Ok(Err(error)) => {
+                written.end(None, &mut stdout, &mut stderr)?;
+                return Err(error.into());
+            }
+            Err(error) => {
+                written.end(None, &mut stdout, &mut stderr)?;
+                return Err(error.into());
+            }
+        };
+        match frame {
             ExecResponseFrame::ExecId(_) if detach => return Ok(0),
             ExecResponseFrame::ExecId(_) => {}
             ExecResponseFrame::Stdout(bytes) => {
-                write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?
+                written.output(Stream::Stdout, &bytes, &mut stdout, &mut stderr)?;
             }
-            ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
-            ExecResponseFrame::Exit(code) => return Ok(code),
-            ExecResponseFrame::Error(error) => return Err(error.into()),
+            ExecResponseFrame::Stderr(bytes) => {
+                written.output(Stream::Stderr, &bytes, &mut stdout, &mut stderr)?;
+            }
+            ExecResponseFrame::Exit(code) => {
+                written.end(Some(code), &mut stdout, &mut stderr)?;
+                return Ok(code);
+            }
+            ExecResponseFrame::Error(error) => {
+                written.end(None, &mut stdout, &mut stderr)?;
+                return Err(error.into());
+            }
         }
     }
+    written.end(None, &mut stdout, &mut stderr)?;
     Err(Error::coded(
         RpcErrorCode::Unavailable,
         if detach {
@@ -456,6 +478,60 @@ async fn forward_exec(
             "Exec stream ended without an exit status"
         },
     ))
+}
+
+/// Which of an exec's output streams a frame came on.
+#[derive(Clone, Copy)]
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+/// Writes an exec's output where it belongs. Docker writes why it couldn't start the
+/// command, such as a missing binary, into the stdout stream, then ends the exec with 126
+/// or 127. So a first stdout frame that reads like that waits for the next frame: the exit
+/// it expects sends it to stderr, and anything else to stdout, as the command's own output.
+#[derive(Default)]
+struct ExecWriter {
+    started: bool,
+    held: Option<Vec<u8>>,
+}
+
+impl ExecWriter {
+    fn output(
+        &mut self,
+        stream: Stream,
+        bytes: &[u8],
+        stdout: &mut dyn Write,
+        stderr: &mut dyn Write,
+    ) -> std::io::Result<()> {
+        if let Some(held) = self.held.take() {
+            write_stdout_frame(stdout, &held)?;
+        }
+        let first = !std::mem::replace(&mut self.started, true);
+        match stream {
+            Stream::Stdout if first && bytes.starts_with(b"OCI runtime exec failed: ") => {
+                self.held = Some(bytes.to_vec());
+                Ok(())
+            }
+            Stream::Stdout => write_stdout_frame(stdout, bytes),
+            Stream::Stderr => stderr.write_all(bytes),
+        }
+    }
+
+    /// Release a held frame once the exec ends, with its exit code when it sent one.
+    fn end(
+        &mut self,
+        code: Option<i32>,
+        stdout: &mut dyn Write,
+        stderr: &mut dyn Write,
+    ) -> std::io::Result<()> {
+        match self.held.take() {
+            Some(held) if matches!(code, Some(126 | 127)) => stderr.write_all(&held),
+            Some(held) => write_stdout_frame(stdout, &held),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Stream Service logs; every Service of the Environment when none is named.
@@ -1338,6 +1414,59 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn a_command_docker_could_not_start_reports_on_stderr() {
+        let missing: &[u8] = b"OCI runtime exec failed: exec failed: unable to start container \
+            process: exec: \"nope\": executable file not found in $PATH\r\n";
+        let written = |frames: &[(Stream, &[u8])], exit: Option<i32>| {
+            let (mut writer, mut stdout, mut stderr) =
+                (ExecWriter::default(), Vec::new(), Vec::new());
+            for (stream, bytes) in frames {
+                writer
+                    .output(*stream, bytes, &mut stdout, &mut stderr)
+                    .unwrap();
+            }
+            writer.end(exit, &mut stdout, &mut stderr).unwrap();
+            (
+                String::from_utf8(stdout).unwrap(),
+                String::from_utf8(stderr).unwrap(),
+            )
+        };
+        let text = String::from_utf8(missing.to_vec()).unwrap();
+        assert_eq!(
+            written(&[(Stream::Stdout, missing)], Some(127)),
+            (String::new(), text.clone())
+        );
+        assert_eq!(
+            written(&[(Stream::Stdout, missing)], Some(0)),
+            (text.clone(), String::new()),
+            "a command that prints those words itself keeps them on stdout"
+        );
+        assert_eq!(
+            written(
+                &[(Stream::Stdout, missing), (Stream::Stdout, b"more\n")],
+                Some(127)
+            ),
+            (format!("{text}more\n"), String::new()),
+            "Docker ends the exec right after its own message"
+        );
+        assert_eq!(
+            written(
+                &[(Stream::Stdout, b"hi\n"), (Stream::Stdout, missing)],
+                Some(127)
+            ),
+            (format!("hi\n{text}"), String::new()),
+            "only output ahead of any other can be Docker's"
+        );
+        assert_eq!(
+            written(
+                &[(Stream::Stderr, b"oops\n"), (Stream::Stdout, b"hi\n")],
+                Some(0)
+            ),
+            ("hi\n".to_owned(), "oops\n".to_owned())
+        );
+    }
 
     #[test]
     fn the_retry_keeps_the_typed_flags_that_chose_where_the_command_ran() {
