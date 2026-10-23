@@ -257,9 +257,12 @@ def lookup(found):
 
 
 def from_main(artifact):
-    """Whether an artifact is a live upload from a main run of this repository."""
+    """Whether an artifact is a live upload from a main run of this repository: a run on main, or main's merge
+    queue, whose run is main's (#3206): gh-readonly-queue/ branches are the merge queue's. A PR the queue later drops
+    has uploaded under its own commit too, which Nick accepted."""
     run = artifact.get("workflow_run") or {}
-    return (not artifact["expired"] and run.get("head_branch") == "main"
+    branch = run.get("head_branch") or ""
+    return (not artifact["expired"] and (branch == "main" or branch.startswith("gh-readonly-queue/main/"))
             and run.get("head_repository_id") == run.get("repository_id"))
 
 

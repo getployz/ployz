@@ -74,6 +74,8 @@ panel had a 60% real-bug rate; CodeRabbit had 11%.
 
 ### Main is red
 
-Revert the culprit first, then fix forward in a new PR. A main run that started always finishes, but a
-newer push replaces one still waiting, so main skips commits. When the commits before the red run show
-cancelled, the culprit may be among them: check those predecessors.
+Revert the culprit first, then fix forward in a new PR. A push to main runs no CI: each main commit's
+checks are those of its merge queue run, on that same commit, so `gh run list --branch main` shows none
+of them. Find them with `gh run list --commit <sha>`. A queue run that fails never merges, so a red on
+main comes from a manual run (`gh workflow run ci.yml --ref main`), usually something outside the code,
+such as Docker Hub.

@@ -258,6 +258,14 @@ class Cache(Scratch):
         self.upload(found, b"tag", run=51, branch="v0.3.0")
         self.assertIsNone(artifacts.fetch(found, self.root / "out"))
 
+    def test_an_upload_from_mains_merge_queue_is_mains(self):
+        found = artifacts.Key("sdk", "6" * 32, {})
+        self.upload(found, b"queue", run=60, branch="gh-readonly-queue/main/pr-3206-0123abcd")
+        self.upload(found, b"other queue", run=61, branch="gh-readonly-queue/release/0.3/pr-7-4567ef01")
+        meta = artifacts.fetch(found, self.root / "out")
+        self.assertEqual(meta["run"], 60)
+        self.assertRestored(b"queue")
+
     def test_a_download_that_does_not_match_its_digest_is_not_cached(self):
         found = artifacts.Key("sdk", "3" * 32, {})
         self.upload(found, b"tampered", run=30, digest="sha256:" + "0" * 64)
