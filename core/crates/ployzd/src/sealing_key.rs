@@ -200,9 +200,7 @@ impl SealingKey {
         <Kem as hpke::Kem>::PrivateKey::from_bytes(&self.0)
             .expect("an X25519 private key is any 32 bytes")
     }
-}
 
-impl SealingKey {
     pub(crate) const fn from_secret(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
