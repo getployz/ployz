@@ -206,6 +206,7 @@ fn capture_target(
     let name = service.name.to_string();
     let (build_method, context, dockerfile) = match spec.recipe {
         Recipe::Railpack { command } => {
+            refuse_railpack_settings(sealed.keys())?;
             if let Some(command) = command {
                 args.insert("RAILPACK_BUILD_CMD".into(), command);
             }
@@ -300,6 +301,19 @@ fn refuse_declared_args<'name>(
     match sealed.find(|name| declared.contains(*name)) {
         Some(name) => Err(Error::Sealed(format!(
             "{name} is sealed. Read it with RUN --mount=type=secret,id={name},env={name}."
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Railpack reads its `RAILPACK_*` settings while it plans, where a Sealed
+/// value is an empty placeholder, so sealing one would plan a different Build.
+fn refuse_railpack_settings<'name>(
+    mut sealed: impl Iterator<Item = &'name String>,
+) -> Result<(), Error> {
+    match sealed.find(|name| name.starts_with("RAILPACK_")) {
+        Some(name) => Err(Error::Sealed(format!(
+            "{name} is sealed. Railpack settings can't be sealed."
         ))),
         None => Ok(()),
     }
@@ -960,6 +974,44 @@ mod tests {
         for dockerfile in [MOUNTING_DOCKERFILE, "FROM scratch\nARG PLAIN\n"] {
             capture_one(&intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
         }
+    }
+
+    #[test]
+    fn a_sealed_railpack_setting_is_refused_by_name() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut intent, _) = sealed_intent(7);
+        let setting = EnvValue::Sealed(ployz_core::SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
+            scope: ployz_core::SealedScope::Shared,
+            key: "RAILPACK_BUILD_CMD".into(),
+        });
+        let ciphertext = serde_json::to_string(&setting).unwrap();
+        intent
+            .target
+            .first_mut()
+            .unwrap()
+            .container
+            .environment
+            .insert("RAILPACK_BUILD_CMD".into(), setting);
+        let railpack = || BuildSpec {
+            context: root.path().to_owned(),
+            recipe: Recipe::Railpack { command: None },
+        };
+        let error = capture_one(&intent, railpack()).err().unwrap().to_string();
+        assert_eq!(
+            error,
+            "RAILPACK_BUILD_CMD is sealed. Railpack settings can't be sealed."
+        );
+        assert!(!error.contains(&ciphertext));
+        assert!(!error.contains("visible"));
+        // A Dockerfile never reads Railpack settings, so it mounts the value like any other.
+        let dockerfile = "FROM scratch
+RUN --mount=type=secret,id=RAILPACK_BUILD_CMD true
+";
+        capture_one(&intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
+        // Only the prefix is refused: another sealed value rides as a fingerprint.
+        let (intent, _) = sealed_intent(7);
+        capture_one(&intent, railpack()).unwrap();
     }
 
     #[test]
