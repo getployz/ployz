@@ -257,7 +257,7 @@ before it stops.
 
 - **No root, no cloud lookups.** `web` and `worker` run as the unprivileged `node` user, and by
   default don't contact a cloud provider's metadata address such as `169.254.169.254` at startup.
-  Setting `OTEL_NODE_RESOURCE_DETECTORS=all` turns those lookups back on.
+  When telemetry is on, setting `OTEL_NODE_RESOURCE_DETECTORS=all` turns those lookups back on.
 - **No telemetry by default.** `web` starts the OpenTelemetry SDK only when you set an OTLP
   endpoint, such as `OTEL_EXPORTER_OTLP_ENDPOINT`, or name an exporter, such as
   `OTEL_TRACES_EXPORTER=console`. Without one it starts no tracing and sends nothing.

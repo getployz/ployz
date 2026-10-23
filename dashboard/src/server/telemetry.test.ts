@@ -12,6 +12,7 @@ const execFile = promisify(execFileCallback);
 const dashboard = new URL("../..", import.meta.url).pathname;
 
 // The app as web starts it: a named ESM import of node:http, which only the loader hook can instrument.
+// It exits by draining, so the SDK flushes its spans on beforeExit, as web's does on shutdown.
 const app = `
 import { createServer, request } from "node:http";
 const server = createServer((_, response) => response.end("ok")).listen(0, () => {
@@ -19,7 +20,7 @@ const server = createServer((_, response) => response.end("ok")).listen(0, () =>
     response.resume();
     response.on("end", () => {
       console.log(JSON.stringify({ sdk: Symbol.for("opentelemetry.js.api.1") in globalThis }));
-      setTimeout(() => process.exit(0), 1500);
+      server.close();
     });
   }).end();
 });
@@ -46,7 +47,6 @@ async function start(env: Record<string, string>) {
       OTEL_NODE_RESOURCE_DETECTORS: "env",
       OTEL_METRICS_EXPORTER: "none",
       OTEL_LOGS_EXPORTER: "none",
-      OTEL_BSP_SCHEDULE_DELAY: "100",
       ...env,
     },
     timeout: 20_000,
