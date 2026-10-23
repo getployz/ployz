@@ -3,7 +3,7 @@ import { Chacha20Poly1305 } from "@hpke/chacha20poly1305";
 import { DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/dhkem-x25519";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SealError } from "#/modules/sealing/seal-error";
-import { sealValue, sealedValueProblem } from "./seal.client";
+import { sealValue, sealedValueProblem } from "./seal-value";
 
 // Test keys only. ployzd's `sealing_key.rs` opens `CIPHERTEXT` from the same literals, so both sides stay compatible.
 const RECIPIENT_PRIVATE_KEY = "347ace27753bb0420141f071765286281c5fb4c450a9811d4ab13b67ac3da146";

@@ -8,7 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "#/components/ui/dialog";
-import { sealedValueProblem } from "#/modules/variables/seal.client";
+import { sealedValueProblem } from "#/modules/variables/seal-value";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { VariableRecord } from "#/modules/variables/variables";
 import {

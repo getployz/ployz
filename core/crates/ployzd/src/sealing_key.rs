@@ -439,7 +439,7 @@ mod tests {
         );
     }
 
-    /// The vector `dashboard/src/modules/variables/seal.client.test.ts` seals in the
+    /// The vector `dashboard/src/modules/variables/seal-value.test.ts` seals in the
     /// browser, from the same literals. Test keys only.
     #[test]
     fn a_value_the_browser_sealed_opens_only_for_the_variable_it_was_sealed_as() {

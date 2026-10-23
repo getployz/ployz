@@ -1,7 +1,7 @@
 import { LockIcon } from "lucide-react";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
-import { warmSealing } from "#/modules/variables/seal.client";
+import { warmSealing } from "#/modules/variables/seal-value";
 
 /**
  * While sealing is ready, or a new key is ticked: the sealed variables, which the text never holds and a save never removes, and a Sealed

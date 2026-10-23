@@ -8,7 +8,7 @@ import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { expect } from "vitest";
 import { callStoreAsMember, writeStoreAsMember } from "#/modules/config-store/config-store.server";
-import { sealValue } from "#/modules/variables/seal.client";
+import { sealValue } from "#/modules/variables/seal-value";
 import type { SealItem } from "#/modules/variables/sealing";
 import { asTestDouble } from "#/lib/test-double";
 import { Database } from "#/server/database.server";

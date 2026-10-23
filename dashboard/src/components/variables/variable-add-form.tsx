@@ -8,7 +8,7 @@ import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLab
 import { Input } from "#/components/ui/input";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
-import { sealedValueProblem, warmSealing } from "#/modules/variables/seal.client";
+import { sealedValueProblem, warmSealing } from "#/modules/variables/seal-value";
 import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
 import { parseDisplayToParts } from "#/modules/variables/variable-template";
 import { variableKeyError, type VariableRecord } from "#/modules/variables/variables";

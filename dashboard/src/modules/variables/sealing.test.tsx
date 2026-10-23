@@ -24,7 +24,7 @@ async function keyPair() {
   return { privateKey: pair.privateKey, publicKey: btoa(String.fromCharCode(...raw)) };
 }
 
-/** Whether `sealed` opens with `privateKey`; the AAD is checked by `seal.client.test.ts`, so any AAD failure is a wrong key here too. */
+/** Whether `sealed` opens with `privateKey`; the AAD is checked by `seal-value.test.ts`, so any AAD failure is a wrong key here too. */
 async function opensWith(sealed: ClientSealedValue, privateKey: CryptoKeyPair["privateKey"]) {
   const bytes = Uint8Array.from(atob(sealed.value.sealed), (char) => char.charCodeAt(0));
   const recipient = await suite.createRecipientContext({ recipientKey: privateKey, enc: bytes.slice(0, 32).buffer, info: new TextEncoder().encode("ployz-sealed-v1").buffer });

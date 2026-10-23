@@ -3,7 +3,7 @@ import type { ClientSealedValue, SecretValue } from "@ployz/sdk";
 import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import { SealError } from "#/modules/sealing/seal-error";
 import { isUnauthorized } from "#/lib/error-message";
-import { sealValue } from "./seal.client";
+import { sealValue } from "./seal-value";
 
 /** A Sealed value to send: its plaintext, and the variable it goes to. */
 export type SealItem = {

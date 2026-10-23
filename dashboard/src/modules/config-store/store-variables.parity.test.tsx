@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as sealingFunctions from "#/modules/sealing/sealing.functions";
-import * as seal from "#/modules/variables/seal.client";
+import * as seal from "#/modules/variables/seal-value";
 import { useSealing } from "#/modules/variables/sealing";
 import { diffVariables, parseEnv, parseJson } from "#/modules/variables/variable-raw-editor";
 import * as functions from "./store.functions";
