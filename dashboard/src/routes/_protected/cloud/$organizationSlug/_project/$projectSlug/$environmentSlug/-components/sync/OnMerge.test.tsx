@@ -5,10 +5,12 @@ import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
 import type { BranchView, ConfigCommand, ConfigQuery, ConfigView, MergeRow, OnMerge, PrPlansView, PullRequestView, RowId } from "@ployz/sdk";
+import { CipherSuite } from "@hpke/core";
 import { toast } from "sonner";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
+import * as sealingFunctions from "#/modules/sealing/sealing.functions";
 import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import { onMergeQuery, prPlansQuery, pullRequestQuery } from "#/modules/config-store/store-pull-requests";
 import { branchQuery, storeViewPrefix } from "#/modules/config-store/store-view.queries";
@@ -326,4 +328,35 @@ it("reads a Kept row of any kind as Kept, with nothing to do", async () => {
   const list = await panel();
   expect(item(list, "Kept").textContent).toBe("webMount of dataKept");
   expect(list.queryByRole("button", { name: "More for Mount of data" })).toBeNull();
+});
+
+/** What a secret's Edit, a plain Edit and a Reset handed the server function at 686f82827. */
+const TRUNK_MERGE = [
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:env.TOKEN\",\"value\":\"merge-secret\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:env.API_URL\",\"value\":\"http://c\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:env.TOKEN\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
+];
+
+it("sends trunk's exact Edit and Reset while sealing is off, sealing nothing", async () => {
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "off" } });
+  const hpke = vi.spyOn(CipherSuite.prototype, "seal");
+  const { store, write } = open();
+  const list = await panel();
+  await choose(list, "TOKEN", "Edit");
+  const secret = within(await screen.findByRole("dialog", { name: /TOKEN/u }));
+  fireEvent.change(secret.getByLabelText("TOKEN in production"), { target: { value: "merge-secret" } });
+  store.onMerge = onMerge(rows.map((entry) => entry.name === "env.TOKEN" ? { ...entry, ride: "edited", lands: { secret: true } } : entry));
+  fireEvent.click(secret.getByRole("button", { name: "Save" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(item(list, "TOKEN").getAttribute("aria-busy")).toBe("false"));
+  await choose(list, "API_URL", "Edit");
+  const plain = within(await screen.findByRole("dialog", { name: /API_URL/u }));
+  fireEvent.change(plain.getByLabelText("API_URL in production"), { target: { value: "http://c" } });
+  fireEvent.click(plain.getByRole("button", { name: "Save" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(item(list, "TOKEN").getAttribute("aria-busy")).toBe("false"));
+  await choose(list, "TOKEN", "Reset");
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
+  expect(write.mock.calls.map(([call]) => JSON.stringify(call.data))).toEqual(TRUNK_MERGE);
+  expect(hpke).not.toHaveBeenCalled();
 });

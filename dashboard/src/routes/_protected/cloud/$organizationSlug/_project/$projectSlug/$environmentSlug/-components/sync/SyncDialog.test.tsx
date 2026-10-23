@@ -2,11 +2,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { RowId, SyncRow, SyncView } from "@ployz/sdk";
+import { CipherSuite } from "@hpke/core";
 import { Suspense } from "react";
 import { toast } from "sonner";
 import { afterEach, assert, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
+import * as sealingFunctions from "#/modules/sealing/sealing.functions";
 import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import { storeViewPrefix, syncQuery } from "#/modules/config-store/store-view.queries";
 import { SyncDialog } from "./SyncDialog";
@@ -187,4 +189,28 @@ it("drops a flip once its change moves under the review, and says so", async () 
   expect(sync.getByRole("checkbox", { name: /^LOG_LEVEL/u }).getAttribute("aria-checked")).toBe("true");
   expect(sync.getByRole("checkbox", { name: /^MODE/u }).getAttribute("aria-checked")).toBe("false");
   expect(sync.getByRole("button", { name: "Sync 4 changes" })).toBeTruthy();
+});
+
+/** What a Sync with typed secrets, and its retry, handed the server function at 686f82827. */
+const TRUNK_SYNC = [
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"},\"picks\":[\"a:variables.LOG_LEVEL\",\"a:variables.TOKEN\",\"w:node\",\"w:variables.MODE\",\"w:variables.KEY\"],\"values\":{\"a:variables.TOKEN\":\"token-value\",\"w:variables.KEY\":\"key-value\"},\"version\":\"4:abc\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"close_after\":true},\"shows\":[{\"query\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"}},{\"query\":\"environments\",\"project\":\"shop\"}]}",
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"},\"picks\":[\"a:variables.LOG_LEVEL\",\"a:variables.TOKEN\",\"w:node\",\"w:variables.MODE\",\"w:variables.KEY\"],\"values\":{\"a:variables.TOKEN\":\"token-value\",\"w:variables.KEY\":\"key-value\"},\"version\":\"4:abc\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"close_after\":true},\"shows\":[{\"query\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"}},{\"query\":\"environments\",\"project\":\"shop\"}]}",
+];
+
+it("sends trunk's exact Sync, and its retry, while sealing is off, sealing nothing", async () => {
+  let n = 0;
+  vi.spyOn(crypto, "randomUUID").mockImplementation(() => `00000000-0000-4000-8000-00000000000${++n}`);
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "off" } });
+  const hpke = vi.spyOn(CipherSuite.prototype, "seal");
+  const { write } = open();
+  write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "stale" } } as never);
+  const sync = await dialog();
+  fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "token-value" } });
+  fireEvent.change(sync.getByLabelText("Set production's value of KEY"), { target: { value: "key-value" } });
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await sync.findByText("These changed since you opened them. Here they are now.");
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+  expect(write.mock.calls.map(([call]) => JSON.stringify(call.data))).toEqual(TRUNK_SYNC);
+  expect(hpke).not.toHaveBeenCalled();
 });
