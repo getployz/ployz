@@ -498,7 +498,8 @@ pub(super) fn failure(
             operation, error, ..
         } => (Some(&operation.spec.name), operation.machine_id, error),
     };
-    let ployz_store::Failure { reason, cause, .. } = ployz_store::Failure::of(error, operations);
+    let ployz_store::Failure { reason, cause, .. } =
+        ployz_store::Failure::on(error, operations, Some(machine));
     let message = crate::ui::sentence(match service {
         Some(service) => format!("{service}: {reason}"),
         None => reason,

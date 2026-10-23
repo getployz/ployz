@@ -1001,6 +1001,40 @@ fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
 }
 
 #[test]
+fn a_full_disk_names_the_server_that_ran_out() {
+    let run = operation(0, MachineId::random(), OperationStatus::Pending);
+    let docker =
+        "Docker stream error: write /var/lib/containerd/ingest/ab/data: no space left on device";
+    let full = ployz_core::DiskFull {
+        docker_root: "/var/lib/containerd".into(),
+        free_bytes: 0,
+    };
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: run.operation.clone(),
+            error: ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error: RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: full.to_string(),
+                    details: full.details(),
+                    cause: vec![docker.into()],
+                },
+            },
+        },
+        unexecuted: Vec::new(),
+        services: Vec::new(),
+    };
+    assert_eq!(
+        crate::ui::plain(&failure(&outcome, std::slice::from_ref(&run), Vec::new())),
+        format!(
+            "error: web: Server edge's disk is full: 0 MB free under /var/lib/containerd.\n  cause: {docker}\n"
+        )
+    );
+}
+
+#[test]
 fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     let machine = MachineId::random();
     let replacement = ployz_core::ReplacementOperation {
