@@ -404,6 +404,8 @@ impl Client {
                 Ok(response) => return Ok(response),
                 Err(error) => error,
             };
+            // The entry's router made this failure, so the channel to the entry works.
+            let entry_answered = error.routed_by_entry();
             let error = crate::connect::keep_target_reply(&mut reply, error);
             if error.retry() != ployz_core::Retry::Now {
                 return Err(crate::connect::keep_lost_call(lost, error));
@@ -415,7 +417,7 @@ impl Client {
                 return Err(crate::connect::keep_lost_call(lost, error));
             }
             tokio::time::sleep(delay).await;
-            redial = true;
+            redial = !entry_answered;
             if error.target_replied() {
                 // The target answered after the loss: that answer is the news now.
                 lost = None;
