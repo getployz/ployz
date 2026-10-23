@@ -554,11 +554,12 @@ impl<'m> Store<'m> {
                     && !accept.is_empty()
                     && accept.iter().all(|name| carried.accept.contains(name))
                 {
+                    // `accept` can hold Volumes accepted before that lose nothing now,
+                    // so the message names none: the retry line names each.
                     error.message = format!(
-                        "{} {typed} doesn't cover deleting the data of {}. Retry with the \
+                        "{} {typed} doesn't cover the data this deletes. Retry with the \
                          version below",
-                        self.version_flag().1,
-                        accept.join(", ")
+                        self.version_flag().1
                     );
                 }
                 let retry = self.retry(Carried {
@@ -1873,8 +1874,8 @@ mod tests {
         assert_eq!(hints, [Hint::Retry(retry.into())]);
         assert_eq!(
             message,
-            "--expect-version 33:4:0.4 doesn't cover deleting the data of big1, big2. \
-             Retry with the version below"
+            "--expect-version 33:4:0.4 doesn't cover the data this deletes. Retry with the \
+             version below"
         );
         // Naming only some of them is still answered by naming each.
         let (hints, message) = accepting(&[
