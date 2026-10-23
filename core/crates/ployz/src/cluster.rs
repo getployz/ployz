@@ -6,18 +6,20 @@ use std::{
 
 use futures_util::future::join_all;
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerAction, ContainerId, ContainerNow, ContainerObservation,
-    ContainerWant, CopyRole, DataLoss, DataLossConfirmation, DescribeContractRequest,
-    DockerVolumeId, DockerVolumeName, EnsureContainerRequest, EnvironmentValues, ForgetRequest,
-    Forgotten, InspectRequest, InspectStorageRequest, LeaveRequest, Left, ListContainersRequest,
-    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    BridgeEndpointCapacity, ByteCapacity, ContainerAction, ContainerId, ContainerNow,
+    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation,
+    DescribeContractRequest, DockerVolumeId, DockerVolumeName, EnsureContainerRequest,
+    EnvironmentValues, ForgetRequest, Forgotten, InspectRequest, InspectStorageRequest,
+    InspectTelemetry, LeaveRequest, Left, ListContainersRequest, ListImagesRequest,
+    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
     MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
     MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest, RemoveVolumesRequest,
     ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, RuntimeWatchFrame,
-    RuntimeWatchRequest, StopOptions, StorageCapacity, UnconfirmedDataLoss, VolumeInventory,
-    VolumeRemoval, VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
+    RuntimeWatchRequest, StopOptions, StorageCapacity, TelemetryObservation, UnconfirmedDataLoss,
+    VolumeInventory, VolumeRemoval, VolumeRemovalOutcome, decode_runtime_watch_frame,
+    derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1132,6 +1134,36 @@ impl Client {
             }
         }
         result
+    }
+
+    /// Read the space under each reachable Machine's Docker root. A Machine that fails or is
+    /// slow to answer is left out, since the reading only ever adds a warning.
+    pub(crate) async fn observe_docker_disks(
+        &self,
+        machines: &[MachineObservation],
+    ) -> Vec<(MachineId, ByteCapacity)> {
+        let reads = machines
+            .iter()
+            .filter(|observed| observed.invites_rpc())
+            .map(|observed| async move {
+                let machine = observed.machine.id;
+                let request = InspectRequest {
+                    telemetry: InspectTelemetry::Full,
+                    ..Default::default()
+                };
+                let target = MachineTarget::from(&machine);
+                let read = self.invoke::<op::Inspect>(request, &target, None);
+                match tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, read).await {
+                    Ok(Ok(details)) => match details.telemetry {
+                        Some(TelemetryObservation::Full { host, .. }) => {
+                            Some((machine, host.docker_root()))
+                        }
+                        _ => None,
+                    },
+                    Ok(Err(_)) | Err(_) => None,
+                }
+            });
+        join_all(reads).await.into_iter().flatten().collect()
     }
 
     /// List Containers on every visible Machine and derive the observed Services.

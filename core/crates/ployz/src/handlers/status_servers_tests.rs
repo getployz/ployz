@@ -248,6 +248,32 @@ fn judged(machines: Vec<MachineObservation>, live: LiveServices<RpcError>) -> Ch
 }
 
 #[test]
+fn status_names_a_server_whose_docker_disk_is_nearly_full() {
+    let [one, two, _] = machines();
+    let disks = [
+        (
+            one.id,
+            ployz_core::ByteCapacity::parse(24_000_000_000, 30_000_000).unwrap(),
+        ),
+        (
+            two.id,
+            ployz_core::ByteCapacity::parse(24_000_000_000, 12_000_000_000).unwrap(),
+        ),
+    ];
+    let attention = disk_attention(&listed(&[&one, &two], &[]), &disks);
+    assert_eq!(
+        serde_json::to_value(&attention).unwrap(),
+        json!([{
+            "reason": "disk_full",
+            "message": "Its disk is nearly full: 30 MB free for Docker. \
+                        Pulling an image onto it can fail until you free space.",
+            "machine": "machine-1",
+            "free_bytes": 30_000_000,
+        }])
+    );
+}
+
+#[test]
 fn status_names_a_service_whose_copies_crash() {
     let [one, two, three] = machines();
     let check = judged(
