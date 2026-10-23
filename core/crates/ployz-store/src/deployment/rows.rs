@@ -352,6 +352,36 @@ fn server_of(id: &str, operations: &[OperationRow]) -> String {
     format!("Server {name}")
 }
 
+/// What the transport said when the call to `machine` itself went unanswered: the
+/// client's message names that Machine by its ID or its name, and no other Machine
+/// is named as the silent one.
+fn unanswered_on<'e>(
+    error: &'e RpcError,
+    machine: &MachineId,
+    operations: &[OperationRow],
+) -> Option<&'e str> {
+    if !error.target_unanswered() {
+        return None;
+    }
+    let id = machine.to_string();
+    if let Some(named) = error
+        .details
+        .get("machine_id")
+        .and_then(serde_json::Value::as_str)
+        && named != id
+    {
+        return None;
+    }
+    let server = server_of(&id, operations);
+    [id.as_str(), server.trim_start_matches("Server ")]
+        .into_iter()
+        .find_map(|known| {
+            error
+                .message
+                .strip_prefix(&format!("Machine {known} did not answer: "))
+        })
+}
+
 impl Failure {
     /// `error` for users. A Server that refused for want of a capability is named
     /// from `operations`, and its sentence stands alone.
@@ -414,26 +444,25 @@ impl Failure {
                 )
             }
             // The call to the row's Server went unanswered, by the router's or this
-            // client's deadline, and the client's message leads with the Machine as it
-            // knew it. The row knows its name, so the reason names it and the cause
-            // keeps what the transport said.
+            // client's deadline, and the client's message leads with that Machine as
+            // it knew it. The row knows its name, so the reason names it and the cause
+            // keeps what the transport said. Another Machine's silence, as a listing
+            // across the Cluster meets it, names that Machine and keeps its words; a
+            // limits update keeps its own outcome below.
             ExecutionError::Machine { action, error }
-                if let Some(id) = machine
-                    && error.target_unanswered() =>
+                if *action != MachineAction::UpdateContainerLimits
+                    && let Some(id) = machine
+                    && let Some(said) = unanswered_on(error, &id, operations) =>
             {
-                let id = id.to_string();
-                let server = server_of(&id, operations);
-                let said = [&id, server.trim_start_matches("Server ")]
-                    .into_iter()
-                    .find_map(|known| {
-                        error
-                            .message
-                            .strip_prefix(&format!("Machine {known} did not answer: "))
-                    })
-                    .unwrap_or(&error.message);
                 let mut cause = vec![said.to_owned()];
                 cause.extend(ployz_core::error_chain::causes(error));
-                (format!("{server} did not answer during {action}"), cause)
+                (
+                    format!(
+                        "{} did not answer during {action}",
+                        server_of(&id.to_string(), operations)
+                    ),
+                    cause,
+                )
             }
             ExecutionError::Machine {
                 action: MachineAction::PullImage,
@@ -1549,6 +1578,40 @@ mod tests {
             "Server prod-1 did not answer during create Container"
         );
         assert_eq!(named.cause, ["deadline has elapsed"]);
+        // Another Machine's silence, met listing across the Cluster, is not this row's.
+        let other = unanswered("Machine prod-2 did not answer: deadline has elapsed".into());
+        let kept = Failure::on(&other, &operations, Some(machine));
+        assert_eq!(kept.reason, "create Container failed");
+        assert_eq!(
+            kept.cause,
+            ["Machine prod-2 did not answer: deadline has elapsed"]
+        );
+        let mut tagged = RpcError::unanswered_target(
+            RpcErrorCode::Unavailable,
+            format!("Machine {machine_id} did not answer: deadline has elapsed"),
+        );
+        tagged.details["machine_id"] = serde_json::json!("b".repeat(32));
+        let elsewhere = ExecutionError::Machine {
+            action: MachineAction::CreateContainer,
+            error: tagged,
+        };
+        assert_eq!(
+            Failure::on(&elsewhere, &operations, Some(machine)).reason,
+            "create Container failed"
+        );
+        // A limits update keeps saying its live limits are unknown.
+        let limits = ExecutionError::Machine {
+            action: MachineAction::UpdateContainerLimits,
+            error: RpcError::unanswered_target(
+                RpcErrorCode::Unavailable,
+                format!("Machine {machine_id} did not answer: deadline has elapsed"),
+            ),
+        };
+        assert!(
+            Failure::on(&limits, &operations, Some(machine))
+                .reason
+                .ends_with("could not confirm the new limits")
+        );
         // A reader that doesn't know which Machine the call went to keeps the client's words.
         let kept = Failure::of(&by_id, &operations);
         assert_eq!(kept.reason, "create Container failed");
