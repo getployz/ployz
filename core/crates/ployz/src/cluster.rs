@@ -117,9 +117,18 @@ impl Client {
     }
 
     /// Replace the channel, and the entry it confirmed, with a freshly confirmed one.
+    /// Clones share the channel, so an entry that now describes itself as another
+    /// Machine is refused, as by [`Self::redial_shared`], and stays the one to expect.
     async fn redial(&mut self) -> Result<(), ConnectError> {
-        self.entry = None;
-        self.entry = self.reconnect(None).await?;
+        let expected = self.entry.take();
+        match self.reconnect(expected).await {
+            Ok(entry) => self.entry = entry,
+            Err(error @ ConnectError::IdentityMismatch { .. }) => {
+                self.entry = expected;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        }
         Ok(())
     }
 
