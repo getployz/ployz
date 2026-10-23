@@ -11,11 +11,12 @@ use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerObservation, ContainerRun, ContainerRuntimeObservation,
-    CopyRotation, EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation,
-    MachineTarget, MembershipObservation, Namespace, QualifiedService, ReadRoutedAddressesRequest,
-    RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, ServiceContainer, ServiceMode,
-    ServiceName, ServiceObservation, ServingContainer, Unacked, op, serving_containers,
+    ByteCapacity, ContainerAddress, ContainerId, ContainerObservation, ContainerRun,
+    ContainerRuntimeObservation, CopyRotation, EnvironmentValues, LiveServices, MachineId,
+    MachineName, MachineObservation, MachineTarget, MembershipObservation, Namespace,
+    QualifiedService, ReadRoutedAddressesRequest, RoutedAddresses, RoutesRead, RpcError,
+    RpcErrorCode, ServiceContainer, ServiceMode, ServiceName, ServiceObservation, ServingContainer,
+    Unacked, op, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
@@ -56,6 +57,10 @@ pub(super) enum Subject {
     },
     Down {
         machine: MachineName,
+    },
+    DiskFull {
+        machine: MachineName,
+        free_bytes: u64,
     },
     NoCopies {
         service: QualifiedService,
@@ -106,14 +111,17 @@ pub(super) fn attention(
             runtime.block_on(async {
                 match server::reach_or_silent(leaf, context).await? {
                     Some(Reach::Dial(mut client)) => {
-                        Ok(Some(observe(&mut client, namespace, rolling_out).await?))
+                        let observed = observe(&mut client, namespace, rolling_out).await?;
+                        let disks = client.observe_docker_disks(&observed.machines).await;
+                        Ok(Some((observed, disks)))
                     }
                     Some(Reach::Ask(_)) | None => Ok(None),
                 }
             })
         });
     match observed {
-        Ok(Some(observed)) => {
+        Ok(Some((observed, disks))) => {
+            let full = disk_attention(&observed.machines, &disks);
             let check = judge(
                 observed,
                 namespace,
@@ -125,7 +133,7 @@ pub(super) fn attention(
             check.warn();
             ServerCheck {
                 partial: check.partial(),
-                attention: check.attention,
+                attention: check.attention.into_iter().chain(full).collect(),
             }
         }
         Ok(None) => ServerCheck {
@@ -159,6 +167,25 @@ pub(super) fn attention(
             }
         }
     }
+}
+
+fn disk_attention(
+    machines: &[MachineObservation],
+    disks: &[(MachineId, ByteCapacity)],
+) -> Vec<Attention> {
+    server::full_disks(machines, disks)
+        .into_iter()
+        .map(|full| Attention {
+            reason: "disk_full".to_owned(),
+            message: full.reason(),
+            deployment: None,
+            next: None,
+            subject: Some(Subject::DiskFull {
+                machine: full.machine.clone(),
+                free_bytes: full.free_bytes,
+            }),
+        })
+        .collect()
 }
 
 fn rolling_out(deploying: &[DeploymentSummary]) -> Option<String> {

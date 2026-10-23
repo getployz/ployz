@@ -592,6 +592,14 @@ everything else under `/var/lib/docker`. These can be on different disks.
   one at `/var/lib/containerd` too. A data disk at `/var/lib/docker` alone doesn't hold images.
 - Run the deploy again.
 
+You can catch a filling disk before a deploy fails on it. `ployz status` lists the server under
+**needs attention** with `Its disk is nearly full: 48 MB free for Docker. Deploys onto it fail
+until you free space.`, and `ployz server ls` prints the same as a warning. Both flag a server with
+less than 1 GB free under Docker's root directory, usually `/var/lib/docker`. They don't measure
+`/var/lib/containerd` when it is on a different disk. In `ployz status --json` the row has reason
+`disk_full`, the server in `machine`, and the free space in `free_bytes`. It doesn't change status's
+exit code. A server that doesn't answer within 3 seconds isn't checked, and nothing says so.
+
 ## Deploy says a service has nothing to run
 
 `api has nothing to run yet: add an image, connect a repository, or run ployz up in its directory`

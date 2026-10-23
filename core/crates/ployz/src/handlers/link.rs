@@ -940,7 +940,9 @@ fn status_record(status: &Status) -> Fields {
                 | Subject::LeftPending { service, .. }
                 | Subject::NoCopies { service },
             ) => Cow::Owned(service.name.to_string()),
-            Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
+            Some(Subject::Down { machine } | Subject::DiskFull { machine, .. }) => {
+                Cow::Owned(machine.to_string())
+            }
             Some(Subject::Unanswered { .. }) | None => Cow::Borrowed("needs attention"),
         };
         record.push(label, Cell::status(&attention.message, Tone::Bad));
