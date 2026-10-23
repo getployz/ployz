@@ -15,9 +15,24 @@ def override(name, default):
     return (os.environ.get(name) or default).rstrip("/")
 
 
+REPOSITORY = "https://github.com/getployz/ployz"
+
+
 def download_base(version):
     """Where a release's assets download from: PLOYZ_GITHUB_URL's releases, as in install.sh."""
-    return f"{override('PLOYZ_GITHUB_URL', 'https://github.com/getployz/ployz')}/releases/download/v{version}/"
+    return f"{override('PLOYZ_GITHUB_URL', REPOSITORY)}/releases/download/v{version}/"
+
+
+def staged():
+    """A cache suffix for releases taken from PLOYZ_GITHUB_URL: a staged copy of a version is a
+    different release until it is published, so it caches apart."""
+    repository = override("PLOYZ_GITHUB_URL", REPOSITORY)
+    return "" if repository == REPOSITORY else "-" + hashlib.sha256(repository.encode()).hexdigest()[:12]
+
+
+def mirror_environment():
+    """`NAME=value` for the guest installer, so it downloads from the same staged copy."""
+    return [] if not staged() else [f"PLOYZ_GITHUB_URL={override('PLOYZ_GITHUB_URL', REPOSITORY)}"]
 
 
 def resolve(source, commands, core):
@@ -46,9 +61,7 @@ def acquire(version, commands, artifacts, name="ployzd"):
     if not arch:
         raise RuntimeError("Release verification needs an amd64 or arm64 Linux host")
     base = download_base(version)
-    # A staged copy of a version is a different release until it is published, so it caches apart.
-    staged = "" if base == f"https://github.com/getployz/ployz/releases/download/v{version}/" else "-" + hashlib.sha256(base.encode()).hexdigest()[:12]
-    cache = Path.home() / ".cache" / "ployz" / "verify" / "releases" / f"{version}-{arch}{staged}"
+    cache = Path.home() / ".cache" / "ployz" / "verify" / "releases" / f"{version}-{arch}{staged()}"
     cache.mkdir(parents=True, exist_ok=True)
     artifacts.mkdir(parents=True, exist_ok=True)
     with (cache / ".lock").open("a") as lock:

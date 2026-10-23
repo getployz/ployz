@@ -51,6 +51,17 @@ class Download(unittest.TestCase):
             "https://staging.example.test/ployz/releases/download/v0.3.4/",
         )
 
+    def staged(self, environment):
+        with mock.patch.dict(os.environ, environment, clear=True):
+            return releases.staged(), releases.mirror_environment()
+
+    def test_a_staged_release_caches_apart_and_reaches_the_guest_installer(self):
+        self.assertEqual(self.staged({}), ("", []))
+        self.assertEqual(self.staged({"PLOYZ_GITHUB_URL": "https://github.com/getployz/ployz/"}), ("", []))
+        suffix, environment = self.staged({"PLOYZ_GITHUB_URL": "https://staging.example.test/ployz"})
+        self.assertRegex(suffix, r"^-[0-9a-f]{12}$")
+        self.assertEqual(environment, ["PLOYZ_GITHUB_URL=https://staging.example.test/ployz"])
+
 
 if __name__ == "__main__":
     unittest.main()
