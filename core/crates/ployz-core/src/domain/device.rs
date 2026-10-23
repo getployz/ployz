@@ -102,13 +102,17 @@ impl DeviceCode {
     #[must_use]
     pub fn of(key: &DeviceKey) -> Self {
         let digest = Sha256::digest(key.as_bytes());
-        let bits = digest[..8]
-            .iter()
-            .fold(0u64, |bits, byte| (bits << 8) | u64::from(*byte));
+        let bits = u64::from_be_bytes(
+            *digest
+                .as_slice()
+                .first_chunk()
+                .expect("a SHA-256 digest is 32 bytes"),
+        );
         let mut code = [0; CODE_LEN];
         for (index, char) in code.iter_mut().enumerate() {
             let shift = 64 - 5 * (index + 1);
-            *char = BASE32[usize::try_from((bits >> shift) & 31).expect("five bits")];
+            let digit = usize::try_from((bits >> shift) & 31).expect("five bits");
+            *char = *BASE32.get(digit).expect("five bits index 32 digits");
         }
         Self(code)
     }
