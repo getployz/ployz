@@ -93,7 +93,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
         let settled = approve_with(&credential, code, async |request| {
-            let mut client = server::connect_full(leaf, context(leaf)).await?;
+            let mut client = server::connect_full(leaf, None).await?;
             set_everywhere(&mut client, request).await
         })
         .await?;
@@ -105,7 +105,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let code = typed_code(leaf)?;
     runtime()?.block_on(async {
-        let mut client = server::connect_full(leaf, context(leaf)).await?;
+        let mut client = server::connect_full(leaf, None).await?;
         set_everywhere(&mut client, SetDeviceRequest::Remove { code })
             .await?
             .finish()
@@ -115,7 +115,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
 pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     runtime()?.block_on(async {
-        let mut client = server::connect(leaf, context(leaf)).await?;
+        let mut client = server::connect(leaf, None).await?;
         let reach = Reach::of(&mut client).await?;
         let (answers, gaps) = reach
             .fan_out(|machine_id| devices_on(client.clone(), machine_id))
@@ -148,10 +148,6 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
             ui::rows(&table);
         })
     })
-}
-
-fn context(leaf: &ArgMatches) -> Option<&str> {
-    leaf.get_one::<String>("context").map(String::as_str)
 }
 
 fn typed_code(leaf: &ArgMatches) -> Result<DeviceCode, Error> {
