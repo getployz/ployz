@@ -1657,7 +1657,12 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
         fs::create_dir_all(test.0.join("props")).unwrap();
         fs::write(test.0.join("props").join(marker), "").unwrap();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
-        let mut storage = VolumeStorage::with_programs(zpool, zfs);
+        // A name no other test's child runs as, so a receive killed before its first line,
+        // which leaves no receive-pid, can still be found among this process's children.
+        let program = format!("zfsstall{}", std::process::id());
+        let zfs_named = test.0.join(&program);
+        std::os::unix::fs::symlink(&zfs, &zfs_named).unwrap();
+        let mut storage = VolumeStorage::with_programs(zpool, zfs_named);
         storage.send_port = source.port;
         storage.receive_stall = Duration::from_millis(200);
         let stream = ployz_core::SendStream {
@@ -1680,11 +1685,19 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
             .await;
         // No await between the answer and the check: a child only killed on drop is
         // still a zombie here, and so still listed in /proc.
-        let pid = fs::read_to_string(test.0.join("props/receive-pid")).unwrap();
+        let left = match fs::read_to_string(test.0.join("props/receive-pid")) {
+            Ok(pid) => vec![pid.trim().parse().unwrap()]
+                .into_iter()
+                .filter(|pid| alive(*pid))
+                .collect(),
+            // On a loaded host the stall can kill the receive before its shell writes the
+            // pid; it never reached the `exec sleep`, so it still runs as `program`.
+            Err(_) => children_named(&program),
+        };
         assert!(received.is_err(), "{marker}");
         assert!(
-            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
-            "{marker}: the receive answered before its child was reaped"
+            left.is_empty(),
+            "{marker}: the receive answered before its child {left:?} was reaped"
         );
     }
 }
@@ -1695,6 +1708,22 @@ fn slow_child(stop: &Stop) -> (ZfsChild, u32) {
     child.spare_from_kill();
     let pid = child.id().unwrap();
     (child, pid)
+}
+
+/// This process's children, zombies included, whose command is `name`.
+fn children_named(name: &str) -> Vec<u32> {
+    let parent = std::process::id();
+    fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(|entry| {
+            let pid: u32 = entry.ok()?.file_name().to_str()?.parse().ok()?;
+            // `pid (comm) state ppid …`, where comm may hold spaces and parentheses.
+            let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let (head, rest) = stat.rsplit_once(") ")?;
+            let ppid: u32 = rest.split_whitespace().nth(1)?.parse().ok()?;
+            (head.split_once(" (")?.1 == name && ppid == parent).then_some(pid)
+        })
+        .collect()
 }
 
 fn alive(pid: u32) -> bool {
