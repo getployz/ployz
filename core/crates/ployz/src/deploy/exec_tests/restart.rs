@@ -1,5 +1,14 @@
 use super::*;
 
+fn created_later(call: Call, container_id: &ContainerId) -> Step {
+    Step(
+        call,
+        Reply::CreatedAfter(*container_id, || {
+            tokio::time::sleep(std::time::Duration::from_millis(5))
+        }),
+    )
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
     let answered = RpcError {

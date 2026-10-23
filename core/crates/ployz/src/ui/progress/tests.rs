@@ -3,7 +3,7 @@
 use super::*;
 use indicatif::{InMemoryTerm, TermLike};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 struct Script {
     now: Duration,
@@ -498,12 +498,31 @@ fn shrinking_viewport_leaves_no_rows_behind() {
     assert!(!terminal.contents().contains("removed from frame"));
 }
 
-#[derive(Clone)]
-struct SlowWriter(Arc<Mutex<Vec<u8>>>);
-impl Write for SlowWriter {
+/// A sink whose writes block until the test opens it.
+struct HeldWriter {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    open: Arc<(Mutex<bool>, Condvar)>,
+}
+impl HeldWriter {
+    fn new(bytes: Arc<Mutex<Vec<u8>>>) -> (Self, impl FnOnce()) {
+        let open = Arc::new((Mutex::new(false), Condvar::new()));
+        let release = Arc::clone(&open);
+        let release = move || {
+            *release.0.lock().unwrap() = true;
+            release.1.notify_all();
+        };
+        (Self { bytes, open }, release)
+    }
+}
+impl Write for HeldWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        thread::sleep(Duration::from_millis(2));
-        self.0.lock().unwrap().extend_from_slice(bytes);
+        let (open, opened) = &*self.open;
+        drop(
+            opened
+                .wait_while(open.lock().unwrap(), |open| !*open)
+                .unwrap(),
+        );
+        self.bytes.lock().unwrap().extend_from_slice(bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -516,7 +535,7 @@ fn producer_does_not_wait_for_slow_sink_and_finish_joins_after_all_transitions()
     let initial = frame(State::Pending);
     let (sender, receiver) = mpsc::channel();
     let bytes = Arc::new(Mutex::new(Vec::new()));
-    let mut sink = SlowWriter(bytes.clone());
+    let (mut sink, open) = HeldWriter::new(bytes.clone());
     let worker_initial = initial.clone();
     let worker = thread::spawn(move || {
         drive(
@@ -546,6 +565,7 @@ fn producer_does_not_wait_for_slow_sink_and_finish_joins_after_all_transitions()
         progress.update(next.clone());
     }
     assert!(!progress.worker.as_ref().unwrap().is_finished());
+    open();
     next.rows.first_mut().unwrap().state = State::Completed;
     progress.finish(next, Disposition::Settled);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
@@ -574,7 +594,7 @@ fn progress_drop_joins_its_worker_without_a_summary() {
     let initial = frame(State::Pending);
     let (sender, receiver) = mpsc::channel();
     let bytes = Arc::new(Mutex::new(Vec::new()));
-    let mut sink = SlowWriter(bytes.clone());
+    let (mut sink, open) = HeldWriter::new(bytes.clone());
     let worker_initial = initial.clone();
     let worker = thread::spawn(move || {
         drive(
@@ -596,6 +616,7 @@ fn progress_drop_joins_its_worker_without_a_summary() {
     let mut next = initial;
     next.rows.first_mut().unwrap().state = State::Running(RowPhase::Starting);
     progress.update(next);
+    open();
     drop(progress);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     assert!(text.ends_with("alpha: starting\n"), "{text}");

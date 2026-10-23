@@ -1139,6 +1139,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    async fn wall_clock(duration: std::time::Duration) {
+        // real-wait: the fake Docker and Corrosion answer over loopback sockets, and paused time would jump past their replies.
+        tokio::time::sleep(duration).await;
+    }
+
     async fn replicating(rescan: std::time::Duration) -> Replicating {
         use ployz_core::{AdvertisedEndpoint, MachineId, MachineName};
 
@@ -1208,7 +1213,7 @@ mod tests {
         let wait_for = |rotation: CopyRotation| async move {
             tokio::time::timeout(Duration::from_secs(5), async {
                 while published().await.as_ref() != Some(&rotation) {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    wall_clock(Duration::from_millis(20)).await;
                 }
             })
             .await
@@ -1248,7 +1253,7 @@ mod tests {
         let mut synced = runtime.first_synced();
         let run_awhile = async |watcher: tokio::task::JoinHandle<()>,
                                 shutdown: CancellationToken| {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            wall_clock(Duration::from_millis(200)).await;
             shutdown.cancel();
             watcher.await.unwrap();
         };

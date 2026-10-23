@@ -933,23 +933,59 @@ mod set_volume_copy {
         created
     }
 
-    /// The cut inspects a holder, then drains it. Waiting for that inspect rather than a
-    /// fixed time keeps a slow test host from fencing the cut before its drain.
-    async fn drain_started(fake: &FakeDocker, holder: &ContainerId, seen: usize) {
-        let inspect = format!("/containers/{holder}/json");
-        loop {
-            let inspected = fake
-                .requests
+    /// The cut withdraws a holder from ingress, then drains it. Awaiting that withdrawal
+    /// rather than a fixed time keeps a slow test host from fencing the cut before its drain.
+    async fn drain_started(service: &MachineService, holder: &ContainerId) {
+        let mut stopping = service
+            .local()
+            .containers()
+            .unwrap()
+            .subscribe_stopping_for_test();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            stopping.wait_for(|stopping| stopping.contains_key(holder)),
+        )
+        .await
+        .expect("the cut began draining the holder")
+        .unwrap();
+    }
+
+    /// Asserts the cut holds the floor lock, so a floor want polled now queues behind it.
+    async fn floor_lock_held(service: &MachineService) {
+        let local = service.local();
+        let turn = std::pin::pin!(local.containers().unwrap().floor_turn());
+        assert!(
+            futures_util::poll!(turn).is_pending(),
+            "the cut holds the floor lock"
+        );
+    }
+
+    fn hold_route(released: &std::sync::Mutex<std::sync::mpsc::Receiver<()>>) {
+        tokio::task::block_in_place(|| {
+            released
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the test released the route");
+        });
+    }
+
+    async fn requested(fake: &FakeDocker, method: http::Method, suffix: &str) {
+        let arrived = || {
+            fake.requests
                 .lock()
                 .unwrap()
                 .iter()
-                .skip(seen)
-                .any(|(method, path)| *method == http::Method::GET && path.ends_with(&inspect));
-            if inspected {
-                return;
+                .any(|(seen, path)| *seen == method && path.ends_with(suffix))
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !arrived() {
+                // real-wait: polls the fake Docker's request log, which emits no arrival event
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        })
+        .await
+        .expect("the request reached the fake Docker");
     }
 
     fn start_holder(fake: &FakeDocker, id: &ContainerId) {
@@ -1274,12 +1310,12 @@ mod set_volume_copy {
         });
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        running_holder(&service, &fake).await;
+        let first = running_holder(&service, &fake).await;
         let draining = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
             "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":300}});
 
         let (refused, _) = tokio::join!(set_copy(&service, draining.clone()), async {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drain_started(&service, &first).await;
             running_holder(&service, &fake).await
         });
         let error = refusal(&refused);
@@ -1604,11 +1640,10 @@ mod set_volume_copy {
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
         let holder = running_holder(&service, &fake).await;
-        let seen = fake.requests.lock().unwrap().len();
 
         let (cut, during) =
             tokio::join!(set_copy(&service, at_gen(draining_cut(3000), 1)), async {
-                drain_started(&fake, &holder, seen).await;
+                drain_started(&service, &holder).await;
                 tokio::time::timeout(
                     std::time::Duration::from_millis(2000),
                     set_copy(&service, floor(1)),
@@ -1642,10 +1677,9 @@ mod set_volume_copy {
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
         let holder = running_holder(&service, &fake).await;
-        let seen = fake.requests.lock().unwrap().len();
 
         let (refused, _) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
-            drain_started(&fake, &holder, seen).await;
+            drain_started(&service, &holder).await;
             set_copy(&service, floor(2)).await
         });
         let error = refusal(&refused);
@@ -1687,24 +1721,15 @@ mod set_volume_copy {
 
         let (refused, seen_by_floor) =
             tokio::join!(set_copy(&service, at_gen(draining_cut(0), 1)), async {
-                while !fake
-                    .requests
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|(method, path)| *method == http::Method::POST && path.ends_with(&stop))
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                let floored = async {
+                requested(&fake, http::Method::POST, &stop).await;
+                floor_lock_held(&service).await;
+                let mut floored = std::pin::pin!(async {
                     reply(&set_copy(&service, floor(2)).await);
                     holder_status(&fake)
-                };
-                let release = async {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    drop(held);
-                };
-                tokio::join!(floored, release).0
+                });
+                assert!(futures_util::poll!(floored.as_mut()).is_pending());
+                drop(held);
+                floored.await
             });
         assert_eq!(seen_by_floor, vec![json!("exited")]);
         let error = refusal(&refused);
@@ -1724,13 +1749,12 @@ mod set_volume_copy {
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
         let holder = running_holder(&service, &fake).await;
-        let seen = fake.requests.lock().unwrap().len();
         let local = service.local();
         let containers = local.containers().unwrap();
         let specs = containers.spec_store_path_for_test().to_owned();
 
         let (failed, ()) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
-            drain_started(&fake, &holder, seen).await;
+            drain_started(&service, &holder).await;
             rusqlite::Connection::open(&specs)
                 .unwrap()
                 .execute("DROP TABLE volume_floors", [])
@@ -1776,10 +1800,9 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         let older = running_holder(&service, &fake).await;
         let deployed = kept_holder(&service, &fake).await;
-        let seen = fake.requests.lock().unwrap().len();
 
         let (refused, _) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
-            drain_started(&fake, &older, seen).await;
+            drain_started(&service, &older).await;
             let floored = set_copy(&service, floor(2)).await;
             start_holder(&fake, &deployed);
             floored
@@ -1811,15 +1834,15 @@ mod set_volume_copy {
         let replies = plugin.replies.clone();
         let raising = std::sync::Arc::new(tokio::sync::Notify::new());
         let raised = raising.clone();
+        let (release, released) = std::sync::mpsc::channel();
+        let released = std::sync::Mutex::new(released);
         plugin.on(WRITER_ROUTE, move || {
             replies.lock().unwrap().insert(
                 INSPECT_ROUTE.into(),
                 writer_root(2, Some(snapshot("f-1", 7))),
             );
             raised.notify_one();
-            tokio::task::block_in_place(|| {
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            });
+            hold_route(&released);
         });
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
@@ -1833,7 +1856,9 @@ mod set_volume_copy {
 
         let (refused, _) = tokio::join!(set_copy(&service, raise), async {
             raising.notified().await;
-            set_copy(&service, floor(2)).await
+            let floored = set_copy(&service, floor(2)).await;
+            release.send(()).unwrap();
+            floored
         });
         let error = refusal(&refused);
         assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
@@ -1850,20 +1875,17 @@ mod set_volume_copy {
         let plugin = cutting_plugin();
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        running_holder(&service, &fake).await;
-        let queued = at_gen(forget(json!({"kind":"writer", "epoch":0})), 1);
+        let holder = running_holder(&service, &fake).await;
+        let request = at_gen(forget(json!({"kind":"writer", "epoch":0})), 1);
 
-        let (_, queued, _) = tokio::join!(
-            set_copy(&service, at_gen(draining_cut(300), 1)),
-            async {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                set_copy(&service, queued).await
-            },
-            async {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                set_copy(&service, floor(2)).await
-            }
-        );
+        let (_, queued) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
+            drain_started(&service, &holder).await;
+            // Its first poll takes the floor lock to admit its gen, or queues on it, ahead
+            // of the floor below: the lock is FIFO, so the request passes before the raise.
+            let mut queued = std::pin::pin!(set_copy(&service, request));
+            assert!(futures_util::poll!(queued.as_mut()).is_pending());
+            tokio::join!(queued, set_copy(&service, floor(2))).0
+        });
         let error = refusal(&queued);
         assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
         assert_eq!(error.details["floor"], json!(2));
@@ -1881,15 +1903,15 @@ mod set_volume_copy {
         let replies = plugin.replies.clone();
         let flipping = std::sync::Arc::new(tokio::sync::Notify::new());
         let flip = flipping.clone();
+        let (release, released) = std::sync::mpsc::channel();
+        let released = std::sync::Mutex::new(released);
         plugin.on(CUT_ROUTE, move || {
             replies
                 .lock()
                 .unwrap()
                 .insert(INSPECT_ROUTE.into(), json!({"Ok": null}));
             flip.notify_one();
-            tokio::task::block_in_place(|| {
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            });
+            hold_route(&released);
             replies
                 .lock()
                 .unwrap()
@@ -1901,7 +1923,11 @@ mod set_volume_copy {
 
         let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(0), 1)), async {
             flipping.notified().await;
-            set_copy(&service, floor(1)).await
+            floor_lock_held(&service).await;
+            let mut floored = std::pin::pin!(set_copy(&service, floor(1)));
+            assert!(futures_util::poll!(floored.as_mut()).is_pending());
+            release.send(()).unwrap();
+            floored.await
         });
         assert_eq!(
             serde_json::to_value(reply(&during)).unwrap(),
@@ -1926,10 +1952,10 @@ mod set_volume_copy {
         );
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        running_holder(&service, &fake).await;
+        let holder = running_holder(&service, &fake).await;
 
         let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(400), 1)), async {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drain_started(&service, &holder).await;
             tokio::time::timeout(std::time::Duration::from_millis(200), inspect(&service))
                 .await
                 .expect("the inspect waited on the draining cut")

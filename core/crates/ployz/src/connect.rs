@@ -52,6 +52,12 @@ pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
 
 pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a targeted read waits before the target counts as silent.
+pub(crate) fn target_read_timeout() -> Duration {
+    crate::cli::env::seconds(crate::cli::env::TARGET_READ_TIMEOUT_SECONDS)
+        .unwrap_or(TARGET_RPC_TIMEOUT)
+}
+
 /// While a call is open, the client pings the entry daemon after this long without a
 /// read, and fails an open call within interval + timeout of its last read: an entry
 /// that lost power or its network ends a Deploy instead of hanging it.

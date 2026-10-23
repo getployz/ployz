@@ -12,7 +12,7 @@ use ployz_core::{
     ContainerKind, Machine, MachineUpdate, Namespace, PublicIpUpdate,
     PublishCertificateMaterialRequest, ResolvedServiceSpec, ServiceId, op,
 };
-use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
+use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa, hold_for, poll_until};
 
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
@@ -46,8 +46,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
         config.contains("auto_https off") && config.contains("http://plain.example.com")
     })
     .await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(ca.ordered(), Vec::<String>::new());
+    hold_orders(&ca, Duration::from_secs(2), &[]).await;
 
     point_dns(&cluster, "app.example.com", ip);
     let custom_id = ServiceId::random();
@@ -78,8 +77,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     )
     .await;
     wait_running(&mut client, &tick_id, 1).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
+    hold_orders(&ca, Duration::from_secs(2), &["app.example.com"]).await;
     assert!(!certificate_bodies(&cluster, 0).contains("app.example.com"));
 }
 
@@ -229,14 +227,18 @@ async fn certificate_renews_before_expiry_without_restart() {
     wait_https(&cluster, 0, "app.example.com").await;
     let issued = issued_certificates(&cluster, 0);
 
-    wait_until(Duration::from_secs(180), || {
+    poll_until(Duration::from_secs(180), "a renewal order", async || {
         count_orders(&ca.ordered(), "app.example.com") >= 2
     })
-    .await;
-    wait_until(Duration::from_secs(60), || {
-        issued_certificates(&cluster, 0) != issued
-    })
-    .await;
+    .await
+    .unwrap();
+    poll_until(
+        Duration::from_secs(60),
+        "the renewed certificate is stored",
+        async || issued_certificates(&cluster, 0) != issued,
+    )
+    .await
+    .unwrap();
     wait_https(&cluster, 0, "app.example.com").await;
     assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 2);
 }
@@ -275,18 +277,34 @@ async fn machines_holding_the_same_certificate_renew_once() {
     assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 1);
     let issued = issued_certificates(&cluster, 0);
 
-    wait_until(Duration::from_secs(180), || {
+    poll_until(Duration::from_secs(180), "a renewal order", async || {
         count_orders(&ca.ordered(), "app.example.com") >= 2
     })
-    .await;
-    wait_until(Duration::from_secs(60), || {
-        issued_certificates(&cluster, 0) != issued
-    })
-    .await;
+    .await
+    .unwrap();
+    poll_until(
+        Duration::from_secs(60),
+        "the renewed certificate is stored",
+        async || issued_certificates(&cluster, 0) != issued,
+    )
+    .await
+    .unwrap();
     wait_https(&cluster, 0, "app.example.com").await;
     wait_https(&cluster, 1, "app.example.com").await;
-    tokio::time::sleep(Duration::from_secs(35)).await;
-    assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 2);
+    hold_for(
+        Duration::from_secs(35),
+        "no order past the renewal",
+        async || {
+            let ordered = ca.ordered();
+            if count_orders(&ordered, "app.example.com") == 2 {
+                Ok(())
+            } else {
+                Err(format!("{ordered:?}"))
+            }
+        },
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -323,16 +341,37 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
     let issued = issued_certificates(&cluster, 0);
     ca.set_validation("127.0.0.1", 1);
 
-    wait_until(Duration::from_secs(100), || ca.ordered().len() >= 2).await;
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    assert_eq!(issued_certificates(&cluster, 0), issued);
+    poll_until(
+        Duration::from_secs(100),
+        "a failing renewal order",
+        async || ca.ordered().len() >= 2,
+    )
+    .await
+    .unwrap();
+    hold_for(
+        Duration::from_secs(5),
+        "the existing certificate stays",
+        async || {
+            let current = issued_certificates(&cluster, 0);
+            if current == issued {
+                Ok(())
+            } else {
+                Err(format!("{current:?}"))
+            }
+        },
+    )
+    .await
+    .unwrap();
     wait_https(&cluster, 0, "app.example.com").await;
 
     ca.set_validation(validation_host(ip), 80);
-    wait_until(Duration::from_secs(180), || {
-        issued_certificates(&cluster, 0) != issued
-    })
-    .await;
+    poll_until(
+        Duration::from_secs(180),
+        "the renewed certificate is stored",
+        async || issued_certificates(&cluster, 0) != issued,
+    )
+    .await
+    .unwrap();
     wait_https(&cluster, 0, "app.example.com").await;
 }
 
@@ -409,8 +448,7 @@ async fn published_material_is_served_never_renewed_and_clear_returns_it_to_acme
     let published_config =
         wait_config(&cluster, 0, |config| pins_tls(config, "app.example.com")).await;
     wait_https(&cluster, 0, "app.example.com").await;
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    assert_eq!(ca.ordered(), Vec::<String>::new());
+    hold_orders(&ca, Duration::from_secs(5), &[]).await;
     assert!(certificate_bodies(&cluster, 0).contains(r#"\"published\":true"#));
 
     clear_material(&mut client, "app.example.com").await;
@@ -475,17 +513,21 @@ async fn published_wildcard_covers_hostnames_so_acme_orders_nothing() {
     .await;
     wait_https(&cluster, 0, "app.example.com").await;
     wait_https(&cluster, 0, "web.example.com").await;
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    assert_eq!(ca.ordered(), Vec::<String>::new());
+    hold_orders(&ca, Duration::from_secs(5), &[]).await;
     assert!(!certificate_bodies(&cluster, 0).contains("\"app.example.com\""));
 
     clear_material(&mut client, "*.example.com").await;
-    wait_until(Duration::from_secs(90), || {
-        let ordered = ca.ordered();
-        count_orders(&ordered, "app.example.com") == 1
-            && count_orders(&ordered, "web.example.com") == 1
-    })
-    .await;
+    poll_until(
+        Duration::from_secs(90),
+        "one order per hostname",
+        async || {
+            let ordered = ca.ordered();
+            count_orders(&ordered, "app.example.com") == 1
+                && count_orders(&ordered, "web.example.com") == 1
+        },
+    )
+    .await
+    .unwrap();
 }
 
 async fn publish_material(
@@ -610,8 +652,7 @@ async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_her
         config.contains("# Certificates not served:") && config.contains(refused)
     })
     .await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(ca.ordered(), Vec::<String>::new());
+    hold_orders(&ca, Duration::from_secs(2), &[]).await;
     assert!(
         certificate_bodies(&cluster, 0).contains(refused),
         "{}",
@@ -741,117 +782,108 @@ async fn create_and_start(
 }
 
 async fn wait_machine_count(cluster: &Cluster, index: usize, count: usize) {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if cluster
-                .machines(index)
-                .await
-                .is_ok_and(|machines| machines.len() == count)
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+    poll_until(Duration::from_secs(60), "Machine count", async || {
+        cluster
+            .machines(index)
+            .await
+            .is_ok_and(|machines| machines.len() == count)
     })
     .await
     .unwrap();
 }
 
 async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: usize) -> ServiceId {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
+    poll_until(
+        Duration::from_secs(60),
+        "Service lists its Containers",
+        async || {
             let live = client
                 .live_services(ployz_core::EnvironmentValues::Redacted)
                 .await
                 .unwrap();
-            if let Some(service) = live.services().into_iter().find(|service| {
-                service.containers.first().is_some_and(|container| {
-                    container.as_observation().resolved_spec.name.as_str() == name
-                }) && service.containers.len() == count
-            }) {
-                return service.service_id;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
+            live.services()
+                .into_iter()
+                .find(|service| {
+                    service.containers.first().is_some_and(|container| {
+                        container.as_observation().resolved_spec.name.as_str() == name
+                    }) && service.containers.len() == count
+                })
+                .map(|service| service.service_id)
+        },
+    )
     .await
     .unwrap()
 }
 
 async fn wait_running(client: &mut ployz::connect::Client, service_id: &ServiceId, count: usize) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        let live = client
-            .live_services(ployz_core::EnvironmentValues::Redacted)
-            .await
-            .unwrap();
-        if let Some(service) = live
-            .services()
-            .into_iter()
-            .find(|service| service.service_id == *service_id)
-        {
-            let running = service
-                .containers
-                .iter()
-                .filter(|container| {
-                    matches!(
-                        container.as_observation().runtime,
-                        ployz_core::ContainerRuntimeObservation::Running {
-                            health: ployz_core::HealthObservation::Healthy
-                                | ployz_core::HealthObservation::NotConfigured
-                        }
-                    )
+    poll_until(
+        Duration::from_secs(60),
+        "Service becomes ready",
+        async || {
+            let live = client
+                .live_services(ployz_core::EnvironmentValues::Redacted)
+                .await
+                .unwrap();
+            live.services()
+                .into_iter()
+                .find(|service| service.service_id == *service_id)
+                .is_some_and(|service| {
+                    service
+                        .containers
+                        .iter()
+                        .filter(|container| {
+                            matches!(
+                                container.as_observation().runtime,
+                                ployz_core::ContainerRuntimeObservation::Running {
+                                    health: ployz_core::HealthObservation::Healthy
+                                        | ployz_core::HealthObservation::NotConfigured
+                                }
+                            )
+                        })
+                        .count()
+                        == count
                 })
-                .count();
-            if running == count {
-                return;
-            }
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "Service did not become ready"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+        },
+    )
+    .await
+    .unwrap();
 }
 
 async fn wait_config(cluster: &Cluster, index: usize, expected: impl Fn(&str) -> bool) -> String {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        match cluster.ingress_proxy_config(index) {
-            Ok(config) if expected(&config) => return config,
-            Ok(config) if tokio::time::Instant::now() >= deadline => {
-                panic!("Caddyfile did not converge:\n{config}")
-            }
-            Err(error) if tokio::time::Instant::now() >= deadline => {
-                panic!("Caddyfile was unavailable: {error}")
-            }
-            _ => {}
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    poll_until(
+        Duration::from_secs(90),
+        "Caddyfile converges",
+        async || match cluster.ingress_proxy_config(index) {
+            Ok(config) if expected(&config) => Ok(config),
+            Ok(config) => Err(config),
+            Err(error) => Err(format!("Caddyfile was unavailable: {error}")),
+        },
+    )
+    .await
+    .unwrap()
 }
 
-async fn wait_until(timeout: Duration, ready: impl Fn() -> bool) {
-    tokio::time::timeout(timeout, async {
-        loop {
-            if ready() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+async fn wait_https(cluster: &Cluster, index: usize, hostname: &str) {
+    poll_until(Duration::from_secs(60), "HTTPS answers ok", async || {
+        let body = curl_https(cluster, index, hostname);
+        if body.trim() == "ok" {
+            Ok(())
+        } else {
+            Err(body)
         }
     })
     .await
     .unwrap();
 }
 
-async fn wait_https(cluster: &Cluster, index: usize, hostname: &str) {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if curl_https(cluster, index, hostname).trim() == "ok" {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+/// Holds the CA's order log at `expected` for `window`: no order arrives that should not.
+async fn hold_orders(ca: &FakeCa, window: Duration, expected: &[&str]) {
+    hold_for(window, "ACME order log stays put", async || {
+        let ordered = ca.ordered();
+        if ordered == expected {
+            Ok(())
+        } else {
+            Err(format!("{ordered:?}"))
         }
     })
     .await

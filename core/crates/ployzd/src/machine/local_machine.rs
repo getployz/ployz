@@ -1139,6 +1139,9 @@ mod tests {
             let shutdown = shutdown.clone();
             async move { local.rediscover_addresses(shutdown).await }
         });
+        // Paused across the Busy retries at 250ms and 750ms, which never leave the
+        // runtime; resumed before the apply waits on the record owner's thread.
+        tokio::time::pause();
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let held = owner
             .record()
@@ -1147,6 +1150,7 @@ mod tests {
             .advertised_endpoints
             .clone();
         drop(upgrade);
+        tokio::time::resume();
         tokio::time::timeout(std::time::Duration::from_secs(10), rediscovery)
             .await
             .unwrap()

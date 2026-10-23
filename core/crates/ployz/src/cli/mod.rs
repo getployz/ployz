@@ -23,6 +23,16 @@ pub mod env {
     pub const PROJECT: &str = "PLOYZ_PROJECT";
     /// Hidden test mode: host the Config Store in-process (`sqlite:PATH`). Not for users.
     pub const STORE: &str = "PLOYZ_STORE";
+    /// Hidden test mode: seconds a followed Deployment sits queued before the follow says why.
+    pub const DEPLOY_UNCLAIMED_SECONDS: &str = "PLOYZ_DEPLOY_UNCLAIMED_SECONDS";
+    /// Hidden test mode: seconds a read waits on a target Machine before calling it silent.
+    pub const TARGET_READ_TIMEOUT_SECONDS: &str = "PLOYZ_TARGET_READ_TIMEOUT_SECONDS";
+
+    /// A hidden test-mode duration in whole seconds, or `None` when unset or unparsable.
+    pub(crate) fn seconds(name: &str) -> Option<std::time::Duration> {
+        let seconds = std::env::var(name).ok()?.parse().ok()?;
+        Some(std::time::Duration::from_secs(seconds))
+    }
 }
 
 #[must_use]

@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixListener,
-    sync::Notify,
+    sync::{Notify, watch},
 };
 use tokio_util::{codec::LengthDelimitedCodec, sync::CancellationToken};
 use tonic::Request;
@@ -43,6 +43,7 @@ use crate::docker::{
     ContainerRuntime,
     test_support::{FakeDocker, fake_runtime_with, spec_with_sources},
 };
+use crate::ingress::PublishedRoutes;
 use crate::machine::{LocalMachineStore, RecordOwner};
 use crate::route_acks::{DownMachines, load_down};
 
@@ -177,33 +178,41 @@ impl Fleet {
         {
             named["NetworkSettings"] = json!({ "Networks": { "ployz": { "IPAddress": address } } });
         }
-        tokio::time::timeout(SETTLE, async {
-            while self
-                .store
-                .container(&container)
-                .await
-                .unwrap()
-                .is_none_or(|row| row.address.is_none())
-            {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        self.container_until(container, |row| {
+            row.is_some_and(|row| row.address.is_some())
         })
         .await
         .unwrap_or_else(|_| panic!("{container} never published an address"));
     }
 
-    async fn run_ingress(&self) -> MachineView {
-        let machines = MachineView::start(self.store.clone(), self.shutdown.clone());
+    async fn container_until(
+        &self,
+        container: ContainerId,
+        done: impl Fn(Option<&ployz_core::ContainerObservation>) -> bool,
+    ) -> Result<(), tokio::time::error::Elapsed> {
+        let mut changes = self.store.subscribe_container_changes().await.unwrap();
         tokio::time::timeout(SETTLE, async {
-            while machines
-                .current()
-                .is_none_or(|current| current.observations.len() < self.nodes.len())
-            {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+            while !done(self.store.container(&container).await.unwrap().as_ref()) {
+                changes.changed().await.unwrap();
             }
         })
         .await
-        .expect("the Machine view never read every Machine");
+    }
+
+    async fn run_ingress(&self) -> (MachineView, Vec<watch::Receiver<PublishedRoutes>>) {
+        let machines = MachineView::start(self.store.clone(), self.shutdown.clone());
+        tokio::time::timeout(
+            SETTLE,
+            machines.watch().wait_for(|current| {
+                current
+                    .as_ref()
+                    .is_some_and(|current| current.observations.len() >= self.nodes.len())
+            }),
+        )
+        .await
+        .expect("the Machine view never read every Machine")
+        .unwrap();
+        let mut publishes = Vec::new();
         for node in &self.nodes {
             let dir = self.dir.join(format!("ingress-{}", node.row.name));
             std::fs::create_dir_all(&dir).unwrap();
@@ -217,36 +226,51 @@ impl Fleet {
                 },
                 dir.join("Caddyfile"),
                 dir.join("admin.sock"),
-                tokio::sync::watch::channel(Default::default()).0,
+                {
+                    let (sender, receiver) = watch::channel(PublishedRoutes::default());
+                    publishes.push(receiver);
+                    sender
+                },
                 self.shutdown.clone(),
             ));
         }
-        machines
+        (machines, publishes)
     }
 
     fn admin(&self) -> AdminClient {
         AdminClient::new(self.dir.join("admin.sock"))
     }
 
-    async fn acked_by_all(&self, service: &QualifiedService, containers: &[ContainerId]) {
+    /// A watcher writes its ack rows before it announces the publish.
+    async fn acked_by_all(
+        &self,
+        publishes: &[watch::Receiver<PublishedRoutes>],
+        service: &QualifiedService,
+        containers: &[ContainerId],
+    ) {
         let want: BTreeSet<_> = containers.iter().copied().collect();
-        tokio::time::timeout(SETTLE, async {
-            loop {
-                let rows = self.store.service_ingress_routes(service).await.unwrap();
-                let acked = self.nodes.iter().all(|node| {
-                    matches!(
-                        rows.get(&(node.row.id, service.clone())),
-                        Some(IngressRouteRow::Acked(ack)) if ack.containers == want
-                    )
-                });
-                if acked {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("every Ingress never acked {service} with {want:?}"));
+        for publish in publishes {
+            tokio::time::timeout(
+                SETTLE,
+                publish
+                    .clone()
+                    .wait_for(|published| published.routes.get(service) == Some(&want)),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("an Ingress never acked {service} with {want:?}"))
+            .unwrap();
+        }
+        let rows = self.store.service_ingress_routes(service).await.unwrap();
+        for node in &self.nodes {
+            assert!(
+                matches!(
+                    rows.get(&(node.row.id, service.clone())),
+                    Some(IngressRouteRow::Acked(ack)) if ack.containers == want
+                ),
+                "{} acked {service} as {rows:?}",
+                node.row.name,
+            );
+        }
     }
 
     async fn ack(&self, index: usize, service: &QualifiedService, containers: &[ContainerId]) {
@@ -273,14 +297,8 @@ impl Fleet {
     /// Wait until the cluster reads `container` with `rotation`, or reads no row for
     /// it when `rotation` is `None`.
     async fn published(&self, container: ContainerId, rotation: Option<CopyRotation>) {
-        tokio::time::timeout(SETTLE, async {
-            loop {
-                let row = self.store.container(&container).await.unwrap();
-                if row.map(|row| row.rotation().clone()) == rotation {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        self.container_until(container, |row| {
+            row.map(|row| row.rotation()) == rotation.as_ref()
         })
         .await
         .unwrap_or_else(|_| panic!("{container} never published as {rotation:?}"));
@@ -291,14 +309,8 @@ impl Fleet {
         container: ContainerId,
         observed: impl Fn(&ContainerRuntimeObservation) -> bool,
     ) {
-        tokio::time::timeout(SETTLE, async {
-            loop {
-                let row = self.store.container(&container).await.unwrap();
-                if row.is_some_and(|row| observed(&row.runtime)) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        self.container_until(container, |row| {
+            row.is_some_and(|row| observed(&row.runtime))
         })
         .await
         .unwrap_or_else(|_| panic!("{container} never published in that runtime"));
@@ -452,13 +464,15 @@ impl Node {
 
     /// Withdrawn means the stop was planned and is draining or waiting for the turn.
     async fn withdrawn(&self, container: ContainerId) {
-        tokio::time::timeout(SETTLE, async {
-            while !self.runtime.stopping_ids_for_test().contains(&container) {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
+        tokio::time::timeout(
+            SETTLE,
+            self.runtime
+                .subscribe_stopping_for_test()
+                .wait_for(|stopping| stopping.contains_key(&container)),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{container} was never withdrawn"));
+        .unwrap_or_else(|_| panic!("{container} was never withdrawn"))
+        .unwrap();
     }
 
     fn container(&self, container: ContainerId) -> Option<Value> {
@@ -1341,15 +1355,14 @@ async fn a_running_copy_set_out_as_its_acked_sibling_exits_stays_routed() {
             fleet
                 .node(1)
                 .set_state(b, json!({"Status": "exited", "ExitCode": 1}));
-            tokio::time::timeout(SETTLE, async {
-                while fleet.store.container(&b).await.unwrap().is_none_or(|row| {
-                    !matches!(row.runtime, ContainerRuntimeObservation::Exited { .. })
-                }) {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap_or_else(|_| panic!("{b} never published as exited"));
+            fleet
+                .container_until(b, |row| {
+                    row.is_some_and(|row| {
+                        matches!(row.runtime, ContainerRuntimeObservation::Exited { .. })
+                    })
+                })
+                .await
+                .unwrap_or_else(|_| panic!("{b} never published as exited"));
             reading.wait().await;
         }
     );
@@ -1423,8 +1436,8 @@ async fn stale_evidence_keeps_in_copy_routed() {
     fleet.membership(2, "Alive");
     let a = fleet.routed(0, "a", "api", 1).await;
     fleet.addressed(0, a, "10.210.1.2").await;
-    let machines = fleet.run_ingress().await;
-    fleet.acked_by_all(&api, &[a]).await;
+    let (machines, publishes) = fleet.run_ingress().await;
+    fleet.acked_by_all(&publishes, &api, &[a]).await;
     let mut dns_down = DownMachines::new(fleet.id(2));
     let routed_before = proxy_routes(
         &service_containers(fleet.store.containers().await.unwrap().observations),
@@ -1450,7 +1463,7 @@ async fn stale_evidence_keeps_in_copy_routed() {
         .map(|serving| serving.as_observation().container_id)
         .collect();
     assert_eq!(dns_routed, BTreeSet::from([a, b]));
-    fleet.acked_by_all(&api, &[a, b]).await;
+    fleet.acked_by_all(&publishes, &api, &[a, b]).await;
     let routes = fleet.read_routes(0, &api).await;
     assert!(!routes.down.contains(&fleet.id(1)), "{routes:?}");
     assert!(routes.complete, "{routes:?}");

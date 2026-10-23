@@ -330,7 +330,7 @@ async fn last_cloud_managed_server_asks_for_cloud_before_any_confirmation() {
 }
 
 type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
-type Reads = std::sync::Arc<std::sync::atomic::AtomicUsize>;
+type Reads = std::sync::Arc<tokio::sync::Notify>;
 
 const ASKED: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this removal takes Server two out","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"remove","name":"two"}}}}"#;
 const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this forget takes Server two out","details":{"approval_id":"apr_9","approval":"forget:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"forget","name":"two"}}}}"#;
@@ -386,7 +386,7 @@ fn fake_cloud_settling(
                     ("200 OK", r#"{"id":"r1"}"#)
                 }
             } else if line.starts_with("GET /api/cli/server-removals/r1 ") {
-                read.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                read.notify_one();
                 (status, settled)
             } else {
                 ("404 Not Found", r#"{"code":"NOT_FOUND"}"#)
@@ -844,12 +844,7 @@ async fn stopping_a_followed_cloud_removal_keeps_the_server_in_the_context() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let followed = timeout(Duration::from_secs(30), async {
-        while reads.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    let followed = timeout(Duration::from_secs(30), reads.notified()).await;
     if followed.is_err() {
         let _ = std::fs::remove_file(&config);
         panic!(
@@ -954,6 +949,7 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
         let connect = connect.clone();
         async move {
             tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .env(TARGET_READ_TIMEOUT, "1")
                 .args(["--json", "--connect", &connect, "server", "forget", server])
                 .args(extra)
                 .output()
@@ -1043,7 +1039,10 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
     server.abort();
 }
 
-const DEAD_REFUSAL: &str = "Server two did not answer in 10s. Forgetting it leaves any Volume copies on it behind and needs dead typed. No changes made.";
+/// Each forget gives a silent Server one second, not the default ten.
+const TARGET_READ_TIMEOUT: &str = "PLOYZ_TARGET_READ_TIMEOUT_SECONDS";
+
+const DEAD_REFUSAL: &str = "Server two did not answer in 1s. Forgetting it leaves any Volume copies on it behind and needs dead typed. No changes made.";
 
 #[tokio::test]
 async fn a_server_listed_up_that_never_replies_leaves_without_a_reset_when_dead_is_typed() {
@@ -1057,6 +1056,7 @@ async fn a_server_listed_up_that_never_replies_leaves_without_a_reset_when_dead_
         let connect = connect.clone();
         async move {
             tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .env(TARGET_READ_TIMEOUT, "1")
                 .args(["--json", "--connect", &connect, "server", "forget", "two"])
                 .args(extra)
                 .output()
@@ -1102,6 +1102,7 @@ async fn a_server_that_stops_answering_after_its_name_is_typed_is_kept() {
     let (address, server) = serve_discovery(service).await;
 
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env(TARGET_READ_TIMEOUT, "1")
         .args(["--json", "--connect", &format!("tcp://{address}")])
         .args(["server", "forget", "two", "--confirm", "two"])
         .output()

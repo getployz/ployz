@@ -181,7 +181,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
             if store.machine(published.id.as_str()).await.unwrap() == Some(published.clone()) {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            wall_clock(Duration::from_millis(50)).await;
         }
     })
     .await
@@ -220,7 +220,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         crate::corrosion::LiveRuntime::unobserved(),
         shutdown.clone(),
     ));
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    wall_clock(Duration::from_millis(700)).await;
     assert!(!publisher.is_finished());
     shutdown.cancel();
     publisher.await.unwrap().unwrap();
@@ -488,4 +488,9 @@ fn container(machine_id: &MachineId, suffix: &str) -> ContainerObservation {
         }
     }))
     .unwrap()
+}
+
+async fn wall_clock(duration: Duration) {
+    // real-wait: Corrosion runs in a container behind real sockets; nothing in-process signals its progress.
+    tokio::time::sleep(duration).await;
 }

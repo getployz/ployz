@@ -112,6 +112,10 @@ jobs:
           cache-key: workspace-lint
           components: clippy
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Check tests wait on events or paused time, not the real clock
+        run: |
+          cargo test --locked --manifest-path scripts/real-wait-lint/Cargo.toml
+          cargo run --locked --manifest-path scripts/real-wait-lint/Cargo.toml -- crates/*
       - name: Check the daemon stays outside the CLI graph
         run: |
           if cargo tree --package ployz --target all --edges normal --prefix none --locked | grep -q '^ployzd '; then

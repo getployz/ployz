@@ -1,0 +1,12 @@
+[package]
+name = "real-wait-lint"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone so span-locations stays out of the workspace's proc-macro2 build.
+[workspace]
+
+[dependencies]
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+syn = { version = "2.0.119", default-features = false, features = ["full", "parsing", "visit", "printing"] }

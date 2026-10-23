@@ -1090,6 +1090,7 @@ impl Server {
             if self.child.try_wait().unwrap().is_some() {
                 return Some(self.peer());
             }
+            // real-wait: the peer is a child process inside a network namespace; its exit is the only signal.
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         None

@@ -12,7 +12,9 @@ async fn a_settled_start_waits_out_a_slow_pull() {
     )];
     let client = Scripted::new(vec![Step(
         Call::Run(machine, ContainerKind::ServiceContainer),
-        Reply::CreatedAfter(container('a'), Duration::from_secs(30 * 60)),
+        Reply::CreatedAfter(container('a'), || {
+            tokio::time::sleep(Duration::from_secs(30 * 60))
+        }),
     )]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;

@@ -149,8 +149,10 @@ mod enabled {
         io,
         path::{Path, PathBuf},
         str::FromStr,
-        time::{Duration, Instant},
+        time::Duration,
     };
+
+    use tokio::time::Instant;
 
     use super::{Act, Identity, Release, warn};
 
@@ -375,7 +377,7 @@ mod enabled {
             assert!(error.contains(&path.display().to_string()), "{error}");
         }
 
-        #[tokio::test]
+        #[tokio::test(start_paused = true)]
         async fn disarming_ends_a_hold() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("fault");
@@ -391,7 +393,7 @@ mod enabled {
             assert!(matches!(by, Release::Disarm), "{by:?}");
         }
 
-        #[tokio::test]
+        #[tokio::test(start_paused = true)]
         async fn a_held_verb_logs_its_release_by_disarm_or_limit_with_its_identity() {
             let volume = ployz_core::DockerVolumeName::parse("app_data").unwrap();
             let target: ployz_core::SnapshotName = "w-3-0".parse().unwrap();

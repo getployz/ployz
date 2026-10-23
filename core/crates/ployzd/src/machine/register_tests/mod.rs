@@ -269,13 +269,9 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let network: ipnet::Ipv4Net = "10.210.0.0/16".parse().unwrap();
     let marker: ipnet::Ipv4Net = "10.0.0.0/8".parse().unwrap();
     replicated.publish_cluster_network(marker).await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while replicated.cluster_network().await.unwrap() != Some(network) {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the founder publishes the Cluster network");
+    eventually(|| async { replicated.cluster_network().await.unwrap() == Some(network) })
+        .await
+        .expect("the founder publishes the Cluster network");
     let served = ployz_core::served_capabilities();
     assert!(!served.is_empty());
     let capabilities = || async {
@@ -285,14 +281,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
             .unwrap()
             .map(|machine| machine.runtime.capabilities)
     };
-    let republished = || async {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while capabilities().await.as_ref() != Some(&served) {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        })
-        .await
-    };
+    let republished = || eventually(|| async { capabilities().await.as_ref() == Some(&served) });
     republished()
         .await
         .expect("the joined Machine publishes itself");
@@ -341,6 +330,8 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
         capabilities().await
     );
     // The founder saw the Register and restore as Machines view changes too.
+    // real-wait: gives the founder's publisher time to react over the fake Cluster's
+    // HTTP API; a rewrite that must not happen has no event to await.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert_eq!(
         replicated.cluster_network().await.unwrap(),
@@ -356,6 +347,21 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     drop(target);
     let _ = std::fs::remove_dir_all(entry_dir);
     let _ = std::fs::remove_dir_all(target_dir);
+}
+
+async fn eventually<F, Fut>(mut done: F) -> Result<(), tokio::time::error::Elapsed>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !done().await {
+            // real-wait: polls the fake Cluster store over its HTTP API, which signals no
+            // row write.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
 }
 
 struct Joiner {

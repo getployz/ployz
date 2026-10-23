@@ -54,17 +54,27 @@ fn initialize(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>) {
     );
 }
 
-fn exited_within(child: &mut Child, limit: Duration) -> Option<ExitStatus> {
+fn polled<T>(limit: Duration, mut ready: impl FnMut() -> Option<T>) -> Option<T> {
     let start = Instant::now();
-    while start.elapsed() < limit {
-        if let Some(status) = child.try_wait().unwrap() {
-            return Some(status);
+    loop {
+        if let Some(value) = ready() {
+            return Some(value);
         }
-        std::thread::sleep(Duration::from_millis(20));
+        if start.elapsed() >= limit {
+            return None;
+        }
+        // real-wait: another process's exit, signal mask, or connect has no event this test can await
+        std::thread::sleep(Duration::from_millis(10));
     }
-    let _ = child.kill();
-    let _ = child.wait();
-    None
+}
+
+fn exited_within(child: &mut Child, limit: Duration) -> Option<ExitStatus> {
+    let exited = polled(limit, || child.try_wait().unwrap());
+    if exited.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    exited
 }
 
 /// Signalling before the handler is installed would stop the server whatever it does.
@@ -83,14 +93,13 @@ fn a_signal_before_initialize_stops_the_server() {
     let home = tempfile::tempdir().unwrap();
     for (signal, number) in [("TERM", 15), ("INT", 2), ("HUP", 1)] {
         let mut server = mcp("http://127.0.0.1:9", home.path());
-        let start = Instant::now();
-        while !catches(server.id(), number) {
-            assert!(
-                start.elapsed() < Duration::from_secs(5),
-                "the server never caught SIG{signal}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let pid = server.id();
+        assert!(
+            polled(Duration::from_secs(5), || catches(pid, number)
+                .then_some(()))
+            .is_some(),
+            "the server never caught SIG{signal}"
+        );
         let status = Command::new("kill")
             .args([&format!("-{signal}"), &server.id().to_string()])
             .status()
@@ -114,20 +123,12 @@ struct Stuck {
 
 fn accepted(cloud: &TcpListener) -> std::net::TcpStream {
     cloud.set_nonblocking(true).unwrap();
-    let start = Instant::now();
-    loop {
-        match cloud.accept() {
-            Ok((held, _)) => return held,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(
-                    start.elapsed() < Duration::from_secs(5),
-                    "the call never reached Cloud"
-                );
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => panic!("{error}"),
-        }
-    }
+    polled(Duration::from_secs(5), || match cloud.accept() {
+        Ok((held, _)) => Some(held),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
+        Err(error) => panic!("{error}"),
+    })
+    .expect("the call never reached Cloud")
 }
 
 fn stuck_call() -> Stuck {

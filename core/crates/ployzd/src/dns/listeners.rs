@@ -193,6 +193,9 @@ pub(crate) trait Keeper: Send + Sync {
 
     /// A status line for `systemctl status`.
     fn status(&self, text: &str) -> io::Result<()>;
+
+    /// The process finished a tick. Only a test supervisor listens.
+    fn ticked(&self) {}
 }
 
 /// Without `NOTIFY_SOCKET` every call is a no-op, so an externally supervised
@@ -262,7 +265,8 @@ impl Keeper for SystemdKeeper {
 #[derive(Clone, Default)]
 pub(crate) struct MemoryKeeper {
     store: std::sync::Arc<std::sync::Mutex<Vec<(String, OwnedFd)>>>,
-    statuses: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    statuses: std::sync::Arc<tokio::sync::watch::Sender<Vec<String>>>,
+    ticks: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 #[cfg(test)]
@@ -277,7 +281,15 @@ impl MemoryKeeper {
     }
 
     pub(crate) fn statuses(&self) -> Vec<String> {
-        self.statuses.lock().unwrap().clone()
+        self.statuses.borrow().clone()
+    }
+
+    pub(crate) fn subscribe_statuses(&self) -> tokio::sync::watch::Receiver<Vec<String>> {
+        self.statuses.subscribe()
+    }
+
+    pub(crate) fn subscribe_ticks(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.ticks.subscribe()
     }
 }
 
@@ -319,8 +331,13 @@ impl Keeper for MemoryKeeper {
     }
 
     fn status(&self, text: &str) -> io::Result<()> {
-        self.statuses.lock().unwrap().push(text.to_owned());
+        self.statuses
+            .send_modify(|statuses| statuses.push(text.to_owned()));
         Ok(())
+    }
+
+    fn ticked(&self) {
+        self.ticks.send_modify(|ticks| *ticks += 1);
     }
 }
 

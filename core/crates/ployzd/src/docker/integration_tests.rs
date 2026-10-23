@@ -1179,7 +1179,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         )
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wall_clock(Duration::from_millis(500)).await;
     assert_ne!(
         replicated
             .container(&fallback)
@@ -1221,7 +1221,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         let shutdown = fail_shutdown.clone();
         async move { failed_runtime.publish_observations(shutdown).await }
     });
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wall_clock(Duration::from_secs(2)).await;
     fail_shutdown.cancel();
     fail_task.await.unwrap().unwrap();
     assert_eq!(
@@ -1333,11 +1333,16 @@ where
 {
     tokio::time::timeout(timeout, async {
         while !condition().await {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            wall_clock(Duration::from_millis(20)).await;
         }
     })
     .await
     .unwrap();
+}
+
+async fn wall_clock(duration: Duration) {
+    // real-wait: Docker and Corrosion are real processes behind sockets; nothing in-process signals their progress.
+    tokio::time::sleep(duration).await;
 }
 
 fn unused_address() -> std::net::SocketAddr {

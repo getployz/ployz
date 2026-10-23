@@ -17,7 +17,7 @@ use tokio::time::timeout;
 use super::ProvisionError;
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz";
-const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A verified copy of this CLI release's daemon, owned by a private directory.
 pub(super) struct Bootstrap {
@@ -153,15 +153,16 @@ impl Bootstrap {
     pub(super) async fn verify_local_version(&self) -> Result<(), ProvisionError> {
         let mut command = Command::new(&self.daemon);
         command.arg("version");
-        verify_command_version("preflight bootstrap daemon", command).await
+        verify_command_version("preflight bootstrap daemon", command, VERSION_TIMEOUT).await
     }
 }
 
 pub(super) async fn verify_command_version(
     stage: &'static str,
     command: Command,
+    budget: Duration,
 ) -> Result<(), ProvisionError> {
-    let output = command_output(command, VERSION_TIMEOUT)
+    let output = command_output(command, budget)
         .await
         .map_err(|source| ProvisionError::BootstrapIo { stage, source })?;
     if !output.status.success() {

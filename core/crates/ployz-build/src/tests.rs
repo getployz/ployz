@@ -22,6 +22,11 @@ fn later_uncertain_termination_preserves_the_first_failure_stage() {
 
 use super::*;
 
+fn wait_on_another_process(duration: Duration) {
+    // real-wait: another process's exec, output burst, or signal delivery has no event this test can await
+    std::thread::sleep(duration);
+}
+
 /// Write an executable stand-in and wait until it can be executed. A
 /// concurrently forked process can briefly hold a just-written program
 /// open, which makes the exec fail until that fork execs or exits.
@@ -34,7 +39,7 @@ pub(crate) fn executable(path: &Path, script: &str) {
         match Command::new(path).arg("--ready").status() {
             Ok(_) => return,
             Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                std::thread::sleep(Duration::from_millis(10));
+                wait_on_another_process(Duration::from_millis(10));
             }
             Err(error) => panic!("stand-in {}: {error}", path.display()),
         }
@@ -110,7 +115,7 @@ fn chatty_builds_deliver_the_final_diagnosis_without_a_disk_spool() {
     // Let a file-backed writer finish its burst before the first poll.
     let error = docker
         .run_started("the build", &[], Streams::Inherited, || {
-            std::thread::sleep(Duration::from_millis(200));
+            wait_on_another_process(Duration::from_millis(200));
         })
         .unwrap_err();
     assert!(matches!(error, BuildError::Docker { .. }), "{error}");
@@ -139,7 +144,7 @@ fn cancellation_does_not_wait_for_a_surviving_output_writer() {
         if matches!(event, Progress::Output(_)) {
             cancellation.cancel();
             // Keep the descendant's pipe full while its parent is terminated.
-            std::thread::sleep(Duration::from_millis(10));
+            wait_on_another_process(Duration::from_millis(10));
         }
     };
     let environment = BTreeMap::new();
@@ -534,7 +539,7 @@ esac
             .args([&signal, &std::process::id().to_string()])
             .status()
             .unwrap();
-        std::thread::sleep(Duration::from_millis(200));
+        wait_on_another_process(Duration::from_millis(200));
         panic!("the build swallowed {signal} after returning");
     }
     use std::os::unix::process::ExitStatusExt as _;

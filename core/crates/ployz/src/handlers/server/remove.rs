@@ -12,7 +12,7 @@ use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{
     CloudHold, DeadConfirmed, HeldCopies, LeftNotForgotten, copies_left_behind, refuse_last_managed,
 };
-use crate::connect::{Remover, TARGET_RPC_TIMEOUT};
+use crate::connect::Remover;
 use crate::context::ConnectionSource;
 use crate::drain::{movable_services_on, replicated_services_on, services_on};
 use crate::handlers::{
@@ -210,7 +210,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let unanswered = format!(
         "Server {} did not answer in {}s. Forgetting it leaves any Volume copies on it behind",
         selected.name,
-        TARGET_RPC_TIMEOUT.as_secs()
+        crate::connect::target_read_timeout().as_secs()
     );
     if dead && crate::ui::can_prompt() {
         crate::ui::warn(format!("{unanswered}."));

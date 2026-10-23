@@ -887,6 +887,7 @@ fn an_install_waits_for_another_to_finish_writing_the_token_before_it_reads_it()
         let pass = checkin::InstallPass { next, seen: None };
         answer_install(pass, &sending(NEW_TOKEN), &paths, PIPED).map_err(|error| error.to_string())
     });
+    // real-wait: gives the install thread time to block on the token directory's flock; a blocked flock emits no event
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(
         !install.is_finished(),

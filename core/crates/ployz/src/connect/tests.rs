@@ -409,6 +409,29 @@ fn only_a_call_that_got_no_status_back_is_unreplied() {
     }
 }
 
+async fn poll_os<T>(mut ready: impl FnMut() -> Option<T>) -> T {
+    loop {
+        if let Some(value) = ready() {
+            return value;
+        }
+        // real-wait: polls the OS for a fake SSH child's pid file or a process's exit; neither emits an event a test can await
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn exited(pid: u32) {
+    poll_os(|| {
+        let alive = StdCommand::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        (!alive).then_some(())
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
     let root = std::env::temp_dir().join(format!("ployz-ssh-cancel-{}", std::process::id()));
@@ -427,31 +450,18 @@ async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
         // Finishing the readiness branch drops the pending connection and its SSH child.
         tokio::select! {
             result = connector.connect(&connection) => panic!("SSH finished before cancellation: {result:?}"),
-            pid = async {
-                loop {
-                    if let Ok(contents) = fs::read_to_string(program.with_extension("pid"))
-                        && let Ok(pid) = contents.trim().parse::<u32>()
-                    {
-                        break pid;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            } => pid,
+            pid = poll_os(|| {
+                fs::read_to_string(program.with_extension("pid"))
+                    .ok()
+                    .and_then(|contents| contents.trim().parse::<u32>().ok())
+            }) => pid,
         }
     })
     .await
     .expect("fake SSH did not publish its PID");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    while StdCommand::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-    {
-        assert!(tokio::time::Instant::now() < deadline, "ssh was not killed");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    tokio::time::timeout(Duration::from_secs(1), exited(pid))
+        .await
+        .expect("ssh was not killed");
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -478,15 +488,13 @@ async fn an_ssh_dial_beside_another_starts_no_master_to_outlive_it() {
         } else {
             connector.connect(&connection).await
         };
-        let invocations = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
+        let invocations = tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_os(|| {
                 let recorded = fs::read_to_string(program.with_extension("args")).unwrap();
-                if recorded.lines().count() == 2 {
-                    break recorded;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+                (recorded.lines().count() == 2).then_some(recorded)
+            }),
+        )
         .await
         .expect("the probe and the session both ran");
         for invocation in invocations.lines() {
@@ -794,19 +802,9 @@ async fn child_stream_preserves_half_close_and_reaps_on_cancellation() {
     let child = spawn_child(Path::new("cat"), &[]).unwrap();
     let pid = child._child.id().unwrap();
     drop(child);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while StdCommand::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("cancelled helper was not reaped");
+    tokio::time::timeout(Duration::from_secs(3), exited(pid))
+        .await
+        .expect("cancelled helper was not reaped");
 }
 
 #[tokio::test(start_paused = true)]
@@ -832,9 +830,9 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
     assert_eq!(error.retry(), Retry::AfterRestart, "{error}");
 }
 
-#[derive(Clone, Copy, Debug)]
 enum Scripted {
-    ConfirmsAfter(Duration),
+    Confirms,
+    ConfirmsAfter(Box<dyn Fn() -> tokio::time::Sleep + Send + Sync>),
     Silent,
     Fails,
 }
@@ -897,9 +895,10 @@ impl ScriptedConnector {
             beside,
         });
         let unfinished = Unfinished(&self.abandoned, index);
-        let dialled = match *script {
+        let dialled = match script {
+            Scripted::Confirms => Ok(test_support::confirming_channel().await),
             Scripted::ConfirmsAfter(delay) => {
-                tokio::time::sleep(delay).await;
+                delay().await;
                 Ok(test_support::confirming_channel().await)
             }
             Scripted::Silent => std::future::pending().await,
@@ -963,9 +962,11 @@ async fn an_entry_that_confirms_within_its_stagger_is_never_raced() {
         let connector = ScriptedConnector::new(vec![
             (
                 first.clone(),
-                Scripted::ConfirmsAfter(stagger - Duration::from_millis(100)),
+                Scripted::ConfirmsAfter(Box::new(move || {
+                    tokio::time::sleep(stagger - Duration::from_millis(100))
+                })),
             ),
-            (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+            (answering_entry(), Scripted::Confirms),
         ]);
         let client = connect_selected_with(connector.selected(), connector.clone())
             .await
@@ -988,7 +989,7 @@ async fn a_silent_entry_is_raced_after_its_stagger_and_dropped_once_another_conf
     for (first, stagger) in staggered_entries() {
         let connector = ScriptedConnector::new(vec![
             (first.clone(), Scripted::Silent),
-            (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+            (answering_entry(), Scripted::Confirms),
         ]);
         let client = connect_selected_with(connector.selected(), connector.clone())
             .await
@@ -1019,9 +1020,9 @@ async fn in_order_a_slow_entry_is_never_raced() {
     let connector = ScriptedConnector::new(vec![
         (
             Connection::unix("/scripted/0.sock").unwrap(),
-            Scripted::ConfirmsAfter(Duration::from_secs(4)),
+            Scripted::ConfirmsAfter(Box::new(|| tokio::time::sleep(Duration::from_secs(4)))),
         ),
-        (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+        (answering_entry(), Scripted::Confirms),
     ]);
     let client = connect_selected_in_order(connector.selected(), connector.clone())
         .await
@@ -1057,7 +1058,7 @@ async fn a_failed_entry_hands_over_at_once_and_only_dials_beside_a_live_one() {
         ),
         (
             answering_entry(),
-            Scripted::ConfirmsAfter(Duration::from_secs(3)),
+            Scripted::ConfirmsAfter(Box::new(|| tokio::time::sleep(Duration::from_secs(3)))),
         ),
     ]);
     let client = connect_selected_with(connector.selected(), connector.clone())
@@ -1318,9 +1319,26 @@ fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
     assert_eq!(selected.source, ConnectionSource::LocalSocket);
 }
 
+/// Reads the client's HTTP/2 stream until a request's HEADERS frame arrives.
+async fn request_headers(daemon: &mut (impl tokio::io::AsyncRead + Unpin)) {
+    use tokio::io::AsyncReadExt as _;
+    let mut preface = [0; 24];
+    daemon.read_exact(&mut preface).await.unwrap();
+    loop {
+        let mut header = [0; 9];
+        daemon.read_exact(&mut header).await.unwrap();
+        let length = u32::from_be_bytes([0, header[0], header[1], header[2]]);
+        let mut payload = vec![0; length as usize];
+        daemon.read_exact(&mut payload).await.unwrap();
+        if header[3] == 0x1 {
+            return;
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_call_after_the_stream_closed_is_marked_and_stays_unavailable() {
-    let (client, daemon) = tokio::io::duplex(1024);
+    let (client, mut daemon) = tokio::io::duplex(1024);
     let channel = connect_stream(client, Duration::from_secs(5))
         .await
         .unwrap();
@@ -1332,7 +1350,7 @@ async fn a_call_after_the_stream_closed_is_marked_and_stays_unavailable() {
     };
     let mut in_flight = rpc.clone();
     let in_flight = tokio::spawn(async move { in_flight.describe_contract(describe()).await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    request_headers(&mut daemon).await;
     drop(daemon);
     let lost = TransportError::from(in_flight.await.unwrap().unwrap_err());
     assert!(!lost.session_closed, "{lost:?}");

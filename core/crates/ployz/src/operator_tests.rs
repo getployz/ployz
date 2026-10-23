@@ -491,7 +491,7 @@ fn log_stream_status_prints_the_message_not_transport_metadata() {
     assert_eq!(error.to_string(), "invalid log time \"notatime\"");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls() {
     let first_metadata = metadata("first");
     let first = vec![

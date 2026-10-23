@@ -159,18 +159,13 @@ mod tests {
     // These raise real signals at the test process; nextest runs every test in
     // a process of its own, so the shared token never leaks into another test.
 
-    #[test]
-    fn sigterm_cancels_like_ctrl_c_while_a_deploy_holds_it() {
+    #[tokio::test]
+    async fn sigterm_cancels_like_ctrl_c_while_a_deploy_holds_it() {
         let (token, _sigterm) = super::interrupted_or_terminated().unwrap();
         signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !token.is_cancelled() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "SIGTERM did not cancel"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tokio::time::timeout(Duration::from_secs(5), token.cancelled())
+            .await
+            .expect("SIGTERM did not cancel");
     }
 
     #[test]
@@ -196,23 +191,19 @@ mod tests {
         let (_token, sigterm) = super::interrupted_or_terminated().unwrap();
         drop(sigterm);
         signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
+        // real-wait: the listener thread ends this process; a death emits no event to await
         std::thread::sleep(Duration::from_secs(5));
     }
 
     // A closed terminal or a dropped SSH session sends SIGHUP.
     #[cfg(target_os = "linux")]
-    #[test]
-    fn sighup_cancels_like_ctrl_c_while_a_deploy_holds_it() {
+    #[tokio::test]
+    async fn sighup_cancels_like_ctrl_c_while_a_deploy_holds_it() {
         let (token, _sigterm) = super::interrupted_or_terminated().unwrap();
         signal_hook::low_level::raise(signal_hook::consts::SIGHUP).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !token.is_cancelled() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "SIGHUP did not cancel"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tokio::time::timeout(Duration::from_secs(5), token.cancelled())
+            .await
+            .expect("SIGHUP did not cancel");
     }
 
     #[test]
@@ -255,6 +246,7 @@ mod tests {
     fn a_hangup_under_nohup_cancels_nothing() {
         let (token, _sigterm) = super::interrupted_or_terminated().unwrap();
         signal_hook::low_level::raise(signal_hook::consts::SIGHUP).unwrap();
+        // real-wait: an ignored SIGHUP cancels nothing, so no event marks that it was ignored
         std::thread::sleep(Duration::from_millis(500));
         assert!(!token.is_cancelled(), "nohup asked to ignore SIGHUP");
     }
@@ -265,6 +257,7 @@ mod tests {
         let (_token, sigterm) = super::interrupted_or_terminated().unwrap();
         drop(sigterm);
         signal_hook::low_level::raise(signal_hook::consts::SIGHUP).unwrap();
+        // real-wait: the listener thread ends this process; a death emits no event to await
         std::thread::sleep(Duration::from_secs(5));
     }
 }

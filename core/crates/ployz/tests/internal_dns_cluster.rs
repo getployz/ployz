@@ -8,7 +8,7 @@ use ployz_core::{
     HealthObservation, Machine, MachineId, MembershipObservation, Namespace, ResolvedServiceSpec,
     ServiceId, ServiceSelector, select_service,
 };
-use ployz_testkit::{Cluster, ClusterPlan};
+use ployz_testkit::{Cluster, ClusterPlan, poll_until};
 
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
@@ -574,14 +574,18 @@ struct DnsProbe<'a> {
 impl DnsProbe<'_> {
     async fn wait_addresses(&self, name: &str, expected: &[Ipv4Addr]) {
         let expected = sorted(expected.to_vec());
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                if sorted(dig_addresses(&self.dig(name, "A", false))) == expected {
-                    return;
+        poll_until(
+            Duration::from_secs(30),
+            &format!("{name} resolves to {expected:?}"),
+            async || {
+                let answer = self.dig(name, "A", false);
+                if sorted(dig_addresses(&answer)) == expected {
+                    Ok(())
+                } else {
+                    Err(answer)
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
+            },
+        )
         .await
         .unwrap();
     }
@@ -613,36 +617,36 @@ async fn wait_for_dns_observations(
     service_id: &ServiceId,
     count: usize,
 ) -> Vec<ContainerObservation> {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(live) = client
+    poll_until(
+        Duration::from_secs(30),
+        &format!("{count} healthy addressed Containers"),
+        async || {
+            let live = client
                 .live_services(ployz_core::EnvironmentValues::Redacted)
                 .await
-            {
-                let services = live.services();
-                if let Ok(service) = select_service(&services, &ServiceSelector::from(service_id))
-                    && service.containers.len() == count
-                    && service.containers.iter().all(|container| {
-                        let observation = container.as_observation();
-                        observation.address.is_some()
-                            && matches!(
-                                &observation.runtime,
-                                ContainerRuntimeObservation::Running {
-                                    health: HealthObservation::Healthy
-                                }
-                            )
-                    })
-                {
-                    return service
-                        .containers
-                        .iter()
-                        .map(|container| container.as_observation().clone())
-                        .collect();
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
+                .ok()?;
+            let services = live.services();
+            let service = select_service(&services, &ServiceSelector::from(service_id)).ok()?;
+            let ready = service.containers.len() == count
+                && service.containers.iter().all(|container| {
+                    let observation = container.as_observation();
+                    observation.address.is_some()
+                        && matches!(
+                            &observation.runtime,
+                            ContainerRuntimeObservation::Running {
+                                health: HealthObservation::Healthy
+                            }
+                        )
+                });
+            ready.then(|| {
+                service
+                    .containers
+                    .iter()
+                    .map(|container| container.as_observation().clone())
+                    .collect::<Vec<_>>()
+            })
+        },
+    )
     .await
     .unwrap()
 }
@@ -652,50 +656,48 @@ async fn wait_for_health(
     container_id: &ContainerId,
     expected: HealthObservation,
 ) {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(live) = client
+    poll_until(
+        Duration::from_secs(30),
+        &format!("Container health becomes {expected:?}"),
+        async || {
+            client
                 .live_services(ployz_core::EnvironmentValues::Redacted)
                 .await
-                && live
-                    .containers
-                    .successes
-                    .iter()
-                    .flat_map(|success| &success.value)
-                    .find(|container| container.container_id == *container_id)
-                    .is_some_and(|container| {
-                        matches!(
-                            &container.runtime,
-                            ContainerRuntimeObservation::Running { health }
-                                if health == &expected
-                        )
-                    })
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
+                .is_ok_and(|live| {
+                    live.containers
+                        .successes
+                        .iter()
+                        .flat_map(|success| &success.value)
+                        .find(|container| container.container_id == *container_id)
+                        .is_some_and(|container| {
+                            matches!(
+                                &container.runtime,
+                                ContainerRuntimeObservation::Running { health }
+                                    if health == &expected
+                            )
+                        })
+                })
+        },
+    )
     .await
     .unwrap();
 }
 
 async fn wait_for_down_membership_observation(cluster: &Cluster, machine: &Machine) {
-    tokio::time::timeout(Duration::from_secs(90), async {
-        loop {
-            if cluster.machines(0).await.is_ok_and(|observations| {
+    poll_until(
+        Duration::from_secs(90),
+        "Machine observed Down",
+        async || {
+            cluster.machines(0).await.is_ok_and(|observations| {
                 observations
                     .iter()
                     .find(|observation| observation.machine.id == machine.id)
                     .is_some_and(|observation| {
                         observation.membership == MembershipObservation::Down
                     })
-            }) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
+            })
+        },
+    )
     .await
     .unwrap();
 }

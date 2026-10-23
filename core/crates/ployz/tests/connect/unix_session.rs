@@ -42,6 +42,7 @@ async fn sdk_script_temporary_files_are_removed_after_exit_and_timeout() {
             result = &mut output => result,
             () = async {
                 while !report.try_exists().unwrap() {
+                    // real-wait: the Node child signals that it made its fixture only by writing this file.
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }, if mode == "timeout" => {

@@ -6,6 +6,7 @@ use std::{
 };
 
 use super::super::pool::{POOL_BACKING_FILE, PoolStorage};
+use super::copy_tests::{eventually, let_requests_act};
 use super::*;
 
 #[tokio::test]
@@ -562,13 +563,10 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
             .await
         }
     });
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !test.0.join("pool-visible").exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    eventually("the first Pool's creation", || {
+        test.0.join("pool-visible").exists()
     })
-    .await
-    .unwrap();
+    .await;
     let succeeds = tokio::spawn({
         let socket = second_socket.clone();
         async move {
@@ -580,7 +578,7 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
             .await
         }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let_requests_act(Duration::from_millis(50)).await;
     assert!(!test.0.join("other").exists());
     fs::write(test.0.join("continue-failure"), "").unwrap();
 

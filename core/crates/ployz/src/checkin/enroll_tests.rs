@@ -33,6 +33,13 @@ const PROBE: &str = r#"{
 }"#;
 const WAIT: &str = r#"{"kind":"wait","retryAfter":30}"#;
 
+/// A pause a paced script or a slow Cloud takes. Only tests on paused time build one.
+type Pause = Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
+
+fn pause(length: Duration) -> Pause {
+    Arc::new(move || Box::pin(tokio::time::sleep(length)))
+}
+
 struct Cloud {
     url: String,
     bodies: Arc<Mutex<Vec<Value>>>,
@@ -43,19 +50,19 @@ struct Cloud {
 
 impl Cloud {
     async fn answering(answers: Vec<String>) -> Self {
-        Self::serving(answers, Duration::ZERO, None).await
+        Self::serving(answers, None, None).await
     }
 
     async fn delaying(answers: Vec<String>, delay: Duration) -> Self {
-        Self::serving(answers, delay, None).await
+        Self::serving(answers, Some(pause(delay)), None).await
     }
 
     /// Holds the answer to the `held`th request, counting from zero, until `release`.
     async fn holding(answers: Vec<String>, held: usize) -> Self {
-        Self::serving(answers, Duration::ZERO, Some(held)).await
+        Self::serving(answers, None, Some(held)).await
     }
 
-    async fn serving(answers: Vec<String>, delay: Duration, held: Option<usize>) -> Self {
+    async fn serving(answers: Vec<String>, delay: Option<Pause>, held: Option<usize>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let bodies = Arc::new(Mutex::new(Vec::new()));
@@ -73,7 +80,9 @@ impl Cloud {
                 if held == Some(request) {
                     gate.notified().await;
                 }
-                tokio::time::sleep(delay).await;
+                if let Some(delay) = &delay {
+                    delay().await;
+                }
                 let answer = answers.next().unwrap_or_else(|| WAIT.to_owned());
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
@@ -174,7 +183,7 @@ struct Scripted {
     disables: AtomicU32,
     participating: bool,
     follow_up: Option<String>,
-    pace: Option<Duration>,
+    pace: Option<Pause>,
     mid_post: bool,
     first: EnrollStage,
     installer: Option<std::path::PathBuf>,
@@ -259,16 +268,16 @@ impl Host for Scripted {
                 self.cloud.told(self.first).await;
             }
             for stage in &self.stages {
-                if let Some(pace) = self.pace {
-                    tokio::time::sleep(pace).await;
+                if let Some(pace) = &self.pace {
+                    pace().await;
                 }
                 progress(*stage);
                 if self.pace.is_none() && *stage >= self.first {
                     self.cloud.told(*stage).await;
                 }
             }
-            if let Some(pace) = self.pace {
-                tokio::time::sleep(pace).await;
+            if let Some(pace) = &self.pace {
+                pace().await;
                 if let Some(last) = self.stages.last() {
                     tokio::time::timeout(HEARTBEAT / 2, self.cloud.told(*last))
                         .await
@@ -719,8 +728,9 @@ async fn a_committed_enroll_with_failed_follow_up_cleans_up_as_joined() {
     assert_eq!(host.disables.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn rejection_during_installing_or_slot_wait_stops_before_storage() {
+    let _ticker = crate::checkin::tests::tick_through_io();
     for stage in [
         EnrollStage::Installing,
         EnrollStage::Enrolling,
@@ -738,7 +748,7 @@ async fn rejection_during_installing_or_slot_wait_stops_before_storage() {
             previous(&fixture, Seen::Enroll, stage);
         }
         let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
-        host.pace = Some(Duration::from_millis(250));
+        host.pace = Some(pause(Duration::from_millis(250)));
         let next = pass(
             &host,
             &mut fixture.client(&cloud),
@@ -759,8 +769,9 @@ async fn rejection_during_installing_or_slot_wait_stops_before_storage() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn rejection_after_storage_allows_committed_work_to_finish() {
+    let _ticker = crate::checkin::tests::tick_through_io();
     for stage in [EnrollStage::Joining, EnrollStage::Publishing] {
         let fixture = Fixture::new("ready");
         let cloud = Arc::new(
@@ -784,7 +795,7 @@ async fn rejection_after_storage_allows_committed_work_to_finish() {
             ],
             Ok(()),
         );
-        host.pace = Some(Duration::from_millis(250));
+        host.pace = Some(pause(Duration::from_millis(250)));
         let next = pass(
             &host,
             &mut fixture.client(&cloud),
@@ -809,8 +820,9 @@ async fn rejection_after_storage_allows_committed_work_to_finish() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn committed_resume_keeps_heartbeat_pacing_when_cloud_keeps_rejecting() {
+    let _ticker = crate::checkin::tests::tick_through_io();
     let fixture = Fixture::new("ready");
     previous(&fixture, Seen::Enroll, EnrollStage::Joining);
     let mut answers = vec![instruction("zfs")];
@@ -828,7 +840,7 @@ async fn committed_resume_keeps_heartbeat_pacing_when_cloud_keeps_rejecting() {
         ],
         Ok(()),
     );
-    host.pace = Some(Duration::from_millis(250));
+    host.pace = Some(pause(Duration::from_millis(250)));
 
     assert_eq!(
         pass(
@@ -850,8 +862,9 @@ async fn committed_resume_keeps_heartbeat_pacing_when_cloud_keeps_rejecting() {
     assert_eq!(cloud.stages(), ["joining", "publishing"]);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn rejected_committed_resume_reports_its_actual_failure() {
+    let _ticker = crate::checkin::tests::tick_through_io();
     let fixture = Fixture::new("ready");
     let cloud = Arc::new(
         Cloud::answering(vec![
@@ -863,7 +876,7 @@ async fn rejected_committed_resume_reports_its_actual_failure() {
     previous(&fixture, Seen::Enroll, EnrollStage::Joining);
     let mut host = Scripted::new(&cloud, vec![], Err("Publish failed".to_owned()));
     host.first = EnrollStage::Joining;
-    host.pace = Some(Duration::from_millis(250));
+    host.pace = Some(pause(Duration::from_millis(250)));
     let next = pass(
         &host,
         &mut fixture.client(&cloud),
@@ -1061,7 +1074,7 @@ async fn reject_resumed_installer(saved: EnrollStage) {
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
     host.installer = Some(script);
-    host.pace = Some(Duration::from_millis(100));
+    host.pace = Some(pause(Duration::from_millis(100)));
     let next = pass(
         &host,
         &mut fixture.client(&cloud),
@@ -1084,8 +1097,9 @@ async fn reject_resumed_installer(saved: EnrollStage) {
     assert!(fixture.paths.token_file.exists());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn resumed_rejection_awaits_the_installer_and_stops_before_storage() {
+    let _ticker = crate::checkin::tests::tick_through_io();
     for saved in [
         EnrollStage::Installing,
         EnrollStage::Enrolling,
@@ -1095,8 +1109,9 @@ async fn resumed_rejection_awaits_the_installer_and_stops_before_storage() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn resumed_rejection_from_saved_storage_stops_at_live_enrolling() {
+    let _ticker = crate::checkin::tests::tick_through_io();
     reject_resumed_installer(EnrollStage::Storage).await;
 }
 
