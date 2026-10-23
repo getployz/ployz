@@ -110,6 +110,8 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
     } catch (error) {
       // Asked for instead: the writer says Requested, and an owner or admin syncs it on approval.
       if (error instanceof Error && isRequested(error)) return onClose();
+      // Only a lost response resends what was sent; after a refusal the next try prepares afresh.
+      if (error instanceof StoreRefused) last.sent = undefined;
       // Any other refusal is the writer's toast.
       setStale(error instanceof StoreRefused && error.code === "conflict");
       return;

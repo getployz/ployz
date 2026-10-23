@@ -220,7 +220,7 @@ it("sends trunk's exact Sync, and its retry, while sealing is off, sealing nothi
 const PRODUCTION_ID = "0e7c2f3a-5b1d-4c8e-9f60-1a2b3c4d5e6f";
 const API_ID = "7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6";
 
-it("seals a typed value for the Service it lands in, sends that ciphertext again on retry, and holds a new Service's value", async () => {
+it("seals a typed value for the Service it lands in, afresh after a refusal and the same after a lost response, and holds a new Service's value", async () => {
   const kem = new DhkemX25519HkdfSha256();
   const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
   const publicKey = btoa(String.fromCharCode(...raw));
@@ -232,6 +232,7 @@ it("seals a typed value for the Service it lands in, sends that ciphertext again
     ? { ok: true, value: { view: "services", environment: { ...summary("production"), id: PRODUCTION_ID }, services } }
     : { ok: true, value: { view: "sync", ...syncView() } }) as never);
   write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "stale" } } as never);
+  write.mockRejectedValueOnce(new TypeError("Failed to fetch"));
   const sync = await dialog();
   await sync.findByText("Set this value after syncing.");
   expect(sync.queryByLabelText("Set production's value of KEY")).toBeNull();
@@ -240,11 +241,16 @@ it("seals a typed value for the Service it lands in, sends that ciphertext again
   await sync.findByText("These changed since you opened them. Here they are now.");
   fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
   await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(sync.getByRole("button", { name: "Sync 5 changes" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
 
-  const [first, retry] = write.mock.calls.map(([call]) => call.data.command);
+  const [first, afterRefusal, afterLoss] = write.mock.calls.map(([call]) => call.data.command);
   expect(JSON.stringify(write.mock.calls)).not.toContain("token-value");
   const values = first?.command === "sync" && first.values ? first.values : assert.fail("not a Sync");
   expect(Object.keys(values)).toEqual(["a:variables.TOKEN"]);
   expect(values["a:variables.TOKEN"]).toMatchObject({ sealedFor: PRODUCTION_ID, value: { scope: { service: API_ID }, key: "TOKEN" } });
-  expect(retry).toEqual(first);
+  expect(afterRefusal).toMatchObject({ ...first, values: { "a:variables.TOKEN": { sealedFor: PRODUCTION_ID, value: { scope: { service: API_ID }, key: "TOKEN" } } } });
+  expect(afterRefusal).not.toEqual(first);
+  expect(afterLoss).toEqual(afterRefusal);
 });
