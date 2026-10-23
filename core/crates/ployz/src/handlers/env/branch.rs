@@ -149,6 +149,7 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
         // One receipt for this run: a retry of the same request replays, not repeats.
         id: Some(SyncId::parse(uuid::Uuid::new_v4().to_string())?),
     };
+    let request = store.seal_sync_values(request)?;
     let synced = store.try_write(&request).map_err(|error| {
         // Stale, nothing to sync, or no such row: the plan shows what there is now.
         store.fail(store::with_next(

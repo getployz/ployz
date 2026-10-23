@@ -69,6 +69,7 @@ http-body-util = "0.1.5"
 hyper = { version = "1.11.0", features = ["http2", "server"] }
 indicatif = { version = "0.18.6", default-features = false, features = ["in_memory", "unicode-width"] }
 ployz-testkit.workspace = true
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 syn = { version = "2.0.119", features = ["full", "visit"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tokio = { version = "1.53.1", features = ["test-util"] }
