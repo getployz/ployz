@@ -593,8 +593,9 @@ where
         }
     }
     let sealing = sealing(&mut ready).await?;
+    let shown = shows_code(matches, reader, ui::json(), ui::stdout_is_terminal());
     let code = match recovery {
-        Some(Recovery::BackUp) if shows_code(matches, reader) => Some(RecoveryCode::generate()),
+        Some(Recovery::BackUp) if shown => Some(RecoveryCode::generate()),
         Some(Recovery::BackUp) => {
             ui::note("Run ployz recovery rotate to get a recovery code.");
             None
@@ -652,8 +653,13 @@ where
         .and_then(|result| ui::emit_committed(result, partial.map_or(Ok(()), Err))))
 }
 
-fn shows_code(matches: &ArgMatches, reader: Reader) -> bool {
-    reader == Reader::Person && (!ui::json() || matches.get_flag("show-recovery-code"))
+fn shows_code(matches: &ArgMatches, reader: Reader, json: bool, stdout_is_terminal: bool) -> bool {
+    let shown = if json {
+        matches.get_flag("show-recovery-code")
+    } else {
+        stdout_is_terminal
+    };
+    reader == Reader::Person && shown
 }
 
 /// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.
@@ -1299,8 +1305,13 @@ mod tests {
                 .try_get_matches_from(arguments)
                 .unwrap();
             let matches = leaf_matches(&root);
-            assert!(!shows_code(matches, Reader::Fleet));
-            assert!(shows_code(matches, Reader::Person));
+            for json in [false, true] {
+                for terminal in [false, true] {
+                    assert!(!shows_code(matches, Reader::Fleet, json, terminal));
+                    let shown = if json { show } else { terminal };
+                    assert_eq!(shows_code(matches, Reader::Person, json, terminal), shown);
+                }
+            }
         }
     }
 }
