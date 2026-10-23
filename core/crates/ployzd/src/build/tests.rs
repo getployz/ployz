@@ -1086,6 +1086,70 @@ async fn a_sealed_value_opens_into_a_private_file_and_never_into_the_output() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+#[tokio::test]
+async fn a_cancelled_sealed_build_leaves_no_opened_file_even_in_a_retained_root() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    for uncertain in [false, true] {
+        let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+        fs::write(fixture.root.join("slow"), "").unwrap();
+        if uncertain {
+            fs::write(fixture.root.join("fail-cleanup"), "").unwrap();
+        }
+        let capture = fixture.capture_with(Some(&cluster));
+        let client = ployz::connect::connect(
+            Path::new("/missing-test-config"),
+            Some(&fixture.address.replace("http://", "tcp://")),
+            None,
+        )
+        .await
+        .unwrap();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let cancel = cancellation.clone();
+        let result = failure(
+            capture
+                .execute_remote_images(
+                    &client,
+                    fixture.machine.id,
+                    None,
+                    cancellation,
+                    |progress| {
+                        if matches!(progress, Progress::Output(_)) {
+                            cancel.cancel();
+                        }
+                    },
+                )
+                .await,
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("seen-secret")).unwrap(),
+            OPENED_TOKEN
+        );
+        let upload_root = fixture.policy.state_directory.join("build-upload");
+        if uncertain {
+            assert!(
+                matches!(result, ployz::build::RemoteBuildFailure::Unknown { .. }),
+                "{result:?}"
+            );
+            assert!(upload_root.is_dir(), "an uncertain upload root is retained");
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    ployz::build::RemoteBuildFailure::Failed {
+                        stage: Stage::Building,
+                        ..
+                    }
+                ),
+                "{result:?}"
+            );
+            assert!(!upload_root.exists());
+        }
+        let mut leftovers = Vec::new();
+        files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+}
+
 fn files_named(root: &Path, name: &str, found: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
