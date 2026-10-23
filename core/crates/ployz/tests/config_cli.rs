@@ -5070,6 +5070,51 @@ fn ctx_offline_says_nothing_is_linked() {
     }
 }
 
+/// With a config file that can't pick a context, commands reach no Server, and `ployz ctx`
+/// says so and names the fix the failing command would.
+#[test]
+fn ctx_names_no_servers_when_the_config_picks_no_context() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    for (config, shown, next) in [
+        (
+            "contexts:\n  lab:\n    connections:\n      - unix: /tmp/MY-SERVER.sock\n",
+            "servers = (none: no current context)\n",
+            "ployz ctx use CONTEXT",
+        ),
+        (
+            "contexts: {}\n",
+            "servers = (none: no contexts)\n",
+            "ployz login",
+        ),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.yaml"), config).unwrap();
+
+        let (code, listed) = in_dir(&store, home.path(), dir.path(), &["server", "ls"], &[]);
+        assert_ne!(code, Some(0), "{listed}");
+
+        let (stdout, stderr, json) = ctx(&store, home.path(), dir.path());
+        assert!(stdout.contains(shown), "{stdout}");
+        assert!(stderr.contains(&format!("next: {next}")), "{stderr}");
+        assert_eq!(json.get("servers"), Some(&json!({ "via": "none" })));
+        assert_eq!(json.get("next"), Some(&json!(next)));
+    }
+}
+
+/// A config file ctx can't read is an error, as it is for every command, not `via local`.
+#[test]
+fn ctx_refuses_a_malformed_config() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("config.yaml"), "contexts: [\n").unwrap();
+
+    let (code, output) = in_dir(&store, home.path(), dir.path(), &["ctx"], &[]);
+    assert_ne!(code, Some(0), "{output}");
+    assert_eq!(output.get("servers"), None, "{output}");
+}
+
 #[test]
 fn a_repository_service_is_checked_by_cloud() {
     for store in &targets() {

@@ -9,7 +9,7 @@ import type { Role } from "#/modules/organization/access.server";
 import { emailInvite } from "#/modules/organization/invitation-mail.server";
 import { createInvite, INVITE_DAYS, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
 import { refusalOf } from "#/modules/organization/access.server";
-import { listMembers, OWN, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
+import { listMembers, OWN, OWNERLESS, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { AppConfig } from "#/server/config.server";
 import { type Conflict, NotFound } from "#/server/public-error";
 
@@ -73,7 +73,7 @@ const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector
     return yield* refuse("ambiguous", `${named.length} members are named ${selector}: ${named.map((row) => row.email).join(", ")}. Pick one by email.`, { candidates: named.map((row) => row.email) });
   }
   if (touchesOwner(only.role) && caller.role !== "owner") return yield* refuse("forbidden", OWN);
-  return only;
+  return { ...only, lastOwner: only.role === "owner" && !members.some((row) => row.role === "owner" && row.userId !== only.userId) };
 });
 
 const pendingInvite = Effect.fn("Members.pendingInvite")(function* (caller: Caller, selector: string) {
@@ -146,8 +146,11 @@ export const orgMemberInvite = defineCommand({
 
 const RoleInput = Schema.Struct({ member: MemberSelector, role: MemberRole.annotate({ description: "The new role: owner, admin or member" }) });
 
+// Refused before the gate, so demoting the last owner never asks for an approval it can't use.
 const roleTarget = (caller: Caller, input: typeof RoleInput.Type) =>
-  managed(caller, input.member, (role) => role === "owner" || input.role === "owner");
+  managed(caller, input.member, (role) => role === "owner" || input.role === "owner").pipe(
+    Effect.flatMap((target) => target.lastOwner && input.role !== "owner" ? Effect.fail(refuse("conflict", OWNERLESS)) : Effect.succeed(target)),
+  );
 
 export const orgMemberRole = defineCommand({
   name: "org_member_role",
@@ -180,7 +183,10 @@ export const orgMemberRole = defineCommand({
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
 
-const rmTarget = (caller: Caller, member: string) => managed(caller, member, (role) => role === "owner");
+// Refused before the gate, so removing the last owner never asks for an approval it can't use.
+const rmTarget = (caller: Caller, member: string) => managed(caller, member, (role) => role === "owner").pipe(
+  Effect.flatMap((target) => target.lastOwner ? Effect.fail(refuse("conflict", OWNERLESS)) : Effect.succeed(target)),
+);
 
 export const orgMemberRm = defineCommand({
   name: "org_member_rm",

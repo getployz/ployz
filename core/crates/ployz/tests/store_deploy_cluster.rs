@@ -108,7 +108,7 @@ async fn an_image_service_deploys_through_the_hidden_store() {
             .container
             .environment
             .get("GREETING")
-            == Some(&"hi-s3cr3t".to_owned())
+            == Some(&"hi-s3cr3t".into())
     }));
 
     // A Volume mounted into web is created by its Deploy; removing it deletes its

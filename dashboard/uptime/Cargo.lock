@@ -1139,13 +1139,14 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "ployz-core"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "base64",
  "ipnet",
  "minisign-verify",
  "oci-spec",
  "prost",
+ "regex",
  "semver",
  "serde",
  "serde_json",
@@ -2102,6 +2103,7 @@ checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

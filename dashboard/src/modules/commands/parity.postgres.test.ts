@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import type { JsonValue } from "@ployz/sdk";
 import { EventType, type StreamChunk } from "@tanstack/ai";
 import { fakeText } from "@tanstack/ai/testing";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { asRecord } from "#/lib/json";
@@ -210,10 +210,15 @@ it.live("asks before changing a role, removing a member or revoking an invite th
   Effect.gen(function* () {
     const { route, converse, team, provided, userId } = yield* parity();
     yield* provided(createInvite(ORGANIZATION, userId, { email: "cy@example.test", role: "member" }));
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [person] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
+      yield* drizzle.insert(member).values({ userId: person?.id ?? expect.fail("no person"), organizationId: ORGANIZATION, role: "member" });
+    }));
     const before = yield* team;
     const writes: ReadonlyArray<readonly [string, JsonValue]> = [
-      ["org_member_role", { member: "ada@example.test", role: "member" }],
-      ["org_member_rm", { member: "Ada" }],
+      ["org_member_role", { member: "Bob", role: "admin" }],
+      ["org_member_rm", { member: "Bob" }],
       ["org_invite_revoke", { invite: "cy@example.test" }],
     ];
     for (const [name, input] of writes) {
@@ -257,34 +262,40 @@ it.live("refuses an input a command doesn't take and a Service it can't find, sa
     expect(yield* sidebar("uptime_show", { project: "shop", service: "nope" })).toMatchObject({ ok: false, refusal: { writes: "none", retry: { tool: "uptime_show" } } });
   }));
 
-/** An approved role change for the sole owner demoting themselves, which `run` refuses once it starts. */
-const approvedDemotion = Effect.fn(function* (provided: Effect.Success<ReturnType<typeof parity>>["provided"], userId: string, session: string) {
+/**
+ * An approved role change making Ada an admin, which `run` refuses once it starts: Bob, an owner, made her a member
+ * after her call took its role, so the locked recheck finds she can't manage members.
+ */
+const approvedPromotion = Effect.fn(function* (provided: Effect.Success<ReturnType<typeof parity>>["provided"], userId: string, session: string) {
   const email = "ada@example.test";
   const asked = {
     subject: `member:${userId}`,
     verb: "set" as const,
-    preview: { email, from: "owner", to: "member" },
+    preview: { email, from: "member", to: "admin" },
     effects: [{ kind: "changes_role" as const, name: email, node: userId, path: `members/${userId}` }],
   };
   const [approved] = yield* provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    const [bob] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
+    yield* drizzle.insert(member).values({ userId: bob?.id ?? expect.fail("no person"), organizationId: ORGANIZATION, role: "owner" });
+    yield* drizzle.update(member).set({ role: "member" }).where(and(eq(member.userId, userId), eq(member.organizationId, ORGANIZATION)));
     return yield* drizzle.insert(operationApprovals).values({
       organizationId: ORGANIZATION, subject: asked.subject, requestedByUserId: userId, via: "agent", credentialKind: "session", credentialId: session,
       command: "set", digest: operationDigest(asked), status: "approved", decidedByUserId: userId, decidedAt: new Date(),
       review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: asked.effects, operation: { verb: "set", name: email, preview: asked.preview } }),
     }).returning({ id: operationApprovals.id });
   }));
-  return { id: approved?.id ?? expect.fail("no approval"), input: { member: email, role: "member" } };
+  return { id: approved?.id ?? expect.fail("no approval"), input: { member: email, role: "admin" } };
 });
 
 it.live("an approved call that refused once it ran hears its retry without the approval, which the caller holds and repeats it under", () =>
   Effect.gen(function* () {
     const { provided, userId } = yield* parity();
-    const { id, input } = yield* approvedDemotion(provided, userId, "session-1");
+    const { id, input } = yield* approvedPromotion(provided, userId, "session-1");
     const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
     const call = (key: string) => provided(runAgentCall(agent, { tool: "org_member_role", input, key, approvalId: id, page: { at: "organization" } }));
     const first = yield* call("role-first");
-    expect(first).toMatchObject({ outcome: { ok: false, refusal: { message: "An Organization needs an owner. Make someone else an owner first.", writes: "unknown" } } });
+    expect(first).toMatchObject({ outcome: { ok: false, refusal: { message: "Only an owner or admin of this Organization can do this.", writes: "unknown" } } });
     const retry = "outcome" in first && "refusal" in first.outcome && "retry" in first.outcome.refusal ? first.outcome.refusal.retry : undefined;
     expect(retry).toEqual({ tool: "org_member_role", input });
     expect(yield* call("role-retry")).toEqual(first);
@@ -325,7 +336,7 @@ it.live("an approved role change runs once: repeating it after the role was rest
 it.live("a command that never asks refuses an approval carried into it, and changes nothing", () =>
   Effect.gen(function* () {
     const { provided, rows, userId } = yield* parity();
-    const { id } = yield* approvedDemotion(provided, userId, "session-1");
+    const { id } = yield* approvedPromotion(provided, userId, "session-1");
     const before = yield* rows;
     const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
     const ran = yield* provided(runAgentCall(agent, { tool: "server_upgrade_policy_set", input: { channel: "beta" }, key: "carried", approvalId: id, page: { at: "organization" } }));
@@ -336,10 +347,10 @@ it.live("a command that never asks refuses an approval carried into it, and chan
 it.live("a sidebar call that names an approval in its input does not pass the gate, even one approved for the same plan", () =>
   Effect.gen(function* () {
     const { provided, sidebar, userId } = yield* parity();
-    const { id, input } = yield* approvedDemotion(provided, userId, "session-other");
+    const { id, input } = yield* approvedPromotion(provided, userId, "session-other");
     const heard = yield* sidebar("org_member_role", { ...input, approval: id });
     expect(heard).toMatchObject({ ok: false, refusal: { code: "invalid_argument", writes: "none" } });
-    expect(JSON.stringify(heard)).not.toContain("needs an owner");
+    expect(JSON.stringify(heard)).not.toContain("Only an owner or admin");
   }));
 
 it.live("answers approvals only through ployz, records who decided, and keeps them out of the sidebar, so the agent never approves its own request", () =>

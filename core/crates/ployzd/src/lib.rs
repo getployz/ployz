@@ -44,6 +44,8 @@ pub mod observe;
 pub(crate) mod route_acks;
 pub mod runtime_unit;
 pub(crate) mod runtime_watch;
+pub(crate) mod sealed_compat;
+pub mod sealed_env;
 pub mod sealing_key;
 mod sealing_recovery;
 pub mod socket_activation;

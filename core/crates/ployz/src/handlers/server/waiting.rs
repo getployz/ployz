@@ -49,6 +49,14 @@ enum Status {
 struct Summary {
     provider: Option<String>,
     prep: Option<Prep>,
+    /// The host's blockers; a list row carries only the first.
+    #[serde(default)]
+    blockers: Vec<Blocker>,
+}
+
+#[derive(Deserialize)]
+struct Blocker {
+    code: String,
 }
 
 pub(super) struct Detail {
@@ -453,7 +461,13 @@ impl Row {
 
     fn readiness(&self) -> (&'static str, Tone) {
         let prep = self.report.prep.as_ref();
-        let docker_failed = prep.is_some_and(|prep| prep.docker == "failed");
+        // The daemon lists a host's own blockers before docker_install_failed, so one of those reads Blocked.
+        let docker_failed = prep.is_some_and(|prep| prep.docker == "failed")
+            && self
+                .report
+                .blockers
+                .first()
+                .is_none_or(|blocker| blocker.code == "docker_install_failed");
         match self.status {
             Status::Offline => ("Offline", Tone::Bad),
             Status::Blocked | Status::Preparing if docker_failed => {
@@ -610,10 +624,6 @@ pub(super) mod tests {
         assert_eq!(readiness("offline", None), "Offline");
         assert_eq!(readiness("blocked", None), "Blocked");
         assert_eq!(
-            readiness("blocked", Some(json!({ "docker": "failed", "zfs": "off" }))),
-            "Docker install failed"
-        );
-        assert_eq!(
             readiness(
                 "preparing",
                 Some(json!({ "docker": "installing", "zfs": "off" }))
@@ -629,6 +639,47 @@ pub(super) mod tests {
         );
         assert_eq!(readiness("waiting", None), "Ready");
         assert_eq!(readiness("enrolling", None), "Unknown");
+    }
+
+    #[test]
+    fn a_hosts_own_blocker_reads_blocked_over_the_docker_install_it_stopped() {
+        // Cloud lists a row's first blocker; the daemon puts the host's own before docker_install_failed.
+        let docker_failed = |status: &str, blockers: Option<Value>| {
+            let mut host = waiting(status, Some(json!({ "docker": "failed", "zfs": "off" })));
+            let report = host
+                .raw
+                .pointer_mut("/report")
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            match blockers {
+                Some(blockers) => report.insert("blockers".into(), blockers),
+                None => report.remove("blockers"),
+            };
+            serde_json::from_value::<Row>(host.raw)
+                .unwrap()
+                .readiness()
+                .0
+        };
+        let disk =
+            json!({ "code": "disk_too_small", "message": "Disk is 24 GiB. Ployz needs 30 GiB." });
+        let docker = json!({ "code": "docker_install_failed", "message": "apt-get exited 100." });
+        // A list row carries the first blocker, `server show` all of them.
+        assert_eq!(docker_failed("blocked", Some(json!([disk]))), "Blocked");
+        assert_eq!(
+            docker_failed("blocked", Some(json!([disk, docker]))),
+            "Blocked"
+        );
+        assert_eq!(
+            docker_failed("blocked", Some(json!([docker]))),
+            "Docker install failed"
+        );
+        // Cloud reads a host with no blocker as preparing; an older Cloud sends no blockers at all.
+        assert_eq!(
+            docker_failed("preparing", Some(json!([]))),
+            "Docker install failed"
+        );
+        assert_eq!(docker_failed("preparing", None), "Docker install failed");
     }
 
     #[test]

@@ -88,7 +88,12 @@ function network(ip: string) {
 export function planServerEnrollment(
   input: EnrollInput,
   candidates: ReadonlyArray<EnrollCandidate>,
-  organization: { readonly hasFirst: boolean },
+  organization: {
+    readonly hasFirst: boolean;
+    /** Names the Organization's Servers and open enrollments hold, and per waiting server those its own Machine holds. */
+    readonly takenNames: ReadonlySet<string>;
+    readonly heldNames: ReadonlyMap<string, ReadonlySet<string>>;
+  },
 ): EnrollPlan {
   const byId = new Map(candidates.map((row) => [row.id, row]));
   const ids = [...new Set(input.ids)];
@@ -131,20 +136,33 @@ export function planServerEnrollment(
     acceptsServices: input.runs.services,
     acceptsIngress: input.runs.ingress,
   };
-  const rows = ordered.map(({ row, storage }, index): PlannedEnrollment => ({
+  // A name another Server holds, or an earlier row takes, is numbered on, as `ployz server add` refuses it. A host keeps
+  // a name its own Machine already holds, from an attempt that published it and then failed.
+  const taken = new Set(organization.takenNames);
+  let next = 1;
+  const nameFor = (row: EnrollCandidate) => {
+    const isTaken = (name: string) => taken.has(name) && organization.heldNames.get(row.id)?.has(name) !== true;
+    let name: string;
+    if (names.kind === "pattern" && names.pattern.includes("{n}")) {
+      do name = names.pattern.replaceAll("{n}", String(next++)); while (isTaken(name));
+    } else {
+      // An unusable hostname gets the engine's `server-` fallback, from the id so the preview and the start agree.
+      const base = names.kind === "pattern" ? names.pattern : machineNameFromHostname(row.report.hostname) ?? `server-${row.id.slice(0, 8)}`;
+      name = base;
+      for (let n = 2; isTaken(name); n++) name = `${base.slice(0, 63 - `-${n}`.length).replace(/-+$/u, "")}-${n}`;
+    }
+    taken.add(name);
+    return name;
+  };
+  const rows = ordered.map(({ row, storage }): PlannedEnrollment => ({
     waitingServerId: row.id,
     fleetTokenId: row.fleetTokenId,
     hostname: row.report.hostname,
     role: row.id === founder ? "founder" : "joiner",
-    instruction: {
-      // An unusable hostname gets the engine's `server-` fallback, from the id so the preview and the start agree.
-      name: names.kind === "hostnames"
-        ? machineNameFromHostname(row.report.hostname) ?? `server-${row.id.slice(0, 8)}`
-        : names.pattern.replaceAll("{n}", String(index + 1)),
-      storage,
-      policy,
-    },
+    instruction: { name: nameFor(row), storage, policy },
   }));
+  const long = rows.find((row) => row.instruction.name.length > 63);
+  if (long !== undefined) return { kind: "refused", message: `${long.instruction.name} is over 63 characters. Choose a shorter name pattern.` };
   return {
     kind: "planned",
     rows,
@@ -252,6 +270,30 @@ export const hasFirstServer = Effect.fn("ServerEnrollment.hasFirst")(function* (
   return (yield* enrollmentAuthority(organizationId, "preview")).hasFirst;
 });
 
+/**
+ * The names the Organization's Servers hold and its open enrollments give, and for each of `ids` the names held by the
+ * Machines its earlier attempts claimed.
+ */
+const takenNames = Effect.fn("ServerEnrollment.takenNames")(function* (organizationId: string, ids: ReadonlyArray<string>) {
+  const { drizzle } = yield* Database;
+  const servers = yield* drizzle.select({ name: organizationMachine.machineName }).from(organizationMachine)
+    .where(eq(organizationMachine.organizationId, organizationId));
+  const enrolling = yield* drizzle.select({ name: sql<string>`${serverEnrollment.instruction}->>'name'` }).from(serverEnrollment)
+    .where(and(eq(serverEnrollment.organizationId, organizationId), isNull(serverEnrollment.endedAt)));
+  const held = ids.length === 0 ? [] : yield* drizzle
+    .selectDistinct({ id: serverEnrollment.waitingServerId, name: organizationMachine.machineName })
+    .from(serverEnrollment)
+    .innerJoin(machineEnrollmentToken, eq(machineEnrollmentToken.id, serverEnrollment.enrollTokenId))
+    .innerJoin(organizationMachine, and(
+      eq(organizationMachine.organizationId, serverEnrollment.organizationId),
+      eq(organizationMachine.machineId, machineEnrollmentToken.claimedMachineId),
+    ))
+    .where(and(eq(serverEnrollment.organizationId, organizationId), inArray(serverEnrollment.waitingServerId, [...ids])));
+  const heldNames = new Map<string, Set<string>>();
+  for (const { id, name } of held) if (name !== null) heldNames.set(id, (heldNames.get(id) ?? new Set()).add(name));
+  return { takenNames: new Set([...servers, ...enrolling].flatMap(({ name }) => name === null ? [] : [name])), heldNames };
+});
+
 const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   organizationId: string,
   input: EnrollInput,
@@ -271,7 +313,7 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   const plan = planServerEnrollment(
     input,
     ids.length === 0 ? [] : yield* candidatesOf(organizationId, ids, mode === "start"),
-    { hasFirst },
+    { hasFirst, ...yield* takenNames(organizationId, ids) },
   );
   if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
   return { ...plan, founded };
@@ -411,7 +453,7 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
     const plan = planServerEnrollment(input, [{
       id: host.id, fleetTokenId: token.id, report, observedIp: host.observedIp,
       rejected: false, enrolling: false, tokenEnded: null,
-    }], { hasFirst: true });
+    }], { hasFirst: true, ...yield* takenNames(token.organizationId, [host.id]) });
     if (plan.kind !== "planned" || plan.rows.length === 0) return false;
     // A check-in answers before Inngest hears of the attempt; the outbox sweep sends any delivery that fails.
     yield* startPlannedEnrollment(token.organizationId, live.userId, { ...plan, founded: true }, "detach");
@@ -495,7 +537,7 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     ))
     .orderBy(asc(serverEnrollment.requestedAt), asc(waitingServer.firstSeenAt), asc(waitingServer.id), asc(serverEnrollment.id));
   const { ahead, joining } = yield* readJoinStatus(organization.id);
-  const { hasFirst } = yield* enrollmentAuthority(organization.id, "preview");
+  const { founded, hasFirst } = yield* enrollmentAuthority(organization.id, "preview");
   const attempts = rows.map(({ instruction, report, ...row }): ServerEnrollmentView => ({
     ...row,
     name: instruction.name,
@@ -505,7 +547,7 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     requestedAt: row.requestedAt.toISOString(),
     endedAt: row.endedAt?.toISOString() ?? null,
   }));
-  return { attempts, hasFirst, joining };
+  return { attempts, founded, hasFirst, joining };
 });
 
 export const readServerEnrollments = Effect.fn("ServerEnrollment.read")(function* (

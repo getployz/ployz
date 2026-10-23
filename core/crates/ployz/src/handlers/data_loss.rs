@@ -76,6 +76,14 @@ pub(super) fn confirm_removal(
         typed: leaf.get_one::<String>("confirm").map(String::as_str),
         retry: &retry_args(root, client.connection_source()),
     };
+    if matches!(volume_effect, VolumeEffect::LoseAccess)
+        && observed.data_loss.is_empty()
+        && !request.named.is_empty()
+    {
+        return Err(Error::usage(format!(
+            "Server {server} has no Volumes requiring loss acceptance; drop --accept-volume-loss. No changes made."
+        )));
+    }
     if !request.check()? {
         let retry = request.retry();
         if ui::can_prompt() {

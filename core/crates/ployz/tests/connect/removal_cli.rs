@@ -1193,3 +1193,87 @@ async fn a_server_that_answers_holding_copies_is_refused_before_cloud_or_any_con
         "Cloud was asked {asked:?}"
     );
 }
+
+#[tokio::test]
+async fn server_rm_input_errors_name_servers_and_volumes() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines = vec![machine('a', "machine-1")];
+    let refused = remove_server(&service, Dial::Connect, "machine-1", &[], &[]).await;
+    cli_transcript(&refused);
+    let json: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(refused.status.code(), Some(2), "{json}");
+    assert!(
+        message(&json).contains("machine-1 holds Volumes: data"),
+        "{json}"
+    );
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn server_rm_without_volumes_explains_unneeded_acceptance() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines = vec![machine('a', "machine-1")];
+    service
+        .listed_volumes
+        .lock()
+        .unwrap()
+        .insert(machine_id('a'), vec![]);
+    let refused = remove_server(
+        &service,
+        Dial::Connect,
+        "machine-1",
+        &[],
+        &["--confirm", "machine-1", "--accept-volume-loss", "data"],
+    )
+    .await;
+    cli_transcript(&refused);
+    let json: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(refused.status.code(), Some(2), "{json}");
+    assert_eq!(
+        json.pointer("/error/code"),
+        Some(&json!("invalid_argument"))
+    );
+    assert!(
+        message(&json).contains("Server machine-1 has no Volumes requiring loss acceptance"),
+        "{json}"
+    );
+    assert!(
+        message(&json).contains("drop --accept-volume-loss"),
+        "{json}"
+    );
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn server_rm_warns_when_approval_does_not_apply() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines = vec![machine('a', "machine-1")];
+    let output = remove_server(
+        &service,
+        Dial::Connect,
+        "machine-1",
+        &[],
+        &[
+            "--confirm",
+            "machine-1",
+            "--accept-volume-loss",
+            "data",
+            "--approval",
+            "xyz",
+        ],
+    )
+    .await;
+    cli_transcript(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{json}");
+    assert!(
+        json.get("warnings")
+            .and_then(serde_json::Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str()
+                == Some("--approval applies only when Ployz Cloud manages the Server.")),
+        "{json}"
+    );
+    assert_eq!(*service.reset_machines.lock().unwrap(), [machine_id('a')]);
+}

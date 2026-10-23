@@ -902,7 +902,7 @@ mod tests {
                 .container
                 .environment
                 .get("TOKEN")
-                .map(String::as_str),
+                .and_then(crate::EnvValue::text),
             Some(crate::REDACTED_ENVIRONMENT_VALUE)
         );
         let wire = serde_json::to_value(&observed).unwrap();

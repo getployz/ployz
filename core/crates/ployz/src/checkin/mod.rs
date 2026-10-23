@@ -809,7 +809,11 @@ async fn check_in<H: Host>(
         code: STALE_PLOYZD.to_owned(),
         message,
     });
-    let running = host.prepare_running().await.unwrap_or_else(|why| {
+    let seen = host.prepare_running().await;
+    // Only a unit seen running may vouch for a stopped Docker; an unreadable one still counts as
+    // running so as not to start a second preparation.
+    let mut confirmed = seen == Ok(true);
+    let running = seen.unwrap_or_else(|why| {
         crate::ui::note(format!("Could not read {}: {why}", unit::PREPARE));
         true
     });
@@ -829,6 +833,8 @@ async fn check_in<H: Host>(
     if let Some(run) = due {
         match host.start_prepare().await {
             Ok(()) => {
+                // The run just started may already be installing Docker before the probe below.
+                confirmed = host.prepare_running().await == Ok(true);
                 prepare_started = Some(now);
                 if run == PrepareRun::Retry {
                     prepare_retries += 1;
@@ -891,7 +897,7 @@ async fn check_in<H: Host>(
             return (next, Some(status));
         }
     };
-    let mut report = probe.report(host.hostname(), state.as_ref());
+    let mut report = probe.report(host.hostname(), state.as_ref(), confirmed);
     report.blockers.extend(stale);
     report.blockers.extend(member);
     status.blockers.clone_from(&report.blockers);

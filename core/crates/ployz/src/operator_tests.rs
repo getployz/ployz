@@ -63,7 +63,12 @@ async fn exec_cluster(
             }
         },
         &[ployz_core::op::Exec::PATH],
-        |_| async { Ok(tonic::Response::new(stream::empty())) },
+        |_| async {
+            let started = ployz_core::ExecResponseFrame::ExecId("exec-1".into()).encode();
+            Ok(tonic::Response::new(
+                stream::once(async { Ok(started.unwrap()) }).chain(stream::pending()),
+            ))
+        },
     )
     .await
 }
@@ -188,6 +193,34 @@ async fn exec_without_a_running_container_names_the_servers_that_did_not_answer(
             "found: {found}"
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn exec_that_loses_its_server_partway_names_it() {
+    let (mut client, server) = exec_cluster(vec![api_on_machine_one(running())], true).await;
+    let (session, _) = timed_exec(&mut client, "app/api", None).await;
+    let mut session = session.expect("exec opens");
+    session
+        .output
+        .next()
+        .await
+        .unwrap()
+        .expect("the exec started");
+    server.abort();
+
+    let lost = crate::failure::Failure::from(
+        tokio::time::timeout(Duration::from_secs(60), session.output.next())
+            .await
+            .expect("the dropped connection ends the stream")
+            .expect("the dropped connection is reported")
+            .unwrap_err(),
+    );
+    assert_eq!(
+        lost.to_string(),
+        "Lost the connection to machine-1; exec ended, but the command may still be running there."
+    );
+    assert_eq!(lost.printed_exit(), None, "a failure, exit 1");
+    assert_eq!(lost.report().code, ployz_core::RpcErrorCode::Unavailable);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1135,6 +1168,7 @@ fn container_on(
                 command: vec![],
                 entrypoint: vec![],
                 environment: Default::default(),
+                sealed_identity: None,
                 labels: Default::default(),
                 hostname: None,
                 extra_hosts: vec![],

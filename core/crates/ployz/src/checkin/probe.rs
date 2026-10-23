@@ -370,10 +370,9 @@ fn bind(port: Port) -> Option<Socket> {
     if tests::STALL_PORT
         .get()
         .is_none_or(|stalled| stalled == port)
+        && let Some(gate) = tests::BIND_GATE.with_borrow(Clone::clone)
     {
-        // real-wait: simulates a blocking OS bind while real sockets serve greetings and the
-        // runtime enforces the bind deadline on its spawn_blocking worker.
-        std::thread::sleep(tests::BIND_STALL.get());
+        gate.wait();
     }
     match port {
         Port::Tcp(number) => {

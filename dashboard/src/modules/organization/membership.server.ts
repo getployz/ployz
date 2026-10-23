@@ -12,6 +12,7 @@ import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
 export const OWN = "Only an owner can make or remove an owner.";
+export const OWNERLESS = "An Organization needs an owner. Make someone else an owner first.";
 
 const refusalFor = (members: ReadonlyArray<{ userId: string; role: Role }>, askedBy: string, touchesOwner: boolean) => {
   const role = members.find((row) => row.userId === askedBy)?.role;
@@ -37,7 +38,7 @@ export const removeMembership = Effect.fn("Organization.removeMembership")(funct
     const refusal = askedBy === userId ? null : refusalFor(members, askedBy, leaving.role === "owner");
     if (refusal !== null) return yield* refusal;
     if (leaving.role === "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {
-      return yield* new Conflict({ message: "An Organization needs an owner. Make someone else an owner first.", userFacing: true });
+      return yield* new Conflict({ message: OWNERLESS, userFacing: true });
     }
     yield* drizzle.delete(member).where(and(eq(member.organizationId, organizationId), eq(member.userId, userId)));
     yield* drizzle.delete(organizationToken)
@@ -79,7 +80,7 @@ export const setMemberRole = Effect.fn("Organization.setMemberRole")(function* (
     const refusal = refusalFor(members, askedBy, target.role === "owner" || role === "owner");
     if (refusal !== null) return yield* refusal;
     if (target.role === "owner" && role !== "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {
-      return yield* new Conflict({ message: "An Organization needs an owner. Make someone else an owner first.", userFacing: true });
+      return yield* new Conflict({ message: OWNERLESS, userFacing: true });
     }
     yield* drizzle.update(member).set({ role }).where(and(eq(member.organizationId, organizationId), eq(member.userId, userId)));
   }));

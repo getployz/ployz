@@ -1,6 +1,7 @@
 import type { RuntimeWatchView } from "@ployz/sdk";
 
-const INGRESS = "ployz-system/ingress";
+/** The Ingress Proxy's Service identity. */
+export const INGRESS = "ployz-system/ingress";
 
 const AT_REST = new Set(["created", "exited", "dead"]);
 

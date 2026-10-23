@@ -346,7 +346,9 @@ server answering, `ployz status` lists `Server web-1 isn't answering` under **ne
 `ployz deploy --plan` warns first that the deploy can't run until it answers. A deploy whose web
 traffic check couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with
 what the connection said in parentheses, and exits 3. A server that just joined or restarted
-answers within a minute; try again then.
+answers within a minute; try again then. While your organization's first server is still
+enrolling, the page shows its enrollment progress instead: there's no server to reach until it
+joins.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with

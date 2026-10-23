@@ -20,9 +20,9 @@ flowchart LR
 
 ## Choose a provider
 
-Use Boat, the default, for a short run: one `up`, the checks for the feature, then `down`, all within the sandboxes' one-hour auto-stop. That covers `doctor`, a feature check and a single scenario check.
+Use Boat, the default, for every run, long ones included. A short run fits the sandboxes' one-hour auto-stop: one `up`, the checks for the feature, then `down`. A run expected to keep its Machines past an hour extends each sandbox up front with `boat extend`; see [Long runs and stopped sandboxes](#long-runs-and-stopped-sandboxes). Don't ask before a long Boat run.
 
-Ask the user before a long run: a run expected to keep its Machines past an hour, or several runs in a row. Read `free -g` and `scripts/verify-cluster ls` first. If the host has room for the run's Incus VMs (2 GiB each by default, plus what other runs hold), offer Incus. Otherwise ask for approval to run it on Boat, naming the Machines, the expected duration and the starts it will take. If the user chooses Incus, pass `--provider incus` to `up`.
+Use Incus, with `--provider incus`, only for what Boat can't model: a Machine with less than 4 GB of RAM, custom IPv6 or router networks, and distros Boat lacks. A Boat sandbox is Ubuntu 24.04 with 4 GB and a 69 GB disk. Read `free -g` and `scripts/verify-cluster ls` before an Incus run, since its VMs share this host.
 
 ## Launch and doctor
 

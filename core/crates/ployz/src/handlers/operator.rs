@@ -10,12 +10,10 @@ use chrono::{DateTime, Local, SecondsFormat, Utc};
 use clap::{Arg, ArgAction, Command};
 use clap::{ArgMatches, parser::ValueSource};
 use crossterm::terminal;
-use futures_util::StreamExt;
 use ployz_core::{
     ContainerId, ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame,
     FanoutSelector, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
-    LogOrigin, LogsOptions, Namespace, OpaquePayload, RpcErrorCode, ServiceSelector, log_level,
-    select_service,
+    LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector, log_level, select_service,
 };
 use ployz_store::{DeploymentId, NamespaceQuery};
 use tokio::io::copy_bidirectional;
@@ -331,10 +329,19 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             let mut session = match open_exec(client, &service, container.as_ref(), options).await {
                 Ok(session) => session,
                 Err(error) => {
-                    if let OperatorError::NotRunningOnAnswered { gaps, names, .. } = &error {
-                        crate::ui::Gaps::of(gaps)
-                            .named(names.iter().map(|(id, name)| (*id, name)))
-                            .warn();
+                    if let OperatorError::NotRunningOnAnswered {
+                        service,
+                        gaps,
+                        names,
+                    } = &error
+                    {
+                        let gaps = crate::ui::Gaps::of(gaps)
+                            .named(names.iter().map(|(id, name)| (*id, name)));
+                        return crate::ui::finish_fanout("container", &None::<()>, &gaps, || {
+                            crate::ui::note(format_args!(
+                                "No running container of {service:?} on the Servers that answered."
+                            ));
+                        });
                     }
                     return Err(error.into());
                 }
@@ -421,7 +428,7 @@ const EXEC_STOPPED_CHECK: std::time::Duration = std::time::Duration::from_secs(3
 /// Print an exec's output until it ends, and return its exit code; 0 once a
 /// detached command is confirmed started.
 async fn forward_exec(
-    output: &mut tonic::Streaming<OpaquePayload>,
+    output: &mut crate::operator::ExecOutput,
     detach: bool,
 ) -> Result<i32, Error> {
     while let Some(payload) = output.next().await {

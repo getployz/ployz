@@ -60,7 +60,7 @@ where
             )
         }
     });
-    connected_client(service).await
+    connected_client(service, false).await
 }
 
 pub(crate) async fn rpc_stream_client<F, Fut, S>(
@@ -85,7 +85,7 @@ where
             )
         }
     });
-    connected_client(service).await
+    connected_client(service, false).await
 }
 
 pub(crate) async fn rpc_bidi_client<F, Fut, S>(
@@ -110,7 +110,7 @@ where
             )
         }
     });
-    connected_client(service).await
+    connected_client(service, false).await
 }
 
 /// The log routes, served as streams.
@@ -120,7 +120,7 @@ pub(crate) const LOG_ROUTES: &[&str] = &[
 ];
 
 /// One fake Machine answering the calls on `streams` with `stream`, and every
-/// other call with `unary`.
+/// other call with `unary`. Aborting the returned task drops its connection.
 pub(crate) async fn rpc_routes<U, UFut, F, Fut, S>(
     unary: U,
     streams: &'static [&'static str],
@@ -151,7 +151,7 @@ where
             })
         }
     });
-    connected_client(service).await
+    connected_client(service, true).await
 }
 
 /// A channel to an in-memory daemon that answers only its own confirmation.
@@ -180,11 +180,12 @@ pub(crate) async fn confirming_channel() -> Channel {
             )
         },
     );
-    memory_channel(service).await.0
+    memory_channel(service, false).await.0
 }
 
 async fn memory_channel<S>(
     service: S,
+    severable: bool,
 ) -> (
     Channel,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
@@ -201,9 +202,27 @@ where
 {
     // Both peers run inside Tokio; clock advancement cannot outrun socket I/O.
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (server_io, link) = if severable {
+        // The returned task carries the bytes between the peers, so aborting it
+        // drops the connection without an answer, as a lost network does.
+        let (mut relayed, far) = tokio::io::duplex(64 * 1024);
+        let mut near = server_io;
+        let link = async move {
+            let _ = tokio::io::copy_bidirectional(&mut near, &mut relayed).await;
+        };
+        (far, Some(link))
+    } else {
+        (server_io, None)
+    };
     let incoming =
         tokio_stream::once(Ok::<_, std::io::Error>(server_io)).chain(tokio_stream::pending());
-    let server = tokio::spawn(Server::builder().serve_with_incoming(service, incoming));
+    let serve = Server::builder().serve_with_incoming(service, incoming);
+    let server = tokio::spawn(async move {
+        match link {
+            Some(link) => tokio::join!(serve, link).0,
+            None => serve.await,
+        }
+    });
     let client_io = Arc::new(Mutex::new(Some(client_io)));
     let channel = Channel::from_static("http://memory.invalid")
         .connect_with_connector(tower::service_fn(move |_| {
@@ -218,6 +237,7 @@ where
 
 async fn connected_client<S>(
     service: S,
+    severable: bool,
 ) -> (
     Client,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
@@ -232,7 +252,7 @@ where
         + 'static,
     S::Future: Send,
 {
-    let (channel, server) = memory_channel(service).await;
+    let (channel, server) = memory_channel(service, severable).await;
     let client = Client::new(
         channel.clone(),
         Connection::tcp("127.0.0.1:1".parse().unwrap()),

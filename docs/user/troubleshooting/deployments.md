@@ -11,7 +11,11 @@ name first. The page opens on the card that failed, with its servers and logs. S
 
 `ployz deploy` and `ployz up` show progress on stderr. On a terminal, the live block
 shows one row per Service, grouped under the depth at which it starts. The count on a
-row is Servers, not replicas. A booting Service counts each Server whose new
+row is Servers, not replicas. A deploy first downloads every image it runs onto each
+Server, then creates the Volumes it needs, before any Server starts work. Until then each
+row reads `waiting 0/3 (pulling <image>)`, or `(pulling <image> or preparing Volumes)` when
+the deploy has Volumes to create, and a large image can hold it there for minutes. A Service
+whose pull policy is Never has nothing to pull and reads plain `waiting`. A booting Service counts each Server whose new
 Containers are ready, so it can read `booting 1/3` while the others boot. Once every
 Server is ready it reads `switching N/N` until they switch together, then
 `switched N/N`. A row whose new Containers already serve shows a `draining old` line
@@ -70,6 +74,15 @@ makes an otherwise successful invocation exit 3 when that Server was relevant to
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
+
+When the CLI says `Server machine-2: deployment observations are incomplete`, it includes
+distinct failure causes in that Server's line and does not repeat its container or volume
+omissions. The Server's observation can be incomplete even if the project has no volumes.
+`--json` keeps every warning, including the individual omissions and failures.
+If the CLI has no name for an observation failure yet, plain output prints the warning at
+the next progress update or heartbeat, using the Machine ID if it still lacks a name.
+Interactive progress can show it at once. If following stops first while progress is showing,
+the warning still prints.
 
 If Cloud stops answering while the CLI follows a Deployment, the command exits 1 with
 `Stopped following Deployment #N; it keeps running in Ployz Cloud.` and an `inspect:` line
@@ -576,17 +589,30 @@ doesn't exist and for a private image you have no access to.
 
 ## My server's disk is full
 
-**Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
+**Failed at pull**, with `Server machine-3's disk is full: 48 MB free under /var/lib/containerd`
 
-The server ran out of disk space while it downloaded an image, from its registry or from another
-server that already had it. A deploy downloads every image it
+The named server ran out of disk space while it downloaded an image, from its registry or from
+another server that already had it. A deploy downloads every image it
 needs before it changes any service, so none of the deploy's services changed and the versions
 already running keep running. The cause line under it is Docker's own error.
 
+The directory is the one on the full disk. Docker keeps images under `/var/lib/containerd`, and
+everything else under `/var/lib/docker`. These can be on different disks.
+
 - Free space on that server: remove files you don't need, or remove old images with
   `docker image prune`.
-- Give the server a bigger disk if it fills up again.
+- Give the server a bigger disk if it fills up again. If you mount a data disk for Docker, mount
+  one at `/var/lib/containerd` too. A data disk at `/var/lib/docker` alone doesn't hold images.
 - Run the deploy again.
+
+You can catch a filling disk before a deploy fails on it. `ployz status` adds the line
+`machine-3 = Its disk is nearly full: 48 MB free for Docker. Pulling an image onto it can fail until
+you free space.`, and `ployz server ls` warns `Server machine-3's disk is nearly full: …`. Both flag a server with less than 1 GB free under Docker's root directory, usually
+`/var/lib/docker`. They don't measure `/var/lib/containerd` when it is on a different disk. In
+`ployz status --json` the row has reason `disk_full`, the server in `machine`, and the free space in
+`free_bytes`. It doesn't change status's exit code. A server that is down, can't reach Docker, or
+doesn't answer within 3 seconds isn't checked, and nothing says so. Signed in with a Read only or
+Deploy token, status asks Cloud instead of your servers, and checks no disk.
 
 ## Deploy says a service has nothing to run
 

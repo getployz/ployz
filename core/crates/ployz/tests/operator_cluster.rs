@@ -3,7 +3,6 @@ use std::{collections::BTreeSet, path::Path, process, time::Duration};
 #[path = "support/containers.rs"]
 mod containers;
 
-use futures_util::StreamExt;
 use ployz::operator::{
     ExecMode, LogInput, ServiceArg, exec_options, merge_logs, observe_service_logs, open_exec,
     open_machine_logs, open_service_logs, select_exec_container,

@@ -495,7 +495,13 @@ impl LocalMachineStore {
             return Err(StoreError::NotParticipating);
         };
         let pinned = self.record.pinned_addresses;
-        if !pinned.public_ip && discovered.public_ip.is_none() && machine.public_ip.is_some() {
+        // Without an IPv4 route, a stored IPv4 public IP was a NAT64 gateway's.
+        let foreign = !discovered.ipv4_route && machine.public_ip.is_some_and(|ip| ip.is_ipv4());
+        if !pinned.public_ip
+            && discovered.public_ip.is_none()
+            && machine.public_ip.is_some()
+            && !foreign
+        {
             return Ok(Rediscovered::PublicIpLookupFailed);
         }
         let update = MachineUpdate {
@@ -503,6 +509,7 @@ impl LocalMachineStore {
                 Some(address) if !pinned.public_ip && machine.public_ip != Some(address) => {
                     PublicIpUpdate::Set(address)
                 }
+                None if !pinned.public_ip && foreign => PublicIpUpdate::Remove,
                 _ => PublicIpUpdate::Keep,
             },
             advertised_endpoints: (!pinned.advertised_endpoints
@@ -944,6 +951,7 @@ mod rediscover_tests {
         DiscoveredNetwork {
             public_ip: Some(ip(NEW_IP)),
             endpoints: endpoints(&["10.0.0.5", NEW_IP]),
+            ipv4_route: true,
         }
     }
 
@@ -975,6 +983,7 @@ mod rediscover_tests {
         let same = DiscoveredNetwork {
             public_ip: Some(ip(OLD_IP)),
             endpoints: endpoints(&["10.0.0.4", OLD_IP]),
+            ipv4_route: true,
         };
 
         assert_eq!(store.rediscover(same).unwrap(), Rediscovered::Unchanged);
@@ -1029,11 +1038,33 @@ mod rediscover_tests {
             .rediscover(DiscoveredNetwork {
                 public_ip: None,
                 endpoints: endpoints(&["10.0.0.5"]),
+                ipv4_route: true,
             })
             .unwrap();
 
         assert_eq!(outcome, Rediscovered::PublicIpLookupFailed);
         assert_eq!(store.record().machine(), Some(&before));
+    }
+
+    #[test]
+    fn a_server_without_an_ipv4_route_drops_the_ipv4_public_ip_it_stored() {
+        // As a NAT64 gateway's address, stored before the lookup knew better.
+        let (dir, mut store) = founded(PinnedAddresses::default());
+        let own = endpoints(&["2001:db8::10"]);
+
+        let outcome = store
+            .rediscover(DiscoveredNetwork {
+                public_ip: None,
+                endpoints: own.clone(),
+                ipv4_route: false,
+            })
+            .unwrap();
+
+        let store = reopened(&dir, store);
+        let machine = store.record().machine().unwrap().clone();
+        assert_eq!(outcome, Rediscovered::Updated(Box::new(machine.clone())));
+        assert_eq!(machine.public_ip, None);
+        assert_eq!(machine.advertised_endpoints, own);
     }
 
     /// A record as `daemon_version` left it, with nothing pinned on disk.

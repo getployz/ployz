@@ -582,14 +582,52 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
     })
     .await;
     client.entry = Some(machine_id('a'));
+    client.confirmed = Some(machine_id('a'));
+    client.connector = crate::connect::test_support::connector(other.channel());
+
+    // A client whose last redial failed has forgotten its entry, and still refuses.
+    let mut forgot = client.clone();
+    forgot.entry = None;
+    for redialing in [client.clone(), forgot] {
+        let refused = redialing.redial_shared().await;
+        assert!(
+            matches!(refused, Err(ConnectError::IdentityMismatch { .. })),
+            "{refused:?}"
+        );
+    }
+
+    let answer = client.clone().entry_id().await.unwrap_err();
+    assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
+}
+
+#[tokio::test]
+async fn a_shared_redial_whose_daemon_will_not_say_which_machine_it_is_keeps_the_old_channel() {
+    let (mut client, _old) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::not_found("answered by the old daemon"))
+    })
+    .await;
+    let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
+        let refused = ployz_core::RpcResponse::from(unavailable("not this Machine's caller"));
+        Ok(tonic::Response::new(refused.encode().unwrap()))
+    })
+    .await;
+    client.entry = Some(machine_id('a'));
+    client.confirmed = Some(machine_id('a'));
     client.connector = crate::connect::test_support::connector(other.channel());
 
     let refused = client.redial_shared().await;
-
     assert!(
-        matches!(refused, Err(ConnectError::IdentityMismatch { .. })),
+        matches!(refused, Err(ConnectError::Remote(_))),
         "{refused:?}"
     );
+
+    // A retry's redial forgets its entry before it dials, and still refuses.
+    let refused = client.clone().redial().await;
+    assert!(
+        matches!(refused, Err(ConnectError::Remote(_))),
+        "{refused:?}"
+    );
+
     let answer = client.clone().entry_id().await.unwrap_err();
     assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
 }

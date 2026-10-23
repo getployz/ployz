@@ -418,6 +418,13 @@ enum Message {
     Abandon,
 }
 
+#[derive(Default)]
+struct NoticeHistory {
+    raw: Vec<DeployWarning>,
+    causes: BTreeSet<(MachineId, String)>,
+    named: BTreeSet<MachineId>,
+}
+
 trait Inbox {
     fn now(&self) -> Duration;
     fn receive(&mut self, timeout: Duration) -> Result<Message, RecvTimeoutError>;
@@ -497,8 +504,9 @@ fn drive(
     let interactive = matches!(backend, Backend::Interactive(_));
     let interval = if interactive { REDRAW } else { HEARTBEAT };
     let mut deadline = inbox.now() + interval;
-    if !interactive {
-        let _ = changes(writer, None, &frame, color);
+    let mut notices_printed = NoticeHistory::default();
+    if !interactive && changes(writer, None, &frame, color, false, &notices_printed).is_ok() {
+        record_named_details(&frame, &mut notices_printed);
     }
     backend.draw(&frame, tick, color);
     let mut pending = None;
@@ -514,10 +522,25 @@ fn drive(
             Ok(Message::Update(next)) => {
                 let changed = !frame.same_evidence(&next);
                 if changed {
+                    let same_run = frame.run == next.run;
                     if !interactive {
-                        let _ = changes(writer, Some(&frame), &next, color);
+                        let _ = flush_deferred(
+                            writer,
+                            &frame,
+                            same_run.then_some(&next),
+                            color,
+                            &mut notices_printed,
+                        );
+                        if !same_run {
+                            notices_printed = NoticeHistory::default();
+                        }
+                        if changes(writer, Some(&frame), &next, color, false, &notices_printed)
+                            .is_ok()
+                        {
+                            record_named_details(&next, &mut notices_printed);
+                        }
                     }
-                    if frame.run != next.run {
+                    if !same_run {
                         backend.clear();
                     }
                     frame = next;
@@ -526,24 +549,46 @@ fn drive(
                 }
             }
             Ok(Message::Finish(final_frame, disposition)) => {
-                let width = match &backend {
-                    Backend::Interactive(live) => (live.size)().0,
-                    Backend::Plain => usize::MAX,
+                let terminal_width = match &backend {
+                    Backend::Interactive(live) => Some((live.size)().0),
+                    Backend::Plain => None,
                 };
                 drop(backend);
+                let same_run = frame.run == final_frame.run;
+                let _ = flush_deferred(
+                    writer,
+                    &frame,
+                    same_run.then_some(&final_frame),
+                    color,
+                    &mut notices_printed,
+                );
+                if !same_run {
+                    notices_printed = NoticeHistory::default();
+                }
                 let _ = finish(
                     writer,
                     &frame,
                     &final_frame,
                     disposition,
-                    interactive,
-                    width,
+                    terminal_width,
                     color,
+                    &notices_printed,
                 );
                 let _ = writer.flush();
                 return;
             }
-            Ok(Message::Abandon) | Err(RecvTimeoutError::Disconnected) => return,
+            Ok(Message::Abandon) | Err(RecvTimeoutError::Disconnected) => {
+                drop(backend);
+                if interactive {
+                    for notice in notices(&frame, true, &notices_printed) {
+                        let _ = writeln!(writer, "! {notice}");
+                    }
+                    let _ = writer.flush();
+                } else {
+                    let _ = flush_deferred(writer, &frame, None, color, &mut notices_printed);
+                }
+                return;
+            }
             Err(RecvTimeoutError::Timeout) => {}
         }
         if inbox.now() >= deadline {
@@ -554,16 +599,28 @@ fn drive(
             if interactive {
                 tick = tick.wrapping_add(1);
                 backend.draw(&frame, tick, color);
-            } else if frame.rows.iter().any(|row| row.state.active()) {
-                let waiting = frame
-                    .rows
-                    .iter()
-                    .filter(|row| row.state.active())
-                    .map(|row| format!("{} ({})", label(&row.subject, &frame), word(row, &frame)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = writeln!(writer, "  still waiting: {waiting}");
-                let _ = writer.flush();
+            } else {
+                let _ = flush_deferred(writer, &frame, None, color, &mut notices_printed);
+                if frame.rows.iter().any(|row| row.state.active()) {
+                    let waiting = frame
+                        .rows
+                        .iter()
+                        .filter(|row| row.state.active())
+                        .map(|row| match &row.detail {
+                            Some(detail) => format!(
+                                "{} ({}, {detail})",
+                                label(&row.subject, &frame),
+                                word(row, &frame)
+                            ),
+                            None => {
+                                format!("{} ({})", label(&row.subject, &frame), word(row, &frame))
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let _ = writeln!(writer, "  still waiting: {waiting}");
+                    let _ = writer.flush();
+                }
             }
             deadline = inbox.now() + interval;
         }
@@ -808,7 +865,7 @@ pub(crate) fn live_lines(
     height: usize,
     color: bool,
 ) -> Vec<String> {
-    let notes = notices(frame);
+    let notes = notices(frame, true, &NoticeHistory::default());
     // Notices give way to the rows on a terminal too short for both.
     if notes.is_empty() || height < notes.len() + 3 {
         return row_lines(frame, tick, width, height, color);
@@ -894,6 +951,8 @@ fn changes(
     previous: Option<&Frame>,
     frame: &Frame,
     color: bool,
+    settled: bool,
+    printed: &NoticeHistory,
 ) -> io::Result<()> {
     let previous = previous.filter(|previous| previous.run == frame.run);
     if previous.is_none_or(|previous| previous.title != frame.title) {
@@ -945,8 +1004,10 @@ fn changes(
             writeln!(writer, "  {}: {text}", label(&row.subject, frame))?;
         }
     }
-    let previous_notices = previous.map(notices).unwrap_or_default();
-    for notice in notices(frame) {
+    let previous_notices = previous
+        .map(|frame| notices(frame, false, printed))
+        .unwrap_or_default();
+    for notice in notices(frame, settled, printed) {
         if !previous_notices.contains(&notice) {
             writeln!(
                 writer,
@@ -958,14 +1019,133 @@ fn changes(
     writer.flush()
 }
 
-fn notices(frame: &Frame) -> Vec<String> {
+fn unqualified_machine(warning: &DeployWarning) -> Option<MachineId> {
+    if let DeployWarning::ObservationFailed {
+        machine_id,
+        gap: None,
+        ..
+    }
+    | DeployWarning::ObservationOmitted {
+        machine_id,
+        gap: None,
+        ..
+    } = warning
+    {
+        Some(*machine_id)
+    } else {
+        None
+    }
+}
+
+fn observation_detail(warning: &DeployWarning) -> Option<(MachineId, String)> {
+    if let DeployWarning::ObservationFailed {
+        machine_id,
+        kind,
+        message,
+        ..
+    } = warning
+    {
+        Some((*machine_id, format!("{kind}s: {message}")))
+    } else if let DeployWarning::ObservationOmitted {
+        machine_id,
+        gap: Some(_),
+        ..
+    } = warning
+    {
+        Some((*machine_id, "observed Down by this Entry".into()))
+    } else {
+        None
+    }
+}
+
+fn has_named_gap(frame: &Frame, id: MachineId) -> bool {
+    frame
+        .notices
+        .iter()
+        .filter_map(DeployWarning::observation_gap)
+        .any(|(machine, _)| machine == id)
+}
+
+fn record_named_details(frame: &Frame, printed: &mut NoticeHistory) {
+    printed.named.extend(
+        frame
+            .notices
+            .iter()
+            .filter_map(DeployWarning::observation_gap)
+            .map(|(id, _)| id),
+    );
+    for warning in &frame.notices {
+        if let Some((id, detail)) = observation_detail(warning)
+            && has_named_gap(frame, id)
+        {
+            printed.causes.insert((id, detail));
+        }
+    }
+}
+
+fn already_printed(warning: &DeployWarning, printed: &NoticeHistory) -> bool {
+    printed.raw.contains(warning)
+        || observation_detail(warning).is_some_and(|detail| printed.causes.contains(&detail))
+        || matches!(warning, DeployWarning::ObservationOmitted { machine_id, gap: None, .. } if printed.named.contains(machine_id))
+}
+
+fn flush_deferred(
+    writer: &mut impl Write,
+    frame: &Frame,
+    next: Option<&Frame>,
+    color: bool,
+    printed: &mut NoticeHistory,
+) -> io::Result<()> {
+    for warning in &frame.notices {
+        let Some(id) = unqualified_machine(warning) else {
+            continue;
+        };
+        if already_printed(warning, printed)
+            || has_named_gap(frame, id)
+            || next.is_some_and(|next| has_named_gap(next, id) && next.notices.contains(warning))
+        {
+            continue;
+        }
+        writeln!(
+            writer,
+            "{}",
+            paint(&format!("! {warning}"), Tone::Change, color)
+        )?;
+        printed.raw.push(warning.clone());
+        if let Some(cause) = observation_detail(warning) {
+            printed.causes.insert(cause);
+        }
+    }
+    writer.flush()
+}
+
+fn notices(frame: &Frame, settled: bool, printed: &NoticeHistory) -> Vec<String> {
     let mut seen = BTreeSet::new();
     frame
         .notices
         .iter()
         .filter_map(|warning| {
-            let Some((id, gap)) = warning.observation_gap() else {
-                return Some(warning.to_string());
+            let observation = warning.observation_gap().or_else(|| {
+                let (DeployWarning::ObservationFailed { machine_id, .. }
+                | DeployWarning::ObservationOmitted { machine_id, .. }) = warning
+                else {
+                    return None;
+                };
+                frame
+                    .notices
+                    .iter()
+                    .filter_map(DeployWarning::observation_gap)
+                    .find(|(id, _)| id == machine_id)
+            });
+            let Some((id, gap)) = observation else {
+                return (!already_printed(warning, printed)
+                    && (settled
+                        || !matches!(
+                            warning,
+                            DeployWarning::ObservationFailed { .. }
+                                | DeployWarning::ObservationOmitted { .. }
+                        )))
+                .then(|| warning.to_string());
             };
             if !seen.insert(id) {
                 return None;
@@ -984,18 +1164,20 @@ fn notices(frame: &Frame) -> Vec<String> {
                 .notices
                 .iter()
                 .filter(|warning| {
-                    warning
-                        .observation_gap()
-                        .is_some_and(|(machine, _)| machine == id)
+                    matches!(warning,
+                        DeployWarning::ObservationFailed { machine_id, .. }
+                        | DeployWarning::ObservationOmitted { machine_id, .. }
+                        if *machine_id == id)
                 })
                 .filter_map(|warning| match warning {
-                    DeployWarning::ObservationFailed { kind, message, .. } => {
-                        Some(format!("{kind}s: {message}"))
+                    DeployWarning::ObservationFailed { .. }
+                    | DeployWarning::ObservationOmitted { gap: Some(_), .. } => {
+                        observation_detail(warning).and_then(|detail| {
+                            (!printed.causes.contains(&detail)).then_some(detail.1)
+                        })
                     }
-                    DeployWarning::ObservationOmitted { .. } => {
-                        Some("observed Down by this Entry".into())
-                    }
-                    DeployWarning::StorageHeadroom { .. }
+                    DeployWarning::ObservationOmitted { gap: None, .. }
+                    | DeployWarning::StorageHeadroom { .. }
                     | DeployWarning::UnbudgetedDiskUsage
                     | DeployWarning::StorageObservationUnknown { .. }
                     | DeployWarning::IngressHostname { .. }
@@ -1007,10 +1189,12 @@ fn notices(frame: &Frame) -> Vec<String> {
                     | DeployWarning::NotInStore { .. } => None,
                 })
                 .collect::<BTreeSet<_>>();
-            Some(format!(
-                "Server {label}: deployment observations are incomplete ({})",
-                details.into_iter().collect::<Vec<_>>().join("; ")
-            ))
+            let details = details.into_iter().collect::<Vec<_>>().join("; ");
+            Some(if details.is_empty() {
+                format!("Server {label}: deployment observations are incomplete")
+            } else {
+                format!("Server {label}: deployment observations are incomplete ({details})")
+            })
         })
         .collect()
 }
@@ -1043,14 +1227,14 @@ fn finish(
     previous: &Frame,
     frame: &Frame,
     disposition: Disposition,
-    interactive: bool,
-    width: usize,
+    terminal_width: Option<usize>,
     color: bool,
+    printed: &NoticeHistory,
 ) -> io::Result<()> {
     if matches!(disposition, Disposition::UpToDate) {
         return Ok(());
     }
-    if interactive {
+    if let Some(width) = terminal_width {
         writeln!(writer, "{}", frame.title)?;
         let width = width.saturating_sub(1);
         for (text, tone) in body(
@@ -1062,11 +1246,11 @@ fn finish(
         ) {
             writeln!(writer, "{}", paint(&text, tone, color))?;
         }
-        for notice in notices(frame) {
+        for notice in notices(frame, true, printed) {
             writeln!(writer, "! {notice}")?;
         }
     } else {
-        changes(writer, Some(previous), frame, color)?;
+        changes(writer, Some(previous), frame, color, true, printed)?;
     }
     let mut counts = Vec::new();
     let gaps = frame
@@ -1156,15 +1340,16 @@ mod tests;
 #[cfg(test)]
 pub(crate) fn settled_text(frame: &Frame) -> String {
     let mut output = Vec::new();
-    changes(&mut output, None, frame, false).unwrap();
+    let printed = NoticeHistory::default();
+    changes(&mut output, None, frame, false, false, &printed).unwrap();
     finish(
         &mut output,
         frame,
         frame,
         Disposition::Settled,
+        None,
         false,
-        80,
-        false,
+        &printed,
     )
     .unwrap();
     String::from_utf8(output).unwrap()

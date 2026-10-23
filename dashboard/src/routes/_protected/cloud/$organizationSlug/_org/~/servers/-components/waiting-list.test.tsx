@@ -120,6 +120,11 @@ it("reads each prep step in the status cell", () => {
       blockers: [{ code: "docker_install_failed", message: "apt-get exited 100. Run the line again." }],
     }),
     host("zfs-failed", { prep: { docker: "ready", zfs: "failed" } }),
+    host("disk-too-small", {
+      status: "blocked",
+      prep: { docker: "failed", zfs: "off" },
+      blockers: [{ code: "disk_too_small", message: "Disk is 24 GiB. Ployz needs 30 GiB." }],
+    }),
   ]);
 
   expect(statusOf("docker-installing")).toBe("Installing Docker5s ago");
@@ -127,6 +132,7 @@ it("reads each prep step in the status cell", () => {
   expect(statusOf("all-ready")).toBe("Ready5s ago");
   expect(statusOf("docker-failed")).toBe("Docker install failedapt-get exited 100. Run the line again.");
   expect(statusOf("zfs-failed")).toMatch(/^ReadyZFS build failed/);
+  expect(statusOf("disk-too-small")).toBe("Disk too smallDisk is 24 GiB. Ployz needs 30 GiB.");
   expect(pick("zfs-failed").hasAttribute("data-disabled")).toBe(false);
   expect(pick("docker-failed").hasAttribute("data-disabled")).toBe(true);
 });
@@ -302,7 +308,7 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const waitingKey = waitingServersQueryOptions("ada").queryKey;
   const statusKey = serverEnrollmentsQueryOptions("ada").queryKey;
   client.setQueryData(waitingKey, [second]);
-  client.setQueryData(statusKey, { attempts: [attempt], hasFirst: true, joining: 0 });
+  client.setQueryData(statusKey, { attempts: [attempt], founded: true, hasFirst: true, joining: 0 });
   render(<QueryClientProvider client={client}><IntakeTray organizationSlug="ada" token={undefined} firstRun={false} /></QueryClientProvider>);
   expect(rowNames()).toEqual(["second"]);
   const waiting = deferred<WaitingServerView[]>();
@@ -313,7 +319,7 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const statusFetch = client.refetchQueries({ queryKey: statusKey });
   const returned: WaitingServerView = { ...first, arrivalAt: "2026-10-17T10:01:00Z", returned: { state: "failed", stage: "storage", message: "Disk missing" } };
   const endWaiting = () => act(async () => { waiting.resolve([second, returned]); await waitingFetch; });
-  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], hasFirst: true, joining: 0 }); await statusFetch; });
+  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], founded: true, hasFirst: true, joining: 0 }); await statusFetch; });
   if (order === "waiting-first") {
     await endWaiting();
     expect(rowNames()).toEqual(["second", "first"]);

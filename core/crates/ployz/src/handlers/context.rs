@@ -17,7 +17,7 @@ use super::{Error, leaf_matches, required};
 /// the command line. Signed out, that is `ployz login`: Cloud Servers need no context. Signed
 /// in, it is their Cloud Servers. `PLOYZ_CONTEXT` outlives both and sends them back here, so
 /// with it set no command does. Read from local state only: choosing a hint never asks Cloud.
-fn no_contexts_next(leaf: &ArgMatches) -> Option<String> {
+pub(super) fn no_contexts_next(leaf: &ArgMatches) -> Option<String> {
     if std::env::var_os(crate::cli::env::CONTEXT).is_some() {
         return None;
     }
@@ -118,7 +118,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
 
 /// `ployz ctx use CONTEXT`, keeping a config file named on the command line;
 /// one from the environment is still set when the retry runs.
-fn retry_use(leaf: &ArgMatches) -> String {
+pub(super) fn retry_use(leaf: &ArgMatches) -> String {
     let mut args = vec!["ployz", "ctx", "use"];
     if leaf.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine)
         && let Some(path) = leaf.get_one::<String>("ployz-config")

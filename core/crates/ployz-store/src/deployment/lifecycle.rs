@@ -1851,13 +1851,15 @@ fn failure(
     let DeployOutcome::Failed { failed, .. } = outcome else {
         return None;
     };
-    let (service, error) = match failed {
-        FailedOperation::Operation { operation, error } => (operation.service_name(), error),
+    let (service, machine, error) = match failed {
+        FailedOperation::Operation { operation, error } => {
+            (operation.service_name(), operation.machine_id(), error)
+        }
         FailedOperation::Replacement {
             operation, error, ..
-        } => (Some(&operation.spec.name), error),
+        } => (Some(&operation.spec.name), operation.machine_id, error),
     };
-    let Failure { reason, cause, .. } = Failure::of(error, operations);
+    let Failure { reason, cause, .. } = Failure::on(error, operations, Some(machine));
     let reason = match service {
         Some(service) => format!("{}: {reason}", current_name(nodes, service)),
         None => reason,

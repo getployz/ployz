@@ -50,8 +50,26 @@ Commands act on your only project and its default environment. With more than on
 your app's directory.
 `ployz ctx` shows where commands act from here. In a directory with no project linked, it asks Cloud
 which projects there are: it names your only project, says the organization has none yet, or says
-it has several and how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
-`ployz link` step.
+it has several and how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)`.
+With a token or device sign-in, it still suggests `ployz link`. When signed out, it says
+`organization = (none: not signed in)` and suggests
+`ployz login` only when it has no Server route. A selected context, `PLOYZ_CONTEXT`, or `--connect`
+still provides a Server route without Cloud sign-in.
+
+Signed out, without `--connect` or `--context`, and with a config file that sets no current
+context, commands reach no server, so it shows
+`servers = (none: no current context)` and `next: ployz ctx use CONTEXT`. With no contexts in the
+file, it shows `(none: no contexts)` and the step those commands name, such as `ployz login`. In
+JSON, `servers.via` is `none` then.
+
+With no config file, `--connect`, sign-in or token, it reports no local daemon socket when that socket
+is absent. If it cannot inspect the socket because of permissions, it says to use `sudo` or join
+the `ployz` group. Socket presence alone does not confirm that the daemon answers. In JSON,
+`credential` names `device`, `token` or `local`, or is null when signed out.
+`servers.local_socket_exists` is true when the local socket is visible, false when it is
+absent, and omitted when the check failed. The added
+`servers.local_socket_status` distinguishes `visible`, `missing`, `permission_denied` and
+`unknown`; `servers.via` still names the selected route.
 
 A link belongs to the organization it was made in. Acting in another one, a command that uses the
 link, such as `ployz status`, refuses. When both are Ployz Cloud organizations, it names
@@ -478,7 +496,13 @@ Scripts can tell failures apart by exit code:
 | 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, a deploy that applied but couldn't see every server or left an old container running, a `ployz status` with a server that joined down or not answering, or a deploy a newer one replaced or someone cancelled. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` following its Deployment also cancels this way on SIGTERM, which CI runners, `timeout` and container stops send, and on Linux on SIGHUP, which closing its terminal or losing its SSH session sends. Under `nohup` it ignores SIGHUP and goes on. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. A `server upgrade` run from your computer works the same way: the server goes on with the upgrade it took, and `ployz server show` says how it ended. |
 
-`ployz exec` exits with your command's own exit code. When the container stops under it,
+If `ployz exec -T db -- true` finds no running container on the servers that answered,
+and another server did not answer, it names the missing servers and exits 3, like `ployz ps`
+and `ployz logs`. The service may still run on one of those servers. Ployz does not claim
+which one without an observation. If every server answers and none reports the service,
+it exits 1 with `No running Service`.
+
+Once it starts, `ployz exec` exits with your command's own exit code. When the container stops under it,
 because a deploy replaced it or the service was stopped, it exits 1 with
 `The container for web stopped; exec ended.` A `retry:` line follows when another container of the
 service runs. It is the command you ran: the `-T` you typed, the `--context`, `--connect`,
@@ -488,7 +512,10 @@ reaches whichever one runs. When `ployz exec` stops before your command does,
 because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
 command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command
 you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a` and `b` running.
-With a TTY, Ctrl-C reaches the command as a keypress first.
+With a TTY, Ctrl-C reaches the command as a keypress first. When the connection drops, exec
+exits 1 with `Lost the connection to machine-1; exec ended, but the command may still be running
+there.` The server stops the command as above once it notices the connection is gone, and until
+then the command goes on.
 
 A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
 `service add` and other changes exit 1 with `Cloud ... stopped answering after it got this

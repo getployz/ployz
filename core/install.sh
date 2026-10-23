@@ -3,6 +3,8 @@
 set -eu
 
 PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz}
+# Passes GitHub's release assets through over IPv6, for a server that can't connect to github.com.
+PLOYZ_FALLBACK_URL=${PLOYZ_FALLBACK_URL:-https://ployz.sh}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 ENROLL=
 VERSION_ARG=
@@ -172,10 +174,20 @@ install_cli() {
 
     # Every release has checksums.txt, so a 404 for it means the release doesn't exist.
     # A file:// mirror, as verify-release.sh uses, answers 000 when curl succeeds.
-    # curl exits 6 when the name doesn't resolve and 7 when nothing answers.
+    # curl exits 6 when the name doesn't resolve and 7 when nothing answers. Then the release comes
+    # through the fallback, and only if that can't connect either does the install stop.
     status=$(curl -sSL -w '%{http_code}' -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt") || {
-        case $? in 6|7) unreachable ;; esac
-        status=
+        case $? in
+            6|7)
+                echo "Can't reach $PLOYZ_GITHUB_URL; downloading the release through $PLOYZ_FALLBACK_URL" >&2
+                base_url="$PLOYZ_FALLBACK_URL/releases/download/v$version"
+                status=$(curl -sSL -w '%{http_code}' -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt") || {
+                    case $? in 6|7) unreachable ;; esac
+                    status=
+                }
+                ;;
+            *) status= ;;
+        esac
     }
     case "$status" in
         2??|000) ;;

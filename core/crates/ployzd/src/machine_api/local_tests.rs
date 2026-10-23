@@ -34,17 +34,31 @@ fn an_operator_reads_every_env_key_but_the_opened_ones() {
 }
 
 #[tokio::test]
-async fn retained_env_withholds_opened_keys_from_an_operator_only() {
+async fn retained_env_answers_no_opened_value_and_names_the_opened_keys() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let dir = std::env::temp_dir().join(format!("ployzd-retained-env-{}", MachineId::random()));
     let store = RecordOwner::spawn(LocalMachineStore::open(&dir).unwrap()).unwrap();
     let socket = dir.join("observe.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let environment = BTreeMap::from([
-        ("DATABASE_URL".to_owned(), "postgres://opened".to_owned()),
-        ("PORT".to_owned(), "8080".to_owned()),
-    ]);
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let sealed = BTreeMap::from([(
+        "DATABASE_URL".to_owned(),
+        ployz_core::EnvValue::Sealed(cluster.seal(
+            "DATABASE_URL",
+            ployz_core::SealedScope::Shared,
+            "postgres://opened",
+        )),
+    )]);
+    let label = serde_json::to_string(&cluster.open(sealed).unwrap().record).unwrap();
+    let environment = crate::observe::layout::RetainedEnv::from_inspected(
+        &[
+            "DATABASE_URL=postgres://opened".to_owned(),
+            "PORT=8080".to_owned(),
+        ],
+        Some(&label),
+    )
+    .unwrap();
     let answer = serde_json::to_vec(&serde_json::json!({ "reply": environment })).unwrap();
     let observer = tokio::spawn(async move {
         loop {
@@ -58,24 +72,14 @@ async fn retained_env_withholds_opened_keys_from_an_operator_only() {
             stream.write_all(&answer).await.unwrap();
         }
     });
-    let service = MachineService {
-        opened_in_test: BTreeSet::from(["DATABASE_URL".to_owned()]),
-        ..MachineService::with_cluster(store, None).with_observe_socket(socket)
-    };
+    let service = MachineService::with_cluster(store, None).with_observe_socket(socket);
+    let id = ContainerId::parse("a".repeat(64)).unwrap();
 
-    for (from_operator, expected) in [
-        (false, environment.clone()),
-        (
-            true,
-            BTreeMap::from([("PORT".to_owned(), "8080".to_owned())]),
-        ),
-    ] {
+    for from_operator in [false, true] {
         let mut request = Request::new(
-            op::RetainedEnv::into_request(ployz_core::RetainedEnvRequest {
-                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
-            })
-            .encode()
-            .unwrap(),
+            op::RetainedEnv::into_request(ployz_core::RetainedEnvRequest { container_id: id })
+                .encode()
+                .unwrap(),
         );
         if from_operator {
             request
@@ -93,10 +97,14 @@ async fn retained_env_withholds_opened_keys_from_an_operator_only() {
             .unwrap();
         assert_eq!(
             reply.environment,
-            Some(expected),
+            Some(BTreeMap::from([("PORT".to_owned(), "8080".to_owned())])),
             "operator: {from_operator}"
         );
     }
+    assert_eq!(
+        service.opened_keys(id).await.unwrap(),
+        BTreeSet::from(["DATABASE_URL".to_owned()])
+    );
     observer.abort();
     std::fs::remove_dir_all(dir).ok();
 }
@@ -1269,15 +1277,14 @@ mod set_volume_copy {
         let draining = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
             "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":400}});
 
-        let hung_up = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            set_copy(&service, draining),
-        )
-        .await;
-        assert!(
-            hung_up.is_err(),
-            "the cut finished inside its drain: {hung_up:?}"
-        );
+        // Hang up once the cut is draining, not after a fixed wait: on a loaded runner the
+        // cut may not have begun by then, and the undo would run before it.
+        tokio::select! {
+            finished = set_copy(&service, draining) => {
+                panic!("the cut finished inside its drain: {finished:?}")
+            }
+            () = drain_started(&service, &holder) => {}
+        }
         let undo = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
             "want":{"kind":"writer", "at":"7", "epoch":1,
                 "start":{"kind":"kept", "container_id":holder.to_string()}}});
@@ -1311,10 +1318,14 @@ mod set_volume_copy {
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
         let first = running_holder(&service, &fake).await;
-        let draining = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
-            "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":300}});
+        let draining = |drain: u32| {
+            json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+                "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":drain}})
+        };
 
-        let (refused, _) = tokio::join!(set_copy(&service, draining.clone()), async {
+        // The fake holder never reads idle, so the drain lasts its whole cap, and the
+        // second holder must start inside it. A loaded runner took over 300 ms to start one.
+        let (refused, _) = tokio::join!(set_copy(&service, draining(3_000)), async {
             drain_started(&service, &first).await;
             running_holder(&service, &fake).await
         });
@@ -1326,7 +1337,7 @@ mod set_volume_copy {
         status.sort_by_key(ToString::to_string);
         assert_eq!(status, vec![json!("exited"), json!("running")]);
 
-        let cut = reply(&set_copy(&service, draining).await);
+        let cut = reply(&set_copy(&service, draining(300)).await);
         assert_eq!(
             serde_json::to_value(&cut).unwrap(),
             json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
@@ -2622,7 +2633,10 @@ mod ensure_container {
         let redacted = |observed: &ContainerObservation| {
             let spec = &observed.resolved_spec;
             assert_eq!(
-                spec.container.environment.get("TOKEN").map(String::as_str),
+                spec.container
+                    .environment
+                    .get("TOKEN")
+                    .and_then(ployz_core::EnvValue::text),
                 Some("<redacted>")
             );
             assert_eq!(
@@ -2631,7 +2645,7 @@ mod ensure_container {
                     .unwrap()
                     .environment
                     .get("DATABASE_URL")
-                    .map(String::as_str),
+                    .and_then(ployz_core::EnvValue::text),
                 Some("<redacted>")
             );
             let graph = spec.mount_graph.config_graph();

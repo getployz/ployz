@@ -264,6 +264,47 @@ fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
     );
 }
 
+#[test]
+fn a_server_answer_names_a_server_whose_readings_are_all_old() {
+    let one = support::machine('a', "one");
+    let host = HostPoint {
+        ts: 10 * SECOND,
+        cpu_busy: Some(0.25),
+        memory: None,
+        interfaces: BTreeMap::new(),
+        disk: None,
+    };
+    let history = crate::sdk::MetricHistory {
+        step_nanos: Some(10 * SECOND),
+        points: MetricPoints::Machine(vec![host.clone()]),
+        machines: vec![MachineSuccess {
+            machine_id: one.machine.id,
+            value: MetricHistoryReply {
+                points: MetricPoints::Machine(vec![host]),
+                step_nanos: 10 * SECOND,
+                gaps: Vec::new(),
+                markers: Vec::new(),
+            },
+        }],
+        unanswered: Vec::new(),
+    };
+
+    let answer = summarize(
+        &history,
+        std::slice::from_ref(&one),
+        None,
+        &Readable::All,
+        (Timestamp(900), 1_000 * SECOND),
+    );
+
+    assert_eq!(answer.metrics.first().and_then(|row| row.now.clone()), None);
+    assert_eq!(
+        answer.notes,
+        ["one answered, but its newest reading is about 16m old. \
+          Its clock may be behind, or it stopped taking readings."]
+    );
+}
+
 // Catches a Server answer that lists, counts or filters to Service events outside the
 // Namespaces its caller may read.
 #[test]

@@ -52,6 +52,7 @@ pub(crate) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             command: Vec::new(),
             entrypoint: Vec::new(),
             environment: Default::default(),
+            sealed_identity: None,
             labels: Default::default(),
             hostname: None,
             extra_hosts: Vec::new(),

@@ -309,16 +309,13 @@ async fn ensure_retried(
     target: &MachineTarget,
     container: RunTarget,
 ) -> Result<ployz_core::ContainerNow, RpcError> {
+    let want = ContainerWant::Running {
+        container,
+        rotation: RunRotation::Pending,
+    };
+    crate::sealed_compat::admit(client, target, &want).await?;
     client
-        .call::<op::EnsureContainer>(
-            ployz_core::EnsureContainerRequest {
-                want: ContainerWant::Running {
-                    container,
-                    rotation: RunRotation::Pending,
-                },
-            },
-            Some(target),
-        )
+        .call::<op::EnsureContainer>(ployz_core::EnsureContainerRequest { want }, Some(target))
         .await
         .map_err(RpcError::from)?
         .into_result()

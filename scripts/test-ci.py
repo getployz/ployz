@@ -142,6 +142,16 @@ class CiTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ci["check_result"](needs)
 
+    def test_ci_ready_skips_a_draft_and_runs_after_any_check_result(self):
+        workflow = (SCRIPT.parent.parent / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("\n  ready:\n", 1)[1].split("\n\n  ", 1)[0]
+        condition = next(line for line in job.splitlines() if line.startswith("    if:"))
+        # always(): a failed or cancelled check must still reach the step that fails CI ready.
+        self.assertIn("always()", condition)
+        # A draft can't merge, and the queue runs CI ready again, so a draft reports skipped.
+        self.assertIn("!github.event.pull_request.draft", condition)
+        self.assertNotIn("exit 1", job)
+
     def test_cloud_stage_runs_alone_and_preserves_failure(self):
         script = SCRIPT.parent.parent / "dashboard/scripts/pr-check.sh"
         with tempfile.TemporaryDirectory() as directory:

@@ -80,6 +80,10 @@ The **Servers** page shows the server **Offline**. Replicas on your other server
 serving, though some requests are slower for a while, and for up to an hour some visitors may
 still be sent to the offline server. Services that ran only there are down.
 
+If `ployz exec -T db -- true` cannot find a running container while a server is not answering,
+it names the missing servers and exits 3. The service may still run there, so an incomplete
+answer does not mean it is gone. `ployz ps` and `ployz logs` also name servers that did not answer.
+
 To bring services back:
 
 1. Deploy the services that don't use a volume on the offline server. They start on your other
@@ -97,8 +101,9 @@ To bring services back:
    the same way: it names the server, starts nothing there, and exits 3. The new replicas start
    serving on your other servers, but the deploy finishes only once they mark that server
    offline. If that takes more than 5 minutes, the service fails and the deploy names the server.
-   A service with a Docker volume fails before it changes anything, because the volume may be on
-   that server. So does any service when the deploy can't read which replicas that server runs.
+   A service with a Docker volume fails before it changes anything when no answering server holds
+   the volume, because it may be on that server. So does any service when the deploy can't read
+   which replicas that server runs.
    A server the others still count as online but that doesn't answer fails the deploy.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your

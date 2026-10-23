@@ -25,8 +25,8 @@ status only when someone should look.
 
 When the list is wide enough, each row also shows how much of the server's CPU and memory is in
 use right now. The meters stay empty until the server sends a reading, and an offline server shows
-none. A dash means the server sent no recent reading for that meter. The server's page has disk
-and the full picture.
+none. A dash means no recent reading reached Ployz for that meter: the server sent none, or its
+clock runs behind, so its readings look old. The server's page has disk and the full picture.
 
 A server that can hold [managed volumes](../services/volumes.md) shows nothing about storage.
 **Docker only** means it was added with **Docker only** storage, or fell back to it because it
@@ -154,7 +154,8 @@ Click a server. Its page shows its status and public IP address, then:
 
 - **Resources**: meters for CPU, memory and disk now, then charts of CPU, memory and network over
   the range you pick, from **1h** to **30d**. The meters and the values above each chart always
-  show the last few minutes, whatever the range; a dash means the server sent no recent reading.
+  show the last few minutes, whatever the range; a dash means no recent reading, either because the
+  server sent none or because its clock runs behind.
   Network shows each interface in its own color, out as a solid line and in as a dashed one. The
   disk bar splits used space into **Volumes**, **Mirrors**, **Logs and metrics** and **Other**,
   then **Free**. Space the server couldn't attribute to one of those shows as **Used**. A stretch
@@ -276,9 +277,14 @@ Turn the switch on and the row reads **Starting the web server…** until the we
 then your domains point at it. When the web server can't start, say because something else on the
 server holds port 80, the switch goes back off and the section says why: **Couldn't start web
 traffic · Port 80 is in use on web-1. Free it, then try again.** Fix the cause and click **Retry**.
+If it still can't start, the section says why again and the switch stays off.
 
 From the CLI, `ployz server set web-1 --accepts-ingress=false` turns the role off but leaves the web
-server running; use the switch to stop it.
+server running; use the switch to stop it. `--accepts-ingress=true` turns the role on before it
+starts the web server, so while the web server starts, the line under the switch reads **The web server
+isn't running, so your domains don't point here.** It reads the same when the start fails: the command
+exits with code 3 and leaves the role on. To try again from Ployz Cloud, turn the switch off, then on.
+If the web server still can't start, the section says why and the switch goes back off.
 
 ## Upgrade Ployz on a server
 
@@ -373,15 +379,21 @@ The command prints one line per server it tried, the failed one included. The er
 stderr, says why that server failed.
 It exits 1 when a server's upgrade failed before any server moved to another release, and 3
 when some did first, or when a server took the upgrade and then stopped answering, since it may
-still finish. A version that was
-never released fails with `no such release 0.3.0-beta.99`.
+still finish. A version that was never released fails with `No Ployz release 9.9.9.`
+and `not_found` in JSON. The CLI reports the Server's release lookup failure, so the CLI computer
+does not need its own connection to GitHub.
 A server that already runs the newest release on the channel you name, or a newer one, says
 `already runs 0.3.0-beta.7`, and a server on this release or later is left alone: nothing is
-reinstalled or restarted.
+reinstalled or restarted. An exact version it already runs says `Server machine-1 already runs 0.3.1.`
+A downgrade says `Downgraded Server machine-1 from 0.3.1 to 0.3.0.` The Ingress Proxy follow-up
+reports whether any Service changes are needed without claiming that every Server is current.
 Ctrl-C stops the command, not the upgrade: the server finishes it on its own, and
 `ployz server show` says how it ended.
 With `--json`, each entry in `attempts` names its server's id under `server`, and `unattempted`
-lists the ids of the servers the command never reached.
+lists the ids of the servers the command never reached. Direct upgrades also include `from_version`,
+the daemon version observed before the request. When that version is known, successful attempts
+include `change` as `upgraded`, `downgraded`, or `unchanged`. Otherwise the command says the Server
+`now runs` the returned version and leaves out `change`.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade.
 
@@ -539,6 +551,12 @@ server answered and none showed a replica of it. If a server didn't answer, the 
 only as `under_replicated`. `ployz status` keeps naming a service with no replicas until a deploy
 starts one; see
 [Status says a service runs no copies](../troubleshooting/deployments.md#status-says-a-service-runs-no-copies).
+Without a terminal, the first `ployz server rm` refusal names the Volumes requiring loss
+acceptance before it gives the command to confirm. If the Server has none (builder-cache Volumes
+don't count), drop `--accept-volume-loss`; supplying it still exits 2. An empty Server name also exits 2 and asks you
+to name a Server. On a Server Ployz Cloud does not manage, `--approval` has no effect and prints a
+warning, also included in JSON `warnings`. The warning does not change the exit code.
+
 Ployz's build cache isn't one of the volumes you confirm losing.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see

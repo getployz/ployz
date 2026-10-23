@@ -6,18 +6,20 @@ use std::{
 
 use futures_util::future::join_all;
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerAction, ContainerId, ContainerNow, ContainerObservation,
-    ContainerWant, CopyRole, DataLoss, DataLossConfirmation, DescribeContractRequest,
-    DockerVolumeId, DockerVolumeName, EnsureContainerRequest, EnvironmentValues, ForgetRequest,
-    Forgotten, InspectRequest, InspectStorageRequest, LeaveRequest, Left, ListContainersRequest,
-    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    BridgeEndpointCapacity, ByteCapacity, ContainerAction, ContainerId, ContainerNow,
+    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation,
+    DescribeContractRequest, DockerVolumeId, DockerVolumeName, EnsureContainerRequest,
+    EnvironmentValues, ForgetRequest, Forgotten, InspectRequest, InspectStorageRequest,
+    InspectTelemetry, LeaveRequest, Left, ListContainersRequest, ListImagesRequest,
+    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
     MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
     MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest, RemoveVolumesRequest,
     ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, RuntimeWatchFrame,
-    RuntimeWatchRequest, StopOptions, StorageCapacity, UnconfirmedDataLoss, VolumeInventory,
-    VolumeRemoval, VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
+    RuntimeWatchRequest, StopOptions, StorageCapacity, TelemetryObservation, UnconfirmedDataLoss,
+    VolumeInventory, VolumeRemoval, VolumeRemovalOutcome, decode_runtime_watch_frame,
+    derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -138,7 +140,8 @@ impl Client {
     }
 
     /// [`Self::redial`] for a client shared by reference, as a Deploy's is. Its entry
-    /// stays the Machine it confirmed, so an endpoint that now reaches another is refused.
+    /// stays the Machine it confirmed, so an endpoint that now reaches another is refused,
+    /// even after a failed redial made this client forget its entry.
     ///
     /// # Errors
     ///
@@ -146,7 +149,7 @@ impl Client {
     /// entry doesn't answer on the new channel.
     pub(crate) async fn redial_shared(&self) -> Result<(), ConnectError> {
         let (channel, entry) = self.dial_confirmed().await?;
-        if let (Some(expected), Some(actual)) = (self.entry, entry)
+        if let (Some(expected), Some(actual)) = (self.entry.or(self.confirmed), entry)
             && expected != actual
         {
             return Err(ConnectError::IdentityMismatch { expected, actual });
@@ -190,7 +193,8 @@ impl Client {
     }
 
     /// The Machine this channel's daemon describes itself as, checked against the
-    /// connection. None when the connection names no Machine and the daemon doesn't say.
+    /// connection. None when neither the connection nor a Machine this client confirmed
+    /// names one and the daemon doesn't say.
     async fn confirmed_entry(&self) -> Result<Option<MachineId>, ConnectError> {
         let confirm = async {
             let payload =
@@ -215,7 +219,11 @@ impl Client {
                     }
                     Ok(Some(description.machine_id))
                 }
-                Err(ConnectError::Remote(_)) if self.connection.machine_id().is_none() => Ok(None),
+                Err(ConnectError::Remote(_))
+                    if self.connection.machine_id().is_none() && self.confirmed.is_none() =>
+                {
+                    Ok(None)
+                }
                 Err(error) => Err(error),
             }
         };
@@ -1128,6 +1136,36 @@ impl Client {
         result
     }
 
+    /// Read the space under each reachable Machine's Docker root. A Machine that fails or is
+    /// slow to answer is left out, since the reading only ever adds a warning.
+    pub(crate) async fn observe_docker_disks(
+        &self,
+        machines: &[MachineObservation],
+    ) -> Vec<(MachineId, ByteCapacity)> {
+        let reads = machines
+            .iter()
+            .filter(|observed| observed.invites_rpc())
+            .map(|observed| async move {
+                let machine = observed.machine.id;
+                let request = InspectRequest {
+                    telemetry: InspectTelemetry::Full,
+                    ..Default::default()
+                };
+                let target = MachineTarget::from(&machine);
+                let read = self.invoke::<op::Inspect>(request, &target, None);
+                match tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, read).await {
+                    Ok(Ok(details)) => match details.telemetry {
+                        Some(TelemetryObservation::Full { host, .. }) => {
+                            Some((machine, host.docker_root()))
+                        }
+                        _ => None,
+                    },
+                    Ok(Err(_)) | Err(_) => None,
+                }
+            });
+        join_all(reads).await.into_iter().flatten().collect()
+    }
+
     /// List Containers on every visible Machine and derive the observed Services.
     ///
     /// `environment` chooses whether observations carry real environment values
@@ -1225,10 +1263,11 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        let target = MachineTarget::from(machine_id);
+        crate::sealed_compat::admit(self, &target, &want).await?;
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        let target = MachineTarget::from(machine_id);
         apply_timeout(
             timeout,
             self.call_once::<op::EnsureContainer>(payload, Some(&target)),

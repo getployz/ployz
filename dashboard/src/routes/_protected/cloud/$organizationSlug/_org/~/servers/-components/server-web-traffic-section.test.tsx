@@ -23,6 +23,15 @@ it("never says your domains point at a Server with no public IP", () => {
   expect(screen.queryByText(/point/)).toBeNull();
 });
 
+it("shows a role on with no web server running as such, with no failure and no Retry, since it may still be starting", () => {
+  section({ kind: "down" });
+  expect(screen.getByText("The web server isn’t running, so your domains don’t point here.")).toBeTruthy();
+  expect(screen.queryByText(/Couldn’t/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(screen.getByRole("switch", { name: "Takes web traffic" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("switch", { name: "Takes web traffic" }).hasAttribute("disabled")).toBe(false);
+});
+
 it("warns that more domains may stop when some weren't reported", () => {
   const dialog = (partial: boolean) =>
     render(<WebTrafficDialog serverName="web-1" domains={["a.example.com"]} partial={partial} reach="last" open onOpenChange={() => {}} onConfirm={() => {}} />);

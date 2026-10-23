@@ -320,14 +320,12 @@ these there:
 
 ## IPv6-only servers
 
-Ployz downloads its releases from github.com and some of its images from ghcr.io, and neither has
-an IPv6 address. A server whose only route out is IPv6 can't reach them, so the install stops:
-
-```
-ERROR: Can't reach github.com, which serves Ployz releases: this server has no IPv4 route, and github.com has no IPv6 address. Give the server outbound IPv4, or NAT64 and DNS64: https://ployz.dev/docs/servers/add-a-server#ipv6-only-servers
-```
-
-Do one of these, then run the install line again:
+Ployz downloads its releases from github.com, which has no IPv6 address. When a server can't reach
+github.com, the download goes through ployz.sh instead, which has one, so the install line still
+installs `ployz` on a server whose only route out is IPv6. Setting the server up needs more: it
+downloads the Ployz daemon from github.com, and pulls some images from ghcr.io, which has no IPv6
+address either, so enrolling the server or running `ployz server add` can't finish. Do one of these
+first:
 
 - **Give the server an IPv4 address.** Most providers sell one as an add-on, such as a Hetzner
   Primary IPv4. The server is then dual-stack and installs like any other.
@@ -335,13 +333,14 @@ Do one of these, then run the install line again:
   NAT64 carries that traffic to IPv4. You need both, and they must agree on the prefix: a DNS64
   resolver alone, such as a public one, gives addresses nothing answers unless a NAT64 gateway
   serves its prefix. Use your provider's NAT64 and DNS64, or a public service that runs both.
-  With both in place, the install line works and a single server sets up and runs. Behind
-  NAT64, the server advertises the gateway's IPv4 address as its own
-  ([#3166](https://github.com/getployz/ployz/issues/3166)), and containers can't reach the DNS
-  resolvers Docker gives them ([#3167](https://github.com/getployz/ployz/issues/3167)).
+  With both in place, the install line works and a single server sets up and runs. The server
+  advertises only its own IPv6 addresses, never the gateway's IPv4 one, and your services
+  resolve names through Ployz as on any other server. A container you start yourself with
+  `docker run` on Docker's default network has only IPv4, so it reaches neither its resolvers
+  nor anything else. Run it with `--network host`, or on a Docker network with IPv6 turned on.
 
-Keep the IPv4 address or NAT64 for as long as the server runs Ployz. Ployz upgrades download from
-github.com too.
+Keep the IPv4 address or NAT64 for as long as the server runs Ployz, because upgrades download from
+github.com and can pull new images from ghcr.io.
 
 ## Good to know
 

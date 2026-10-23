@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -32,6 +33,7 @@ use crate::checkin::{LocalCheckin, Paths, Seen};
 use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
+use crate::context::{Config, ConfigError, ContextError, select_connections};
 use crate::ui::{Cell, Fields, Hint, Tone};
 
 pub(super) fn link_command(command: Command) -> Command {
@@ -940,7 +942,9 @@ fn status_record(status: &Status) -> Fields {
                 | Subject::LeftPending { service, .. }
                 | Subject::NoCopies { service },
             ) => Cow::Owned(service.name.to_string()),
-            Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
+            Some(Subject::Down { machine } | Subject::DiskFull { machine, .. }) => {
+                Cow::Owned(machine.to_string())
+            }
             Some(Subject::Unanswered { .. }) | None => Cow::Borrowed("needs attention"),
         };
         record.push(label, Cell::status(&attention.message, Tone::Bad));
@@ -957,6 +961,7 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     #[derive(Serialize)]
     struct Context<'a> {
         organization: Option<Organization>,
+        credential: Option<&'static str>,
         #[serde(flatten)]
         scope: &'a Scope,
         /// What an unnamed Project falls back to, when the Store said.
@@ -968,8 +973,17 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let config = config_path(matches)?;
     let scope = scope(matches)?;
     let default = scope.project.is_none().then(|| fallback(&config)).flatten();
+    let organization = acting_organization(&config)?;
+    let credential = if super::store::local_mode() {
+        Some("local")
+    } else if crate::cloud_account::env_token().is_some() {
+        Some("token")
+    } else {
+        organization.as_ref().map(|_| "device")
+    };
     let context = Context {
-        organization: acting_organization(&config)?,
+        organization,
+        credential,
         scope: &scope,
         default,
         servers: servers(matches, &config)?,
@@ -978,12 +992,23 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
         .default
         .as_ref()
         .and_then(|default| default.project.as_ref().zip(default.environment.as_ref()));
-    let hint = match (&scope.project, &context.default, only) {
-        (Some(_), ..) | (None, _, Some(_)) => None,
-        (None, Some(Fallback { projects: 0, .. }), None) => Some("ployz project new NAME"),
-        (None, _, None) => Some("ployz link --project PROJECT"),
+    let hint = if context.credential.is_none() && context.servers.needs_login() {
+        Some("ployz login")
+    } else {
+        match (&scope.project, &context.default, only) {
+            (Some(_), ..) | (None, _, Some(_)) => None,
+            (None, Some(Fallback { projects: 0, .. }), None) => Some("ployz project new NAME"),
+            (None, _, None) => Some("ployz link --project PROJECT"),
+        }
     }
     .map(str::to_owned);
+    // No Server reached blocks more than an unnamed Project does.
+    let hint = context
+        .servers
+        .none
+        .as_ref()
+        .and_then(|(_, next)| next.clone())
+        .or(hint);
     let project = match (&scope.project, &context.default) {
         (Some(project), _) => format!("{} ({})", project.name, project.source.as_str()),
         (
@@ -1014,20 +1039,18 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let record = Fields::new()
         .field(
             "organization",
-            context
-                .organization
-                .as_ref()
-                .map_or("(the token's)", |organization| organization.slug.as_str()),
+            context.organization.as_ref().map_or(
+                if context.credential.is_none() {
+                    "(none: not signed in)"
+                } else {
+                    "(the token's)"
+                },
+                |organization| organization.slug.as_str(),
+            ),
         )
         .field("project", project)
         .field("environment", environment)
-        .field(
-            "servers",
-            context.servers.context.as_ref().map_or_else(
-                || format!("via {}", context.servers.via),
-                |name| format!("via context {name}"),
-            ),
-        );
+        .field("servers", context.servers.label());
     crate::ui::fields(&Next::new(&context, hint.clone()), &record)?;
     if let Some(hint) = hint {
         crate::ui::hint(&Hint::Next(hint));
@@ -1069,11 +1092,93 @@ struct Servers {
     via: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_socket_exists: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_socket_status: Option<LocalSocketStatus>,
+    /// With `via` `none`, why, and the step the failing command names.
+    #[serde(skip)]
+    none: Option<(&'static str, Option<String>)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalSocketStatus {
+    Visible,
+    Missing,
+    PermissionDenied,
+    Unknown,
+}
+
+impl Servers {
+    fn local(result: io::Result<bool>) -> Self {
+        // Absent when the probe failed: the socket may exist behind an unreadable directory.
+        let exists = result.as_ref().ok().copied();
+        let status = match result {
+            Ok(true) => LocalSocketStatus::Visible,
+            Ok(false) => LocalSocketStatus::Missing,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                LocalSocketStatus::PermissionDenied
+            }
+            Err(_) => LocalSocketStatus::Unknown,
+        };
+        Self {
+            via: "local",
+            context: None,
+            local_socket_exists: exists,
+            local_socket_status: Some(status),
+            none: None,
+        }
+    }
+
+    fn needs_login(&self) -> bool {
+        matches!(
+            self.local_socket_status,
+            Some(
+                LocalSocketStatus::Missing
+                    | LocalSocketStatus::PermissionDenied
+                    | LocalSocketStatus::Unknown
+            )
+        )
+    }
+
+    fn label(&self) -> String {
+        if let Some((why, _)) = &self.none {
+            return format!("(none: {why})");
+        }
+        if let Some(name) = &self.context {
+            return format!("via context {name}");
+        }
+        match self.local_socket_status {
+            Some(LocalSocketStatus::Missing) => "(none: no local daemon socket)".to_owned(),
+            Some(LocalSocketStatus::PermissionDenied) => {
+                "(none: can't read the local daemon socket; run with sudo or join the ployz group)"
+                    .to_owned()
+            }
+            Some(LocalSocketStatus::Unknown) => {
+                "(none: can't check the local daemon socket)".to_owned()
+            }
+            Some(LocalSocketStatus::Visible) | None => format!("via {}", self.via),
+        }
+    }
 }
 
 /// In `server::connect`'s order. A `--connect` target isn't echoed: it can carry a capability.
 fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
-    let via = |via, context| Servers { via, context };
+    let via = |via, context| Servers {
+        via,
+        context,
+        local_socket_exists: None,
+        local_socket_status: None,
+        none: None,
+    };
+    let none = |why, next| Servers {
+        via: "none",
+        context: None,
+        local_socket_exists: None,
+        local_socket_status: None,
+        none: Some((why, next)),
+    };
     if matches.get_one::<String>("connect").is_some() {
         return Ok(via("connect", None));
     }
@@ -1084,18 +1189,80 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     if token || CredentialStore::beside(config).organization()?.is_some() {
         return Ok(via("cloud", None));
     }
-    let current = crate::context::Config::load_or_empty(config)?
-        .current_context()
-        .map(str::to_owned);
-    Ok(match current {
-        Some(context) => via("context", Some(context)),
-        None => via("local", None),
-    })
+    let local = Path::new(crate::connect::DEFAULT_LOCAL_SOCKET);
+    let config = match Config::load(config) {
+        Ok(config) => config,
+        Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            return Ok(Servers::local(local.try_exists()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(context) = config.current_context() {
+        return Ok(via("context", Some(context.to_owned())));
+    }
+    // A config file sends commands to its current context, never the local socket, so
+    // without one they reach no Server: say what they say.
+    Ok(
+        match select_connections(None, Some(&config), None, false, local) {
+            Err(ContextError::NoCurrentContext(_)) => none(
+                "no current context",
+                Some(super::context::retry_use(matches)),
+            ),
+            Err(ContextError::NoContexts(_)) => {
+                none("no contexts", super::context::no_contexts_next(matches))
+            }
+            _ => Servers::local(local.try_exists()),
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_socket_check_distinguishes_visibility_and_permission() {
+        let cases = [
+            (
+                Ok(true),
+                LocalSocketStatus::Visible,
+                "via local",
+                Some(true),
+            ),
+            (
+                Ok(false),
+                LocalSocketStatus::Missing,
+                "(none: no local daemon socket)",
+                Some(false),
+            ),
+            (
+                Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+                LocalSocketStatus::PermissionDenied,
+                "(none: can't read the local daemon socket; run with sudo or join the ployz group)",
+                None,
+            ),
+            (
+                Err(io::Error::other("unavailable")),
+                LocalSocketStatus::Unknown,
+                "(none: can't check the local daemon socket)",
+                None,
+            ),
+        ];
+        for (result, status, label, exists) in cases {
+            let servers = Servers::local(result);
+            assert_eq!(servers.label(), label);
+            assert_eq!(servers.needs_login(), exists != Some(true));
+            let json = serde_json::to_value(&servers).unwrap();
+            assert_eq!(
+                json.pointer("/local_socket_exists"),
+                exists.map(serde_json::Value::Bool).as_ref()
+            );
+            assert_eq!(
+                json.pointer("/local_socket_status"),
+                Some(&serde_json::to_value(status).unwrap())
+            );
+        }
+    }
 
     fn linked_in(id: &str, slug: &str) -> Link {
         Link {

@@ -24,7 +24,7 @@ pub(crate) mod test_support;
 use std::{
     collections::{BTreeMap, HashMap},
     net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -48,6 +48,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
+use crate::sealed_compat::LogStore;
 use checks::CheckRecords;
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
@@ -303,6 +304,8 @@ pub struct ContainerRuntime {
     first_synced: watch::Sender<bool>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
+    sealing_key_dir: Option<PathBuf>,
+    log_store: LogStore,
 }
 
 impl ContainerRuntime {
@@ -316,7 +319,22 @@ impl ContainerRuntime {
             first_synced: watch::Sender::new(false),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
+            sealing_key_dir: None,
+            log_store: LogStore::default(),
         }
+    }
+
+    /// Opens Sealed env values with the Sealing Key kept in `data_dir`.
+    #[must_use]
+    pub fn with_sealing_key(mut self, data_dir: PathBuf) -> Self {
+        self.sealing_key_dir = Some(data_dir);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_log_store(mut self, log_store: LogStore) -> Self {
+        self.log_store = log_store;
+        self
     }
 
     pub async fn floor_turn(&self) -> FloorTurn<'_> {
@@ -790,6 +808,36 @@ impl ContainerRuntime {
             .filter(|pid| *pid != 0))
     }
 
+    /// The record of the Sealed values `container_id` was given, from its label.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container or its label does not parse.
+    pub(crate) async fn sealed_record(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<crate::sealed_env::SealedRecord>, Error> {
+        let inspected = decode_raw_inspect(
+            self.docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )?;
+        let label = inspected
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
+            .and_then(|labels| labels.get(crate::sealed_env::LABEL_SEALED));
+        Ok(crate::sealed_env::SealedRecord::from_label(
+            label.map(String::as_str),
+        )?)
+    }
+
+    pub(crate) fn sealing_key_dir(&self) -> Option<&Path> {
+        self.sealing_key_dir.as_deref()
+    }
+
     pub async fn inspect_managed(
         &self,
         container_id: &ContainerId,
@@ -852,7 +900,17 @@ impl ContainerRuntime {
         let run = container_run(&inspected);
         let mut runtime = runtime_observation(inspected.state.as_ref());
         let mut effective_check = effective_healthcheck(inspected.config.as_ref());
-        let mut last_check = last_docker_check(inspected.state.as_ref());
+        let mut last_check = last_docker_check(inspected.state.as_ref(), || {
+            crate::sealed_env::Lines::new(
+                *container_id,
+                crate::sealed_env::SealedRecord::from_label(
+                    labels
+                        .get(crate::sealed_env::LABEL_SEALED)
+                        .map(String::as_str),
+                ),
+                self.sealing_key_dir(),
+            )
+        });
         if kind == ContainerKind::ServiceContainer
             && let Some(HealthcheckSpec::Http(check)) = &resolved_spec.container.healthcheck
         {
@@ -1259,7 +1317,10 @@ struct InspectHealthLog {
     output: String,
 }
 
-fn last_docker_check(state: Option<&serde_json::Value>) -> Option<LastHealthCheck> {
+fn last_docker_check(
+    state: Option<&serde_json::Value>,
+    lines: impl FnOnce() -> crate::sealed_env::Lines,
+) -> Option<LastHealthCheck> {
     let newest = state?.get("Health")?.get("Log")?.as_array()?.last()?;
     let newest = InspectHealthLog::deserialize(newest).ok()?;
     let checked = chrono::DateTime::parse_from_rfc3339(&newest.start).ok();
@@ -1268,7 +1329,8 @@ fn last_docker_check(state: Option<&serde_json::Value>) -> Option<LastHealthChec
     {
         return None;
     }
-    Some(LastHealthCheck::exited(newest.exit_code, &newest.output))
+    let output = lines().text(&newest.output).unwrap_or_default();
+    Some(LastHealthCheck::exited(newest.exit_code, &output))
 }
 
 fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObservation {
@@ -1285,8 +1347,21 @@ fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObs
             .health
             .as_ref()
             .and_then(|health| health.status.as_deref()),
-        state,
+        &state_without_app_output(state),
     )
+}
+
+fn state_without_app_output(state: &serde_json::Value) -> serde_json::Value {
+    let mut decoded = serde_json::Map::new();
+    for field in ["Status", "ExitCode"] {
+        if let Some(value) = state.get(field) {
+            decoded.insert(field.into(), value.clone());
+        }
+    }
+    if let Some(health) = state.get("Health").and_then(|health| health.get("Status")) {
+        decoded.insert("Health".into(), json!({ "Status": health }));
+    }
+    serde_json::Value::Object(decoded)
 }
 
 fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<HealthcheckSpec> {
@@ -1393,6 +1468,10 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Network(#[from] crate::network::NetworkError),
+    #[error(transparent)]
+    Sealed(#[from] crate::sealed_env::OpenError),
+    #[error(transparent)]
+    LogStoreUpgrading(#[from] crate::sealed_compat::LogStoreUpgrading),
     #[error(transparent)]
     SpecStore(#[from] SpecStoreError),
     #[error(transparent)]
@@ -1544,8 +1623,10 @@ impl Error {
             | Self::EventStreamClosed
             // A peer pull is idempotent, so a rerun is safe whatever docker printed.
             | Self::PeerPull(_)
-            | Self::UnregistryNotReady { .. } => RpcErrorCode::Unavailable,
-            Self::MissingPreDeployHook
+            | Self::UnregistryNotReady { .. }
+            | Self::Sealed(crate::sealed_env::OpenError::KeyMissing)
+            | Self::LogStoreUpgrading(_) => RpcErrorCode::Unavailable,
+            Self::Sealed(_) | Self::MissingPreDeployHook
             | Self::EndpointCapacity
             | Self::DurationOverflow
             | Self::SizeOverflow
@@ -1744,6 +1825,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &namespace,
             &spec,
+            None,
         )
         .unwrap();
         assert!(
@@ -1799,6 +1881,7 @@ mod tests {
             ContainerKind::PreDeployHook,
             &namespace,
             &spec,
+            None,
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
@@ -1869,6 +1952,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
+            None,
         )
         .unwrap();
         assert_eq!(body.stop_timeout, Some(1));
@@ -1901,6 +1985,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 namespace,
                 &spec,
+                None,
             )
             .unwrap();
             create::ingress_sysctls(&mut body, namespace, &spec, kernel_supports);
@@ -1951,6 +2036,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 namespace,
                 &caddy,
+                None,
             )
             .unwrap();
             assert!(
@@ -2001,6 +2087,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
+            None,
         )
         .unwrap();
         let host = body.host_config.unwrap();
@@ -2501,11 +2588,14 @@ mod tests {
             })
         };
         assert_eq!(
-            last_docker_check(Some(&state(json!({
-                "Status": "unhealthy",
-                "FailingStreak": 2,
-                "Log": [entry(0, "accepting connections\n"), entry(127, "sh: pg_isready: not found\nmore")],
-            })))),
+            last_docker_check(
+                Some(&state(json!({
+                    "Status": "unhealthy",
+                    "FailingStreak": 2,
+                    "Log": [entry(0, "accepting connections\n"), entry(127, "sh: pg_isready: not found\nmore")],
+                }))),
+                || crate::sealed_env::Lines::Shown
+            ),
             Some(LastHealthCheck::Exited {
                 code: 127,
                 output: "sh: pg_isready: not found".into(),
@@ -2516,25 +2606,37 @@ mod tests {
             json!({ "Status": "starting", "Log": null }),
             json!({ "Status": "starting" }),
         ] {
-            assert_eq!(last_docker_check(Some(&state(health))), None);
+            assert_eq!(
+                last_docker_check(Some(&state(health)), || crate::sealed_env::Lines::Shown),
+                None
+            );
         }
         assert_eq!(
-            last_docker_check(Some(&json!({ "Status": "running" }))),
+            last_docker_check(Some(&json!({ "Status": "running" })), || {
+                crate::sealed_env::Lines::Shown
+            }),
             None
         );
         assert_eq!(
-            last_docker_check(Some(&state(
-                json!({ "Log": [{ "Output": "no exit code" }] })
-            ))),
+            last_docker_check(
+                Some(&state(json!({ "Log": [{ "Output": "no exit code" }] }))),
+                || crate::sealed_env::Lines::Shown
+            ),
             None
         );
-        assert_eq!(last_docker_check(None), None);
         assert_eq!(
-            last_docker_check(Some(&json!({
-                "Status": "running",
-                "StartedAt": "2026-10-05T11:00:00Z",
-                "Health": { "Status": "starting", "Log": [entry(1, "from the previous start")] },
-            }))),
+            last_docker_check(None, || crate::sealed_env::Lines::Shown),
+            None
+        );
+        assert_eq!(
+            last_docker_check(
+                Some(&json!({
+                    "Status": "running",
+                    "StartedAt": "2026-10-05T11:00:00Z",
+                    "Health": { "Status": "starting", "Log": [entry(1, "from the previous start")] },
+                })),
+                || crate::sealed_env::Lines::Shown
+            ),
             None
         );
     }
@@ -2841,4 +2943,344 @@ async fn inspection_reports_failing_once_the_check_passed_since_this_start() {
         observe(&second_start, "unhealthy").await,
         HealthObservation::Unhealthy
     );
+}
+
+#[cfg(test)]
+mod sealed_output_tests {
+    use ployz_core::{
+        ContainerDetails, EnvValue, LastHealthCheck, LogBody, LogEntry, LogsOptions, Machine,
+        RuntimeWatchFrame, SealedScope, encode_runtime_watch_frame,
+    };
+
+    use super::test_support::{FakeDocker, container_request, fake_runtime_with, machine};
+    use super::*;
+    use crate::sealed_env::{OpenError, test_support::Cluster};
+    use crate::sealing_key::SealingKey;
+
+    const OPENED: &str = "opened-t0ken";
+
+    type Containers = Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>;
+
+    async fn created_with_token(
+        cluster: &Cluster,
+    ) -> (ContainerRuntime, Machine, ContainerId, Containers) {
+        let containers = Containers::default();
+        let (runtime, machine, created) = create_with_env(
+            cluster,
+            LogStore::Unsupervised,
+            fake_docker(&containers),
+            sealed_token(cluster),
+        )
+        .await;
+        (runtime, machine, created.unwrap().container_id, containers)
+    }
+
+    fn fake_docker(containers: &Containers) -> FakeDocker {
+        FakeDocker {
+            named_containers: Some(containers.clone()),
+            ..Default::default()
+        }
+    }
+
+    fn sealed_token(cluster: &Cluster) -> EnvValue {
+        EnvValue::Sealed(cluster.seal(
+            "TOKEN",
+            SealedScope::Service(cluster.identity.service),
+            OPENED,
+        ))
+    }
+
+    async fn create_with_env(
+        cluster: &Cluster,
+        log_store: LogStore,
+        docker: FakeDocker,
+        token: EnvValue,
+    ) -> (ContainerRuntime, Machine, Result<ContainerCreated, Error>) {
+        let (runtime, _fake) = fake_runtime_with(docker).await;
+        let runtime = runtime
+            .with_sealing_key(cluster.dir.0.clone())
+            .with_log_store(log_store);
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let mut spec = test_support::spec_with_sources(Vec::new());
+        spec.container.sealed_identity = Some(cluster.identity.clone());
+        spec.container.environment.insert("TOKEN".into(), token);
+        let created = runtime
+            .create_with_admission::<_, _, Error>(
+                &machine,
+                container_request(
+                    ContainerKind::ServiceContainer,
+                    &namespace,
+                    &spec,
+                    std::future::ready(None),
+                ),
+            )
+            .await;
+        (runtime, machine, created)
+    }
+
+    #[tokio::test]
+    async fn no_sealed_value_opens_while_the_log_store_runs_older_software() {
+        let cluster = Cluster::new();
+        let containers = Containers::default();
+
+        let (_runtime, _machine, created) = create_with_env(
+            &cluster,
+            LogStore::Upgrading,
+            fake_docker(&containers),
+            sealed_token(&cluster),
+        )
+        .await;
+
+        assert!(
+            matches!(created, Err(Error::LogStoreUpgrading(_))),
+            "{created:?}"
+        );
+        let refused = ployz_core::RpcError::from(&created.unwrap_err());
+        assert_eq!(refused.code, RpcErrorCode::Unavailable);
+        assert!(containers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_sealed_value_creates_no_container_without_a_sealing_key() {
+        let cluster = Cluster::new();
+        let token = sealed_token(&cluster);
+        SealingKey::set(&cluster.dir.0, None).unwrap();
+        let containers = Containers::default();
+
+        let (_runtime, _machine, created) = create_with_env(
+            &cluster,
+            LogStore::Unsupervised,
+            fake_docker(&containers),
+            token,
+        )
+        .await;
+
+        assert!(
+            matches!(created, Err(Error::Sealed(OpenError::KeyMissing))),
+            "{created:?}"
+        );
+        assert!(containers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_value_sealed_for_another_cluster_creates_no_container() {
+        let cluster = Cluster::new();
+        let containers = Containers::default();
+
+        let (_runtime, _machine, created) = create_with_env(
+            &cluster,
+            LogStore::Unsupervised,
+            fake_docker(&containers),
+            sealed_token(&Cluster::new()),
+        )
+        .await;
+
+        assert!(
+            matches!(&created, Err(Error::Sealed(OpenError::Unopenable(key))) if key == "TOKEN"),
+            "{created:?}"
+        );
+        assert!(containers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tailed_logs_never_show_an_opened_value() {
+        let cluster = Cluster::new();
+        let docker = fake_docker(&Containers::default());
+        let logs = docker.logs.clone();
+        let (runtime, machine, created) = create_with_env(
+            &cluster,
+            LogStore::Unsupervised,
+            docker,
+            sealed_token(&cluster),
+        )
+        .await;
+        let frame = |stream: u8, line: &str| {
+            let line = format!("2026-10-23T00:00:00.000000000Z {line}\n");
+            let mut frame = vec![stream, 0, 0, 0];
+            frame.extend(u32::try_from(line.len()).unwrap().to_be_bytes());
+            frame.extend(line.into_bytes());
+            frame
+        };
+        *logs.lock().unwrap() = [
+            frame(1, &format!("token={OPENED}")),
+            frame(2, &format!("rejected {OPENED} twice: {OPENED}")),
+        ]
+        .concat();
+
+        let lines: Vec<_> = runtime
+            .container_logs(
+                &machine.id,
+                &machine.name,
+                created.unwrap().container_id,
+                &LogsOptions {
+                    follow: false,
+                    tail: -1,
+                    since_nanos: None,
+                    until_unix_seconds: None,
+                },
+            )
+            .await
+            .unwrap()
+            .map(|entry| LogEntry::decode(&entry.unwrap()).unwrap().body)
+            .collect()
+            .await;
+
+        assert_eq!(
+            lines,
+            [
+                LogBody::Stdout(b"token=[secret TOKEN]\n".to_vec()),
+                LogBody::Stderr(b"rejected [secret TOKEN] twice: [secret TOKEN]\n".to_vec()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn text_values_create_while_the_log_store_runs_older_software() {
+        let cluster = Cluster::new();
+        let containers = Containers::default();
+
+        let (_runtime, _machine, created) = create_with_env(
+            &cluster,
+            LogStore::Upgrading,
+            fake_docker(&containers),
+            EnvValue::Text(OPENED.into()),
+        )
+        .await;
+
+        assert!(created.is_ok(), "{created:?}");
+        assert_eq!(containers.lock().unwrap().len(), 1);
+    }
+
+    async fn printed_by_check(
+        cluster: &Cluster,
+        key_dir: PathBuf,
+        mut state: serde_json::Value,
+    ) -> ContainerDetails {
+        let (runtime, machine, id, containers) = created_with_token(cluster).await;
+        state.as_object_mut().unwrap().insert(
+            "Health".into(),
+            json!({
+                "Status": "unhealthy",
+                "Log": [{ "ExitCode": 1, "Output": format!("connection rejected: {OPENED}\n") }],
+            }),
+        );
+        for container in containers.lock().unwrap().values_mut() {
+            let container = container.as_object_mut().unwrap();
+            container
+                .get_mut("Config")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap()
+                .insert("Healthcheck".into(), json!({ "Test": ["CMD", "check"] }));
+            container.insert("State".into(), state.clone());
+        }
+        let runtime = runtime.with_sealing_key(key_dir);
+        runtime
+            .inspect_managed_details(&id, &machine.id)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_spec_store_keeps_only_ciphertext() {
+        let cluster = Cluster::new();
+        let (runtime, _machine, _id, containers) = created_with_token(&cluster).await;
+
+        let docker = serde_json::to_string(&*containers.lock().unwrap()).unwrap();
+        assert!(docker.contains(&format!("TOKEN={OPENED}")), "{docker}");
+        let store = runtime.spec_store_path_for_test();
+        let name = store.file_name().unwrap().to_str().unwrap();
+        let holds =
+            |bytes: &[u8], text: &str| bytes.windows(text.len()).any(|w| w == text.as_bytes());
+        let mut held_the_spec = false;
+        for entry in std::fs::read_dir(store.parent().unwrap()).unwrap() {
+            let path = entry.unwrap().path();
+            if !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(name)
+            {
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            held_the_spec |= holds(&bytes, "\"TOKEN\":{\"sealed\"");
+            assert!(!holds(&bytes, OPENED), "{path:?} holds the opened value");
+        }
+        assert!(held_the_spec);
+    }
+
+    #[tokio::test]
+    async fn inspect_scrubs_opened_values_from_the_last_check_output() {
+        let cluster = Cluster::new();
+        let details = printed_by_check(
+            &cluster,
+            cluster.dir.0.clone(),
+            json!({ "Status": "running" }),
+        )
+        .await;
+
+        assert_eq!(
+            details.last_check,
+            Some(LastHealthCheck::Exited {
+                code: 1,
+                output: "connection rejected: [secret TOKEN]".into(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn inspect_withholds_check_output_when_the_sealing_key_is_gone() {
+        let cluster = Cluster::new();
+        let empty = crate::test_dir::TestDir::new("sealed-output-no-key");
+        std::fs::create_dir_all(&empty.0).unwrap();
+        let details =
+            printed_by_check(&cluster, empty.0.clone(), json!({ "Status": "running" })).await;
+
+        assert_eq!(
+            details.last_check,
+            Some(LastHealthCheck::Exited {
+                code: 1,
+                output: String::new(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_docker_state_publishes_no_check_output() {
+        let cluster = Cluster::new();
+        let details = printed_by_check(
+            &cluster,
+            cluster.dir.0.clone(),
+            json!({ "Status": "future-status" }),
+        )
+        .await;
+        let published = observe::redacted_container(&details.container);
+        let frame = encode_runtime_watch_frame(&RuntimeWatchFrame {
+            machines: Vec::new(),
+            containers: vec![published.clone()],
+            volumes: Vec::new(),
+            certificates: Vec::new(),
+            incomplete_ids: Default::default(),
+            observed_at: chrono::Utc::now().to_rfc3339(),
+        })
+        .unwrap();
+
+        assert!(matches!(
+            details.container.runtime,
+            ContainerRuntimeObservation::Unknown { .. }
+        ));
+        for shown in [
+            serde_json::to_string(&details.container).unwrap(),
+            details.container.runtime.to_string(),
+            serde_json::to_string(&published).unwrap(),
+            frame
+                .decode_json::<serde_json::Value>()
+                .unwrap()
+                .to_string(),
+        ] {
+            assert!(!shown.contains(OPENED), "{shown}");
+            assert!(shown.contains("future-status"), "{shown}");
+        }
+    }
 }

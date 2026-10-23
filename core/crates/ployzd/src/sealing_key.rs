@@ -6,7 +6,9 @@ use hpke::{
     Deserializable, Kem as _, OpModeR, OpModeS, Serializable, aead::ChaCha20Poly1305,
     kdf::HkdfSha256, kem::X25519HkdfSha256,
 };
-use ployz_core::{SealedSealingKey, Sealing, SealingPublicKey, WireGuardPublicKey};
+use ployz_core::{
+    Ciphertext, SEALED_VALUE_INFO, SealedSealingKey, Sealing, SealingPublicKey, WireGuardPublicKey,
+};
 use rand_core::{OsRng, TryRngCore as _};
 use thiserror::Error;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -196,6 +198,41 @@ impl SealingKey {
             .map_err(|_| OpenError::Malformed)
     }
 
+    /// Opens one env value sealed to this key under `aad`, or `None` when it
+    /// does not open.
+    pub(crate) fn open_value(&self, aad: &[u8], sealed: &Ciphertext) -> Option<Zeroizing<Vec<u8>>> {
+        let (encapped, ciphertext) = sealed.as_bytes().split_at_checked(ENCAPPED_KEY_LEN)?;
+        let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped).ok()?;
+        hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
+            &OpModeR::Base,
+            &self.private(),
+            &encapped,
+            SEALED_VALUE_INFO,
+            ciphertext,
+            aad,
+        )
+        .ok()
+        .map(Zeroizing::new)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seal_value(&self, aad: &[u8], plaintext: &[u8]) -> Ciphertext {
+        let recipient = Kem::sk_to_pk(&self.private());
+        let (encapped, ciphertext) =
+            hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
+                &OpModeS::Base,
+                &recipient,
+                SEALED_VALUE_INFO,
+                plaintext,
+                aad,
+                &mut OsRng.unwrap_err(),
+            )
+            .expect("sealing to a generated key succeeds");
+        let mut sealed = encapped.to_bytes().to_vec();
+        sealed.extend(ciphertext);
+        Ciphertext::from_bytes(sealed)
+    }
+
     fn private(&self) -> <Kem as hpke::Kem>::PrivateKey {
         <Kem as hpke::Kem>::PrivateKey::from_bytes(&self.0)
             .expect("an X25519 private key is any 32 bytes")
@@ -292,6 +329,40 @@ mod tests {
         );
         let private = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key.0);
         assert!(!format!("{key:?}").contains(&private));
+    }
+
+    #[test]
+    fn a_sealed_value_opens_only_under_its_own_key_and_associated_data() {
+        let key = SealingKey::generate();
+        let sealed = key.seal_value(b"aad", b"hunter2");
+        assert_eq!(
+            key.open_value(b"aad", &sealed).unwrap().as_slice(),
+            b"hunter2"
+        );
+        assert!(key.open_value(b"other", &sealed).is_none());
+        assert!(SealingKey::generate().open_value(b"aad", &sealed).is_none());
+    }
+
+    #[test]
+    fn a_sealed_value_with_any_byte_flipped_does_not_open() {
+        let key = SealingKey::generate();
+        let sealed = key.seal_value(b"aad", b"hunter2");
+        assert!(sealed.as_bytes().len() > ENCAPPED_KEY_LEN);
+
+        for index in 0..sealed.as_bytes().len() {
+            let mut tampered = sealed.as_bytes().to_vec();
+            *tampered.get_mut(index).unwrap() ^= 0x01;
+            let part = if index < ENCAPPED_KEY_LEN {
+                "encapsulated key"
+            } else {
+                "ciphertext"
+            };
+            assert!(
+                key.open_value(b"aad", &Ciphertext::from_bytes(tampered))
+                    .is_none(),
+                "{part} byte {index}"
+            );
+        }
     }
 
     #[test]

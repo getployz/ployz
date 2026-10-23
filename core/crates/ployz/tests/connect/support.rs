@@ -213,6 +213,7 @@ pub(super) struct DiscoveryService {
     pub(super) register_blocked: Option<Arc<tokio::sync::Notify>>,
     /// The one Upgrade attempt this daemon holds.
     upgrade_attempt: Arc<Mutex<Option<ployz_core::MachineUpgradeAttempt>>>,
+    pub(super) upgrade_outcome: Option<ployz_core::MachineUpgradeOutcome>,
     /// The Machine Target of every Upgrade call, in order.
     pub(super) upgrade_targets: Arc<Mutex<Vec<String>>>,
     /// Lose the next Upgrade request's reply after accepting it.
@@ -315,6 +316,7 @@ impl DiscoveryService {
             lose_register_reply: false,
             register_blocked: None,
             upgrade_attempt: Arc::default(),
+            upgrade_outcome: None,
             upgrade_targets: Arc::default(),
             lose_upgrade_reply: Arc::default(),
             selected_endpoints: Arc::default(),
@@ -902,8 +904,16 @@ impl FakeMachine for DiscoveryService {
         let mut stored = self.upgrade_attempt.lock().unwrap();
         let attempt = stored.get_or_insert_with(|| ployz_core::MachineUpgradeAttempt {
             attempt_id: body.attempt_id,
-            target: ployz_core::MachineVersion::parse("1.2.3").unwrap(),
-            outcome: ployz_core::MachineUpgradeOutcome::Accepted,
+            target: match body.release {
+                ployz_core::MachineRelease::Exact(version) => version,
+                ployz_core::MachineRelease::Stable | ployz_core::MachineRelease::Beta => {
+                    ployz_core::MachineVersion::parse("1.2.3").unwrap()
+                }
+            },
+            outcome: self
+                .upgrade_outcome
+                .clone()
+                .unwrap_or(ployz_core::MachineUpgradeOutcome::Accepted),
         });
         let reply = if attempt.attempt_id == body.attempt_id {
             RpcResponse::from(attempt.clone())
@@ -1783,4 +1793,13 @@ pub(super) struct BuildRecorder {
     pub(super) delivered: AtomicBool,
     pub(super) created: AtomicBool,
     pub(super) admission_outcome: Option<ployz_build::remote::Outcome>,
+}
+
+pub(super) fn cli_transcript(output: &std::process::Output) {
+    eprintln!(
+        "exit {:?}\nstdout:\n{}stderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

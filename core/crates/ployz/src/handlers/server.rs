@@ -55,7 +55,7 @@ pub(super) use helpers::{
 };
 use init::init;
 pub(super) use remove::remove;
-pub(super) use show::{list, show};
+pub(super) use show::{full_disks, list, show};
 pub(super) use upgrade::upgrade;
 
 pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {

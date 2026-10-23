@@ -2,7 +2,7 @@
 //! deadline, and a store that does not answer is unavailable, so one Machine
 //! without ployz-observe fails alone.
 
-use std::{collections::BTreeMap, io, path::PathBuf, time::Duration};
+use std::{io, path::PathBuf, time::Duration};
 
 use ployz_core::{
     ContainerId, LogHistoryRequest, OpaquePayload,
@@ -12,7 +12,10 @@ use tokio::{net::UnixStream, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 
-use super::serve::{EnvAnswer, MetricsAnswer, Request, read_frame, write_frame};
+use super::{
+    layout::RetainedEnv,
+    serve::{EnvAnswer, MetricsAnswer, Request, read_frame, write_frame},
+};
 use crate::logs::RpcStream;
 
 const DEADLINE: Duration = Duration::from_secs(3);
@@ -92,7 +95,7 @@ impl ObserveClient {
     pub async fn retained_env(
         &self,
         container: ContainerId,
-    ) -> Result<Option<BTreeMap<String, String>>, Status> {
+    ) -> Result<Option<RetainedEnv>, Status> {
         let mut stream = self.send(&Request::Env(container)).await?;
         let frame = deadline(read_frame(&mut stream, MAX_ROW))
             .await?
