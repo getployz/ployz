@@ -482,7 +482,7 @@ pub(crate) fn add_domain(
                         Some(prefix) => prefix.as_str().to_owned(),
                         None => free_prefix(&base, &taken),
                     };
-                    refuse_too_long(&prefix, cluster.as_ref())?;
+                    refuse_too_long(&prefix, cluster.as_ref(), "prefix")?;
                     managed.push(ServiceManagedHostname {
                         prefix: prefix.clone(),
                         target_port: add.port,
@@ -530,7 +530,7 @@ pub(crate) fn set_generated_domain(
     let cluster = cluster_of(tx, &environment, trusted)?;
     let taken = taken_prefixes(tx, who, &environment, &own, (trusted, cluster.as_ref()))?;
     refuse_taken(tx, who, &taken, prefix)?;
-    refuse_too_long(prefix, cluster.as_ref())?;
+    refuse_too_long(prefix, cluster.as_ref(), "prefix")?;
     let generated_domains = domains_of(&environment.working, trusted)
         .into_iter()
         .filter_map(|domain| match &domain.name {
@@ -669,11 +669,14 @@ fn taken_prefixes<'t>(
     Ok(taken)
 }
 
-/// The Cluster Domain `environment`'s generated domains live under: the one Cloud
-/// reserved, else the one its last Deploy used.
 /// Refuses a generated domain whose hostname under `cluster` can't be served: a valid
 /// prefix under a long Cluster Domain can pass 253 characters, which Deploy would refuse.
-fn refuse_too_long(prefix: &str, cluster: Option<&Hostname>) -> Result<(), RpcError> {
+/// `shorter` names what to shorten.
+fn refuse_too_long(
+    prefix: &str,
+    cluster: Option<&Hostname>,
+    shorter: &str,
+) -> Result<(), RpcError> {
     let Some(cluster) = cluster else {
         return Ok(());
     };
@@ -683,7 +686,7 @@ fn refuse_too_long(prefix: &str, cluster: Option<&Hostname>) -> Result<(), RpcEr
     };
     let message = if hostname.len() > 253 {
         format!(
-            "{hostname} is {} characters, over a hostname's 253: choose a shorter prefix",
+            "{hostname} is {} characters, over a hostname's 253: choose a shorter {shorter}",
             hostname.len()
         )
     } else {
@@ -745,9 +748,11 @@ pub(crate) fn refuse_too_long_copies(
         }
     };
     new.into_iter()
-        .try_for_each(|prefix| refuse_too_long(prefix, cluster.as_ref()))
+        .try_for_each(|prefix| refuse_too_long(prefix, cluster.as_ref(), "branch name"))
 }
 
+/// The Cluster Domain `environment`'s generated domains live under: the one Cloud
+/// reserved, else the one its last Deploy used.
 fn cluster_of(
     tx: &mut dyn Tx,
     environment: &Environment,
