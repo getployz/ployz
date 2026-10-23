@@ -717,8 +717,11 @@ impl Behind {
             } = self.entries.pop_front().expect("just checked");
             self.flushed += 1;
             let mut last_in = false;
+            // A convergence moves every draining Server's copies. A concurrent Drain's
+            // moves are its own to report, though this one waited for their old copies.
             let moves = moves
                 .into_iter()
+                .filter(|step| step.from.id == record.server.id)
                 .map(|Step { from, to, old }| {
                     let old = match old.expect("flushed once every old copy ended") {
                         Ok(old) => old,
@@ -749,6 +752,7 @@ impl Behind {
                     },
                     false,
                 ),
+                Shape::Moved if moves.is_empty() => (DrainOutcome::NothingToMove, false),
                 Shape::Moved => (DrainOutcome::Moved { moves }, false),
                 Shape::Failed(failure) => (DrainOutcome::Failed { moves, failure }, last_in),
                 Shape::Interrupted => (DrainOutcome::Interrupted { moves }, last_in),

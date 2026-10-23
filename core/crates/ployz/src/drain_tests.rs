@@ -405,6 +405,47 @@ async fn a_move_beside_an_out_copy_reports_the_move_then_the_old_copy() {
     );
 }
 
+/// A move off another draining Server, as a concurrent standalone Drain's convergence
+/// of the same Service makes.
+fn a_move_off_web_3() -> Move {
+    Move {
+        from: MachineRef {
+            id: MachineId::parse("c".repeat(32)).unwrap(),
+            name: MachineName::parse("web-3").unwrap(),
+        },
+        to: MachineRef {
+            id: MachineId::parse("a".repeat(32)).unwrap(),
+            name: MachineName::parse("web-1").unwrap(),
+        },
+        old: OldCopyEnd::Stopped,
+    }
+}
+
+#[tokio::test]
+async fn a_drain_reports_only_the_moves_off_its_own_server() {
+    let both = [one_move(), vec![a_move_off_web_3()]].concat();
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [
+            Converged::Moved { moves: both },
+            Converged::Moved {
+                moves: vec![a_move_off_web_3()],
+            },
+        ]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [
+            entry("web", moved()),
+            entry("api", DrainOutcome::NothingToMove)
+        ]
+    );
+    assert!(report.complete());
+}
+
 #[tokio::test]
 async fn a_move_whose_old_copy_is_still_in_leaves_the_drain_incomplete() {
     let moves = vec![Move {
