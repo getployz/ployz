@@ -338,7 +338,8 @@ pub(crate) fn failed(
 }
 
 /// Whether Saved `revision` was only ever shipped by Deployments that ended having
-/// run nothing, and at least one shipped it: the save is all that is left of them.
+/// run nothing, and at least one shipped it: the save is all that is left of them. A
+/// run that settled any node into Applied State before it stopped ran something.
 pub(crate) fn only_ran_nothing(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -362,7 +363,9 @@ pub(crate) fn only_ran_nothing(
             return Ok(false);
         }
         let run: Run = row.json(1, "Deployment run")?;
-        if !matches!(run.outcome, Some(Outcome::NotExecuted { .. })) {
+        if !matches!(run.outcome, Some(Outcome::NotExecuted { .. }))
+            || run.nodes.values().any(|status| status.applied(false))
+        {
             return Ok(false);
         }
     }

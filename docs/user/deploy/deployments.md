@@ -64,7 +64,10 @@ choose **Discard all changes**.
 **Discard all changes** returns everything to your latest saved version, including a staged
 rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
 version. When part of your latest saved version is not deployed, for example because its deploy failed,
-the bottom bar shows **Save #4 not deployed** with **Deploy** instead of a change count. While a
+the bottom bar shows **Save #4 not deployed** with **Deploy** instead of a change count. A deploy
+saves your changes before it starts, so one that ran nothing, for example because it was refused
+while a server didn't answer, still leaves them saved. The bar then says **Save #4 · its deploy ran
+nothing**, and `ployz diff` and `ployz discard` name the save the same way. While a
 deploy of it is queued or running, for example `ployz deploy web` deploying web and the services
 it references, the bar shows that deploy's status instead, **Queued**, **Preparing** or **Deploying · Save #4**, with **Deploy
 next** for the rest. A deploy still waiting for CI isn't queued yet, so the bar keeps **Save #4 not
@@ -75,9 +78,6 @@ A new service's change starts with what it runs, its image or its repository and
 `ployz discard web.image` says so and names the command, `ployz discard web`.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
 Saving records that reversal; Discard on its row returns it to the latest saved value.
-A version that only a deploy that ran nothing saved, such as one refused because a server didn't
-answer, is the exception: discard its changes and nothing is left to show or save, since nothing
-of it ran.
 In the CLI, `ployz discard` with no path drops every staged change in the environment, including
 changes someone else staged from the dashboard or an agent, and lists each one it dropped. Pass a
 path, such as `ployz discard web.env.KEY`, to drop only that change. It also names each saved change

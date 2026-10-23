@@ -97,6 +97,10 @@ pub struct Discarded {
     pub environment: EnvironmentSummary,
     /// The latest Saved revision, unchanged by Discard.
     pub saved: Option<Revision>,
+    /// Whether every Deploy of that revision ran nothing, as [`DiffView::saved_ran_nothing`].
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub saved_ran_nothing: bool,
     /// False when nothing it names was staged.
     pub changed: bool,
     /// The draft reversals left after it, each with the discard that brings it back.
@@ -278,6 +282,7 @@ pub(crate) fn discard(
     Ok(Discarded {
         environment,
         saved: reviewed.saved.as_ref().map(|saved| saved.revision),
+        saved_ran_nothing: view.saved_ran_nothing,
         changed,
         reversed,
         dropped: dropped(&before, &view),

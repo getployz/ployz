@@ -24,6 +24,8 @@ export type EnvironmentChangesReviewProps = {
   asks?: boolean;
   /** Working State differs from Saved State: Save only saves it without deploying. */
   canSave: boolean;
+  /** The latest Save when every Deploy of it ran nothing, so changes it holds never reached a Server. */
+  ranNothingSave?: number | null;
   onSave: () => void;
   /** None when nothing is left to discard: the footer leaves Discard all out. */
   onDiscardAll?: (() => void) | undefined;
@@ -59,7 +61,7 @@ export type EnvironmentChangesReviewProps = {
  * change, coloured by its kind; Discard and Never sync in each line's ⋯; Discard all and Save only in the footer.
  */
 export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
-  const { environment, canSave, canDeploy, totalChanges, onClose, after, message, onMessageChange, included = [] } = props;
+  const { environment, canSave, canDeploy, totalChanges, onClose, after, message, onMessageChange, included = [], ranNothingSave = null } = props;
   const staged = canSave || totalChanges > 0 || included.length > 0;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -69,6 +71,7 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
           <DialogDescription>
             {!staged ? "Nothing staged here"
               : `${plural(totalChanges, "change")} in ${environment}, ${canSave ? "not yet saved" : "saved, not deployed"}.`}
+            {staged && ranNothingSave !== null ? ` Save #${ranNothingSave}'s deploy ran nothing, so none of it reached a server.` : null}
           </DialogDescription>
           {staged && (canSave || canDeploy) ? (
             <InputGroup>

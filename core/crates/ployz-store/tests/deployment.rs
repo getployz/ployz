@@ -2135,10 +2135,10 @@ fn nothing_executed_applies_nothing() {
     assert_eq!(changed(&store, &who), ["api", "web"]);
 }
 
-/// #3275: a Deploy saves Working State before it runs. Once the edits of one that ran
-/// nothing are discarded, nothing is left saved to undo or to save again.
+/// #3275: a Deploy saves Working State before it runs. When it runs nothing, the save
+/// still holds its changes, and the review says they never ran.
 #[test]
-fn discarding_after_a_deploy_that_ran_nothing_leaves_nothing_saved() {
+fn a_save_whose_deploy_ran_nothing_is_marked_in_the_review() {
     let (store, who) = shop();
     let a = runner("runner-a");
     admit(&store, &who, 1, &[], None).unwrap();
@@ -2149,6 +2149,7 @@ fn discarding_after_a_deploy_that_ran_nothing_leaves_nothing_saved() {
     store
         .record(&id(1), &a, succeeded(&["api", "web"]))
         .unwrap();
+    assert!(!diff(&store, &who).saved_ran_nothing);
 
     set_replicas(&store, &who, "web", 3);
     admit(&store, &who, 2, &[], None).unwrap();
@@ -2160,11 +2161,9 @@ fn discarding_after_a_deploy_that_ran_nothing_leaves_nothing_saved() {
             RunEvidence::NotExecuted("Storage capacity is unknown".into()),
         )
         .unwrap();
-    assert_eq!(changed(&store, &who), ["web"]);
-    // Retrying as is: the draft is the refused Deploy's save, so nothing is unsaved.
-    assert!(diff(&store, &who).draft_changes.is_empty());
+    assert!(diff(&store, &who).saved_ran_nothing);
 
-    store
+    let discarded = store
         .write(
             &who,
             &Discard {
@@ -2175,19 +2174,31 @@ fn discarding_after_a_deploy_that_ran_nothing_leaves_nothing_saved() {
             },
         )
         .unwrap();
+    assert!(discarded.saved_ran_nothing);
+    // Saved #2 still holds the change, so it stays reviewable; the mark says it never ran.
     let view = diff(&store, &who);
-    assert!(view.changes.is_empty(), "{:?}", view.changes);
-    assert!(view.draft_changes.is_empty(), "{:?}", view.draft_changes);
-    assert_eq!(view.draft_count, 0);
-
-    // A new edit compares against what ran, not the save that ran nothing.
-    set_replicas(&store, &who, "web", 2);
-    let draft = diff(&store, &who).draft_changes;
-    let setting = &draft[0].settings[0];
+    assert!(view.changes.is_empty());
+    let setting = &view.draft_changes[0].settings[0];
     assert_eq!(
-        (setting.before.clone(), setting.after.clone()),
-        (json!(1), json!(2))
+        (
+            setting.path.as_str(),
+            setting.before.clone(),
+            setting.after.clone()
+        ),
+        ("web.replicas", json!(3), json!(1))
     );
+    assert!(view.saved_ran_nothing);
+
+    // Deploying it again, and it running, clears the mark.
+    admit(&store, &who, 3, &[], None).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &a, succeeded(&["api", "web"]))
+        .unwrap();
+    assert!(!diff(&store, &who).saved_ran_nothing);
 }
 
 #[test]

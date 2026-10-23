@@ -46,6 +46,8 @@ type BottomBarProps = {
   stagedChanges?: number;
   /** The latest Save when it is all there is to deploy: part of it is neither applied nor shipped by a Deploy in flight, which may ship the rest. */
   undeployedSave?: number | null;
+  /** The latest Save when every Deploy of it ran nothing: none of it reached a Server. */
+  ranNothingSave?: number | null;
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
   onDeploy: (message: string) => void;
@@ -92,6 +94,7 @@ export function BottomBar({
   totalChanges,
   stagedChanges = totalChanges,
   undeployedSave = null,
+  ranNothingSave = null,
   canSave,
   onDeploy,
   onSave,
@@ -212,7 +215,7 @@ export function BottomBar({
     return () => document.removeEventListener("keydown", deployOnShiftEnter);
   });
 
-  const subject = toDeploy(stagedChanges, undeployedSave, active);
+  const subject = toDeploy(stagedChanges, undeployedSave, ranNothingSave !== null && ranNothingSave === undeployedSave, active);
   // With only a Save left to deploy, Discard all returns to that Save: nothing would change.
   const nothingToDiscard = subject.kind === "save";
   const counted = countedWords(subject);
@@ -259,7 +262,7 @@ export function BottomBar({
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
-    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, asks, canSave: saveable,
+    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, asks, canSave: saveable, ranNothingSave,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
     onDiscardAll: nothingToDiscard ? undefined : discardAll,
@@ -289,13 +292,13 @@ export function BottomBar({
  */
 type ToDeploy =
   | { kind: "changes"; count: number }
-  | { kind: "save"; save: number; shipping: DeploymentSummary | undefined }
+  | { kind: "save"; save: number; ranNothing: boolean; shipping: DeploymentSummary | undefined }
   | { kind: "nothing" };
 
-function toDeploy(stagedChanges: number, save: number | null, active: readonly DeploymentSummary[]): ToDeploy {
+function toDeploy(stagedChanges: number, save: number | null, ranNothing: boolean, active: readonly DeploymentSummary[]): ToDeploy {
   if (stagedChanges > 0) return { kind: "changes", count: stagedChanges };
   if (save === null) return { kind: "nothing" };
-  return { kind: "save", save, shipping: active.find((deployment) => !deployment.remove && deployment.saved === save) };
+  return { kind: "save", save, ranNothing, shipping: active.find((deployment) => !deployment.remove && deployment.saved === save) };
 }
 
 /** The row's words for its changes. A Save is never "not running": beside Service cards that reads as an outage. */
@@ -304,7 +307,8 @@ function countedWords(subject: ToDeploy) {
     case "changes":
       return plural(subject.count, "change");
     case "save":
-      return subject.shipping ? `${deploymentStatusLabel(subject.shipping)} · Save #${subject.save}` : `Save #${subject.save} not deployed`;
+      if (subject.shipping) return `${deploymentStatusLabel(subject.shipping)} · Save #${subject.save}`;
+      return subject.ranNothing ? `Save #${subject.save} · its deploy ran nothing` : `Save #${subject.save} not deployed`;
     case "nothing":
       return null;
   }
