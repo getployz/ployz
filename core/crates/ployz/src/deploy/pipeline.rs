@@ -69,7 +69,17 @@ impl Client {
     ) -> Result<Vec<super::SlotRepair>, DeployError> {
         let machines = self.machines().await?;
         let snapshot = gather_deploy_snapshot(self, machines, &intent).await?;
-        Ok(planning::plan_ingress_repairs(&intent, &snapshot))
+        let repairs = planning::plan_ingress_repairs(&intent, &snapshot);
+        if !repairs
+            .iter()
+            .any(|repair| matches!(repair.action, super::SlotAction::Unchecked(_)))
+        {
+            return Ok(repairs);
+        }
+        // A Server left unchecked may have begun leaving after the read above. Read
+        // again, once; a failed read keeps the repairs as planned.
+        let reread = self.machines().await.ok();
+        Ok(planning::without_departed(repairs, reread.as_deref()))
     }
 
     /// Calculate a Namespace-removal preview. Confirming executes these operations.
