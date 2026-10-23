@@ -471,6 +471,49 @@ fn a_row_lands_in_what_the_receiver_calls_its_node() {
     assert_eq!(refused.code, RpcErrorCode::Ambiguous, "{refused:?}");
 }
 
+#[test]
+fn a_synced_mount_never_lands_where_the_receiver_mounts_another_volume() {
+    let (store, who) = shop(false);
+    let volume = |environment: &str, n: u8, name: &str, at: &str| {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateVolume {
+                    shared_writes: false,
+                    storage_locked: false,
+                    restored_from: None,
+                    storage: ployz_core::config::VolumeKind::Docker {},
+                    id: ployz_store::VolumeId::parse(uuid(n)).unwrap(),
+                    environment: self::at(environment),
+                    name: ployz_store::VolumeName::parse(name).unwrap(),
+                    mounts: vec![ployz_store::Mount {
+                        service: ServiceName::parse("web").unwrap(),
+                        path: at.into(),
+                    }],
+                },
+            )
+            .unwrap();
+    };
+    volume("production", 20, "logs", "/logs");
+    branch(&store, &who, 21, "production", "fix-logs");
+    set(
+        &store,
+        &who,
+        "fix-logs",
+        &[("web.mounts.logs", json!("/x"))],
+    );
+    volume("production", 22, "cache", "/x/");
+    let review = offered(&store, &who, "fix-logs", "production");
+    let refused = store
+        .write(&who, &sync(&review, Some(&["web.mounts.logs"])))
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "web already mounts Volume cache at /x; pick another directory"
+    );
+}
+
 /// Sync what `view` offers now, the rows named `only` (or else those ticked) less
 /// those named `skip`.
 fn skipping(view: &SyncView, only: Option<&[&str]>, skip: &[&str]) -> SyncChanges {

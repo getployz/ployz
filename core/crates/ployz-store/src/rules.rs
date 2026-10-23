@@ -715,7 +715,7 @@ impl<'a> Refusing<'a> {
 )]
 pub(crate) mod tests {
     use ployz_core::config::{
-        SavedEnvironmentIntent, SavedVariableValue, ValuePart, ValuePartOwner,
+        SavedEnvironmentIntent, SavedVariableValue, ValuePart, ValuePartOwner, VolumeAttachment,
     };
     use ployz_core::{RpcError, RpcErrorCode, ServiceName};
     use serde_json::{Value, json};
@@ -971,6 +971,35 @@ pub(crate) mod tests {
         branch(&store, &who, &["db"]).unwrap();
         let refused = set(&store, &who, &[("db.replicas", json!(3))]).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict);
+    }
+
+    #[test]
+    fn a_mount_production_already_breaks_never_blocks_a_write() {
+        let (store, who) = shop();
+        // As saved before mounts were checked: logs shares db's /data, and redis
+        // mounts it under /sys.
+        seed(&store, &who, |working| {
+            let mut logs = working.volumes[0].clone();
+            logs.resource_id = uuid(6);
+            logs.resource_lineage_id = uuid(6);
+            logs.name = "logs".into();
+            working.volumes.push(logs);
+            for service in &mut working.services {
+                let at = if service.slug == "db" {
+                    "/data/"
+                } else {
+                    "/sys/logs"
+                };
+                service.volume_attachments.push(VolumeAttachment {
+                    volume_resource_id: uuid(6),
+                    mount_path: at.into(),
+                });
+            }
+        });
+        unrelated(&store, &who).unwrap();
+        branch(&store, &who, &["db"]).unwrap();
+        let refused = set(&store, &who, &[("redis.mounts.data", json!("/sys/logs"))]).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
     }
 
     #[test]
