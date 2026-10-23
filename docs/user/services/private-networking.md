@@ -16,8 +16,15 @@ address on that network.
 
 On a server with IPv6, the server's web server also gets a private IPv6 address, so IPv6 visitors
 to your domains reach your app with their own address in `X-Forwarded-For`. Your services stay
-IPv4-only. A port a service publishes on the server still answers IPv6 visitors, but your app
-sees them as the server's private gateway, such as `10.210.0.1`.
+IPv4-only unless they opt in. A port a service publishes on the server still answers IPv6
+visitors, but your app sees them as the server's private gateway, such as `10.210.0.1`.
+
+A service deployed through the SDK with `ipv6: true` in its container spec gets a private IPv6
+address too. Its published ports then see IPv6 visitors as themselves, and it can reach IPv6
+addresses on the internet. Your app must listen on `::`: one that listens only on `0.0.0.0`
+stops answering IPv6 visitors on its published ports. Turning it on or off replaces the
+service's containers. A server whose container network has no IPv6 refuses such a service; see
+[A service can't take IPv6](../troubleshooting/servers.md#a-service-cant-take-ipv6).
 
 ```mermaid
 flowchart LR

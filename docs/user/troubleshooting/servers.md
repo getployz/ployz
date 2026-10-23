@@ -474,8 +474,18 @@ container network has no IPv6. `journalctl -u ployz` says why:
   next start.
 - `could not take IPv6`: the log line gives Docker's reason. Ployz tries again at its next start.
 
-A port a service publishes on the server always shows IPv6 visitors as the gateway. Give the
-service a domain to see their addresses.
+A port a service publishes on the server shows IPv6 visitors as the gateway, unless the service
+takes IPv6. Give the service a domain to see their addresses.
+
+## A service can't take IPv6
+
+A deploy of a service with `ipv6: true` fails on one server with one of these:
+
+- `this Server's ployz bridge has no IPv6`: the server's container network is IPv4-only. Fix it
+  as in [Apps see IPv6 visitors as 10.210.x.1](#apps-see-ipv6-visitors-as-10210x1), then deploy
+  again.
+- `runs a ployzd that can't give a Service IPv6`: the server runs an older Ployz. Run
+  `ployz server upgrade <server>`, then deploy again.
 
 ## Services can't resolve each other's names
 

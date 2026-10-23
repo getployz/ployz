@@ -136,8 +136,9 @@ impl ServingShape {
             stop_timeout_secs,
             sysctls,
             restart,
+            ipv6,
         } = container;
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "name": name,
             "mode": service_mode_kind(mode),
             "image": image,
@@ -168,6 +169,10 @@ impl ServingShape {
             "configs": configs,
             "config_mounts": sorted_json(config_mounts),
         });
+        // Only a spec that takes IPv6 hashes it, so every earlier token stays as it was.
+        if *ipv6 && let Some(fields) = payload.as_object_mut() {
+            fields.insert("ipv6".to_owned(), serde_json::Value::Bool(true));
+        }
         payload
     }
 
@@ -357,5 +362,32 @@ mod tests {
             "log_driver": { "name": "json-file" }
         }));
         assert_eq!(stored.serving_shape().token(), "1c6e8ff538d68038");
+    }
+
+    #[test]
+    fn only_a_spec_that_takes_ipv6_changes_the_serving_shape() {
+        let container = |ipv6: Option<bool>| {
+            let mut container = json!({ "image": "nginx:1.29-alpine", "environment": { "PORT": "80" }, "pull_policy": "missing" });
+            if let Some(ipv6) = ipv6 {
+                container
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("ipv6".to_owned(), json!(ipv6));
+            }
+            web_spec(container)
+        };
+        assert_eq!(
+            container(Some(false)).serving_shape().token(),
+            "1c6e8ff538d68038"
+        );
+        assert!(
+            serde_json::to_value(&container(Some(false)).container)
+                .unwrap()
+                .get("ipv6")
+                .is_none()
+        );
+        let ipv6 = container(Some(true));
+        assert_ne!(ipv6.serving_shape(), container(None).serving_shape());
+        assert_eq!(ipv6.serving_shape(), ipv6.to_requested().serving_shape());
     }
 }

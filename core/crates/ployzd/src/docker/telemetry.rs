@@ -25,6 +25,15 @@ impl LocalDocker {
         Ok(self.bridge().await?.capacity)
     }
 
+    /// Whether the ployz bridge is dual-stack, so a container can take IPv6 on it.
+    pub(super) async fn bridge_takes_ipv6(&self) -> Result<bool, Error> {
+        let network = self
+            .client
+            .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
+            .await?;
+        Ok(network.enable_ipv6 == Some(true))
+    }
+
     pub(super) async fn bridge(&self) -> Result<Bridge, Error> {
         let network = self
             .client

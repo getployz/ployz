@@ -1271,6 +1271,7 @@ impl Client {
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
         crate::sealed_compat::admit(self, &target, &want).await?;
+        crate::bridge_ipv6_compat::admit(self, &target, &want).await?;
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;

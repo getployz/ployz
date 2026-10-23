@@ -175,6 +175,9 @@ impl ContainerRuntime {
         if create::holds_sealed(kind, spec) {
             self.log_store.admit_sealed().await?;
         }
+        if spec.container.ipv6 && !self.docker.bridge_takes_ipv6().await? {
+            return Err(Error::BridgeIpv6Unavailable);
+        }
         let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),

@@ -111,6 +111,8 @@ macro_rules! rpc_catalog {
                 MANAGEMENT_SCOPE_CAPABILITY: ("ployz.management.scope.v1", Always),
                 /// The daemon opens Sealed values and keeps them out of its own logs.
                 ENV_SEALED_CAPABILITY: ("ployz.env.sealed.v1", Always),
+                /// A spec's `ipv6` gives its container an IPv6 address on the ployz bridge.
+                BRIDGE_IPV6_CAPABILITY: ("ployz.container.bridge-ipv6.v1", Container),
             }
         }
     };

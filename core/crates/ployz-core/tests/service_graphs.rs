@@ -279,6 +279,7 @@ fn requested_with_graphs(
             stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
             restart: Default::default(),
+            ipv6: false,
         },
         placement: Default::default(),
         ports: Vec::new(),
