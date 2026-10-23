@@ -21,6 +21,8 @@ import {
   retireServerAccess,
 } from "#/modules/machines/server-access.server";
 import { refusal } from "#/modules/config-store/config-store.server";
+import { DEVICE_KEY } from "#/modules/devices/device-code";
+import { readDeviceRequest, requestDevice } from "#/modules/devices/device-request.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers, forgetServersAsked } from "#/modules/machines/forget-servers.server";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
@@ -49,6 +51,7 @@ import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unh
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { CreateOrganization } from "#/modules/organization/organization-state";
 import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
+import { lacks } from "#/modules/organization/access.server";
 import { slugifySegment } from "#/utils/slug";
 import { NotFound, Validation } from "#/server/public-error";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
@@ -156,6 +159,8 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
   );
 
 const NewTokenName = Schema.Struct({ name: NewToken.fields.name });
+
+const NewDeviceRequest = Schema.Struct({ key: Schema.String.check(Schema.isPattern(DEVICE_KEY)) });
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, making and removing them, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
@@ -407,6 +412,23 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (carried !== null) return refusal(carried);
       const forgotten = yield* forgetServers(forgetter(caller), (checked) => gated(caller, request)(forgetServersAsked(caller.organization, checked)));
       return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : refusal(forgotten.refusal);
+    }
+    case "POST device-requests": {
+      if (caller.credential.kind !== "session") return personOnly("Only a signed-in person can request a Device. No changes made.");
+      const { key } = yield* decodeBody(NewDeviceRequest, request, "A Device request takes the Device's key as 64 lowercase hex digits.");
+      const requested = yield* requestDevice(caller.organization.id, key);
+      if (requested === null) {
+        return refusal({ code: "device_request_conflict", message: "Another Device's request holds this code. No changes made.", details: null });
+      }
+      return { code: requested.code, expiresAt: requested.expiresAt.toISOString() };
+    }
+    case "GET device-requests/:id": {
+      if (caller.credential.kind !== "session") return personOnly("Only a signed-in person can read a Device request.");
+      const lacking = lacks({ ...caller, support: null }, "servers:shell");
+      if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: null });
+      const pending = yield* readDeviceRequest(caller.organization.id, decodeURIComponent(id ?? "").trim().toLowerCase());
+      if (pending === null) return missingRefusal("No such Device request.");
+      return { code: pending.code, key: pending.key, expiresAt: pending.expiresAt.toISOString() };
     }
     case "POST server-access": {
       const access = yield* provideServerAccess(caller);
