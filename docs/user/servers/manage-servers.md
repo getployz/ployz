@@ -396,8 +396,9 @@ include `change` as `upgraded`, `downgraded`, or `unchanged`. Otherwise the comm
 `now runs` the returned version and leaves out `change`.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade. Once a server has taken the upgrade, it gets
-5 minutes to answer again, the time its daemon has to restart. Without Ployz Cloud, a server that
-powers off or loses its network while it upgrades stops the command after those 5 minutes with
+up to 5 minutes to answer again, the time its daemon has to restart, within the command's overall
+16 minutes. Without Ployz Cloud, a server that powers off or loses its network while it upgrades
+stops the command after those 5 minutes with
 `Server machine-1 stopped answering during upgrade …`, and exits 3. Once it's back,
 `ployz server show` says how the upgrade ended.
 
