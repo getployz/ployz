@@ -208,6 +208,21 @@ pub enum MoveFailure {
     Refused { reason: StayReason },
 }
 
+impl MoveFailure {
+    /// The Server whose copy failed to move. A refusal names none.
+    pub(crate) fn server(&self) -> Option<&MachineRef> {
+        match self {
+            Self::NoDestination { from, .. }
+            | Self::SourceTooOld { from }
+            | Self::ReadImage { from, .. }
+            | Self::CopyImage { from, .. }
+            | Self::NotServing { from, .. }
+            | Self::Cancelled { from, .. } => Some(from),
+            Self::Refused { .. } => None,
+        }
+    }
+}
+
 impl fmt::Display for MoveFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

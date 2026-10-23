@@ -538,16 +538,26 @@ async fn execute<C: DrainClient>(
             // Listed before the move, so a copy the move itself leaves Out is reported
             // once, by the move, and not waited on twice. A failed listing leaves the
             // copies to `remaining`, which still finds the Service there.
-            let left_behind = behind
+            let listed = behind
                 .alongside(&mut record, client.copies_on(&server.id, service))
-                .await
-                .unwrap_or_default();
+                .await;
+            let left_behind = listed.as_deref().unwrap_or_default();
             let converged = behind
                 .alongside(&mut record, client.converge(service, cancellation))
                 .await;
             let (shape, moves) = match converged {
                 Converged::Moved { moves } => (Shape::Moved, moves),
                 Converged::NothingToMove => (Shape::Done(DrainOutcome::NothingToMove), Vec::new()),
+                // Another Server's failed move is its own Drain's to report, unless it kept a
+                // copy here from moving. A failed listing can't tell, so the failure stays.
+                Converged::Failed { moves, failure }
+                    if failure.server().is_some_and(|from| from.id != server.id)
+                        && listed
+                            .as_ref()
+                            .is_ok_and(|copies| moved_all(copies, &moves, &server.id)) =>
+                {
+                    (Shape::Moved, moves)
+                }
                 Converged::Failed { moves, failure } => (Shape::Failed(failure), moves),
                 Converged::Stays { reason } => {
                     (Shape::Done(DrainOutcome::Stays { reason }), Vec::new())
@@ -617,6 +627,16 @@ async fn execute<C: DrainClient>(
         stopped,
         remaining,
     }
+}
+
+/// Whether a convergence moved every copy on `server` it had to, those still routed or
+/// never yet admitted.
+fn moved_all(copies: &[Copy], moves: &[Moving], server: &MachineId) -> bool {
+    let movable = copies
+        .iter()
+        .filter(|copy| matches!(copy.rotation, CopyRotation::In | CopyRotation::Pending))
+        .count();
+    moves.iter().filter(|step| step.from.id == *server).count() >= movable
 }
 
 #[derive(Default)]
