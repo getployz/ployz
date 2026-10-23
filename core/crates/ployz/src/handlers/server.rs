@@ -1454,6 +1454,10 @@ mod tests {
                     let stale = stale.clone();
                     let updated = updated.clone();
                     async move {
+                        #[expect(
+                            clippy::wildcard_enum_match_arm,
+                            reason = "the fixture answers only UpdateMachine and ListMachines"
+                        )]
                         let response = match request.into_inner().decode_request().unwrap().body {
                             RpcRequestBody::UpdateMachine(_) => {
                                 if let Some(answered) = answered.lock().unwrap().take() {
@@ -1554,6 +1558,10 @@ mod tests {
                         let stale = stale.clone();
                         let updated = updated.clone();
                         async move {
+                            #[expect(
+                                clippy::wildcard_enum_match_arm,
+                                reason = "the fixture answers only UpdateMachine and ListMachines"
+                            )]
                             let response = match request.into_inner().decode_request().unwrap().body
                             {
                                 RpcRequestBody::UpdateMachine(_) => {
