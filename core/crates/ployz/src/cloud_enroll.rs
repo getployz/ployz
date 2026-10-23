@@ -1618,7 +1618,19 @@ mod tests {
             let error = result.unwrap_err();
             if body != cant_reach {
                 // A proxy in front of a down Cloud answers 503 too; that is not Cloud's diagnosis.
-                assert!(matches!(error, Error::RetrySameCommand { .. }), "{error:?}");
+                let Error::RetrySameCommand { cause, .. } = &error else {
+                    panic!("{error:?}");
+                };
+                assert!(
+                    matches!(
+                        cause.downcast_ref::<crate::setup_retry::Error<Error>>(),
+                        Some(crate::setup_retry::Error::Exhausted {
+                            last: Some(Error::Status { status: 503, .. }),
+                            ..
+                        })
+                    ),
+                    "{error:?}"
+                );
                 continue;
             }
             assert!(matches!(error, Error::CloudCantReach), "{error:?}");
