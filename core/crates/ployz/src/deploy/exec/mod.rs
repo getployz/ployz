@@ -667,8 +667,16 @@ where
         // A closed session says nothing of the Machine, so it is never kept as its answer.
         let (error, retry) = match &lost {
             Some(lost) if error.never_reached() || closed => (lost.clone(), error.code.retry()),
-            _ if error.target_unanswered() || closed => {
+            _ if closed => {
                 let error = answer.clone().unwrap_or(error);
+                let retry = error.code.retry();
+                (error, retry)
+            }
+            _ if error.target_unanswered() => {
+                // A silence is stronger news than an earlier lost reply, and a later
+                // closed session says nothing to undo it.
+                lost = None;
+                let error = answer.get_or_insert(error).clone();
                 let retry = error.code.retry();
                 (error, retry)
             }
