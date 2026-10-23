@@ -461,6 +461,7 @@ impl VolumePlan<'_> {
                     | PlanError::CopiesUnknown { .. }
                     | PlanError::VolumeServerTakesNoServices { .. },
                 ) => {}
+                Err(error) if super::volume_server_away(&error) => {}
                 result => result.map_err(|source| {
                     super::service_error(name_errors_with_service, spec.name.as_str(), source)
                 })?,

@@ -2058,3 +2058,95 @@ fn storage_snapshot() -> DeploySnapshot {
         ..Default::default()
     }
 }
+
+/// A full Deploy whose `db` mounts a Volume on a Server that didn't return its storage
+/// capacity blocks only `db`: `web` is still planned, and `db` is reported not
+/// attempted. That holds whether the Volume's copies are known or not, and however
+/// the Server went silent.
+#[test]
+fn a_silent_volume_server_blocks_only_the_service_that_mounts_its_volume() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+    let timed_out = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "target Machine RPC timed out".into(),
+        details: Default::default(),
+        cause: Vec::new(),
+    };
+    for (case, copies, silent, down) in [
+        ("copies unknown, not asked", vec![], None, false),
+        (
+            "writer known, not asked",
+            vec![('2', CopyRole::Writer)],
+            None,
+            false,
+        ),
+        (
+            "writer known, timed out",
+            vec![('2', CopyRole::Writer)],
+            Some(timed_out.clone()),
+            false,
+        ),
+        (
+            "writer known, Server down",
+            vec![('2', CopyRole::Writer)],
+            None,
+            true,
+        ),
+    ] {
+        let rows = if copies.is_empty() {
+            vec![]
+        } else {
+            vec![provisioned_row('2')]
+        };
+        let mut snapshot = copies_snapshot(&copies, rows);
+        match silent {
+            None => snapshot.storage_capacity.remove(&machine_id('2')),
+            Some(error) => snapshot
+                .storage_capacity
+                .insert(machine_id('2'), Err(error)),
+        };
+        if down {
+            for machine in &mut snapshot.machines {
+                if machine.machine.id == machine_id('2') {
+                    machine.membership = MembershipObservation::Down;
+                }
+            }
+        }
+
+        // A direct preview still refuses as a whole.
+        assert!(preview_deploy(&intent, &snapshot).is_err(), "{case}");
+        let preview =
+            runner_preview(&intent, &snapshot).unwrap_or_else(|error| panic!("{case}: {error:?}"));
+        let [blocked] = preview.blocked.as_slice() else {
+            panic!("{case}: {:?}", preview.blocked)
+        };
+        assert_eq!(blocked.service, db.name, "{case}");
+        assert!(
+            operations(&preview)
+                .iter()
+                .any(|operation| operation.service_name() == Some(&web.name)),
+            "{case}: {:?}",
+            operations(&preview)
+        );
+        assert!(
+            operations(&preview)
+                .iter()
+                .all(|operation| operation.service_name() != Some(&db.name)),
+            "{case}"
+        );
+    }
+}
