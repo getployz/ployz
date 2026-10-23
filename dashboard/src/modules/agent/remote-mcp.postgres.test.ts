@@ -9,6 +9,7 @@ import { afterEach, expect, vi } from "vitest";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
+import { operationApprovals } from "#/modules/approvals/tables";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
@@ -472,6 +473,11 @@ it.live("an approved Cloud command that refused once it ran hands back a retry n
     const refused = yield* Fiber.join(running);
     const retry = { tool: "org_member_role", input: { ...promote, approval: approvalId } };
     expect(refused).toMatchObject({ isError: true, body: { ok: false, refusal: { message: "Only an owner or admin of this Organization can do this.", writes: "unknown", retry } } });
+    const [handedBack] = yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.select({ usedAt: operationApprovals.usedAt }).from(operationApprovals).where(eq(operationApprovals.id, approvalId));
+    }));
+    expect(handedBack).toEqual({ usedAt: null });
     expect(yield* agent.call("org_member_role", retry.input)).toMatchObject({ isError: true, body: { ok: false, refusal: { retry } } });
     expect(yield* shop.provided(pendingApprovals(ORGANIZATION))).toEqual([]);
   }).pipe(Effect.scoped), 30_000);
