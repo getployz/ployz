@@ -260,6 +260,7 @@ fn requested_with_graphs(
             command: Vec::new(),
             entrypoint: Vec::new(),
             environment: BTreeMap::new(),
+            sealed_identity: None,
             labels: Default::default(),
             hostname: None,
             extra_hosts: Vec::new(),

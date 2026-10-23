@@ -7,7 +7,7 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
+    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ContainerId,
     ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
     OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
@@ -24,8 +24,10 @@ use crate::{
         LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
+    observe::layout::RetainedEnv,
     route_acks::{Ackers, routed},
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
+    sealed_env::{self, Lines, SealedRecord},
 };
 
 const DEFAULT_OBSERVE_SOCKET: &str = "/run/ployz/observe.sock";
@@ -42,8 +44,6 @@ pub struct MachineService {
     pub(crate) grants: Arc<crate::management::BuildGrants>,
     pub(crate) endpoint_chooser: Option<crate::network::EndpointChooser>,
     pub(crate) published_routes: tokio::sync::watch::Receiver<crate::ingress::PublishedRoutes>,
-    #[cfg(test)]
-    opened_in_test: BTreeSet<String>,
 }
 
 impl MachineService {
@@ -67,21 +67,7 @@ impl MachineService {
                 crate::ingress::PublishedRoutes::default(),
             )
             .1,
-            #[cfg(test)]
-            opened_in_test: BTreeSet::new(),
         }
-    }
-
-    // TODO: SL2 records the keys it opened; answer from durable state, since RetainedEnv
-    // serves Containers Docker no longer reports.
-    #[cfg(not(test))]
-    fn opened_env_keys(&self, _container: &ployz_core::ContainerId) -> BTreeSet<String> {
-        BTreeSet::new()
-    }
-
-    #[cfg(test)]
-    fn opened_env_keys(&self, _container: &ployz_core::ContainerId) -> BTreeSet<String> {
-        self.opened_in_test.clone()
     }
 
     pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
@@ -193,6 +179,27 @@ impl MachineService {
             }
             Err(_) => Err(unavailable("WireGuard is not running on this Server")),
         }
+    }
+
+    async fn sealed_record(&self, id: ContainerId) -> Result<Option<SealedRecord>, Status> {
+        if let Some(env) = self.observe.retained_env(id).await? {
+            return Ok(env.sealed().cloned());
+        }
+        self.containers()
+            .map_err(|error| Status::unavailable(error.message))?
+            .sealed_record(&id)
+            .await
+            .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))
+    }
+
+    async fn opened_keys(&self, id: ContainerId) -> Result<BTreeSet<String>, Status> {
+        Ok(self
+            .sealed_record(id)
+            .await?
+            .iter()
+            .flat_map(SealedRecord::keys)
+            .map(str::to_owned)
+            .collect())
     }
 
     fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
@@ -372,10 +379,10 @@ impl MachineRpc for MachineService {
         {
             Ok(mut details) => {
                 if operator {
-                    withhold_opened(
-                        &mut details.environment,
-                        &self.opened_env_keys(&request.container_id),
-                    );
+                    match self.opened_keys(request.container_id).await {
+                        Ok(opened) => withhold_opened(&mut details.environment, &opened),
+                        Err(_) => details.environment = None,
+                    }
                 }
                 respond(details)
             }
@@ -526,7 +533,19 @@ impl MachineRpc for MachineService {
         let request =
             op::LogHistory::from_request_body(request_body(request)?).map_err(invalid_request)?;
         request.validate().map_err(Status::invalid_argument)?;
-        self.observe.history(request).await.map(Response::new)
+        let rows = self.observe.history(request).await?;
+        let service = self.clone();
+        Ok(Response::new(sealed_env::scrub_history(rows, move |id| {
+            let service = service.clone();
+            async move {
+                let record = service.sealed_record(id).await;
+                let key_dir = service
+                    .containers()
+                    .ok()
+                    .and_then(ContainerRuntime::sealing_key_dir);
+                Lines::new(id, record, key_dir)
+            }
+        })))
     }
 
     async fn metric_history(
@@ -542,16 +561,14 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
         let request = expect::<op::RetainedEnv>(request)?;
-        let mut environment = self.observe.retained_env(request.container_id).await?;
-        if operator {
-            withhold_opened(
-                &mut environment,
-                &self.opened_env_keys(&request.container_id),
-            );
-        }
-        respond(RetainedEnvReply { environment })
+        respond(RetainedEnvReply {
+            environment: self
+                .observe
+                .retained_env(request.container_id)
+                .await?
+                .map(RetainedEnv::into_values),
+        })
     }
 
     async fn tail_logs(

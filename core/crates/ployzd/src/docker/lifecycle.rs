@@ -172,12 +172,16 @@ impl ContainerRuntime {
     ) -> Result<ContainerCreated, Error> {
         let reserved_name =
             creation_key.map(|key| creation_name(&machine.id, namespace, &spec.name, kind, key));
+        if create::holds_sealed(kind, spec) {
+            self.log_store.admit_sealed().await?;
+        }
         let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
             kind,
             namespace,
             spec,
+            self.sealing_key_dir.as_deref(),
         )?;
         create::ingress_sysctls(
             &mut body,

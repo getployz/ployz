@@ -70,6 +70,7 @@ ployz = { path = "../ployz" }
 ployz-store.workspace = true
 ployz-testkit.workspace = true
 tokio = { version = "1.53.1", features = ["test-util"] }
+uuid = "1.24.0"
 
 [lints]
 workspace = true

@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     ByteQuantity, ConfigFileName, ConfigMount, ConfigName, ConfigSpec, ConfiguredHealthcheck,
-    ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckCommand,
+    ContainerResources, CpuNanos, DependencyCondition, DeployIntent, EnvValue, HealthcheckCommand,
     HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost, Namespace, Operator, PlanOptions,
     PortPublication, PreDeployCommand, PreDeployHook, PruneScope, PullPolicy, RawVolumeSource,
     RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceConfigGraph, ServiceContainerSpec,
@@ -400,7 +400,11 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             container: ServiceContainerSpec {
                 image: image.clone(),
                 command,
-                environment,
+                environment: environment
+                    .into_iter()
+                    .map(|(key, value)| (key, EnvValue::Text(value)))
+                    .collect(),
+                sealed_identity: None,
                 pull_policy: PullPolicy::Missing,
                 restart,
                 healthcheck,

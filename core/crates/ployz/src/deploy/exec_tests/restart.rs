@@ -620,3 +620,30 @@ async fn a_create_whose_connection_drops_fails_without_waiting_out_a_restart() {
     assert!(started.elapsed() < RESTART_WAIT, "{:?}", started.elapsed());
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_run_waits_out_a_log_store_upgrade() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
+    let call = || Call::Run(machine, ContainerKind::ServiceContainer);
+    let client = Scripted::new(vec![
+        Step(
+            call(),
+            Reply::Error(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "the Log Store still runs the software from before an upgrade".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            }),
+        ),
+        created(call(), &container('a')),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}

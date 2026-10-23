@@ -1231,10 +1231,11 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        let target = MachineTarget::from(machine_id);
+        crate::sealed_compat::admit(self, &target, &want).await?;
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        let target = MachineTarget::from(machine_id);
         apply_timeout(
             timeout,
             self.call_once::<op::EnsureContainer>(payload, Some(&target)),

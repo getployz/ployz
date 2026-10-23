@@ -1473,7 +1473,7 @@ mod stopped_on_request {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             ..
-        } = local.ensure_container(want).await.unwrap()
+        } = Box::pin(local.ensure_container(want)).await.unwrap()
         else {
             panic!("the want was refused");
         };
@@ -1768,5 +1768,35 @@ mod stopped_on_request {
             );
             fixture.finish();
         }
+    }
+}
+
+#[test]
+fn a_sealed_value_the_spec_cannot_open_is_a_refusal_but_an_unreadable_key_is_an_error() {
+    use ployz_core::ContainerRefusalReason;
+
+    use crate::sealed_env::OpenError;
+
+    let unopenable = ContainerRefusalReason::SealedValueUnopenable;
+    for (open, reason) in [
+        (
+            OpenError::KeyMissing,
+            Some(ContainerRefusalReason::SealingKeyMissing),
+        ),
+        (OpenError::MissingIdentity("TOKEN".into()), Some(unopenable)),
+        (OpenError::SealedPort, Some(unopenable)),
+        (OpenError::BadName("A=B".into()), Some(unopenable)),
+        (OpenError::Unbound("TOKEN".into()), Some(unopenable)),
+        (OpenError::Unopenable("TOKEN".into()), Some(unopenable)),
+        (
+            OpenError::KeyUnreadable(std::io::ErrorKind::PermissionDenied.into()),
+            None,
+        ),
+    ] {
+        let label = open.to_string();
+        let refused = super::create_refusal(crate::docker::Error::Sealed(open).into())
+            .ok()
+            .map(|refusal| refusal.reason);
+        assert_eq!(refused, reason, "{label}");
     }
 }

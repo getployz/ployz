@@ -470,7 +470,7 @@ fn scrub_target() -> Scrub {
         claim: target
             .iter()
             .flat_map(|spec| spec.container.environment.iter())
-            .map(|(key, value)| (key.clone(), value.clone()))
+            .filter_map(|(key, value)| Some((key.clone(), value.text()?.to_owned())))
             .collect(),
     }
 }

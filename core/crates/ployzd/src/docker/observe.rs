@@ -483,7 +483,7 @@ fn observe_copies(
     }
 }
 
-fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
+pub(crate) fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
     let mut parts = observation.clone().into_parts();
     parts.resolved_spec = published_spec(parts.resolved_spec);
     ContainerObservation::try_from(parts)
@@ -742,7 +742,7 @@ mod tests {
                 .container
                 .environment
                 .get("TOKEN")
-                .map(String::as_str),
+                .and_then(ployz_core::EnvValue::text),
             Some("service-secret")
         );
     }
@@ -837,7 +837,7 @@ mod tests {
                 .container
                 .environment
                 .get("CADDY_ADMIN")
-                .map(String::as_str),
+                .and_then(ployz_core::EnvValue::text),
             Some("unix//run/ingress/caddy/admin.sock")
         );
         assert!(

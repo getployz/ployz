@@ -34,17 +34,31 @@ fn an_operator_reads_every_env_key_but_the_opened_ones() {
 }
 
 #[tokio::test]
-async fn retained_env_withholds_opened_keys_from_an_operator_only() {
+async fn retained_env_answers_no_opened_value_and_names_the_opened_keys() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let dir = std::env::temp_dir().join(format!("ployzd-retained-env-{}", MachineId::random()));
     let store = RecordOwner::spawn(LocalMachineStore::open(&dir).unwrap()).unwrap();
     let socket = dir.join("observe.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let environment = BTreeMap::from([
-        ("DATABASE_URL".to_owned(), "postgres://opened".to_owned()),
-        ("PORT".to_owned(), "8080".to_owned()),
-    ]);
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let sealed = BTreeMap::from([(
+        "DATABASE_URL".to_owned(),
+        ployz_core::EnvValue::Sealed(cluster.seal(
+            "DATABASE_URL",
+            ployz_core::SealedScope::Shared,
+            "postgres://opened",
+        )),
+    )]);
+    let label = serde_json::to_string(&cluster.open(sealed).unwrap().record).unwrap();
+    let environment = crate::observe::layout::RetainedEnv::from_inspected(
+        &[
+            "DATABASE_URL=postgres://opened".to_owned(),
+            "PORT=8080".to_owned(),
+        ],
+        Some(&label),
+    )
+    .unwrap();
     let answer = serde_json::to_vec(&serde_json::json!({ "reply": environment })).unwrap();
     let observer = tokio::spawn(async move {
         loop {
@@ -58,24 +72,14 @@ async fn retained_env_withholds_opened_keys_from_an_operator_only() {
             stream.write_all(&answer).await.unwrap();
         }
     });
-    let service = MachineService {
-        opened_in_test: BTreeSet::from(["DATABASE_URL".to_owned()]),
-        ..MachineService::with_cluster(store, None).with_observe_socket(socket)
-    };
+    let service = MachineService::with_cluster(store, None).with_observe_socket(socket);
+    let id = ContainerId::parse("a".repeat(64)).unwrap();
 
-    for (from_operator, expected) in [
-        (false, environment.clone()),
-        (
-            true,
-            BTreeMap::from([("PORT".to_owned(), "8080".to_owned())]),
-        ),
-    ] {
+    for from_operator in [false, true] {
         let mut request = Request::new(
-            op::RetainedEnv::into_request(ployz_core::RetainedEnvRequest {
-                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
-            })
-            .encode()
-            .unwrap(),
+            op::RetainedEnv::into_request(ployz_core::RetainedEnvRequest { container_id: id })
+                .encode()
+                .unwrap(),
         );
         if from_operator {
             request
@@ -93,10 +97,14 @@ async fn retained_env_withholds_opened_keys_from_an_operator_only() {
             .unwrap();
         assert_eq!(
             reply.environment,
-            Some(expected),
+            Some(BTreeMap::from([("PORT".to_owned(), "8080".to_owned())])),
             "operator: {from_operator}"
         );
     }
+    assert_eq!(
+        service.opened_keys(id).await.unwrap(),
+        BTreeSet::from(["DATABASE_URL".to_owned()])
+    );
     observer.abort();
     std::fs::remove_dir_all(dir).ok();
 }
@@ -2625,7 +2633,10 @@ mod ensure_container {
         let redacted = |observed: &ContainerObservation| {
             let spec = &observed.resolved_spec;
             assert_eq!(
-                spec.container.environment.get("TOKEN").map(String::as_str),
+                spec.container
+                    .environment
+                    .get("TOKEN")
+                    .and_then(ployz_core::EnvValue::text),
                 Some("<redacted>")
             );
             assert_eq!(
@@ -2634,7 +2645,7 @@ mod ensure_container {
                     .unwrap()
                     .environment
                     .get("DATABASE_URL")
-                    .map(String::as_str),
+                    .and_then(ployz_core::EnvValue::text),
                 Some("<redacted>")
             );
             let graph = spec.mount_graph.config_graph();

@@ -81,6 +81,8 @@ pub(crate) struct FakeDocker {
     /// Named mode: every inspect of a running Container sends its headers, then its
     /// body this long after.
     pub(crate) slow_running_inspects: Arc<Mutex<Duration>>,
+    /// The multiplexed body every Container log request answers with.
+    pub(crate) logs: Arc<Mutex<Vec<u8>>>,
 }
 
 async fn fake_docker(
@@ -139,6 +141,9 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
     }
     if method == Method::POST && path.ends_with("/stop") {
         drop(fake.stop_gate.read().await);
+    }
+    if method == Method::GET && path.contains("/containers/") && path.ends_with("/logs") {
+        return fake.logs.lock().unwrap().clone().into_response();
     }
     if method == Method::GET && path.ends_with("/events") {
         return axum::body::Body::from_stream(futures_util::stream::pending::<

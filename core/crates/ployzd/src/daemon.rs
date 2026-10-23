@@ -41,6 +41,7 @@ use crate::{
     management::{self, ManagementConfig},
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
     runtime_unit::UnitSupervision,
+    sealed_compat::LogStore,
 };
 
 /// How the daemon attaches a Container Runtime.
@@ -254,7 +255,11 @@ impl Daemon {
             ContainerMode::Auto => {
                 let specs = MachineSpecStore::open(config.data_dir.join("machine.db")).await?;
                 match LocalDocker::connect() {
-                    Ok(docker) => Some(ContainerRuntime::new(docker, specs)),
+                    Ok(docker) => Some(
+                        ContainerRuntime::new(docker, specs)
+                            .with_sealing_key(config.data_dir.clone())
+                            .with_log_store(LogStore::of(config.units)),
+                    ),
                     Err(error) => {
                         eprintln!(
                             "WARNING: local Docker is unavailable: {error}",

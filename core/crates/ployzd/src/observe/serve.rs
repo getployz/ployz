@@ -6,7 +6,6 @@
 //! [`MetricsAnswer`] frame, and an env request with one [`EnvAnswer`] frame.
 
 use std::{
-    collections::BTreeMap,
     io,
     sync::{
         Arc,
@@ -60,7 +59,7 @@ pub(crate) enum Request {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EnvAnswer {
     /// `None` when the store kept no env for the Container.
-    Reply(Option<BTreeMap<String, String>>),
+    Reply(Option<RetainedEnv>),
     /// The store could not be read.
     Failed(String),
 }
@@ -213,7 +212,7 @@ async fn answer_env(
         .map_err(io::Error::other)
         .and_then(std::convert::identity);
     let answer = match read {
-        Ok(env) => EnvAnswer::Reply(env.map(RetainedEnv::into_values)),
+        Ok(env) => EnvAnswer::Reply(env),
         Err(error) => EnvAnswer::Failed(error.to_string()),
     };
     let bytes = serde_json::to_vec(&answer).map_err(io::Error::other)?;
@@ -310,7 +309,7 @@ pub(crate) async fn read_frame(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Arc, time::Duration};
+    use std::{sync::Arc, time::Duration};
 
     use ployz_core::{
         ContainerId, HistoryRow, LogHistoryRequest, OpaquePayload,
@@ -476,7 +475,8 @@ mod tests {
         store.prepare().unwrap();
         let kept = ContainerId::parse("a".repeat(64)).unwrap();
         let never = ContainerId::parse("b".repeat(64)).unwrap();
-        let env = RetainedEnv::from_inspected(&["TOKEN=live-only-sentinel".to_owned()]).unwrap();
+        let env =
+            RetainedEnv::from_inspected(&["TOKEN=live-only-sentinel".to_owned()], None).unwrap();
         std::fs::create_dir_all(store.container(&kept)).unwrap();
         env.write(&store.container(&kept)).unwrap();
         let socket = dir.0.join("observe.sock");
@@ -484,13 +484,7 @@ mod tests {
         let serving = tokio::spawn(serve(listener, store));
 
         let client = ObserveClient::new(socket);
-        assert_eq!(
-            client.retained_env(kept).await.unwrap(),
-            Some(BTreeMap::from([(
-                "TOKEN".to_owned(),
-                "live-only-sentinel".to_owned()
-            )]))
-        );
+        assert_eq!(client.retained_env(kept).await.unwrap(), Some(env));
         assert_eq!(client.retained_env(never).await.unwrap(), None);
         serving.abort();
     }

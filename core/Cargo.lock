@@ -4009,6 +4009,7 @@ dependencies = [
  "minisign-verify",
  "oci-spec",
  "prost",
+ "regex",
  "semver",
  "serde",
  "serde_json",
@@ -4154,6 +4155,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
  "x509-parser",
  "zeroize",
 ]

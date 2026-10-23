@@ -47,6 +47,7 @@ use crate::docker::{
     LABEL_DEPLOYMENT, LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID,
     LABEL_SERVICE_NAME,
 };
+use crate::sealed_env::LABEL_SEALED;
 
 const LABEL_SYSTEM_MANAGED: &str = "ployzd.managed";
 const LOCAL_LOGS_DIR: &str = "local-logs";
@@ -1718,7 +1719,14 @@ fn keep_env(id: &ContainerId, dir: &Path, inspected: &ContainerInspectResponse) 
 
 fn retained_env(inspected: &ContainerInspectResponse) -> Option<RetainedEnv> {
     let config = inspected.config.as_ref()?;
-    RetainedEnv::from_inspected(config.env.as_deref().unwrap_or_default())
+    let label = config
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(LABEL_SEALED));
+    RetainedEnv::from_inspected(
+        config.env.as_deref().unwrap_or_default(),
+        label.map(String::as_str),
+    )
 }
 
 fn write_meta(dir: &Path, meta: &ContainerMeta) -> io::Result<()> {

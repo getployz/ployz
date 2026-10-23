@@ -591,7 +591,10 @@ fn a_replayed_generate_keeps_its_secret_and_seals_over_plain_text() {
             .find(|spec| spec.name.as_str() == "web")
             .unwrap();
         let env = &web.container.environment;
-        claimed_env.push((env["PASSWORD"].clone(), env["TOKEN"].clone()));
+        claimed_env.push((
+            env["PASSWORD"].text().unwrap().to_owned(),
+            env["TOKEN"].text().unwrap().to_owned(),
+        ));
         store
             .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
             .unwrap();

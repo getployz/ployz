@@ -170,7 +170,12 @@ fn capture_target(
         reference.repository(),
         uuid::Uuid::new_v4()
     );
-    let mut args = service.container.environment.clone();
+    let mut args: BTreeMap<String, String> = service
+        .container
+        .environment
+        .iter()
+        .filter_map(|(key, value)| Some((key.clone(), value.text()?.to_owned())))
+        .collect();
     let name = service.name.to_string();
     let (build_method, context, dockerfile) = match spec.recipe {
         Recipe::Railpack { command } => {

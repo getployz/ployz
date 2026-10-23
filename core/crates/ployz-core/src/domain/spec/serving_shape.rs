@@ -117,6 +117,7 @@ impl ServingShape {
             command,
             entrypoint,
             environment,
+            sealed_identity: _,
             labels,
             hostname,
             extra_hosts,
