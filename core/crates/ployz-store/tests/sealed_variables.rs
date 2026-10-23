@@ -365,6 +365,66 @@ fn a_template_that_opens_past_a_containers_variable_limit_is_refused_at_claim() 
     assert!(!format!("{error:?}").contains("BwcH"), "{error:?}");
 }
 
+/// The longest value Linux passes a Container as `PASSWORD=value` with its NUL.
+const PASSWORD_MAX: usize = 128 * 1024 - "PASSWORD".len() - 2;
+
+/// `PASSWORD` sealed in the browser so that it opens to `opened` bytes: HPKE adds
+/// 48 to the plaintext.
+fn sealed_password(opened: usize) -> Value {
+    use base64::Engine as _;
+    let sealed = base64::engine::general_purpose::STANDARD.encode(vec![7; opened + 48]);
+    json!({ "secret": {
+        "sealedFor": uuid(2),
+        "value": { "sealed": sealed, "scope": { "service": uuid(3) }, "key": "PASSWORD" },
+    } })
+}
+
+#[test]
+fn a_sealed_value_is_taken_up_to_the_limit_at_the_length_it_opens_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+    refused(
+        &store,
+        "web.env.PASSWORD",
+        sealed_password(PASSWORD_MAX + 1),
+        "too long",
+    );
+    set(&store, "web.env.PASSWORD", sealed_password(PASSWORD_MAX));
+}
+
+#[test]
+fn a_template_is_claimed_up_to_the_limit_at_the_length_its_sealed_parts_open_to() {
+    // `COPY=` is 4 bytes shorter than `PASSWORD=`, so 4 bytes of text fill it exactly.
+    for (text, fits) in [("abcd", true), ("abcde", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let url = backend::fresh_url(&dir);
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        shop(&store);
+        backend::sealed_variables_on(&url, "org");
+        set(&store, "web.env.PASSWORD", sealed_password(PASSWORD_MAX));
+        set(
+            &store,
+            "web.env.COPY",
+            json!(format!("{text}${{{{ PASSWORD }}}}")),
+        );
+        let claimed = try_claim(&store);
+        if fits {
+            claimed.unwrap();
+            continue;
+        }
+        let error = claimed.unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+        assert!(
+            error.message.starts_with("web.env.COPY is too long"),
+            "{error:?}"
+        );
+        assert!(!format!("{error:?}").contains("BwcH"), "{error:?}");
+    }
+}
+
 #[test]
 fn a_renamed_sealed_variable_reaches_the_deploy_as_a_template_under_the_key_it_was_sealed_for() {
     let dir = tempfile::tempdir().unwrap();
