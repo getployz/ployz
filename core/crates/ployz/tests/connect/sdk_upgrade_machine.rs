@@ -82,7 +82,12 @@ async fn another_attempt_is_refused() {
 
 #[tokio::test]
 async fn upgrade_cli_describes_same_version() {
-    upgrade_cli_case("1.2.3", "Server machine-1 already runs 1.2.3.", "unchanged").await;
+    upgrade_cli_case(
+        "1.2.3",
+        "Server machine-1 already runs 1.2.3.",
+        Some("unchanged"),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -90,17 +95,27 @@ async fn upgrade_cli_describes_downgrade() {
     upgrade_cli_case(
         "1.2.4",
         "Downgraded Server machine-1 from 1.2.4 to 1.2.3.",
-        "downgraded",
+        Some("downgraded"),
     )
     .await;
 }
 
 #[tokio::test]
 async fn upgrade_cli_describes_upgrade() {
-    upgrade_cli_case("1.2.2", "Upgraded Server machine-1 to 1.2.3.", "upgraded").await;
+    upgrade_cli_case(
+        "1.2.2",
+        "Upgraded Server machine-1 to 1.2.3.",
+        Some("upgraded"),
+    )
+    .await;
 }
 
-async fn upgrade_cli_case(running: &str, phrase: &str, change: &str) {
+#[tokio::test]
+async fn upgrade_cli_does_not_guess_direction_without_a_prior_version() {
+    upgrade_cli_case("", "Server machine-1 now runs 1.2.3.", None).await;
+}
+
+async fn upgrade_cli_case(running: &str, phrase: &str, change: Option<&str>) {
     for json in [false, true] {
         let mut service = DiscoveryService::new(super::support::test_description());
         let mut server = machine('a', "machine-1");
@@ -137,7 +152,6 @@ async fn upgrade_cli_case(running: &str, phrase: &str, change: &str) {
         );
         assert_eq!(output.status.code(), Some(0), "{text}");
         if json {
-            super::support::cli_transcript(&output);
             let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(
                 result.pointer("/attempts/0/from_version"),
@@ -146,7 +160,7 @@ async fn upgrade_cli_case(running: &str, phrase: &str, change: &str) {
             );
             assert_eq!(
                 result.pointer("/attempts/0/change"),
-                Some(&serde_json::json!(change)),
+                change.map(serde_json::Value::from).as_ref(),
                 "{result}"
             );
         } else {

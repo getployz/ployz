@@ -5,8 +5,8 @@ use std::{collections::BTreeSet, time::Duration};
 use clap::ArgMatches;
 use ployz_core::{
     Machine, MachineId, MachineRelease, MachineTarget, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineVersion, RequestMachineUpgradeRequest,
-    RpcErrorCode, op,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
+    RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -400,8 +400,46 @@ fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
 #[derive(Serialize)]
 struct Attempted {
     server: MachineId,
+    from_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    change: Option<UpgradeChange>,
     #[serde(flatten)]
     attempt: MachineUpgradeAttempt,
+}
+
+impl Attempted {
+    fn new(machine: &Machine, attempt: MachineUpgradeAttempt) -> Self {
+        let change = if let MachineUpgradeOutcome::Succeeded { version } = &attempt.outcome {
+            UpgradeChange::between(&machine.runtime.daemon_version, version)
+        } else {
+            None
+        };
+        Self {
+            server: machine.id,
+            from_version: machine.runtime.daemon_version.clone(),
+            change,
+            attempt,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UpgradeChange {
+    Unchanged,
+    Downgraded,
+    Upgraded,
+}
+
+impl UpgradeChange {
+    fn between(from: &str, to: &MachineVersion) -> Option<Self> {
+        let from = MachineVersion::parse(from).ok()?;
+        Some(match from.cmp(to) {
+            std::cmp::Ordering::Equal => Self::Unchanged,
+            std::cmp::Ordering::Greater => Self::Downgraded,
+            std::cmp::Ordering::Less => Self::Upgraded,
+        })
+    }
 }
 
 /// Upgrade each Server's daemon in order, stopping at the first failure; once all succeed,
@@ -434,34 +472,32 @@ async fn run_all(
         let (stopped, definitive) = match ran {
             Err(error) => {
                 // An accepted attempt is committed evidence: keep it in the result.
-                attempts.extend(seen.map(|attempt| Attempted {
-                    server: machine.id,
-                    attempt,
-                }));
+                attempts.extend(seen.map(|attempt| Attempted::new(machine, attempt)));
                 (error, false)
             }
             Ok(attempt) => {
-                // The listing read before the run is what the Server ran then.
-                match &attempt.outcome {
-                    MachineUpgradeOutcome::Succeeded { version }
-                        if version.to_string() == machine.runtime.daemon_version =>
-                    {
-                        crate::ui::stream(format_args!(
-                            "Server {} already runs {version}, at or past {release}.",
-                            machine.name
-                        ));
-                    }
-                    MachineUpgradeOutcome::Succeeded { .. } => {
-                        upgraded = true;
-                        print_attempt(machine, &attempt);
-                    }
-                    MachineUpgradeOutcome::Accepted
-                    | MachineUpgradeOutcome::Running { .. }
-                    | MachineUpgradeOutcome::Failed { .. }
-                    | MachineUpgradeOutcome::Interrupted { .. } => print_attempt(machine, &attempt),
+                if let MachineUpgradeOutcome::Succeeded { version } = &attempt.outcome {
+                    upgraded |= version.to_string() != machine.runtime.daemon_version;
                 }
+                print_attempt(machine, &attempt);
                 let stopped = match &attempt.outcome {
                     MachineUpgradeOutcome::Succeeded { .. } => None,
+                    MachineUpgradeOutcome::Failed {
+                        stage: MachineUpgradeStage::Acquiring,
+                        error: reason,
+                    } if reason
+                        == &format!("release selection: no such release {}", attempt.target)
+                        || reason
+                            == &format!(
+                                "release selection: download release checksums: release {} has no checksums.txt",
+                                attempt.target
+                            ) =>
+                    {
+                        Some(Error::not_found(format!(
+                            "No Ployz release {}.",
+                            attempt.target
+                        )))
+                    }
                     MachineUpgradeOutcome::Failed {
                         stage,
                         error: reason,
@@ -493,10 +529,7 @@ async fn run_all(
                         unreachable!("run_one returns only terminal evidence")
                     }
                 };
-                attempts.push(Attempted {
-                    server: machine.id,
-                    attempt,
-                });
+                attempts.push(Attempted::new(machine, attempt));
                 match stopped {
                     Some(error) => (error, true),
                     None => continue,
@@ -713,7 +746,19 @@ fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
             stage.as_str()
         )),
         MachineUpgradeOutcome::Succeeded { version } => {
-            crate::ui::stream(format_args!("Upgraded Server {name} to {version}."));
+            match UpgradeChange::between(&machine.runtime.daemon_version, version) {
+                Some(UpgradeChange::Unchanged) => {
+                    crate::ui::stream(format_args!("Server {name} already runs {version}."))
+                }
+                Some(UpgradeChange::Downgraded) => crate::ui::stream(format_args!(
+                    "Downgraded Server {name} from {} to {version}.",
+                    machine.runtime.daemon_version
+                )),
+                Some(UpgradeChange::Upgraded) => {
+                    crate::ui::stream(format_args!("Upgraded Server {name} to {version}."))
+                }
+                None => crate::ui::stream(format_args!("Server {name} now runs {version}.")),
+            }
         }
         MachineUpgradeOutcome::Failed { stage, .. } => crate::ui::stream(format_args!(
             "Server {name} failed to upgrade to {target} while {}.",
