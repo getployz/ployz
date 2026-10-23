@@ -72,6 +72,19 @@ describe("Drain result", () => {
     expect(drainSummary(report([{ service: "shop/cron", result: "old_copies", ends: [{ kind: "running", unconfirmed: { kind: "proxies", servers: [web1] } }] }]), "web-2")).toBe("1 stayed");
   });
 
+  it("says everything moved off when only another server's move failed, and still shows that failure", () => {
+    const elsewhere: ServiceDrain = {
+      service: "shop/api",
+      result: "failed",
+      moves: [{ from: web2, to: web1, old: { kind: "stopped" } }],
+      failure: { stage: "read_image", from: web3, to: web1, detail: "web-3 did not answer" },
+    };
+    // The Engine counts it complete: the failure left nothing behind, and nothing remains here.
+    const done = { ...report([elsewhere]), complete: true };
+    expect(drainSummary(done, "web-2")).toBe("Everything moved off web-2");
+    expect(drainRow(elsewhere, web2.id)).toMatchObject({ tone: "failed", reason: expect.stringContaining("It still runs on web-3.") });
+  });
+
   it("counts what it left alone and never says nothing ran here while something does", () => {
     const unowned = ["left-behind/old", "legacy/cron"];
     const left: DrainReport["remaining"] = { kind: "observed", services: [...unowned, "ployz-system/dns"], unchosen: unowned };
