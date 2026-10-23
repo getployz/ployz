@@ -1099,6 +1099,8 @@ enum LocalSocketStatus {
 
 impl Servers {
     fn local(result: io::Result<bool>) -> Self {
+        // Absent when the probe failed: the socket may exist behind an unreadable directory.
+        let exists = result.as_ref().ok().copied();
         let status = match result {
             Ok(true) => LocalSocketStatus::Visible,
             Ok(false) => LocalSocketStatus::Missing,
@@ -1110,7 +1112,7 @@ impl Servers {
         Self {
             via: "local",
             context: None,
-            local_socket_exists: Some(status == LocalSocketStatus::Visible),
+            local_socket_exists: exists,
             local_socket_status: Some(status),
         }
     }
@@ -1178,34 +1180,39 @@ mod tests {
     #[test]
     fn local_socket_check_distinguishes_visibility_and_permission() {
         let cases = [
-            (Ok(true), LocalSocketStatus::Visible, "via local", true),
+            (
+                Ok(true),
+                LocalSocketStatus::Visible,
+                "via local",
+                Some(true),
+            ),
             (
                 Ok(false),
                 LocalSocketStatus::Missing,
                 "(none: no local daemon socket)",
-                false,
+                Some(false),
             ),
             (
                 Err(io::Error::from(io::ErrorKind::PermissionDenied)),
                 LocalSocketStatus::PermissionDenied,
                 "(none: can't read the local daemon socket; run with sudo or join the ployz group)",
-                false,
+                None,
             ),
             (
                 Err(io::Error::other("unavailable")),
                 LocalSocketStatus::Unknown,
                 "(none: can't check the local daemon socket)",
-                false,
+                None,
             ),
         ];
         for (result, status, label, exists) in cases {
             let servers = Servers::local(result);
             assert_eq!(servers.label(), label);
-            assert_eq!(servers.needs_login(), !exists);
+            assert_eq!(servers.needs_login(), exists != Some(true));
             let json = serde_json::to_value(&servers).unwrap();
             assert_eq!(
                 json.pointer("/local_socket_exists"),
-                Some(&serde_json::json!(exists))
+                exists.map(serde_json::Value::Bool).as_ref()
             );
             assert_eq!(
                 json.pointer("/local_socket_status"),
