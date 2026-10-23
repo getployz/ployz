@@ -97,7 +97,7 @@ async fn a_key_that_does_not_hash_to_the_code_is_refused_before_any_machine() {
         assert_eq!(route, "GET /api/cli/device-requests/mmg42klgyq");
         (
             200,
-            json!({ "code": "mmg42klgyq", "key": key(1), "expiresAt": "x" }),
+            json!({ "code": "mmg42klgyq", "key": key(1), "expires_at": "x" }),
         )
     });
     let credential = Credential::Token {

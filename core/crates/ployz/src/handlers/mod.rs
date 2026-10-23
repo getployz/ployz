@@ -19,7 +19,7 @@ mod data_loss;
 #[cfg(feature = "verify-faults")]
 pub(crate) mod debug;
 pub(crate) mod deploy;
-pub(crate) mod devices;
+pub(crate) mod device;
 pub(crate) mod docs;
 pub(crate) mod domain;
 pub(crate) mod env;
@@ -699,7 +699,7 @@ where
             let mut client = server::connect_full(leaf, context).await?;
             work(&mut client).await
         })
-        .map_err(devices::unless_full)
+        .map_err(device::unless_full)
 }
 
 /// [`with_client`] for a read Cloud also answers: `work` runs against the Servers, or the

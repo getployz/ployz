@@ -420,7 +420,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (requested === null) {
         return refusal({ code: "device_request_conflict", message: "Another Device's request holds this code. No changes made.", details: null });
       }
-      return { code: requested.code, expiresAt: requested.expiresAt.toISOString() };
+      return { code: requested.code, expires_at: requested.expiresAt.toISOString() };
     }
     case "GET device-requests/:id": {
       if (caller.credential.kind !== "session") return personOnly("Only a signed-in person can read a Device request.");
@@ -428,7 +428,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: null });
       const pending = yield* readDeviceRequest(caller.organization.id, decodeURIComponent(id ?? "").trim().toLowerCase());
       if (pending === null) return missingRefusal("No such Device request.");
-      return { code: pending.code, key: pending.key, expiresAt: pending.expiresAt.toISOString() };
+      return { code: pending.code, key: pending.key, expires_at: pending.expiresAt.toISOString() };
     }
     case "POST server-access": {
       const access = yield* provideServerAccess(caller);

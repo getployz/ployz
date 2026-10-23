@@ -104,7 +104,7 @@ pub(super) async fn connect_full(
         Err(LoginError::SignedOut) => return connect(matches, context).await,
         Err(error) => return Err(error.into()),
     };
-    let device = super::devices::key::load(&super::devices::key::path(&config))?;
+    let device = super::device::key::load(&super::device::key::path(&config))?;
     if device.is_none()
         && let Ok(client) = super::connect_context(matches, None).await
     {

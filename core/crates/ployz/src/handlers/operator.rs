@@ -913,8 +913,8 @@ async fn run_port_forward(
                         }
                         Err(error) => {
                             crate::ui::warn_cause(format_args!("port-forward connection to {remote} failed"), &error);
-                            if std::iter::once(error.to_string()).chain(crate::ui::causes(&error)).any(|text| super::devices::needs_device(&text)) {
-                                crate::ui::hint(&super::devices::request_hint());
+                            if std::iter::once(error.to_string()).chain(crate::ui::causes(&error)).any(|text| super::device::needs_device(&text)) {
+                                crate::ui::hint(&super::device::request_hint());
                             }
                         }
                     }
