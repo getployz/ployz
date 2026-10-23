@@ -2,6 +2,8 @@
 //! Project as the receiver's changes to deploy. It never deletes and never deploys; a secret the receiver lacks arrives with the
 //! value the person syncing gives it, or without one.
 
+use ployz_core::config::SecretCiphertext;
+
 use super::proposal;
 use super::*;
 use crate::variables::{VariableKey, validate_text};
@@ -504,7 +506,7 @@ pub(crate) fn seal_secret(
     validate_text(&VariableKey::parse(key)?, value)?;
     Ok(SealedSecret {
         fingerprint: sealing.fingerprint(value),
-        value: sealing.seal(value),
+        value: SecretCiphertext::Store(sealing.seal(value)),
     })
 }
 

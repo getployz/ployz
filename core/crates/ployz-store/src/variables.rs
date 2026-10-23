@@ -12,8 +12,9 @@ use std::fmt;
 use ployz_core::config::{
     CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput, ResolveVariablesResult,
     ResolvedConfigFile, ResolverValue, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
-    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, is_deleted_owner,
-    parse_variable_template, render_variable_parts, resolve_config_file, resolve_variables,
+    SecretCiphertext, ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer,
+    is_deleted_owner, parse_variable_template, render_variable_parts, resolve_config_file,
+    resolve_variables,
 };
 use ployz_core::{ConfigFileName, RpcError, ServiceName};
 use ring::rand::{SecureRandom as _, SystemRandom};
@@ -190,7 +191,7 @@ pub(crate) fn set(
                 current.value.clone()
             }
             Some(_) | None => SavedVariableValue::Secret {
-                encrypted_value: Some(sealing.seal(&plaintext)),
+                encrypted_value: Some(SecretCiphertext::Store(sealing.seal(&plaintext))),
             },
         };
         Ok((value, fingerprint, typed))
@@ -802,8 +803,11 @@ pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
     unseal: Option<&SealingKey>,
 ) -> Result<Resolved, RpcError> {
-    let open = |sealed: Option<&ployz_core::config::EncryptedSecretValue>| match (unseal, sealed) {
-        (Some(key), Some(sealed)) => key.open(sealed).map(Some),
+    let open = |sealed: Option<&SecretCiphertext>| match (unseal, sealed) {
+        (Some(key), Some(SecretCiphertext::Store(sealed))) => key.open(sealed).map(Some),
+        (Some(_), Some(SecretCiphertext::ClientSealed(_))) => Err(error::internal(
+            "A value sealed in the browser never opens in the Store",
+        )),
         (Some(_), None) => Err(error::corrupt("sealed secret")),
         (None, _) => Ok(None),
     };
@@ -994,7 +998,7 @@ mod tests {
                 owner_lineage_id: "web-lineage".into(),
                 key: "P".into(),
                 value: SavedVariableValue::Secret {
-                    encrypted_value: Some(key.seal("s3cr3t")),
+                    encrypted_value: Some(SecretCiphertext::Store(key.seal("s3cr3t"))),
                 },
             }],
         };

@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use crate::ConfigFileName;
 use crate::config::service_changes::{at, default_value, source_cell};
 use crate::config::{
-    ConfigError, EncryptedSecretValue, SavedConfigIntent, SavedEnvironmentIntent as Intent,
-    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, SavedVolumeIntent,
+    ConfigError, SavedConfigIntent, SavedEnvironmentIntent as Intent, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, SecretCiphertext,
 };
 
 /// One row's address: a lineage and a place in its node. The only row address anywhere;
@@ -316,7 +316,7 @@ impl Cell {
 pub struct SealedSecret {
     /// Tells it apart from another value without showing either.
     pub fingerprint: String,
-    pub value: EncryptedSecretValue,
+    pub value: SecretCiphertext,
 }
 
 /// What a row holds with a secret's value: what lands, and what
