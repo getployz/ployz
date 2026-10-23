@@ -63,13 +63,15 @@ export function projectLogGap(gap: LogGap): ContainerLogRow {
   };
 }
 
+const OUT_OF_MEMORY = "Out of memory";
+
 export function projectLogExit(exit: LogExit): ContainerLogLine {
   const code = exit.exitCode === null ? "" : ` (exit code ${exit.exitCode})`;
   return {
     kind: "line", id: `${exit.machineId}/${exit.containerId}/exit/${exit.timestampNanos}`, timestamp: exit.timestampNanos,
     machineId: exit.machineId, machineName: exit.machineName, containerId: exit.containerId, serviceName: exit.serviceName,
     channel: "lifecycle", level: exit.oomKilled || (exit.exitCode ?? 0) !== 0 ? "error" : "info",
-    message: exit.oomKilled ? `Out of memory${code}` : exit.exitCode === null ? "Exited" : `Exited with code ${exit.exitCode}`,
+    message: exit.oomKilled ? `${OUT_OF_MEMORY}${code}` : exit.exitCode === null ? "Exited" : `Exited with code ${exit.exitCode}`,
   };
 }
 
@@ -137,8 +139,13 @@ export function mergeContainerHistory(collection: ContainerLogs, rows: readonly 
   const replaced = [...collection.values()].filter(row => row.kind === "line" && !page.has(row.id) && !stored.has(group(row)) && groups.has(group(row))).map(row => row.id);
   if (replaced.length) collection.delete(replaced);
   for (const key of groups) stored.add(key);
-  const fresh = rows.filter(row => !collection.has(row.id));
-  if (fresh.length) collection.insert(fresh);
+  // An older daemon kept a die Docker sent again as a second exit row, and only one copy may have seen its OOM kill.
+  const fresh = new Map<string, ContainerLogRow>();
+  for (const row of rows) {
+    if (collection.has(row.id)) continue;
+    if (!fresh.has(row.id) || (row.kind === "line" && row.message.startsWith(OUT_OF_MEMORY))) fresh.set(row.id, row);
+  }
+  if (fresh.size) collection.insert([...fresh.values()]);
 }
 
 export const compareLogRows = (a: ContainerLogRow, b: ContainerLogRow) => {

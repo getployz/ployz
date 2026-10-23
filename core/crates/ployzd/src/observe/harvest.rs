@@ -3049,6 +3049,35 @@ mod tests {
             .harvester
             .on_inspected(id, inspected(&running_after(7, 6)));
 
+        assert_eq!(
+            history_exits(&host),
+            [(T0 + 3, Some(137), true), (T0 + 6, Some(137), true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn history_shows_an_exit_settled_again_once_with_the_oom_kill_it_learned() {
+        let host = host().with_machine();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let service = ("ployz.service.id", SERVICE_ID);
+        let die = event("die", T0 + 5, &[service, ("exitCode", "137")]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running
+            .harvester
+            .on_inspected(id, inspected(&self::running(1)));
+        running.harvester.on_docker_event(die.clone());
+        running.settle_exits(|| Inspected::Unanswered);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_docker_event(die);
+        running.settle_exits(|| inspected(&exited(1, 5, 137, true)));
+
+        assert_eq!(history_exits(&host), [(T0 + 5, Some(137), true)]);
+    }
+
+    /// Each exit row a page of the Log Store's history holds.
+    fn history_exits(host: &Host) -> Vec<(i64, Option<i64>, bool)> {
         let query = super::super::query::Query::new(ployz_core::LogHistoryRequest {
             namespace: Some("default".into()),
             limit: 100,
@@ -3062,8 +3091,7 @@ mod tests {
             &std::sync::atomic::AtomicBool::new(false),
         )
         .unwrap();
-        let exits: Vec<_> = page
-            .rows
+        page.rows
             .iter()
             .filter_map(|row| {
                 let ployz_core::HistoryRow::Exit {
@@ -3077,11 +3105,7 @@ mod tests {
                 };
                 Some((*ts, *exit_code, *oom_killed))
             })
-            .collect();
-        assert_eq!(
-            exits,
-            [(T0 + 3, Some(137), true), (T0 + 6, Some(137), true)]
-        );
+            .collect()
     }
 
     #[tokio::test]
