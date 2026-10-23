@@ -20,7 +20,6 @@ fn id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
 }
 
-/// What each Machine of a three-Machine Cluster does when asked to set a Device.
 #[derive(Clone, Copy, PartialEq)]
 enum Daemon {
     Approves,

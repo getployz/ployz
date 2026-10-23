@@ -456,10 +456,7 @@ where
     }
 
     fn call(&mut self, request: http::Request<hyper::body::Incoming>) -> Self::Future {
-        // Clearing its own slot revokes the caller, and the Clear response is its only
-        // confirmation on this connection, so that response survives the drain. A Device
-        // removing itself is the same case.
-        let drain_exempt = matches!(
+        let may_revoke_caller = matches!(
             request.uri().path(),
             op::SetManagementClient::PATH | op::SetDevice::PATH
         );
@@ -469,7 +466,7 @@ where
             .insert(self.connection.weak_handle());
         request.extensions_mut().insert(self.client);
         let response = self.api.call(request);
-        if drain_exempt {
+        if may_revoke_caller {
             return Box::pin(response);
         }
         let drain = self.drain.clone();
