@@ -378,6 +378,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         memory_total_bytes: None,
         running_builds: 0,
         pool_committable_bytes: None,
+        sealing: None,
         store_filesystem: None,
         capabilities: Default::default(),
         management_identity: None,

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::NameMatches;
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue, MachineName,
-    MachineSubnet, MachineTarget, ManagementAddress, ManagementIdentity, Placement,
+    MachineSubnet, MachineTarget, ManagementAddress, ManagementIdentity, Placement, Sealing,
     SelectedEndpoint, ValueError, WireGuardPublicKey,
 };
 
@@ -140,6 +140,10 @@ pub struct MachineRuntime {
     /// never persisted. Absent when unobserved and from older daemons.
     #[ts(optional = nullable)]
     pub pool_committable_bytes: Option<u64>,
+    /// What this Machine holds of the Cluster's Sealing Key. Live, never persisted.
+    /// Absent when unobserved and from older daemons.
+    #[ts(optional = nullable)]
+    pub sealing: Option<Sealing>,
     /// Filesystem type under the daemon's replicated state, such as `ext4` or `zfs`, or
     /// its magic number in hex when the daemon does not name it. Absent when unobserved
     /// and from older daemons.

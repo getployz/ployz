@@ -606,6 +606,7 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
             .map(|(total, _)| total),
         running_builds: 0,
         pool_committable_bytes: None,
+        sealing: None,
         store_filesystem: store_filesystem(data_dir),
         capabilities: ployz_core::served_capabilities(),
         management_identity: None,
