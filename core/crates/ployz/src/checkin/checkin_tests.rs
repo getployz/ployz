@@ -2753,3 +2753,24 @@ fn only_root_can_take_the_check_in_loop_lock() {
         .mode();
     assert_eq!(mode & 0o777, 0o600);
 }
+
+#[tokio::test]
+async fn docker_stopped_reads_as_installing_docker_once_a_retry_starts_the_preparation() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(&paths.prepare_state, DOCKER_INSTALLING).unwrap();
+    let (url, server) = cloud("200 OK", WAIT).await;
+    let host = FakeHost {
+        docker_stopped: true,
+        ..FakeHost::default()
+    };
+    // The install it left is old enough to retry, so this pass starts ployz-prepare itself.
+    let later = Utc::now() + super::PREPARE_RETRY + chrono::Duration::minutes(1);
+    pass(&host, &mut client(&url), &key(), &paths, later).await;
+    let request = server.await.unwrap();
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
+    assert!(!request.contains("docker_stopped"), "{request}");
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline().title, "Installing Docker");
+}
