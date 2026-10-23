@@ -1123,7 +1123,10 @@ fn a_branch_whose_name_makes_a_generated_hostname_too_long_is_refused() {
     ] {
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
         assert!(refused.message.contains("253"), "{refused:?}");
-        assert!(refused.message.contains("shorter branch name"), "{refused:?}");
+        assert!(
+            refused.message.contains("shorter branch name"),
+            "{refused:?}"
+        );
         assert_eq!(refused.details["hostname"], format!("web-fixit.{cluster}"));
     }
 
