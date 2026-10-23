@@ -552,7 +552,9 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             details: json!({ "management_protocol": "older" }),
             cause: Vec::new(),
         },
-        error @ (ConnectError::IdentityMismatch { .. } | ConnectError::ClientRefused) => RpcError {
+        error @ (ConnectError::IdentityMismatch { .. }
+        | ConnectError::ClientRefused
+        | ConnectError::TunnelNeedsFull) => RpcError {
             code: RpcErrorCode::Unauthenticated,
             message: error.to_string(),
             details: Value::Null,
@@ -868,6 +870,8 @@ pub enum ConnectError {
     ClientRefused,
     #[error("Machine confirmed this Management Client was cleared")]
     ClientCleared,
+    #[error("tunnels need Full access")]
+    TunnelNeedsFull,
     /// The Machine speaks the management protocol of Ployz 0.2 or 0.3.0-beta.6 and earlier, which
     /// this release does not; only its own upgrade reaches it, over SSH.
     #[error(
@@ -1025,6 +1029,7 @@ impl ConnectError {
             | Self::ClientRefused
             | Self::OlderMachine
             | Self::ClientCleared
+            | Self::TunnelNeedsFull
             | Self::MissingMachineDetails
             | Self::SshClientMissing
             | Self::Routing(_)
@@ -1082,6 +1087,7 @@ impl ConnectError {
             | Self::ClientRefused
             | Self::OlderMachine
             | Self::ClientCleared
+            | Self::TunnelNeedsFull
             | Self::Routing(_)
             | Self::Join(_)
             | Self::Codec(_)

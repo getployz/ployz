@@ -9,7 +9,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use iroh::endpoint::{Connection, VarInt};
-use ployz_core::{ManagementScope, TUNNEL_FAILED, TUNNEL_OPEN};
+use ployz_core::{ManagementScope, TUNNEL_FAILED, TUNNEL_NEEDS_FULL, TUNNEL_OPEN};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
@@ -47,7 +47,10 @@ pub(super) async fn serve(
         return;
     }
     if record.management_scope(&remote) < Some(ManagementScope::Full) {
-        return connection.close(VarInt::from_u32(TUNNEL_FAILED), b"tunnels need Full access");
+        return connection.close(
+            VarInt::from_u32(TUNNEL_NEEDS_FULL),
+            b"tunnels need Full access",
+        );
     }
     let revoked = revoked(records, remote);
     tokio::pin!(revoked);
