@@ -302,7 +302,7 @@ these there:
 
 ## IPv6-only servers
 
-Ployz downloads its releases from github.com and its Corrosion image from ghcr.io, and neither has
+Ployz downloads its releases from github.com and some of its images from ghcr.io, and neither has
 an IPv6 address. A server whose only route out is IPv6 can't reach them, so the install stops:
 
 ```
@@ -317,7 +317,7 @@ Do one of these, then run the install line again:
   NAT64 carries that traffic to IPv4. You need both, and they must agree on the prefix: a DNS64
   resolver alone, such as a public one, gives addresses nothing answers unless a NAT64 gateway
   serves its prefix. Use your provider's NAT64 and DNS64, or a public service that runs both.
-  With both in place, the install line works and a server can start a Cluster on its own. Behind
+  With both in place, the install line works and a single server sets up and runs. Behind
   NAT64, the server advertises the gateway's IPv4 address as its own
   ([#3166](https://github.com/getployz/ployz/issues/3166)), and containers can't reach the DNS
   resolvers Docker gives them ([#3167](https://github.com/getployz/ployz/issues/3167)).
