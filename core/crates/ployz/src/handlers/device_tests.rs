@@ -219,3 +219,55 @@ fn a_device_key_other_users_can_read_is_refused() {
     assert!(error.contains("chmod 600"), "{error}");
     assert!(error.contains(&path.display().to_string()), "{error}");
 }
+
+#[test]
+fn each_device_command_parses_and_reaches_its_connection() {
+    let cloud = crate::cloud_login::tests::fake_cloud(|route, _| {
+        assert_eq!(
+            route,
+            format!("GET /api/cli/device-requests/{}", key(0).code())
+        );
+        (
+            200,
+            json!({ "code": key(0).code(), "key": key(0), "expires_at": "x" }),
+        )
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let signed_in = json!({
+        "state": "signed_in",
+        "cloud": cloud,
+        "token": "session-token",
+        "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+        "organization": { "id": "o1", "slug": "acme" },
+    });
+    std::fs::write(dir.path().join("cloud.json"), signed_in.to_string()).unwrap();
+    let config = dir.path().join("config.yaml");
+    let connect = format!("unix://{}", dir.path().join("absent.sock").display());
+    let code = key(0).code().to_string();
+    for (args, handler) in [
+        (vec!["ls"], list as fn(&ArgMatches) -> Result<(), Error>),
+        (vec!["rm", &code], remove),
+        (vec!["approve", &code], super::approve),
+    ] {
+        let root = crate::cli::command()
+            .try_get_matches_from(
+                [
+                    "ployz",
+                    "--ployz-config",
+                    config.to_str().unwrap(),
+                    "device",
+                ]
+                .into_iter()
+                .chain(args.iter().copied())
+                .chain(["--connect", &connect]),
+            )
+            .unwrap();
+
+        let message = handler(&root).unwrap_err().report().message;
+
+        assert_eq!(
+            message, "Ployz couldn't reach your Server's daemon.",
+            "{args:?}"
+        );
+    }
+}
