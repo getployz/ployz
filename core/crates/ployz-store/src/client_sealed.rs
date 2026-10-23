@@ -116,6 +116,9 @@ pub(crate) fn accept(
     if value.value.key != key.as_str() {
         return Err(refuse("sealed for another variable"));
     }
+    if key.as_str() == "PORT" {
+        return Err(refuse("can't be sealed: Ployz reads it to route traffic"));
+    }
     match value.value.scope {
         SealedScope::Service(scope) if scope == service => {}
         SealedScope::Service(_) => return Err(refuse("sealed for another Service")),
@@ -219,6 +222,15 @@ mod tests {
             assert!(error.message.contains(why), "{}", error.message);
             assert!(!error.message.contains("AAAA"), "{}", error.message);
         }
+        let port = VariableKey::parse("PORT").unwrap();
+        let error = accept(
+            value(2, 3, "PORT", bytes.clone()),
+            &port,
+            &receiver(true),
+            refuse,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("route traffic"), "{}", error.message);
         let mut shared = value(2, 3, "K", bytes);
         shared.value.scope = SealedScope::Shared;
         let error = accept(shared, &key, &receiver(true), refuse).unwrap_err();

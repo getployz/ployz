@@ -364,3 +364,55 @@ fn a_template_that_opens_past_a_containers_variable_limit_is_refused_at_claim() 
     );
     assert!(!format!("{error:?}").contains("BwcH"), "{error:?}");
 }
+
+#[test]
+fn a_renamed_sealed_variable_reaches_the_deploy_as_a_template_under_the_key_it_was_sealed_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+    set(&store, "web.env.PASSWORD", password(1));
+    store
+        .write(
+            &who(),
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Rename {
+                    path: SettingPath::parse("web.env.PASSWORD").unwrap(),
+                    to: "DB_PASSWORD".into(),
+                    update_references: false,
+                }],
+            },
+        )
+        .unwrap();
+    let claimed = claim(&store);
+    let web = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    let sealed = backend::client_sealed(&uuid(2), &uuid(3), "PASSWORD", 1)["value"].clone();
+    assert!(!web.container.environment.contains_key("PASSWORD"));
+    assert_eq!(
+        json!(web.container.environment["DB_PASSWORD"]),
+        json!({ "template": [sealed] })
+    );
+}
+
+#[test]
+fn a_sealed_port_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+    refused(
+        &store,
+        "web.env.PORT",
+        json!({ "secret": backend::client_sealed(&uuid(2), &uuid(3), "PORT", 1) }),
+        "route traffic",
+    );
+}

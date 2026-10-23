@@ -960,7 +960,9 @@ pub(crate) fn resolve(
                 ServiceEnvValue::Secret {
                     encrypted_value, ..
                 } => match stored(encrypted_value.as_ref())? {
-                    // Only a value sealed for this very variable is bound to its name.
+                    // Only a value sealed for this very variable is bound to its name. A
+                    // renamed one keeps the key it was sealed under, so it reaches the
+                    // Machine as a Template part, which opens under that key.
                     ResolverValue::Sealed { value }
                         if value.key == *key
                             && value.scope == SealedScope::Service(node_uuid(&node.node_id)) =>
