@@ -48,7 +48,7 @@ fn deploy_warning_display_is_the_cli_line_body() {
     );
     assert_eq!(
         DeployWarning::ObserverRelativeHostnameConflict.to_string(),
-        "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness."
+        "Ployz couldn't reach every Server, so it couldn't fully check for hostname conflicts. Deploy again once all Servers answer."
     );
 }
 

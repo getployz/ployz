@@ -643,7 +643,7 @@ impl Run {
                     Vec::new()
                 };
                 if self.status().await.ok() != Some(DeploymentStatus::Cancelling) {
-                    self.fill_ingress(session).await;
+                    self.fill_ingress(session, prepared.preview.machine_names()).await;
                 }
                 self.record(RunEvidence::Executed {
                     progress,
@@ -657,7 +657,11 @@ impl Run {
         }
     }
 
-    async fn fill_ingress(&self, session: &Session) {
+    async fn fill_ingress(
+        &self,
+        session: &Session,
+        machine_names: &BTreeMap<MachineId, ployz_core::MachineName>,
+    ) {
         let filled = match session.client() {
             Ok(mut client) => {
                 let server = client.server();
@@ -666,7 +670,7 @@ impl Run {
                     stop.cancel()
                 })
                 .await
-                .map_err(|failure| crate::ingress::unchecked(&failure, server))
+                .map_err(|failure| crate::ingress::unchecked(&failure, server, machine_names))
             }
             Err(error) => Err(crate::ui::row(&error)),
         };
