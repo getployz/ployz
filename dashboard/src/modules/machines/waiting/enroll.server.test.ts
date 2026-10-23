@@ -89,10 +89,10 @@ describe("names", () => {
     const id = "0f1e2d3c-4b5a-4968-8776-655443322110";
     const plan = planned(planServerEnrollment(
       input({ ids: ["a", id] }),
-      [row("a", { report: { hostname: "HP-WIN11" } }), row(id, { report: { hostname: "___" } })],
+      [row("a", { report: { hostname: "MY-SERVER" } }), row(id, { report: { hostname: "___" } })],
       founded,
     ));
-    expect(plan.rows.map((r) => [r.hostname, r.instruction.name])).toEqual([["HP-WIN11", "hp-win11"], ["___", "server-0f1e2d3c"]]);
+    expect(plan.rows.map((r) => [r.hostname, r.instruction.name])).toEqual([["MY-SERVER", "my-server"], ["___", "server-0f1e2d3c"]]);
   });
 
   it("numbers a pattern from the founder down", () => {

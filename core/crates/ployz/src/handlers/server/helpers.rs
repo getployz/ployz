@@ -315,7 +315,7 @@ mod tests {
         for (hostname, name) in [
             ("Vultr1", "vultr1"),
             ("machine-a", "machine-a"),
-            ("HP-WIN11", "hp-win11"),
+            ("MY-SERVER", "my-server"),
             ("build_box.lan", "build-box-lan"),
             (long.as_str(), &long[..63]),
         ] {
@@ -344,7 +344,7 @@ mod tests {
     fn a_requested_name_wins_over_the_hostname() {
         let requested = MachineName::parse("web-1").unwrap();
         assert_eq!(
-            machine_name(Some(requested.clone()), &token_with_hostname("HP-WIN11")),
+            machine_name(Some(requested.clone()), &token_with_hostname("MY-SERVER")),
             requested
         );
     }
@@ -356,13 +356,13 @@ mod tests {
                 .arg(clap::Arg::new("name").long("name"))
                 .get_matches_from(["add", "--name", name])
         };
-        let refused = requested_name(&matches("HP-WIN11")).unwrap_err();
+        let refused = requested_name(&matches("MY-SERVER")).unwrap_err();
         assert_eq!(
             refused.to_string(),
-            "invalid Machine Name \"HP-WIN11\": a 1-63 character lowercase DNS label"
+            "invalid Machine Name \"MY-SERVER\": a 1-63 character lowercase DNS label"
         );
         assert_eq!(refused.report().code, RpcErrorCode::InvalidArgument);
-        assert_eq!(refused.hints(), [Hint::Closest("hp-win11".into())]);
+        assert_eq!(refused.hints(), [Hint::Closest("my-server".into())]);
         let refused = requested_name(&matches("___")).unwrap_err();
         assert!(refused.hints().is_empty());
         assert_eq!(
