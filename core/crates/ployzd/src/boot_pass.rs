@@ -427,11 +427,11 @@ async fn pass<H: BootHost>(
     Ok(())
 }
 
-fn actor_key(actor: &str) -> String {
+pub(crate) fn actor_key(actor: &str) -> String {
     actor.replace('-', "").to_ascii_lowercase()
 }
 
-fn alone(
+pub(crate) fn alone(
     machines: &ReplicatedObservations<Machine, MachineId>,
     local: &MachineId,
     bootstrap: &[Machine],
@@ -548,7 +548,7 @@ impl BootHost for DaemonHost {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum PeerError {
+pub(crate) enum PeerError {
     #[error("could not reach the peer")]
     Connect(#[from] tonic::transport::Error),
     #[error("the peer refused the request")]
@@ -560,7 +560,9 @@ enum PeerError {
 }
 
 /// A request with no iroh connection skips the Machine API's credential check.
-async fn target_versions(address: SocketAddr) -> Result<BTreeMap<String, i64>, PeerError> {
+pub(crate) async fn target_versions(
+    address: SocketAddr,
+) -> Result<BTreeMap<String, i64>, PeerError> {
     let channel = Endpoint::from_shared(format!("http://{address}"))?
         .connect()
         .await?;
