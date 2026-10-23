@@ -218,7 +218,8 @@ export function findDuplicateJsonKeys(text: string): string[] {
 }
 
 export type RawEditorDiff = {
-  creates: { key: string; value: string }[];
+  /** With `sealed`, the raw editor ticked it Sealed. */
+  creates: { key: string; value: string; sealed?: boolean }[];
   updates: { variableId: string; key: string; value: string }[];
   deletes: string[];
 };

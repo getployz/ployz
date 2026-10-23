@@ -144,6 +144,7 @@ function ServiceVariablesView({
         onApply={onApplyRaw}
         variables={variables}
         valueTargets={valueTargets}
+        sealing={sealing.state}
       />
     </div></TabsContent>
   );
