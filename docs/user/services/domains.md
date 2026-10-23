@@ -34,6 +34,8 @@ and click **Generate Domain**. The pencil on each domain changes only that one.
 From the CLI, name the subdomain: `ployz domain add web --prefix shop`. Without `--prefix`, a
 service that has a generated domain keeps it, and the CLI suggests a free subdomain. To change
 one of several, name it: `ployz domain set web store --domain shop`.
+A full hostname can be at most 253 characters, so under a long cluster domain Ployz refuses a
+subdomain that would make it longer, when you add or change it.
 `ployz get web` or `ployz get web.domains` lists a service's domains, and `ployz diff` shows a staged one by
 its full hostname, `web.domains: added shop.acme.ployz.app`.
 
