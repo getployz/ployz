@@ -226,7 +226,9 @@ jobs:
         run: |
           curl -fsSL https://get.docker.com | sudo sh >/dev/null
           docker version --format 'Docker {{.Server.Version}}'
-          docker pull --quiet alpine:3.23.3
+          # Docker Hub refuses anonymous pulls at times, so pull through Google's mirror of it.
+          docker pull --quiet mirror.gcr.io/library/alpine:3.23.3 || docker pull --quiet alpine:3.23.3
+          docker image inspect alpine:3.23.3 >/dev/null 2>&1 || docker tag mirror.gcr.io/library/alpine:3.23.3 alpine:3.23.3
           cargo nextest run --package ployzd --all-features --locked --run-ignored only -E 'test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
       - uses: actions/upload-artifact@v4
         if: always()
@@ -261,7 +263,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       # The Postgres tests start their own postgres:16-alpine containers through the Docker CLI.
-      - run: docker pull --quiet postgres:16-alpine
+      - run: |
+          docker pull --quiet mirror.gcr.io/library/postgres:16-alpine || docker pull --quiet postgres:16-alpine
+          docker image inspect postgres:16-alpine >/dev/null 2>&1 || docker tag mirror.gcr.io/library/postgres:16-alpine postgres:16-alpine
       - run: cargo nextest run --locked
       # Main builds and publishes the image for every commit, so PRs skip the 3-4 minute release build.
       - name: Build and publish the Railway image
