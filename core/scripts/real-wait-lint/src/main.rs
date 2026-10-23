@@ -23,6 +23,7 @@ use std::process::ExitCode;
 use std::{env, fs};
 
 use proc_macro2::{Span, TokenStream, TokenTree};
+use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -1210,7 +1211,9 @@ fn compact(tokens: TokenStream) -> String {
 }
 
 /// Whether every value matches `pat`, judged from its syntax alone. A capitalized name, like
-/// `None` or a constant, is a pattern to match, not a binding.
+/// `None` or a constant, is a pattern to match, not a binding. Syntax cannot see a lowercase
+/// constant, which rustc warns about, or alternatives that together cover every value, like
+/// `Some(_) | None`; the second only flags a sleep that time was paused for.
 fn matches_every_value(pat: &syn::Pat) -> bool {
     match pat {
         syn::Pat::Wild(_) => true,
@@ -1220,6 +1223,7 @@ fn matches_every_value(pat: &syn::Pat) -> bool {
             Some((_, subpat)) => matches_every_value(subpat),
             None => ident
                 .ident
+                .unraw()
                 .to_string()
                 .starts_with(|first: char| first == '_' || first.is_lowercase()),
         },
@@ -1524,12 +1528,20 @@ async fn waits_for_none() {
         _ => tokio::time::sleep(d).await,
     }
 }
+#[tokio::test]
+async fn waits_for_a_raw_none() {
+    match value {
+        r#None if { tokio::time::pause(); false } => (),
+        _ => tokio::time::sleep(d).await,
+    }
+}
 "#;
         assert_eq!(
             lint(source),
             [
                 "13: real-clock sleep in test code",
-                "20: real-clock sleep in test code"
+                "20: real-clock sleep in test code",
+                "27: real-clock sleep in test code"
             ]
         );
     }
