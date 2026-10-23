@@ -43,10 +43,12 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     let (waiting, attempts) = runtime.block_on(async {
         tokio::try_join!(waiting::fetch(&credential), waiting::enrolling(&credential))
     })?;
-    let matched = matching(&waiting, pattern)?;
-    let (joining, enrolling): (Vec<_>, Vec<_>) = enrolling_matches(&attempts, pattern)?
-        .into_iter()
-        .partition(|attempt| attempt.joining());
+    let Matched {
+        waiting: matched,
+        attempts: open,
+    } = matching(&waiting, &attempts, pattern)?;
+    let (joining, enrolling): (Vec<_>, Vec<_>) =
+        open.into_iter().partition(|attempt| attempt.joining());
     if matched.is_empty() && enrolling.is_empty() {
         if !joining.is_empty() {
             return Err(Error::detailed(
@@ -187,38 +189,101 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     Err(Error::partial())
 }
 
-fn matching<'a>(waiting: &'a [Waiting], pattern: &str) -> Result<Vec<&'a Waiting>, Error> {
-    let named = waiting::named(waiting, pattern)?;
-    if !named.is_empty() {
-        return Ok(named);
-    }
-    let glob = glob(pattern)?;
-    Ok(waiting
-        .iter()
-        .filter(|host| glob.is_match(&host.row.name))
-        .collect())
+struct Matched<'a> {
+    waiting: Vec<&'a Waiting>,
+    attempts: Vec<&'a Enrolling>,
 }
 
-/// The open attempts `pattern` names by attempt id, waiting server id or name, else those
-/// whose name the glob matches.
-fn enrolling_matches<'a>(
+impl Matched<'_> {
+    fn len(&self) -> usize {
+        self.waiting.len() + self.attempts.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// What `pattern` names across waiting servers and open attempts, in the order
+/// [`waiting::named`] keeps: an exact id, else exact names, else the one id that starts with
+/// it (eight characters or more), else the names the glob matches. An enrolling server goes
+/// by its waiting server id, which the table shows, or its attempt id.
+fn matching<'a>(
+    waiting: &'a [Waiting],
     attempts: &'a [Enrolling],
     pattern: &str,
-) -> Result<Vec<&'a Enrolling>, Error> {
-    let named: Vec<_> = attempts
-        .iter()
-        .filter(|attempt| {
-            attempt.id == pattern || attempt.waiting_server_id == pattern || attempt.name == pattern
-        })
-        .collect();
+) -> Result<Matched<'a>, Error> {
+    let pick = |host: &dyn Fn(&Waiting) -> bool, attempt: &dyn Fn(&Enrolling) -> bool| Matched {
+        waiting: waiting.iter().filter(|row| host(row)).collect(),
+        attempts: attempts.iter().filter(|row| attempt(row)).collect(),
+    };
+    let exact = pick(&|host| host.row.id == pattern, &|attempt| {
+        attempt.id == pattern || attempt.waiting_server_id == pattern
+    });
+    if !exact.is_empty() {
+        return Ok(exact);
+    }
+    let named = pick(&|host| host.row.name == pattern, &|attempt| {
+        attempt.name == pattern
+    });
     if !named.is_empty() {
         return Ok(named);
     }
+    if pattern.chars().count() >= waiting::ID_PREFIX_MIN {
+        let started = pick(&|host| host.row.id.starts_with(pattern), &|attempt| {
+            attempt.waiting_server_id.starts_with(pattern)
+        });
+        match started.len() {
+            0 => {}
+            1 => return Ok(started),
+            _ => return Err(ambiguous(&started, pattern)),
+        }
+    }
     let glob = glob(pattern)?;
-    Ok(attempts
+    Ok(pick(&|host| glob.is_match(&host.row.name), &|attempt| {
+        glob.is_match(&attempt.name)
+    }))
+}
+
+fn ambiguous(started: &Matched<'_>, pattern: &str) -> Error {
+    if started.attempts.is_empty() {
+        return waiting::ambiguous(
+            format!(
+                "{} waiting servers have an id starting {}. Use more of the id",
+                started.waiting.len(),
+                printable(pattern)
+            ),
+            &started.waiting,
+        );
+    }
+    let ids = started
+        .waiting
         .iter()
-        .filter(|attempt| glob.is_match(&attempt.name))
-        .collect())
+        .map(|host| printable(&host.row.id).to_string())
+        .chain(
+            started
+                .attempts
+                .iter()
+                .map(|attempt| printable(&attempt.waiting_server_id).to_string()),
+        )
+        .collect::<Vec<_>>()
+        .join(", ");
+    Error::detailed(
+        RpcErrorCode::Ambiguous,
+        format!(
+            "{} servers have an id starting {}. Use more of the id: {ids}",
+            started.len(),
+            printable(pattern)
+        ),
+        json!({
+            "waiting_servers": started
+                .waiting
+                .iter()
+                .map(|host| json!({ "id": host.row.id, "ip": host.row.ip() }))
+                .collect::<Vec<_>>(),
+            "enrolling": attempts_json(&started.attempts),
+        }),
+    )
 }
 
 fn glob(pattern: &str) -> Result<globset::GlobMatcher, Error> {
@@ -321,8 +386,9 @@ mod tests {
         };
         let waiting = [host("a", "db1"), host("b", "db[1]")];
         let names = |pattern| {
-            matching(&waiting, pattern)
+            matching(&waiting, &[], pattern)
                 .unwrap()
+                .waiting
                 .into_iter()
                 .map(|host| host.row.name.as_str())
                 .collect::<Vec<_>>()
@@ -331,5 +397,64 @@ mod tests {
         assert_eq!(names("db[2]"), Vec::<&str>::new());
         assert_eq!(names("db*"), ["db1", "db[1]"]);
         assert_eq!(names("b"), ["db[1]"]);
+    }
+
+    fn enrolling(waiting_server_id: &str, name: &str) -> Enrolling {
+        serde_json::from_value(json!({
+            "id": format!("attempt-{waiting_server_id}"),
+            "waiting_server_id": waiting_server_id,
+            "name": name,
+            "state": "running",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_literal_name_in_either_list_beats_the_glob_it_spells() {
+        let mut host = super::super::waiting::tests::waiting("waiting", None);
+        host.row.id = "a".into();
+        host.row.name = "db[1]".into();
+        let waiting = [host];
+        let attempts = [enrolling("b", "db1"), enrolling("c", "web[")];
+        let picked = |pattern| {
+            let matched = matching(&waiting, &attempts, pattern).unwrap();
+            (
+                matched
+                    .waiting
+                    .iter()
+                    .map(|host| host.row.id.as_str())
+                    .collect::<Vec<_>>(),
+                matched
+                    .attempts
+                    .iter()
+                    .map(|attempt| attempt.waiting_server_id.as_str())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(picked("db[1]"), (vec!["a"], vec![]));
+        assert_eq!(picked("web["), (vec![], vec!["c"]));
+        assert_eq!(picked("db*"), (vec!["a"], vec!["b"]));
+    }
+
+    #[test]
+    fn an_enrolling_server_takes_a_unique_id_prefix() {
+        let mut host = super::super::waiting::tests::waiting("waiting", None);
+        host.row.id = "11111111-aaaa".into();
+        let waiting = [host];
+        let attempts = [
+            enrolling("22222222-aaaa", "web-1"),
+            enrolling("11111111-bbbb", "web-2"),
+        ];
+        let matched = matching(&waiting, &attempts, "22222222").unwrap();
+        assert_eq!(matched.attempts.len(), 1);
+        assert!(matched.waiting.is_empty());
+        let error = matching(&waiting, &attempts, "11111111")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.starts_with("2 servers have an id starting 11111111"),
+            "{error}"
+        );
     }
 }

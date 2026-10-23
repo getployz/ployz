@@ -309,7 +309,7 @@ pub(super) fn may_have_acted(error: &StoreCallError) -> bool {
     }
 }
 
-const ID_PREFIX_MIN: usize = 8;
+pub(super) const ID_PREFIX_MIN: usize = 8;
 
 /// The waiting server whose id `selector` is, else those named `selector` exactly, else the
 /// one whose id starts with it (eight characters or more), in the list's order.
