@@ -447,6 +447,20 @@ const failedFounder = async (target: Host, machineId: string) => {
   await run(closeServerEnrollment("unbound", "failure", attempt?.id));
 };
 
+it("keeps the name a host's own Machine published before its attempt failed", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  const machineId = "2".repeat(32);
+  await failedFounder(a, machineId);
+  await harness.pool.query(
+    "insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, is_dial_entry, machine_name) values ($1, $2, $3, $4, true, 'web-a')",
+    [adaOrg, machineId, "a".repeat(64), encryption.encrypt("ployz1:published")],
+  );
+  await run(enroll([a]));
+  const { rows } = await harness.pool.query<{ name: string }>("select instruction->>'name' as name from server_enrollment where ended_at is null");
+  expect(rows.map((row) => row.name)).toEqual(["web-a"]);
+});
+
 it("plans a first server over an old founding claim no token can finish, and drops that claim", async () => {
   const [a, b] = await waiting("web-a", "web-b");
   if (a === undefined || b === undefined) throw new Error("two hosts");

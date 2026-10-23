@@ -19,8 +19,8 @@ Enroll on arrival only adds servers to an organization that already has one. In 
 organization, enroll the first server yourself. Until then the install ends with
 `No cluster yet. Enroll one server in Ployz Cloud to start it.` and `ployz status` on the server
 shows `No cluster yet`. Ready servers then join on their next check-in. Blocked servers and servers
-still installing Docker or building ZFS keep waiting. Ployz keeps the hostnames, numbering one another
-server already has, and enables
+still installing Docker or building ZFS keep waiting. Ployz keeps the hostnames, numbering any that
+another server already has, and enables
 Services, Web traffic, and Builds. It uses ZFS with a spare disk when available, or the main
 disk otherwise. Servers where ZFS cannot run, or its preparation failed, was skipped, or was
 turned off, use Docker volumes.
