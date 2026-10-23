@@ -1,6 +1,9 @@
 //! Management transport endpoint ownership, authenticated dialing, and channel cleanup.
 
-use super::{BoxProxyStream, ConnectError, connect_stream};
+use super::{
+    BoxProxyStream, ConnectError, connect_stream,
+    diagnostics::{self, Stage, StageGuard},
+};
 use crate::context::ConnectionError;
 use iroh::{
     Endpoint as IrohEndpoint, EndpointAddr, PublicKey, RelayMode, RelayUrl, SecretKey,
@@ -188,38 +191,58 @@ pub(super) async fn connect_management(
 ) -> Result<Channel, ConnectError> {
     let machine = PublicKey::from_bytes(capability.machine().as_bytes())
         .map_err(|_| ConnectionError::ManagementCapability)?;
-    let endpoint = management_endpoint(relay).await?;
+    let mut stage = StageGuard::begin(Stage::EndpointBind);
+    let endpoint = management_endpoint(relay).await;
+    stage.finish(&endpoint);
+    let endpoint = endpoint?;
     let address = EndpointAddr::new(machine).with_relay_url(relay.url.clone());
+    let mut stage = StageGuard::begin(Stage::IrohConnect);
     let connection = endpoint
         .endpoint
         .connect(address, MANAGEMENT_ALPN)
         .await
-        .map_err(|error| dial_error("management dial", &error))?;
+        .map_err(|error| dial_error("management dial", &error));
+    stage.finish(&connection);
+    let connection = connection?;
+    diagnostics::record(|timings| timings.selected_connection = Some(connection.clone()));
     let session = Arc::new(ManagementConnection {
         connection,
         _endpoint: endpoint,
     });
     let probe = async {
-        let (mut send, receive) =
+        let mut stage = StageGuard::begin(Stage::Proof);
+        let opened =
             session.connection.open_bi().await.map_err(|error| {
                 ConnectError::Attempt(format!("management stream: {error}").into())
-            })?;
-        prove(&session.connection, &mut send, capability)
+            });
+        if opened.is_err() {
+            stage.finish(&opened);
+        }
+        let (mut send, receive) = opened?;
+        let proof = prove(&session.connection, &mut send, capability)
             .await
-            .map_err(|error| ConnectError::Attempt(format!("management stream: {error}").into()))?;
+            .map_err(|error| ConnectError::Attempt(format!("management stream: {error}").into()));
+        stage.finish(&proof);
+        proof?;
         let stream = ManagementIo {
             io: tokio::io::join(receive, send),
             _session: Arc::clone(&session),
         };
-        let channel = connect_stream(stream, Duration::from_secs(15)).await?;
+        let mut stage = StageGuard::begin(Stage::Http2Channel);
+        let channel = connect_stream(stream, Duration::from_secs(15)).await;
+        stage.finish(&channel);
+        let channel = channel?;
         // The daemon refuses by identity right after the handshake, which the client only
         // observes once it reads. Probe before the channel is trusted so refusal is
         // distinguishable from an unreachable Machine.
-        MachineRpcClient::new(channel.clone())
+        let mut stage = StageGuard::begin(Stage::ProbeDescribeContract);
+        let described = MachineRpcClient::new(channel.clone())
             .describe_contract(
                 op::DescribeContract::into_request(DescribeContractRequest {}).encode()?,
             )
-            .await?;
+            .await;
+        stage.finish(&described);
+        described?;
         Ok::<_, ConnectError>(channel)
     };
     probe

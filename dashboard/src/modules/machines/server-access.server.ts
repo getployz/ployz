@@ -1,11 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, isNotNull, isNull, not, sql, type SQLWrapper } from "drizzle-orm";
 import { Cause, Clock, Effect, Schema } from "effect";
+import type { DialTiming } from "@ployz/sdk";
 import type { MachineId } from "#/db/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { dialCorrelation, dialTimingFields, nativeDialTimingFields, sampleDialTiming, shouldLogDialTiming, type DialTimingInput } from "#/modules/machines/server-access-diagnostics";
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
@@ -62,9 +64,34 @@ type Provisioned = { readonly capability: string | null; readonly refused: strin
 
 /** `value`, or why the Server gave none. */
 const answered = <A, R>(call: Effect.Effect<A, PloyzSdkError | Cause.TimeoutError, R>) => call.pipe(
-  Effect.map((value) => ({ value, refused: null })),
-  Effect.catch((error) => Effect.succeed({ value: null, refused: refusal(error) })),
+  Effect.map((value) => ({ value, refused: null, outcome: "answered" as const })),
+  Effect.catch((error) => Effect.succeed({ value: null, refused: refusal(error), outcome: dialOutcome(error) })),
 );
+
+function dialOutcome(error: PloyzSdkError | Cause.TimeoutError): DialTimingInput["outcome"] {
+  if (Cause.isTimeoutError(error)) return "timed_out";
+  if ("cause" in error && error.cause instanceof RpcError) {
+    if (error.cause.dialTiming?.outcome === "timed_out") return "timed_out";
+    if (error.cause.unanswered) return error.cause.message === "connection cancelled" ? "cancelled" : "unanswered";
+    return "refused";
+  }
+  return "refused";
+}
+
+const logDialTiming = (input: DialTimingInput) => {
+  if (!shouldLogDialTiming(input)) return Effect.void;
+  const fields = dialTimingFields(input);
+  const log = input.outcome !== "answered" && input.stage === "cloud_dial"
+    ? Effect.logInfo : input.outcome !== "answered" ? Effect.logWarning
+      : input.totalMs >= 2_000 ? Effect.logInfo : Effect.logDebug;
+  return log("Server Access dial timing").pipe(Effect.annotateLogs(fields));
+};
+
+const logNativeDialTiming = (timing: DialTiming, cloudOutcome: DialTimingInput["outcome"]) => {
+  const log = timing.outcome !== "answered" ? Effect.logWarning
+    : timing.totalMs >= 2_000 ? Effect.logInfo : Effect.logDebug;
+  return log("Server Access native dial timing").pipe(Effect.annotateLogs(nativeDialTimingFields(timing, cloudOutcome)));
+};
 
 /**
  * Why a Server gave no holder, or null when it sent no reply: Cloud's timeout ran out, or the SDK says the dial failed
@@ -128,9 +155,26 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     // takes it off the Server. Not interrupted: a cancelled statement would cancel the connection's next.
     const provisioned: Provisioned = yield* Effect.scoped(Effect.gen(function* () {
       const ployz = yield* Ployz;
+      const runLog = Effect.runForkWith(yield* Effect.context());
       const deadline = (yield* Clock.currentTimeMillis) + SERVER_TIMEOUT_MS;
-      const dialed = yield* answered(ployz.connect({ connections: [cloud], timeoutMs: SERVER_TIMEOUT_MS }, { closeWithin: clusterRead })
+      const sampled = sampleDialTiming();
+      const correlation = dialCorrelation();
+      let cloudDialOutcome: DialTimingInput["outcome"] | undefined;
+      const pendingNativeTimings: DialTiming[] = [];
+      const onDialTiming = (timing: DialTiming) => {
+        if (cloudDialOutcome === undefined) pendingNativeTimings.push(timing);
+        else runLog(logNativeDialTiming(timing, cloudDialOutcome));
+      };
+      const dialStarted = performance.now();
+      const dialed = yield* answered(ployz.connect({
+        connections: [cloud], timeoutMs: SERVER_TIMEOUT_MS, sampleDialTiming: sampled, dialCorrelation: correlation,
+        onDialTiming,
+      }, { closeWithin: clusterRead })
         .pipe(Effect.timeout(SERVER_TIMEOUT_MS)));
+      const dialMs = performance.now() - dialStarted;
+      cloudDialOutcome = dialed.outcome;
+      for (const timing of pendingNativeTimings) runLog(logNativeDialTiming(timing, cloudDialOutcome));
+      yield* logDialTiming({ stage: "cloud_dial", totalMs: dialMs, outcome: dialed.outcome, sampled, correlation });
       if (dialed.value === null) return { capability: null, refused: dialed.refused, revoked: false };
       const client = dialed.value;
       const timeLeft = Clock.currentTimeMillis.pipe(Effect.map((now) => Math.max(1, deadline - now)));
@@ -179,7 +223,10 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
           setWhere: sql`${serverAccess.encryptedCapability} is null and ${serverAccess.revokedAt} is null and ${unheld}`,
         }).returning({ machineId: serverAccess.machineId });
         if (claimed.length > 0) {
+          const setStarted = performance.now();
           const management = yield* answered(client.setManagementClient(label).pipe(Effect.timeout(yield* timeLeft)));
+          const setMs = performance.now() - setStarted;
+          yield* logDialTiming({ stage: "set_management_client", totalMs: setMs, outcome: management.outcome, sampled, correlation });
           if (management.value === null) {
             // Only the claim itself: a key or a revocation written over it meanwhile is somebody else's.
             yield* drizzle.delete(serverAccess)
