@@ -34,7 +34,8 @@ const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
 /// Where releases come from. Production always uses [`ReleaseSource::Published`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ReleaseSource {
-    /// Ployz's fixed, trusted published release and channel endpoints.
+    /// Ployz's published releases, from the [`ployz_core::release_mirrors`], and its
+    /// channel endpoint. The signed checksums decide what installs.
     Published,
     /// A local release directory for in-process installer tests.
     #[cfg(test)]

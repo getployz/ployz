@@ -424,14 +424,9 @@ async fn launch_worker(
         .arg("--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX")
         .arg(format!("--property={writable}"))
         .args(
-            ployz_core::RELEASE_MIRROR_VARIABLES
-                .iter()
-                .filter_map(|name| {
-                    env::var(name)
-                        .ok()
-                        .filter(|url| !url.is_empty())
-                        .map(|url| format!("--setenv={name}={url}"))
-                }),
+            ployz_core::release_mirror_overrides()
+                .into_iter()
+                .map(|(name, url)| format!("--setenv={name}={url}")),
         )
         .arg(executable)
         .arg("--data-dir")

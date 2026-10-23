@@ -22,6 +22,21 @@ pub fn release_mirrors() -> [String; 2] {
     release_mirrors_from(|name| std::env::var(name).ok())
 }
 
+/// The [`RELEASE_MIRROR_VARIABLES`] this process has set, for a process that downloads on
+/// its behalf: the upgrade worker, or the installer a remote `server add` runs.
+#[must_use]
+pub fn release_mirror_overrides() -> Vec<(&'static str, String)> {
+    RELEASE_MIRROR_VARIABLES
+        .into_iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|url| !url.is_empty())
+                .map(|url| (name, url))
+        })
+        .collect()
+}
+
 fn release_mirrors_from(var: impl Fn(&str) -> Option<String>) -> [String; 2] {
     let base = |name, default| {
         let url = var(name).filter(|url| !url.is_empty());
