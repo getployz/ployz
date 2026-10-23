@@ -380,7 +380,8 @@ pub(crate) fn gap_notes(history: &MetricHistory) -> Vec<String> {
 
 /// One note per Server that answered with readings yet none current, so its
 /// dash under NOW is not read as a Server that stopped sending. Its clock
-/// may run behind this one's: the reply carries no clock of its own to tell.
+/// may run behind: the reply carries no clock of its own to tell. Service
+/// readings stop wherever a replica left, so only Server readings count.
 pub(crate) fn behind_notes(
     history: &MetricHistory,
     until_nanos: i64,
@@ -393,17 +394,18 @@ pub(crate) fn behind_notes(
         .machines
         .iter()
         .filter_map(|machine| {
-            let newest = match &machine.value.points {
-                MetricPoints::Service(points) => points.last().map(Bucket::ts),
-                MetricPoints::Machine(points) => points.last().map(Bucket::ts),
-            }?;
+            let MetricPoints::Machine(points) = &machine.value.points else {
+                return None;
+            };
+            let newest = points.last()?.ts;
             (newest < fresh_since).then(|| {
+                let ended = newest.saturating_add(machine.value.step_nanos);
                 format!(
-                    "{} answered, but its newest reading is {} older than this computer's clock. \
-                     Its clock may be off, or it stopped taking readings.",
+                    "{} answered, but its newest reading is about {} old. \
+                     Its clock may be behind, or it stopped taking readings.",
                     name(machine.machine_id),
                     span(Duration::from_nanos(
-                        u64::try_from(until_nanos.saturating_sub(newest)).unwrap_or_default()
+                        u64::try_from(until_nanos.saturating_sub(ended)).unwrap_or_default()
                     ))
                 )
             })
