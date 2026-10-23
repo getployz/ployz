@@ -9,6 +9,7 @@ mod branch;
 mod build;
 mod builders;
 pub mod catalog;
+mod client_sealed;
 mod command;
 mod config_item;
 mod deployment;
@@ -288,6 +289,17 @@ impl ConfigStore {
     pub fn sealed_names(&self, environment: &EnvironmentId) -> Result<BTreeSet<String>, RpcError> {
         self.storage
             .read(|tx| review::sealed::names(tx, environment.as_str()))
+    }
+
+    /// Whether `organization` takes values sealed in the browser: on only once its
+    /// `config_sealed_variables` row exists, which nothing in the Store inserts.
+    /// In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn sealed_variables(&self, organization: &OrganizationId) -> Result<bool, RpcError> {
+        self.storage
+            .read(|tx| client_sealed::enabled(tx, organization))
     }
 
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with
