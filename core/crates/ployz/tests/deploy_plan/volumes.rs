@@ -6,7 +6,7 @@ use ployz_core::{
     RpcErrorCode, ServiceAttempt, ServiceDependency, ServiceName, VolumeObservationFailure,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     num::{NonZeroU32, NonZeroU64},
 };
 
@@ -2057,4 +2057,239 @@ fn storage_snapshot() -> DeploySnapshot {
             .collect(),
         ..Default::default()
     }
+}
+
+/// A full Deploy whose `db` mounts a Volume on a Server that didn't return its storage
+/// capacity blocks only `db`: `web` is still planned, and `db` is reported not
+/// attempted. That holds whether the Volume's copies are known or not, and however
+/// the Server went silent.
+#[test]
+fn a_silent_volume_server_blocks_only_the_service_that_mounts_its_volume() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+    let timed_out = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "target Machine RPC timed out".into(),
+        details: Default::default(),
+        cause: Vec::new(),
+    };
+    for (case, copies, silent, down) in [
+        ("copies unknown, not asked", vec![], None, false),
+        (
+            "writer known, not asked",
+            vec![('2', CopyRole::Writer)],
+            None,
+            false,
+        ),
+        (
+            "writer known, timed out",
+            vec![('2', CopyRole::Writer)],
+            Some(timed_out.clone()),
+            false,
+        ),
+        (
+            "writer known, Server down",
+            vec![('2', CopyRole::Writer)],
+            None,
+            true,
+        ),
+    ] {
+        let rows = if copies.is_empty() {
+            vec![]
+        } else {
+            vec![provisioned_row('2')]
+        };
+        let mut snapshot = copies_snapshot(&copies, rows);
+        match silent {
+            None => snapshot.storage_capacity.remove(&machine_id('2')),
+            Some(error) => snapshot
+                .storage_capacity
+                .insert(machine_id('2'), Err(error)),
+        };
+        if down {
+            for machine in &mut snapshot.machines {
+                if machine.machine.id == machine_id('2') {
+                    machine.membership = MembershipObservation::Down;
+                }
+            }
+        }
+
+        // A direct preview still refuses as a whole.
+        assert!(preview_deploy(&intent, &snapshot).is_err(), "{case}");
+        let preview =
+            runner_preview(&intent, &snapshot).unwrap_or_else(|error| panic!("{case}: {error:?}"));
+        let [blocked] = preview.blocked.as_slice() else {
+            panic!("{case}: {:?}", preview.blocked)
+        };
+        assert_eq!(blocked.service, db.name, "{case}");
+        assert!(
+            operations(&preview)
+                .iter()
+                .any(|operation| operation.service_name() == Some(&web.name)),
+            "{case}: {:?}",
+            operations(&preview)
+        );
+        assert!(
+            operations(&preview)
+                .iter()
+                .all(|operation| operation.service_name() != Some(&db.name)),
+            "{case}"
+        );
+    }
+}
+
+/// A Volume that sits on an answering Machine it can't use there still refuses the
+/// whole Deploy under the runner: only a Volume on a down or silent Server waits.
+#[test]
+fn a_volume_on_an_answering_server_it_cannot_use_still_refuses_under_the_runner() {
+    let intent = automatic_provisioned_intent();
+    let mut pinned = machine('1', "pinned");
+    pinned.storage = Some(MachineStorageObservation::Stateless);
+    let mut other = machine('2', "other");
+    other.storage = Some(MachineStorageObservation::Ready);
+    let mut existing = provisioned_row('1');
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
+    let snapshot = DeploySnapshot {
+        machines: vec![pinned, other],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing])
+            .expect("valid Volume Snapshot fixture"),
+        ..storage_snapshot()
+    };
+
+    let preview = runner_preview(&intent, &snapshot);
+    assert!(preview.is_err(), "{:?}", preview.map(|plan| plan.blocked));
+}
+
+/// A Service blocked because its Volume's Server is silent gives back what its
+/// placement took, so a later Service can use the same host port there.
+#[test]
+fn a_service_blocked_on_a_silent_volume_server_gives_back_its_host_port() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    db.ports.push(host_port(8080));
+    let mut web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    web.ports.push(host_port(8080));
+    web.placement.constraints =
+        [PlacementConstraint::parse(format!("node.id == {}", machine_id('2'))).unwrap()].into();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &web],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    snapshot.storage_capacity.remove(&machine_id('2'));
+
+    let preview = runner_preview(&intent, &snapshot).unwrap_or_else(|error| panic!("{error:?}"));
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, db.name);
+    assert!(
+        operations(&preview)
+            .iter()
+            .any(|operation| operation.service_name() == Some(&web.name)
+                && operation.machine_id() == machine_id('2')),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+/// Services sharing a Volume on a down Server wait together, and the rest of the
+/// Deploy goes ahead.
+#[test]
+fn services_sharing_a_volume_on_a_down_server_block_only_themselves() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    let mut worker = db.clone();
+    worker.name = ServiceName::parse("worker").unwrap();
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &worker, &web],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    for machine in &mut snapshot.machines {
+        if machine.machine.id == machine_id('2') {
+            machine.membership = MembershipObservation::Down;
+        }
+    }
+
+    let preview = runner_preview(&intent, &snapshot).unwrap_or_else(|error| panic!("{error:?}"));
+    let blocked = preview
+        .blocked
+        .iter()
+        .map(|blocked| blocked.service.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        blocked,
+        BTreeSet::from([db.name.clone(), worker.name.clone()])
+    );
+    assert!(
+        operations(&preview)
+            .iter()
+            .any(|operation| operation.service_name() == Some(&web.name)),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+/// Plain Volumes split across two answering Servers still refuse the whole Deploy under
+/// the runner, though no Server was asked for its storage: a plain Volume needs none.
+#[test]
+fn plain_volumes_on_answering_servers_still_refuse_under_the_runner() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "a");
+    add_named_volume(&mut db, "b");
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &web],
+        PlanOptions::default(),
+    );
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![
+            observed_volume(machine_id('1'), "a"),
+            observed_volume(machine_id('2'), "b"),
+        ])
+        .expect("valid Volume Snapshot fixture"),
+        ..Default::default()
+    };
+
+    assert!(preview_deploy(&intent, &snapshot).is_err());
+    let preview = runner_preview(&intent, &snapshot);
+    assert!(preview.is_err(), "{:?}", preview.map(|plan| plan.blocked));
 }
