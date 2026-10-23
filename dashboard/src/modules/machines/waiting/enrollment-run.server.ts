@@ -191,7 +191,7 @@ export const cancelServerEnrollments = Effect.fn("ServerEnrollment.cancelAttempt
   const cancelling = locked.filter((row) => !sent.has(row.tokenId));
   // Expired now, not when the run ends the attempt, so a join after this cancel finds the token dead.
   if (cancelling.length > 0) {
-    yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: new Date() }).where(and(
+    yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: sql`now()` }).where(and(
       inArray(machineEnrollmentToken.id, cancelling.map((row) => row.tokenId)),
       isNull(machineEnrollmentToken.joinedMachineId),
     ));
