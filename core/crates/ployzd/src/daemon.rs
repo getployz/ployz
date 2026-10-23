@@ -202,6 +202,9 @@ impl Daemon {
             Opened::Ready(store) => store,
             Opened::Resetting(interrupted) => {
                 let record = interrupted.record().clone();
+                // Removing the network and Corrosion waits on Docker, which IO load slows
+                // past TimeoutStartSec, and each timed-out start begins it again.
+                let _extend = extend_systemd_start_timeout("finishing the interrupted reset");
                 finish_interrupted_reset(
                     interrupted,
                     NetworkPlane::cleanup_retained(&record),
@@ -815,7 +818,7 @@ async fn start_corrosion(
         )
     });
     // MACHINE_START_WAIT covers Corrosion image pull and wait_ready via EXTEND_TIMEOUT.
-    let _extend = extend_systemd_start_timeout();
+    let _extend = extend_systemd_start_timeout("starting Corrosion");
     Ok(Some(
         CorrosionConfig::new(
             paths.data_dir,
@@ -881,7 +884,8 @@ impl Drop for SystemdStartTimeoutExtend {
     }
 }
 
-fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
+/// Keeps extending the start timeout while `what` runs, up to MACHINE_START_WAIT.
+fn extend_systemd_start_timeout(what: &'static str) -> SystemdStartTimeoutExtend {
     let usec = u32::try_from(SYSTEMD_START_TIMEOUT_EXTENSION.as_micros())
         .expect("30s start-timeout extension fits u32 microseconds");
     let deadline = Instant::now() + MACHINE_START_WAIT;
@@ -890,7 +894,7 @@ fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
             loop {
                 if Instant::now() >= deadline {
                     eprintln!(
-                        "stopped extending the systemd start timeout: Corrosion is taking too long to start"
+                        "stopped extending the systemd start timeout: {what} is taking too long"
                     );
                     return;
                 }
