@@ -33,3 +33,13 @@ it("counts the ingress Servers apart from their addresses, and passes on the cer
     incomplete_certificates: ["app.example.com"],
   });
 });
+
+it("doesn't count the ingress Servers while a Machine row is unread, which could be one of them", () => {
+  const frame = asTestDouble<RuntimeWatchView>()({
+    machines: [],
+    containers: [],
+    certificates: [],
+    incomplete_ids: { machines: ["machine-1"], containers: [], volumes: [], certificates: [] },
+  } as never);
+  expect(observedOf(frame).ingress_servers).toBeUndefined();
+});

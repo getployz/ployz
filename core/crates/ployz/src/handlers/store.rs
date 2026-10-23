@@ -457,8 +457,11 @@ impl<'m> Store<'m> {
                 .machines
                 .iter()
                 .filter(|observed| observed.machine.accepts_ingress);
-            evidence.ingress_servers =
-                Some(u32::try_from(ingress.clone().count()).unwrap_or(u32::MAX));
+            evidence.ingress_servers = frame
+                .incomplete_ids
+                .machines
+                .is_empty()
+                .then(|| u32::try_from(ingress.clone().count()).unwrap_or(u32::MAX));
             evidence.ingress_addresses = ingress
                 .filter_map(|observed| observed.machine.public_ip)
                 .map(|address| address.to_string())

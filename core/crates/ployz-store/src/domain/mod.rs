@@ -32,8 +32,8 @@ mod status;
 pub use change::{DomainChange, DomainEdit};
 use status::row;
 
-/// What Cloud observed of the Organization's public traffic, passed in-process with a
-/// domain read or write. Empty unless Cloud supplies it.
+/// What Cloud or the Standalone CLI observed of the public traffic, passed in-process with
+/// a domain read or write. Empty when nothing was observed.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(rename = "ConfigDomainEvidence")]
@@ -50,8 +50,8 @@ pub struct DomainEvidence {
     #[ts(as = "Option<Vec<CertificateHost>>", optional)]
     pub incomplete_certificates: Vec<CertificateHost>,
     /// How many Servers accept ingress, as the Runtime Watch reported them; none when the
-    /// Cluster couldn't be observed. Read only without a Cluster Domain, whose status
-    /// already says it.
+    /// Cluster or one of its Machines couldn't be read. Read only without a Cluster Domain,
+    /// whose status already says it.
     #[serde(default)]
     #[ts(optional)]
     pub ingress_servers: Option<u32>,

@@ -63,14 +63,14 @@ export function publishedOf(frame: RuntimeWatchView): PublishedHostname[] {
 
 /**
  * What one Runtime Watch frame says of the domains: the Cluster's certificates and those it couldn't read, how many
- * Servers take ingress and their public addresses, and the hostnames its Services publish.
+ * Servers take ingress when it could read every Machine and their public addresses, and the hostnames its Services publish.
  */
 export function observedOf(frame: RuntimeWatchView) {
   const ingress = frame.machines.filter(({ machine }) => machine.accepts_ingress);
   return {
     certificates: frame.certificates,
     incomplete_certificates: frame.incomplete_ids.certificates,
-    ingress_servers: ingress.length,
+    ingress_servers: frame.incomplete_ids.machines.length === 0 ? ingress.length : undefined,
     ingress_addresses: ingress.flatMap(({ machine }) => machine.public_ip !== null ? [machine.public_ip] : []),
     published: publishedOf(frame),
   };
