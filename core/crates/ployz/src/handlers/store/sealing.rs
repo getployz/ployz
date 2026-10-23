@@ -57,6 +57,7 @@ impl Store<'_> {
     /// `conflict` when the Organization seals on the client but has no Server; what
     /// Cloud or the Store refused, the text included.
     pub(crate) fn seal_edit(&self, mut edit: Edit) -> Result<Edit, Error> {
+        let fail = |error| self.fail(error);
         let mut plain = false;
         edit.map_plaintext_secrets(|_| {
             plain = true;
@@ -68,7 +69,7 @@ impl Store<'_> {
         let query = SealingTargetsQuery::Edit {
             environment: edit.environment.clone(),
         };
-        let Some((recipient, targets)) = self.ready(&query)? else {
+        let Some((recipient, targets)) = self.ready(&query, fail)? else {
             return Ok(edit);
         };
         let SealingTargetsView::Edit {
@@ -98,18 +99,23 @@ impl Store<'_> {
             };
             let plaintext = secret
                 .admit()
-                .map_err(|error| self.fail(StoreCallError::Refused(error)))?;
+                .map_err(|error| fail(StoreCallError::Refused(error)))?;
             seal(&recipient, &identity, secret.key(), plaintext).map(Some)
         })?;
         Ok(edit)
     }
 
     /// `request` with each plain-text value sealed for the receiver's Service its row
-    /// lands in, when the Organization seals on the client.
+    /// lands in, when the Organization seals on the client. `fail` maps what Cloud or
+    /// the Store refuses, as it maps the write's own refusal.
     ///
     /// # Errors
     /// As [`Self::seal_edit`].
-    pub(crate) fn seal_sync_values(&self, mut request: SyncChanges) -> Result<SyncChanges, Error> {
+    pub(crate) fn seal_sync_values(
+        &self,
+        mut request: SyncChanges,
+        fail: impl Fn(StoreCallError) -> Error,
+    ) -> Result<SyncChanges, Error> {
         let rows: Vec<_> = request
             .values
             .iter()
@@ -125,7 +131,7 @@ impl Store<'_> {
             version: request.version.clone(),
             rows,
         };
-        let Some((recipient, targets)) = self.ready(&query)? else {
+        let Some((recipient, targets)) = self.ready(&query, &fail)? else {
             return Ok(request);
         };
         let SealingTargetsView::Sync {
@@ -152,7 +158,7 @@ impl Store<'_> {
             };
             let plaintext = target
                 .admit(plaintext)
-                .map_err(|error| self.fail(StoreCallError::Refused(error)))?;
+                .map_err(|error| fail(StoreCallError::Refused(error)))?;
             *value =
                 SecretValue::ClientSealed(seal(&recipient, &identity, &target.key, plaintext)?);
         }
@@ -163,12 +169,9 @@ impl Store<'_> {
     fn ready(
         &self,
         query: &SealingTargetsQuery,
+        fail: impl Fn(StoreCallError) -> Error,
     ) -> Result<Option<(SealingPublicKey, SealingTargetsView)>, Error> {
-        match self
-            .backend
-            .sealing(query)
-            .map_err(|error| self.fail(error))?
-        {
+        match self.backend.sealing(query).map_err(&fail)? {
             Sealing::Off => Ok(None),
             Sealing::NoServer => Err(Error::conflict("Sealed values need a server.")
                 .hint(Hint::Next("ployz server add".into()))),
@@ -177,7 +180,7 @@ impl Store<'_> {
                 targets,
             } => {
                 let targets = SealingTargetsQuery::view(*targets)
-                    .map_err(|error| self.fail(StoreCallError::Refused(error)))?;
+                    .map_err(|error| fail(StoreCallError::Refused(error)))?;
                 Ok(Some((public_key, targets)))
             }
         }

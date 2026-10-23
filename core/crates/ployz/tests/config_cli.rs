@@ -8529,3 +8529,35 @@ fn env_sync_refuses_an_empty_value_as_the_store_does_before_sealing_it() {
     assert_eq!((code, &sealed), (Some(2), &legacy));
     assert_eq!(written, 0);
 }
+
+#[test]
+fn env_sync_with_a_value_at_a_stale_version_names_the_plan_as_it_does_unsealed() {
+    let args = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--version",
+        "0:0",
+        "--value",
+        "web.env.OTHER_KEY",
+    ];
+    let stdin = "given-key\n";
+    let legacy_flag = (SealingState::Off, false);
+    let (code, mut legacy, _) = refused_by(legacy_flag, branch_with_a_new_secret, &args, stdin);
+    assert_eq!(code, Some(1), "{legacy}");
+    assert_eq!(legacy["error"]["code"], json!("conflict"), "{legacy}");
+    assert_eq!(
+        legacy["error"]["details"]["next"],
+        json!("ployz env sync --to --plan --env fix-key")
+    );
+    let (code, mut sealed, written) =
+        refused_by(sealing_ready(), branch_with_a_new_secret, &args, stdin);
+    // Each Store's version is its own.
+    for refused in [&mut legacy, &mut sealed] {
+        assert!(refused["error"]["details"]["version"].take().is_string());
+    }
+    assert_eq!((code, &sealed), (Some(1), &legacy));
+    assert_eq!(written, 0);
+}
