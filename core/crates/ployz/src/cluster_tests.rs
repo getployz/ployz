@@ -582,14 +582,20 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
     })
     .await;
     client.entry = Some(machine_id('a'));
+    client.confirmed = Some(machine_id('a'));
     client.connector = crate::connect::test_support::connector(other.channel());
 
-    let refused = client.redial_shared().await;
+    // A client whose last redial failed has forgotten its entry, and still refuses.
+    let mut forgot = client.clone();
+    forgot.entry = None;
+    for redialing in [client.clone(), forgot] {
+        let refused = redialing.redial_shared().await;
+        assert!(
+            matches!(refused, Err(ConnectError::IdentityMismatch { .. })),
+            "{refused:?}"
+        );
+    }
 
-    assert!(
-        matches!(refused, Err(ConnectError::IdentityMismatch { .. })),
-        "{refused:?}"
-    );
     let answer = client.clone().entry_id().await.unwrap_err();
     assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
 }
