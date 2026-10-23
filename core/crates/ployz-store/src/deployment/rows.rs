@@ -1392,7 +1392,6 @@ mod tests {
             },
         };
         let removed = not_found(serde_json::json!({
-            "inspect": ["ployz server ls"],
             "reason": "no_such_server",
             "targets": [machine_id],
         }));
@@ -1425,7 +1424,7 @@ mod tests {
             "create Container failed"
         );
         // A daemon from before the tag, or a Server's own not-found, reads as before.
-        let untagged = not_found(serde_json::json!({ "inspect": ["ployz server ls"] }));
+        let untagged = not_found(serde_json::json!({}));
         let kept = Failure::on(&untagged, &operations, Some(machine));
         assert_eq!(kept.reason, "create Container failed");
         assert_eq!(kept.cause, [format!("No Server named {machine_id:?}")]);
