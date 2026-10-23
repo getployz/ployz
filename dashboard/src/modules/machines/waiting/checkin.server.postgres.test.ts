@@ -812,6 +812,10 @@ it.each([
 
 it("rate limits one source address and keeps what it already wrote", async () => {
   const { token } = await fleetToken("rack-1");
+  // A window that ends after the test keeps every check-in in one count, however slowly they run.
+  await harness.pool.query(
+    "insert into checkin_rate_limit (key, window_start, count) values ('ip:198.51.100.1', now() + interval '1 hour', 0)",
+  );
   const hosts = Array.from({ length: 120 }, newHost);
   const outcomes = [];
   for (const host of hosts) outcomes.push(await run(Effect.exit(checkIn(request(token, host, { ip: "198.51.100.1" })))));
