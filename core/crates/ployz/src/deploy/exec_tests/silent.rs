@@ -699,3 +699,18 @@ async fn a_dependency_check_fails_by_name_on_an_up_machine_that_never_lists() {
     names_the_second(error);
     server.abort();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_full_listing_names_a_suspect_machine_that_never_answers() {
+    let (client, server) = live_and_second(std::sync::Arc::default(), Pair::suspect_silent()).await;
+
+    let error = MachineOperations::service_containers(
+        &client,
+        &QualifiedService::parse("app/web").unwrap(),
+    )
+    .await
+    .expect_err("a silent Machine leaves the full listing incomplete");
+
+    names_the_second(&error);
+    server.abort();
+}
