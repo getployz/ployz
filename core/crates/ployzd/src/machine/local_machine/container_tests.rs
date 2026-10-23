@@ -283,6 +283,7 @@ async fn joining_admits_direct_create() {
                         visible_peers: vec![peer],
                         target_versions: Default::default(),
                         sealing_key: None,
+                        devices: Vec::new(),
                     },
                 },
                 wireguard_mtu: None,
