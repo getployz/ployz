@@ -15,9 +15,6 @@ pub(crate) struct Guard {
 }
 
 impl Guard {
-    /// A write no CLI made: Cloud's dashboard and automation, or the hidden local Store.
-    pub(crate) const NOT_CLI: Self = Self { from_cli: false };
-
     /// Admit a plain-text secret for variable `key`, unless it came from the CLI and
     /// `sealed_on_client` finds the Organization seals there; that is read only for
     /// the CLI.
@@ -31,7 +28,7 @@ impl Guard {
     ) -> Result<(), RpcError> {
         if self.from_cli && sealed_on_client()? {
             return Err(crate::error::unsupported(
-                format!("{key}: update ployz to set a Sealed value"),
+                format!("{key}: update ployz to set a Sealed value."),
                 json!({ "variable": key, "next": "curl -fsSL https://ployz.sh | sh" }),
             ));
         }

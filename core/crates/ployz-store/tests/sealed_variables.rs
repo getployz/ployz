@@ -582,7 +582,7 @@ fn an_old_cli_s_plain_text_secret_is_refused_only_with_the_flag_on_and_only_a_ne
         assert_eq!(error.code, RpcErrorCode::Unsupported, "{error:?}");
         assert_eq!(
             error.message,
-            format!("{key}: update ployz to set a Sealed value")
+            format!("{key}: update ployz to set a Sealed value.")
         );
         assert_eq!(
             error.details,

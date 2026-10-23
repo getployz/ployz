@@ -431,7 +431,7 @@ commands! {
     SetMergeValue(crate::SetMergeValue) -> OnMerge(crate::OnMerge)
         needs ChangesStage
         agent none "No tool works on branches."
-        => crate::pull_request::set_merge_value(tx, who, sealing, c);
+        => crate::pull_request::set_merge_value(tx, who, sealing, c, trusted);
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch) -> Branch(crate::Branched)
         needs ChangesStage
