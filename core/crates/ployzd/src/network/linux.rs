@@ -27,7 +27,7 @@ use ployz_core::{
     SelectedEndpoint, WireGuardPublicKey,
 };
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::docker_image::is_not_found;
@@ -40,7 +40,7 @@ use super::{
     peers_for,
 };
 use crate::{
-    corrosion::{MachineView, ReplicatedObservations, ReplicatedStore},
+    corrosion::{MachineView, MachinesSnapshot, ReplicatedObservations, ReplicatedStore},
     machine::{LocalMachineBody, LocalMachineRecord, RecordOwner},
 };
 
@@ -169,17 +169,16 @@ impl NetworkPlane {
                         shutdown.cancelled().await;
                         break;
                     }
-                    let snapshot = machines.borrow_and_update().clone();
-                    if let Some(snapshot) = snapshot
-                        && previous.as_ref() != Some(&snapshot)
-                    {
-                        if let Err(error) = self.rebuild(&replicated, &snapshot, &local).await {
-                            return Err(io::Error::other(error));
-                        }
-                        previous = Some(snapshot);
-                    }
+                    machines.borrow_and_update();
+                    self.rebuild_when_changed(&replicated, &machines, &mut previous, &local)
+                        .await?;
                 }
-                _ = ticker.tick() => self.poll_endpoints(&local).await,
+                _ = ticker.tick() => {
+                    // A rebuild that couldn't read the store tries again here.
+                    self.rebuild_when_changed(&replicated, &machines, &mut previous, &local)
+                        .await?;
+                    self.poll_endpoints(&local).await;
+                }
                 Some(choice) = choices.recv() => self.apply_choice(choice, &local).await,
             }
         }
@@ -254,12 +253,35 @@ impl NetworkPlane {
         )
     }
 
+    /// Rebuild from the view's latest snapshot unless it is the last one applied.
+    async fn rebuild_when_changed(
+        &mut self,
+        replicated: &ReplicatedStore,
+        machines: &watch::Receiver<MachinesSnapshot>,
+        previous: &mut MachinesSnapshot,
+        local: &RecordOwner,
+    ) -> io::Result<()> {
+        let snapshot = machines.borrow().clone();
+        if let Some(snapshot) = snapshot
+            && previous.as_ref() != Some(&snapshot)
+            && self
+                .rebuild(replicated, &snapshot, local)
+                .await
+                .map_err(io::Error::other)?
+        {
+            *previous = Some(snapshot);
+        }
+        Ok(())
+    }
+
+    /// Whether the snapshot was applied. `false` when the store couldn't be read, so a
+    /// later tick applies it.
     async fn rebuild(
         &mut self,
         replicated: &ReplicatedStore,
         snapshot: &ReplicatedObservations<Machine, MachineId>,
         local: &RecordOwner,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<bool, NetworkError> {
         let heard_from_peers = match replicated.heard_from_peers().await {
             Ok(heard) => heard,
             Err(error) => {
@@ -267,7 +289,7 @@ impl NetworkPlane {
                     "failed to read which Machines this Corrosion store has heard from: {error}",
                     error = ployz_core::error_chain::inline(&error),
                 );
-                return Ok(());
+                return Ok(false);
             }
         };
         let record = local.record();
@@ -278,7 +300,7 @@ impl NetworkPlane {
             record.phase() == LocalMachinePhase::Joining,
             heard_from_peers,
         ) else {
-            return Ok(());
+            return Ok(true);
         };
         let selected = &record.selected_endpoints;
         let now = SystemTime::now();
@@ -296,7 +318,7 @@ impl NetworkPlane {
                 persist_selection(local, peer.machine_id, endpoint).await;
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn configure_device(

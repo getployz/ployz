@@ -240,6 +240,21 @@ mod tests {
                 vec![MembershipEvidence::Down, MembershipEvidence::Down],
                 MembershipEvidence::Down,
             ),
+            // A state from a newer Corrosion isn't hidden by a stale Down, nor hides Up.
+            (
+                vec![
+                    MembershipEvidence::Down,
+                    MembershipEvidence::Unrecognized { raw: "Left".into() },
+                ],
+                MembershipEvidence::Unrecognized { raw: "Left".into() },
+            ),
+            (
+                vec![
+                    MembershipEvidence::Unrecognized { raw: "Left".into() },
+                    MembershipEvidence::Up,
+                ],
+                MembershipEvidence::Up,
+            ),
         ] {
             let by_address = membership_states_by_address(states.clone().into_iter().map(state));
             assert_eq!(by_address.get(&key), Some(&expected), "{states:?}");

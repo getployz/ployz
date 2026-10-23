@@ -976,7 +976,9 @@ async fn published_network(
     if let Some(network) = replicated.cluster_network().await? {
         return Ok(network);
     }
-    if record.cluster_network().is_none() && !replicated.heard_from_peers().await? {
+    if record.cluster_network().is_none()
+        && matches!(replicated.heard_from_peers().await, Ok(false))
+    {
         return Err(Error::ClusterStoreEmpty);
     }
     Err(Error::ClusterNetworkUnpublished)

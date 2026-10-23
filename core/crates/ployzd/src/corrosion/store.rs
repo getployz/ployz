@@ -1015,8 +1015,18 @@ impl ReplicatedStore {
     /// Whether this store holds a change from any Machine but this one. A store created
     /// afresh holds none until gossip reaches it.
     pub(crate) async fn heard_from_peers(&self) -> Result<bool, Error> {
-        let local = self.local_actor().await?;
-        Ok(self.version().await?.keys().any(|actor| *actor != local))
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT EXISTS (SELECT 1 FROM crsql_db_versions WHERE site_id != crsql_site_id()) AS heard",
+                [],
+            ))
+            .await?;
+        match query.rows(["heard"])?.as_slice() {
+            [[heard]] if heard.as_i64() == Some(0) => Ok(false),
+            [[heard]] if heard.as_i64() == Some(1) => Ok(true),
+            _ => Err(Error::Protocol("invalid heard-from-peers row".into())),
+        }
     }
 
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
