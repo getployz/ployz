@@ -3,8 +3,8 @@
 //! `config_sealed_variables` row exists, and nothing here inserts one.
 
 use ployz_core::config::{
-    ClientSealedValue, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue,
-    SealedSecret, SecretCiphertext,
+    ClientSealedValue, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
+    SavedVariableValue, SealedSecret, SecretCiphertext,
 };
 use ployz_core::{RpcError, SealedScope, SealedValue};
 use ring::digest::{SHA256, digest};
@@ -102,15 +102,20 @@ pub(crate) fn refuse_port(working: &SavedEnvironmentIntent) -> Result<(), RpcErr
 
 /// Whether `service`'s PORT holds a value the browser sealed.
 fn sealed_port(service: &SavedServiceIntent) -> bool {
-    service.variables.iter().any(|variable| {
-        variable.key == "PORT"
-            && matches!(
-                variable.value,
-                SavedVariableValue::Secret {
-                    encrypted_value: Some(SecretCiphertext::ClientSealed(_))
-                }
-            )
-    })
+    service
+        .variables
+        .iter()
+        .any(|variable| variable.key == "PORT" && browser_sealed(variable))
+}
+
+/// Whether `variable` holds a value the browser sealed.
+pub(crate) fn browser_sealed(variable: &SavedVariableIntent) -> bool {
+    matches!(
+        variable.value,
+        SavedVariableValue::Secret {
+            encrypted_value: Some(SecretCiphertext::ClientSealed(_))
+        }
+    )
 }
 
 /// Where a client-sealed value lands, and whether its Organization takes one.

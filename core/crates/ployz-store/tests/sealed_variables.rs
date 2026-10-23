@@ -241,6 +241,24 @@ fn a_sealed_value_is_taken_only_with_the_flag_on_and_only_sealed_for_its_variabl
 }
 
 #[test]
+fn a_read_marks_the_rows_the_browser_sealed_and_only_those() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    set(&store, "web.env.TOKEN", json!({ "secret": SECRET }));
+    let read = || store.read(&who(), &EnvironmentQuery::default()).unwrap();
+    assert!(json!(read()).get("sealed").is_none());
+    backend::sealed_variables_on(&url, "org");
+    set(&store, "web.env.PASSWORD", password(1));
+    let sealed = read().sealed;
+    assert_eq!(
+        sealed.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        [format!("{}:variables.PASSWORD", uuid(3))]
+    );
+}
+
+#[test]
 fn a_sealed_secret_is_kept_by_its_marker_and_never_becomes_plain() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
