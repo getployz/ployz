@@ -18,6 +18,7 @@ import { AppConfig } from "#/server/config.server";
 import { DatabaseLive, ReportingDatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
+import { RedactedLogsLive, redactSpanExits } from "#/server/log-redaction";
 
 const InfrastructureLive = Layer.mergeAll(
   SecretEncryptionLive,
@@ -46,14 +47,17 @@ const RuntimeLive = OrganizationRuntimeLive.pipe(
 // so they nest under the HTTP server span and share its exporter. Without the
 // SDK the global provider is a no-op and this costs nothing. The Resource only
 // names the tracer; an unnamed instrumentation scope crashes the OTLP exporter.
-const TracingLive = OtelTracer.layerGlobal.pipe(
+// A span that ends on a failure records it, so its tracer names each failed query by its kind.
+const TracingLive = redactSpanExits(OtelTracer.layerGlobal.pipe(
   Layer.provide(Resource.layer({ serviceName: "ployz-cloud" })),
-);
+));
 
+// Every log, to the console and the span, names a failed query by its kind and never its params.
 export const AppLive = AuthLive.pipe(
   Layer.provideMerge(InfrastructureLive),
   Layer.merge(RuntimeLive),
   Layer.provideMerge(TracingLive),
+  Layer.provideMerge(RedactedLogsLive),
 );
 
 export type AppServices = Layer.Success<typeof AppLive>;

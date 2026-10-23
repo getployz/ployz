@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import type { ChangeName } from "#/collections/read.contract";
 import { eventStreamResponse, sseEvent } from "#/server/event-stream";
 import { isClientDisconnect, publicErrorResponse } from "#/server/public-error";
+import { runRedactedLog } from "#/server/log-redaction";
 
 export type OrgChangesHandlerDeps = {
   /** Refuses non-members. */
@@ -39,7 +40,7 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
 function logReadFailure(cause: unknown) {
   // A client that disconnected mid-read is routine.
   const log = isClientDisconnect(cause) ? Effect.logDebug : Effect.logError;
-  Effect.runFork(log("Organization change log read failed.", cause));
+  runRedactedLog(log("Organization change log read failed.", cause));
   return undefined;
 }
 

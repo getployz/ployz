@@ -2,9 +2,10 @@ import "@tanstack/react-start/server-only";
 import { trace } from "@opentelemetry/api";
 import { defineChatMiddleware, type ChatMiddlewareContext } from "@tanstack/ai";
 import { otelMiddleware } from "@tanstack/ai/middlewares/otel";
-import { Effect, Schema } from "effect";
+import { Effect, Logger, Schema } from "effect";
 import type { PostHogService } from "#/modules/analytics/posthog.server";
 import type { Caller } from "#/modules/identity/actor";
+import { redactedLoggers } from "#/server/log-redaction";
 
 type Properties = Record<string, string | number | boolean | null>;
 
@@ -29,8 +30,11 @@ export const aiObservability = (posthog: PostHogService, caller: Caller) => {
   let spanId: string | null = null;
   let toolsCalled: string[] = [];
   let toolFailed = false;
+  // These run outside the app runtime, so they log through its loggers here.
+  const run = (effect: Effect.Effect<void>) =>
+    Effect.runPromise(effect.pipe(Effect.provideService(Logger.CurrentLoggers, redactedLoggers)));
   const capture = (event: string, properties: Properties) =>
-    Effect.runPromise(posthog.capture({ userId: caller.userId, organizationId: caller.organization.id, event, properties }));
+    run(posthog.capture({ userId: caller.userId, organizationId: caller.organization.id, event, properties }));
   const turn = (ctx: ChatMiddlewareContext, duration: number, failed: boolean) =>
     capture("$ai_trace", {
       $ai_trace_id: ctx.runId,
@@ -74,7 +78,7 @@ export const aiObservability = (posthog: PostHogService, caller: Caller) => {
     onAfterToolCall: (ctx, { toolCallId, toolName, ok, result, duration }) => {
       const failed = !ok || refused(result);
       toolFailed ||= failed;
-      void Effect.runPromise(posthog.toolCall({
+      void run(posthog.toolCall({
         userId: caller.userId,
         organizationId: caller.organization.id,
         threadId: ctx.threadId,

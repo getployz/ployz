@@ -16,6 +16,7 @@ import {
 } from "effect/unstable/sql/SqlError";
 import { Pool, type PoolConfig } from "pg";
 import { AppConfig } from "#/server/config.server";
+import { runRedactedLog } from "#/server/log-redaction";
 
 export interface DatabaseService {
   readonly drizzle: EffectPgDatabase;
@@ -113,7 +114,7 @@ export const afterDatabaseCommit = <A, E, R>(program: Effect.Effect<A, E, R>) =>
   Effect.flatMap(Database, database => database.afterCommit(program));
 
 function reportIdlePoolError(cause: Error) {
-  Effect.runFork(Effect.logError("An idle PostgreSQL client failed.", cause));
+  runRedactedLog(Effect.logError("An idle PostgreSQL client failed.", cause));
 }
 
 function acquirePool(options: PoolConfig) {

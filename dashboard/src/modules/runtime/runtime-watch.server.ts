@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { RuntimeWatchView } from "@ployz/sdk";
-import { Effect, Exit, Scope } from "effect";
+import { Effect, Exit, Logger, Scope } from "effect";
+import { redactedLoggers } from "#/server/log-redaction";
 import { onIngressChange } from "#/modules/cluster-domain/ingress-running";
 import { InngestClient, sendInngestEvent } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
@@ -60,6 +61,7 @@ export const openRuntimeWatchForOrganization = Effect.fn(
     sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: input.organizationId })).pipe(
       Effect.provideService(InngestClient, inngest),
       Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; the hourly sync covers it.", error)),
+      Effect.provideService(Logger.CurrentLoggers, redactedLoggers),
     ),
   );
   return {
