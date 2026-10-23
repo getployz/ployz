@@ -219,7 +219,7 @@ it("says a Save whose Deploy ran nothing never reached a server, in the bar and 
   expect(staged.getAllByText("Save #4 · its deploy ran nothing")).toHaveLength(2);
   expect(staged.queryByText("Save #4 not deployed")).toBeNull();
   await act(async () => { fireEvent.click(staged.getByRole("button", { name: "Details" })); });
-  expect(await screen.findByText(/Save #4's deploy ran nothing, so none of it reached a server\./)).toBeTruthy();
+  expect(await screen.findByText(/Save #4's deploy ran nothing, so none of its changes reached a server\./)).toBeTruthy();
 });
 
 it("says a Deploy in flight ships the Save, as that Deployment's status reads, never not running", async () => {

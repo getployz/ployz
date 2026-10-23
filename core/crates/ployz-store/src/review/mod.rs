@@ -63,7 +63,7 @@ pub struct DiffView {
     pub draft_count: usize,
     /// Whether every Deploy of the latest Saved revision ran nothing, so none of what it
     /// saved reached a Server. Its draft reversals are changes that never ran.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     pub saved_ran_nothing: bool,
     /// Staged changes that arrived from the Parent's deploy by Follow, still at the
@@ -318,7 +318,10 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let draft = saved_comparison(environment, &baseline)?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
-    if let Some(saved) = &saved {
+    // Only staged changes or draft reversals are worded by it.
+    if let Some(saved) = &saved
+        && (view.total_count > 0 || view.draft_count > 0)
+    {
         view.saved_ran_nothing = crate::deployment::only_ran_nothing(tx, id, saved.revision)?;
     }
     by_name(&mut view.changes);

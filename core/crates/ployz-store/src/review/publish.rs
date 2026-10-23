@@ -98,7 +98,7 @@ pub struct Discarded {
     /// The latest Saved revision, unchanged by Discard.
     pub saved: Option<Revision>,
     /// Whether every Deploy of that revision ran nothing, as [`DiffView::saved_ran_nothing`].
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     pub saved_ran_nothing: bool,
     /// False when nothing it names was staged.

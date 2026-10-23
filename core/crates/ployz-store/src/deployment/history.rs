@@ -339,7 +339,9 @@ pub(crate) fn failed(
 
 /// Whether Saved `revision` was only ever shipped by Deployments that ended having
 /// run nothing, and at least one shipped it: the save is all that is left of them. A
-/// run that settled any node into Applied State before it stopped ran something.
+/// run that settled any node into Applied State before it stopped ran something. A
+/// Superseded one was never claimed. It only labels a review, so an unreadable run
+/// reads as "not known to have run nothing" rather than failing the review.
 pub(crate) fn only_ran_nothing(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -348,7 +350,8 @@ pub(crate) fn only_ran_nothing(
     let rows = tx.query(
         &format!(
             "SELECT status, run FROM config_deployment \
-             WHERE environment_id = ?1 AND {NUMBERED} AND saved_revision = ?2"
+             WHERE environment_id = ?1 AND {NUMBERED} AND saved_revision = ?2 \
+             AND status NOT IN ('superseded')"
         ),
         &[
             environment.as_str().into(),
@@ -362,7 +365,9 @@ pub(crate) fn only_ran_nothing(
         if row.variant::<DeploymentStatus>(0, "Deployment status")? != DeploymentStatus::Failed {
             return Ok(false);
         }
-        let run: Run = row.json(1, "Deployment run")?;
+        let Ok(run) = row.json::<Run>(1, "Deployment run") else {
+            return Ok(false);
+        };
         if !matches!(run.outcome, Some(Outcome::NotExecuted { .. }))
             || run.nodes.values().any(|status| status.applied(false))
         {

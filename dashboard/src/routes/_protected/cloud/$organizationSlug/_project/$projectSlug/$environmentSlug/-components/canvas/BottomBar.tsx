@@ -46,7 +46,7 @@ type BottomBarProps = {
   stagedChanges?: number;
   /** The latest Save when it is all there is to deploy: part of it is neither applied nor shipped by a Deploy in flight, which may ship the rest. */
   undeployedSave?: number | null;
-  /** The latest Save when every Deploy of it ran nothing: none of it reached a Server. */
+  /** The latest Save when every Deploy of it ran nothing: none of its changes reached a Server. */
   ranNothingSave?: number | null;
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */

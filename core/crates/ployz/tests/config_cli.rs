@@ -4066,6 +4066,13 @@ fn a_save_whose_deploy_ran_nothing_says_so() {
         assert!(output.status.success(), "{}", said(&output));
         said(&output)
     };
+    let refused = text(&["diff"]);
+    assert!(
+        refused.contains(
+            "Saved as version #2. Its deploy ran nothing, so none of these changes reached a server."
+        ),
+        "{refused}"
+    );
     let discarded = text(&["discard"]);
     assert!(
         discarded.contains(
@@ -4076,7 +4083,7 @@ fn a_save_whose_deploy_ran_nothing_says_so() {
     let diff = text(&["diff"]);
     assert!(
         diff.contains(
-            "Saved #2 holds changes above that its deploy never ran; saving replaces it."
+            "Saved #2 holds changes above that its deploy never ran; a new save or deploy leaves them behind."
         ),
         "{diff}"
     );

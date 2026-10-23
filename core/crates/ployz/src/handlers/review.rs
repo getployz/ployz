@@ -168,16 +168,18 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 super::store::fix_broken(matches, reference)
             ));
         }
-        if view.saved_ran_nothing && !view.reversals().is_empty() {
-            crate::ui::stream(format_args!(
-                "Saved #{} holds changes above that its deploy never ran; saving replaces it.",
-                view.saved.map_or(0, |saved| saved.0)
-            ));
-        }
+        let saved = view.saved.map_or(0, |saved| saved.0);
         if view.published && !view.changes.is_empty() {
+            if view.saved_ran_nothing {
+                crate::ui::stream(format_args!(
+                    "Saved as version #{saved}. Its deploy ran nothing, so none of these changes reached a server."
+                ));
+            } else {
+                crate::ui::stream(format_args!("Saved as version #{saved}. Not deployed."));
+            }
+        } else if view.saved_ran_nothing && !view.reversals().is_empty() {
             crate::ui::stream(format_args!(
-                "Saved as version #{}. Not deployed.",
-                view.saved.map_or(0, |saved| saved.0)
+                "Saved #{saved} holds changes above that its deploy never ran; a new save or deploy leaves them behind."
             ));
         }
         if let Some(hint) = &hint {
