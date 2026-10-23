@@ -413,6 +413,68 @@ fn cloud_replacement_resets_event_dedup_without_changing_the_ndjson_shape() {
 }
 
 #[test]
+fn deploy_reports_a_server_gap_once_and_keeps_json_warnings() {
+    use ployz_core::{
+        DeployWarning, MachineId, MachineName, ObservationGap, ObservationGapReason,
+        ObservationKind,
+    };
+    use ployz_store::DeploymentWarning;
+    let machine_id = MachineId::parse("2".repeat(32)).unwrap();
+    let warnings = vec![
+        DeployWarning::ObservationOmitted {
+            kind: ObservationKind::Container,
+            machine_id,
+            gap: Some(ObservationGap {
+                machine_name: MachineName::parse("machine-2").unwrap(),
+                reason: ObservationGapReason::Down,
+            }),
+        },
+        DeployWarning::ObservationOmitted {
+            kind: ObservationKind::Volume,
+            machine_id,
+            gap: None,
+        },
+        DeployWarning::MixedAfterReturn {
+            machine: "machine-2".into(),
+        },
+    ];
+    let mut applied = view(7, DeploymentStatus::Applied);
+    applied.deployment.warnings = warnings
+        .iter()
+        .cloned()
+        .map(|warning| DeploymentWarning::Deploy { warning })
+        .collect();
+    let mut reply = observed(7, DeploymentStatus::Applied);
+    reply.body = serde_json::to_value(View::Deployment(Box::new(applied))).unwrap();
+    let (output, _) = run(vec![admitted(), reply]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(
+        stderr
+            .matches("deployment observations are incomplete")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert!(!stderr.contains("observation omitted"), "{stderr}");
+    assert!(!stderr.contains(machine_id.as_str()), "{stderr}");
+    assert!(stderr.contains("If machine-2 restarts"), "{stderr}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result.pointer("/warnings"),
+        Some(
+            &serde_json::to_value(
+                warnings
+                    .into_iter()
+                    .map(|warning| DeploymentWarning::Deploy { warning })
+                    .collect::<Vec<_>>()
+            )
+            .unwrap()
+        )
+    );
+}
+
+#[test]
 fn cloud_interrupt_during_follow_wait_exits_without_another_read_or_remote_cancel() {
     for delay in [
         Duration::ZERO,
@@ -712,6 +774,48 @@ fn losing_cloud_while_following_says_the_deployment_keeps_running() {
     assert_eq!(
         inspected(&error),
         "ployz deployment show 7 --project shop --env production"
+    );
+}
+
+#[test]
+fn losing_cloud_after_an_observation_failure_prints_the_notice() {
+    use ployz_core::{DeployWarning, MachineId, ObservationKind};
+    use ployz_store::DeploymentWarning;
+
+    let mut running = view(7, DeploymentStatus::Running);
+    running.builds = serde_json::from_value(json!([
+        {"service": "web", "commit": null, "status": "building", "message": null, "server": null}
+    ]))
+    .unwrap();
+    running.deployment.warnings = vec![DeploymentWarning::Deploy {
+        warning: DeployWarning::ObservationFailed {
+            kind: ObservationKind::Volume,
+            machine_id: MachineId::parse("2".repeat(32)).unwrap(),
+            message: "volume query timed out".into(),
+            gap: None,
+        },
+    }];
+    let mut failed = observed(7, DeploymentStatus::Running);
+    failed.status = 500;
+    failed.body = json!({"error": {"code": "unavailable", "message": "Store read failed", "cause": [], "details": null}});
+    let (output, _) = run(vec![
+        admitted(),
+        Reply {
+            body: serde_json::to_value(View::Deployment(Box::new(running))).unwrap(),
+            ..observed(7, DeploymentStatus::Running)
+        },
+        failed,
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        stderr.contains("! volume observation failed on"),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("volume query timed out").count(),
+        1,
+        "{stderr}"
     );
 }
 

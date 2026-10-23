@@ -54,6 +54,47 @@ mod unknown_service_cli;
 use support::*;
 
 #[tokio::test]
+async fn cli_exec_reports_incomplete_discovery_as_partial() {
+    let mut service = DiscoveryService::new(test_description());
+    let mut down = machine('b', "machine-3");
+    down.membership = MembershipObservation::Down;
+    service.machines.push(down);
+    let (address, server) = serve_discovery(service).await;
+    let home = tempfile::tempdir().unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("PLOYZ_TOKEN")
+        .env_remove("PLOYZ_PROJECT")
+        .env_remove("PLOYZ_ENV")
+        .env(
+            "PLOYZ_STORE",
+            format!("sqlite:{}", home.path().join("store.db").display()),
+        )
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "--color=never",
+            "exec",
+            "-T",
+            "app/db",
+            "--",
+            "true",
+        ])
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(stderr.contains("machine-3 did not answer"), "{stderr}");
+    assert_eq!(stderr.matches("machine-3").count(), 1, "{stderr}");
+    assert!(stderr.contains("db"), "{stderr}");
+    assert!(!stderr.contains("No running Service"), "{stderr}");
+}
+
+#[tokio::test]
 async fn cli_exec_requires_exit_status_or_detached_start_confirmation() {
     use ployz_core::ExecResponseFrame::{ExecId, Exit, Stdout};
     use std::time::Duration;
