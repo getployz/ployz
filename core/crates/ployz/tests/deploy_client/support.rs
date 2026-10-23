@@ -120,6 +120,15 @@ pub(super) struct DeployService {
     ingress_roles: Arc<Mutex<BTreeMap<MachineId, bool>>>,
     /// What an `UpdateMachine` turning the ingress role off answers instead.
     role_off_refusal: Option<RpcError>,
+    /// The Entry Machine's own `ListMachines` answers this many more times without any
+    /// ingress role, as before a role turned on elsewhere reached it.
+    entry_lag: Arc<AtomicUsize>,
+    /// The only Machine `start_error` fails on; every Machine when `None`.
+    start_error_on: Option<MachineId>,
+    /// What removing a Container answers instead, so it stays where it was.
+    removal_refusal: Option<RpcError>,
+    /// An inspect of a removed Container answers not found, as the daemon does.
+    removed_unfound: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -200,6 +209,10 @@ impl DeployService {
             },
             ingress_roles: Arc::default(),
             role_off_refusal: None,
+            entry_lag: Arc::default(),
+            start_error_on: None,
+            removal_refusal: None,
+            removed_unfound: false,
         }
     }
 
@@ -235,6 +248,37 @@ impl DeployService {
             details: Value::Null,
             cause: Vec::new(),
         });
+        self
+    }
+
+    /// Like [`Self::fail_starts`], on `machine_id` only.
+    pub(super) fn fail_starts_on(self, machine_id: MachineId, message: &str) -> Self {
+        Self {
+            start_error_on: Some(machine_id),
+            ..self.fail_starts(message)
+        }
+    }
+
+    /// Every Container removal is refused, so a failed start's Container stays.
+    pub(super) fn refuse_removals(mut self, message: &str) -> Self {
+        self.removal_refusal = Some(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: message.into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        });
+        self
+    }
+
+    /// An inspect of a removed Container answers not found.
+    pub(super) fn unfound_once_removed(mut self) -> Self {
+        self.removed_unfound = true;
+        self
+    }
+
+    /// The Entry Machine's next `reads` listings show no Server with the ingress role.
+    pub(super) fn entry_lags_ingress(self, reads: usize) -> Self {
+        self.entry_lag.store(reads, Ordering::SeqCst);
         self
     }
 
@@ -415,6 +459,12 @@ impl DeployService {
             cause: Vec::new(),
         });
         self
+    }
+
+    fn start_error(&self, machine_id: MachineId) -> Option<&RpcError> {
+        self.start_error
+            .as_ref()
+            .filter(|_| self.start_error_on.is_none_or(|on| on == machine_id))
     }
 
     /// The Machines as `ListMachines` answers them, with each role `UpdateMachine` set.
@@ -798,14 +848,27 @@ impl FakeMachine for DeployService {
 
     async fn list_machines(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         if let Some(error) = self.machines_error.lock().unwrap().clone() {
             return encoded(RpcResponse::from(error));
         }
+        let mut machines = self.listed_machines();
+        let lags = machine_from_metadata(&request).is_err()
+            && self
+                .entry_lag
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reads| {
+                    reads.checked_sub(1)
+                })
+                .is_ok();
+        if lags {
+            for observed in &mut machines {
+                observed.machine.accepts_ingress = false;
+            }
+        }
         encoded(RpcResponse::from(MachineList {
             enrollment: None,
-            machines: self.listed_machines(),
+            machines,
         }))
     }
 
@@ -946,6 +1009,14 @@ impl FakeMachine for DeployService {
         if self.uninspectable.contains(&inspect.container_id) {
             return Err(Status::not_found("no such container"));
         }
+        if self.removed_unfound && self.removed.lock().unwrap().contains(&inspect.container_id) {
+            return encoded(RpcResponse::from(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: format!("No such container: {}", inspect.container_id),
+                details: Value::Null,
+                cause: Vec::new(),
+            }));
+        }
         if self.stalled_inspects.contains(&inspect.container_id) {
             return Err(Status::deadline_exceeded("docker did not answer"));
         }
@@ -1080,7 +1151,7 @@ impl FakeMachine for DeployService {
                         container_id
                     }
                 };
-                if let Some(error) = &self.start_error {
+                if let Some(error) = self.start_error(machine_id) {
                     return encoded(RpcResponse::from(error.clone()));
                 }
                 (
@@ -1096,7 +1167,7 @@ impl FakeMachine for DeployService {
                 container: RunTarget::Existing(locator),
                 ..
             } => {
-                if let Some(error) = &self.start_error {
+                if let Some(error) = self.start_error(machine_id) {
                     return encoded(RpcResponse::from(error.clone()));
                 }
                 let container_id = self.located(&locator)?;
@@ -1129,6 +1200,9 @@ impl FakeMachine for DeployService {
                 )
             }
             ployz_core::ContainerWant::Gone { container, .. } => {
+                if let Some(refusal) = &self.removal_refusal {
+                    return encoded(RpcResponse::from(refusal.clone()));
+                }
                 if let Ok(container_id) = self.located(&container) {
                     if let Err(answer) = turned(container_id).await {
                         return encoded(RpcResponse::from(answer));

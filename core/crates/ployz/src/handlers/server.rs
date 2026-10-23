@@ -11,9 +11,9 @@ use crate::cli::{
     base, env, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
 };
 use ployz_core::{
-    AdvertisedEndpoint, BuildConcurrencyUpdate, Machine, MachineName, MachineObservation,
-    MachineTarget, MachineUpdate, PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint,
-    UpdateMachineRequest, op,
+    AdvertisedEndpoint, BuildConcurrencyUpdate, InspectContainerRequest, ListMachinesRequest,
+    Machine, MachineId, MachineName, MachineObservation, MachineTarget, MachineUpdate,
+    PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest, op,
 };
 
 use serde_json::{Value, json};
@@ -26,7 +26,7 @@ use crate::{
     connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
-    ui::progress::NotRunning,
+    ui::progress::StartFailure,
 };
 
 use super::{Error, leaf_matches, string_values, with_client};
@@ -949,16 +949,15 @@ pub(crate) async fn apply_update(
     let (ingress, follow_up) = match followed {
         Ok(ingress) => (ingress, Ok(())),
         Err(error) => {
-            let error = super::ingress_hints(error, |args| super::rerun(&recovery, args));
-            let not_running = error
-                .diagnostic()
-                .filter(|diagnostic| diagnostic.failed_machine == Some(machine.id))
-                .and_then(|diagnostic| diagnostic.not_running);
-            let error = match not_running {
-                Some(not_running) if turns_on && !error.is_interrupted() => {
-                    turn_back_off(client, &mut machine, not_running, error, rerun, &recovery).await
+            let error = match own_start_failure(&error, machine.id, turns_on) {
+                Some(failure) if stays_down(client, &machine.id, failure).await => {
+                    turn_back_off(client, &mut machine, failure, error, rerun, &recovery).await
                 }
-                _ => ingress_incomplete("Server updated", error, rerun),
+                _ => ingress_incomplete(
+                    "Server updated",
+                    super::ingress_hints(error, |args| super::rerun(&recovery, args)),
+                    rerun,
+                ),
             };
             (None, Err(error))
         }
@@ -975,24 +974,69 @@ pub(crate) async fn apply_update(
     )
 }
 
-/// Whether the Server `selector` names is seen without the ingress role. A Server not read
-/// counts as having it, so a failed start never turns off a role this command didn't turn on.
-async fn ingress_off(client: &mut Client, selector: &MachineTarget) -> bool {
-    let Ok(machines) = client.machines().await else {
+/// Whether the Server `selector` names holds no ingress role in its own view of the Cluster.
+/// Every role change goes through that Server's own record, so its view is the freshest
+/// there is; another Machine's can lag a change Ployz Cloud just made. A Server not read
+/// counts as holding it, so a failed start never turns off a role this command didn't
+/// turn on.
+async fn ingress_off(client: &Client, selector: &MachineTarget) -> bool {
+    let Ok(listed) = client
+        .invoke_answered::<op::ListMachines>(
+            ListMachinesRequest {},
+            selector,
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+    else {
         return false;
     };
-    crate::cluster::visible_machine(selector, &machines)
+    crate::cluster::visible_machine(selector, &listed.machines)
         .is_ok_and(|observed| !observed.machine.accepts_ingress)
 }
 
-/// Turn web traffic back off on `machine` after its Ingress Proxy was seen failing to start
-/// there, as the dashboard switch does, so the Server isn't advertised with nothing listening.
-/// `UpdateMachine` has no compare-and-set: this one-field patch overwrites a role another
-/// writer set since, and leaves every other field as it is.
+/// How the new Ingress Proxy failed to start on `machine`, when the role it needs was off
+/// before this command and the Deploy ended on its own there: not interrupted, and not on
+/// another Server.
+fn own_start_failure(error: &Error, machine: MachineId, turns_on: bool) -> Option<StartFailure> {
+    error
+        .diagnostic()
+        .filter(|diagnostic| {
+            turns_on && !error.is_interrupted() && diagnostic.failed_machine == Some(machine)
+        })
+        .and_then(|diagnostic| diagnostic.start_failure)
+}
+
+/// Whether the new Ingress Proxy that failed to start on `machine` can't be running there:
+/// Docker never ran it, or `machine` itself says it's gone. One that failed its health
+/// check may still run, or run again under Docker's restart policy, while it's there.
+async fn stays_down(client: &Client, machine: &MachineId, failure: StartFailure) -> bool {
+    let StartFailure::Unhealthy(container_id) = failure else {
+        return true;
+    };
+    matches!(
+        client
+            .invoke_answered::<op::InspectContainer>(
+                InspectContainerRequest { container_id },
+                &MachineTarget::from(machine),
+                Some(TARGET_RPC_TIMEOUT),
+            )
+            .await,
+        Err(ConnectError::Remote(RpcError {
+            code: RpcErrorCode::NotFound,
+            ..
+        }))
+    )
+}
+
+/// Turn web traffic back off on `machine` after its new Ingress Proxy was seen failing to
+/// start there with no old one in its place, as the dashboard switch does, so the Server
+/// isn't advertised with nothing listening. `UpdateMachine` has no compare-and-set: this
+/// one-field patch overwrites a role another writer set since, and leaves every other
+/// field as it is.
 async fn turn_back_off(
     client: &mut Client,
     machine: &mut Machine,
-    not_running: NotRunning,
+    failure: StartFailure,
     failed: Error,
     rerun: String,
     recovery: &ArgMatches,
@@ -1012,16 +1056,18 @@ async fn turn_back_off(
     {
         Ok(updated) => {
             *machine = updated.machine;
-            let headline = match not_running {
-                NotRunning::PortTaken => format!(
+            let headline = match failure {
+                StartFailure::PortTaken => format!(
                     "Web traffic stays off on {name}: port 80 or 443 is in use. Free it, then try again."
                 ),
-                NotRunning::Stopped => super::ingress_headline(
+                StartFailure::Unhealthy(_) => super::ingress_headline(
                     &format!("Web traffic stays off on {name}; its Ingress Proxy didn't start"),
                     &failed,
                 ),
             };
-            failed.context(headline).hint(Hint::Next(rerun))
+            super::ingress_hints(failed, |args| super::rerun(recovery, args))
+                .context(headline)
+                .hint(Hint::Next(rerun))
         }
         Err(error) => {
             let headline = super::ingress_headline(
@@ -1040,7 +1086,7 @@ async fn turn_back_off(
                     "--accepts-ingress=false",
                 ],
             );
-            failed
+            super::ingress_log_hints(failed, |args| super::rerun(recovery, args))
                 .context(headline)
                 .with_detail("rollback_error", json!(RpcError::from(error)))
                 .hint(Hint::Next(off))
@@ -1336,6 +1382,36 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a start that failed on its own, on the Server whose role this command turned on,
+    /// can turn the role back off.
+    #[test]
+    fn only_an_uninterrupted_start_failure_on_the_server_turned_on_counts() {
+        let one = MachineId::random();
+        let failed_on = |machine| {
+            Error::coded(RpcErrorCode::Internal, "ingress: create Container failed.")
+                .with_diagnostic(crate::ui::progress::Diagnostic {
+                    failed_machine: Some(machine),
+                    start_failure: Some(StartFailure::PortTaken),
+                    ..Default::default()
+                })
+        };
+        assert_eq!(
+            own_start_failure(&failed_on(one), one, true),
+            Some(StartFailure::PortTaken)
+        );
+        assert_eq!(own_start_failure(&failed_on(one), one, false), None);
+        assert_eq!(
+            own_start_failure(&failed_on(one).interrupted(), one, true),
+            None,
+            "an interrupt may have cut the Deploy short"
+        );
+        assert_eq!(
+            own_start_failure(&failed_on(MachineId::random()), one, true),
+            None,
+            "a failure on another Server"
+        );
+    }
 
     #[test]
     fn endpoints_accept_socket_or_ip_and_apply_the_default_port() {

@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ployz_core::{DeployWarning, MachineId, Namespace, QualifiedService, ServiceName};
+use ployz_core::{ContainerId, DeployWarning, MachineId, Namespace, QualifiedService, ServiceName};
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
@@ -1361,21 +1361,23 @@ pub(crate) fn settled_text(frame: &Frame) -> String {
 #[derive(Debug, Default)]
 pub(crate) struct Diagnostic {
     pub failed_machine: Option<MachineId>,
-    /// Why the new Container is seen not to run on `failed_machine`. `None` when the outcome
-    /// there is unknown, as after a lost connection or a listing that failed.
-    pub not_running: Option<NotRunning>,
+    /// How a new Container that replaced none failed to start on `failed_machine`. `None`
+    /// when the outcome there is unknown, as after a lost connection or a listing that
+    /// failed, or when an old Container was brought back in its place.
+    pub start_failure: Option<StartFailure>,
     pub failures: Vec<Detail>,
     pub logs: Vec<LogTail>,
     pub compensation: Vec<Detail>,
 }
 
-/// What proves a Deploy's new Container doesn't run.
+/// How a Deploy's new Container failed to start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NotRunning {
-    /// Docker refused it a port something else holds.
+pub(crate) enum StartFailure {
+    /// Docker refused it a port something else holds, so it never ran.
     PortTaken,
-    /// Its health check saw it stop, or never turn healthy.
-    Stopped,
+    /// Its health check saw it stop, or never turn healthy. It may still run, or run again
+    /// under Docker's restart policy, until it's gone from its Server.
+    Unhealthy(ContainerId),
 }
 
 /// One distinct failed task or observed compensation action.

@@ -4,14 +4,15 @@ use crate::{
     connect::Client,
     failure::Failure,
     ui::progress::{
-        Detail, Diagnostic, Frame, GraphService, LogTail, NotRunning, Row, Run, State, Subject,
+        Detail, Diagnostic, Frame, GraphService, LogTail, Row, Run, StartFailure, State, Subject,
         Timing, Work,
     },
 };
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, HealthFailure,
-    MachineId, Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
-    ReplacementCompensation, RestoreAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
+    MachineAction, MachineId, Namespace, OperationPhase, OperationRow, OperationStatus,
+    QualifiedService, ReplacementCompensation, RestoreAttempt, RpcError, RpcErrorCode, ServiceName,
+    StopAttempt,
 };
 use ployz_store::tools::SealedValues;
 use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, StoppedBy, starts_container};
@@ -506,22 +507,38 @@ pub(super) fn failure(
         None => reason,
     });
     let lost_to_newer = matches!(error, ExecutionError::NewerServing { .. });
-    let not_running = match error {
-        ExecutionError::Machine { error, .. } => std::iter::once(&error.message)
+    let fresh = matches!(
+        failed,
+        FailedOperation::Operation {
+            operation: DeployOperation::RunContainer { .. },
+            ..
+        }
+    );
+    let start_failure = match error {
+        ExecutionError::Machine {
+            action: MachineAction::CreateContainer,
+            error,
+        } if fresh => std::iter::once(&error.message)
             .chain(&error.cause)
             .any(|cause| crate::ingress::port_taken(cause))
-            .then_some(NotRunning::PortTaken),
-        ExecutionError::Health { failure, .. } => {
-            (!matches!(failure, HealthFailure::Cancelled)).then_some(NotRunning::Stopped)
+            .then_some(StartFailure::PortTaken),
+        ExecutionError::Health {
+            container_id,
+            failure,
+            ..
+        } if fresh && !matches!(failure, HealthFailure::Cancelled) => {
+            Some(StartFailure::Unhealthy(*container_id))
         }
-        ExecutionError::DependencyHealth { .. }
+        ExecutionError::Machine { .. }
+        | ExecutionError::Health { .. }
+        | ExecutionError::DependencyHealth { .. }
         | ExecutionError::Hook { .. }
         | ExecutionError::NewerServing { .. }
         | ExecutionError::Cancelled => None,
     };
     let mut diagnostic = Diagnostic {
         failed_machine: (!lost_to_newer).then_some(machine),
-        not_running,
+        start_failure,
         logs: if lost_to_newer { Vec::new() } else { tails },
         ..Diagnostic::default()
     };

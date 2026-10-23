@@ -1257,3 +1257,96 @@ fn a_gap_found_at_run_time_leaves_a_direct_deploy_partial_and_names_its_server()
         "{shown:?}"
     );
 }
+
+fn port_taken(action: MachineAction) -> ExecutionError {
+    ExecutionError::Machine {
+        action,
+        error: RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Docker refused the Container".into(),
+            cause: vec!["failed to bind host port 0.0.0.0:80/tcp: address already in use".into()],
+            details: serde_json::Value::Null,
+        },
+    }
+}
+
+fn exited() -> ExecutionError {
+    ExecutionError::Health {
+        container_id: old('c'),
+        failure: ployz_core::HealthFailure::TimedOut {
+            deadline_millis: None,
+            last_check: None,
+        },
+        out_of_memory: None,
+        last_run: None,
+    }
+}
+
+fn failed_at(failed: FailedOperation<ExecutionError>) -> Option<crate::ui::progress::StartFailure> {
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed,
+        unexecuted: Vec::new(),
+        services: Vec::new(),
+    };
+    failure(&outcome, &[], Vec::new())
+        .diagnostic()
+        .and_then(|diagnostic| diagnostic.start_failure)
+}
+
+/// Only Docker refusing the new Container a port says the port is taken; the same words
+/// from another step, such as a pull, prove nothing about what runs.
+#[test]
+fn only_a_create_refused_a_port_reads_as_port_taken() {
+    let machine = MachineId::random();
+    let run = operation(0, machine, OperationStatus::Pending).operation;
+    let at = |error| {
+        failed_at(FailedOperation::Operation {
+            operation: run.clone(),
+            error,
+        })
+    };
+    assert_eq!(
+        at(port_taken(MachineAction::CreateContainer)),
+        Some(crate::ui::progress::StartFailure::PortTaken)
+    );
+    assert_eq!(at(port_taken(MachineAction::PullImage)), None);
+    assert_eq!(at(port_taken(MachineAction::InspectContainer)), None);
+}
+
+/// A failed replacement brought its old Container back, or tried to, so something may serve
+/// in the new one's place.
+#[test]
+fn a_failed_replacement_reads_as_no_start_failure() {
+    let machine = MachineId::random();
+    let replacement = ployz_core::ReplacementOperation {
+        machine_id: machine,
+        old_container_id: old('a'),
+        spec: spec(),
+        skip_health_monitor: false,
+    };
+    assert_eq!(
+        failed_at(FailedOperation::Replacement {
+            operation: replacement,
+            error: exited(),
+            compensation: ReplacementCompensation::OldStopped {
+                stop_new_container: Some(StopAttempt::Stopped),
+                restore_old_container: RestoreAttempt::Restored,
+            },
+        }),
+        None
+    );
+}
+
+/// A fresh start that failed its health check names its Container, which may still run.
+#[test]
+fn a_fresh_start_that_failed_its_health_check_names_its_container() {
+    let machine = MachineId::random();
+    assert_eq!(
+        failed_at(FailedOperation::Operation {
+            operation: operation(0, machine, OperationStatus::Pending).operation,
+            error: exited(),
+        }),
+        Some(crate::ui::progress::StartFailure::Unhealthy(old('c')))
+    );
+}

@@ -268,9 +268,17 @@ async fn turn_web_traffic_on(
         recovery,
     )
     .await;
-    let machines = client.machines().await.unwrap();
+    let listed = client
+        .invoke_answered::<ployz_core::op::ListMachines>(
+            ployz_core::ListMachinesRequest {},
+            &ployz_core::MachineTarget::from(&id),
+            None,
+        )
+        .await
+        .unwrap();
     server.abort();
-    let on = machines
+    let on = listed
+        .machines
         .iter()
         .find(|observed| observed.machine.id == id)
         .unwrap()
@@ -300,12 +308,16 @@ async fn web_traffic_whose_proxy_cannot_take_its_port_goes_back_off() {
     assert!(report.details.get("retry").is_some(), "{report:?}");
 }
 
-/// Any other failed start says what failed after the same words.
+/// A proxy that failed its health check and is gone from the Server again says what failed
+/// after the same words.
 #[tokio::test(start_paused = true)]
 async fn web_traffic_whose_proxy_keeps_restarting_goes_back_off() {
-    let (result, on) =
-        turn_web_traffic_on(support::DeployService::new(server_one(false)).restart_containers())
-            .await;
+    let (result, on) = turn_web_traffic_on(
+        support::DeployService::new(server_one(false))
+            .restart_containers()
+            .unfound_once_removed(),
+    )
+    .await;
     let error = result.unwrap_err();
     assert!(!on, "web traffic went back off");
     assert!(
@@ -338,12 +350,36 @@ async fn web_traffic_whose_proxy_start_went_unseen_stays_on() {
     );
 }
 
-/// A start whose answer was lost, as when the Server stops answering, may have run, so web
-/// traffic stays on.
+/// A proxy that failed its health check but couldn't be removed may still run, or run again
+/// under Docker's restart policy, so web traffic stays on.
 #[tokio::test(start_paused = true)]
-async fn web_traffic_whose_proxy_start_went_unanswered_stays_on() {
+async fn web_traffic_whose_failed_proxy_stays_on_its_server_stays_on() {
     let (result, on) = turn_web_traffic_on(
-        support::DeployService::new(server_one(false)).fail_starts("transport error"),
+        support::DeployService::new(server_one(false))
+            .restart_containers()
+            .unfound_once_removed()
+            .refuse_removals("docker did not answer"),
+    )
+    .await;
+    let error = result.unwrap_err();
+    assert!(on, "web traffic stays on");
+    assert!(
+        error
+            .report()
+            .message
+            .starts_with("Server updated; the Ingress Proxy did not follow"),
+        "{:?}",
+        error.report()
+    );
+}
+
+/// A create that failed for a reason other than a taken port, such as Docker refusing it,
+/// proves nothing about what runs there, so web traffic stays on.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_whose_proxy_create_failed_otherwise_stays_on() {
+    let (result, on) = turn_web_traffic_on(
+        support::DeployService::new(server_one(false))
+            .fail_starts("invalid mount config for type \"bind\""),
     )
     .await;
     let error = result.unwrap_err();
@@ -364,6 +400,52 @@ async fn web_traffic_already_on_stays_on_when_its_proxy_cannot_start() {
     let (result, on) =
         turn_web_traffic_on(support::DeployService::new(server_one(true)).fail_starts(PORT_TAKEN))
             .await;
+    let error = result.unwrap_err();
+    assert!(on, "web traffic stays on");
+    assert!(
+        error
+            .report()
+            .message
+            .starts_with("Server updated; the Ingress Proxy did not follow"),
+        "{:?}",
+        error.report()
+    );
+}
+
+/// Web traffic Cloud turned on before this command, which the Entry Machine hadn't seen yet,
+/// stays on: the target's own record says the command didn't turn it on.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_turned_on_elsewhere_first_stays_on() {
+    let (result, on) = turn_web_traffic_on(
+        support::DeployService::new(server_one(true))
+            .fail_starts(PORT_TAKEN)
+            .entry_lags_ingress(1),
+    )
+    .await;
+    let error = result.unwrap_err();
+    assert!(on, "web traffic stays on");
+    assert!(
+        error
+            .report()
+            .message
+            .starts_with("Server updated; the Ingress Proxy did not follow"),
+        "{:?}",
+        error.report()
+    );
+}
+
+/// A proxy that can't start on another Server says nothing about this one.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_whose_proxy_fails_on_another_server_stays_on() {
+    let mut two = support::machine('b', "two");
+    two.machine.accepts_ingress = true;
+    let two_id = two.machine.id;
+    let (result, on) = turn_web_traffic_on(
+        support::DeployService::new(server_one(false))
+            .with_machines(vec![server_one(false), two])
+            .fail_starts_on(two_id, PORT_TAKEN),
+    )
+    .await;
     let error = result.unwrap_err();
     assert!(on, "web traffic stays on");
     assert!(
@@ -401,6 +483,10 @@ async fn web_traffic_that_cannot_go_back_off_says_both_failures() {
     assert_eq!(
         report.details.pointer("/rollback_error/message"),
         Some(&serde_json::json!("the Server's record is busy"))
+    );
+    assert!(
+        report.details.get("retry").is_none(),
+        "only the off command is offered: {report:?}"
     );
     let id = support::machine('a', "one").machine.id;
     let next = report
