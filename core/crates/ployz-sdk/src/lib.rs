@@ -244,6 +244,25 @@ pub struct RunningDeployHandle {
     inner: sdk::RunningDeploy,
 }
 
+#[cfg(test)]
+mod dial_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_fired_deadline_is_timed_out() {
+        let failure = sdk::CallError {
+            error: RpcError { code: RpcErrorCode::Unavailable, message: "no answer".into(), details: serde_json::Value::Null, cause: Vec::new() },
+            unanswered: true,
+            target_unreached: false,
+        };
+        assert_eq!(classify_failure(&failure, false, false), DialOutcome::Unanswered);
+        assert_eq!(classify_failure(&failure, false, true), DialOutcome::Cancelled);
+        assert_eq!(classify_failure(&failure, true, true), DialOutcome::TimedOut);
+        let refused = sdk::CallError { unanswered: false, ..failure };
+        assert_eq!(classify_failure(&refused, false, false), DialOutcome::Refused);
+    }
+}
+
 #[napi]
 impl Client {
     /// Clear this Machine's Management Client slot named `label`.

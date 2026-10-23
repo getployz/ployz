@@ -172,10 +172,27 @@ mod tests {
 
     #[test]
     fn slow_and_non_answering_dials_are_always_kept() {
+        assert!(!should_emit(false, 1_999, DialOutcome::Answered));
+        assert!(should_emit(false, 2_000, DialOutcome::Answered));
         assert!(should_emit(false, 2_001, DialOutcome::Answered));
         assert!(should_emit(false, 40, DialOutcome::TimedOut));
         assert!(should_emit(false, 40, DialOutcome::Cancelled));
+        assert!(should_emit(false, 40, DialOutcome::Refused));
+        assert!(should_emit(false, 40, DialOutcome::Unanswered));
+        assert!(should_emit(true, 40, DialOutcome::Answered));
         assert!(!should_emit(false, 40, DialOutcome::Answered));
+    }
+
+    #[tokio::test]
+    async fn failed_stage_keeps_its_name_after_finish() {
+        let timings = Arc::new(Mutex::new(DialTimings::default()));
+        scope(Arc::clone(&timings), async {
+            let mut stage = StageGuard::begin(Stage::Proof);
+            stage.finish_error();
+        }).await;
+        let recorded = timings.lock().expect("timings lock");
+        assert!(recorded.proof_ms.is_some());
+        assert!(matches!(recorded.unfinished_stage, Some(Stage::Proof)));
     }
 
     #[tokio::test]

@@ -28,13 +28,17 @@ const arriveAtOnce = async () => (session = new NativeClient());
 let connecting = arriveAtOnce;
 let diagnostic = null;
 let cancelReasons = [];
+let nativeCorrelation;
 const native = new Module(addon);
 native.loaded = true;
 native.exports = {
   Client: NativeClient,
   ConfigStore: class {},
   SealedNames: class {},
-  startConnections: () => ({ cancel: (timedOut) => cancelReasons.push(timedOut), wait: () => connecting(), dialTimings: () => diagnostic }),
+  startConnections: (_connections, _sampled, correlation) => {
+    nativeCorrelation = correlation;
+    return { cancel: (timedOut) => cancelReasons.push(timedOut), wait: () => connecting(), dialTimings: () => diagnostic };
+  },
 };
 require.cache[addon] = native;
 const sdk = require(dir);
@@ -74,6 +78,66 @@ test("sampled dial reports only stage durations and enum values", async () => {
   } finally {
     diagnostic = null;
   }
+});
+
+test("a rejecting async diagnostic callback leaves the dial result and process unchanged", async () => {
+  const unhandled = [];
+  const record = reason => unhandled.push(reason);
+  process.on("unhandledRejection", record);
+  diagnostic = { totalMs: 12, outcome: "answered", pathKind: "unknown" };
+  try {
+    const client = await sdk.connect({
+      connections: [{ tcp: "127.0.0.1:1" }],
+      onDialTiming: async () => { throw new Error("diagnostic failed"); },
+    });
+    assert.equal(client.dialTiming.outcome, "answered");
+    await tick();
+    await tick();
+    assert.deepEqual(unhandled, []);
+    const closing = client.close();
+    session.finishClose();
+    await closing;
+  } finally {
+    diagnostic = null;
+    process.off("unhandledRejection", record);
+  }
+});
+
+test("a fast unsampled dial has no dialTiming property", async () => {
+  const client = await sdk.connect({ connections: [{ tcp: "127.0.0.1:1" }] });
+  assert.equal(Object.hasOwn(client, "dialTiming"), false);
+  const closing = client.close();
+  session.finishClose();
+  await closing;
+});
+
+test("a caller abort reason remains untouched", async () => {
+  const abort = new AbortController();
+  const reason = new Error("caller gave up");
+  diagnostic = { totalMs: 12, outcome: "cancelled", pathKind: "unknown" };
+  try {
+    let arrive;
+    connecting = () => new Promise(resolve => (arrive = resolve));
+    const pending = sdk.connect({ connections: [{ tcp: "127.0.0.1:1" }], signal: abort.signal });
+    abort.abort(reason);
+    arrive((session = new NativeClient()));
+    await tick();
+    session.finishClose();
+    await assert.rejects(pending, error => error === reason);
+    assert.equal(Object.hasOwn(reason, "dialTiming"), false);
+  } finally {
+    connecting = arriveAtOnce;
+    diagnostic = null;
+  }
+});
+
+test("a supplied correlation value reaches native unchanged", async () => {
+  const correlation = "0011223344556677";
+  const client = await sdk.connect({ connections: [{ tcp: "127.0.0.1:1" }], dialCorrelation: correlation });
+  assert.equal(nativeCorrelation, correlation);
+  const closing = client.close();
+  session.finishClose();
+  await closing;
 });
 const activeTimeouts = () => process.getActiveResourcesInfo().filter(resource => resource === "Timeout").length;
 
