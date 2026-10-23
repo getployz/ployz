@@ -10,7 +10,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::storage::Tx;
-use crate::variables::{MAX_ENV_STRING, TOO_LONG, VariableKey};
+use crate::variables::{TOO_LONG, VariableKey, too_long};
 use crate::{EnvironmentId, OrganizationId, SealingKey};
 
 /// A secret's new value: plain text the Store seals, or a value the browser sealed
@@ -123,7 +123,7 @@ pub(crate) fn accept(
             return Err(refuse("sealed for every Service; seal it for this one"));
         }
     }
-    if key.as_str().len() + plaintext_len(&value.value) + 2 > MAX_ENV_STRING {
+    if too_long(key.as_str(), plaintext_len(&value.value)) {
         return Err(refuse(TOO_LONG));
     }
     Ok(SealedSecret {
@@ -209,7 +209,7 @@ mod tests {
                 "another variable",
             ),
             (
-                value(2, 3, "K", vec![0; MAX_ENV_STRING + 48]),
+                value(2, 3, "K", vec![0; crate::variables::MAX_ENV_STRING + 48]),
                 true,
                 "too long",
             ),

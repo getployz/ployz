@@ -98,6 +98,10 @@ fn refused(store: &ConfigStore, path: &str, value: Value, why: &str) {
 
 /// Admit Deployment 101 of the default Environment and claim it, as a runner does.
 fn claim(store: &ConfigStore) -> ployz_store::Claimed {
+    try_claim(store).unwrap()
+}
+
+fn try_claim(store: &ConfigStore) -> Result<ployz_store::Claimed, RpcError> {
     let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
     store
         .write_trusted(
@@ -115,9 +119,7 @@ fn claim(store: &ConfigStore) -> ployz_store::Claimed {
             &ployz_store::Trusted::default(),
         )
         .unwrap();
-    store
-        .claim(&id, &RunnerId::parse("runner").unwrap())
-        .unwrap()
+    store.claim(&id, &RunnerId::parse("runner").unwrap())
 }
 
 fn value(store: &ConfigStore, path: &str) -> Value {
@@ -330,4 +332,35 @@ fn lowering_carries_a_sealed_value_and_a_template_around_it_to_the_deploy_unopen
         json!({ "template": ["pg://", sealed, "@db"] })
     );
     assert_eq!(snapshot["resolvedEnv"]["TOKEN"], SECRET);
+}
+
+#[test]
+fn a_template_that_opens_past_a_containers_variable_limit_is_refused_at_claim() {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+    let sealed = base64::engine::general_purpose::STANDARD.encode(vec![7; 70_000 + 48]);
+    set(
+        &store,
+        "web.env.PASSWORD",
+        json!({ "secret": {
+            "sealedFor": uuid(2),
+            "value": { "sealed": sealed, "scope": { "service": uuid(3) }, "key": "PASSWORD" },
+        } }),
+    );
+    set(
+        &store,
+        "web.env.DOUBLE",
+        json!("${{ PASSWORD }}${{ PASSWORD }}"),
+    );
+    let error = try_claim(&store).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(
+        error.message.starts_with("web.env.DOUBLE is too long"),
+        "{error:?}"
+    );
+    assert!(!format!("{error:?}").contains("BwcH"), "{error:?}");
 }

@@ -560,8 +560,8 @@ pub(crate) const MAX_ENV_STRING: usize = 128 * 1024;
 
 pub(crate) const TOO_LONG: &str = "too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
 
-fn too_long(key: &str, value: &str) -> bool {
-    key.len() + value.len() + 2 > MAX_ENV_STRING
+pub(crate) const fn too_long(key: &str, value: usize) -> bool {
+    key.len() + value + 2 > MAX_ENV_STRING
 }
 
 /// The most Linux passes a program for its variables and arguments together with
@@ -659,7 +659,7 @@ pub(crate) fn validate_text(key: &VariableKey, text: &str) -> Result<(), RpcErro
     if text.contains('\0') {
         return Err(invalid(key, "null characters are not allowed"));
     }
-    if too_long(key.as_str(), text) {
+    if too_long(key.as_str(), text.len()) {
         return Err(invalid(key, TOO_LONG));
     }
     Ok(())
@@ -981,7 +981,7 @@ pub(crate) fn resolve(
                 },
             };
             if let Some(value) = value {
-                if value.text().is_some_and(|text| too_long(key, text)) {
+                if too_long(key, opened_len(&value)) {
                     return Err(error::invalid(
                         format!("{}.env.{key} is {TOO_LONG}", config.settings.private_dns),
                         json!({ "variable": key }),
