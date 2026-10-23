@@ -587,6 +587,14 @@ doesn't exist and for a private image you have no access to.
 - If the image is private, add **Registry credentials**, or replace a token that expired. See
   [Use a private image](../deploy/docker-image.md#use-a-private-image).
 
+A server that can't look up a hostname while pulling says so instead:
+
+**Failed at pull**, with `Host registry.example.invalid does not resolve, so the image could not be pulled. Check the image's registry, or this Server's DNS`
+
+The host is usually the registry in the image name, so check that part for typos. It can also be
+the registry's sign-in service or a proxy the server pulls through. If the name is right, the
+server's DNS can't resolve it.
+
 ## My server's disk is full
 
 **Failed at pull**, with `Server machine-3's disk is full: 48 MB free under /var/lib/containerd`
