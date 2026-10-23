@@ -971,16 +971,7 @@ impl LocalMachine {
         {
             containers.departure_failed();
         }
-        departed?;
-        let reset_warning = match publication {
-            Some(publication) => publication
-                .remove(&machine_id)
-                .await
-                .err()
-                .map(|error| ployz_core::error_chain::inline(&error)),
-            None => None,
-        };
-        Ok(leave_response(&self.owner, reset_warning))
+        departed
     }
 
     /// Remove every managed Container, depart storage and commit the reset.

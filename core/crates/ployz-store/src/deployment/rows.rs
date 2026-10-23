@@ -1590,7 +1590,9 @@ mod tests {
             RpcErrorCode::Unavailable,
             format!("Machine {machine_id} did not answer: deadline has elapsed"),
         );
-        tagged.details["machine_id"] = serde_json::json!("b".repeat(32));
+        if let Some(details) = tagged.details.as_object_mut() {
+            details.insert("machine_id".into(), serde_json::json!("b".repeat(32)));
+        }
         let elsewhere = ExecutionError::Machine {
             action: MachineAction::CreateContainer,
             error: tagged,
