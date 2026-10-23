@@ -87,7 +87,6 @@ async fn cli_exec_reports_incomplete_discovery_as_partial() {
         .unwrap();
     server.abort();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    eprintln!("exec exit={:?}\n{stderr}", output.status.code());
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     assert!(stderr.contains("machine-3 did not answer"), "{stderr}");
     assert_eq!(stderr.matches("machine-3").count(), 1, "{stderr}");

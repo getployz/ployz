@@ -79,6 +79,9 @@ When the CLI says `Server machine-2: deployment observations are incomplete`, it
 distinct failure causes in that Server's line and does not repeat its container or volume
 omissions. The Server's observation can be incomplete even if the project has no volumes.
 `--json` keeps every warning, including the individual omissions and failures.
+If the CLI has no name for an observation failure yet, plain output prints the warning at
+the next progress update or heartbeat, using the Machine ID if it still lacks a name.
+Interactive progress can show it at once. If following stops first, the warning still prints.
 
 If Cloud stops answering while the CLI follows a Deployment, the command exits 1 with
 `Stopped following Deployment #N; it keeps running in Ployz Cloud.` and an `inspect:` line
