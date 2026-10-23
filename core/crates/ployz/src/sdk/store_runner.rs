@@ -903,13 +903,12 @@ impl Run {
         deletes: &[ployz_core::DockerVolumeId],
         unprepared: Unprepared,
     ) -> Result<DeploymentSummary, RpcError> {
-        let Unprepared { error, same_again } = unprepared;
-        match needs_upload(&error) {
+        match needs_upload(&unprepared.error) {
             Some(services) => self.unbuilt(upload_needed(earlier, services)).await,
             None => {
                 self.not_executed(Failure {
-                    same_again,
-                    ..refused_before_deletes(&error, deletes)
+                    same_again: unprepared.same_again,
+                    ..refused_before_deletes(&unprepared, deletes)
                 })
                 .await
             }
@@ -1487,22 +1486,18 @@ pub(super) fn log_line(event: &Value) -> String {
     String::new()
 }
 
-/// `error` as a Failure. A Server short of storage whose Volumes this Deploy also deletes
-/// is told why they don't help: they are deleted only once the Deploy succeeds.
-fn refused_before_deletes(error: &RpcError, deletes: &[ployz_core::DockerVolumeId]) -> Failure {
-    let mut failure = Failure::from(error);
-    let short = matches!(
-        error.details.get("code").and_then(Value::as_str),
-        Some("insufficient_storage" | "pool_cannot_grow")
-    );
-    let on = error.details.get("machine_id").and_then(Value::as_str);
-    if short
-        && deletes
-            .iter()
-            .any(|volume| on == Some(volume.machine_id.to_string().as_str()))
+/// `unprepared` as a Failure. A Server short of storage whose Volumes this Deploy also
+/// deletes is told why they don't help: they are deleted only once the Deploy succeeds.
+fn refused_before_deletes(
+    unprepared: &Unprepared,
+    deletes: &[ployz_core::DockerVolumeId],
+) -> Failure {
+    let mut failure = Failure::from(&unprepared.error);
+    if let Some(short) = unprepared.short_of_storage
+        && deletes.iter().any(|volume| volume.machine_id == short)
     {
         failure.reason.push_str(
-            " Volumes this deploy deletes free their space only after it succeeds, so they don't count here. Deploy the deletions before the new Volumes.",
+            " Volumes this deploy deletes free their space only after it succeeds, so they don't make room for its new volumes.",
         );
     }
     failure

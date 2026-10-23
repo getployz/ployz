@@ -60,6 +60,8 @@ pub type RunningBuild = Running<BuildOutcome>;
 pub(crate) struct Unprepared {
     pub(crate) error: RpcError,
     pub(crate) same_again: bool,
+    /// The Server whose storage could not hold the Deploy's Volumes.
+    pub(crate) short_of_storage: Option<ployz_core::MachineId>,
 }
 
 impl From<RpcError> for Unprepared {
@@ -67,6 +69,7 @@ impl From<RpcError> for Unprepared {
         Self {
             error,
             same_again: false,
+            short_of_storage: None,
         }
     }
 }
@@ -81,6 +84,7 @@ impl From<crate::deploy::DeployError> for Unprepared {
     fn from(error: crate::deploy::DeployError) -> Self {
         Self {
             same_again: error.same_again(),
+            short_of_storage: error.short_of_storage(),
             error: error.into(),
         }
     }
@@ -92,6 +96,7 @@ fn unprepared(
 ) -> Unprepared {
     Unprepared {
         same_again: error.same_again(),
+        short_of_storage: error.short_of_storage(),
         error: preparation_error(error, cancellation_requested),
     }
 }
