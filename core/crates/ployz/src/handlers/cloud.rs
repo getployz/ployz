@@ -10,13 +10,14 @@ use ployz_core::{
     CloudEnrollToken, DescribeContractRequest, EnrollAs, EnrollRequest, InspectRequest,
     LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, ManagementCapability,
     ManagementClientLabel, RecoveryCode, SetManagementClientRequest, StorageChoice, TokenRequest,
-    WrapSealingKeyRequest, op,
+    op,
 };
 
+use super::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cloud_enroll::{
     self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, InitializeMode,
-    Join, Outcome, Recovery, RecoveryBackup,
+    Join, Outcome, Recovery,
 };
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
@@ -647,25 +648,8 @@ where
         .and_then(|result| ui::emit_committed(result, partial.map_or(Ok(()), Err))))
 }
 
-const RECOVERY_CODE_NOT_SAVED: &str =
-    "Recovery code not saved. Run ployz recovery rotate now to make one.";
-
 fn shows_code(matches: &ArgMatches, reader: Reader) -> bool {
     reader == Reader::Person && (!ui::json() || matches.get_flag("show-recovery-code"))
-}
-
-/// The Sealing Key wrapped under `code`, for Cloud to keep until `ployz recover` needs it.
-async fn wrap_sealing_key(
-    client: &mut Client,
-    code: &RecoveryCode,
-) -> Result<RecoveryBackup, Error> {
-    let wrapped = client
-        .call_repeatable::<op::WrapSealingKey>(WrapSealingKeyRequest { code: code.clone() }, None)
-        .await?;
-    Ok(RecoveryBackup {
-        public_key: wrapped.public_key,
-        backup: wrapped.backup,
-    })
 }
 
 /// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.
@@ -716,9 +700,15 @@ fn founder_result(
             }
         } else {
             ui::write_fields(&Fields::new().field("Recovery code", code.as_str())).map_err(
-                |error| Error::unavailable(format!("{error}; {RECOVERY_CODE_NOT_SAVED}")),
+                |error| {
+                    Error::caused(
+                        ployz_core::RpcErrorCode::Unavailable,
+                        RECOVERY_CODE_NOT_SAVED,
+                        error,
+                    )
+                },
             )?;
-            ui::note("Keep the recovery code safe; ployz recover needs it.");
+            ui::note(KEEP_THE_CODE);
         }
     }
     if let Some(next) = next {
