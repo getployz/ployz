@@ -336,19 +336,9 @@ where
         ));
     }
     let pairing = join.pairing;
-    let mut ready = if local.is_some() {
+    if local.is_some() {
         report.step(Step::Join);
         progress(EnrollStage::Joining);
-        if details.phase == LocalMachinePhase::Joining {
-            wait_phase(
-                matches,
-                LocalMachinePhase::Participating,
-                "the joined Server did not become ready",
-            )
-            .await?
-        } else {
-            client
-        }
     } else {
         unlisted_participation(&details, &assigned)?;
         client = ensure_uninitialized(
@@ -373,13 +363,13 @@ where
         )
         .await?;
         progress(EnrollStage::Joining);
-        wait_phase(
-            matches,
-            LocalMachinePhase::Participating,
-            "the joined Server did not become ready",
-        )
-        .await?
-    };
+    }
+    let mut ready = wait_phase(
+        matches,
+        LocalMachinePhase::Participating,
+        "the joined Server did not become ready",
+    )
+    .await?;
     let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
@@ -497,11 +487,11 @@ where
     };
     // A rerun on the founded Server finishes or repeats the enrollment; it founds nothing.
     let founding = matches!(state, FounderLocalState::Initialize);
-    let (machine, mut ready) = match state {
+    let machine = match state {
         FounderLocalState::Resume { machine } => {
             report.step(Step::Join);
             progress(EnrollStage::Joining);
-            (*machine, client)
+            *machine
         }
         FounderLocalState::Initialize => {
             client = ensure_uninitialized(
@@ -530,15 +520,15 @@ where
             )
             .await?;
             progress(EnrollStage::Joining);
-            let ready = wait_phase(
-                matches,
-                LocalMachinePhase::Participating,
-                "the first Server did not become ready",
-            )
-            .await?;
-            (machine, ready)
+            machine
         }
     };
+    let mut ready = wait_phase(
+        matches,
+        LocalMachinePhase::Participating,
+        "the first Server did not become ready",
+    )
+    .await?;
 
     let mut partial = None;
     if machine.accepts_ingress
