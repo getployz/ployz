@@ -922,6 +922,36 @@ impl LocalMachine {
             Some(cluster) => Some(cluster.replicated.machine_publication().await),
             None => None,
         };
+        // From here until the row goes, a deploy plans no Ingress Proxy here and the
+        // ingress check doesn't call this Machine unchecked. Best effort: a Machine
+        // whose Cluster can't take the mark still leaves.
+        if let Some(publication) = &publication
+            && let Err(error) = publication.mark_leaving(&machine_id, true).await
+        {
+            tracing::warn!(%error, "could not mark this Machine's row as leaving");
+        }
+        if let Err(error) = self.depart_admitted(exit).await {
+            if let Some(publication) = &publication
+                && let Err(error) = publication.mark_leaving(&machine_id, false).await
+            {
+                tracing::warn!(%error, "could not unmark this Machine's row after a failed Leave");
+            }
+            return Err(error);
+        }
+        let reset_warning = match publication {
+            Some(publication) => publication
+                .remove(&machine_id)
+                .await
+                .err()
+                .map(|error| ployz_core::error_chain::inline(&error)),
+            None => None,
+        };
+        Ok(leave_response(&self.owner, reset_warning))
+    }
+
+    /// Reset this Machine: its Containers, its storage, then its phase. Any failure
+    /// leaves it Participating.
+    async fn depart_admitted(&self, exit: StorageExit) -> Result<(), Error> {
         let prepared_reset = self
             .owner
             .mutate(|store| {

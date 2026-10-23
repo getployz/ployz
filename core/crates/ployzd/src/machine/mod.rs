@@ -590,6 +590,7 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
         store_filesystem: store_filesystem(data_dir),
         capabilities: ployz_core::served_capabilities(),
         management_identity: None,
+        leaving: false,
     }
 }
 
