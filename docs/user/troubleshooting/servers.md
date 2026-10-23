@@ -370,7 +370,10 @@ what the connection said in parentheses, and exits 3. A server that stopped answ
 before it stops answering (Ployz 0.3.4 or later on that server and on the server the CLI connects
 through). Any deploy step a server leaves
 unanswered reads `Server web-1 did not answer during create Container`, with what the connection
-said beneath it. A server that just joined or restarted
+said beneath it. A server that answered but refused because this computer's access doesn't cover
+the command isn't counted as silent: the CLI names it with its reason, as in
+`web-1 refused: set_device needs Full access.`, and the next step the server gives under it. That
+needs a 0.3.4 or later CLI. A server that just joined or restarted
 answers within a minute; try again then. While your organization's first server is still
 enrolling, the page shows its enrollment progress instead: there's no server to reach until it
 joins.

@@ -1382,6 +1382,9 @@ impl SshFailure {
     }
 }
 
+/// The code of a refusal on the caller's access, such as a Server refusing a scope.
+pub(crate) const FORBIDDEN: &str = "forbidden";
+
 fn rpc_error_code(code: tonic::Code) -> RpcErrorCode {
     match code {
         tonic::Code::InvalidArgument => RpcErrorCode::InvalidArgument,
@@ -1390,10 +1393,11 @@ fn rpc_error_code(code: tonic::Code) -> RpcErrorCode {
         tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => RpcErrorCode::Unavailable,
         tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
         tonic::Code::Unauthenticated => RpcErrorCode::Unauthenticated,
+        // The spelling Cloud's refusals already use; a reader that doesn't know it keeps it.
+        tonic::Code::PermissionDenied => RpcErrorCode::from(FORBIDDEN),
         tonic::Code::Ok
         | tonic::Code::Cancelled
         | tonic::Code::Unknown
-        | tonic::Code::PermissionDenied
         | tonic::Code::ResourceExhausted
         | tonic::Code::FailedPrecondition
         | tonic::Code::OutOfRange
