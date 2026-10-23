@@ -16,6 +16,7 @@ use bollard::{
         ContainerCreateBody, HostConfig, Mount, MountType, RestartPolicy, RestartPolicyNameEnum,
     },
 };
+use futures_util::TryStreamExt;
 use rustix::fs::{IFlags, Mode, OFlags};
 use serde::Serialize;
 
@@ -119,33 +120,29 @@ impl CorrosionConfig {
             let admin = AdminClient::new(self.paths.admin_socket());
             let docker = Docker::connect_with_socket_defaults()?;
             let service = DockerService {
-                service: ManagedService::host(docker, self.container_name.clone(), IMAGE),
+                service: ManagedService::host(docker.clone(), self.container_name.clone(), IMAGE),
+                docker,
                 data_dir: self.paths.data_dir.clone(),
                 run_dir: self.paths.run_dir.clone(),
             };
+            // A daemon killed during a rotation leaves its CLI container behind.
+            ManagedService::host(service.docker.clone(), CLI_CONTAINER_NAME, IMAGE)
+                .remove()
+                .await?;
             let ensured = service.start(&files).await?;
-            wait_ready_or_replace(
-                ensured == Ensure::Keep,
-                || async { api.query(Statement::new("SELECT 1", [])).await.is_ok() },
-                async {
-                    service.service.remove().await?;
-                    service.start(&files).await?;
-                    Ok(())
-                },
-            )
+            wait_ready_or_replace(ensured == Ensure::Keep, || answers(&api), async {
+                service.service.remove().await?;
+                service.start(&files).await?;
+                Ok(())
+            })
             .await?;
-            let kept = service.clone();
-            let keeper = tokio::spawn(keep(
-                move || {
-                    let (service, files) = (kept.clone(), files.clone());
-                    async move { service.start(&files).await }
-                },
-                KEEP_EVERY,
-            ));
+            let keeper = spawn_keeper(service.clone(), files.clone());
             Ok(RunningCorrosion {
-                store: ReplicatedStore::new(api),
+                store: ReplicatedStore::new(api.clone()),
+                api,
                 admin,
                 service,
+                files,
                 keeper,
             })
         })
@@ -154,6 +151,7 @@ impl CorrosionConfig {
 
     fn install(&self) -> Result<InstalledFiles, Error> {
         create_private_dir(&self.paths.data_dir)?;
+        finish_rotation(&self.paths.data_dir)?;
         let refused = async_writes(&self.paths.data_dir);
         if let Some(first) = refused.first() {
             tracing::warn!(
@@ -236,9 +234,25 @@ async fn remove(service: &ManagedService, run_dir: &Path) -> Result<(), Error> {
 
 pub struct RunningCorrosion {
     store: ReplicatedStore,
+    api: ApiClient,
     admin: AdminClient,
     service: DockerService,
+    files: InstalledFiles,
     keeper: tokio::task::JoinHandle<()>,
+}
+
+async fn answers(api: &ApiClient) -> bool {
+    api.query(Statement::new("SELECT 1", [])).await.is_ok()
+}
+
+fn spawn_keeper(service: DockerService, files: InstalledFiles) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(keep(
+        move || {
+            let (service, files) = (service.clone(), files.clone());
+            async move { service.start(&files).await }
+        },
+        KEEP_EVERY,
+    ))
 }
 
 impl Drop for RunningCorrosion {
@@ -302,29 +316,150 @@ impl RunningCorrosion {
     }
 
     pub async fn cleanup(&mut self) -> Result<(), Error> {
+        self.stop_keeper().await;
+        remove(&self.service.service, &self.service.run_dir).await
+    }
+
+    async fn stop_keeper(&mut self) {
         self.keeper.abort();
         if !self.keeper.is_finished() {
             let _ = (&mut self.keeper).await;
         }
-        remove(&self.service.service, &self.service.run_dir).await
     }
+
+    /// Gives this Machine's store a new Corrosion actor and keeps every row, the way
+    /// `corrosion restore` does by default: `backup` moves the actor off cr-sqlite's
+    /// ordinal 0, and cr-sqlite mints a new one when the agent opens the copy. The old
+    /// actor is then a peer's like any other, so sync pulls back the versions of it that
+    /// peers hold and this store lost. Corrosion runs again on every exit.
+    pub async fn rotate_actor(&mut self) -> Result<(), Error> {
+        self.stop_keeper().await;
+        let rotated = async {
+            self.service.service.remove().await?;
+            let data_dir = &self.service.data_dir;
+            let staged = data_dir.join(STAGED_STORE);
+            remove_store_files(&staged)?;
+            self.service
+                .run_cli(&["backup", &staged.to_string_lossy()])
+                .await?;
+            keep_members(&staged, &data_dir.join("store.db"))?;
+            fs::File::open(&staged)?.sync_all()?;
+            // `backup` checkpoints the copy's WAL into it and truncates it.
+            if fs::metadata(sibling(&staged, "-wal")).is_ok_and(|wal| wal.len() > 0) {
+                return Err(Error::Api(
+                    "`corrosion backup` left frames in its WAL".into(),
+                ));
+            }
+            for suffix in ["-wal", "-shm"] {
+                remove_file(&sibling(&staged, suffix))?;
+            }
+            fs::rename(&staged, data_dir.join(ROTATED_STORE))?;
+            fs::File::open(data_dir)?.sync_all()?;
+            finish_rotation(data_dir)
+        }
+        .await;
+        let started = self.service.start(&self.files).await;
+        self.keeper = spawn_keeper(self.service.clone(), self.files.clone());
+        rotated?;
+        started?;
+        tokio::time::timeout(KEPT_READY_TIMEOUT, wait_ready(|| answers(&self.api)))
+            .await
+            .map_err(|_| {
+                Error::Api(format!(
+                    "rotated Corrosion did not answer within {}s",
+                    KEPT_READY_TIMEOUT.as_secs()
+                ))
+            })
+    }
+}
+
+/// `corrosion backup` writes here; a crash leaves only a partial copy to discard.
+const STAGED_STORE: &str = "rotate.db.tmp";
+/// A complete, synced backup with no own actor, waiting to replace `store.db`.
+const ROTATED_STORE: &str = "rotate.db";
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn remove_file(path: &Path) -> Result<(), Error> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+        _ => Ok(()),
+    }
+}
+
+fn remove_store_files(path: &Path) -> Result<(), Error> {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        remove_file(&sibling(path, suffix))?;
+    }
+    Ok(())
+}
+
+/// `backup` empties the gossip member list, which is where Corrosion finds peers that
+/// its config does not name. A founder's config names none, so it gets the old list.
+fn keep_members(staged: &Path, store: &Path) -> Result<(), Error> {
+    let copy = || -> rusqlite::Result<()> {
+        let connection = rusqlite::Connection::open(staged)?;
+        connection.execute("ATTACH DATABASE ?1 AS old", [store.to_string_lossy()])?;
+        connection.execute(
+            "INSERT OR IGNORE INTO __corro_members SELECT * FROM old.__corro_members",
+            [],
+        )?;
+        connection.execute_batch("DETACH DATABASE old; PRAGMA wal_checkpoint(TRUNCATE);")
+    };
+    copy().map_err(|error| {
+        Error::Api(format!(
+            "could not keep the gossip members: {}",
+            ployz_core::error_chain::inline(&error)
+        ))
+    })
+}
+
+/// Puts a synced rotated store in place of `store.db`, the two steps `corrosion restore`
+/// takes, without its in-place copy that a power cut can leave half done. The old WAL
+/// would replay onto the new file, and subscriptions belong to the old actor, so both
+/// go first. Runs again at the next start when a crash interrupts it.
+fn finish_rotation(data_dir: &Path) -> Result<(), Error> {
+    remove_store_files(&data_dir.join(STAGED_STORE))?;
+    let rotated = data_dir.join(ROTATED_STORE);
+    if !rotated.exists() {
+        return Ok(());
+    }
+    let store = data_dir.join("store.db");
+    for suffix in ["-wal", "-shm"] {
+        remove_file(&sibling(&store, suffix))?;
+    }
+    match fs::remove_dir_all(data_dir.join("subscriptions")) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
+    fs::rename(&rotated, &store)?;
+    fs::File::open(data_dir)?.sync_all()?;
+    tracing::info!("Corrosion's store now runs under a new actor");
+    Ok(())
 }
 
 #[derive(Clone)]
 struct DockerService {
     service: ManagedService,
+    docker: Docker,
     data_dir: PathBuf,
     run_dir: PathBuf,
 }
 
+const CLI_CONTAINER_NAME: &str = "ployz-corrosion-cli";
+
 impl DockerService {
-    async fn start(&self, files: &InstalledFiles) -> Result<Ensure, Error> {
+    fn owner(&self) -> Result<String, Error> {
         let owner = fs::metadata(&self.data_dir)?;
-        let config = container_config(
-            &self.data_dir,
-            &self.run_dir,
-            format!("{}:{}", owner.uid(), owner.gid()),
-        );
+        Ok(format!("{}:{}", owner.uid(), owner.gid()))
+    }
+
+    async fn start(&self, files: &InstalledFiles) -> Result<Ensure, Error> {
+        let config = container_config(&self.data_dir, &self.run_dir, self.owner()?);
         self.service
             .ensure_host(DesiredContainer::new(
                 config,
@@ -332,6 +467,74 @@ impl DockerService {
             ))
             .await
             .map_err(Into::into)
+    }
+
+    /// Runs one `corrosion` command against the stopped agent's config and files, and
+    /// fails with the command's last output lines when it exits non-zero.
+    async fn run_cli(&self, args: &[&str]) -> Result<(), Error> {
+        let mut config = container_config(&self.data_dir, &self.run_dir, self.owner()?);
+        let mut cmd = vec![
+            "corrosion".to_owned(),
+            "-c".to_owned(),
+            self.data_dir
+                .join("config.toml")
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        cmd.extend(args.iter().map(|arg| (*arg).to_owned()));
+        config.cmd = Some(cmd);
+        if let Some(host) = &mut config.host_config {
+            host.restart_policy = None;
+        }
+        let cli = ManagedService::host(self.docker.clone(), CLI_CONTAINER_NAME, IMAGE);
+        cli.remove().await?;
+        self.docker
+            .create_container(
+                Some(
+                    bollard::query_parameters::CreateContainerOptionsBuilder::default()
+                        .name(CLI_CONTAINER_NAME)
+                        .build(),
+                ),
+                config,
+            )
+            .await?;
+        self.docker
+            .start_container(CLI_CONTAINER_NAME, None)
+            .await?;
+        let exited = self
+            .docker
+            .wait_container(CLI_CONTAINER_NAME, None)
+            .try_collect::<Vec<_>>()
+            .await;
+        let output = match &exited {
+            Ok(_) => String::new(),
+            Err(_) => self
+                .docker
+                .logs(
+                    CLI_CONTAINER_NAME,
+                    Some(
+                        bollard::query_parameters::LogsOptionsBuilder::default()
+                            .stdout(true)
+                            .stderr(true)
+                            .tail("20")
+                            .build(),
+                    ),
+                )
+                .map_ok(|line| line.to_string())
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap_or_default()
+                .concat(),
+        };
+        let removed = cli.remove().await;
+        exited.map_err(|error| {
+            Error::Api(format!(
+                "`corrosion {}` failed: {}: {output}",
+                args.join(" "),
+                ployz_core::error_chain::inline(&error)
+            ))
+        })?;
+        Ok(removed?)
     }
 }
 
@@ -742,6 +945,85 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    #[test]
+    fn a_rotated_store_replaces_the_old_one_with_its_wal_and_subscriptions() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
+        for (name, body) in [
+            ("store.db", "old"),
+            ("store.db-wal", "old frames"),
+            ("store.db-shm", ""),
+            ("rotate.db", "rotated"),
+            ("rotate.db.tmp", "partial"),
+        ] {
+            fs::write(dir.join(name), body).unwrap();
+        }
+        fs::create_dir(dir.join("subscriptions")).unwrap();
+
+        finish_rotation(dir).unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("store.db")).unwrap(), "rotated");
+        for gone in [
+            "store.db-wal",
+            "store.db-shm",
+            "rotate.db",
+            "rotate.db.tmp",
+            "subscriptions",
+        ] {
+            assert!(!dir.join(gone).exists(), "{gone} is still there");
+        }
+    }
+
+    #[test]
+    fn a_rotated_store_keeps_the_gossip_members_backup_cleared() {
+        let root = tempfile::tempdir().unwrap();
+        let (staged, store) = (
+            root.path().join("rotate.db.tmp"),
+            root.path().join("store.db"),
+        );
+        let members = "CREATE TABLE __corro_members (actor_id BLOB PRIMARY KEY NOT NULL, \
+            address TEXT NOT NULL, foca_state JSON, rtt_min INTEGER, \
+            updated_at DATETIME NOT NULL DEFAULT 0) WITHOUT ROWID;";
+        for path in [&staged, &store] {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .execute_batch(&format!("PRAGMA journal_mode = WAL; {members}"))
+                .unwrap();
+        }
+        rusqlite::Connection::open(&store)
+            .unwrap()
+            .execute(
+                "INSERT INTO __corro_members (actor_id, address) VALUES (x'01', '[fdcc::2]:7570')",
+                [],
+            )
+            .unwrap();
+
+        keep_members(&staged, &store).unwrap();
+
+        let address: String = rusqlite::Connection::open(&staged)
+            .unwrap()
+            .query_row("SELECT address FROM __corro_members", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(address, "[fdcc::2]:7570");
+    }
+
+    #[test]
+    fn without_a_rotated_store_only_a_partial_backup_goes() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
+        for name in ["store.db", "store.db-wal", "rotate.db.tmp"] {
+            fs::write(dir.join(name), name).unwrap();
+        }
+        fs::create_dir(dir.join("subscriptions")).unwrap();
+
+        finish_rotation(dir).unwrap();
+
+        for kept in ["store.db", "store.db-wal", "subscriptions"] {
+            assert!(dir.join(kept).exists(), "{kept} is gone");
+        }
+        assert!(!dir.join("rotate.db.tmp").exists());
     }
 
     #[tokio::test(start_paused = true)]
