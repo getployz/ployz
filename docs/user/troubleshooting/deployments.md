@@ -90,7 +90,7 @@ for `ployz deployment show N`. Ctrl-C stops following a Cloud Deployment and exi
 keeps running. The command returns its last known result when one is available, including
 a completion observed during interruption. An active
 Cloud request can take up to 15 seconds to return. For local execution, Ctrl-C requests
-cancellation and waits for owned work and cleanup to settle. Server enrollment that
+cancellation and waits for the steps under way and their cleanup to settle. Server enrollment that
 already committed remains committed; follow the recovery hint if Global catch-up or
 web traffic setup was interrupted.
 
