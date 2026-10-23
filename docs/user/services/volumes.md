@@ -30,9 +30,9 @@ Manage mounts from the volume's panel. Mount forms appear when you choose an act
 your entered directory if a write fails.
 Each directory holds one volume or config, so choose another directory if the service already
 mounts one there; `/data/` and `/data` are the same directory. A volume can't mount under `/proc`,
-`/sys` or `/dev`, which the kernel fills. These rules also hold when you discard a change or sync
-from another environment: a discard that would put a mount back where another volume now mounts,
-or a sync that would land one there, is refused the same way.
+`/sys` or `/dev`, which the kernel fills. These rules hold for every change, not only the one you
+type: a discard, a sync from another environment or a restore from history that would break one is
+refused the same way. A mount saved before these rules existed doesn't block your other changes.
 
 ## Choose the storage limit
 
