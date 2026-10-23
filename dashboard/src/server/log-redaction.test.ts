@@ -114,8 +114,7 @@ describe("redacted logs", () => {
 
     const status = spans[0]?.status;
     const exit = status?._tag === "Ended" ? status.exit : Exit.void;
-    expect(Exit.isFailure(exit)).toBe(true);
-    const text = Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "";
+    const text = Exit.match(exit, { onFailure: Cause.pretty, onSuccess: () => "ended without failing" });
     expect(text).toContain(SUMMARY);
     expect(text).not.toMatch(/secret-/u);
   });
