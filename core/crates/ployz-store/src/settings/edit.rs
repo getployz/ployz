@@ -174,6 +174,16 @@ pub(crate) fn edit(
             mounted.push((path.settings_of()?.clone(), volume.clone()));
         }
     }
+    // Each Service a variable is set on, judged by the environment the whole edit leaves.
+    let mut grown = Vec::new();
+    for (path, step) in &steps {
+        if let (Step::Set(_), Some(Target::Variable(_))) = (step, path.target()) {
+            let service = path.settings_of()?;
+            if !grown.contains(service) {
+                grown.push(service.clone());
+            }
+        }
+    }
     // The source changes go first, unsets before sets, so the order of keys never matters.
     steps.sort_by_key(|(path, step)| match (path.target(), step) {
         (Some(Target::Setting(setting)), step) if is_source(*setting) => {
@@ -208,6 +218,15 @@ pub(crate) fn edit(
         crate::volume::refuse_shared_path(&editing.environment, service, volume)?;
     }
     let mut notes = Vec::<SettingNote>::new();
+    // Each Service a variable was set on, by the environment the whole edit leaves.
+    for service in &grown {
+        if let Some(note) = variables::environment_note(&editing.environment, service)? {
+            notes.push(SettingNote {
+                path: SettingPath::whole(service),
+                note,
+            });
+        }
+    }
     for (service, setting) in set {
         let config = &editing.environment.service(&service)?.config;
         if !setting.applies(config) {
