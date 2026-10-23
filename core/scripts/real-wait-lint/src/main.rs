@@ -214,6 +214,8 @@ struct Call {
     path: Vec<String>,
     method: bool,
     paused: bool,
+    /// Production code never runs a test helper, so only test code decides its clock.
+    in_test: bool,
 }
 
 struct TestFn {
@@ -242,7 +244,7 @@ fn analyze(source: &str, file: &syn::File, in_test: bool) -> Analysis {
     let names: HashSet<_> = fns.iter().map(|f| f.name.clone()).collect();
     let mut callers: HashMap<_, Vec<_>> = HashMap::new();
     for f in &fns {
-        for call in &f.callees {
+        for call in f.callees.iter().filter(|call| call.in_test) {
             let resolved = if call.method {
                 None
             } else {
@@ -550,6 +552,7 @@ impl Body {
             path: expanded,
             method: false,
             paused: self.paused,
+            in_test: self.in_test,
         });
     }
 
@@ -718,6 +721,7 @@ impl<'ast> Visit<'ast> for Body {
             path: vec![call.method.to_string()],
             method: true,
             paused: self.paused,
+            in_test: self.in_test,
         });
     }
 
@@ -1393,6 +1397,23 @@ mod tests {
 }
 "#;
         assert_eq!(lint(source), ["5: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn production_calls_do_not_decide_a_test_helpers_clock() {
+        let source = r#"
+async fn production(child: &mut tokio::process::Child) {
+    child.wait().await.unwrap();
+}
+#[cfg(test)]
+mod tests {
+    struct Worker;
+    impl Worker { async fn wait(&self) { tokio::time::sleep(d).await; } }
+    #[tokio::test(start_paused = true)]
+    async fn paused() { Worker.wait().await; }
+}
+"#;
+        assert_eq!(lint(source), Vec::<String>::new());
     }
 
     #[test]
