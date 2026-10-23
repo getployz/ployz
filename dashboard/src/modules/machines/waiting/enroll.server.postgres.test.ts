@@ -722,6 +722,7 @@ it("refuses to cancel an attempt whose join Cloud may have sent, and Reject spar
   expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);
   expect(await tokenLive(attemptId)).toBe(true);
   expect(await outbox()).not.toContain("server/enrollment.cancel");
+  expect(await checkin(a, { attempt: { attemptId, stage: "enrolling" } })).not.toMatchObject({ kind: "stop" });
 });
 
 it("cancels an attempt whose Machine was assigned only under a pairing Cloud since forgot", async () => {

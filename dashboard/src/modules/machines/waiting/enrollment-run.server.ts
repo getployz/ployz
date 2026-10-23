@@ -187,19 +187,7 @@ export const cancelServerEnrollments = Effect.fn("ServerEnrollment.cancelAttempt
   const tokenIds = locked.map((row) => row.tokenId);
   yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken)
     .where(inArray(machineEnrollmentToken.id, tokenIds)).orderBy(machineEnrollmentToken.id).for("update");
-  // Only the current pairing's assignments: a Machine keeps its ID across a pairing that was forgotten. Only a claimed token has one.
-  const [pairing] = yield* drizzle.select({ secret: organizationPairing.encryptedPairingSecret }).from(organizationPairing)
-    .where(and(eq(organizationPairing.organizationId, organizationId), exists(drizzle.select({ one: sql`1` }).from(machineEnrollmentToken)
-      .where(and(inArray(machineEnrollmentToken.id, tokenIds), isNotNull(machineEnrollmentToken.claimedMachineId))))));
-  const clusterKey = pairing === undefined ? null : hashEnrollmentToken(yield* decryptPairingSecret(pairing.secret));
-  const sent = new Set((yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken).where(and(
-    inArray(machineEnrollmentToken.id, tokenIds),
-    or(isNotNull(machineEnrollmentToken.joinedMachineId), clusterKey === null ? undefined : exists(drizzle.select({ one: sql`1` }).from(enrollmentAllocation).where(and(
-      eq(enrollmentAllocation.organizationId, machineEnrollmentToken.organizationId),
-      eq(enrollmentAllocation.clusterKey, clusterKey),
-      sql`${enrollmentAllocation.assignments} @> jsonb_build_array(jsonb_build_object('machine', jsonb_build_object('id', ${machineEnrollmentToken.claimedMachineId}::text)))`,
-    )))),
-  ))).map((row) => row.id));
+  const sent = yield* joinsSent(organizationId, tokenIds);
   const cancelling = locked.filter((row) => !sent.has(row.tokenId));
   // Expired now, not when the run ends the attempt, so a join after this cancel finds the token dead.
   if (cancelling.length > 0) {
@@ -212,6 +200,27 @@ export const cancelServerEnrollments = Effect.fn("ServerEnrollment.cancelAttempt
   if (unbound.length > 0) yield* endAndRevokeTokensNow(and(inArray(serverEnrollment.id, unbound), open), { state: "cancelled" });
   yield* enqueueCancels(cancelling.map((row) => row.id));
   return locked.filter((row) => sent.has(row.tokenId)).map((row) => row.id);
+});
+
+/** The enroll tokens whose join Cloud may have sent: joined, or their Machine holds an assignment. */
+export const joinsSent = Effect.fn("ServerEnrollment.joinsSent")(function* (
+  organizationId: string,
+  tokenIds: ReadonlyArray<string>,
+) {
+  const { drizzle } = yield* Database;
+  // Only the current pairing's assignments: a Machine keeps its ID across a pairing that was forgotten. Only a claimed token has one.
+  const [pairing] = yield* drizzle.select({ secret: organizationPairing.encryptedPairingSecret }).from(organizationPairing)
+    .where(and(eq(organizationPairing.organizationId, organizationId), exists(drizzle.select({ one: sql`1` }).from(machineEnrollmentToken)
+      .where(and(inArray(machineEnrollmentToken.id, [...tokenIds]), isNotNull(machineEnrollmentToken.claimedMachineId))))));
+  const clusterKey = pairing === undefined ? null : hashEnrollmentToken(yield* decryptPairingSecret(pairing.secret));
+  return new Set((yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken).where(and(
+    inArray(machineEnrollmentToken.id, [...tokenIds]),
+    or(isNotNull(machineEnrollmentToken.joinedMachineId), clusterKey === null ? undefined : exists(drizzle.select({ one: sql`1` }).from(enrollmentAllocation).where(and(
+      eq(enrollmentAllocation.organizationId, machineEnrollmentToken.organizationId),
+      eq(enrollmentAllocation.clusterKey, clusterKey),
+      sql`${enrollmentAllocation.assignments} @> jsonb_build_array(jsonb_build_object('machine', jsonb_build_object('id', ${machineEnrollmentToken.claimedMachineId}::text)))`,
+    )))),
+  ))).map((row) => row.id));
 });
 
 export const cancelOpenServerEnrollments = Effect.fn("ServerEnrollment.cancelOpen")(function* (organizationId: string) {
@@ -254,6 +263,7 @@ export const openAttemptFor = Effect.fn("ServerEnrollment.openFor")(function* (w
     stage: serverEnrollment.stage,
     instruction: serverEnrollment.instruction,
     encryptedToken: serverEnrollment.encryptedToken,
+    tokenId: serverEnrollment.enrollTokenId,
   }).from(serverEnrollment).where(and(eq(serverEnrollment.waitingServerId, waitingServerId), open, isNotNull(serverEnrollment.encryptedToken)));
   return row ?? null;
 });
