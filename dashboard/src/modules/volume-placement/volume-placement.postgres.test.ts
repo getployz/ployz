@@ -167,12 +167,19 @@ describe("volume placement", () => {
     };
     const placement = () => stagePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] });
     const restore = () => stageRestore(organizationId, null, { volumeId, environment, guid: "point", name: "point", at: 0 });
-    // Cloud's own credential failing isn't the user's session, and a 501 has no public error.
-    const internal = new Set(["unauthenticated", "unsupported", "internal"]);
-    for (const code of ["invalid_argument", "not_found", "conflict", "forbidden", "unavailable", ...internal]) {
+    // As the CLI answers each code, except that Cloud's own credential failing isn't the user's session, and a 501 has
+    // no public error.
+    const statuses: ReadonlyArray<readonly [string, number, number]> = [
+      ["invalid_argument", 422, 422], ["not_found", 404, 404], ["unknown_command", 404, 404],
+      ["conflict", 409, 409], ["ambiguous", 409, 409], ["confirmation_required", 409, 409], ["approval_required", 409, 409], ["channel_mismatch", 409, 409],
+      ["forbidden", 403, 403], ["approval_denied", 403, 403], ["claim_required", 403, 403], ["unavailable", 503, 503],
+      ["unauthenticated", 401, 500], ["unsupported", 501, 500], ["internal", 500, 500], ["constructor", 500, 500],
+    ];
+    for (const [code, cli, browser] of statuses) {
+      expect(statusFor(code), code).toBe(cli);
       for (const staging of [placement, restore]) {
         const error = await answered(code, staging);
-        expect(statusForPublicError(error), code).toBe(internal.has(code) ? 500 : statusFor(code));
+        expect(statusForPublicError(error), code).toBe(browser);
         expect(error.message).not.toContain("shop/production");
       }
     }

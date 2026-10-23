@@ -143,26 +143,26 @@ export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (o
 });
 
 /** Each Store refusal code's HTTP status. Any other code is a 500. */
-const REFUSAL_STATUS: Readonly<Record<string, number>> = {
-  invalid_argument: 422,
-  not_found: 404,
-  unknown_command: 404,
-  conflict: 409,
-  ambiguous: 409,
-  confirmation_required: 409,
-  approval_required: 409,
-  channel_mismatch: 409,
-  unauthenticated: 401,
-  forbidden: 403,
-  approval_denied: 403,
-  claim_required: 403,
-  unsupported: 501,
-  unavailable: 503,
-};
+const REFUSAL_STATUS: ReadonlyMap<string, number> = new Map([
+  ["invalid_argument", 422],
+  ["not_found", 404],
+  ["unknown_command", 404],
+  ["conflict", 409],
+  ["ambiguous", 409],
+  ["confirmation_required", 409],
+  ["approval_required", 409],
+  ["channel_mismatch", 409],
+  ["unauthenticated", 401],
+  ["forbidden", 403],
+  ["approval_denied", 403],
+  ["claim_required", 403],
+  ["unsupported", 501],
+  ["unavailable", 503],
+]);
 
 /** A Store refusal travels to the CLI verbatim: the RPC error vocabulary, never the rejected value. */
 export function statusFor(code: string) {
-  return REFUSAL_STATUS[code] ?? 500;
+  return REFUSAL_STATUS.get(code) ?? 500;
 }
 
 /**
