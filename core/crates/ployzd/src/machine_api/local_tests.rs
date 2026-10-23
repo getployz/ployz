@@ -1310,10 +1310,14 @@ mod set_volume_copy {
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
         let first = running_holder(&service, &fake).await;
-        let draining = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
-            "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":300}});
+        let draining = |drain: u32| {
+            json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+                "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":drain}})
+        };
 
-        let (refused, _) = tokio::join!(set_copy(&service, draining.clone()), async {
+        // The fake holder never reads idle, so the drain lasts its whole cap, and the
+        // second holder must start inside it. A loaded runner took over 300 ms to start one.
+        let (refused, _) = tokio::join!(set_copy(&service, draining(3_000)), async {
             drain_started(&service, &first).await;
             running_holder(&service, &fake).await
         });
@@ -1325,7 +1329,7 @@ mod set_volume_copy {
         status.sort_by_key(ToString::to_string);
         assert_eq!(status, vec![json!("exited"), json!("running")]);
 
-        let cut = reply(&set_copy(&service, draining).await);
+        let cut = reply(&set_copy(&service, draining(300)).await);
         assert_eq!(
             serde_json::to_value(&cut).unwrap(),
             json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
