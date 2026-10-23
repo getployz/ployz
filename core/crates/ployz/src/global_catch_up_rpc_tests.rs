@@ -1137,3 +1137,21 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn catch_up_keeps_a_sealed_value_off_a_machine_that_cannot_open_it() {
+    use std::sync::atomic::Ordering;
+
+    let target = MachineTarget::from(&machine('a', "machine-a").id);
+    let (mut client, server, ensured) =
+        crate::sealed_compat::tests::fleet(&[ployz_core::MANAGEMENT_SCOPE_CAPABILITY]).await;
+    let new = new_container("global:test", crate::sealed_compat::tests::spec(true));
+
+    let error = ensure_retried(&mut client, &target, RunTarget::New(new))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, ployz_core::RpcErrorCode::Unsupported);
+    assert_eq!(ensured.load(Ordering::SeqCst), 0);
+    server.abort();
+}
