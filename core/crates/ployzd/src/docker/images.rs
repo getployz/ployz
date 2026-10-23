@@ -259,7 +259,7 @@ fn pull_failure(
     };
     let written = stores
         .iter()
-        .filter(|(dir, _)| message.contains(&format!("{dir}/")))
+        .filter(|(dir, _)| writes_under(&message, dir))
         .min_by_key(|(_, free_bytes)| *free_bytes)
         .cloned();
     match written.or(docker_root) {
@@ -280,6 +280,18 @@ fn pull_failure(
         }
         _ => error,
     }
+}
+
+/// Whether `message` names a path under `dir`: `dir/` where a path starts, so that
+/// `/mnt/data/var/lib/containerd/…` is not under `/var/lib/containerd`.
+fn writes_under(message: &str, dir: &str) -> bool {
+    let needle = format!("{dir}/");
+    message.match_indices(&needle).any(|(at, _)| {
+        message[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|before| before.is_whitespace() || matches!(before, '"' | '\'' | '(' | '='))
+    })
 }
 
 /// The routable ports among Docker's exposed-port keys, in order and without repeats.
@@ -545,6 +557,18 @@ mod tests {
         let error = pull_failure(
             Error::ImagePull(streamed(
                 "failed to extract layer: failed to Lchown \"/srv/containerd/tmpmounts/m/shadow.mo\": no such file or directory",
+            )),
+            Some(("/var/lib/docker".into(), 50_000_000_000)),
+            &[("/var/lib/containerd".into(), 500_000_000)],
+        );
+        assert!(matches!(error, Error::ImagePull(_)), "{error:?}");
+    }
+
+    #[test]
+    fn a_store_moved_under_another_directory_is_not_the_default_one() {
+        let error = pull_failure(
+            Error::ImagePull(streamed(
+                "failed to extract layer: failed to Lchown \"/mnt/data/var/lib/containerd/tmpmounts/m/shadow.mo\": no such file or directory",
             )),
             Some(("/var/lib/docker".into(), 50_000_000_000)),
             &[("/var/lib/containerd".into(), 500_000_000)],
