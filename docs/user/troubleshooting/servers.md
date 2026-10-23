@@ -367,7 +367,8 @@ server answering, `ployz status` lists `Server web-1 isn't answering` under **ne
 traffic check couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with
 what the connection said in parentheses, and exits 3. A server that stopped answering because
 `ployz server rm` was removing it doesn't count: the removal says so in the server's own record
-before it stops answering (Ployz 0.3.4 or later on that server). Any deploy step a server leaves
+before it stops answering (Ployz 0.3.4 or later on that server and on the server the CLI connects
+through). Any deploy step a server leaves
 unanswered reads `Server web-1 did not answer during create Container`, with what the connection
 said beneath it. A server that just joined or restarted
 answers within a minute; try again then. While your organization's first server is still

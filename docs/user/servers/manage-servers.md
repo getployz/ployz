@@ -571,7 +571,7 @@ That needs Ployz 0.3.4 or later on the server the CLI connects through; an older
 server's ID instead. While the removal runs, a deploy doesn't add a missing web server to the
 leaving server, and its web traffic check doesn't count the leaving server as unchecked when it
 stops answering partway through the removal. That needs Ployz 0.3.4 or later on the server being
-removed. Once the removal is done, `ployz ps` and the other listings that were still asking it
+removed and on the server the CLI connects through. Once the removal is done, `ployz ps` and the other listings that were still asking it
 warn `machine-2 was removed while this ran; its rows are missing.` and exit 3; that needs 0.3.4 or
 later on the server the CLI connects through. With `--json` the removal lists every
 service left short as `under_replicated`. It also lists a service as `no_copies` when every other
