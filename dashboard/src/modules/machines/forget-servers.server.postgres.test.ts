@@ -70,7 +70,7 @@ it.live("Forget Servers refuses while a Server answers, and forgets nothing", ()
       ok: false,
       refusal: {
         code: "conflict",
-        message: "Your Servers are still reachable (machine-1). Remove them from the Servers page or with `ployz server rm` instead.",
+        message: "Your Servers are still reachable (machine-1). To forget them, stop their Ployz daemons first. To reset them, remove them from the Servers page or with `ployz server rm`.",
         details: { answered: ["machine-1"] },
       },
     });
