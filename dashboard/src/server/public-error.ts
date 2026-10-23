@@ -202,7 +202,7 @@ function causeValues(cause: unknown): unknown[] | undefined {
 }
 
 /** Whether `cause` may hold a failed query: one is in it, or it is too deep to tell. */
-function mayCarryQuery(cause: unknown): boolean {
+export function mayCarryQuery(cause: unknown): boolean {
   const values = causeValues(cause);
   return values === undefined || values.some((at) => {
     const tagged = decodeTaggedFailure(at);
@@ -214,7 +214,7 @@ function mayCarryQuery(cause: unknown): boolean {
  * `value` by its tags, SQLSTATE and any failed query's statement, or else its error class: never a message or field,
  * since a query's message holds its params and the database's can quote the values it refused.
  */
-function safeSummary(cause: unknown): string {
+export function safeSummary(cause: unknown): string {
   const tags = typedFailureSummary(cause);
   const name = Option.getOrUndefined(decodeErrorName(cause))?.name;
   const kind = tags.length > 0 ? tags : name !== undefined && IDENTIFIER.test(name) ? name : "defect";

@@ -18,6 +18,7 @@ import { AppConfig } from "#/server/config.server";
 import { DatabaseLive, ReportingDatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
+import { RedactedLogsLive } from "#/server/log-redaction";
 
 const InfrastructureLive = Layer.mergeAll(
   SecretEncryptionLive,
@@ -50,10 +51,12 @@ const TracingLive = OtelTracer.layerGlobal.pipe(
   Layer.provide(Resource.layer({ serviceName: "ployz-cloud" })),
 );
 
+// Every log, to the console and the span, names a failed query by its kind and never its params.
 export const AppLive = AuthLive.pipe(
   Layer.provideMerge(InfrastructureLive),
   Layer.merge(RuntimeLive),
   Layer.provideMerge(TracingLive),
+  Layer.provideMerge(RedactedLogsLive),
 );
 
 export type AppServices = Layer.Success<typeof AppLive>;
