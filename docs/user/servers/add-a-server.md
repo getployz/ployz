@@ -17,8 +17,9 @@ your other servers on a private network.
 - **A main disk of 30 GiB or more.** Ployz keeps a quarter of the disk, at least 10 GiB, free for
   the system. On EC2, raise the root volume from its 8 GB default when you launch the instance.
 - **Root**, or a user that can run `sudo`.
-- **Outbound internet access**, and a **public IP address** on at least one server so visitors
-  can reach your apps.
+- **Outbound internet access over IPv4**, and a **public IP address** on at least one server so
+  visitors can reach your apps. A server with only IPv6 needs NAT64 and DNS64; see
+  [IPv6-only servers](#ipv6-only-servers).
 
 You don't need Docker: Ployz installs it if it's missing.
 
@@ -317,7 +318,33 @@ these there:
 | TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic |
 | UDP 51820 | Your other servers | Services on different servers reaching each other |
 
+## IPv6-only servers
+
+Ployz downloads its releases from github.com and some of its images from ghcr.io, and neither has
+an IPv6 address. A server whose only route out is IPv6 can't reach them, so the install stops:
+
+```
+ERROR: Can't reach github.com, which serves Ployz releases: this server has no IPv4 route, and github.com has no IPv6 address. Give the server outbound IPv4, or NAT64 and DNS64: https://ployz.dev/docs/servers/add-a-server#ipv6-only-servers
+```
+
+Do one of these, then run the install line again:
+
+- **Give the server an IPv4 address.** Most providers sell one as an add-on, such as a Hetzner
+  Primary IPv4. The server is then dual-stack and installs like any other.
+- **Use NAT64 and DNS64.** DNS64 answers an IPv6 address for names that only have IPv4 ones, and
+  NAT64 carries that traffic to IPv4. You need both, and they must agree on the prefix: a DNS64
+  resolver alone, such as a public one, gives addresses nothing answers unless a NAT64 gateway
+  serves its prefix. Use your provider's NAT64 and DNS64, or a public service that runs both.
+  With both in place, the install line works and a single server sets up and runs. Behind
+  NAT64, the server advertises the gateway's IPv4 address as its own
+  ([#3166](https://github.com/getployz/ployz/issues/3166)), and containers can't reach the DNS
+  resolvers Docker gives them ([#3167](https://github.com/getployz/ployz/issues/3167)).
+
+Keep the IPv4 address or NAT64 for as long as the server runs Ployz. Ployz upgrades download from
+github.com too.
+
 ## Good to know
+
 
 - **Operating system updates stay with you.** Ployz doesn't install them.
 - **Already running Docker?** Ployz keeps it and its settings, if it's Docker 29.2 or newer
