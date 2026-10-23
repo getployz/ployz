@@ -395,7 +395,10 @@ the daemon version observed before the request. When that version is known, succ
 include `change` as `upgraded`, `downgraded`, or `unchanged`. Otherwise the command says the Server
 `now runs` the returned version and leaves out `change`.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
-command quickly instead of waiting out the upgrade.
+command quickly instead of waiting out the upgrade. That holds mid-upgrade too: a server that
+powers off or loses its network while it upgrades stops the command after a minute with
+`Server machine-1 stopped answering during upgrade …`, and exits 3. Once it's back,
+`ployz server show` says how the upgrade ended.
 
 An upgrade doesn't always replace the web server Ployz runs on each server. One created by an
 earlier release can hang a request for about 15 minutes when a server running one of your
