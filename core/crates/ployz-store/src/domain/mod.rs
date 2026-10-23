@@ -472,6 +472,7 @@ pub(crate) fn add_domain(
                         Some(prefix) => prefix.as_str().to_owned(),
                         None => free_prefix(&base, &taken),
                     };
+                    refuse_too_long(&prefix, cluster.as_ref())?;
                     managed.push(ServiceManagedHostname {
                         prefix: prefix.clone(),
                         target_port: add.port,
@@ -519,6 +520,7 @@ pub(crate) fn set_generated_domain(
     let cluster = cluster_of(tx, &environment, trusted)?;
     let taken = taken_prefixes(tx, who, &environment, &own, (trusted, cluster.as_ref()))?;
     refuse_taken(tx, who, &taken, prefix)?;
+    refuse_too_long(prefix, cluster.as_ref())?;
     let generated_domains = domains_of(&environment.working, trusted)
         .into_iter()
         .filter_map(|domain| match &domain.name {
@@ -659,6 +661,30 @@ fn taken_prefixes<'t>(
 
 /// The Cluster Domain `environment`'s generated domains live under: the one Cloud
 /// reserved, else the one its last Deploy used.
+/// Refuses a generated domain whose hostname under `cluster` can't be served: a valid
+/// prefix under a long Cluster Domain can pass 253 characters, which Deploy would refuse.
+fn refuse_too_long(prefix: &str, cluster: Option<&Hostname>) -> Result<(), RpcError> {
+    let Some(cluster) = cluster else {
+        return Ok(());
+    };
+    let hostname = format!("{prefix}.{cluster}");
+    let Err(refused) = IngressHost::parse(&hostname) else {
+        return Ok(());
+    };
+    let message = if hostname.len() > 253 {
+        format!(
+            "{hostname} is {} characters, over a hostname's 253: choose a shorter prefix",
+            hostname.len()
+        )
+    } else {
+        format!("{hostname} can't be served: {refused}")
+    };
+    Err(error::invalid(
+        message,
+        json!({ "hostname": hostname, "cluster_domain": cluster.as_str() }),
+    ))
+}
+
 fn cluster_of(
     tx: &mut dyn Tx,
     environment: &Environment,
