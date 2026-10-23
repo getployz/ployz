@@ -116,16 +116,18 @@ export function VariableAddForm({
 
   const typedKey = state.key.trim().toUpperCase();
   const keyError = typedKey ? variableKeyError(typedKey) : null;
+  // A secret sealed here needs a value: Add waits for one rather than saying so before anything is typed.
+  const awaitsSecret = sealing?.state === "ready" && state.sealed && state.value === "";
   const valueError = !state.sealed
     ? referenceError(state.value, serviceNames)
-    : sealing?.state === "ready"
+    : sealing?.state === "ready" && !awaitsSecret
       ? sealedValueProblem(typedKey, state.value)
       : state.value.includes("${{") ? "A sealed value is stored as-is. Untick Sealed to use a reference." : null;
 
   function handleAdd() {
     const key = typedKey;
     // Invalid input stays in the form, as typed, with the reason under it.
-    if (!key || keyError || valueError) return;
+    if (!key || keyError || valueError || awaitsSecret) return;
 
     const existing = variables.find((variable) => variable.key === key);
     if (existing) {
@@ -253,7 +255,7 @@ export function VariableAddForm({
         <div className="flex items-center gap-2">
           <Button
             type="submit"
-            disabled={!typedKey || keyError !== null || valueError !== null}
+            disabled={!typedKey || keyError !== null || valueError !== null || awaitsSecret}
           >
             <CheckIcon data-icon="inline-start" />
             Add

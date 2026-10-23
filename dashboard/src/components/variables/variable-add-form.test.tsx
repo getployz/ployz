@@ -70,6 +70,16 @@ describe("VariableAddForm", () => {
     expect(onCreateVariable).toHaveBeenCalledWith({ key: "STRIPE_SECRET", value: "sk_live_51Hx", sealed: true, exported: false });
   });
 
+  it("waits for a value to seal without calling the empty field a problem", () => {
+    const onCreateVariable = renderForm(vi.fn(), "ready");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sealed" }));
+    fireEvent.change(screen.getByLabelText("Key"), { target: { value: "TOKEN" } });
+    expect(screen.getByRole("button", { name: "Add" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByText("A sealed value can't be empty.")).toBeNull();
+    fireEvent.submit(screen.getByRole("button", { name: "Add" }));
+    expect(onCreateVariable).not.toHaveBeenCalled();
+  });
+
   it("keeps trunk's checks while sealing is off", () => {
     const onCreateVariable = renderForm();
     fireEvent.click(screen.getByRole("checkbox", { name: "Sealed" }));

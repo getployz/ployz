@@ -10,13 +10,15 @@ const SHORT_ROW = 6;
 const encoder = new TextEncoder();
 
 /**
- * Why `value` can't be sealed in the browser for `key`, or null. The Store and the Server refuse these too; this
- * says so before the value leaves the page.
+ * Why `value` can't be sealed in the browser for `key`, or null: the checks the Store runs on a value it can read,
+ * and the Server on one it opens. Ciphertext hides most of them from the Store, so a sealed value meets them here.
  */
 export function sealedValueProblem(key: string, value: string): string | null {
   if (key === "PORT") return "PORT can't be sealed: Ployz reads it to route traffic.";
-  // The Store refuses a NUL in a plain value, and can't see one inside a sealed value: no environment can hold it.
+  if (value === "") return "A sealed value can't be empty.";
   if (value.includes("\0")) return "A value can't hold a null character.";
+  // UTF-8 would save U+FFFD in its place, not what was typed.
+  if (/\p{Cs}/u.test(value)) return "A value can't hold an unpaired surrogate.";
   if (value.includes("${{")) return "A sealed value is stored as-is. Untick Sealed to use a reference.";
   if (hasShortRow(value)) return "Each line of a multiline sealed value needs at least 6 characters.";
   if (encoder.encode(key).length + encoder.encode(value).length + 2 > MAX_ENV_STRING) {
