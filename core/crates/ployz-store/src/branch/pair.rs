@@ -8,6 +8,7 @@
 //! prior cell back so it is offered again, and Undo puts the receiver's own back.
 
 use super::*;
+use crate::Trusted;
 use crate::removal::short_digest;
 use crate::settings::ServiceSetting;
 
@@ -314,7 +315,7 @@ impl Checked<'_> {
         into: &mut Environment,
         picks: &BTreeSet<RowId>,
         values: &BTreeMap<RowId, SealedCell>,
-        owner: Owner<'_>,
+        (owner, trusted): (Owner<'_>, Option<&Trusted>),
     ) -> Result<Vec<NodeName>, RpcError> {
         let of = self.of;
         if picks.is_empty() {
@@ -361,7 +362,15 @@ impl Checked<'_> {
         let source_removed = scope::removed_of(tx, &of.source)?;
         into.removed
             .append(&source_removed, |lineage| read.contains(lineage));
-        let staged = land(tx, who, into, (&of.from, &carried), applied.next, picks)?;
+        let staged = land(
+            tx,
+            who,
+            into,
+            (&of.from, &carried),
+            applied.next,
+            picks,
+            trusted,
+        )?;
         share(tx, (&into.summary.id, &of.other), &applied.base)?;
         Ok(staged)
     }
@@ -1032,7 +1041,14 @@ pub(crate) fn land(
     (from, carried): (&SavedEnvironmentIntent, &Carried),
     next: SavedEnvironmentIntent,
     picks: &BTreeSet<RowId>,
+    trusted: Option<&Trusted>,
 ) -> Result<Vec<NodeName>, RpcError> {
+    crate::domain::refuse_too_long_copies(
+        tx,
+        &branch.summary.id,
+        trusted,
+        (&branch.working, &next),
+    )?;
     let before = std::mem::replace(&mut branch.working, next);
     crate::volume::check_storage(
         tx,

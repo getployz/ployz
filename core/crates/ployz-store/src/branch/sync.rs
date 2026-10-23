@@ -251,7 +251,7 @@ pub(crate) fn sync(
         sync: &id,
     };
     let before = proposal::credentials(tx, &into)?;
-    let staged = checked.apply(tx, who, &mut into, &picks, &values, owner)?;
+    let staged = checked.apply(tx, who, &mut into, &picks, &values, (owner, Some(trusted)))?;
     proposal::keep_carried(tx, &into, &proposal, &before)?;
     if close_after {
         trusted.writes(&from.summary.name)?;

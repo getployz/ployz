@@ -1,11 +1,13 @@
 //! Creating a Branch, and copying or keeping one.
 
 use super::*;
+use crate::Trusted;
 
 pub(crate) fn create_branch(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateBranch,
+    trusted: &Trusted,
 ) -> Result<Branched, RpcError> {
     let parent = scope::lock(tx, who, &create.from)?;
     crate::removal::marked(tx, &parent)?;
@@ -216,6 +218,7 @@ pub(crate) fn create_branch(
         (&from, &carried),
         applied.next,
         &picks,
+        Some(trusted),
     )?;
     Ok(Branched {
         branch: view(tx, &branch)?,
@@ -227,6 +230,7 @@ pub(crate) fn copy_node(
     tx: &mut dyn Tx,
     who: &Actor,
     copy: &CopyNode,
+    trusted: &Trusted,
 ) -> Result<Branched, RpcError> {
     let mut branch = scope::lock(tx, who, &copy.environment)?;
     let row = branch_row(tx, &branch)?;
@@ -305,7 +309,14 @@ pub(crate) fn copy_node(
         .map(|row| row.id.clone())
         .collect();
     let none = BTreeMap::new();
-    let staged = checked.apply(tx, who, &mut branch, &picks, &none, Owner::None)?;
+    let staged = checked.apply(
+        tx,
+        who,
+        &mut branch,
+        &picks,
+        &none,
+        (Owner::None, Some(trusted)),
+    )?;
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,

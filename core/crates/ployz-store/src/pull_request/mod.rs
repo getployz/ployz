@@ -992,7 +992,8 @@ fn create(
         })
         .collect::<Result<Vec<_>, RpcError>>()?;
     // Generated domains expand under the Cluster Domain of the start-from's last
-    // Deploy. A PR Environment its Deploy refuses isn't made: the caller rolls it back.
+    // Deploy. A PR Environment that Cluster Domain can't serve, or that its Deploy
+    // refuses, isn't made: the caller rolls it back.
     let cluster_domain = deployment::cluster_domain(tx, &start.summary.id)?;
     let name = free_name(tx, start, event.number)?;
     let id = EnvironmentId::parse(uuid::Uuid::new_v4().to_string())?;
@@ -1013,6 +1014,7 @@ fn create(
             keep: false,
             fix: None,
         },
+        trusted,
     )?;
     let mut environment = scope::lock_id(tx, who, &id)?;
     environment.working = derive(environment.working, event);

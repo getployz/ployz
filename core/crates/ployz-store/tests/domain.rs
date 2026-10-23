@@ -1077,6 +1077,62 @@ fn a_generated_hostname_longer_than_a_hostname_is_refused_when_its_prefix_is_cho
     );
 }
 
+/// A Branch adds its name to each generated prefix it copies, so a hostname that fits
+/// the Parent can be too long on the Branch: refused when the Branch is made, not at Deploy.
+#[test]
+fn a_branch_whose_name_makes_a_generated_hostname_too_long_is_refused() {
+    let (store, who) = shop();
+    let mut trusted = cloud();
+    // 245 characters: `web.` fits under it, `web-fixit.` makes 255.
+    let cluster = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(53)
+    );
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host(&cluster);
+    store
+        .write_trusted(&who, &add(None, None), &trusted)
+        .unwrap();
+    let branch = |name: &str| ployz_store::CreateBranch {
+        id: EnvironmentId::parse(
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()).to_string(),
+        )
+        .unwrap(),
+        from: at(None),
+        name: EnvironmentName::parse(name).unwrap(),
+        copy: vec![ployz_store::NodeName::Service(
+            ServiceName::parse("web").unwrap(),
+        )],
+        live: Vec::new(),
+        setup: Vec::new(),
+        keep: false,
+        fix: None,
+    };
+
+    admit(&store, &who, 1, &trusted).unwrap();
+    apply(&store, 1);
+
+    // Without Cloud's evidence, the Cluster Domain the Parent last deployed under.
+    for refused in [
+        store
+            .write_trusted(&who, &branch("fixit"), &trusted)
+            .unwrap_err(),
+        store.write(&who, &branch("fixit")).unwrap_err(),
+    ] {
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+        assert!(refused.message.contains("253"), "{refused:?}");
+        assert!(
+            refused.message.contains("shorter branch name"),
+            "{refused:?}"
+        );
+        assert_eq!(refused.details["hostname"], format!("web-fixit.{cluster}"));
+    }
+
+    store.write(&who, &branch("fix")).unwrap();
+}
+
 #[test]
 fn a_new_generated_prefix_avoids_published_hostnames() {
     let (store, who) = shop();

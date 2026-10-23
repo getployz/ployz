@@ -394,7 +394,7 @@ commands! {
         keyed [c.id.as_str()] if crate::replay::branch
         needs EnvironmentCreate
         agent none "No tool works on branches."
-        => crate::branch::create_branch(tx, who, c);
+        => crate::branch::create_branch(tx, who, c, trusted);
     /// Sync one Environment's changes into another of its Project: staged there,
     /// never deleting or deploying.
     Sync(crate::SyncChanges) -> Synced(crate::Synced)
@@ -421,7 +421,7 @@ commands! {
     CopyNode(crate::CopyNode) -> Branch(crate::Branched)
         needs ChangesStage
         agent none "No tool works on branches."
-        => crate::branch::copy_node(tx, who, c);
+        => crate::branch::copy_node(tx, who, c, trusted);
     /// Mark rows of an Environment Never sync, or sync them again.
     NeverSync(crate::NeverSync) -> NeverSynced(crate::NeverSynced)
         needs ChangesStage
