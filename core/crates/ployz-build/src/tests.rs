@@ -860,6 +860,9 @@ fn the_builder_cache_is_not_user_data() {
     let slot = format!("buildx_buildkit_{}-10_state", super::builder_name());
     assert!(super::is_builder_cache(&slot), "{slot}");
     assert!(super::is_builder_cache("buildx_buildkit_ployz-0-20_state"));
+    assert!(super::is_builder_cache(
+        "buildx_buildkit_ployz-0-2550_state"
+    ));
     for data in [
         "shop-production_pgdata",
         "buildx_buildkit_ployz-00",
@@ -871,6 +874,9 @@ fn the_builder_cache_is_not_user_data() {
         "buildx_buildkit_ployz-0-x0_state",
         "buildx_buildkit_ployz-1000-11_state",
         "buildx_buildkit_ployz-1000-0_state",
+        "buildx_buildkit_ployz-1000-00_state",
+        "buildx_buildkit_ployz-1000-010_state",
+        "buildx_buildkit_ployz-1000-2560_state",
     ] {
         assert!(!super::is_builder_cache(data), "{data}");
     }

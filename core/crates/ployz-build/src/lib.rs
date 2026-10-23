@@ -73,16 +73,21 @@ pub fn builder_name() -> String {
 }
 
 /// Whether `volume` is the build cache of a Ployz builder, any user's and any slot's:
-/// Ployz's own, not data. Its node is `<uid>0`, or `<uid>-<slot>0` after slot 0.
+/// Ployz's own, not data. Its node is `<uid>0`, or `<uid>-<slot>0` for slots 1 to 255.
 #[must_use]
 pub fn is_builder_cache(volume: &str) -> bool {
     let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    // Exactly as `slot_name` writes it: no leading zero, and within `known_slots`.
+    let slot = |part: &str| {
+        part.parse::<u8>()
+            .is_ok_and(|slot| slot > 0 && slot.to_string() == part)
+    };
     volume
         .strip_prefix("buildx_buildkit_ployz-")
         .and_then(|rest| rest.strip_suffix("_state"))
         .is_some_and(|node| match node.split_once('-') {
             // Buildx appends `0` to the builder name, so a slot's node is `<slot>0`.
-            Some((uid, node)) => digits(uid) && node.strip_suffix('0').is_some_and(&digits),
+            Some((uid, node)) => digits(uid) && node.strip_suffix('0').is_some_and(slot),
             None => digits(node),
         })
 }
