@@ -373,6 +373,7 @@ impl DeployService {
                 observation,
                 last_check: None,
                 oom_killed: self.oom_killed,
+                departing: None,
             };
         };
         if *health == HealthObservation::Starting {
@@ -387,6 +388,7 @@ impl DeployService {
                 deadline_millis: u64::try_from(deadline.as_millis()).ok(),
                 last_check: None,
                 oom_killed: false,
+                departing: None,
             };
         }
         if matches!(
@@ -399,6 +401,7 @@ impl DeployService {
                 observation,
                 last_check: None,
                 oom_killed: self.oom_killed,
+                departing: None,
             }
         }
     }

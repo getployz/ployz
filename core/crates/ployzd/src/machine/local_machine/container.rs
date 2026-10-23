@@ -826,6 +826,7 @@ impl LocalMachine {
                     deadline_millis: u64::try_from(limit.as_millis()).ok(),
                     last_check,
                     oom_killed,
+                    departing: None,
                 });
             };
             let inspected = inspected?;
@@ -853,6 +854,7 @@ impl LocalMachine {
                         observation,
                         last_check,
                         oom_killed: inspected.oom_killed,
+                        departing: None,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::TimedOut {
@@ -863,6 +865,7 @@ impl LocalMachine {
                         deadline_millis,
                         last_check,
                         oom_killed: inspected.oom_killed,
+                        departing: None,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::Cancelled) => {
@@ -870,6 +873,7 @@ impl LocalMachine {
                         deadline_millis: None,
                         last_check: None,
                         oom_killed: false,
+                        departing: None,
                     });
                 }
             };

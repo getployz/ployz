@@ -2947,6 +2947,7 @@ pub(in crate::deploy) fn health_error(
     let out_of_memory = health
         .as_ref()
         .and_then(|health| out_of_memory(health, spec));
+    let departing = health.as_ref().and_then(HealthVerdict::departing).cloned();
     let failure = health
         .and_then(HealthVerdict::into_failure)
         .unwrap_or(HealthFailure::TimedOut {
@@ -2958,6 +2959,7 @@ pub(in crate::deploy) fn health_error(
         failure,
         out_of_memory,
         last_run: None,
+        departing,
     }
 }
 
@@ -2979,6 +2981,7 @@ fn started_container(
         return Ok(container_id);
     };
     let out_of_memory = out_of_memory(&health, spec);
+    let departing = health.departing().cloned();
     match health.into_failure() {
         None => Ok(container_id),
         Some(failure) => Err(ExecutionError::Health {
@@ -2986,6 +2989,7 @@ fn started_container(
             failure,
             out_of_memory,
             last_run: None,
+            departing,
         }),
     }
 }

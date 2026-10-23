@@ -367,6 +367,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
                     observation: unhealthy(),
                     last_check: Some(last_check.clone()),
                     oom_killed: false,
+                    departing: None,
                 },
             ),
         ),
@@ -390,6 +391,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
             },
             out_of_memory: None,
             last_run: None,
+            departing: None,
         }
     );
     assert!(
@@ -419,6 +421,7 @@ async fn a_timed_out_verdict_fails_the_start() {
                     deadline_millis: None,
                     last_check: None,
                     oom_killed: false,
+                    departing: None,
                 },
             ),
         ),
@@ -439,6 +442,7 @@ async fn a_timed_out_verdict_fails_the_start() {
                     },
                     out_of_memory: None,
                     last_run: None,
+                    departing: None,
                 },
                 ..
             },
@@ -477,6 +481,7 @@ async fn a_verdict_docker_killed_out_of_memory_fails_with_the_memory_limit() {
                         deadline_millis: Some(30_000),
                         last_check: Some(last_check.clone()),
                         oom_killed,
+                        departing: None,
                     },
                 ),
             ),
@@ -500,6 +505,7 @@ async fn a_verdict_docker_killed_out_of_memory_fails_with_the_memory_limit() {
                 },
                 out_of_memory,
                 last_run: None,
+                departing: None,
             }
         );
         client.assert_done();
@@ -643,6 +649,7 @@ async fn restored_oom_limit(replacement_mib: i64) {
         observation: unhealthy(),
         last_check: None,
         oom_killed: true,
+        departing: None,
     };
     let client = Scripted {
         observed_specs: BTreeMap::from([(old, old_spec)]),
@@ -686,6 +693,7 @@ async fn restored_oom_limit(replacement_mib: i64) {
                 memory_bytes: Some(old_limit),
             }),
             last_run: None,
+            departing: None,
         }
     );
     client.assert_done();

@@ -1216,6 +1216,7 @@ mod tests {
                 },
                 out_of_memory,
                 last_run: None,
+                departing: None,
             };
             let machine_id = "a".repeat(32);
             let operations: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{

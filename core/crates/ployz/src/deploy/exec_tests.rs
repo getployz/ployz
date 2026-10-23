@@ -1658,6 +1658,7 @@ fn unhealthy_run(machine: MachineId, container_id: &ContainerId) -> Step {
                 observation: unhealthy(),
                 last_check: None,
                 oom_killed: false,
+                departing: None,
             },
         ),
     )

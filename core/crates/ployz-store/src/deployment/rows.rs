@@ -1332,6 +1332,7 @@ mod tests {
                 },
                 out_of_memory: None,
                 last_run: None,
+                departing: None,
             },
             &[],
         )
@@ -1615,6 +1616,7 @@ mod tests {
                     exit_code: None,
                     last_line: Some(last_line.to_owned()),
                 }),
+                departing: None,
             },
             &[],
         )

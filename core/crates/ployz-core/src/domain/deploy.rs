@@ -1206,6 +1206,11 @@ pub enum ExecutionError {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         last_run: Option<LastRun>,
+        /// The Leave that was removing the Server as it answered, so the Container's
+        /// end was the Leave's doing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        departing: Option<crate::rpc::Departure>,
     },
     #[error("dependency {dependency} failed health gate: {failure}")]
     DependencyHealth {
