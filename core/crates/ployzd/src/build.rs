@@ -402,12 +402,7 @@ fn receive_and_execute(
         }
     };
     let progress = |progress| match &sealed {
-        Some(opened) => {
-            let progress = opened.scrub.progress(progress);
-            if !matches!(&progress, Progress::Output(bytes) if bytes.is_empty()) {
-                send(progress);
-            }
-        }
+        Some(opened) => opened.scrub.progress(progress).into_iter().for_each(&send),
         None => send(progress),
     };
     progress(Progress::Stage(Stage::Upload));
@@ -435,8 +430,9 @@ fn receive_and_execute(
         sealed.as_ref().map_or(&none, |opened| &opened.values),
         &progress,
     );
-    if let Some(tail) = sealed.as_ref().and_then(|opened| opened.scrub.finish()) {
-        send(tail);
+    // Reached however the Build ended, so a cancelled one releases no held text.
+    if let Some(opened) = &sealed {
+        opened.scrub.finish().into_iter().for_each(&send);
     }
     let outcome = match result {
         Ok(completed) => {
