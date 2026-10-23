@@ -5102,6 +5102,19 @@ fn ctx_names_no_servers_when_the_config_picks_no_context() {
     }
 }
 
+/// A config file ctx can't read is an error, as it is for every command, not `via local`.
+#[test]
+fn ctx_refuses_a_malformed_config() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("config.yaml"), "contexts: [\n").unwrap();
+
+    let (code, output) = in_dir(&store, home.path(), dir.path(), &["ctx"], &[]);
+    assert_ne!(code, Some(0), "{output}");
+    assert_eq!(output.get("servers"), None, "{output}");
+}
+
 #[test]
 fn a_repository_service_is_checked_by_cloud() {
     for store in &targets() {

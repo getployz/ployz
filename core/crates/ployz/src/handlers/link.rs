@@ -33,6 +33,7 @@ use crate::checkin::{LocalCheckin, Paths, Seen};
 use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
+use crate::context::{Config, ConfigError, ContextError, select_connections};
 use crate::ui::{Cell, Fields, Hint, Tone};
 
 pub(super) fn link_command(command: Command) -> Command {
@@ -999,6 +1000,13 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
         }
     }
     .map(str::to_owned);
+    // No Server reached blocks more than an unnamed Project does.
+    let hint = context
+        .servers
+        .none
+        .as_ref()
+        .and_then(|(_, next)| next.clone())
+        .or(hint);
     let project = match (&scope.project, &context.default) {
         (Some(project), _) => format!("{} ({})", project.name, project.source.as_str()),
         (
@@ -1086,6 +1094,9 @@ struct Servers {
     local_socket_exists: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     local_socket_status: Option<LocalSocketStatus>,
+    /// With `via` `none`, why, and the step the failing command names.
+    #[serde(skip)]
+    none: Option<(&'static str, Option<String>)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1112,6 +1123,7 @@ impl Servers {
             context: None,
             local_socket_exists: Some(status == LocalSocketStatus::Visible),
             local_socket_status: Some(status),
+            none: None,
         }
     }
 
@@ -1127,6 +1139,9 @@ impl Servers {
     }
 
     fn label(&self) -> String {
+        if let Some((why, _)) = &self.none {
+            return format!("(none: {why})");
+        }
         if let Some(name) = &self.context {
             return format!("via context {name}");
         }
@@ -1151,6 +1166,14 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
         context,
         local_socket_exists: None,
         local_socket_status: None,
+        none: None,
+    };
+    let none = |why, next| Servers {
+        via: "none",
+        context: None,
+        local_socket_exists: None,
+        local_socket_status: None,
+        none: Some((why, next)),
     };
     if matches.get_one::<String>("connect").is_some() {
         return Ok(via("connect", None));
@@ -1162,13 +1185,31 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     if token || CredentialStore::beside(config).organization()?.is_some() {
         return Ok(via("cloud", None));
     }
-    let current = crate::context::Config::load_or_empty(config)?
-        .current_context()
-        .map(str::to_owned);
-    Ok(match current {
-        Some(context) => via("context", Some(context)),
-        None => Servers::local(Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).try_exists()),
-    })
+    let local = Path::new(crate::connect::DEFAULT_LOCAL_SOCKET);
+    let config = match Config::load(config) {
+        Ok(config) => config,
+        Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            return Ok(Servers::local(local.try_exists()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(context) = config.current_context() {
+        return Ok(via("context", Some(context.to_owned())));
+    }
+    // A config file sends commands to its current context, never the local socket, so
+    // without one they reach no Server: say what they say.
+    Ok(
+        match select_connections(None, Some(&config), None, false, local) {
+            Err(ContextError::NoCurrentContext(_)) => none(
+                "no current context",
+                Some(super::context::retry_use(matches)),
+            ),
+            Err(ContextError::NoContexts(_)) => {
+                none("no contexts", super::context::no_contexts_next(matches))
+            }
+            _ => Servers::local(local.try_exists()),
+        },
+    )
 }
 
 #[cfg(test)]

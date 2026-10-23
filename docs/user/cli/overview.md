@@ -56,7 +56,12 @@ With a token or device sign-in, it still suggests `ployz link`. When signed out,
 `ployz login` only when it has no Server route. A selected context, `PLOYZ_CONTEXT`, or `--connect`
 still provides a Server route without Cloud sign-in.
 
-With no context, `--connect`, sign-in or token, it reports no local daemon socket when that socket
+With a config file that sets no current context, commands reach no server, so it shows
+`servers = (none: no current context)` and `next: ployz ctx use CONTEXT`. With no contexts in the
+file, it shows `(none: no contexts)` and the step those commands name, such as `ployz login`. In
+JSON, `servers.via` is `none` then.
+
+With no config file, `--connect`, sign-in or token, it reports no local daemon socket when that socket
 is absent. If it cannot inspect the socket because of permissions, it says to use `sudo` or join
 the `ployz` group. Socket presence alone does not confirm that the daemon answers. In JSON,
 `credential` names `device`, `token` or `local`, or is null when signed out.
