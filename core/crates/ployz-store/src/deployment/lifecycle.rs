@@ -1191,7 +1191,7 @@ pub(crate) fn claim(
             true
         }
     };
-    let sources = build::sources_of(tx, &stored)?;
+    let sources = build::sources_of(tx, &stored, sealing)?;
     let saved = held_revision(tx, &stored)?;
     // An earlier run may have fixed a Volume's storage since this one was admitted.
     if let Err(refused) = crate::volume::check_admitted(tx, &stored.summary.environment_id, &saved)
@@ -1385,6 +1385,24 @@ pub(crate) fn input(
         Some((sealing, &organization)),
     )
     .map(|lowered| lowered.input)
+}
+
+/// The first variable of each Service of `saved`, by Service ID, whose value reads a
+/// value sealed in the browser, as `stored` lowers it.
+pub(crate) fn sealed_reads(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    saved: &SavedEnvironmentIntent,
+    sealing: &SealingKey,
+) -> Result<BTreeMap<String, String>, RpcError> {
+    let branch = crate::branch::lowering(tx, &stored.summary.environment_id, saved)?;
+    super::lowering::first_sealed(
+        &stored.summary.environment_id,
+        saved,
+        stored.cluster_domain.as_ref(),
+        &branch,
+        sealing,
+    )
 }
 
 /// Cancel a Deployment of `who`'s Organization. A queued one, or one waiting for CI,
