@@ -144,6 +144,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     namespace: same,
     namespaces: same,
     sealed_names: same,
+    sealing_targets: same,
     domains: same,
     domain: same,
     volumes: same,
