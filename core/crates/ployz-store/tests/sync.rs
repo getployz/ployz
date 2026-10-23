@@ -16,9 +16,9 @@ use ployz_store::{
     CreateService, DeploymentId, DeploymentStatus, DeploymentSummary, Discard, Edit, EnvironmentId,
     EnvironmentName, EnvironmentRef, EnvironmentRemoval, EnvironmentsQuery, KeepBranch,
     OrganizationId, Permission, ProjectId, ProjectName, Publish, Removal, Remove, RemoveService,
-    RemovedBecause, RenameService, SecretRow, SecretValue, ServiceLineageId, ServiceQuery,
-    SettingPath, Sweep, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced,
-    SystemEvent, Trusted, UndoSync, Written,
+    RemovedBecause, RenameService, SealingTargetsQuery, SealingTargetsView, SecretRow, SecretValue,
+    ServiceLineageId, ServiceQuery, SettingPath, Sweep, SyncChange, SyncChanges, SyncId, SyncQuery,
+    SyncRow, SyncView, Synced, SystemEvent, Trusted, UndoSync, Written,
 };
 use serde_json::{Value, json};
 
@@ -2048,6 +2048,190 @@ fn a_value_sealed_for_the_parent_arrives_not_set_in_a_branch_created_from_it() {
     deploy(&store, &who, "production", 3);
     assert_eq!(
         values(&store, &who, "fix-two", "web")["env"]["API_KEY"],
+        json!({ "secret": true })
+    );
+}
+
+/// The ID of Service `name` in `environment`: its own, not its lineage.
+fn service_id(store: &ConfigStore, who: &Actor, environment: &str, name: &str) -> ServiceLineageId {
+    store
+        .read(
+            who,
+            &ServiceQuery {
+                environment: at(environment),
+                service: ServiceName::parse(name).unwrap(),
+            },
+        )
+        .unwrap()
+        .service
+        .service
+        .id
+}
+
+/// Where a Sync from fix-web into its Parent at `version` lands `rows`.
+fn sync_targets(
+    store: &ConfigStore,
+    who: &Actor,
+    version: &str,
+    rows: &[&str],
+) -> Result<SealingTargetsView, RpcError> {
+    store.read(
+        who,
+        &SealingTargetsQuery::Sync {
+            from: at("fix-web"),
+            into: None,
+            version: version.into(),
+            rows: rows.iter().map(|row| (*row).into()).collect(),
+        },
+    )
+}
+
+#[test]
+fn sealing_targets_resolve_each_row_as_the_sync_does_to_the_receiver_s_own_service() {
+    let (store, who) = shop(false);
+    // fix-web's web is an Own Copy: its own ID, web's lineage.
+    let copy = service_id(&store, &who, "fix-web", "web");
+    assert_ne!(copy.as_str(), uuid(3));
+    let edit = store
+        .read(
+            &who,
+            &SealingTargetsQuery::Edit {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    let SealingTargetsView::Edit { services, .. } = &edit else {
+        panic!("{edit:?}");
+    };
+    let web = services
+        .iter()
+        .find(|service| service.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(web.service.to_string(), copy.as_str());
+    // production calls web site now: the row is web.env.API_KEY in fix-web and
+    // site.env.API_KEY in production, and lands in production's site.
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("site").unwrap(),
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.env.API_KEY", json!({ "secret": "test-key" })),
+            ("web.image", json!("web:2")),
+        ],
+    );
+    let review = view(&store, &who);
+    let api_key = row(&review, "web.env.API_KEY").at.row().clone();
+    for asked in ["web.env.API_KEY", "site.env.API_KEY", &api_key.to_string()] {
+        let targets = sync_targets(&store, &who, &review.version, &[asked]).unwrap();
+        let SealingTargetsView::Sync {
+            organization,
+            from,
+            into,
+            version,
+            values,
+        } = targets
+        else {
+            panic!("{targets:?}");
+        };
+        assert_eq!(organization, "org");
+        assert_eq!(from.name.as_str(), "fix-web");
+        assert_eq!(into.name.as_str(), "production");
+        assert_eq!(version, review.version);
+        assert_eq!(values.len(), 1, "{values:?}");
+        assert_eq!(values[0].asked, asked.into());
+        assert_eq!(values[0].row, api_key);
+        assert_eq!(values[0].service.to_string(), uuid(3));
+        assert_eq!(values[0].key, "API_KEY");
+    }
+    let refused = |rows: &[&str], code: RpcErrorCode, why: &str| {
+        let error = sync_targets(&store, &who, &review.version, rows).unwrap_err();
+        assert_eq!(error.code, code, "{error:?}");
+        assert!(error.message.contains(why), "{error:?}");
+    };
+    refused(
+        &["web.source"],
+        RpcErrorCode::InvalidArgument,
+        "isn't a secret",
+    );
+    refused(&["web.env.NOPE"], RpcErrorCode::NotFound, "No row named");
+    let stale = sync_targets(&store, &who, "0:stale", &["web.env.API_KEY"]).unwrap_err();
+    assert_eq!(stale.code, RpcErrorCode::Conflict, "{stale:?}");
+    // A new Service's secret has no Service in the receiver to seal for yet.
+    service(&store, &who, "fix-web", 5, "api", "api:1");
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("api.env.KEY", json!({ "secret": "test-api-key" }))],
+    );
+    let review = view(&store, &who);
+    let error = sync_targets(&store, &who, &review.version, &["api.env.KEY"]).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    assert!(error.message.contains("isn't there yet"), "{error:?}");
+}
+
+#[test]
+fn an_old_cli_s_plain_text_for_a_synced_secret_is_refused_once_the_flag_is_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), false);
+    let cli = Trusted {
+        from_cli: true,
+        ..Trusted::default()
+    };
+    let with_value = |label: &str| {
+        let review = view(&store, &who);
+        SyncChanges {
+            values: BTreeMap::from([(label.into(), "plain-value".into())]),
+            ..sync(&review, Some(&[label]))
+        }
+    };
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.API_KEY", json!({ "secret": "test-key" }))],
+    );
+    store
+        .write_trusted(&who, &with_value("web.env.API_KEY"), &cli)
+        .unwrap();
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["API_KEY"],
+        json!({ "secret": true })
+    );
+
+    backend::sealed_variables_on(&url, "org");
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.TOKEN", json!({ "secret": "test-token" }))],
+    );
+    let error = store
+        .write_trusted(&who, &with_value("web.env.TOKEN"), &cli)
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unsupported, "{error:?}");
+    assert_eq!(error.message, "TOKEN: update ployz to set a Sealed value");
+    assert_eq!(error.details["next"], "curl -fsSL https://ployz.sh | sh");
+    assert!(!format!("{error:?}").contains("plain-value"), "{error:?}");
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["TOKEN"],
+        Value::Null
+    );
+    // Not from the CLI, the Store seals it as before.
+    store.write(&who, &with_value("web.env.TOKEN")).unwrap();
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["TOKEN"],
         json!({ "secret": true })
     );
 }

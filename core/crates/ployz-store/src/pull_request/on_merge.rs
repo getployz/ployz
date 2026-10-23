@@ -502,7 +502,7 @@ pub(crate) fn set_merge_value(
                     &label,
                     value,
                     &landing.into,
-                    enabled,
+                    (crate::old_cli::Guard::NOT_CLI, enabled),
                 )?)
             }
             (SecretValue::ClientSealed(_), false) => {

@@ -3,11 +3,12 @@
 //! value the person syncing gives it, or without one.
 
 use ployz_core::config::SecretCiphertext;
+use uuid::Uuid;
 
 use super::proposal;
 use super::*;
 use crate::variables::{VariableKey, validate_text};
-use crate::{SealingKey, SecretValue, Trusted, client_sealed};
+use crate::{SealingKey, SecretValue, Trusted, client_sealed, old_cli};
 
 /// Sync one Environment's changes into another of its Project, staged in the
 /// receiver's Working State. Nothing is deleted, published or deployed.
@@ -224,13 +225,13 @@ pub(crate) fn sync(
     let sides = [&from.working, &into.working];
     let (picks, values) = picks(checked.rows(), &sides, request)?;
     proposal::refuse_held(checked.rows(), &sides, &picks, &owners)?;
-    let enabled = values.values().any(SecretValue::is_client_sealed)
+    let enabled = (trusted.from_cli || values.values().any(SecretValue::is_client_sealed))
         && client_sealed::enabled(tx, &who.organization)?;
     let values = sealed(
         sealing,
         checked.rows(),
         [&from, &into],
-        enabled,
+        (old_cli::Guard::from(trusted), enabled),
         &picks,
         &values,
     )?;
@@ -419,13 +420,7 @@ pub(crate) fn picks(
     sides: &[&SavedEnvironmentIntent; 2],
     request: &SyncChanges,
 ) -> Result<(BTreeSet<RowId>, BTreeMap<RowId, SecretValue>), RpcError> {
-    let moves = rows.iter().filter(|row| {
-        matches!(
-            row.verdict,
-            Verdict::Moves { .. } | Verdict::Differs(Why::Included)
-        )
-    });
-    let named = named_in(sides, moves.map(|row| &row.id));
+    let named = named_in(sides, moving(rows));
     let values = request
         .values
         .iter()
@@ -458,13 +453,95 @@ pub(crate) fn picks(
     Ok((landing, values))
 }
 
-/// `values` sealed, each for a picked secret the receiver `into` lacks; a value the
-/// browser sealed is taken only with `client_sealed` on.
+/// The rows of `rows` a Sync may land: those that move, and those another
+/// proposal included.
+fn moving(rows: &[PlannedRow]) -> impl Iterator<Item = &RowId> {
+    rows.iter()
+        .filter(|row| {
+            matches!(
+                row.verdict,
+                Verdict::Moves { .. } | Verdict::Differs(Why::Included)
+            )
+        })
+        .map(|row| &row.id)
+}
+
+/// Where each of `rows` lands in a Sync of `from` into `into` at `version`: the
+/// receiver's own Service, by ID, and the variable, resolved as the Sync resolves
+/// them. Returns the two sides with the targets.
+pub(crate) fn sealing_targets(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    side: (&EnvironmentRef, Option<&EnvironmentRef>),
+    version: &str,
+    rows: &[RowRef],
+) -> Result<
+    (
+        EnvironmentSummary,
+        EnvironmentSummary,
+        Vec<crate::sealing_targets::SyncSealingTarget>,
+    ),
+    RpcError,
+> {
+    let target = target(tx, who, side)?;
+    let (from, into) = scope::load_pair(tx, who, (&target.from, &target.into), false)?;
+    let (sync, _, _) = proposal::planned(tx, &from, &into)?;
+    let checked = sync.check(tx, &into, Guard::Sync(version))?;
+    let sides = [&from.working, &into.working];
+    let named = named_in(&sides, moving(checked.rows()));
+    let values = rows
+        .iter()
+        .map(|asked| {
+            let row = resolve_one(asked, &named)?;
+            let label = label(&sides, &row);
+            let refuse = |message: &str| {
+                error::invalid(format!("{label}: {message}"), json!({ "row": row }))
+            };
+            let At::Variable(key) = row.at().clone() else {
+                return Err(refuse("it isn't a secret"));
+            };
+            let service = receiving(&into, &row, &refuse)?;
+            let service = Uuid::parse_str(&service.id)
+                .map_err(|_| refuse("this Service has no ID a sealed value binds to"))?;
+            Ok(crate::sealing_targets::SyncSealingTarget {
+                asked: asked.clone(),
+                row,
+                service,
+                key,
+            })
+        })
+        .collect::<Result<_, RpcError>>()?;
+    Ok((from.summary, into.summary, values))
+}
+
+/// `row` as reads show it in either side, else its RowId.
+fn label(sides: &[&SavedEnvironmentIntent; 2], row: &RowId) -> String {
+    named(sides, row).map_or_else(|| row.to_string(), |named| named.to_string())
+}
+
+/// The receiver's own Service that secret `row` lands in: what a client-sealed
+/// value binds to, so it must be there already.
+fn receiving<'receiver>(
+    receiver: &'receiver Environment,
+    row: &RowId,
+    refuse: &impl Fn(&str) -> RpcError,
+) -> Result<&'receiver SavedServiceIntent, RpcError> {
+    receiver
+        .working
+        .services
+        .iter()
+        .find(|service| service.lineage_id == row.lineage())
+        .ok_or_else(|| refuse("its Service isn't there yet, so nothing can be sealed for it"))
+}
+
+/// `values` sealed, each for a picked secret the receiver `into` lacks; plain text
+/// passes the guard in `client_sealed`, and a value the browser sealed is taken only
+/// with its flag on.
 pub(crate) fn sealed(
     sealing: &SealingKey,
     rows: &[PlannedRow],
     [from, into]: [&Environment; 2],
-    client_sealed: bool,
+    client_sealed: (old_cli::Guard, bool),
     picks: &BTreeSet<RowId>,
     values: &BTreeMap<RowId, SecretValue>,
 ) -> Result<BTreeMap<RowId, SealedCell>, RpcError> {
@@ -472,8 +549,7 @@ pub(crate) fn sealed(
     values
         .iter()
         .map(|(row, value)| {
-            let label =
-                named(&sides, row).map_or_else(|| row.to_string(), |named| named.to_string());
+            let label = label(&sides, row);
             let needs = rows.iter().any(|planned| {
                 planned.id == *row
                     && matches!(
@@ -497,15 +573,16 @@ pub(crate) fn sealed(
 }
 
 /// `value`, sealed for secret `row` (labelled `label`) of `receiver`, once it is one
-/// the row takes. A client-sealed value binds to the receiver's own Service, so it
-/// needs that Service there already.
+/// the row takes. Plain text passes the guard in `client_sealed`, whose flag says
+/// whether the Organization seals on the client. A client-sealed value binds to the
+/// receiver's own Service, so it needs that Service there already.
 pub(crate) fn seal_secret(
     sealing: &SealingKey,
     row: &RowId,
     label: &str,
     value: &SecretValue,
     receiver: &Environment,
-    client_sealed: bool,
+    (guard, client_sealed): (old_cli::Guard, bool),
 ) -> Result<SealedSecret, RpcError> {
     let At::Variable(key) = row.at() else {
         return Err(error::invalid(
@@ -522,6 +599,7 @@ pub(crate) fn seal_secret(
                     json!({ "row": row }),
                 ));
             }
+            guard.admit(key.as_str(), || Ok(client_sealed))?;
             validate_text(&key, value)?;
             Ok(SealedSecret {
                 fingerprint: sealing.fingerprint(value),
@@ -532,14 +610,7 @@ pub(crate) fn seal_secret(
             let refuse = |message: &str| {
                 error::invalid(format!("{label}: {message}"), json!({ "row": row }))
             };
-            let service = receiver
-                .working
-                .services
-                .iter()
-                .find(|service| service.lineage_id == row.lineage())
-                .ok_or_else(|| {
-                    refuse("its Service isn't there yet, so nothing can be sealed for it")
-                })?;
+            let service = receiving(receiver, row, &refuse)?;
             let receiver = client_sealed::Receiver {
                 environment: &receiver.summary.id,
                 service,
