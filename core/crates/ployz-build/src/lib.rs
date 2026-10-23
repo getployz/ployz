@@ -81,7 +81,8 @@ pub fn is_builder_cache(volume: &str) -> bool {
         .strip_prefix("buildx_buildkit_ployz-")
         .and_then(|rest| rest.strip_suffix("_state"))
         .is_some_and(|node| match node.split_once('-') {
-            Some((uid, slot)) => digits(uid) && digits(slot),
+            // Buildx appends `0` to the builder name, so a slot's node is `<slot>0`.
+            Some((uid, node)) => digits(uid) && node.strip_suffix('0').is_some_and(&digits),
             None => digits(node),
         })
 }
