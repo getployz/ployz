@@ -294,6 +294,16 @@ prepares Docker and ZFS meanwhile.
     check-in reply or a busy server may have left too little time to listen, so check again. A
     server running a `ployz` older than this feature leaves every port Unknown.
 
+## Another program holds UDP port 51820
+
+A waiting server reads **Blocked** with `UDP port 51820 is in use by avahi-daemon (pid 812).`, or
+`ployz status` lists it under `blocked`. Ployz needs that port for WireGuard between servers, and
+while another program holds it, Ployz can't start on the server: an enroll would fail waiting for
+it. See what holds it with `sudo ss -ulpn 'sport = :51820'`, then stop or restart that program.
+avahi-daemon, for one, can take the port at random and lets it go when restarted. The block
+clears on the server's next check-in. `another WireGuard interface` means a WireGuard interface
+that isn't Ployz's listens on the port: list them with `sudo wg show interfaces`.
+
 ## Ployz stops over a leftover network
 
 `sudo systemctl status ployz` shows the service failed with `status=78`, and its logs say
