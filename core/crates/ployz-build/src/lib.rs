@@ -77,7 +77,9 @@ pub fn builder_name() -> String {
 #[must_use]
 pub fn is_builder_cache(volume: &str) -> bool {
     let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
-    // Exactly as `slot_name` writes it: no leading zero, and within `known_slots`.
+    // Exactly as `builder_name` and `slot_name` write them: no leading zero, a uid's range,
+    // and a slot within `known_slots`.
+    let uid = |part: &str| part.parse::<u32>().is_ok_and(|uid| uid.to_string() == part);
     let slot = |part: &str| {
         part.parse::<u8>()
             .is_ok_and(|slot| slot > 0 && slot.to_string() == part)
@@ -87,7 +89,7 @@ pub fn is_builder_cache(volume: &str) -> bool {
         .and_then(|rest| rest.strip_suffix("_state"))
         .is_some_and(|node| match node.split_once('-') {
             // Buildx appends `0` to the builder name, so a slot's node is `<slot>0`.
-            Some((uid, node)) => digits(uid) && node.strip_suffix('0').is_some_and(slot),
+            Some((owner, node)) => uid(owner) && node.strip_suffix('0').is_some_and(slot),
             None => digits(node),
         })
 }
