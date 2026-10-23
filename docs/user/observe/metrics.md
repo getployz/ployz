@@ -80,8 +80,8 @@ minute.
 
 When the server answered but its newest reading is more than a few samples old, Ployz says so
 below the table, as in `machine-1 answered, but its newest reading is about 1h old`. Its clock
-may run behind, or it stopped taking readings. `timedatectl` on the server shows which. The
-`server_metrics` tool carries the same note.
+may run behind, or it stopped taking readings. Check its clock with `timedatectl` on the server.
+The `server_metrics` tool carries the same note.
 
 ## Ask an agent
 
