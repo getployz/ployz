@@ -804,10 +804,19 @@ impl<'ast> Visit<'ast> for Body {
                 body.in_test = in_test;
             }));
             // Past a pattern every value matches, each path to the next arm ran the guard.
-            let every_value = matches!(
-                &arm.pat,
-                syn::Pat::Wild(_) | syn::Pat::Ident(syn::PatIdent { subpat: None, .. })
-            );
+            // A capitalized name, like `None` or a constant, is a pattern to match, not a
+            // binding.
+            let every_value = match &arm.pat {
+                syn::Pat::Wild(_) => true,
+                syn::Pat::Ident(ident) => {
+                    ident.subpat.is_none()
+                        && ident
+                            .ident
+                            .to_string()
+                            .starts_with(|first: char| first == '_' || first.is_lowercase())
+                }
+                _ => false,
+            };
             next = if every_value { tried } else { next && tried };
         }
         self.join(start, ways);
@@ -1500,8 +1509,21 @@ async fn waits_for_some() {
         _ => tokio::time::sleep(d).await,
     }
 }
+#[tokio::test]
+async fn waits_for_none() {
+    match value {
+        None if { tokio::time::pause(); false } => (),
+        _ => tokio::time::sleep(d).await,
+    }
+}
 "#;
-        assert_eq!(lint(source), ["13: real-clock sleep in test code"]);
+        assert_eq!(
+            lint(source),
+            [
+                "13: real-clock sleep in test code",
+                "20: real-clock sleep in test code"
+            ]
+        );
     }
 
     #[test]
