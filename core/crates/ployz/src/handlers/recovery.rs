@@ -337,9 +337,16 @@ fn rotate_failure(error: LoginError) -> Error {
             "Another rotation reached Cloud first. {ROTATE_AGAIN}"
         ));
     }
+    // A 5xx may come after Cloud stored the backup, so it confirms nothing.
     if matches!(
         error,
-        LoginError::Unreachable { .. } | LoginError::Unanswered { .. } | LoginError::Reply(_)
+        LoginError::Unreachable { .. }
+            | LoginError::Unanswered { .. }
+            | LoginError::Reply(_)
+            | LoginError::Status {
+                status: 500..=599,
+                ..
+            }
     ) {
         return Error::unavailable(format!(
             "Cloud didn't confirm the new backup. {ROTATE_AGAIN}"
@@ -584,22 +591,28 @@ mod tests {
 
     #[test]
     fn rotate_prints_no_code_when_cloud_lost_the_reply() {
-        let cloud = cloud(|route, _| match route {
-            "POST /api/cli/sealing/recovery" => (200, recovery_row(key(1), None)),
-            "POST /api/cli/sealing/rotate" => (200, json!({ "stored": true })),
-            other => panic!("unexpected {other}"),
-        });
-        let dir = config_dir(Some(&cloud.url), "");
-        let daemon = daemon(dir.path(), key(1), true);
-        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+        for reply in [
+            (200, json!({ "stored": true })),
+            (500, json!({ "error": "internal" })),
+            (503, json!({ "error": "unavailable" })),
+        ] {
+            let cloud = cloud(move |route, _| match route {
+                "POST /api/cli/sealing/recovery" => (200, recovery_row(key(1), None)),
+                "POST /api/cli/sealing/rotate" => reply.clone(),
+                other => panic!("unexpected {other}"),
+            });
+            let dir = config_dir(Some(&cloud.url), "");
+            let daemon = daemon(dir.path(), key(1), true);
+            let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
 
-        let (result, printed) = rotate_json(&root);
+            let (result, printed) = rotate_json(&root);
 
-        let error = result.unwrap_err();
-        assert!(printed.is_none());
-        assert_eq!(error.report().code, RpcErrorCode::Unavailable);
-        assert!(error.to_string().contains("didn't confirm"), "{error}");
-        assert!(error.to_string().contains(ROTATE_AGAIN), "{error}");
+            let error = result.unwrap_err();
+            assert!(printed.is_none());
+            assert_eq!(error.report().code, RpcErrorCode::Unavailable);
+            assert!(error.to_string().contains("didn't confirm"), "{error}");
+            assert!(error.to_string().contains(ROTATE_AGAIN), "{error}");
+        }
     }
 
     #[test]
