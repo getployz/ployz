@@ -419,12 +419,7 @@ fn summary(revision: &ployz_store::SavedRevision) -> String {
                 change
                     .settings
                     .iter()
-                    .map(|row| {
-                        labels
-                            .get(&row.path)
-                            .cloned()
-                            .unwrap_or_else(|| row.path.clone())
-                    })
+                    .map(|row| crate::ui::escaped(labels.get(&row.path).unwrap_or(&row.path)))
                     .collect()
             } else {
                 vec![format!(
@@ -477,7 +472,10 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                     .map_or("-", ployz_store::Principal::as_str)
                     .to_owned(),
                 summary(revision),
-                revision.message.clone().unwrap_or_else(|| "-".to_owned()),
+                revision
+                    .message
+                    .as_deref()
+                    .map_or_else(|| "-".to_owned(), crate::ui::escaped),
             ]);
         }
         return crate::ui::finish(&view, || {
@@ -515,7 +513,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                 for row in &change.settings {
                     crate::ui::stream(format_args!(
                         "  {}: {} → {}",
-                        labels.get(&row.path).unwrap_or(&row.path),
+                        crate::ui::escaped(labels.get(&row.path).unwrap_or(&row.path)),
                         super::store::shown(&row.before),
                         super::store::shown(&row.after)
                     ));
@@ -523,7 +521,10 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
             }
             for path in ployz_store::NodeChange::shown_paths(&preview.changes, &preview.overwritten)
             {
-                crate::ui::stream(format_args!("  overwrites draft {path}"));
+                crate::ui::stream(format_args!(
+                    "  overwrites draft {}",
+                    crate::ui::escaped(&path.to_string())
+                ));
             }
             crate::ui::stream(format_args!("Review version: {}", preview.version));
         });
