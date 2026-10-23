@@ -39,8 +39,8 @@ const input = (overrides: Partial<EnrollInput> = {}): EnrollInput => ({
   ...overrides,
 });
 
-const empty = { hasFirst: false };
-const founded = { hasFirst: true };
+const empty = { hasFirst: false, takenNames: new Set<string>(), heldNames: new Map<string, ReadonlySet<string>>() };
+const founded = { hasFirst: true, takenNames: new Set<string>(), heldNames: new Map<string, ReadonlySet<string>>() };
 
 const planned = (plan: EnrollPlan) => {
   if (plan.kind !== "planned") throw new Error(`expected a plan, got: ${plan.message}`);
@@ -111,6 +111,61 @@ describe("names", () => {
       message: "A name pattern needs {n} to name more than one server.",
     });
     expect(planned(planServerEnrollment(input({ names }), [row("a")], founded)).rows[0]?.instruction.name).toBe("web");
+  });
+
+  it("numbers a hostname another Server or this batch already holds, as ployz server add refuses it", () => {
+    const plan = planned(planServerEnrollment(
+      input({ ids: ["a", "b", "c"] }),
+      [row("a", { report: { hostname: "MY-SERVER" } }), row("b", { report: { hostname: "my-server" } }), row("c")],
+      { ...founded, takenNames: new Set(["my-server", "host-c-2"]) },
+    ));
+    expect(plan.rows.map((r) => r.instruction.name)).toEqual(["my-server-2", "my-server-3", "host-c"]);
+  });
+
+  it("keeps a numbered name within 63 characters", () => {
+    const long = "a".repeat(63);
+    const plan = planned(planServerEnrollment(
+      input({ ids: ["a"] }), [row("a", { report: { hostname: long } })], { ...founded, takenNames: new Set([long]) },
+    ));
+    expect(plan.rows[0]?.instruction.name).toBe(`${"a".repeat(61)}-2`);
+  });
+
+  it("cuts a trailing hyphen before the number", () => {
+    const base = `${"a".repeat(60)}-bb`;
+    const plan = planned(planServerEnrollment(
+      input({ ids: ["a"] }), [row("a", { report: { hostname: base } })], { ...founded, takenNames: new Set([base]) },
+    ));
+    expect(plan.rows[0]?.instruction.name).toBe(`${"a".repeat(60)}-2`);
+  });
+
+  it("refuses a pattern that numbering past taken names makes longer than 63 characters", () => {
+    const pattern = `${"a".repeat(61)}-{n}`;
+    const takenNames = new Set(Array.from({ length: 9 }, (_, index) => `${"a".repeat(61)}-${index + 1}`));
+    expect(planServerEnrollment(input({ names: { kind: "pattern", pattern } }), [row("a")], { ...founded, takenNames })).toEqual({
+      kind: "refused",
+      message: `${"a".repeat(61)}-10 is over 63 characters. Choose a shorter name pattern.`,
+    });
+  });
+
+  it("keeps a name the host's own Machine holds, and numbers it for another host", () => {
+    const plan = planned(planServerEnrollment(
+      input({ ids: ["a", "b"] }),
+      [row("a", { report: { hostname: "web-a" } }), row("b", { report: { hostname: "web-a" } })],
+      { ...founded, takenNames: new Set(["web-a"]), heldNames: new Map([["a", new Set(["web-a"])]]) },
+    ));
+    expect(plan.rows.map((r) => r.instruction.name)).toEqual(["web-a", "web-a-2"]);
+  });
+
+  it("skips the numbers a pattern would repeat, and numbers a taken pattern without {n}", () => {
+    const takenNames = new Set(["web-1", "web-3", "web"]);
+    const numbered = planned(planServerEnrollment(
+      input({ ids: ["a", "b"], names: { kind: "pattern", pattern: "web-{n}" } }), [row("a"), row("b")], { ...founded, takenNames },
+    ));
+    expect(numbered.rows.map((r) => r.instruction.name)).toEqual(["web-2", "web-4"]);
+    const single = planned(planServerEnrollment(
+      input({ names: { kind: "pattern", pattern: "web" } }), [row("a")], { ...founded, takenNames },
+    ));
+    expect(single.rows[0]?.instruction.name).toBe("web-2");
   });
 });
 
