@@ -863,9 +863,13 @@ impl fmt::Display for MachineNames<'_> {
 
 impl PlanError {
     /// The Server whose storage can't hold the Deploy's Volumes, as opposed to a
-    /// conflict or capacity nobody could read.
+    /// conflict or capacity nobody could read. Looks through the Service a plan error
+    /// may name.
     #[must_use]
     pub fn short_of_storage(&self) -> Option<MachineId> {
+        if let Self::Service { source, .. } = self {
+            return source.short_of_storage();
+        }
         let Self::Storage {
             machine_id, source, ..
         } = self
