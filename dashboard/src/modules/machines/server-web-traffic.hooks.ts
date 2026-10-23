@@ -9,7 +9,7 @@ import type { WebTrafficWant } from "./server-web-traffic";
 import { needsAttention, serverStatus, type ServerStatus } from "./server-status";
 import {
   ingressProxyOn,
-  WEB_TRAFFIC_SETTLE_MS,
+  settleLeft,
   type WebTrafficReach,
   webTrafficReach,
   webTrafficView,
@@ -68,7 +68,7 @@ export function useServerWebTraffic(
   }, [requested]);
   useEffect(() => {
     if (finished === null) return;
-    const left = new Date(finished.endedAt).getTime() + WEB_TRAFFIC_SETTLE_MS - Date.now();
+    const left = settleLeft(finished.endedAt, Date.now());
     if (left <= 0) {
       setSettledId(finished.attemptId);
       return;

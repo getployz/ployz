@@ -1,6 +1,6 @@
 import type { IngressCheck, MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { ingressProxyOn, webTrafficChecked, webTrafficReach, webTrafficView, type IngressProxy } from "./server-web-traffic-view";
+import { ingressProxyOn, settleLeft, WEB_TRAFFIC_SETTLE_MS, webTrafficChecked, webTrafficReach, webTrafficView, type IngressProxy } from "./server-web-traffic-view";
 import { type LatestWebTraffic, startFailure } from "./server-web-traffic";
 
 const server = { id: "m1", acceptsIngress: false, publicIp: "203.0.113.10" };
@@ -91,6 +91,20 @@ describe("webTrafficView", () => {
     expect(webTrafficChecked({ kind: "failed", want: "on", on: false, reason: "x", address: null })).toBe(false);
     expect(webTrafficChecked({ kind: "failed", want: "on", on: true, reason: "x", address: null })).toBe(true);
     expect(webTrafficChecked({ kind: "down" })).toBe(true);
+  });
+});
+
+describe("settleLeft", () => {
+  const ended = "2026-01-01T12:00:00.000Z";
+  const at = (iso: string) => new Date(iso).getTime();
+
+  it("counts the settle time from when the change ended", () => {
+    expect(settleLeft(ended, at("2026-01-01T12:00:10.000Z"))).toBe(WEB_TRAFFIC_SETTLE_MS - 10_000);
+    expect(settleLeft(ended, at("2026-01-01T12:01:00.000Z"))).toBeLessThanOrEqual(0);
+  });
+
+  it("never waits longer than the settle time when the browser's clock is behind Cloud's", () => {
+    expect(settleLeft(ended, at("2026-01-01T11:55:00.000Z"))).toBe(WEB_TRAFFIC_SETTLE_MS);
   });
 });
 

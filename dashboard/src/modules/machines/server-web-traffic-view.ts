@@ -61,6 +61,10 @@ export function ingressProxyOn(
 /** How long a finished change may take to show on the Server before the row trusts what the Server says instead. */
 export const WEB_TRAFFIC_SETTLE_MS = 30_000;
 
+/** How long until a change that ended at `endedAt` has settled, never more than the settle time if the clocks differ. */
+export const settleLeft = (endedAt: string, now: number) =>
+  Math.min(new Date(endedAt).getTime() + WEB_TRAFFIC_SETTLE_MS - now, WEB_TRAFFIC_SETTLE_MS);
+
 /**
  * The row for `server`, from what the Server reports (`acceptsIngress`), its latest change, and the change this tab
  * asked for (`requested`, until its row arrives). A change under way shows as such; a finished one whose outcome the
