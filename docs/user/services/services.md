@@ -103,9 +103,9 @@ ployz exec web                     # a shell in one of its containers
 ployz exec web npm run migrate     # or one command
 ```
 
-`ployz exec` exits with the command's exit code. When the command can't start, such as a
-program missing from the image, Docker's error prints on stderr, so piping the output doesn't
-take it for the command's own.
+`ployz exec` exits with the command's exit code, and with 127 when the program isn't in the image.
+Docker's error for a command that can't start prints on stderr. With `-T`, so does the command's
+own stderr, which keeps both out of piped output.
 
 A restart doesn't pick up staged changes. Deploy for that. Restarting or stopping the same
 service from the CLI and from the [Ployz agent](../account/agent-sidebar.md) at once can leave it

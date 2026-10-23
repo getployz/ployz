@@ -856,14 +856,14 @@ fn a_stop_first_replacement_reads_stopping_old_until_its_start_runs() {
 }
 
 #[test]
-fn rollback_and_health_waits_read_their_own_words() {
+fn rollback_and_health_waits_read_their_own_words_with_the_count() {
     let groups = [group("web", &[])];
     assert_eq!(
         lines(&graph_frame(
             &groups,
             &[("web", &["completed", "compensating"])]
         )),
-        ["depth 0", "  ◐ web  rolling back"]
+        ["depth 0", "  ◐ web  rolling back 1/2"]
     );
     assert_eq!(
         lines(&graph_frame(&groups, &[("web", &["completed", "health"])])),

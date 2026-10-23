@@ -18,9 +18,10 @@ the deploy has Volumes to create, and a large image can hold it there for minute
 whose pull policy is Never has nothing to pull and reads plain `waiting`. A booting Service counts each Server whose new
 Containers are ready, so it can read `booting 1/3` while the others boot. Once every
 Server is ready it reads `switching N/N` until they switch together, then
-`switched N/N`. When a new Container fails its health check, the row reads `rolling back`, such
-as `rolling back (1 failed)`, while Ployz stops the new Containers and starts the old ones again.
-It shows no count, since the new Containers are going away. A row whose new Containers already serve shows a `draining old` line
+`switched N/N`. Under Stop first or Rolling, a new Container that can't start or fails its
+health check makes the row read `rolling back` while Ployz starts the old Container on that Server
+again, such as `rolling back (1 failed)`. It counts the Servers whose new Container already serves,
+as in `rolling back 1/2`, and shows no count when none does. A row whose new Containers already serve shows a `draining old` line
 while the deploy removes Containers it no longer needs, which waits until every Server routes to the new ones. Old copies that a
 replacement leaves behind drain on each Server after the switch, so they show in
 `ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,

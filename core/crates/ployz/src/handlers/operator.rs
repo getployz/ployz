@@ -441,18 +441,20 @@ async fn forward_exec(
         match ExecResponseFrame::decode(&payload?)? {
             ExecResponseFrame::ExecId(_) if detach => return Ok(0),
             ExecResponseFrame::ExecId(_) => {}
-            ExecResponseFrame::Stdout(bytes) if start_failure(first, &bytes) => {
-                first = false;
-                std::io::stderr().write_all(&bytes)?;
-            }
-            ExecResponseFrame::Stdout(bytes) => {
-                first = false;
-                write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?;
-            }
-            ExecResponseFrame::Stderr(bytes) => {
-                first = false;
-                std::io::stderr().write_all(&bytes)?;
-            }
+            ExecResponseFrame::Stdout(bytes) => write_output(
+                &mut first,
+                Stream::Stdout,
+                &bytes,
+                &mut crate::ui::stdout_bytes(),
+                &mut std::io::stderr(),
+            )?,
+            ExecResponseFrame::Stderr(bytes) => write_output(
+                &mut first,
+                Stream::Stderr,
+                &bytes,
+                &mut crate::ui::stdout_bytes(),
+                &mut std::io::stderr(),
+            )?,
             ExecResponseFrame::Exit(code) => return Ok(code),
             ExecResponseFrame::Error(error) => return Err(error.into()),
         }
@@ -467,10 +469,29 @@ async fn forward_exec(
     ))
 }
 
-/// Docker writes why it couldn't start an exec's command, such as a missing binary, into the
-/// exec's stdout stream, ahead of anything the command writes. `first` says no output came yet.
-fn start_failure(first: bool, bytes: &[u8]) -> bool {
-    first && bytes.starts_with(b"OCI runtime exec failed: ")
+/// Which of an exec's output streams a frame came on.
+#[derive(Clone, Copy)]
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+/// Write one frame of an exec's output to `stdout` or `stderr`. Docker writes why it couldn't
+/// start the command, such as a missing binary, into the stdout stream ahead of any output, so
+/// that frame goes to `stderr`. `first` holds until the exec wrote anything.
+fn write_output(
+    first: &mut bool,
+    stream: Stream,
+    bytes: &[u8],
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> std::io::Result<()> {
+    let start_failure = *first && bytes.starts_with(b"OCI runtime exec failed: ");
+    *first = false;
+    match stream {
+        Stream::Stdout if !start_failure => write_stdout_frame(stdout, bytes),
+        Stream::Stdout | Stream::Stderr => stderr.write_all(bytes),
+    }
 }
 
 /// Stream Service logs; every Service of the Environment when none is named.
@@ -1356,14 +1377,32 @@ mod tests {
 
     #[test]
     fn a_command_docker_could_not_start_reports_on_stderr() {
-        let missing = b"OCI runtime exec failed: exec failed: unable to start container process: \
-            exec: \"nope\": executable file not found in $PATH: unknown\r\n";
-        assert!(start_failure(true, missing));
-        assert!(
-            !start_failure(false, missing),
-            "only the first output can be Docker's"
+        let missing: &[u8] = b"OCI runtime exec failed: exec failed: unable to start container \
+            process: exec: \"nope\": executable file not found in $PATH\r\n";
+        let written = |frames: &[(Stream, &[u8])]| {
+            let (mut first, mut stdout, mut stderr) = (true, Vec::new(), Vec::new());
+            for (stream, bytes) in frames {
+                write_output(&mut first, *stream, bytes, &mut stdout, &mut stderr).unwrap();
+            }
+            (
+                String::from_utf8(stdout).unwrap(),
+                String::from_utf8(stderr).unwrap(),
+            )
+        };
+        let text = String::from_utf8(missing.to_vec()).unwrap();
+        assert_eq!(
+            written(&[(Stream::Stdout, missing)]),
+            (String::new(), text.clone())
         );
-        assert!(!start_failure(true, b"hello\n"));
+        assert_eq!(
+            written(&[(Stream::Stdout, b"hi\n"), (Stream::Stdout, missing)]),
+            (format!("hi\n{text}"), String::new()),
+            "only output ahead of any other can be Docker's"
+        );
+        assert_eq!(
+            written(&[(Stream::Stderr, b"oops\n"), (Stream::Stdout, b"hi\n")]),
+            ("hi\n".to_owned(), "oops\n".to_owned())
+        );
     }
 
     #[test]

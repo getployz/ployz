@@ -169,10 +169,10 @@ impl GraphService {
             | State::Unknown
             | State::Excluded => state.word(),
         };
-        // A rollback restores the old copies, so a count of new copies ready would mislead.
+        // A rollback with no new copy serving restores every old one: 0/N would read as none.
         if self.total == 0
             || (*state == State::NotAttempted && self.ready == 0)
-            || *state == State::Running(RowPhase::Compensating)
+            || (*state == State::Running(RowPhase::Compensating) && self.ready == 0)
         {
             word.to_owned()
         } else if matches!(state, State::Failed | State::Cancelled | State::Interrupted) {

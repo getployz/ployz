@@ -38,8 +38,8 @@ fn find<'a>(root: &'a Command, path: &[String]) -> Option<&'a Command> {
         .try_fold(root, |command, name| command.find_subcommand(name))
 }
 
-/// A group only Cloud published has no description of its own. The CLI describes the ones it
-/// knows, and lists the commands of any other.
+/// A group only Cloud published has no description of its own. The CLI describes top-level
+/// `uptime`, and any other such group lists its commands.
 fn described(parent: Command, path: &[String]) -> Command {
     let [name, rest @ ..] = path else {
         let commands = parent
@@ -47,11 +47,13 @@ fn described(parent: Command, path: &[String]) -> Command {
             .map(|command| command.get_name().to_owned())
             .collect::<Vec<_>>()
             .join(", ");
-        return match parent.get_name() {
-            "uptime" => parent.about("See whether visitors reach a Service, from every region"),
-            _ => parent.about(format!("Commands: {commands}")),
-        };
+        return parent.about(format!("Commands: {commands}"));
     };
+    if name == "uptime" && rest.is_empty() {
+        return parent.mut_subcommand(name.clone(), |group| {
+            group.about("See whether visitors reach a Service, from every region")
+        });
+    }
     parent.mut_subcommand(name.clone(), |group| described(group, rest))
 }
 
