@@ -325,6 +325,7 @@ async fn a_rolling_copy_that_fails_health_fails_its_own_step_and_the_next_never_
                 observation: unhealthy(),
                 last_check: None,
                 oom_killed: false,
+                departing: None,
             },
         )]),
         ..Scripted::new(vec![
@@ -2277,6 +2278,7 @@ async fn a_failed_restore_after_publication_is_reported() {
                 observation: unhealthy(),
                 last_check: None,
                 oom_killed: false,
+                departing: None,
             },
         )]),
         ..Scripted::new(vec![
@@ -2327,6 +2329,7 @@ async fn a_failed_group_restores_a_copy_held_to_free_host_ports() {
                 observation: unhealthy(),
                 last_check: None,
                 oom_killed: false,
+                departing: None,
             },
         )]),
         ..Scripted::new(vec![

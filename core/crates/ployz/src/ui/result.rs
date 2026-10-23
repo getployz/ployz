@@ -322,18 +322,36 @@ impl Gaps {
     /// One warning per Machine that didn't answer, by name, with its cause.
     pub(crate) fn warn(&self) {
         for failure in &self.failures {
-            if let Some(refusal) = failure.error.refusal() {
-                flag(&refusal.naming(self.name(&failure.machine_id)).to_string());
-                continue;
-            }
-            did_not_answer(&self.name(&failure.machine_id));
-            if let Some(cause) = super::causes(&failure.error).last() {
+            let (warning, cause) = self.warning(failure);
+            flag(&warning);
+            if let Some(cause) = cause {
                 note(format_args!("  {} {cause}", Tone::Bad.paint("cause:")));
             }
         }
         for machine_id in &self.omitted {
-            did_not_answer(&self.name(machine_id));
+            flag(&missing_rows(&self.name(machine_id)));
         }
+    }
+
+    /// The warning for `failure`, naming its Machine, and the cause line under it when
+    /// the warning doesn't say what happened by itself.
+    fn warning(&self, failure: &MachineFailure<RpcError>) -> (String, Option<String>) {
+        let name = self.name(&failure.machine_id);
+        if let Some(refusal) = failure.error.refusal() {
+            return (refusal.naming(name).to_string(), None);
+        }
+        // The entry Machine stopped listing it between our membership read and this
+        // call, as `ployz server rm` does. Its id would only repeat the name.
+        if failure.error.server_unlisted(&failure.machine_id) {
+            return (
+                format!("{name} was removed while this ran; its rows are missing."),
+                None,
+            );
+        }
+        (
+            missing_rows(&name),
+            super::causes(&failure.error).last().cloned(),
+        )
     }
 
     /// `Ok` when every Machine answered; otherwise the partial exit.
@@ -346,8 +364,12 @@ impl Gaps {
     }
 }
 
+fn missing_rows(server: &str) -> String {
+    format!("{server} did not answer; its rows are missing.")
+}
+
 fn did_not_answer(server: &str) {
-    flag(&format!("{server} did not answer; its rows are missing."));
+    flag(&missing_rows(server));
 }
 
 /// The end of a read Cloud fanned out for us: one warning per Server it names
@@ -415,5 +437,49 @@ mod tests {
             Some(serde_json::json!(["Docker volume (not recommended)"]))
         );
         assert!(second.unwrap().get("warnings").is_none());
+    }
+
+    /// A Server the entry Machine stopped listing between our membership read and the
+    /// fan-out, as `ployz server rm` does, is named once, without the id its
+    /// not-found answer carries (#3277). A Server that didn't answer keeps its cause.
+    #[test]
+    fn a_server_the_entry_stopped_listing_is_named_without_its_id() {
+        use ployz_core::RpcErrorCode;
+
+        let machine_id = MachineId::parse("4".repeat(32)).unwrap();
+        let name = MachineName::parse("machine-4").unwrap();
+        let unlisted = RpcError {
+            code: RpcErrorCode::NotFound,
+            message: format!("No Server named {:?}", machine_id.to_string()),
+            details: serde_json::json!({
+                "inspect": ["ployz server ls"],
+                "reason": "no_such_server",
+                "targets": [machine_id.to_string()],
+            }),
+            cause: Vec::new(),
+        };
+        let silent = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!("Machine {machine_id} did not answer: target Machine RPC timed out"),
+            details: serde_json::Value::Null,
+            cause: vec!["deadline has elapsed".into()],
+        };
+        let gaps = Gaps::default().named([(machine_id, &name)]);
+        let warning = |error: RpcError| gaps.warning(&MachineFailure { machine_id, error });
+
+        assert_eq!(
+            warning(unlisted),
+            (
+                "machine-4 was removed while this ran; its rows are missing.".to_owned(),
+                None
+            )
+        );
+        assert_eq!(
+            warning(silent),
+            (
+                "machine-4 did not answer; its rows are missing.".to_owned(),
+                Some("deadline has elapsed".to_owned())
+            )
+        );
     }
 }

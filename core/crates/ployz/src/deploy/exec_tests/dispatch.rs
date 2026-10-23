@@ -1168,6 +1168,71 @@ fn an_ingress_server_the_entry_no_longer_lists_is_not_left_unchecked() {
     assert_eq!(unchecked, [(silent.id, "Docker is down".to_owned())]);
 }
 
+/// An ingress Server whose own daemon says it is leaving is on its way out with its
+/// ingress role, so the plan puts no Ingress Proxy there, and the check doesn't call it
+/// unchecked when its listing times out during the removal (#3277). A Server that is
+/// silent without saying so stays unchecked, and an empty one that answered gets its
+/// proxy.
+#[test]
+fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
+    use std::collections::BTreeMap;
+
+    use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
+    use crate::deploy::{SlotAction, plan_ingress_repairs};
+
+    let leaving = |hex, name| {
+        let mut machine = crate::global_fixtures::machine(hex, name);
+        machine.runtime.leaving = true;
+        machine
+    };
+    let serving = crate::global_fixtures::machine('1', "edge-1");
+    let leaving_answered = leaving('2', "edge-2");
+    let leaving_silent = leaving('3', "edge-3");
+    let silent = crate::global_fixtures::machine('4', "edge-4");
+    let empty = crate::global_fixtures::machine('5', "edge-5");
+    let mut snapshot = servers(
+        &[
+            serving.clone(),
+            leaving_answered.clone(),
+            leaving_silent.clone(),
+            silent.clone(),
+            empty.clone(),
+        ],
+        vec![ingress_on('a', &serving)],
+    );
+    let timed_out = |machine: &ployz_core::Machine| ployz_core::MachineFailure {
+        machine_id: machine.id,
+        error: error("target Machine RPC timed out"),
+    };
+    snapshot.container_failures = vec![timed_out(&leaving_silent), timed_out(&silent)];
+
+    let repairs: BTreeMap<_, _> = plan_ingress_repairs(&ingress_intent(), &snapshot)
+        .into_iter()
+        .map(|repair| {
+            let action = match repair.action {
+                SlotAction::Create(Ok(_)) => "create".to_owned(),
+                SlotAction::Unchecked(cause) => format!("unchecked: {cause}"),
+                action @ (SlotAction::Create(Err(_))
+                | SlotAction::Start(_)
+                | SlotAction::Dead(_)
+                | SlotAction::Restarting(_)) => panic!("{action:?}"),
+            };
+            (repair.machine_id, action)
+        })
+        .collect();
+
+    assert_eq!(
+        repairs,
+        BTreeMap::from([
+            (
+                silent.id,
+                "unchecked: target Machine RPC timed out".to_owned()
+            ),
+            (empty.id, "create".to_owned()),
+        ])
+    );
+}
+
 #[tokio::test]
 async fn ingress_create_cleanup_never_names_a_sibling() {
     use crate::deploy::{

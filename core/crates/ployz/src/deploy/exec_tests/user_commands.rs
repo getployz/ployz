@@ -388,6 +388,7 @@ async fn user_stop_start_restart_remove() {
         deadline_millis: Some(1_000),
         last_check: None,
         oom_killed: false,
+        departing: None,
     };
     fake.unhealthy_in.insert(container('1'), verdict.clone());
     let ran = run_command(Command::Start, Recording::of(fake)).await;

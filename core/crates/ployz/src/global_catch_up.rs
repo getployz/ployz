@@ -314,6 +314,7 @@ async fn ensure_retried(
         rotation: RunRotation::Pending,
     };
     crate::sealed_compat::admit(client, target, &want).await?;
+    crate::bridge_ipv6_compat::admit(client, target, &want).await?;
     client
         .call::<op::EnsureContainer>(ployz_core::EnsureContainerRequest { want }, Some(target))
         .await

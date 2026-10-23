@@ -2081,7 +2081,13 @@ fn sealing_a_value_removes_its_earlier_plain_text_from_history() {
     publish(&store, &who, None).unwrap();
     assert_eq!(
         history_values(&store, &who, "web.env.TOKEN"),
-        vec![None, Some(json!({ "secret": true })), None, None, None]
+        vec![
+            None,
+            Some(json!({ "secret": true })),
+            Some(json!({ "secret": true })),
+            None,
+            Some(json!({ "secret": true }))
+        ]
     );
     let history = serde_json::to_string(
         &store
@@ -2114,8 +2120,50 @@ fn rotating_a_sealed_value_removes_the_older_ciphertext_from_history() {
     publish(&store, &who, None).unwrap();
     assert_eq!(
         history_values(&store, &who, "web.env.TOKEN"),
-        vec![None, Some(json!({ "secret": true })), None]
+        vec![
+            None,
+            Some(json!({ "secret": true })),
+            Some(json!({ "secret": true }))
+        ]
     );
+}
+
+/// A version that only re-entered a sealed value still names the variable it
+/// changed, and shows neither value.
+#[test]
+fn history_names_a_version_that_only_changed_a_sealed_value() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "one-private" }),
+    );
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "two-private" }),
+    );
+    publish(&store, &who, None).unwrap();
+
+    let history = store
+        .read(&who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    let newest = &history.revisions[0];
+    let [change] = newest.changes.as_slice() else {
+        panic!("{:?}", newest.changes)
+    };
+    let [setting] = change.settings.as_slice() else {
+        panic!("{:?}", change.settings)
+    };
+    assert_eq!(setting.path, "web.env.TOKEN");
+    assert_eq!(setting.before, json!({ "secret": true }));
+    assert_eq!(setting.after, json!({ "secret": true }));
+    let text = history_text(&store, &who);
+    assert!(!text.contains("one-private") && !text.contains("two-private"));
 }
 
 #[test]

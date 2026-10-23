@@ -101,6 +101,7 @@ pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             stop_timeout_secs: None,
             sysctls: Default::default(),
             restart: RestartPolicy::default(),
+            ipv6: false,
         },
         placement: Placement::default(),
         ports: Vec::new(),

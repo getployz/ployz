@@ -12,7 +12,7 @@ import {
 } from "#/modules/machines/waiting/checkin-wire";
 import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { asStage, forwardTo, openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
+import { asStage, forwardTo, joinsSent, openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hasFirstServer, startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
@@ -182,7 +182,9 @@ const admit = Effect.fn("Checkin.admit")(function* (
   if (stopped !== null) return stopped;
   if (!newToToken && existing.rejectedAt !== null) {
     const open = yield* openAttemptFor(existing.id);
-    if (open === null || !joinCommitted(open, existing)) return stop("rejected");
+    // Reject spares a join Cloud may have sent, so the host keeps enrolling.
+    const spared = open !== null && (joinCommitted(open, existing) || (yield* joinsSent(token.organizationId, [open.tokenId])).has(open.tokenId));
+    if (!spared) return stop("rejected");
   }
   if (takingLastSlots && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
     return yield* new CheckinRefused({

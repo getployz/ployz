@@ -919,6 +919,18 @@ pub(crate) fn fix_broken(matches: &ArgMatches, reference: &ployz_store::BrokenRe
     }
 }
 
+/// A broken reference and its fix as a stream line, the name escaped and the fix pasteable.
+pub(crate) fn broken_line(
+    matches: &ArgMatches,
+    reference: &ployz_store::BrokenReference,
+) -> String {
+    format!(
+        "{}; deploys skip it until you change it: {}",
+        crate::ui::escaped(&reference.to_string()),
+        super::pasteable(&fix_broken(matches, reference))
+    )
+}
+
 /// A Store error and the hint this command adds to it.
 pub(crate) struct Refusal {
     error: StoreCallError,

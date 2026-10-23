@@ -348,6 +348,39 @@ async fn stop_first_tolerates_disappearance_between_inspect_and_stop() {
     client.assert_done();
 }
 
+/// A Server being removed stops and removes its copies itself, and the deploy's own
+/// stop or remove of such a copy finds it gone, which is what it asked for. Nothing
+/// is reported left running on that Server (#2924).
+#[tokio::test]
+async fn an_old_copy_its_leaving_server_took_is_not_left_running() {
+    for order in [UpdateOrder::StartFirst, UpdateOrder::StopFirst] {
+        let machine = machine('1');
+        let old = container('a');
+        let new = container('b');
+        let plan = vec![replacement(&machine, &old, order)];
+        // Each stop or remove of `old` answers not found without a scripted step.
+        let mut steps = Vec::new();
+        if order == UpdateOrder::StopFirst {
+            steps.push(observed(Call::Inspect(machine, old), running()));
+        }
+        steps.extend([
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            observed(Call::Inspect(machine, old), running()),
+        ]);
+        let client = Scripted::new(steps).with_copy_gone(&machine, &old);
+
+        let (outcome, warnings) =
+            execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+        assert!(
+            matches!(outcome, DeployOutcome::Success { .. }),
+            "{order:?}: {outcome:?}"
+        );
+        assert!(warnings.is_empty(), "{order:?}: {warnings:?}");
+        client.assert_done();
+    }
+}
+
 #[tokio::test]
 async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
     for order in [UpdateOrder::StartFirst, UpdateOrder::StopFirst] {
@@ -800,6 +833,7 @@ async fn a_failed_group_stops_its_new_copies_before_it_restores_the_held_ones() 
                 observation: unhealthy(),
                 last_check: None,
                 oom_killed: false,
+                departing: None,
             },
         )]),
         ..Scripted::new(vec![
@@ -923,6 +957,7 @@ async fn a_refused_or_failed_restore_leaves_the_service_empty() {
         observation: unhealthy(),
         last_check: None,
         oom_killed: false,
+        departing: None,
     };
     for refused in [true, false] {
         let machine = machine('1');
@@ -1474,5 +1509,49 @@ async fn a_stop_first_task_the_machine_window_delays_is_withdrawn_with_its_step(
     let mut brought_in = client.brought_in();
     brought_in.sort();
     assert_eq!(brought_in, news);
+    client.assert_done();
+}
+
+/// A start-first replacement copy found unhealthy while its Server was being removed
+/// gets the cleanup any unhealthy copy gets: the deploy removes it and never flips,
+/// and names the removal (#2924).
+#[tokio::test]
+async fn a_replacement_copy_found_unhealthy_while_its_server_left_is_removed() {
+    let machine = machine('1');
+    let old = container('a');
+    let new = container('b');
+    let plan = vec![replacement(&machine, &old, UpdateOrder::StartFirst)];
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Settled(new, exited_leaving()),
+        ),
+        ok(Call::Discard(machine, new)),
+    ]);
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = execute_with(&plan, &client, &CancellationToken::new()).await
+    else {
+        panic!("the deploy should fail");
+    };
+
+    assert!(
+        matches!(
+            &error,
+            ExecutionError::Health {
+                container_id,
+                departing: Some(_),
+                ..
+            } if *container_id == new
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        ployz_store::Failure::of(&error, &[]).reason,
+        "Server lc-3 was removed while the deploy ran"
+    );
+    assert!(client.brought_in().is_empty());
     client.assert_done();
 }

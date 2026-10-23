@@ -470,11 +470,18 @@ export const cancelServerEnrollment = Effect.fn("ServerEnrollment.cancel")(funct
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [attempt] = yield* drizzle
-      .select({ id: serverEnrollment.id, open: sql<boolean>`${serverEnrollment.endedAt} is null` })
+      .select({ id: serverEnrollment.id, open: sql<boolean>`${serverEnrollment.endedAt} is null`, instruction: serverEnrollment.instruction })
       .from(serverEnrollment)
       .where(and(eq(serverEnrollment.organizationId, organization.id), eq(serverEnrollment.id, input.id)));
     if (attempt === undefined) return yield* new NotFound({ message: "No such enrollment." });
-    if (attempt.open) yield* cancelServerEnrollments(organization.id, [attempt.id]);
+    const spared = attempt.open ? yield* cancelServerEnrollments(organization.id, [attempt.id]) : [];
+    if (spared.length > 0) {
+      const { name } = attempt.instruction;
+      return yield* new Conflict({
+        message: `${name} may already be in the Cluster: Cloud sent its join. Nothing cancelled. Once it has joined, remove it with ployz server rm ${name}.`,
+        userFacing: true,
+      });
+    }
     return { id: attempt.id, cancelling: attempt.open };
   }));
 });

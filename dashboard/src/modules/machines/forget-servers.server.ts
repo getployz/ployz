@@ -106,7 +106,7 @@ const check = Effect.fn("ForgetServers.checkReach")(function* (forgetter: Forget
   const reached = yield* reachServers(known);
   const answered = reached.filter((server) => server.reach === "answered").map((server) => server.name);
   if (answered.length > 0) {
-    const message = `Your Servers are still reachable (${answered.join(", ")}). Remove them from the Servers page or with \`ployz server rm\` instead.`;
+    const message = `Your Servers are still reachable (${answered.join(", ")}). To forget them, stop their Ployz daemons first. To reset them, remove them from the Servers page or with \`ployz server rm\`.`;
     return { result: refused({ code: "conflict", message, details: { answered } }), seen };
   }
   const servers = reached.flatMap((server): ObservedServer[] => server.reach === "answered" ? [] : [{ ...server, reach: server.reach }]);

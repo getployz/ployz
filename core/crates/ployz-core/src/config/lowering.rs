@@ -445,6 +445,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 sealed_identity,
                 pull_policy: PullPolicy::Missing,
                 restart,
+                ipv6: false,
                 healthcheck,
                 resources: ContainerResources {
                     cpu_nanos,

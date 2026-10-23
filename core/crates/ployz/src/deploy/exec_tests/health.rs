@@ -367,6 +367,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
                     observation: unhealthy(),
                     last_check: Some(last_check.clone()),
                     oom_killed: false,
+                    departing: None,
                 },
             ),
         ),
@@ -390,6 +391,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
             },
             out_of_memory: None,
             last_run: None,
+            departing: None,
         }
     );
     assert!(
@@ -419,6 +421,7 @@ async fn a_timed_out_verdict_fails_the_start() {
                     deadline_millis: None,
                     last_check: None,
                     oom_killed: false,
+                    departing: None,
                 },
             ),
         ),
@@ -439,6 +442,7 @@ async fn a_timed_out_verdict_fails_the_start() {
                     },
                     out_of_memory: None,
                     last_run: None,
+                    departing: None,
                 },
                 ..
             },
@@ -477,6 +481,7 @@ async fn a_verdict_docker_killed_out_of_memory_fails_with_the_memory_limit() {
                         deadline_millis: Some(30_000),
                         last_check: Some(last_check.clone()),
                         oom_killed,
+                        departing: None,
                     },
                 ),
             ),
@@ -500,6 +505,7 @@ async fn a_verdict_docker_killed_out_of_memory_fails_with_the_memory_limit() {
                 },
                 out_of_memory,
                 last_run: None,
+                departing: None,
             }
         );
         client.assert_done();
@@ -643,6 +649,7 @@ async fn restored_oom_limit(replacement_mib: i64) {
         observation: unhealthy(),
         last_check: None,
         oom_killed: true,
+        departing: None,
     };
     let client = Scripted {
         observed_specs: BTreeMap::from([(old, old_spec)]),
@@ -686,6 +693,7 @@ async fn restored_oom_limit(replacement_mib: i64) {
                 memory_bytes: Some(old_limit),
             }),
             last_run: None,
+            departing: None,
         }
     );
     client.assert_done();
@@ -699,4 +707,98 @@ async fn a_restored_copy_killed_for_memory_names_its_own_limit() {
 #[tokio::test]
 async fn a_restored_copy_killed_for_memory_under_an_unchanged_limit_names_it() {
     restored_oom_limit(16).await;
+}
+
+/// A start that failed while its Server was being removed gets exactly the cleanup
+/// any failed start gets: the slot is discarded, so a copy the Leave never took is
+/// not left running should the Leave fail. The failure keeps its code and message,
+/// and the deploy names the removal (#2924).
+#[tokio::test]
+async fn a_start_that_failed_while_its_server_left_is_cleaned_up_as_ever() {
+    let machine = machine('1');
+    let plan = vec![run(
+        &machine,
+        spec(Some(0), Some(healthcheck()), None),
+        false,
+    )];
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Error(error("detail temporarily unavailable").overlapping_leave(&leaving())),
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = execute_with(&plan, &client, &CancellationToken::new()).await
+    else {
+        panic!("the deploy should fail");
+    };
+
+    let ExecutionError::Machine {
+        action: MachineAction::CreateContainer,
+        error: answered,
+    } = &error
+    else {
+        panic!("the start's own failure comes back: {error:?}");
+    };
+    assert_eq!(answered.code, RpcErrorCode::Internal);
+    assert_eq!(answered.message, "detail temporarily unavailable");
+    assert_eq!(
+        ployz_store::Failure::of(&error, &[]).reason,
+        "Server lc-3 was removed while the deploy ran"
+    );
+    client.assert_done();
+}
+
+/// A copy found unhealthy while its Server was being removed is answered by its own
+/// verdict, so the deploy removes it as it does any unhealthy copy, keeps the
+/// Container in the stored failure, and names the removal, not the exit (#2924).
+#[tokio::test]
+async fn a_copy_found_unhealthy_while_its_server_left_is_removed_and_the_removal_named() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = vec![run(
+        &machine,
+        spec(Some(0), Some(healthcheck()), None),
+        false,
+    )];
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Settled(new, exited_leaving()),
+        ),
+        ok(Call::Discard(machine, new)),
+    ]);
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = execute_with(&plan, &client, &CancellationToken::new()).await
+    else {
+        panic!("the deploy should fail");
+    };
+
+    assert_eq!(
+        error,
+        ExecutionError::Health {
+            container_id: new,
+            failure: HealthFailure::Runtime {
+                observation: exited(0),
+                last_check: None,
+            },
+            out_of_memory: None,
+            last_run: None,
+            departing: Some(departure()),
+        }
+    );
+    let failure = ployz_store::Failure::of(&error, &[]);
+    assert_eq!(
+        failure.reason,
+        "Server lc-3 was removed while the deploy ran"
+    );
+    assert!(failure.cause.is_empty(), "{failure:?}");
+    client.assert_done();
 }

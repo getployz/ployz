@@ -777,7 +777,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     };
     crate::ui::fields(&Next::new(&status, hint.clone()), &status_record(&status))?;
     if let Some(hint) = hint {
-        crate::ui::hint(&Hint::Next(hint));
+        crate::ui::hint(&Hint::Next(super::pasteable(&hint)));
     }
     if partial {
         return Err(Error::partial());
@@ -941,13 +941,16 @@ fn status_record(status: &Status) -> Fields {
                 | Subject::NotServing { service, .. }
                 | Subject::LeftPending { service, .. }
                 | Subject::NoCopies { service },
-            ) => Cow::Owned(service.name.to_string()),
+            ) => Cow::Owned(crate::ui::escaped(&service.name.to_string())),
             Some(Subject::Down { machine } | Subject::DiskFull { machine, .. }) => {
-                Cow::Owned(machine.to_string())
+                Cow::Owned(crate::ui::escaped(&machine.to_string()))
             }
             Some(Subject::Unanswered { .. }) | None => Cow::Borrowed("needs attention"),
         };
-        record.push(label, Cell::status(&attention.message, Tone::Bad));
+        record.push(
+            label,
+            Cell::status(crate::ui::escaped(&attention.message), Tone::Bad),
+        );
     }
     record
 }

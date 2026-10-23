@@ -134,6 +134,10 @@ impl ContainerRuntime {
             },
             "create container"
         );
+        // Before any Volume is made, so a bridge without IPv6 refuses with nothing to undo.
+        if spec.container.ipv6 && !self.docker.bridge_takes_ipv6().await.map_err(E::from)? {
+            return Err(E::from(Error::BridgeIpv6Unavailable));
+        }
         require_eligible(
             self.admit_and_ensure_volumes(machine, namespace, spec, storage)
                 .await
@@ -717,6 +721,8 @@ impl ContainerRuntime {
     }
 
     pub async fn remove_all_managed(&self) -> Result<(), Error> {
+        self.departing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let mut config_operation = self.specs.config_operation().await;
         for container_id in self.docker.managed_container_ids().await? {
             match self

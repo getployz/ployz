@@ -13,13 +13,13 @@ use ployz_core::{
     InspectTelemetry, LeaveRequest, Left, ListContainersRequest, ListImagesRequest,
     ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
-    MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
-    MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest, RemoveVolumesRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, RuntimeWatchFrame,
-    RuntimeWatchRequest, StopOptions, StorageCapacity, TelemetryObservation, UnconfirmedDataLoss,
-    VolumeInventory, VolumeRemoval, VolumeRemovalOutcome, decode_runtime_watch_frame,
-    derive_live_services, op,
+    MachineLabelKey, MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation,
+    MachineSuccess, MachineTarget, MachineUpdate, NameMatches, Namespace, ObservedDataLoss,
+    OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest,
+    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
+    RuntimeWatchFrame, RuntimeWatchRequest, StopOptions, StorageCapacity, TelemetryObservation,
+    UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
+    decode_runtime_watch_frame, derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1271,6 +1271,7 @@ impl Client {
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
         crate::sealed_compat::admit(self, &target, &want).await?;
+        crate::bridge_ipv6_compat::admit(self, &target, &want).await?;
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
@@ -1710,6 +1711,8 @@ impl RoleSetting {
 pub(crate) enum RoleWaitError {
     #[error("this entry Server has not yet observed the new {} role", .0.role())]
     NotObserved(RoleSetting),
+    #[error("this entry Server has not yet listed the change")]
+    ChangeNotObserved,
     #[error("cancelled while waiting for the new role")]
     Cancelled,
     #[error(transparent)]
@@ -1719,15 +1722,105 @@ pub(crate) enum RoleWaitError {
 /// Wait until this entry sees Machine `id` with `setting`, so what plans next plans from it.
 ///
 /// # Errors
-/// Fails when the entry hasn't observed it within 30 s, `cancellation` fires first, or
-/// listing Machines fails.
+/// Fails when the entry hasn't observed it within 30 s plus one list call,
+/// `cancellation` fires first, or listing Machines fails.
 pub(crate) async fn wait_for_role(
     client: &mut Client,
     id: &MachineId,
     setting: RoleSetting,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RoleWaitError> {
-    // ponytail: fixed 30 s bound; the role replicates within seconds on a healthy Cluster.
+    wait_until(
+        client,
+        id,
+        |machine| setting.holds(machine),
+        RoleWaitError::NotObserved(setting),
+        cancellation,
+    )
+    .await
+}
+
+/// Whether this entry lists Machine `id` with `setting` now, in one list call.
+///
+/// # Errors
+/// Fails when listing Machines fails.
+pub(crate) async fn lists_role(
+    client: &mut Client,
+    id: &MachineId,
+    setting: RoleSetting,
+) -> Result<bool, RoleWaitError> {
+    Ok(client
+        .machines()
+        .await?
+        .iter()
+        .any(|entry| entry.machine.id == *id && setting.holds(&entry.machine)))
+}
+
+/// The fields of a Machine update that a later plan reads: placement Labels and the roles.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PlannedChange {
+    labels: Vec<MachineLabelKey>,
+    accepts_builds: bool,
+    accepts_services: bool,
+    accepts_ingress: bool,
+}
+
+impl PlannedChange {
+    pub(crate) fn of(update: &MachineUpdate) -> Self {
+        Self {
+            labels: update.label_changes.keys().cloned().collect(),
+            accepts_builds: update.accepts_builds.is_some(),
+            accepts_services: update.accepts_services.is_some(),
+            accepts_ingress: update.accepts_ingress.is_some(),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.labels.is_empty()
+            && !self.accepts_builds
+            && !self.accepts_services
+            && !self.accepts_ingress
+    }
+
+    /// Whether `listed` carries every changed field as the target saved it.
+    fn listed(&self, saved: &Machine, listed: &Machine) -> bool {
+        self.labels
+            .iter()
+            .all(|key| saved.labels.get(key) == listed.labels.get(key))
+            && (!self.accepts_builds || saved.accepts_builds == listed.accepts_builds)
+            && (!self.accepts_services || saved.accepts_services == listed.accepts_services)
+            && (!self.accepts_ingress || saved.accepts_ingress == listed.accepts_ingress)
+    }
+}
+
+/// Wait until this entry lists `saved` with every field in `change`, in one poll.
+///
+/// # Errors
+/// As [`wait_for_role`].
+pub(crate) async fn wait_for_change(
+    client: &mut Client,
+    saved: &Machine,
+    change: &PlannedChange,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<(), RoleWaitError> {
+    wait_until(
+        client,
+        &saved.id,
+        |listed| change.listed(saved, listed),
+        RoleWaitError::ChangeNotObserved,
+        cancellation,
+    )
+    .await
+}
+
+async fn wait_until(
+    client: &mut Client,
+    id: &MachineId,
+    holds: impl Fn(&Machine) -> bool,
+    not_observed: RoleWaitError,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<(), RoleWaitError> {
+    // ponytail: 30 s deadline plus one ListMachines call, capped at 10 s.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let machines = tokio::select! {
@@ -1737,12 +1830,12 @@ pub(crate) async fn wait_for_role(
         };
         if machines
             .iter()
-            .any(|entry| entry.machine.id == *id && setting.holds(&entry.machine))
+            .any(|entry| entry.machine.id == *id && holds(&entry.machine))
         {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(RoleWaitError::NotObserved(setting));
+            return Err(not_observed);
         }
         tokio::select! {
             biased;

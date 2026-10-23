@@ -40,6 +40,8 @@ pub(crate) use store::{InterruptedReset, Opened};
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{CutRefusal, RecoveryError, RuntimeWatchTelemetry, SealingError};
+#[cfg(test)]
+pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
 
 #[cfg(test)]
@@ -612,6 +614,7 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
         store_filesystem: store_filesystem(data_dir),
         capabilities: ployz_core::served_capabilities(),
         management_identity: None,
+        leaving: false,
     }
 }
 

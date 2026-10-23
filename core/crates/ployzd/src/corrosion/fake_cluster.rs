@@ -548,6 +548,11 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     text_param(&statement.params, 2).to_owned(),
                 );
             }
+            "DELETE FROM ingress_routes WHERE machine_id = ?" => {
+                let machine_id = text_param(&statement.params, 0);
+                kv.ingress_routes
+                    .retain(|(owner, _), _| owner != machine_id);
+            }
             query if query.starts_with("DELETE FROM ingress_routes") => {
                 kv.ingress_routes.remove(&(
                     text_param(&statement.params, 0).to_owned(),
@@ -570,6 +575,38 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     text_param(&statement.params, 0).to_owned(),
                     text_param(&statement.params, 1).to_owned(),
                 ));
+            }
+            query
+                if query.starts_with(
+                    "UPDATE machines SET info = json_set(info, '$.runtime.leaving'",
+                ) =>
+            {
+                set_leaving(&mut kv, text_param(&statement.params, 0), true);
+            }
+            query
+                if query.starts_with(
+                    "UPDATE machines SET info = json_remove(info, '$.runtime.leaving')",
+                ) =>
+            {
+                set_leaving(&mut kv, text_param(&statement.params, 0), false);
+            }
+            "DELETE FROM volumes WHERE machine_id = ?" => {
+                let machine_id = text_param(&statement.params, 0);
+                kv.volumes.retain(|(owner, _), _| owner != machine_id);
+            }
+            "DELETE FROM containers WHERE machine_id = ?" => {
+                let machine_id = text_param(&statement.params, 0);
+                kv.containers.retain(|_, (owner, _)| owner != machine_id);
+                let _ = kv.container_changes.send(());
+            }
+            "DELETE FROM machines WHERE id = ?" => {
+                if kv
+                    .machines
+                    .remove(text_param(&statement.params, 0))
+                    .is_some()
+                {
+                    let _ = kv.machine_changes.send(());
+                }
             }
             query => panic!("unexpected statement {query}"),
         }
@@ -596,4 +633,23 @@ pub(crate) fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>
     }
     body.extend(br#"{"eoq":{"time":0.0}}"#);
     body.into()
+}
+
+/// `json_set`/`json_remove` of `$.runtime.leaving` on `machine_id`'s row, if it has one.
+fn set_leaving(kv: &mut ClusterKv, machine_id: &str, leaving: bool) {
+    let Some(info) = kv.machines.get_mut(machine_id) else {
+        return;
+    };
+    let mut row: serde_json::Value = serde_json::from_str(info).unwrap();
+    let runtime = row
+        .get_mut("runtime")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("a Machine row has a runtime object");
+    if leaving {
+        runtime.insert("leaving".to_owned(), json!(true));
+    } else {
+        runtime.remove("leaving");
+    }
+    *info = row.to_string();
+    let _ = kv.machine_changes.send(());
 }

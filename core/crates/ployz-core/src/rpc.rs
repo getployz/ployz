@@ -1204,6 +1204,11 @@ pub enum HealthVerdict {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(optional, as = "Option<bool>")]
         oom_killed: bool,
+        /// The Leave that was removing the Server as it answered, so what the copy did
+        /// since was the Leave's doing. `None` from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        departing: Option<Departure>,
     },
     TimedOut {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1216,10 +1221,24 @@ pub enum HealthVerdict {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(optional, as = "Option<bool>")]
         oom_killed: bool,
+        /// The Leave that was removing the Server as it answered, so what the copy did
+        /// since was the Leave's doing. `None` from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        departing: Option<Departure>,
     },
 }
 
 impl HealthVerdict {
+    /// The Leave that was removing the Server as it answered for a failed Container.
+    #[must_use]
+    pub const fn departing(&self) -> Option<&Departure> {
+        match self {
+            Self::Healthy => None,
+            Self::Failed { departing, .. } | Self::TimedOut { departing, .. } => departing.as_ref(),
+        }
+    }
+
     /// Whether Docker OOM-killed a process of the failed Container's run.
     #[must_use]
     pub const fn oom_killed(&self) -> bool {
@@ -1750,6 +1769,31 @@ impl RpcError {
         }
     }
 
+    /// `self` from a call that failed while a Leave was removing `server`, so its copy
+    /// was the Leave's to stop. Code, message and every other detail stay as they were.
+    /// Read back by [`Self::departure`]. Details that aren't an object are kept unmarked.
+    #[must_use]
+    pub fn overlapping_leave(mut self, server: &crate::MachineName) -> Self {
+        if self.details.is_null() {
+            self.details = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(details) = &mut self.details {
+            details.insert(
+                DEPARTING_KEY.into(),
+                serde_json::json!(Departure {
+                    server: server.clone()
+                }),
+            );
+        }
+        self
+    }
+
+    /// The Leave that overlapped the call this error answers, if one did.
+    #[must_use]
+    pub fn departure(&self) -> Option<Departure> {
+        Departure::deserialize(self.details.get(DEPARTING_KEY)?).ok()
+    }
+
     /// `self` from a call to `machine_id` whose connection dropped after it went out and
     /// before an answer came back, so the target may have done the work. Read back by
     /// [`Self::reply_lost`]. Details that aren't an object are kept unmarked.
@@ -1893,6 +1937,14 @@ const REGISTRY_REFUSALS: [&str; 3] = [
 const PULL_POLICY: &str = "pull_policy";
 const DISK_FULL: &str = "disk_full";
 
+/// The Leave that overlapped a call: what a Server's Containers did since it began is
+/// the Leave's doing. Annotates a failure's details under [`DEPARTING_KEY`], an unhealthy
+/// [`HealthVerdict`], and the `ExecutionError::Health` a deploy stores.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Departure {
+    pub server: crate::MachineName,
+}
+
 /// An image a pull answered not found for, from [`RpcError::missing_image`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MissingImage<'a> {
@@ -1985,6 +2037,8 @@ const TARGET_UNANSWERED_REASON: &str = "target_unanswered";
 /// Target it does not list, beside the `targets` it looked up. Read back by
 /// [`RpcError::server_unlisted`].
 pub const NO_SUCH_SERVER_REASON: &str = "no_such_server";
+/// The details key an [`RpcError::overlapping_leave`] mark lives under.
+pub const DEPARTING_KEY: &str = "departing";
 const REPLY_LOST_KEY: &str = "reply_lost";
 const REACHED_KEY: &str = "reached";
 
@@ -2100,6 +2154,37 @@ mod rpc_error_wire {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// A Leave's mark names its Server and leaves the rest of the failure as it was,
+    /// and an unmarked Conflict reads back none.
+    #[test]
+    fn a_leave_marks_a_failure_without_changing_it() {
+        let server = crate::MachineName::parse("lc-3").unwrap();
+        let departure = Departure {
+            server: server.clone(),
+        };
+
+        let failed = RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "No such container".into(),
+            details: json!({ "container": "b" }),
+            cause: vec!["docker".into()],
+        };
+        let marked = failed.clone().overlapping_leave(&server);
+        assert_eq!(marked.code, failed.code);
+        assert_eq!(marked.message, failed.message);
+        assert_eq!(marked.cause, failed.cause);
+        assert_eq!(marked.details.get("container"), Some(&json!("b")));
+        assert_eq!(marked.departure(), Some(departure));
+
+        let held = RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "slot held".into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        };
+        assert_eq!(held.departure(), None);
+    }
+
     #[test]
     fn a_status_carries_its_causes_in_the_details() {
         let error = RpcError {

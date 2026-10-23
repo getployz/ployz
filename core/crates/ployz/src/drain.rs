@@ -399,7 +399,9 @@ async fn turn_services_off(
     wait_for_role(client, id, RoleSetting::ServicesOff, cancellation)
         .await
         .map_err(|error| match error {
-            RoleWaitError::NotObserved(_) => DrainError::RoleNotObserved,
+            RoleWaitError::NotObserved(_) | RoleWaitError::ChangeNotObserved => {
+                DrainError::RoleNotObserved
+            }
             RoleWaitError::Cancelled => DrainError::Cancelled,
             RoleWaitError::Connect(error) => DrainError::Connect(error),
         })

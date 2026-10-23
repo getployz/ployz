@@ -35,7 +35,10 @@ From the CLI, name the subdomain: `ployz domain add web --prefix shop`. Without 
 service that has a generated domain keeps it, and the CLI suggests a free subdomain. To change
 one of several, name it: `ployz domain set web store --domain shop`.
 A full hostname can be at most 253 characters, so under a long cluster domain Ployz refuses a
-subdomain that would make it longer, when you add or change it.
+subdomain that would make it longer, when you add or change it. A branch adds its name to each
+subdomain it copies, such as `web-fix`, so Ployz also refuses a branch, or a sync into one, whose
+name makes a copied hostname too long, or a copied subdomain longer than 63 characters. Choose a
+shorter branch name. A pull request that can't land in a branch for this reason skips that branch.
 `ployz get web` or `ployz get web.domains` lists a service's domains, and `ployz diff` shows a staged one by
 its full hostname, `web.domains: added shop.acme.ployz.app`.
 

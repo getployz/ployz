@@ -101,6 +101,7 @@ async fn a_refused_in_discards_the_new_copy_and_keeps_the_old_one() {
             observation: unhealthy(),
             last_check: None,
             oom_killed: false,
+            departing: None,
         },
     );
     let Err(RelocateError::NotServing {

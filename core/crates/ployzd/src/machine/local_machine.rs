@@ -12,17 +12,18 @@ use std::{
 use ployz_core::{
     ContainerId, ContainerObservation, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
     InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
-    MachineId, MachineIdentity, MachineList, MachineObservation, MachineToken, MachineUpdated,
-    ManagementAddress, ManagementClientLabel, MembershipEvidence, PublicIpDiscovery, RecoverySeed,
-    RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation, RttStatistics,
-    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
+    MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
+    MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
+    PublicIpDiscovery, RecoverySeed, RegisterRequest, Registered, RpcError, RpcErrorCode,
+    RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
+    synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use super::{
     EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError, local_runtime,
-    store::{Installation, Rediscovered},
+    store::{Installation, PreparedReset, Rediscovered},
 };
 
 use crate::{
@@ -49,6 +50,8 @@ pub struct LocalMachine {
     settled: container::SettledCreations,
     #[cfg(test)]
     peers: Option<PeerInspect>,
+    #[cfg(test)]
+    ensure_pause: Option<container::EnsurePause>,
 }
 
 const PEER_INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -66,6 +69,8 @@ pub(crate) type PeerInspect = std::sync::Arc<
 
 mod container;
 pub(crate) use container::CutRefusal;
+#[cfg(test)]
+pub(crate) use container::{EnsurePause, EnsurePausePoint};
 mod management_client;
 mod push_target;
 mod sealing;
@@ -131,10 +136,22 @@ pub enum Error {
     ClusterStoreUnavailable,
     #[error("Cluster network is not published yet")]
     ClusterNetworkUnpublished,
+    #[error(
+        "this Server's Cluster store holds no other Server: it was recreated and can't reach them yet"
+    )]
+    ClusterStoreEmpty,
     #[error("Cluster is not available")]
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
+    /// A Leave was removing this Machine from the Cluster as the call failed with
+    /// `source`, so its answer is `source`'s, marked with the Server.
+    #[error("Server {server} is being removed from the Cluster")]
+    Departing {
+        server: MachineName,
+        #[source]
+        source: Box<Error>,
+    },
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error("push target {0}")]
@@ -185,7 +202,18 @@ impl LocalMachine {
             settled: container::SettledCreations::default(),
             #[cfg(test)]
             peers: None,
+            #[cfg(test)]
+            ensure_pause: None,
         }
+    }
+
+    /// Hold every `ensure_container` on this handle at `pause`'s point until the test
+    /// releases it; clones made before this call never pause.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn pausing_ensure_for_test(mut self, pause: container::EnsurePause) -> Self {
+        self.ensure_pause = Some(pause);
+        self
     }
 
     #[cfg(test)]
@@ -686,7 +714,7 @@ impl LocalMachine {
         // Other Machines' rows are not consulted: Cloud owns concurrency, and a
         // Register for an existing id overwrites its row.
         let snapshot = ployz_core::EnrollmentSnapshot {
-            network: published_network(replicated).await?,
+            network: published_network(&self.record(), replicated).await?,
             machines: Vec::new(),
             target_versions: BTreeMap::new(),
         };
@@ -714,7 +742,8 @@ impl LocalMachine {
     /// Returns [`Error::NotParticipating`] when this Machine is not
     /// participating, [`Error::ClusterStoreUnavailable`] when the Cluster
     /// store is missing, [`Error::ClusterNetworkUnpublished`] before the
-    /// founder publishes the Cluster network, and [`Error::Cluster`] when
+    /// founder publishes the Cluster network, [`Error::ClusterStoreEmpty`] when
+    /// this joined Machine's store never held another Machine, and [`Error::Cluster`] when
     /// replicated I/O fails.
     pub async fn list_machines(&self) -> Result<MachineList, Error> {
         let local = self.record();
@@ -722,7 +751,7 @@ impl LocalMachine {
             return Err(Error::NotParticipating);
         }
         let replicated = self.replicated()?;
-        let network = published_network(replicated).await?;
+        let network = published_network(&local, replicated).await?;
         let machines = replicated.machines().await?.observations;
         let states = self.membership_states().await?;
         let entry_id = local.id();
@@ -887,6 +916,36 @@ impl LocalMachine {
             Some(cluster) => Some(cluster.replicated.machine_publication().await),
             None => None,
         };
+        // From here until the row goes, a deploy plans no Ingress Proxy here and the
+        // ingress check doesn't call this Machine unchecked. Best effort: a Machine
+        // whose Cluster can't take the mark still leaves.
+        if let Some(publication) = &publication
+            && let Err(error) = publication.mark_leaving(&machine_id, true).await
+        {
+            tracing::warn!(%error, "could not mark this Machine's row as leaving");
+        }
+        if let Err(error) = self.depart_admitted(exit).await {
+            if let Some(publication) = &publication
+                && let Err(error) = publication.mark_leaving(&machine_id, false).await
+            {
+                tracing::warn!(%error, "could not unmark this Machine's row after a failed Leave");
+            }
+            return Err(error);
+        }
+        let reset_warning = match publication {
+            Some(publication) => publication
+                .remove(&machine_id)
+                .await
+                .err()
+                .map(|error| ployz_core::error_chain::inline(&error)),
+            None => None,
+        };
+        Ok(leave_response(&self.owner, reset_warning))
+    }
+
+    /// Reset this Machine: its Containers, its storage, then its phase. Any failure
+    /// leaves it Participating.
+    async fn depart_admitted(&self, exit: StorageExit) -> Result<(), Error> {
         let prepared_reset = self
             .owner
             .mutate(|store| {
@@ -897,6 +956,24 @@ impl LocalMachine {
                 }
             })
             .await??;
+        // A resend on a Machine already resetting leaves it leaving whatever happens.
+        let began_reset = prepared_reset.is_some();
+        let departed = self.clear_out(prepared_reset, exit).await;
+        if departed.is_err()
+            && began_reset
+            && let Some(containers) = &self.containers
+        {
+            containers.departure_failed();
+        }
+        departed
+    }
+
+    /// Remove every managed Container, depart storage and commit the reset.
+    async fn clear_out(
+        &self,
+        prepared_reset: Option<PreparedReset>,
+        exit: StorageExit,
+    ) -> Result<(), Error> {
         if let Some(containers) = &self.containers
             && let Err(error) = containers.remove_all_managed().await
         {
@@ -908,15 +985,7 @@ impl LocalMachine {
                 .mutate(move |store| prepared_reset.commit(store))
                 .await??;
         }
-        let reset_warning = match publication {
-            Some(publication) => publication
-                .remove(&machine_id)
-                .await
-                .err()
-                .map(|error| ployz_core::error_chain::inline(&error)),
-            None => None,
-        };
-        Ok(leave_response(&self.owner, reset_warning))
+        Ok(())
     }
 }
 
@@ -999,12 +1068,24 @@ impl StorageExit {
 }
 
 /// The founder's publisher writes the Cluster network after it starts
-/// answering as Participating, so a missing row means not ready yet.
-async fn published_network(replicated: &ReplicatedStore) -> Result<ipnet::Ipv4Net, Error> {
-    replicated
-        .cluster_network()
-        .await?
-        .ok_or(Error::ClusterNetworkUnpublished)
+/// answering as Participating, so on the founder a missing row means not ready
+/// yet. A joined Machine whose store never held another Machine lost that store.
+async fn published_network(
+    record: &LocalMachineRecord,
+    replicated: &ReplicatedStore,
+) -> Result<ipnet::Ipv4Net, Error> {
+    if let Some(network) = replicated.cluster_network().await? {
+        return Ok(network);
+    }
+    if record.cluster_network().is_none()
+        && matches!(
+            replicated.held_another_machine(&record.id()).await,
+            Ok(false)
+        )
+    {
+        return Err(Error::ClusterStoreEmpty);
+    }
+    Err(Error::ClusterNetworkUnpublished)
 }
 
 fn registered(

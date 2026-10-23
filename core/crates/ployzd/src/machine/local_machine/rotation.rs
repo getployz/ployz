@@ -308,6 +308,7 @@ impl LocalMachine {
                     observation,
                     last_check: None,
                     oom_killed: false,
+                    departing: None,
                 }),
             },
             Written::Refused(refusal) => refused(now, refusal),

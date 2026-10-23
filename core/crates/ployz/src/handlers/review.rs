@@ -164,8 +164,8 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
         }
         for reference in &view.broken {
             crate::ui::stream(format_args!(
-                "{reference}; deploys skip it until you change it: {}",
-                super::store::fix_broken(matches, reference)
+                "{}",
+                super::store::broken_line(matches, reference)
             ));
         }
         let saved = view.saved.map_or(0, |saved| saved.0);

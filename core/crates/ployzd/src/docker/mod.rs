@@ -70,17 +70,20 @@ pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
 pub const LABEL_NAMESPACE: &str = "ployz.namespace";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
+/// Set on a container whose spec takes IPv6 on the ployz bridge.
+pub const LABEL_BRIDGE_IPV6: &str = "ployz.network.ipv6";
 
-/// Only the Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6
-/// visitors reach it by DNAT with their own address (#2837). Every other container
-/// stays IPv4-only, so its published ports keep reaching an app that listens on
-/// IPv4 alone through docker-proxy, as before.
+/// The Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6 visitors
+/// reach it by DNAT with their own address (#2837), and so does a container whose
+/// spec opts in (#3009). Every other container stays IPv4-only, so its published
+/// ports keep reaching an app that listens on IPv4 alone through docker-proxy.
 #[must_use]
 pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
     let ingress = QualifiedService::system_ingress();
-    labels.get(LABEL_NAMESPACE) == Some(&ingress.namespace.to_string())
-        && labels.get(LABEL_SERVICE_NAME) == Some(&ingress.name.to_string())
-        && !labels.contains_key(LABEL_HOOK)
+    labels.contains_key(LABEL_BRIDGE_IPV6)
+        || labels.get(LABEL_NAMESPACE) == Some(&ingress.namespace.to_string())
+            && labels.get(LABEL_SERVICE_NAME) == Some(&ingress.name.to_string())
+            && !labels.contains_key(LABEL_HOOK)
 }
 
 /// The ployz bridge endpoint for a container that does or does not take IPv6.
@@ -306,6 +309,9 @@ pub struct ContainerRuntime {
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
     sealing_key_dir: Option<PathBuf>,
     log_store: LogStore,
+    /// Set when a Leave begins removing every managed Container, and cleared only when
+    /// that Leave fails, so a committed Leave keeps it set.
+    departing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ContainerRuntime {
@@ -321,6 +327,7 @@ impl ContainerRuntime {
             stranded: Arc::default(),
             sealing_key_dir: None,
             log_store: LogStore::default(),
+            departing: Arc::default(),
         }
     }
 
@@ -335,6 +342,19 @@ impl ContainerRuntime {
     pub(crate) fn with_log_store(mut self, log_store: LogStore) -> Self {
         self.log_store = log_store;
         self
+    }
+
+    /// Whether a Leave is removing every managed Container here, or has committed. A
+    /// Container call that overlapped it met the Leave's stops.
+    #[must_use]
+    pub fn departing(&self) -> bool {
+        self.departing.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A Leave that failed leaves this Machine in the Cluster, taking Container work again.
+    pub fn departure_failed(&self) {
+        self.departing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub async fn floor_turn(&self) -> FloorTurn<'_> {
@@ -1567,6 +1587,11 @@ pub enum Error {
     },
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
+    /// The spec takes IPv6, but this Machine's ployz bridge is IPv4-only.
+    #[error(
+        "this Server's ployz bridge has no IPv6, so it can't give the Service an IPv6 address; the bridge stays IPv4-only when the host has no IPv6, an interface accepts router advertisements, Docker's ip6tables is off, or the IPv6 mesh fence is missing"
+    )]
+    BridgeIpv6Unavailable,
     #[error("container duration exceeds Docker's range")]
     DurationOverflow,
     #[error("container size exceeds Docker's range")]
@@ -1616,7 +1641,9 @@ impl Error {
             | Self::ServicePlacementMismatch
             | Self::LimitsRefused { .. }
             | Self::WorkNotAccepted => RpcErrorCode::Conflict,
-            Self::ProvisionedStorageUnsupported | Self::UnsupportedImageStore => RpcErrorCode::Unsupported,
+            Self::ProvisionedStorageUnsupported
+            | Self::UnsupportedImageStore
+            | Self::BridgeIpv6Unavailable => RpcErrorCode::Unsupported,
             Self::VolumeCreatedButUnverified { .. }
             | Self::StorageUnobservable
             | Self::VolumePluginListFailed(_)
@@ -2019,7 +2046,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_system_ingress_takes_ipv6_on_the_bridge() {
+    fn of_specs_without_ipv6_only_the_system_ingress_takes_it_on_the_bridge() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
         let ingress = ployz_core::QualifiedService::system_ingress();
@@ -2057,6 +2084,46 @@ mod tests {
                 "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
             )]))
         );
+    }
+
+    #[test]
+    fn a_service_that_takes_ipv6_joins_the_bridge_with_it_and_so_does_its_hook() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+        let namespace = ployz_core::Namespace::parse("app").unwrap();
+        let spec = |ipv6: bool| -> ResolvedServiceSpec {
+            serde_json::from_value(serde_json::json!({
+                "service_id": "a".repeat(32),
+                "name": "web",
+                "mode": { "mode": "global" },
+                "container": { "image": "nginx:1.29-alpine", "pull_policy": "missing", "ipv6": ipv6 },
+                "pre_deploy": { "command": ["migrate"] }
+            }))
+            .unwrap()
+        };
+        for kind in [
+            ContainerKind::ServiceContainer,
+            ContainerKind::PreDeployHook,
+        ] {
+            for ipv6 in [true, false] {
+                let body = create::container_create_body(
+                    &machine_id,
+                    gateway,
+                    kind,
+                    &namespace,
+                    &spec(ipv6),
+                    None,
+                )
+                .unwrap();
+                let labels = body.labels.as_ref().unwrap();
+                assert_eq!(takes_bridge_ipv6(labels), ipv6, "{kind:?}");
+                assert_eq!(
+                    labels.get(LABEL_BRIDGE_IPV6).map(String::as_str),
+                    ipv6.then_some("true")
+                );
+                assert_eq!(body.networking_config.is_none(), ipv6, "{kind:?}");
+            }
+        }
     }
 
     #[test]

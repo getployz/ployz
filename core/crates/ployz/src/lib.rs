@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), deny(clippy::print_stdout))]
 
 mod approval;
+mod bridge_ipv6_compat;
 pub mod build;
 mod cancellation;
 mod checkin;

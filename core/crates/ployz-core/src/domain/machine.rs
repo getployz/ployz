@@ -160,6 +160,12 @@ pub struct MachineRuntime {
     #[serde(default, with = "crate::management_identity_hex")]
     #[ts(skip)]
     pub management_identity: Option<ManagementIdentity>,
+    /// Whether this Machine is leaving the Cluster: its own daemon sets it once a Leave
+    /// is admitted, and its row goes when the Leave completes. False claims nothing: a
+    /// daemon from before the field never sets it, and an older entry Machine drops it
+    /// when it relays the row.
+    #[ts(as = "Option<bool>", optional)]
+    pub leaving: bool,
 }
 
 /// How many Builds one Machine runs at once.

@@ -409,6 +409,24 @@ replica, or carries on and finishes. Otherwise the new replica takes no traffic,
 names it as `1 copy no deploy brought into routing takes no traffic`, and the next deploy removes
 it.
 
+## A server was removed during my deploy
+
+**Server web-2 was removed while the deploy ran**
+
+The server was removed while the deploy started replicas on it, so the deploy failed. Your app
+didn't crash: removing the server stopped its replicas. A server removed while the deploy was only
+stopping its old replicas doesn't fail the deploy. The deploy removes any replica it had started
+on that server, as it does after any failed start. Deploy again to run the new version on the
+servers you kept:
+
+```sh
+ployz deploy
+```
+
+A server on Ployz 0.3.1 or earlier reports this as **The Container exited with code 0**, with
+your app's shutdown lines as the cause. A client on 0.3.1 or earlier reads a newer server's
+answer the same way.
+
 ## My upload or log stream fails on a slow connection
 
 `keep-alive timed out`

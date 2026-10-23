@@ -886,8 +886,12 @@ impl Session {
         let body: RpcRequestBody =
             serde_json::from_value(request).map_err(|error| invalid_argument(error.to_string()))?;
         let path = volume_switch_path(&body)?;
-        let request = ployz_core::RpcRequest::from(body);
         let client = self.client()?;
+        self.until_closed(crate::bridge_ipv6_compat::admit_switch(
+            &client, &target, &body,
+        ))
+        .await?;
+        let request = ployz_core::RpcRequest::from(body);
         let response = self
             .until_closed_answered(async {
                 client
@@ -1037,6 +1041,7 @@ impl Session {
             .map_err(|error| match error {
                 crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
+                | crate::cluster::RoleWaitError::ChangeNotObserved
                 | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
             })?;
             crate::ingress::fill_slots(&mut client, cancel)
@@ -1073,6 +1078,7 @@ impl Session {
             .map_err(|error| match error {
                 crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
+                | crate::cluster::RoleWaitError::ChangeNotObserved
                 | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
             })?;
             crate::drain::retirement::retire_ingress_proxy(&client, &id, cancel).await

@@ -365,7 +365,12 @@ answered but refused every connection, the error names the server tried last, as
 server answering, `ployz status` lists `Server web-1 isn't answering` under **needs attention**, and
 `ployz deploy --plan` warns first that the deploy can't run until it answers. A deploy whose web
 traffic check couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with
-what the connection said in parentheses, and exits 3. A server that just joined or restarted
+what the connection said in parentheses, and exits 3. A server that stopped answering because
+`ployz server rm` was removing it doesn't count: the removal says so in the server's own record
+before it stops answering (Ployz 0.3.4 or later on that server and on the server the CLI connects
+through). Any deploy step a server leaves
+unanswered reads `Server web-1 did not answer during create Container`, with what the connection
+said beneath it. A server that just joined or restarted
 answers within a minute; try again then. While your organization's first server is still
 enrolling, the page shows its enrollment progress instead: there's no server to reach until it
 joins.
@@ -399,6 +404,26 @@ don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
 `error: Corrosion HTTP request failed`, with the cause `Connection refused`, means the server
 answered but its cluster store wasn't running. If it was stopped, as by
 `docker stop ployz-corrosion`, Ployz starts it again within a few seconds; try again then.
+
+## A server's cluster store was lost
+
+```text
+error: this Server's Cluster store holds no other Server: it was recreated and can't reach them yet
+```
+
+A server keeps the cluster's shared state in `/var/lib/ployz/corrosion/store.db`. If that file is
+lost, for example after a power loss or a manual wipe, Ployz starts an empty one. The server keeps
+its tunnels to the other servers, and the empty store refills from them, usually within a minute.
+Until then, commands through that server fail with this error. Commands through another server
+still work.
+
+1. Wait a minute and try again.
+2. If it persists, run `ployz server ls` through another server. If this one shows `down` there,
+   make sure UDP 51820 is open between your servers, then restart Ployz on it with
+   `sudo systemctl restart ployz`.
+
+If you still have the old `store.db`, you don't need it back: the refilled store holds the same
+state.
 
 ## A server shows Offline
 
@@ -485,8 +510,19 @@ container network has no IPv6. `journalctl -u ployz` says why:
   next start.
 - `could not take IPv6`: the log line gives Docker's reason. Ployz tries again at its next start.
 
-A port a service publishes on the server always shows IPv6 visitors as the gateway. Give the
-service a domain to see their addresses.
+A port a service publishes on the server shows IPv6 visitors as the gateway, unless the service
+takes IPv6. Give the service a domain to see their addresses.
+
+## A service can't take IPv6
+
+A deploy of a service with `ipv6: true` fails on one server with one of these:
+
+- `this Server's ployz bridge has no IPv6`: the server's container network is IPv4-only, or its
+  IPv6 mesh fence is missing even though `docker network inspect ployz` shows `EnableIPv6: true`.
+  Fix it as in [Apps see IPv6 visitors as 10.210.x.1](#apps-see-ipv6-visitors-as-10210x1); for
+  the fence, `sudo systemctl restart ployz` puts it back. Then deploy again.
+- `runs a ployzd that can't give a Service IPv6`: the server runs an older Ployz. Run
+  `ployz server upgrade <server>`, then deploy again.
 
 ## Services can't resolve each other's names
 

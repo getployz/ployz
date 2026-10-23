@@ -107,7 +107,7 @@ fn into(
     if !landing.is_empty() {
         let none = BTreeMap::new();
         let landed = crate::storage::attempt(tx, |tx| {
-            checked.apply(tx, who, &mut branch, &landing, &none, Owner::None)
+            checked.apply(tx, who, &mut branch, &landing, &none, (Owner::None, None))
         });
         match landed {
             // One of the Branch's own rules refuses it: all of it is a hint.
@@ -217,7 +217,14 @@ pub(crate) fn take(
         ));
     }
     let none = BTreeMap::new();
-    let staged = checked.apply(tx, who, &mut branch, &picks, &none, Owner::None)?;
+    let staged = checked.apply(
+        tx,
+        who,
+        &mut branch,
+        &picks,
+        &none,
+        (Owner::None, Some(trusted)),
+    )?;
     let asked = json!({ "version": take.version, "rows": take.rows });
     review::approve_move(
         tx,

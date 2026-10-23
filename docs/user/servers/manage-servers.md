@@ -207,6 +207,15 @@ Every server runs builds, runs services and takes web traffic. To turn one off, 
 [Ployz agent](../account/agent-sidebar.md) can change these too, but it can't turn web traffic
 back on: that starts the server's web server, which the switch below and `ployz server set` do.
 
+When `ployz server set` changes a label, `--accepts-builds`, `--accepts-services` or
+`--accepts-ingress`, it waits for the Server your CLI connects through to list the change before
+reporting the update. An immediate deploy through that same Server then sees it. If that Server
+answers but doesn't list the change in time, the command warns you. When it turned web traffic on
+and that setting is what went unlisted, or the wait lost its connection, it also reports the web
+server start as unfinished. The target Server's record
+may have changed; check `ployz server ls` before deploying. A deploy through another Server, or from
+Ployz Cloud, can still plan from the old settings until that Server lists the change.
+
 Under **Services** on a server's page, turn off **Run services here** and nothing new starts on
 the server. What already runs there stays until you drain it, or until your next deploy moves it
 to your other servers. If no other server runs services, deploys fail until you turn the switch
@@ -568,7 +577,12 @@ other replicated services may now run short of replicas. A deploy that still has
 server when the removal finishes fails on its turn with `Server machine-2 was removed while the
 deploy ran`, and the deploy's web traffic check doesn't count the removed server as unchecked.
 That needs Ployz 0.3.4 or later on the server the CLI connects through; an older one names the
-server's ID instead. With `--json` the removal lists every
+server's ID instead. While the removal runs, a deploy doesn't add a missing web server to the
+leaving server, and its web traffic check doesn't count the leaving server as unchecked when it
+stops answering partway through the removal. That needs Ployz 0.3.4 or later on the server being
+removed and on the server the CLI connects through. Once the removal is done, `ployz ps` and the other listings that were still asking it
+warn `machine-2 was removed while this ran; its rows are missing.` and exit 3; that needs 0.3.4 or
+later on the server the CLI connects through. With `--json` the removal lists every
 service left short as `under_replicated`. It also lists a service as `no_copies` when every other
 server answered and none showed a replica of it. If a server didn't answer, the service is listed
 only as `under_replicated`. `ployz status` keeps naming a service with no replicas until a deploy
@@ -688,6 +702,10 @@ doesn't offer to forget it.
 When it is your only server, Ployz Cloud forgets it as it [forgets servers you
 deleted](#forget-servers-you-deleted). When none of several servers answers, forget them all that
 way.
+
+If your only server still answers, `ployz server forget` refuses. Stop its Ployz daemon first, or
+use `ployz server rm` to reset and remove it. On the server, run
+`sudo systemctl stop ployz.socket ployz` to stop both the daemon and its socket.
 
 Ployz refuses to forget a server that answers and holds a copy of any volume. Remove it with
 `ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors.

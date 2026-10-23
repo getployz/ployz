@@ -251,10 +251,7 @@ fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<()
             result.service.name, result.environment.project, result.environment.name
         ));
         for reference in &result.broken {
-            crate::ui::stream(format_args!(
-                "  {reference}; deploys skip it until you change it: {}",
-                store::fix_broken(matches, reference)
-            ));
+            crate::ui::stream(format_args!("  {}", store::broken_line(matches, reference)));
         }
         if let Some(hint) = hint.clone() {
             crate::ui::hint(&Hint::Next(hint));

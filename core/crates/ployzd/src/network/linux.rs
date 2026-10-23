@@ -28,7 +28,7 @@ use ployz_core::{
     SelectedEndpoint, WireGuardPublicKey,
 };
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::docker_image::is_not_found;
@@ -41,14 +41,14 @@ use super::{
     peers_for, port_held_elsewhere,
 };
 use crate::{
-    corrosion::{MachineView, ReplicatedObservations},
+    corrosion::{MachineView, MachinesSnapshot, ReplicatedObservations, ReplicatedStore},
     machine::{LocalMachineBody, LocalMachineRecord, RecordOwner},
 };
 
 const NETWORK_MTU: u32 = 1420;
 const DOCKER_NETWORK_MANAGED_LABEL: &str = "ployzd.managed";
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PeerSet {
     Bootstrap,
     Snapshot,
@@ -146,12 +146,12 @@ impl NetworkPlane {
     /// operator's endpoint from `choices` goes to WireGuard at once.
     pub async fn run(
         &mut self,
-        machines: Option<MachineView>,
+        machines: Option<(ReplicatedStore, MachineView)>,
         local: RecordOwner,
         mut choices: mpsc::Receiver<EndpointChoice>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
-        let Some(machines) = machines else {
+        let Some((replicated, machines)) = machines else {
             drop(choices);
             shutdown.cancelled().await;
             return Ok(());
@@ -160,6 +160,8 @@ impl NetworkPlane {
         machines.mark_changed();
         let mut previous = None;
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        // A slow store read must not leave ticks queued ahead of operator choices.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 biased;
@@ -170,18 +172,17 @@ impl NetworkPlane {
                         shutdown.cancelled().await;
                         break;
                     }
-                    let snapshot = machines.borrow_and_update().clone();
-                    if let Some(snapshot) = snapshot
-                        && previous.as_ref() != Some(&snapshot)
-                    {
-                        if let Err(error) = self.rebuild(&snapshot, &local).await {
-                            return Err(io::Error::other(error));
-                        }
-                        previous = Some(snapshot);
-                    }
+                    machines.borrow_and_update();
+                    self.rebuild_when_changed(&replicated, &machines, &mut previous, &local)
+                        .await?;
                 }
-                _ = ticker.tick() => self.poll_endpoints(&local).await,
                 Some(choice) = choices.recv() => self.apply_choice(choice, &local).await,
+                _ = ticker.tick() => {
+                    // A rebuild that couldn't read the store, or only added, tries again here.
+                    self.rebuild_when_changed(&replicated, &machines, &mut previous, &local)
+                        .await?;
+                    self.poll_endpoints(&local).await;
+                }
             }
         }
         if local.record().phase() == LocalMachinePhase::Resetting {
@@ -255,19 +256,56 @@ impl NetworkPlane {
         )
     }
 
+    /// Rebuild from the view's latest snapshot unless it is the last one settled.
+    async fn rebuild_when_changed(
+        &mut self,
+        replicated: &ReplicatedStore,
+        machines: &watch::Receiver<MachinesSnapshot>,
+        previous: &mut MachinesSnapshot,
+        local: &RecordOwner,
+    ) -> io::Result<()> {
+        let snapshot = machines.borrow().clone();
+        if let Some(snapshot) = snapshot
+            && previous.as_ref() != Some(&snapshot)
+        {
+            let settled = self
+                .rebuild(replicated, &snapshot, local)
+                .await
+                .map_err(io::Error::other)?;
+            // An unsettled rebuild may have added peers, so no snapshot counts as applied:
+            // the same snapshot arriving again must still prune them.
+            *previous = settled.then_some(snapshot);
+        }
+        Ok(())
+    }
+
+    /// Whether the snapshot is settled. `false` when the store couldn't be read, or when
+    /// only adding kept peers the store can't yet vouch for, so a later tick reads again.
     async fn rebuild(
         &mut self,
+        replicated: &ReplicatedStore,
         snapshot: &ReplicatedObservations<Machine, MachineId>,
         local: &RecordOwner,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<bool, NetworkError> {
+        let held_another_machine = match replicated.held_another_machine(&self.machine.id).await {
+            Ok(held) => held,
+            Err(error) => {
+                eprintln!(
+                    "failed to read whether this Corrosion store has held another Machine: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
+                return Ok(false);
+            }
+        };
         let record = local.record();
-        let Some(planned) = snapshot_peers(
+        let Some((planned, set)) = snapshot_peers(
             &self.machine.id,
             snapshot,
             &self.bootstrap_peers,
             record.phase() == LocalMachinePhase::Joining,
+            held_another_machine,
         ) else {
-            return Ok(());
+            return Ok(true);
         };
         let selected = &record.selected_endpoints;
         let now = SystemTime::now();
@@ -275,7 +313,8 @@ impl NetworkPlane {
         let host = self.wireguard.read_interface_data()?;
         seed_retained_selections(&planned, &mut previous, &host.peers, now);
         let (planned, _) = attach_peer_selections(planned, previous, selected, now);
-        self.apply_peers(&planned, PeerSet::Snapshot)?;
+        let settled = set == PeerSet::Snapshot || host.peers.is_empty() && planned.is_empty();
+        self.apply_peers(&planned, set)?;
         self.endpoint_peers = planned;
         // Only an installed selection is worth remembering across a restart.
         for peer in &self.endpoint_peers {
@@ -285,7 +324,7 @@ impl NetworkPlane {
                 persist_selection(local, peer.machine_id, endpoint).await;
             }
         }
-        Ok(())
+        Ok(settled)
     }
 
     fn configure_device(
@@ -1083,17 +1122,22 @@ fn seed_retained_selections(
     }
 }
 
+/// The peers a snapshot plans, and whether they replace the installed set. A store that
+/// never held a row for another Machine, such as one recreated after its `store.db` was
+/// lost, can't say who left: it only adds, so the peers that carry its gossip stay. A
+/// removed Machine's row leaves its key behind, so a removal still prunes.
 fn snapshot_peers(
     machine_id: &MachineId,
     snapshot: &ReplicatedObservations<Machine, MachineId>,
     bootstrap: &[MeshPeer],
     joining: bool,
-) -> Option<Vec<MeshPeer>> {
+    held_another_machine: bool,
+) -> Option<(Vec<MeshPeer>, PeerSet)> {
     if !snapshot.incomplete_ids.is_empty() {
         return None;
     }
     let mut peers = peers_for(machine_id, &snapshot.observations);
-    if joining {
+    if joining || !held_another_machine {
         let known = peers
             .iter()
             .map(|peer| peer.machine_id)
@@ -1105,7 +1149,12 @@ fn snapshot_peers(
                 .cloned(),
         );
     }
-    Some(peers)
+    let set = if held_another_machine {
+        PeerSet::Snapshot
+    } else {
+        PeerSet::Bootstrap
+    };
+    Some((peers, set))
 }
 
 struct PeerChanges<'peers> {

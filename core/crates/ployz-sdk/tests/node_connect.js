@@ -8,7 +8,8 @@ const path = require("node:path");
 const Module = require("node:module");
 
 const pkg = path.join(__dirname, "..");
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ployz-sdk-connect-"));
+// Node caches the addon under its real path, so a symlinked temp dir (macOS /var) would miss the stub below.
+const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ployz-sdk-connect-")));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 for (const file of ["index.js", "wrap.js", "runtime-logs.js"]) fs.copyFileSync(path.join(pkg, file), path.join(dir, file));
 const addon = path.join(dir, "ployz-sdk.node");
@@ -35,6 +36,17 @@ native.exports = {
 };
 require.cache[addon] = native;
 const sdk = require(dir);
+
+test("a cancelled native dial says no Server answered", async () => {
+  const binding = require(path.join(pkg, "ployz-sdk.node"));
+  const { RpcError, withRpcError } = require(path.join(pkg, "wrap.js"));
+  const pending = binding.startConnections([{ tcp: "127.0.0.1:1" }]);
+  pending.cancel();
+  await assert.rejects(
+    withRpcError(pending.wait()),
+    error => error instanceof RpcError && error.code === "unavailable" && error.unanswered === true,
+  );
+});
 
 const abortListeners = signal => getEventListeners(signal, "abort").length;
 const tick = () => new Promise(resolve => setImmediate(resolve));

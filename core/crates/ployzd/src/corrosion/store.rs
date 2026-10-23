@@ -98,6 +98,25 @@ impl MachinePublicationGuard<'_> {
         self.store.api.execute(removal(machine_id)).await
     }
 
+    /// Say in `machine_id`'s row that it is leaving, or take that back, for a deploy
+    /// that plans the Ingress Proxy and checks it (#3277). An update in place: a row
+    /// the Cluster already forgot stays gone rather than coming back marked.
+    pub(crate) async fn mark_leaving(
+        &self,
+        machine_id: &MachineId,
+        leaving: bool,
+    ) -> Result<(), Error> {
+        let statement = if leaving {
+            "UPDATE machines SET info = json_set(info, '$.runtime.leaving', json('true')) WHERE id = ?"
+        } else {
+            "UPDATE machines SET info = json_remove(info, '$.runtime.leaving') WHERE id = ?"
+        };
+        self.store
+            .api
+            .execute([Statement::new(statement, [json!(machine_id)])])
+            .await
+    }
+
     /// Remove a Machine another Machine forgot, leaving a tombstone keyed by the
     /// row's Management Identity so the forgotten Machine can learn it was forgotten
     /// (#2927). A row without an identity leaves none. One transaction, so no
@@ -1039,6 +1058,24 @@ impl ReplicatedStore {
         match query.rows(["site_id"])?.as_slice() {
             [[actor]] => actor_id(actor),
             _ => Err(Error::Protocol("invalid local actor row".into())),
+        }
+    }
+
+    /// Whether this store has ever held a row for a Machine other than `own`. A removed
+    /// row keeps its cr-sqlite key, so only a store created afresh, before gossip
+    /// reaches it, reads `false` once another Machine exists.
+    pub(crate) async fn held_another_machine(&self, own: &MachineId) -> Result<bool, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT EXISTS (SELECT 1 FROM machines__crsql_pks WHERE id != ?) AS held",
+                [json!(own)],
+            ))
+            .await?;
+        match query.rows(["held"])?.as_slice() {
+            [[held]] if held.as_i64() == Some(0) => Ok(false),
+            [[held]] if held.as_i64() == Some(1) => Ok(true),
+            _ => Err(Error::Protocol("invalid held-another-Machine row".into())),
         }
     }
 
