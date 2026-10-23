@@ -1740,6 +1740,22 @@ pub(crate) async fn wait_for_role(
     .await
 }
 
+/// Whether this entry lists Machine `id` with `setting` now, in one list call.
+///
+/// # Errors
+/// Fails when listing Machines fails.
+pub(crate) async fn lists_role(
+    client: &mut Client,
+    id: &MachineId,
+    setting: RoleSetting,
+) -> Result<bool, RoleWaitError> {
+    Ok(client
+        .machines()
+        .await?
+        .iter()
+        .any(|entry| entry.machine.id == *id && setting.holds(&entry.machine)))
+}
+
 /// The fields of a Machine update that a later plan reads: placement Labels and the roles.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PlannedChange {

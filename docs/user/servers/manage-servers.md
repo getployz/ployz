@@ -210,8 +210,8 @@ back on: that starts the server's web server, which the switch below and `ployz 
 When `ployz server set` changes a label, `--accepts-builds`, `--accepts-services` or
 `--accepts-ingress`, it waits for the Server your CLI connects through to list the change before
 reporting the update. An immediate deploy through that same Server then sees it. If the wait ends
-without confirmation, the command warns you; when it turned web traffic on and that setting is what
-went unlisted, it reports the web server start as unfinished instead. The target Server's record
+without confirmation, the command warns you. When it turned web traffic on and that setting is
+what went unlisted, it also reports the web server start as unfinished. The target Server's record
 may have changed; check `ployz server ls` before deploying. A deploy through another Server, or from
 Ployz Cloud, can still plan from the old settings until that Server lists the change.
 

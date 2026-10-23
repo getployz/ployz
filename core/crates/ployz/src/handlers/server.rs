@@ -966,14 +966,16 @@ pub(crate) async fn apply_update(
         match listed {
             Ok(()) => {}
             // Only the ingress role gates the proxy start; another unlisted field only warned.
-            Err(RoleWaitError::ChangeNotObserved) => crate::cluster::wait_for_role(
-                client,
-                &machine.id,
-                crate::cluster::RoleSetting::IngressOn,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(unobserved)?,
+            // One more list, not another wait, so the command keeps the one wait's budget.
+            Err(RoleWaitError::ChangeNotObserved) => {
+                let ingress = crate::cluster::RoleSetting::IngressOn;
+                if !crate::cluster::lists_role(client, &machine.id, ingress)
+                    .await
+                    .map_err(unobserved)?
+                {
+                    return Err(unobserved(RoleWaitError::NotObserved(ingress)));
+                }
+            }
             Err(error) => return Err(unobserved(error)),
         }
         crate::ingress::follow_roles(client, ingress).await
