@@ -1013,6 +1013,7 @@ fn create(
             keep: false,
             fix: None,
         },
+        trusted,
     )?;
     let mut environment = scope::lock_id(tx, who, &id)?;
     environment.working = derive(environment.working, event);

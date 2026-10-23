@@ -695,6 +695,59 @@ fn refuse_too_long(prefix: &str, cluster: Option<&Hostname>) -> Result<(), RpcEr
     ))
 }
 
+/// Refuse each generated prefix `after` gives a Service that `before` didn't, when the
+/// hostname it makes is too long. A Branch adds its name to the prefixes it copies, so a
+/// hostname that fits its Parent can be too long on the Branch. The Cluster Domain is
+/// Cloud's, else the one `environment` or its nearest ancestor last deployed under.
+pub(crate) fn refuse_too_long_copies(
+    tx: &mut dyn Tx,
+    environment: &crate::EnvironmentId,
+    trusted: Option<&Trusted>,
+    (before, after): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
+) -> Result<(), RpcError> {
+    let new: Vec<&str> = after
+        .services
+        .iter()
+        .flat_map(|service| {
+            let held = before
+                .services
+                .iter()
+                .find(|old| old.lineage_id == service.lineage_id);
+            service
+                .config
+                .managed_hostnames
+                .iter()
+                .map(|hostname| hostname.prefix.as_str())
+                .filter(move |prefix| {
+                    !held.is_some_and(|old| {
+                        old.config
+                            .managed_hostnames
+                            .iter()
+                            .any(|hostname| hostname.prefix == *prefix)
+                    })
+                })
+        })
+        .collect();
+    if new.is_empty() {
+        return Ok(());
+    }
+    let cluster = match trusted.and_then(|trusted| trusted.domains.cluster_domain.as_ref()) {
+        Some(cluster) => Some(cluster.name.clone()),
+        None => {
+            let mut cluster = crate::deployment::cluster_domain(tx, environment)?;
+            for ancestor in crate::branch::ancestors(tx, environment)? {
+                if cluster.is_some() {
+                    break;
+                }
+                cluster = crate::deployment::cluster_domain(tx, &ancestor)?;
+            }
+            cluster
+        }
+    };
+    new.into_iter()
+        .try_for_each(|prefix| refuse_too_long(prefix, cluster.as_ref()))
+}
+
 fn cluster_of(
     tx: &mut dyn Tx,
     environment: &Environment,

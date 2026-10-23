@@ -935,6 +935,7 @@ fn land_one(
             (&from.working, &carried),
             working,
             &staged,
+            None,
         )?;
     } else if consumed {
         scope::persist_working(tx, &mut destination)?;
