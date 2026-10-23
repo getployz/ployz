@@ -65,7 +65,8 @@ pub(super) fn shows_code(matches: &ArgMatches, json: bool, stdout_is_terminal: b
 }
 
 pub(super) fn recover(root: &ArgMatches) -> Result<(), Error> {
-    recover_from(root, std::io::stdin().lock())
+    // Unlocked: the hidden prompt reads stdin itself, and would wait forever on a held lock.
+    recover_from(root, std::io::stdin())
 }
 
 fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
