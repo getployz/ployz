@@ -159,6 +159,8 @@ impl NetworkPlane {
         machines.mark_changed();
         let mut previous = None;
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        // A slow store read must not leave ticks queued ahead of operator choices.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 biased;
@@ -173,13 +175,13 @@ impl NetworkPlane {
                     self.rebuild_when_changed(&replicated, &machines, &mut previous, &local)
                         .await?;
                 }
+                Some(choice) = choices.recv() => self.apply_choice(choice, &local).await,
                 _ = ticker.tick() => {
-                    // A rebuild that couldn't read the store tries again here.
+                    // A rebuild that couldn't read the store, or only added, tries again here.
                     self.rebuild_when_changed(&replicated, &machines, &mut previous, &local)
                         .await?;
                     self.poll_endpoints(&local).await;
                 }
-                Some(choice) = choices.recv() => self.apply_choice(choice, &local).await,
             }
         }
         if local.record().phase() == LocalMachinePhase::Resetting {
@@ -264,12 +266,14 @@ impl NetworkPlane {
         let snapshot = machines.borrow().clone();
         if let Some(snapshot) = snapshot
             && previous.as_ref() != Some(&snapshot)
-            && self
+        {
+            let settled = self
                 .rebuild(replicated, &snapshot, local)
                 .await
-                .map_err(io::Error::other)?
-        {
-            *previous = Some(snapshot);
+                .map_err(io::Error::other)?;
+            // An unsettled rebuild may have added peers, so no snapshot counts as applied:
+            // the same snapshot arriving again must still prune them.
+            *previous = settled.then_some(snapshot);
         }
         Ok(())
     }
