@@ -1106,6 +1106,69 @@ async fn waits() {
     }
 
     #[test]
+    fn a_pause_that_may_not_run_leaves_a_later_sleep_real() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    if ready() { tokio::time::pause(); }
+    tokio::time::sleep(d).await;
+    match mode { Mode::Fake => tokio::time::pause(), Mode::Real => {} }
+    tokio::time::sleep(d).await;
+    for _ in 0..n { tokio::time::pause(); }
+    tokio::time::sleep(d).await;
+    let pause = || tokio::time::pause();
+    tokio::time::sleep(d).await;
+    tokio::select! { _ = ready() => tokio::time::pause(), _ = other() => {} }
+    tokio::time::sleep(d).await;
+}
+"#;
+        assert_eq!(
+            lint(source),
+            [
+                "5: real-clock sleep in test code",
+                "7: real-clock sleep in test code",
+                "9: real-clock sleep in test code",
+                "11: real-clock sleep in test code",
+                "13: real-clock sleep in test code",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pause_covers_the_rest_of_its_own_branch() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    if ready() {
+        tokio::time::pause();
+        tokio::time::sleep(d).await;
+    }
+    loop {
+        tokio::time::sleep(d).await;
+        tokio::time::pause();
+        tokio::time::sleep(d).await;
+    }
+    tokio::join!(async { tokio::time::pause(); tokio::time::sleep(d).await; });
+    { tokio::time::pause(); }
+    tokio::time::sleep(d).await;
+}
+"#;
+        assert_eq!(lint(source), ["9: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn a_resume_that_may_run_ends_paused_time() {
+        let source = r#"
+#[tokio::test(start_paused = true)]
+async fn waits() {
+    if ready() { tokio::time::resume(); }
+    tokio::time::sleep(d).await;
+}
+"#;
+        assert_eq!(lint(source), ["5: real-clock sleep in test code"]);
+    }
+
+    #[test]
     fn a_pause_with_arguments_is_not_tokios() {
         let source = r#"
 #[tokio::test]
@@ -1202,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn conditional_pauses_follow_visit_order() {
+    fn a_helper_called_after_a_conditional_pause_is_real() {
         let source = r#"
 #[cfg(test)]
 mod tests {
@@ -1215,7 +1278,13 @@ mod tests {
     }
 }
 "#;
-        assert!(lint(source).is_empty(), "{:?}", lint(source));
+        assert_eq!(
+            lint(source),
+            [
+                "4: real-clock sleep in test code",
+                "9: real-clock sleep in test code"
+            ]
+        );
     }
 
     #[test]
@@ -1229,7 +1298,7 @@ async fn waits() { sleep(d); }
     }
 
     #[test]
-    fn expression_pauses_follow_visit_order() {
+    fn a_pause_on_only_some_paths_leaves_a_later_sleep_real() {
         for setup in [
             "if ready() { tokio::time::pause(); }",
             "match flag { true => tokio::time::pause(), false => {} }",
@@ -1243,12 +1312,16 @@ async fn waits() { sleep(d); }
             let source = format!(
                 "#[tokio::test]\nasync fn waits() {{ {setup}\ntokio::time::sleep(d).await; }}"
             );
-            assert!(lint(&source).is_empty(), "{setup}: {:?}", lint(&source));
+            assert_eq!(
+                lint(&source),
+                ["3: real-clock sleep in test code"],
+                "{setup}"
+            );
         }
     }
 
     #[test]
-    fn branch_clocks_follow_visit_order() {
+    fn branch_clocks_join_where_the_branches_do() {
         let source = r#"
 #[tokio::test]
 async fn waits() {
@@ -1264,7 +1337,13 @@ async fn waits() {
     tokio::time::sleep(d).await;
 }
 "#;
-        assert_eq!(lint(source), ["13: real-clock sleep in test code"]);
+        assert_eq!(
+            lint(source),
+            [
+                "8: real-clock sleep in test code",
+                "13: real-clock sleep in test code"
+            ]
+        );
     }
 
     #[test]
