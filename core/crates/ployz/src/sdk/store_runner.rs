@@ -35,9 +35,6 @@ use crate::context::Connection;
 use crate::deploy::MachineOperations;
 use crate::deploy::cleanup::{self, Copy, Step};
 
-/// Why a build that reads a sealed value fails when no Server can take it.
-pub(crate) const SEALED_BUILDS: &str = "Builds that read a sealed value run on your server.";
-
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
 
@@ -1346,7 +1343,7 @@ fn targets(
         }
         if !source.builders.contains(&Builder::Servers) {
             let why = match source.sealed {
-                Some(_) => SEALED_BUILDS,
+                Some(_) => crate::build::SEALED_BUILDS_RUN_ON_SERVER,
                 None => source.message.as_deref().unwrap_or_default(),
             };
             failed.push(format!(
