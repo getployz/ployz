@@ -66,6 +66,9 @@ pub struct Client {
     connector: Arc<dyn Connector>,
     /// The Machine the entry described itself as when it was last confirmed.
     entry: Option<MachineId>,
+    /// The Machine `channel` was last confirmed to reach. Unlike `entry`, a failed redial
+    /// keeps it, so a later one can tell the endpoint now reaches another Machine.
+    confirmed: Option<MachineId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -89,6 +92,7 @@ impl Client {
             source,
             connector,
             entry: None,
+            confirmed: None,
         }
     }
 
@@ -116,19 +120,20 @@ impl Client {
             .or_else(|| self.entry.map(|machine| machine.to_string()))
     }
 
-    /// Replace the channel, and the entry it confirmed, with a freshly confirmed one.
-    /// Clones share the channel, so an entry that now describes itself as another
-    /// Machine is refused, as by [`Self::redial_shared`], and stays the one to expect.
+    /// Replace the channel, and the entry it confirmed, with a freshly confirmed one. An
+    /// entry that now describes itself as another Machine, as after a reset, moves only
+    /// this client: its clones, a Deploy's among them, keep the Machine they confirmed.
     async fn redial(&mut self) -> Result<(), ConnectError> {
-        let expected = self.entry.take();
-        match self.reconnect(expected).await {
-            Ok(entry) => self.entry = entry,
-            Err(error @ ConnectError::IdentityMismatch { .. }) => {
-                self.entry = expected;
-                return Err(error);
+        self.entry = None;
+        let (channel, entry) = self.dial_confirmed().await?;
+        match (self.confirmed, entry) {
+            (Some(confirmed), Some(entry)) if confirmed != entry => {
+                self.channel = Arc::new(std::sync::RwLock::new(channel));
             }
-            Err(error) => return Err(error),
+            _ => self.share(channel),
         }
+        self.confirmed = entry.or(self.confirmed);
+        self.entry = entry;
         Ok(())
     }
 
@@ -140,16 +145,19 @@ impl Client {
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`], when the
     /// entry doesn't answer on the new channel.
     pub(crate) async fn redial_shared(&self) -> Result<(), ConnectError> {
-        self.reconnect(self.entry).await.map(|_| ())
+        let (channel, entry) = self.dial_confirmed().await?;
+        if let (Some(expected), Some(actual)) = (self.entry, entry)
+            && expected != actual
+        {
+            return Err(ConnectError::IdentityMismatch { expected, actual });
+        }
+        self.share(channel);
+        Ok(())
     }
 
-    /// Dial the connection again and confirm its entry on the new channel, which only
-    /// then replaces the shared one. Returns the entry it confirmed, which must be
-    /// `expected` when both are known.
-    async fn reconnect(
-        &self,
-        expected: Option<MachineId>,
-    ) -> Result<Option<MachineId>, ConnectError> {
+    /// Dial the connection again and confirm its entry on the new channel. Returns the
+    /// channel unshared, with the entry it confirmed.
+    async fn dial_confirmed(&self) -> Result<(Channel, Option<MachineId>), ConnectError> {
         let candidate = Self {
             channel: Arc::new(std::sync::RwLock::new(
                 self.connector.connect(&self.connection).await?,
@@ -157,16 +165,15 @@ impl Client {
             ..self.clone()
         };
         let entry = candidate.confirmed_entry().await?;
-        if let (Some(expected), Some(actual)) = (expected, entry)
-            && expected != actual
-        {
-            return Err(ConnectError::IdentityMismatch { expected, actual });
-        }
+        Ok((candidate.channel(), entry))
+    }
+
+    /// Replace the channel every clone shares.
+    fn share(&self, channel: Channel) {
         *self
             .channel
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = candidate.channel();
-        Ok(entry)
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = channel;
     }
 
     /// One-shot check that this channel reaches a daemon. No unary retry — a
@@ -178,6 +185,7 @@ impl Client {
     /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`].
     pub(crate) async fn confirm_entry(&mut self) -> Result<(), ConnectError> {
         self.entry = self.confirmed_entry().await?;
+        self.confirmed = self.entry.or(self.confirmed);
         Ok(())
     }
 

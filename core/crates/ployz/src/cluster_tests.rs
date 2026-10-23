@@ -595,7 +595,7 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
 }
 
 #[tokio::test]
-async fn a_retry_redial_that_reaches_another_machine_leaves_its_clones_on_the_old_channel() {
+async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
     let (mut client, _old) = crate::connect::test_support::rpc_client(|_| async {
         Err(tonic::Status::not_found("answered by the old daemon"))
     })
@@ -611,17 +611,20 @@ async fn a_retry_redial_that_reaches_another_machine_leaves_its_clones_on_the_ol
     })
     .await;
     client.entry = Some(machine_id('a'));
+    client.confirmed = Some(machine_id('a'));
     client.connector = crate::connect::test_support::connector(other.channel());
 
-    // The retry loop redials the same clone again after a refusal.
-    let mut retrying = client.clone();
-    for _ in 0..2 {
-        let refused = retrying.redial().await;
-        assert!(
-            matches!(refused, Err(ConnectError::IdentityMismatch { .. })),
-            "{refused:?}"
-        );
+    // As a Server reset under `server add` does, the endpoint now answers as another
+    // Machine; the retry follows it. A clone whose last redial failed has forgotten
+    // its entry, and still moves only itself.
+    let mut forgot = client.clone();
+    forgot.entry = None;
+    for mut retrying in [client.clone(), forgot] {
+        retrying.redial().await.unwrap();
+        assert_eq!(retrying.entry_machine(), Some(machine_id('b')));
+        assert_eq!(retrying.entry_id().await.unwrap(), machine_id('b'));
     }
+
     let answer = client.clone().entry_id().await.unwrap_err();
     assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
 }
