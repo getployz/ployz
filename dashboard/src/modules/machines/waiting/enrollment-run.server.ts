@@ -82,6 +82,17 @@ export const recordStage = Effect.fn("ServerEnrollment.recordStage")(function* (
   return rows.length === 1;
 });
 
+/**
+ * Cloud is about to send this attempt's Register, and the Entry answers it with the Sealing Key, so the join can commit before
+ * the host reports it. From here the attempt reads as committed. False when the attempt already ended.
+ */
+export const recordJoinSent = Effect.fn("ServerEnrollment.joinSent")(function* (attemptId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.update(serverEnrollment).set({ stage: forwardTo(serverEnrollment.stage, "joining") })
+    .where(and(eq(serverEnrollment.id, attemptId), open)).returning({ id: serverEnrollment.id });
+  return rows.length === 1;
+});
+
 type Ending =
   | { readonly state: "joined"; readonly machineId: MachineId }
   | { readonly state: "failed"; readonly failure: EnrollmentFailure }

@@ -19,7 +19,7 @@ import {
   readServerEnrollmentStatus,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
-import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, recordStage, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
+import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, recordJoinSent, recordStage, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
 import { listWaitingServers, showWaitingServer } from "#/modules/machines/waiting/waiting-servers.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
@@ -685,6 +685,32 @@ it("closes a cancelled attempt no run has bound, and says when there was nothing
   expect(await run(cancelServerEnrollment(ada, { organizationSlug: "ada", id }))).toEqual({ id, cancelling: false });
   expect(await failure(cancelServerEnrollment(ada, { organizationSlug: "ada", id: "00000000-0000-4000-8000-000000000899" })))
     .toMatchObject({ _tag: "NotFound" });
+});
+
+it("refuses to cancel an attempt once Cloud sent its join, and Reject spares it, since the Server may already be in the Cluster", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  expect(await run(recordJoinSent(attemptId))).toBe(true);
+  sent.mockClear();
+  expect(await failure(cancelServerEnrollment(ada, { organizationSlug: "ada", id: attemptId }))).toMatchObject({
+    _tag: "Conflict",
+    message: "web-a may already be in the Cluster: Cloud sent its join. Nothing cancelled. Once it has joined, remove it with ployz server rm web-a.",
+  });
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }))).toEqual({ rejected: 1 });
+  expect(await stages()).toEqual([{ state: "running", stage: "joining", ended_at: null }]);
+  expect(await outbox()).not.toContain("server/enrollment.cancel");
+});
+
+it("records no join for an attempt that already ended", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  const [started] = (await run(enroll([a]))).attempts;
+  const id = started?.id ?? "";
+  await run(cancelServerEnrollment(ada, { organizationSlug: "ada", id }));
+  expect(await run(recordJoinSent(id))).toBe(false);
+  expect((await attempts()).map((row) => row.state)).toEqual(["cancelled"]);
 });
 
 it("fails an attempt whose run failed before it bound the attempt", async () => {
