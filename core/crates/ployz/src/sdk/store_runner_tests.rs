@@ -1263,11 +1263,14 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
         let plain = Failure::from(&refused.error).reason;
         let failure = refused_before_deletes(&refused, &deleting('a'));
         assert_eq!(failure.reason, format!("{plain}{note}"));
+        // Deploying the same again deletes nothing first, so it is refused the same way.
+        assert!(failure.same_again);
         for unchanged in [
             refused_before_deletes(&refused, &deleting('b')),
             refused_before_deletes(&refused, &[]),
         ] {
             assert_eq!(unchanged.reason, plain);
+            assert_eq!(unchanged.same_again, refused.same_again);
         }
     }
 }
