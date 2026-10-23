@@ -254,3 +254,28 @@ it("seals a typed value for the Service it lands in, afresh after a refusal and 
   expect(afterRefusal).not.toEqual(first);
   expect(afterLoss).toEqual(afterRefusal);
 });
+
+it("reads sealing afresh on a retry after a lost response, and seals what it sent plain once sealing is on, under the same Sync", async () => {
+  const { write } = open();
+  const services = [asTestDouble<ServiceListing>()({ row: "a:node", id: API_ID, name: "api", change: null })];
+  vi.mocked(functions.readStoreViewServerFn).mockImplementation(async ({ data }) => (data.query.query === "services"
+    ? { ok: true, value: { view: "services", environment: { ...summary("production"), id: PRODUCTION_ID }, services } }
+    : { ok: true, value: { view: "sync", ...syncView() } }) as never);
+  write.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  const sync = await dialog();
+  fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "token-value" } });
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(sync.getByRole("button", { name: "Sync 5 changes" }).hasAttribute("disabled")).toBe(false));
+  const kem = new DhkemX25519HkdfSha256();
+  const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
+  vi.mocked(sealingFunctions.readSealingFn).mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)) } });
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+
+  const [lost, retry] = write.mock.calls.map(([call]) => call.data.command);
+  expect(JSON.stringify(lost)).toContain("token-value");
+  expect(JSON.stringify(retry)).not.toContain("token-value");
+  expect(retry).toMatchObject({ id: lost?.command === "sync" ? lost.id : assert.fail("not a Sync"),
+    values: { "a:variables.TOKEN": { sealedFor: PRODUCTION_ID, value: { scope: { service: API_ID }, key: "TOKEN" } } } });
+});

@@ -37,8 +37,8 @@ export function useSealing(organizationSlug: string) {
 
 export type Sealing = ReturnType<typeof useSealing>;
 
-/** Seals one item to the key a fresh read returned. */
-type Sealer = (item: SealItem) => Promise<ClientSealedValue>;
+/** Seals one item to the key a fresh read returned, `publicKey`. */
+export type Sealer = ((item: SealItem) => Promise<ClientSealedValue>) & { readonly publicKey: string };
 
 /** One fresh read: null while sealing is off, else a `Sealer` bound to the key it returned. */
 async function sealer(queryClient: QueryClient, organizationSlug: string): Promise<Sealer | null> {
@@ -48,8 +48,9 @@ async function sealer(queryClient: QueryClient, organizationSlug: string): Promi
   if (sealing.state === "off") return null;
   if (sealing.state === "no_server") throw new SealError(NO_SERVER);
   const recipient = { organizationId, publicKey: sealing.publicKey };
-  return async ({ key, value, target }) =>
+  const seal = async ({ key, value, target }: SealItem): Promise<ClientSealedValue> =>
     ({ sealedFor: target.environment, value: { sealed: await sealed(recipient, target, key, value), scope: { service: target.service }, key } });
+  return Object.assign(seal, { publicKey: sealing.publicKey });
 }
 
 async function sealed(...input: Parameters<typeof sealValue>) {

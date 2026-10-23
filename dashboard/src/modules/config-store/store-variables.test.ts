@@ -190,7 +190,7 @@ it("seals a Sync row for the Service its lineage lands in, keyed by the row's va
   const services = [asTestDouble<ServiceListing>()({ row: "a:node" as RowId, id: "api-there", name: "web", change: null })];
   const seal = vi.fn(async ({ key, value, target }: { key: string; value: string; target: { environment: string; service: string } }) =>
     asTestDouble<ClientSealedValue>()({ sealedFor: `${key}=${value}@${target.environment}/${target.service}` }));
-  const sealing = { sealer: async () => seal };
+  const sealing = { sealer: async () => Object.assign(seal, { publicKey: "key" }) };
   const receiver = async () => ({ environment: "env-there", services });
   const typed = [{ row: "a:variables.TOKEN" as RowId, value: "one" }, { row: "b:variables.TOKEN" as RowId, value: "two" }];
 
