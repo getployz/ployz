@@ -583,7 +583,7 @@ pub(crate) fn restore(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// `volume set NAME --size N` on a deployed Volume: Cloud sets every copy's size, then records
-/// it. Without Cloud, `cloud()` refuses it as it refuses `volume move`.
+/// it. Without Cloud the refusal names the resize and the limit the Volume keeps.
 pub(crate) fn resize(
     root: &ArgMatches,
     store: &store::Store<'_>,
@@ -591,6 +591,14 @@ pub(crate) fn resize(
     maximum_bytes: ProvisionedVolumeMaximumBytes,
 ) -> Result<(), Error> {
     let volume = &view.volume.volume.name;
+    if let (Backend::Local(..), Some(kept)) = (store.backend(), view.volume.recorded_storage) {
+        return Err(Error::coded(
+            RpcErrorCode::Unsupported,
+            format!(
+                "Resizing deployed Volume {volume} needs Ployz Cloud; without it, {volume} keeps its {kept} limit."
+            ),
+        ));
+    }
     let started = format!("resize of Volume {volume} to {maximum_bytes}");
     request_located(
         root,
