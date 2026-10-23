@@ -685,7 +685,6 @@ where
     })
 }
 
-/// [`with_client`] for what needs Full scope, dialing through [`server::connect_full`].
 fn with_full_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
 where
     F: for<'a> FnOnce(
