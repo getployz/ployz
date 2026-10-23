@@ -260,7 +260,7 @@ names a draining container only when the service has too few others serving.
 If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
 reads **Drain again**. One failure doesn't count: a drain also moves containers off other servers whose
 services are off, and when one of those moves fails without leaving anything behind, its row says the
-service still runs on that server, but this server's drain is still done. Turning services back on doesn't
+service still runs on that server, but that failure alone doesn't make this server's drain incomplete. Turning services back on doesn't
 move anything back.
 
 `ployz server drain web-2` does the same from the CLI and exits non-zero if anything stayed or
