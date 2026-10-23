@@ -194,15 +194,15 @@ const finish = ({ step, runEffect, run, runId }: RunSteps, id: string, message: 
 /**
  * One SetVolumeCopy. A Machine answers Busy while a Container step or another switch holds the Volume, so the run
  * sleeps and asks again with the same request, which spends no retry. `at` is when the Machine answered, in ms. A
- * retried attempt's answer is `late`: the attempt before may have made the change and lost the answer, so the
- * change may have been made before `at`. A step an older version of this function memoized has no `late`, and has
- * no `at` if it ran on a retried attempt.
+ * retried attempt's answer has `lateAt` instead: the attempt before may have made the change and lost the answer, so
+ * the change may have been made before it. Older versions of this function read only `at`, so a late time must not
+ * use that name in case one replays this step after a rollback.
  */
 async function settle({ step, runEffect, run, runId, attempt }: RunSteps, id: string, ask: Effect.Effect<CopyAnswer, Error, AppServices>, still: string) {
   for (let check = 0; check < BUSY_CHECKS; check += 1) {
     if (check > 0) await step.sleep(`${id}-wait-${check}`, BUSY_WAIT);
-    const answer: CopyAnswer & { readonly at?: number; readonly late?: true } = await step.run(check === 0 ? id : `${id}-${check}`, () =>
-      runEffect(ask).then((answered) => (attempt === 0 ? { ...answered, at: Date.now() } : { ...answered, at: Date.now(), late: true as const })));
+    const answer: CopyAnswer & { readonly at?: number; readonly lateAt?: number } = await step.run(check === 0 ? id : `${id}-${check}`, () =>
+      runEffect(ask).then((answered) => (attempt === 0 ? { ...answered, at: Date.now() } : { ...answered, lateAt: Date.now() })));
     if (!answer.ok && answer.reason === "stale") {
       await step.run(`${id}-stale`, () => runEffect(endRun(run, runId, "failed", answer.message)));
       throw new Stale(answer.message);
@@ -672,8 +672,8 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       }, `${A.name} is still stopping ${name}'s Service`);
       if (!stopped.ok) throw new NonRetriableError(stopped.message);
       source = stopped.copy;
-      // A late cut's time may follow the stop by any amount, which would shorten the downtime.
-      stoppedAt = stopped.late === true ? null : stopped.at ?? null;
+      // A late cut's time may follow the stop by any amount, which would shorten the downtime, so it has no `at`.
+      stoppedAt = stopped.at ?? null;
       await note("05-stopped", `${service} stopped for the final copy`);
     }
     const cut = slotAt(source);
@@ -691,10 +691,11 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
     // A late start may have been made before its answer, and the cut's answer follows the stop, so the time is
     // only an estimate either way. Times stamped by different workers can disagree; a negative one says nothing.
-    const stopped = stoppedAt === null || started.at === undefined || started.at < stoppedAt ? null : formatDuration((started.at - stoppedAt) / 1000);
+    const startedAt = started.at ?? started.lateAt;
+    const stopped = stoppedAt === null || startedAt === undefined || startedAt < stoppedAt ? null : formatDuration((startedAt - stoppedAt) / 1000);
     downtime = stopped === null
       ? null
-      : started.late === true ? `${service} was stopped about ${stopped} (its start was retried)` : `${service} was stopped ${stopped}`;
+      : started.at === undefined ? `${service} was stopped about ${stopped} (its start was retried)` : `${service} was stopped ${stopped}`;
   } catch (error) {
     return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));
   }
