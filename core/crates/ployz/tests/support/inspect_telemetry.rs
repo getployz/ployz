@@ -16,7 +16,8 @@ pub(super) fn observation(scope: InspectTelemetry) -> Option<TelemetryObservatio
                 1,
                 0,
                 ByteCapacity::default(),
-                ByteCapacity::default(),
+                // A roomy Docker disk, so no fake Server reads as nearly full.
+                ByteCapacity::parse(64_000_000_000, 32_000_000_000).expect("available fits total"),
             ),
             bridge,
         }),
