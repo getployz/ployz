@@ -49,7 +49,7 @@ pub(crate) async fn apply_requested(
         for warning in &preview.warnings {
             ui::warn(warning.to_string());
         }
-        ui::note("Everything is up to date.");
+        ui::note("No Service changes needed.");
         return Ok(DeployOutcome::Success {
             completed: Vec::new(),
             services: Vec::new(),

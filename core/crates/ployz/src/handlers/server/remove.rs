@@ -69,6 +69,8 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?.to_owned();
+    let machine_target = MachineTarget::parse(&selector)
+        .map_err(|_| Error::usage("Name a Server by name or ID."))?;
     let runtime = runtime()?;
     let reached = runtime.block_on(async {
         match removal {
@@ -88,8 +90,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     // Before anything is listed or confirmed: a removal that can't happen asks nothing.
     let (machines, selected, current, hold, held) = runtime.block_on(async {
         let machines = client.machines().await?;
-        let observation =
-            crate::cluster::visible_machine(&MachineTarget::parse(&selector)?, &machines)?;
+        let observation = crate::cluster::visible_machine(&machine_target, &machines)?;
         let selected = observation.machine.clone();
         let mut current = client
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
@@ -181,6 +182,9 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         let short = left_short(&selected.id, &live, last);
         Ok::<_, Error>((cloud, observed, services, movable, short))
     })?;
+    if cloud.is_none() && matches.get_one::<String>("approval").is_some() {
+        crate::ui::warn("--approval applies only when Ployz Cloud manages the Server.");
+    }
     if let Some((warning, drain)) = running_services(
         selected.name.as_str(),
         &movable,
@@ -234,13 +238,27 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         },
         &labels,
         |retry| {
+            let volumes = if removal == Removal::Reset && !observed.data_loss.is_empty() {
+                format!(
+                    " Server {} holds Volumes: {}.",
+                    selected.name,
+                    observed
+                        .data_loss
+                        .iter()
+                        .map(|loss| volume_label(&labels, loss))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            } else {
+                String::new()
+            };
             Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
                 if dead {
                     format!("{unanswered} and needs dead typed. No changes made.")
                 } else {
                     format!(
-                        "{} Server {} needs its name typed. No changes made.",
+                        "{} Server {} needs its name typed.{volumes} No changes made.",
                         match removal {
                             Removal::Reset => "Removing",
                             Removal::Forget => "Forgetting",

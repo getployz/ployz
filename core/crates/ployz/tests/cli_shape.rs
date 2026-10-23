@@ -3550,3 +3550,14 @@ fn server_enroll_mixed_selection_requires_confirmation_for_new_hosts() {
             .any(|route| route.starts_with("POST /api/cli/enrollments "))
     );
 }
+
+#[test]
+fn server_rm_empty_name_uses_server_wording() {
+    let (code, json, _) = run_json(&["server", "rm", "", "--confirm", "", "--json"]);
+    assert_eq!(code, Some(2), "{json}");
+    assert_eq!(
+        json.pointer("/error/code"),
+        Some(&serde_json::json!("invalid_argument"))
+    );
+    assert!(message(&json).contains("Name a Server"), "{json}");
+}

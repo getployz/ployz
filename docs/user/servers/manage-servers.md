@@ -373,15 +373,21 @@ The command prints one line per server it tried, the failed one included. The er
 stderr, says why that server failed.
 It exits 1 when a server's upgrade failed before any server moved to another release, and 3
 when some did first, or when a server took the upgrade and then stopped answering, since it may
-still finish. A version that was
-never released fails with `no such release 0.3.0-beta.99`.
+still finish. A version that was never released fails with `No Ployz release 9.9.9.`
+and `not_found` in JSON. The CLI reports the Server's release lookup failure, so the CLI computer
+does not need its own connection to GitHub.
 A server that already runs the newest release on the channel you name, or a newer one, says
 `already runs 0.3.0-beta.7`, and a server on this release or later is left alone: nothing is
-reinstalled or restarted.
+reinstalled or restarted. An exact version it already runs says `Server machine-1 already runs 0.3.1.`
+A downgrade says `Downgraded Server machine-1 from 0.3.1 to 0.3.0.` The Ingress Proxy follow-up
+reports whether any Service changes are needed without claiming that every Server is current.
 Ctrl-C stops the command, not the upgrade: the server finishes it on its own, and
 `ployz server show` says how it ended.
 With `--json`, each entry in `attempts` names its server's id under `server`, and `unattempted`
-lists the ids of the servers the command never reached.
+lists the ids of the servers the command never reached. Direct upgrades also include `from_version`,
+the daemon version observed before the request. When that version is known, successful attempts
+include `change` as `upgraded`, `downgraded`, or `unchanged`. Otherwise the command says the Server
+`now runs` the returned version and leaves out `change`.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade.
 
@@ -539,6 +545,12 @@ server answered and none showed a replica of it. If a server didn't answer, the 
 only as `under_replicated`. `ployz status` keeps naming a service with no replicas until a deploy
 starts one; see
 [Status says a service runs no copies](../troubleshooting/deployments.md#status-says-a-service-runs-no-copies).
+Without a terminal, the first `ployz server rm` refusal names the Volumes the Server holds
+before it gives the command to confirm. If the Server holds no Volumes, drop
+`--accept-volume-loss`; supplying it still exits 2. An empty Server name also exits 2 and asks you
+to name a Server. On a Server Ployz Cloud does not manage, `--approval` has no effect and prints a
+warning, also included in JSON `warnings`. The warning does not change the exit code.
+
 Ployz's build cache isn't one of the volumes you confirm losing.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see
