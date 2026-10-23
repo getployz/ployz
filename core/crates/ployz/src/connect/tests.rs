@@ -153,7 +153,7 @@ fn transport_predicates_follow_the_grpc_code() {
         (tonic::Code::DeadlineExceeded,   true,  false, false, RpcErrorCode::Unavailable),
         (tonic::Code::NotFound,           false, false, true,  RpcErrorCode::NotFound),
         (tonic::Code::AlreadyExists,      false, false, false, RpcErrorCode::Conflict),
-        (tonic::Code::PermissionDenied,   false, false, false, RpcErrorCode::Internal),
+        (tonic::Code::PermissionDenied,   false, false, false, RpcErrorCode::from("forbidden")),
         (tonic::Code::ResourceExhausted,  false, false, false, RpcErrorCode::Internal),
         (tonic::Code::FailedPrecondition, false, false, false, RpcErrorCode::Internal),
         (tonic::Code::Aborted,            false, false, false, RpcErrorCode::Conflict),

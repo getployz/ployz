@@ -310,13 +310,20 @@ impl Gaps {
             .map_or_else(|| machine_id.to_string(), ToString::to_string)
     }
 
-    /// One warning per Machine that didn't answer, by name, with its cause.
+    /// One warning per Machine that didn't answer or refused, by name, with its cause or
+    /// next step.
     pub(crate) fn warn(&self) {
         for failure in &self.failures {
-            let (warning, cause) = self.warning(failure);
+            let (warning, under) = self.warning(failure);
             flag(&warning);
-            if let Some(cause) = cause {
-                note(format_args!("  {} {cause}", Tone::Bad.paint("cause:")));
+            match under {
+                Some(Under::Cause(cause)) => {
+                    note(format_args!("  {} {cause}", Tone::Bad.paint("cause:")));
+                }
+                Some(Under::Next(next)) => {
+                    note(format_args!("  {} {next}", Tone::Label.paint("next:")));
+                }
+                None => {}
             }
         }
         for machine_id in &self.omitted {
@@ -324,12 +331,27 @@ impl Gaps {
         }
     }
 
-    /// The warning for `failure`, naming its Machine, and the cause line under it when
-    /// the warning doesn't say what happened by itself.
-    fn warning(&self, failure: &MachineFailure<RpcError>) -> (String, Option<String>) {
+    /// The warning for `failure`, naming its Machine, and the line under it: the cause when
+    /// the warning doesn't say what happened by itself, or a refusal's next step.
+    fn warning(&self, failure: &MachineFailure<RpcError>) -> (String, Option<Under>) {
         let name = self.name(&failure.machine_id);
         if let Some(refusal) = failure.error.refusal() {
             return (refusal.naming(name).to_string(), None);
+        }
+        // It answered, refusing the caller's access: its reason, never "did not answer".
+        if failure.error.code.as_str() == crate::connect::FORBIDDEN {
+            let next = failure
+                .error
+                .details
+                .get("next")
+                .and_then(serde_json::Value::as_str);
+            return (
+                format!(
+                    "{name} refused: {}.",
+                    failure.error.message.trim_end_matches('.')
+                ),
+                next.map(|next| Under::Next(next.to_owned())),
+            );
         }
         // The entry Machine stopped listing it between our membership read and this
         // call, as `ployz server rm` does. Its id would only repeat the name.
@@ -341,7 +363,10 @@ impl Gaps {
         }
         (
             missing_rows(&name),
-            super::causes(&failure.error).last().cloned(),
+            super::causes(&failure.error)
+                .last()
+                .cloned()
+                .map(Under::Cause),
         )
     }
 
@@ -353,6 +378,13 @@ impl Gaps {
             Err(Failure::partial())
         }
     }
+}
+
+/// The line under a Machine's warning.
+#[derive(Debug, Eq, PartialEq)]
+enum Under {
+    Cause(String),
+    Next(String),
 }
 
 fn missing_rows(server: &str) -> String {
@@ -469,7 +501,44 @@ mod tests {
             warning(silent),
             (
                 "machine-4 did not answer; its rows are missing.".to_owned(),
-                Some("deadline has elapsed".to_owned())
+                Some(Under::Cause("deadline has elapsed".to_owned()))
+            )
+        );
+    }
+
+    /// A Server that refuses on scope answered: it names its reason and next step, never
+    /// "did not answer".
+    #[test]
+    fn a_refusing_server_says_why_and_what_to_do_next() {
+        let machine_id = MachineId::parse("4".repeat(32)).unwrap();
+        let name = MachineName::parse("machine-4").unwrap();
+        let status = ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &std::io::Error::other("set_device needs Full access"),
+            serde_json::json!({ "capability": "set_device", "next": "ployz device request" }),
+        );
+        let error = crate::connect::TransportError::from(status).to_rpc_error();
+        let gaps = Gaps::default().named([(machine_id, &name)]);
+
+        assert_eq!(
+            gaps.warning(&MachineFailure { machine_id, error }),
+            (
+                "machine-4 refused: set_device needs Full access.".to_owned(),
+                Some(Under::Next("ployz device request".to_owned()))
+            )
+        );
+
+        // A refusal with no next step, whose message already ends its sentence.
+        let status = ployz_core::rpc::caused_status(
+            tonic::Code::PermissionDenied,
+            &std::io::Error::other("Only Cloud manages management slots."),
+        );
+        let error = crate::connect::TransportError::from(status).to_rpc_error();
+        assert_eq!(
+            gaps.warning(&MachineFailure { machine_id, error }),
+            (
+                "machine-4 refused: Only Cloud manages management slots.".to_owned(),
+                None
             )
         );
     }
