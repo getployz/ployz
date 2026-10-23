@@ -79,7 +79,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
     >
       <span aria-hidden="true" className={cn("size-2 rounded-full", stale ? "bg-muted-foreground" : dot)} />
       <span className="truncate font-medium">{server.name}</span>
-      <span className="col-2 row-2 flex min-w-0 items-center gap-1 @xl:col-auto @xl:row-auto">
+      <span className="col-2 row-2 flex min-w-0 flex-wrap items-center gap-1 @xl:col-auto @xl:row-auto">
         {names.length === 0 ? <span className="truncate text-muted-foreground">{runsHere(server)}</span> : (
           <>
             <span className="flex min-w-0 gap-1 overflow-hidden">
