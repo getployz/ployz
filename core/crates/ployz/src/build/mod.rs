@@ -368,6 +368,14 @@ impl CapturedBuild {
         self.targets().cloned().collect()
     }
 
+    /// Whether any Build reads a Sealed value, which only a Builder that opens them can run.
+    #[must_use]
+    pub fn reads_sealed(&self) -> bool {
+        self.targets
+            .iter()
+            .any(|captured| !captured.sealed.is_empty())
+    }
+
     /// Run each Build in order on one resolved Machine over the authenticated
     /// Ployz stream, and bind each completed image to its Service. With
     /// `admit_by`, a Build the Machine hasn't admitted by then is withdrawn.
