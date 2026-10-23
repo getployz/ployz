@@ -41,11 +41,12 @@ as `namespace/name`, either explicitly or through project or deployment scope.
 The command still needs a server observation and access to each selected server's
 log store. Servers that do not answer are named, and partial results exit with code 3.
 
-`ployz logs` prints each line on the stream your app wrote it to, as `docker logs` does: what it
-wrote to stdout goes to stdout, and what it wrote to stderr goes to stderr. Many images, nginx
-among them, log to stderr, so add `2>&1` to pipe or save every line, as in
-`ployz logs web 2>&1 | grep error`. With `--json`, every line goes to stdout, and its `stream`
-says which one your app wrote it to.
+Read from your servers, `ployz logs` prints each line on the stream your app wrote it to, as
+`docker logs` does: what it wrote to stdout goes to stdout, and what it wrote to stderr goes to
+stderr. Many images, nginx among them, log to stderr, so add `2>&1` to pipe or save every line, as
+in `ployz logs web 2>&1 | grep error`. With `--json`, every line goes to stdout, and its `stream`
+says which one your app wrote it to. Logs Ployz Cloud reads for a token without server access,
+and `--build` output, print every line on stdout, and their `--json` has no `stream`.
 
 A name the environment doesn't have now, and that no retained line matches, fails with
 `No Service named nosvc in Environment production` and lists the services you can name. This holds
