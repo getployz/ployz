@@ -22,7 +22,6 @@ const NO_SERVER = "Add a server to set sealed values.";
  */
 export function useSealing(organizationSlug: string) {
   const queryClient = useQueryClient();
-  // Support can't read it; its controls show as off, and a Sealed write it tries rejects in `prepare`.
   const { data } = useQuery(sealingQueryOptions(organizationSlug));
   return {
     state: data?.sealing.state ?? "off",
