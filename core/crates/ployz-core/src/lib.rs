@@ -15,6 +15,8 @@ mod log_level;
 mod machine_telemetry;
 pub mod metrics;
 pub mod namespace;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod port_holder;
 mod ports;
 mod release;
 #[cfg(not(target_arch = "wasm32"))]

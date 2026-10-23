@@ -197,7 +197,9 @@ your first server.
    front of them.
 3. Read the server's logs with `sudo journalctl -u ployz -n 200`. Only if they say `refusing to
    change the retained WireGuard interface` or `refusing to replace the existing Docker network`,
-   follow [Ployz stops over a leftover network](#ployz-stops-over-a-leftover-network).
+   follow [Ployz stops over a leftover network](#ployz-stops-over-a-leftover-network). If they say
+   `UDP port 51820 is in use`, follow
+   [Another program holds UDP port 51820](#another-program-holds-udp-port-51820).
 
 ## A server waits for approval and never shows up
 
@@ -302,6 +304,11 @@ while another program holds it, Ployz can't start on the server: an enroll would
 it. See what holds it with `sudo ss -ulpn 'sport = :51820'`, then stop or restart that program.
 avahi-daemon, for one, can take the port at random and lets it go when restarted. The block
 clears on the server's next check-in.
+
+A server that's already in a Cluster, or one you added with `ployz server add`, has no check-in.
+There, Ployz keeps restarting, and `sudo journalctl -u ployz -n 50` says `UDP port 51820 is in use
+by avahi-daemon (pid 812), so WireGuard can't listen`, or `by another program` when it can't tell
+which. Free the port the same way, and Ployz starts on its next restart.
 
 ## Ployz stops over a leftover network
 

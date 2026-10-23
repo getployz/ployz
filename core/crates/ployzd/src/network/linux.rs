@@ -37,7 +37,7 @@ use super::{
     WIREGUARD_INTERFACE_NAME, WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey,
     attach_peer_selections, checked_command, choose_endpoint,
     firewall::{docker_ipv6_firewall, fence_container_ipv6, remove_firewall_rules},
-    peers_for,
+    peers_for, port_held_elsewhere,
 };
 use crate::{
     corrosion::{MachineView, ReplicatedObservations},
@@ -302,7 +302,8 @@ impl NetworkPlane {
                     port: WIREGUARD_PORT,
                     peers: Vec::new(),
                     mtu: Some(self.mtu),
-                })?;
+                })
+                .map_err(|error| self.port_clash().unwrap_or_else(|| error.into()))?;
         } else {
             self.wireguard.assign_address(&address)?;
             checked_command(
@@ -318,6 +319,19 @@ impl NetworkPlane {
             )?;
         }
         Ok(())
+    }
+
+    /// Another program holds the WireGuard port, unless this interface listens on it already and
+    /// the setup failed after that.
+    fn port_clash(&self) -> Option<NetworkError> {
+        let listening = self
+            .wireguard
+            .read_interface_data()
+            .is_ok_and(|host| host.listen_port == WIREGUARD_PORT);
+        if listening {
+            return None;
+        }
+        port_held_elsewhere(WIREGUARD_PORT)
     }
 
     fn apply_peers(&mut self, peers: &[MeshPeer], set: PeerSet) -> Result<(), NetworkError> {
