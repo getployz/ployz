@@ -1191,7 +1191,6 @@ pub(crate) fn claim(
             true
         }
     };
-    let sources = build::sources_of(tx, &stored, sealing)?;
     let saved = held_revision(tx, &stored)?;
     // An earlier run may have fixed a Volume's storage since this one was admitted.
     if let Err(refused) = crate::volume::check_admitted(tx, &stored.summary.environment_id, &saved)
@@ -1212,25 +1211,13 @@ pub(crate) fn claim(
         )?;
         return Ok(Err(refused));
     }
-    let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
-    let ships = stored.lowering(&saved);
-    let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
-    let organization = crate::build::organization(tx, &stored.summary.id)?;
-    let lowered = lower(
-        &stored.summary.environment_id,
-        &saved,
-        &deployed,
-        &ships,
-        (stored.namespace.clone(), stored.cluster_domain.as_ref()),
-        &branch,
-        Some((sealing, &organization)),
-    );
     let Lowered {
         input,
         mut intent,
         warnings,
+        sealed,
         ..
-    } = match lowered {
+    } = match lowered(tx, &stored, &saved, sealing) {
         Ok(lowered) => lowered,
         // Every claim lowers it the same way: it fails rather than waits queued,
         // and takes nothing over. A new Deploy may still get past it, since a Branch
@@ -1251,6 +1238,7 @@ pub(crate) fn claim(
         }
         Err(error) => return Err(error),
     };
+    let sources = build::routed(tx, &stored, &saved, sealed)?;
     if starting {
         let taken_over = tx.execute(
             "UPDATE config_deployment SET status = 'unknown' \
@@ -1298,7 +1286,7 @@ pub(crate) fn claim(
         deployment: stored.summary,
         intent,
         sealed_names,
-        input,
+        input: json_value(&input),
         receipts,
         sources,
         deletes,
@@ -1357,34 +1345,36 @@ pub(crate) fn save_receipt(
 /// The Saved revision `stored` ships, each Volume at the size its Servers hold: a
 /// Deploy neither grows nor shrinks one, so a revision saved before a resize asks
 /// the size it holds now.
-fn held_revision(tx: &mut dyn Tx, stored: &Stored) -> Result<SavedEnvironmentIntent, RpcError> {
+pub(crate) fn held_revision(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+) -> Result<SavedEnvironmentIntent, RpcError> {
     let mut saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     crate::volume::size::held(tx, &stored.summary.environment_id, &mut saved.volumes)?;
     Ok(saved)
 }
 
-/// The lowering input of `stored`, secrets unsealed: what a build of it takes.
-/// In-process only.
-pub(crate) fn input(
+/// `stored` lowered from `saved`, its held revision, with secrets unsealed: what a
+/// build of it takes. In-process only.
+pub(crate) fn lowered(
     tx: &mut dyn Tx,
     stored: &Stored,
+    saved: &SavedEnvironmentIntent,
     sealing: &SealingKey,
-) -> Result<Value, RpcError> {
-    let saved = held_revision(tx, stored)?;
-    let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
-    let ships = stored.lowering(&saved);
-    let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
+) -> Result<Lowered, RpcError> {
+    let branch = crate::branch::lowering(tx, &stored.summary.environment_id, saved)?;
+    let ships = stored.lowering(saved);
+    let deployed = deployed_volumes(tx, &stored.summary.environment_id, saved)?;
     let organization = crate::build::organization(tx, &stored.summary.id)?;
     lower(
         &stored.summary.environment_id,
-        &saved,
+        saved,
         &deployed,
         &ships,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some((sealing, &organization)),
     )
-    .map(|lowered| lowered.input)
 }
 
 /// The first variable of each Service of `saved`, by Service ID, whose value reads a

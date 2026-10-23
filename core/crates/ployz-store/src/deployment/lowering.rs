@@ -591,18 +591,22 @@ pub(super) fn unmounted(
 }
 
 /// A Deployment lowered at claim.
-pub(super) struct Lowered {
+pub(crate) struct Lowered {
     /// The lowering input the runner lowers again once it built.
-    pub(super) input: Value,
-    pub(super) intent: DeployIntent,
+    pub(crate) input: LowerDeploymentInput,
+    pub(crate) intent: DeployIntent,
     /// The Services a narrowed Deploy ships once its builds and uploads land: the
     /// named ones and what they reference. Empty for a full Deploy.
-    pub(super) shipped: BTreeSet<ServiceName>,
+    pub(crate) shipped: BTreeSet<ServiceName>,
     /// Service variables a secret without a value or a broken reference left out,
     /// then Config file references whose resolved value may break the file or is
     /// left empty. Only lowering with the sealing key sees every value, so only it
     /// warns of those.
-    pub(super) warnings: Vec<DeploymentWarning>,
+    pub(crate) warnings: Vec<DeploymentWarning>,
+    /// The first variable of each Service, by Service ID, whose value reads a value
+    /// sealed in the browser: its build runs on a Server. Names only. Empty without
+    /// the sealing key, which leaves such a variable out.
+    pub(crate) sealed: BTreeMap<String, String>,
 }
 
 /// `saved` compiled, and its variables and Config files resolved as [`lower`]
@@ -636,7 +640,7 @@ fn resolve(
 
 /// The first variable of each Service of `saved`, by Service ID, whose value reads
 /// a value sealed in the browser, resolved as [`lower`] resolves it. Names only:
-/// no value leaves here.
+/// no value leaves here. Refuses what [`lower`] refuses.
 pub(super) fn first_sealed(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
@@ -644,24 +648,23 @@ pub(super) fn first_sealed(
     branch: &crate::branch::Lowering,
     sealing: &SealingKey,
 ) -> Result<BTreeMap<String, String>, RpcError> {
-    let resolved = match resolve(environment, saved, cluster_domain, branch, Some(sealing)) {
-        Ok((_, resolved)) => resolved,
-        // Lowering refuses the same way, so nothing builds or ships.
-        Err(refused) if refused.code == ployz_core::RpcErrorCode::InvalidArgument => {
-            return Ok(BTreeMap::new());
-        }
-        Err(error) => return Err(error),
-    };
-    Ok(resolved
+    let (_, resolved) = resolve(environment, saved, cluster_domain, branch, Some(sealing))?;
+    Ok(sealed_names(&resolved))
+}
+
+/// The first variable of each Service of `resolved`, by Service ID, whose value
+/// reads a value sealed in the browser.
+fn sealed_names(resolved: &variables::Resolved) -> BTreeMap<String, String> {
+    resolved
         .env
-        .into_iter()
+        .iter()
         .filter_map(|(service, env)| {
             let name = env
-                .into_iter()
+                .iter()
                 .find_map(|(name, value)| value.is_sealed().then_some(name))?;
-            Some((service, name))
+            Some((service.clone(), name.clone()))
         })
-        .collect())
+        .collect()
 }
 
 /// Lower Saved revision `saved` to the Deploy Intent of a Deployment that
@@ -683,6 +686,7 @@ pub(super) fn lower(
 ) -> Result<Lowered, RpcError> {
     let (unseal, organization) = unseal.unzip();
     let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch, unseal)?;
+    let sealed = sealed_names(&resolved);
     let (narrowed, services, removals, prune): (bool, &[ServiceName], _, _) = match ships {
         Ships::All { removals, prune } => (
             false,
@@ -984,10 +988,11 @@ pub(super) fn lower(
         .map(|(_, warning)| warning)
         .collect();
     Ok(Lowered {
-        input: json_value(&input(with(false, false))),
+        input: input(with(false, false)),
         shipped,
         intent,
         warnings,
+        sealed,
     })
 }
 
@@ -1008,6 +1013,6 @@ pub(super) fn built(config: &ServiceConfig) -> ServiceConfig {
     config
 }
 
-pub(super) fn json_value(value: &impl Serialize) -> Value {
+pub(crate) fn json_value(value: &impl Serialize) -> Value {
     serde_json::to_value(value).expect("lowering input is JSON")
 }

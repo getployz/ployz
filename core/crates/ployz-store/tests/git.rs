@@ -11,8 +11,8 @@ use ployz_store::{
     Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildReport, BuildStatus, Change, Command,
     ConfigStore, CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DiffQuery,
     Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
-    Publish, Query, Retry, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, SettingPath,
-    SourceKind, Trusted, View, Written,
+    Publish, Query, Retry, RunEvidence, RunnerId, SealingKey, ServiceLineageId, ServiceQuery,
+    SettingPath, SourceKind, Trusted, View, Written,
 };
 use ployz_store::{
     BuildOrder, BuildOrderQuery, Builder, GithubBuildId, GithubClaims, GithubEnd, GithubGrant,
@@ -1780,4 +1780,38 @@ fn github_gets_no_sealed_value_and_never_a_build_that_reads_one() {
         error.message,
         "DB_URL is sealed. Builds that read a sealed value run on your server."
     );
+}
+
+#[test]
+fn an_environment_with_no_sealed_value_routes_without_opening_a_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    store
+        .write(
+            &who,
+            &edit(vec![
+                set("web.env.TOKEN", json!({ "secret": "legacy" })),
+                set("web.env.URL", json!("https://${{ TOKEN }}@example.com")),
+            ]),
+        )
+        .unwrap();
+    let deployment = admit(&store, &who, 1, &[]);
+
+    // Another key can't open the legacy secret, which a build's input needs.
+    let store = ConfigStore::open(&url, SealingKey::new(b"another-key").unwrap()).unwrap();
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    assert!(store.github_input(&id).is_err());
+    // Routing it never did, so it still doesn't.
+    let source = &store.sources(&deployment).unwrap()[0];
+    assert_eq!(source.sealed, None);
+    assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
+    let pinned = store
+        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .unwrap();
+    assert_eq!(pinned[0].commit, Some(backend::sha(&"a".repeat(40))));
+    assert_eq!(pinned[0].sealed, None);
 }
