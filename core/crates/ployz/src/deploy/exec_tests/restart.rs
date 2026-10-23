@@ -229,6 +229,70 @@ async fn a_target_silent_after_a_lost_reply_stays_silent_when_its_session_then_c
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_target_silent_after_a_lost_reply_stays_silent_when_later_sends_never_reach_it() {
+    let lost = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "connection lost".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
+    .reply_lost_from(&machine('1'));
+    let attempts = std::cell::Cell::new(0);
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            attempts.set(attempts.get() + 1);
+            let error = match attempts.get() {
+                1 => lost.clone(),
+                2 => RpcError::unanswered_target(
+                    RpcErrorCode::Unavailable,
+                    "Machine did not answer: deadline has elapsed".into(),
+                ),
+                _ => RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "couldn't dial the target".into(),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                }
+                .unreached(),
+            };
+            async move { Err::<(), _>(error) }
+        },
+        || async { None },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(attempts.get() > 3);
+    assert!(error.target_unanswered(), "{error:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_silent_target_whose_session_then_closes_is_reported_silent() {
+    let attempts = std::cell::Cell::new(0);
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            attempts.set(attempts.get() + 1);
+            let error = match attempts.get() {
+                1 => RpcError::unanswered_target(
+                    RpcErrorCode::Unavailable,
+                    "Machine did not answer: deadline has elapsed".into(),
+                ),
+                _ => crate::connect::closed_session_error(),
+            };
+            async move { Err::<(), _>(error) }
+        },
+        || async { None },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(attempts.get(), 2);
+    assert!(error.target_unanswered(), "{error:?}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn cancelling_a_deploy_ends_a_redial_still_dialing() {
     let cancellation = CancellationToken::new();
     tokio::spawn({
