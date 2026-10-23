@@ -1614,21 +1614,22 @@ mod tests {
             ),
         ];
         for (change, before, steps, update) in cases {
-            let mut listed = vec![web("machine-3", true, None, MembershipObservation::Up)];
-            before(&mut listed[0].machine);
+            let mut first = web("machine-3", true, None, MembershipObservation::Up);
+            before(&mut first.machine);
+            let id = first.machine.id;
+            let mut listed = vec![first];
             for step in &steps {
                 let mut next = listed.last().unwrap().clone();
                 step(&mut next.machine);
                 listed.push(next);
             }
-            let id = listed[0].machine.id;
             let saved = listed.last().unwrap().machine.clone();
             let stage = Arc::new(AtomicUsize::new(0));
             let (mut client, server) = crate::connect::test_support::rpc_client({
                 let stage = Arc::clone(&stage);
                 move |request: Request<OpaquePayload>| {
                     let stage = stage.load(Ordering::SeqCst);
-                    let listed = listed[stage].clone();
+                    let listed = listed.get(stage).unwrap().clone();
                     let saved = saved.clone();
                     async move {
                         #[expect(
