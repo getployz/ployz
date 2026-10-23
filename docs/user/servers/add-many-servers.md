@@ -103,16 +103,18 @@ the attempts have joined. Every row draws six progress segments, including Docke
 **Joined** rows stay in the list for one hour. Older attempts leave the polling view. The Servers below it show what Cloud observes from your
 running servers. A new server takes no apps until you deploy.
 
-**Cancel** on a row ends that attempt and revokes its enrollment token. A failed or cancelled
+**Cancel** on a row ends that attempt and revokes its enrollment token. Once Cloud has sent the
+server its join, Cancel refuses with `web-1 may already be in the Cluster: Cloud sent its join.
+Nothing cancelled.` and the attempt runs on. Once the server has joined, remove it with
+`ployz server rm web-1`. A failed or cancelled
 server returns to the bottom of Waiting. The live server status stays primary, with **Last enroll failed** or
 **Last enroll cancelled** below it. Open the server to see how its last attempt ended (**Failed at**
 a stage, **Failed**, or **Cancelled**) and its reason, when there is one. Both stay until you enroll the server again, however often it checks in. Fix the cause, then enroll the server again. Reloading restores the list and its order.
 
 **Reject** turns away an unrecognized server. The same installation cannot come back with the
 same Fleet Token. Reimaging a server creates a new identity, so review arrivals even when you
-have rejected that hardware before. Once Cloud has heard a server report that it is joining,
-rejecting it no longer stops the join. The server stays in the Enrolling list like any other row,
-up to an hour after it ends.
-A reject that lands after the server commits to joining but before Cloud hears so still cancels
-it. Revoke a leaked Fleet Token from **Tokens**. This drops
+have rejected that hardware before. Once Cloud has sent a server its join, or heard it report
+that it is joining, rejecting it no longer stops the join. The server stays in the Enrolling list
+like any other row, up to an hour after it ends. Remove it with `ployz server rm` once it has
+joined. Revoke a leaked Fleet Token from **Tokens**. This drops
 its waiting servers; servers that already joined stay.
