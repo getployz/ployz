@@ -1560,29 +1560,34 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    /// Every attempt gets the same 503, so the stage's last error is Cloud's answer wherever
+    /// the deadline lands. Paused tokio jumps to the next timer whenever it waits on real IO,
+    /// so a 10ms ticker keeps each jump far short of reqwest's own timeouts.
+    #[tokio::test(start_paused = true)]
     async fn enrollment_stages_name_the_relay_only_when_cloud_says_it_never_reaches_the_server() {
         let cant_reach: &[u8] =
             br#"{"error":"Cloud can't reach this Server through the relay or directly."}"#;
+        let ticker = tokio::spawn(async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
         for (publishing, body) in [true, false]
             .into_iter()
             .flat_map(|publishing| [(publishing, cant_reach), (publishing, b"busy".as_slice())])
         {
             let (listener, url) = listen().await;
             let server = tokio::spawn(async move {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                read_http(&mut stream).await;
-                tokio::io::AsyncWriteExt::write_all(
-                    &mut stream,
-                    &http_response(503, "Service Unavailable", body),
-                )
-                .await
-                .unwrap();
-                // Spend the stage's wait while the second attempt awaits its answer, so it ends in flight.
-                read_http(&mut stream).await;
-                tokio::time::pause();
-                tokio::time::advance(crate::setup_retry::WAIT).await;
-                tokio::time::resume();
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    read_http(&mut stream).await;
+                    // A client the deadline cut has gone; the next attempt must still connect.
+                    let _ = tokio::io::AsyncWriteExt::write_all(
+                        &mut stream,
+                        &http_response(503, "Service Unavailable", body),
+                    )
+                    .await;
+                }
             });
             let credential = PairingCredential::parse("pairing-secret").unwrap();
             let result = if publishing {
@@ -1609,11 +1614,11 @@ mod tests {
                 )
                 .await
             };
+            server.abort();
             let error = result.unwrap_err();
             if body != cant_reach {
                 // A proxy in front of a down Cloud answers 503 too; that is not Cloud's diagnosis.
                 assert!(matches!(error, Error::RetrySameCommand { .. }), "{error:?}");
-                server.await.unwrap();
                 continue;
             }
             assert!(matches!(error, Error::CloudCantReach), "{error:?}");
@@ -1621,8 +1626,8 @@ mod tests {
                 error.to_string(),
                 "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from this Server, and from Cloud if you host it yourself, then try again."
             );
-            server.await.unwrap();
         }
+        ticker.abort();
     }
 
     #[tokio::test]
