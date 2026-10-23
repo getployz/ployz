@@ -46,11 +46,17 @@ pub(super) struct BindFaults {
 }
 
 impl BindFaults {
+    /// Runs on the runtime thread as `open` hands a bind out, so the gate knows every bind to wait
+    /// for before any of them starts.
     pub(super) fn capture() -> Self {
+        let gate = BIND_GATE.with_borrow(Clone::clone);
+        if let Some(gate) = &gate {
+            gate.update(|state| state.handed_out += 1);
+        }
         Self {
             only_v6: ONLY_V6_BY_DEFAULT.get(),
             ipv6_error: IPV6_FAILS_WITH.get(),
-            gate: BIND_GATE.with_borrow(Clone::clone),
+            gate,
             port: STALL_PORT.get(),
             began: BIND_BEGAN.with_borrow(Clone::clone),
             returns_to: None,
@@ -96,12 +102,16 @@ pub(super) struct Gate {
 #[derive(Default)]
 struct GateState {
     released: bool,
+    handed_out: usize,
+    /// Binds that reached the gate and waited on it.
+    held: usize,
     returned: usize,
 }
 
 impl Gate {
     pub(super) fn wait(&self) {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.held += 1;
         let _released = self
             .changed
             .wait_while(state, |state| !state.released)
@@ -129,15 +139,19 @@ impl StalledBinds {
         Self(gate)
     }
 
-    /// Releases the stalled binds and waits until `binds` binds have returned.
-    fn release_until_returned(&self, binds: usize) {
+    /// Releases the stalled binds and waits until every bind `open` handed out has returned. Fails
+    /// when no bind was held, as when a loaded host delays `open` past its deadline before it binds,
+    /// because the test would then prove nothing.
+    fn release_until_returned(&self) {
         self.0.update(|state| state.released = true);
         let state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let _returned = self
+        let (state, waited) = self
             .0
             .changed
-            .wait_while(state, |state| state.returned < binds)
+            .wait_timeout_while(state, PATIENCE, |state| state.returned < state.handed_out)
             .unwrap_or_else(PoisonError::into_inner);
+        assert!(!waited.timed_out(), "a released bind never returned");
+        assert!(state.held > 0, "no bind reached the gate");
     }
 }
 
@@ -675,8 +689,9 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
     let stalled = StalledBinds::new();
     LEAD.set(Some(Duration::from_millis(300)));
     let mut probes = Probes::default();
-    probes
-        .open(
+    tokio::time::timeout(
+        PATIENCE,
+        probes.open(
             handout(
                 "later-bind",
                 1_000,
@@ -685,8 +700,10 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
             ),
             &key(),
             Instant::now(),
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("open waited on the stalled bind");
     // `open` gave up on the stalled bind at its deadline, inside the window.
     assert!(std::net::TcpStream::connect(("127.0.0.1", first)).is_ok());
     assert!(!bindable(udp));
@@ -702,7 +719,7 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
         bindable(first) && bindable(udp),
         "ports were not released at expiry"
     );
-    stalled.release_until_returned(3);
+    stalled.release_until_returned();
     assert!(bindable(second));
     assert_eq!(
         probes.report().await.unwrap().bind_failed,
@@ -729,8 +746,9 @@ async fn a_listener_greets_cloud_while_a_later_bind_stalls() {
         std::io::Read::read_exact(&mut stream, &mut read).map(|()| read)
     });
     let mut probes = Probes::default();
-    probes
-        .open(
+    tokio::time::timeout(
+        PATIENCE,
+        probes.open(
             handout(
                 "stalled",
                 3_000,
@@ -739,8 +757,10 @@ async fn a_listener_greets_cloud_while_a_later_bind_stalls() {
             ),
             &key(),
             Instant::now(),
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("open waited on the stalled bind");
     let read = cloud.join().unwrap();
     probes.close().await;
     assert_eq!(read.expect("no greeting inside Cloud's read"), expected);
@@ -785,7 +805,7 @@ async fn a_bind_that_finishes_after_the_deadline_reports_as_failed_and_stays_ref
     .await
     .expect("open waited on the stalled bind");
     // `open` gave up at its deadline, so the bind finishes after it.
-    stalled.release_until_returned(1);
+    stalled.release_until_returned();
 
     assert!(TcpStream::connect(("127.0.0.1", tcp)).await.is_err());
     assert!(bindable(tcp));
@@ -813,13 +833,14 @@ async fn a_bind_after_d8_s_only_attempt_reports_failed_in_a_short_window() {
     )
     .await
     .expect("open waited on the stalled bind");
+    // The bind finishes inside the window but after the bind deadline, so it must not listen.
+    stalled.release_until_returned();
     assert!(std::net::TcpStream::connect(("127.0.0.1", tcp)).is_err());
     probes.finish().await;
     assert_eq!(
         probes.report().await.unwrap().bind_failed,
         [format!("tcp:{tcp}")]
     );
-    stalled.release_until_returned(1);
     assert!(bindable(tcp));
 }
 
