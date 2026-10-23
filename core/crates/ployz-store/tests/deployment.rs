@@ -5265,9 +5265,10 @@ fn a_full_disk_names_itself_at_the_pull_step_and_keeps_dockers_error() {
     else {
         panic!("expected a failed row");
     };
+    // The row is one Server's, so it names that Server.
     assert_eq!(
         reason,
-        "The Server's disk is full: 48 MB free under /var/lib/docker"
+        "Server alpha's disk is full: 48 MB free under /var/lib/docker"
     );
     assert_eq!(cause, vec![docker.to_owned()]);
     assert_eq!(step, Some(FailedAt::Pull));

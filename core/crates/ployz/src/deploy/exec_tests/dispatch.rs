@@ -2,6 +2,7 @@ use super::*;
 use ployz_core::OperationStatus;
 use ployz_core::RunRotation;
 use ployz_core::labels::CREATION_KEY;
+use ployz_core::{MachineName, OperationRow};
 
 #[tokio::test]
 async fn dispatches_the_complete_algebra() {
@@ -250,6 +251,186 @@ async fn a_failed_run_removes_its_slot_and_keeps_the_run_error() {
         ));
         client.assert_done();
     }
+}
+
+/// `plan`'s rows as the report sees them, each Server named `machine-<hex>` from its ID.
+fn named_rows(plan: &crate::deploy::DeployPlan) -> Vec<OperationRow> {
+    plan.pending_rows()
+        .into_iter()
+        .map(|row| {
+            let hex = row
+                .machine_id
+                .to_string()
+                .chars()
+                .next()
+                .expect("a machine id");
+            OperationRow {
+                machine_name: Some(MachineName::parse(format!("machine-{hex}")).unwrap()),
+                ..row
+            }
+        })
+        .collect()
+}
+
+/// The report's failure for a start on `machine_id` that `answer` fails.
+async fn failed_start_on(machine_id: MachineId, answer: RpcError) -> ployz_store::Failure {
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![run(&machine_id, spec(None, None, None), false)],
+        test_namespace(),
+    );
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine_id, ContainerKind::ServiceContainer),
+            Reply::Error(answer.clone()),
+        ),
+        Step(
+            Call::DiscardSlot(machine_id, ContainerKind::ServiceContainer),
+            Reply::Error(answer),
+        ),
+    ]);
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    client.assert_done();
+    let DeployOutcome::Failed {
+        failed:
+            FailedOperation::Operation {
+                operation,
+                error:
+                    error @ ExecutionError::Machine {
+                        action: MachineAction::CreateContainer,
+                        error: answered,
+                    },
+            },
+        ..
+    } = &outcome
+    else {
+        panic!("the start should fail: {outcome:?}");
+    };
+    assert_eq!(answered.code, RpcErrorCode::NotFound);
+    ployz_store::Failure::on(error, &named_rows(&plan), Some(operation.machine_id()))
+}
+
+/// A Server removed while a rolling deploy works on other Servers is gone from the
+/// entry Machine's routing by its turn. The deploy names the removed Server, not the
+/// Machine ID routing could not find (#3151).
+#[tokio::test]
+async fn a_server_removed_before_its_turn_is_named() {
+    let removed = machine('2');
+
+    let failure = failed_start_on(removed, no_server_named(&removed)).await;
+
+    assert_eq!(
+        failure.reason,
+        "Server machine-2 was removed while the deploy ran"
+    );
+    assert!(failure.cause.is_empty(), "{:?}", failure.cause);
+}
+
+/// A Server removed after its new copy started is gone from routing when the deploy
+/// brings that copy In. The deploy names the removed Server there too (#3151).
+#[tokio::test]
+async fn a_server_removed_before_its_copy_goes_in_is_named() {
+    let removed = machine('2');
+    let new = container('a');
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![run(&removed, spec(None, None, None), true)],
+        test_namespace(),
+    );
+    let client = Scripted {
+        unrouted_in: BTreeSet::from([new]),
+        ..Scripted::new(vec![
+            created(Call::Run(removed, ContainerKind::ServiceContainer), &new),
+            Step(
+                Call::Discard(removed, new),
+                Reply::Error(no_server_named(&removed)),
+            ),
+        ])
+    };
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { operation, error },
+        ..
+    } = &outcome
+    else {
+        panic!("bringing the copy In should fail: {outcome:?}");
+    };
+    assert_eq!(
+        ployz_store::Failure::on(error, &named_rows(&plan), Some(operation.machine_id())).reason,
+        "Server machine-2 was removed while the deploy ran"
+    );
+}
+
+/// A listing the entry Machine fans out can fail on another Server. That failure says
+/// nothing of the operation's own Server, so it stands even when that Server was removed.
+#[tokio::test]
+async fn another_servers_not_found_is_kept_on_a_removed_servers_turn() {
+    let removed = machine('2');
+    let other = machine('3');
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![run(&removed, spec(None, None, None), true)],
+        test_namespace(),
+    );
+    let client = Scripted::new(vec![Step(
+        Call::List(api()),
+        Reply::Error(no_server_named(&other)),
+    )]);
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { operation, error },
+        ..
+    } = &outcome
+    else {
+        panic!("the listing should fail the start: {outcome:?}");
+    };
+    assert_eq!(
+        ployz_store::Failure::on(error, &named_rows(&plan), Some(operation.machine_id())).cause,
+        [format!("No Server named {:?}", other.to_string())]
+    );
+    client.assert_done();
+}
+
+/// A Server the Cluster still lists answered not-found itself, without routing's tag,
+/// so its answer stands.
+#[tokio::test]
+async fn a_member_servers_own_not_found_is_kept() {
+    let member = machine('2');
+    let answer = RpcError {
+        code: RpcErrorCode::NotFound,
+        message: "No such image: example/web:1".into(),
+        details: serde_json::Value::Null,
+        cause: vec!["docker".into()],
+    };
+
+    let failure = failed_start_on(member, answer).await;
+
+    assert_eq!(failure.reason, "create Container failed");
+    assert_eq!(failure.cause, ["No such image: example/web:1", "docker"]);
 }
 
 #[tokio::test]
@@ -942,6 +1123,46 @@ async fn proxy_copies_never_routed_always_removable() {
         "a proxy copy is never brought In or sent Out, and leaves by Gone"
     );
     client.assert_done();
+}
+
+/// An ingress Server the entry Machine no longer lists left the Cluster after the
+/// snapshot's membership read, and its ingress role with it, so the check has nothing
+/// there to leave unchecked. One whose listing failed any other way still is (#3151).
+#[test]
+fn an_ingress_server_the_entry_no_longer_lists_is_not_left_unchecked() {
+    use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
+    use crate::deploy::{SlotAction, plan_ingress_repairs};
+
+    let serving = crate::global_fixtures::machine('1', "edge-1");
+    let removed = crate::global_fixtures::machine('2', "edge-2");
+    let silent = crate::global_fixtures::machine('3', "edge-3");
+    let mut snapshot = servers(
+        &[serving.clone(), removed.clone(), silent.clone()],
+        vec![ingress_on('a', &serving)],
+    );
+    snapshot.container_failures = vec![
+        ployz_core::MachineFailure {
+            machine_id: removed.id,
+            error: no_server_named(&removed.id),
+        },
+        ployz_core::MachineFailure {
+            machine_id: silent.id,
+            error: error("Docker is down"),
+        },
+    ];
+
+    let unchecked: Vec<_> = plan_ingress_repairs(&ingress_intent(), &snapshot)
+        .into_iter()
+        .filter_map(|repair| match repair.action {
+            SlotAction::Unchecked(cause) => Some((repair.machine_id, cause)),
+            SlotAction::Create(_)
+            | SlotAction::Start(_)
+            | SlotAction::Dead(_)
+            | SlotAction::Restarting(_) => None,
+        })
+        .collect();
+
+    assert_eq!(unchecked, [(silent.id, "Docker is down".to_owned())]);
 }
 
 #[tokio::test]
