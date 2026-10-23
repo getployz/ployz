@@ -40,15 +40,33 @@ pub struct Edit {
 }
 
 impl Edit {
-    /// Each new secret's plain text this edit carries, `{"secret": "…"}` in a `set`,
-    /// under `value`, or in a patch's `env`, replaced by what `seal` makes of it;
-    /// `None` leaves the text for the Store to seal. Anything else, such as a Service
-    /// the Store won't find, is left for the Store to judge.
+    /// Whether this edit carries a new secret's plain text, `{"secret": "…"}` in a
+    /// variable's `set`, under `value`, or in a patch's `env`.
+    #[must_use]
+    pub fn carries_plaintext_secret(&self) -> bool {
+        self.changes.iter().any(|change| match change {
+            Change::Set { path, value } => {
+                matches!(path.target(), Some(Target::Variable(_))) && plaintext_in(value).is_some()
+            }
+            Change::Patch { value, .. } => value
+                .get("env")
+                .and_then(Value::as_object)
+                .is_some_and(|env| env.values().any(|value| plaintext_in(value).is_some())),
+            Change::Unset { .. } | Change::Rename { .. } => false,
+        })
+    }
+
+    /// Each new secret's plain text this edit carries, as
+    /// [`Self::carries_plaintext_secret`] finds it, replaced by what `seal` makes of
+    /// it; `None` leaves the text for the Store to seal. Anything else, such as a
+    /// Service the Store won't find, is left for the Store to judge.
     ///
     /// # Errors
-    /// What `seal` refuses, or a path or variable name the Store would refuse.
-    pub fn map_plaintext_secrets<E: From<RpcError>>(
+    /// What `seal` refuses, and, through `refuse`, the Store's refusal of a patch
+    /// path or variable name that holds plain text, so the text is never sent.
+    pub fn map_plaintext_secrets<E>(
         &mut self,
+        refuse: impl Fn(RpcError) -> E,
         mut seal: impl FnMut(PlaintextSecret<'_>) -> Result<Option<ClientSealedValue>, E>,
     ) -> Result<(), E> {
         for change in &mut self.changes {
@@ -57,15 +75,19 @@ impl Edit {
                     let Some(Target::Variable(key)) = path.target() else {
                         continue;
                     };
-                    seal_in(value, path.settings_of()?, key, &mut seal)?;
+                    let service = path.settings_of().map_err(&refuse)?;
+                    seal_in(value, service, key, &mut seal)?;
                 }
                 Change::Patch { path, value } => {
-                    let service = path.settings_of()?;
                     let Some(env) = value.get_mut("env").and_then(Value::as_object_mut) else {
                         continue;
                     };
                     for (key, value) in env {
-                        let key = VariableKey::parse(key)?;
+                        if plaintext_in(value).is_none() {
+                            continue;
+                        }
+                        let service = path.settings_of().map_err(&refuse)?;
+                        let key = VariableKey::parse(key).map_err(&refuse)?;
                         seal_in(value, service, &key, &mut seal)?;
                     }
                 }
@@ -114,27 +136,34 @@ fn seal_in<E>(
     key: &VariableKey,
     seal: &mut impl FnMut(PlaintextSecret<'_>) -> Result<Option<ClientSealedValue>, E>,
 ) -> Result<(), E> {
-    let wrapped = matches!(value, Value::Object(fields) if !fields.contains_key("secret"));
-    let slot = match value {
-        Value::Object(fields) if wrapped => match fields.get_mut("value") {
-            Some(value) => value,
-            None => return Ok(()),
-        },
-        Value::Null
-        | Value::Bool(_)
-        | Value::Number(_)
-        | Value::String(_)
-        | Value::Array(_)
-        | Value::Object(_) => value,
-    };
-    let Some(text) = variables::plaintext_secret(slot) else {
+    let Some(text) = plaintext_in(value) else {
         return Ok(());
     };
-    let secret = PlaintextSecret { service, key, text };
-    if let Some(sealed) = seal(secret)? {
-        *slot = json!({ "secret": sealed });
-    }
+    let Some(sealed) = seal(PlaintextSecret { service, key, text })? else {
+        return Ok(());
+    };
+    let slot = if wrapped(value) {
+        &mut value["value"]
+    } else {
+        value
+    };
+    *slot = json!({ "secret": sealed });
     Ok(())
+}
+
+/// The plain text of `value`'s `{"secret": "…"}`, direct or under `value`.
+fn plaintext_in(value: &Value) -> Option<&str> {
+    let slot = if wrapped(value) {
+        value.get("value")?
+    } else {
+        value
+    };
+    variables::plaintext_secret(slot)
+}
+
+/// Whether `value` is `{"value": …, "exported": …}`, which holds the value under `value`.
+fn wrapped(value: &Value) -> bool {
+    matches!(value, Value::Object(fields) if !fields.contains_key("secret"))
 }
 
 /// One change, addressed as `SERVICE.SETTING`, or as `SERVICE` for a patch.
