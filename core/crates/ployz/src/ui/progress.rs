@@ -559,7 +559,14 @@ fn drive(
                     .rows
                     .iter()
                     .filter(|row| row.state.active())
-                    .map(|row| format!("{} ({})", label(&row.subject, &frame), word(row, &frame)))
+                    .map(|row| match &row.detail {
+                        Some(detail) => format!(
+                            "{} ({}, {detail})",
+                            label(&row.subject, &frame),
+                            word(row, &frame)
+                        ),
+                        None => format!("{} ({})", label(&row.subject, &frame), word(row, &frame)),
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = writeln!(writer, "  still waiting: {waiting}");

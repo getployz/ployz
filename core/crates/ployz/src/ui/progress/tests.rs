@@ -912,6 +912,17 @@ fn heartbeat_pairs_each_waiting_row_with_its_state() {
 }
 
 #[test]
+fn heartbeat_names_what_a_waiting_row_is_doing() {
+    let mut initial = frame(State::Pending);
+    initial.rows.first_mut().unwrap().detail = Some("pulling pytorch/pytorch:2.5.1".into());
+    let text = plain(initial, vec![(30_001, Message::Abandon)]);
+    assert!(
+        text.contains("still waiting: web on alpha (pending, pulling pytorch/pytorch:2.5.1)\n"),
+        "{text}"
+    );
+}
+
+#[test]
 fn copies_left_running_take_the_check_mark_off_the_switched_row_and_count_in_the_summary() {
     let web = QualifiedService::parse("shop/web").unwrap();
     let left = |container: char, reason: &str| DeployWarning::LeftRunning {
