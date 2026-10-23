@@ -647,50 +647,43 @@ where
     Redial: Future<Output = Option<Result<(), RpcError>>>,
 {
     let deadline = Instant::now() + RESTART_WAIT;
-    // A Machine that answered on an earlier attempt was not silent throughout: its
-    // answer stands in for a later silence, as `call_retried` keeps it.
+    // What earlier attempts showed of the Machine. A real answer clears the other two, and
+    // a lost reply and a silence each clear the other. A Machine that answered was not
+    // silent throughout: its answer stands in for a later silence, as `call_retried` keeps it.
     let mut answer: Option<RpcError> = None;
-    // A resend that never reached the Machine says nothing of a send whose answer was
-    // lost: the Machine may have done that one.
+    // A send whose answer was lost: the Machine may have done it.
     let mut lost: Option<RpcError> = None;
+    // A Machine that didn't answer: stronger news than an earlier lost reply, as
+    // `keep_lost_call` holds.
+    let mut silent: Option<RpcError> = None;
     loop {
         let error = match op().await {
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
-        if error.reply_lost() {
-            lost = Some(error.clone());
-        }
-        // Whether to send again follows what this attempt met. A resend that didn't reach
-        // the Machine reports the earlier loss instead of itself.
         let closed = crate::connect::on_closed_session(&error);
-        // A closed session says nothing of the Machine, so it is never kept as its answer.
-        let (error, retry) = match &lost {
-            Some(lost) if error.never_reached() || closed => (lost.clone(), error.code.retry()),
-            _ if closed => {
-                let error = answer.clone().unwrap_or(error);
-                let retry = error.code.retry();
-                (error, retry)
-            }
-            _ if error.target_unanswered() => {
-                // A silence is stronger news than an earlier lost reply, and a later
-                // closed session says nothing to undo it.
-                lost = None;
-                let error = answer.get_or_insert(error).clone();
-                let retry = error.code.retry();
-                (error, retry)
-            }
-            _ => {
-                // A lost reply isn't the Machine's answer either: a later silence is
-                // stronger news, as `keep_lost_call` holds.
-                if !error.reply_lost() {
-                    lost = None;
-                    answer = Some(error.clone());
-                }
-                let retry = error.code.retry();
-                (error, retry)
-            }
-        };
+        // A send that never reached the Machine, or met a closed session, says nothing of
+        // it, so it is never kept.
+        let unreached = error.never_reached() || closed;
+        if error.reply_lost() {
+            silent = None;
+            lost = Some(error.clone());
+        } else if error.target_unanswered() && !unreached {
+            lost = None;
+            silent = Some(error.clone());
+        } else if !unreached {
+            lost = None;
+            silent = None;
+            answer = Some(error.clone());
+        }
+        let reported = lost
+            .clone()
+            .or_else(|| answer.clone())
+            .or_else(|| silent.clone())
+            .unwrap_or_else(|| error.clone());
+        // Whether to send again follows what this attempt met.
+        let retry = if unreached { &error } else { &reported }.code.retry();
+        let error = reported;
         let again = retry != Retry::Never
             && Instant::now() < deadline
             && !cancellation.is_cancelled()
