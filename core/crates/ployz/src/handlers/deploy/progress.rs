@@ -8,7 +8,8 @@ use crate::ui::{
 };
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
 use ployz_core::{
-    DeployWarning, QualifiedService, RpcError, RpcErrorCode, ServiceName, config::MEM_LIMIT_MAX,
+    DeployOperation, DeployWarning, PullPolicy, QualifiedService, RpcError, RpcErrorCode,
+    ServiceName, config::MEM_LIMIT_MAX,
 };
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
@@ -40,8 +41,10 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         };
         let runtime = view.runtime_names.get(name).unwrap_or(name);
         let mut row = runtime_row(view, name, runtime, &node.rows);
-        if pulling && row.state == State::Pending {
-            row.detail = image(view, runtime).map(|image| format!("pulling {image}"));
+        if let Some(volumes) = pulling
+            && row.state == State::Pending
+        {
+            row.detail = pulled(view, runtime).map(|image| format!("pulling {image}{volumes}"));
         }
         if node.rows.is_empty() {
             let build = view.builds.iter().find(|build| build.service == *name);
@@ -155,14 +158,14 @@ fn by_service_name(view: &DeploymentView, mut warning: DeployWarning) -> DeployW
     warning
 }
 
-/// Service `name`'s row from its recorded work on each Server, read against the plan
-/// for `runtime`.
-/// Whether the run is pulling its images: a Deploy pulls every image it runs on each
-/// Server before any Server starts work, so a running Deploy whose builds are done
-/// and whose every row still waits is pulling.
-fn pulling(view: &DeploymentView) -> bool {
-    view.deployment.status == DeploymentStatus::Running
-        && view.preview.is_some()
+/// While the run is pulling its images, what it may be doing beside the pull. A
+/// Deploy pulls every image it runs on each Server, then prepares the plan's
+/// Volumes, before any Server starts work on a Service. The Store records neither
+/// step, so a running Deploy whose builds are done and whose every row still waits
+/// is pulling, or preparing Volumes when its plan does.
+fn pulling(view: &DeploymentView) -> Option<&'static str> {
+    let preview = view.preview.as_ref()?;
+    let waiting = view.deployment.status == DeploymentStatus::Running
         && view
             .builds
             .iter()
@@ -171,20 +174,29 @@ fn pulling(view: &DeploymentView) -> bool {
             .nodes
             .iter()
             .flat_map(|node| &node.rows)
-            .all(|row| matches!(row.state, RowState::Pending))
+            .chain(view.untargeted.values().flatten())
+            .all(|row| matches!(row.state, RowState::Pending));
+    let volumes = preview
+        .operations
+        .iter()
+        .any(|row| matches!(row.operation, DeployOperation::PrepareVolumes { .. }));
+    waiting.then_some(if volumes { " or preparing Volumes" } else { "" })
 }
 
-/// The image the plan runs for Service `runtime`.
-fn image<'a>(view: &'a DeploymentView, runtime: &ServiceName) -> Option<&'a str> {
+/// The image the plan pulls for Service `runtime`: none under `Never`.
+fn pulled<'a>(view: &'a DeploymentView, runtime: &ServiceName) -> Option<&'a str> {
     view.preview
         .as_ref()?
         .operations
         .iter()
         .filter(|row| row.service_name() == Some(runtime))
         .find_map(|row| row.operation.spec())
+        .filter(|spec| spec.container.pull_policy != PullPolicy::Never)
         .map(|spec| spec.container.image.as_str())
 }
 
+/// Service `name`'s row from its recorded work on each Server, read against the plan
+/// for `runtime`.
 fn runtime_row(
     view: &DeploymentView,
     name: &ServiceName,
@@ -1882,15 +1894,10 @@ mod tests {
         );
     }
 
-    /// A Deploy pulls every image before any Server starts work (#2879).
-    fn pulling_view(row: &str) -> DeploymentView {
-        let mut view = view();
-        view.deployment.status = DeploymentStatus::Running;
-        view.deployment.outcome = None;
-        view.runtime_names.clear();
+    fn planned_run(index: u32, name: &str, image: &str, policy: &str) -> ployz_core::OperationRow {
         let requested: ployz_core::RequestedServiceSpec = serde_json::from_value(json!({
-            "name": "web", "mode": {"mode": "replicated", "replicas": 1},
-            "container": {"image": "pytorch/pytorch:2.5.1", "pull_policy": "missing"}
+            "name": name, "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": image, "pull_policy": policy}
         }))
         .unwrap();
         let spec = requested
@@ -1903,51 +1910,125 @@ mod tests {
             )
             .unwrap();
         let machine: ployz_core::MachineId = "a".repeat(32).parse().unwrap();
-        view.preview = Some(ployz_core::DeployPreview::new(
-            vec![ployz_core::OperationRow {
-                index: 0,
+        ployz_core::OperationRow {
+            index,
+            machine_id: machine,
+            machine_name: None,
+            service_name: Some(name.parse().unwrap()),
+            display_name: None,
+            operation: ployz_core::DeployOperation::RunContainer {
                 machine_id: machine,
-                machine_name: None,
-                service_name: Some("web".parse().unwrap()),
-                display_name: None,
-                operation: ployz_core::DeployOperation::RunContainer {
-                    machine_id: machine,
-                    spec,
-                    skip_health_monitor: false,
-                },
-                status: ployz_core::OperationStatus::Pending,
-            }],
+                spec,
+                skip_health_monitor: false,
+            },
+            status: ployz_core::OperationStatus::Pending,
+        }
+    }
+
+    /// A running Deploy of web (pytorch, pulled when missing) and api (redis under
+    /// `api_policy`), each with its one row in `web` and `api` state (#2879).
+    fn pulling_view(web: &str, api: &str, api_policy: &str) -> DeploymentView {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Running;
+        view.deployment.outcome = None;
+        view.runtime_names.clear();
+        view.preview = Some(ployz_core::DeployPreview::new(
+            vec![
+                planned_run(0, "web", "pytorch/pytorch:2.5.1", "missing"),
+                planned_run(1, "api", "redis:7", api_policy),
+            ],
             Vec::new(),
             view.namespace.clone(),
         ));
+        let row = |state: &str| match state {
+            "running" => {
+                json!({"machine_id": "a".repeat(32), "server": "edge", "state": "running", "phase": "starting", "serving": false})
+            }
+            _ => json!({"machine_id": "a".repeat(32), "server": "edge", "state": state}),
+        };
         view.nodes = serde_json::from_value(json!([
-            {"type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "pending", "rows": [
-                {"machine_id": "a".repeat(32), "server": "edge", "state": row}
-            ]}
+            {"type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "pending", "rows": [row(web)]},
+            {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "api", "outcome": "pending", "rows": [row(api)]}
         ]))
         .unwrap();
         view
     }
 
-    #[test]
-    fn a_service_whose_servers_pull_its_image_says_so() {
-        let frame = frame(&pulling_view("pending"));
-        let row = frame.rows.first().unwrap();
-        assert_eq!(row.state, State::Pending);
-        assert_eq!(row.detail.as_deref(), Some("pulling pytorch/pytorch:2.5.1"));
+    fn details(view: &DeploymentView) -> Vec<Option<String>> {
+        frame(view).rows.into_iter().map(|row| row.detail).collect()
     }
 
     #[test]
-    fn once_a_server_starts_work_nothing_is_pulling() {
-        let mut view = pulling_view("pending");
-        view.nodes = serde_json::from_value(json!([
-            {"type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "pending", "rows": [
-                {"machine_id": "a".repeat(32), "server": "edge", "state": "running", "phase": "starting", "serving": false}
-            ]}
-        ]))
+    fn a_service_whose_servers_pull_its_image_says_so() {
+        assert_eq!(
+            details(&pulling_view("pending", "pending", "missing")),
+            [
+                Some("pulling pytorch/pytorch:2.5.1".to_owned()),
+                Some("pulling redis:7".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_service_that_never_pulls_does_not_say_it_is_pulling() {
+        assert_eq!(
+            details(&pulling_view("pending", "pending", "never")),
+            [Some("pulling pytorch/pytorch:2.5.1".to_owned()), None]
+        );
+    }
+
+    #[test]
+    fn once_a_server_starts_work_no_service_is_pulling() {
+        assert_eq!(
+            details(&pulling_view("running", "pending", "missing")),
+            [None, None]
+        );
+    }
+
+    #[test]
+    fn a_removal_that_started_ends_the_pull() {
+        let mut view = pulling_view("pending", "pending", "missing");
+        view.untargeted = serde_json::from_value(json!({"old": [
+            {"machine_id": "a".repeat(32), "server": "edge", "state": "running", "phase": "removing_container", "serving": false}
+        ]}))
         .unwrap();
         let frame = frame(&view);
-        assert_eq!(frame.rows.first().unwrap().detail, None);
+        assert!(frame.rows.iter().all(|row| {
+            row.detail
+                .as_deref()
+                .is_none_or(|detail| !detail.starts_with("pulling"))
+        }));
+    }
+
+    /// Volumes are prepared after the pulls, before any Service row moves.
+    #[test]
+    fn a_deploy_that_prepares_volumes_does_not_claim_only_a_pull() {
+        let mut view = pulling_view("pending", "pending", "never");
+        let machine: ployz_core::MachineId = "a".repeat(32).parse().unwrap();
+        if let Some(preview) = view.preview.as_mut() {
+            preview.operations.insert(
+                0,
+                ployz_core::OperationRow {
+                    index: 2,
+                    machine_id: machine,
+                    machine_name: None,
+                    service_name: None,
+                    display_name: None,
+                    operation: ployz_core::DeployOperation::PrepareVolumes {
+                        machine_id: machine,
+                        specs: Vec::new(),
+                    },
+                    status: ployz_core::OperationStatus::Pending,
+                },
+            );
+        }
+        assert_eq!(
+            details(&view),
+            [
+                Some("pulling pytorch/pytorch:2.5.1 or preparing Volumes".to_owned()),
+                None
+            ]
+        );
     }
 
     #[test]
