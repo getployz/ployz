@@ -803,7 +803,12 @@ impl<'ast> Visit<'ast> for Body {
                 body.visit_expr(&arm.body);
                 body.in_test = in_test;
             }));
-            next = next && tried;
+            // Past a pattern every value matches, each path to the next arm ran the guard.
+            let every_value = matches!(
+                &arm.pat,
+                syn::Pat::Wild(_) | syn::Pat::Ident(syn::PatIdent { subpat: None, .. })
+            );
+            next = if every_value { tried } else { next && tried };
         }
         self.join(start, ways);
     }
