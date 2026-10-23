@@ -330,9 +330,11 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 Ok(session) => session,
                 Err(error) => {
                     if let OperatorError::NotRunningOnAnswered { gaps, names, .. } = &error {
-                        crate::ui::Gaps::of(gaps)
-                            .named(names.iter().map(|(id, name)| (*id, name)))
-                            .warn();
+                        let gaps = crate::ui::Gaps::of(gaps)
+                            .named(names.iter().map(|(id, name)| (*id, name)));
+                        return crate::ui::finish_fanout("container", &None::<()>, &gaps, || {
+                            crate::ui::note(error.to_string());
+                        });
                     }
                     return Err(error.into());
                 }

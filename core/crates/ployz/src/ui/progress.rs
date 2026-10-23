@@ -971,7 +971,19 @@ fn notices(frame: &Frame) -> Vec<String> {
         .notices
         .iter()
         .filter_map(|warning| {
-            let Some((id, gap)) = warning.observation_gap() else {
+            let observation = warning.observation_gap().or_else(|| {
+                let (DeployWarning::ObservationFailed { machine_id, .. }
+                | DeployWarning::ObservationOmitted { machine_id, .. }) = warning
+                else {
+                    return None;
+                };
+                frame
+                    .notices
+                    .iter()
+                    .filter_map(DeployWarning::observation_gap)
+                    .find(|(id, _)| id == machine_id)
+            });
+            let Some((id, gap)) = observation else {
                 return Some(warning.to_string());
             };
             if !seen.insert(id) {
@@ -991,18 +1003,20 @@ fn notices(frame: &Frame) -> Vec<String> {
                 .notices
                 .iter()
                 .filter(|warning| {
-                    warning
-                        .observation_gap()
-                        .is_some_and(|(machine, _)| machine == id)
+                    matches!(warning,
+                        DeployWarning::ObservationFailed { machine_id, .. }
+                        | DeployWarning::ObservationOmitted { machine_id, .. }
+                        if *machine_id == id)
                 })
                 .filter_map(|warning| match warning {
                     DeployWarning::ObservationFailed { kind, message, .. } => {
                         Some(format!("{kind}s: {message}"))
                     }
-                    DeployWarning::ObservationOmitted { .. } => {
+                    DeployWarning::ObservationOmitted { gap: Some(_), .. } => {
                         Some("observed Down by this Entry".into())
                     }
-                    DeployWarning::StorageHeadroom { .. }
+                    DeployWarning::ObservationOmitted { gap: None, .. }
+                    | DeployWarning::StorageHeadroom { .. }
                     | DeployWarning::UnbudgetedDiskUsage
                     | DeployWarning::StorageObservationUnknown { .. }
                     | DeployWarning::IngressHostname { .. }

@@ -490,7 +490,13 @@ Scripts can tell failures apart by exit code:
 | 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, a deploy that applied but couldn't see every server or left an old container running, a `ployz status` with a server that joined down or not answering, or a deploy a newer one replaced or someone cancelled. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` following its Deployment also cancels this way on SIGTERM, which CI runners, `timeout` and container stops send, and on Linux on SIGHUP, which closing its terminal or losing its SSH session sends. Under `nohup` it ignores SIGHUP and goes on. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. A `server upgrade` run from your computer works the same way: the server goes on with the upgrade it took, and `ployz server show` says how it ended. |
 
-`ployz exec` exits with your command's own exit code. When the container stops under it,
+If `ployz exec -T db -- true` finds no running container on the servers that answered,
+and another server did not answer, it names the missing servers and exits 3, like `ployz ps`
+and `ployz logs`. The service may still run on one of those servers. Ployz does not claim
+which one without an observation. If every server answers and none reports the service,
+it exits 1 with `No running Service`.
+
+Once it starts, `ployz exec` exits with your command's own exit code. When the container stops under it,
 because a deploy replaced it or the service was stopped, it exits 1 with
 `The container for web stopped; exec ended.` A `retry:` line follows when another container of the
 service runs. It is the command you ran: the `-T` you typed, the `--context`, `--connect`,

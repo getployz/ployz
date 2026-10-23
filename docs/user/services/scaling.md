@@ -80,6 +80,10 @@ The **Servers** page shows the server **Offline**. Replicas on your other server
 serving, though some requests are slower for a while, and for up to an hour some visitors may
 still be sent to the offline server. Services that ran only there are down.
 
+If `ployz exec -T db -- true` cannot find a running container while a server is not answering,
+it names the missing servers and exits 3. The service may still run there, so an incomplete
+answer does not mean it is gone. `ployz ps` and `ployz logs` also name servers that did not answer.
+
 To bring services back:
 
 1. Deploy the services that don't use a volume on the offline server. They start on your other
