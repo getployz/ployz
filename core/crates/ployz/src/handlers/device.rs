@@ -230,22 +230,8 @@ async fn devices_on(
     ))
 }
 
-pub(super) fn needs_device(error: &str) -> bool {
-    error.contains("need Full access") || error.contains("needs Full access")
-}
-
 pub(super) fn request_hint() -> Hint {
     Hint::Next("ployz device request".into())
-}
-
-/// `error`, pointing at a Device request where a Machine refused it for scope.
-pub(super) fn unless_full(error: Error) -> Error {
-    let report = error.report();
-    if needs_device(&report.message) || error.causes().iter().any(|cause| needs_device(cause)) {
-        error.hint(request_hint())
-    } else {
-        error
-    }
 }
 
 /// Daemons from before Devices. Delete once every supported daemon sets them.

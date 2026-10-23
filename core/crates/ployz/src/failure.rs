@@ -420,6 +420,10 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
             serde_json::json!({ "valid_children": valid }),
         );
     }
+    if let Some(OperatorError::StartExec { source, .. }) = error.downcast_ref::<OperatorError>() {
+        let RpcError { code, details, .. } = source.to_rpc_error();
+        return (code, details);
+    }
     if let Some(OperatorError::NotRunningOnAnswered { gaps, .. }) =
         error.downcast_ref::<OperatorError>()
     {
@@ -552,7 +556,9 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
     match error {
         ConnectError::Remote(error) => error.code.clone(),
         ConnectError::Rpc(error) => error.to_rpc_error().code,
-        ConnectError::ClientRefused | ConnectError::ClientCleared => RpcErrorCode::Unauthenticated,
+        ConnectError::ClientRefused
+        | ConnectError::ClientCleared
+        | ConnectError::TunnelNeedsFull => RpcErrorCode::Unauthenticated,
         ConnectError::OlderMachine => RpcErrorCode::Unsupported,
         ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
             RpcErrorCode::Unsupported
@@ -1102,6 +1108,29 @@ mod tests {
         assert_eq!(report.code, RpcErrorCode::Unsupported);
         assert_eq!(report.details, details);
         assert_eq!(crate::ui::exit_code(&report.code), 1);
+    }
+
+    #[test]
+    fn an_exec_refused_for_scope_points_at_a_device_request() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("ployz.container.exec.v1 needs Full access")]
+        struct NeedsFullAccess;
+        let status = ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &NeedsFullAccess,
+            serde_json::json!({
+                "capability": "ployz.container.exec.v1",
+                "next": "ployz device request",
+            }),
+        );
+        let failure = Failure::from(OperatorError::StartExec {
+            container: "api-1".into(),
+            source: TransportError::from(status).addressed_as("beta"),
+        });
+        assert_eq!(
+            failure.hints(),
+            [crate::ui::Hint::Next("ployz device request".into())]
+        );
     }
 
     #[test]

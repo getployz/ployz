@@ -185,13 +185,3 @@ fn a_device_key_other_users_can_read_is_refused() {
     assert!(error.contains("chmod 600"), "{error}");
     assert!(error.contains(&path.display().to_string()), "{error}");
 }
-
-#[test]
-fn shared_scope_refusals_point_at_a_device_request() {
-    let refused = unless_full(Error::command(std::io::Error::other(
-        "exec needs Full access",
-    )));
-    assert_eq!(refused.hints(), [request_hint()]);
-    let other = unless_full(Error::usage("Service selector is required"));
-    assert!(other.hints().is_empty());
-}

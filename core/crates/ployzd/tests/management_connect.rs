@@ -536,6 +536,13 @@ async fn only_a_device_execs_or_tunnels() {
                 .contains("ployz.container.exec.v1 needs Full access"),
             "{refused:?}"
         );
+        assert_eq!(
+            ployz_core::rpc::status_details(refused.details()),
+            Some(serde_json::json!({
+                "capability": "ployz.container.exec.v1",
+                "next": "ployz device request",
+            })),
+        );
     }
     let status = exec(device_channel).await.unwrap_err();
     assert_eq!(status.code(), tonic::Code::Unavailable, "{status:?}");
@@ -547,9 +554,7 @@ async fn only_a_device_execs_or_tunnels() {
             .dial_proxy(&connection(capability), "tcp", &target)
             .await
         {
-            Err(ConnectError::Attempt(message)) => {
-                assert!(message.contains("tunnels need Full access"), "{message}");
-            }
+            Err(ConnectError::TunnelNeedsFull) => {}
             other => panic!("an Operator tunnel must be refused, got {:?}", other.err()),
         }
     }
