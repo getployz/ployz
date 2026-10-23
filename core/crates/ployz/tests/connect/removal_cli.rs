@@ -329,6 +329,23 @@ async fn last_cloud_managed_server_asks_for_cloud_before_any_confirmation() {
     assert!(service.reset_machines.lock().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn forgetting_the_last_cloud_managed_server_names_the_daemon_to_stop() {
+    let mut service = DiscoveryService::new(test_description());
+    service.storage_capacity = Some(empty_storage());
+    let (output, service) = forget_cloud_server(service, "one", &[], &["--confirm", "one"]).await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error.pointer("/error/code"), Some(&json!("conflict")));
+    assert_eq!(
+        error.pointer("/error/message"),
+        Some(&json!(
+            "Server one is the last Server and Cloud manages it. Stop its Ployz daemon and socket (systemctl stop ployz.socket ployz) before forgetting every Server, or remove it to reset it. No changes made."
+        ))
+    );
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+}
+
 type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
 type Reads = std::sync::Arc<tokio::sync::Notify>;
 

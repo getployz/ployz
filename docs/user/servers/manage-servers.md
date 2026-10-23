@@ -703,6 +703,10 @@ When it is your only server, Ployz Cloud forgets it as it [forgets servers you
 deleted](#forget-servers-you-deleted). When none of several servers answers, forget them all that
 way.
 
+If your only server still answers, `ployz server forget` refuses. Stop its Ployz daemon first, or
+use `ployz server rm` to reset and remove it. On the server, run
+`sudo systemctl stop ployz.socket ployz` to stop both the daemon and its socket.
+
 Ployz refuses to forget a server that answers and holds a copy of any volume. Remove it with
 `ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors.
 

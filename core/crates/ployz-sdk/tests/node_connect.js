@@ -37,6 +37,17 @@ native.exports = {
 require.cache[addon] = native;
 const sdk = require(dir);
 
+test("a cancelled native dial says no Server answered", async () => {
+  const binding = require(path.join(pkg, "ployz-sdk.node"));
+  const { RpcError, withRpcError } = require(path.join(pkg, "wrap.js"));
+  const pending = binding.startConnections([{ tcp: "127.0.0.1:1" }]);
+  pending.cancel();
+  await assert.rejects(
+    withRpcError(pending.wait()),
+    error => error instanceof RpcError && error.code === "unavailable" && error.unanswered === true,
+  );
+});
+
 const abortListeners = signal => getEventListeners(signal, "abort").length;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const activeTimeouts = () => process.getActiveResourcesInfo().filter(resource => resource === "Timeout").length;

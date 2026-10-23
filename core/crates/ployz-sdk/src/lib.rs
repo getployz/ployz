@@ -84,7 +84,11 @@ impl PendingConnection {
         let connector = std::sync::Arc::new(ployz::connect::SystemConnector::default());
         tokio::select! {
             biased;
-            () = self.cancel.cancelled() => Err(rpc_to_napi(RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null, cause: Vec::new(), })),
+            () = self.cancel.cancelled() => Err(call_to_napi(sdk::CallError {
+                error: RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null, cause: Vec::new() },
+                unanswered: true,
+                target_unreached: false,
+            })),
             result = sdk::connect_answered(connections, connector) => Ok(Client { inner: result.map_err(call_to_napi)? }),
         }
     }
