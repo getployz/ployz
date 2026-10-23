@@ -1479,6 +1479,27 @@ async fn waits() {
     }
 
     #[test]
+    fn a_guard_every_value_reaches_runs_before_the_next_arm() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    match 0 {
+        _ if { tokio::time::pause(); false } => (),
+        _ => tokio::time::sleep(d).await,
+    }
+}
+#[tokio::test]
+async fn waits_for_some() {
+    match value {
+        Some(_) if { tokio::time::pause(); false } => (),
+        _ => tokio::time::sleep(d).await,
+    }
+}
+"#;
+        assert_eq!(lint(source), ["13: real-clock sleep in test code"]);
+    }
+
+    #[test]
     fn a_break_out_of_a_labeled_block_falls_through_after_it() {
         let source = r#"
 #[tokio::test]
