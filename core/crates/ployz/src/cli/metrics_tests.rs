@@ -8,7 +8,7 @@ use ployz_core::{
     },
 };
 
-use super::{Window, report};
+use super::{Window, behind_notes, report};
 use crate::sdk::MetricHistory;
 
 const STEP: i64 = 10_000_000_000;
@@ -263,4 +263,45 @@ fn a_range_with_no_readings_says_so_instead_of_a_table() {
         "No readings for wbe in the last 1h."
     );
     assert!(report.notes.is_empty());
+}
+
+#[test]
+fn a_server_that_answers_with_only_old_readings_is_named_with_their_age() {
+    let point = |ago: i64| ServicePoint {
+        ts: UNTIL - ago * STEP,
+        ..service_point(0, 20_000.0, 80_000_000)
+    };
+    let answered = |machine_id: MachineId, points: Vec<ServicePoint>| MachineSuccess {
+        machine_id,
+        value: MetricHistoryReply {
+            points: MetricPoints::Service(points),
+            step_nanos: STEP,
+            gaps: Vec::new(),
+            markers: Vec::new(),
+        },
+    };
+    let current = MachineId::parse("d".repeat(32)).unwrap();
+    let silent = MachineId::parse("e".repeat(32)).unwrap();
+    let history = MetricHistory {
+        step_nanos: Some(STEP),
+        points: MetricPoints::Service(vec![point(360), point(1)]),
+        machines: vec![
+            answered(machine(), vec![point(400), point(360)]),
+            answered(current, vec![point(2), point(1)]),
+            answered(silent, Vec::new()),
+        ],
+        unanswered: Vec::new(),
+    };
+    let names = BTreeMap::from([
+        (machine(), "machine-3"),
+        (current, "machine-1"),
+        (silent, "machine-2"),
+    ]);
+    assert_eq!(
+        behind_notes(&history, UNTIL, |id| names.get(&id).unwrap().to_string()),
+        [
+            "machine-3 answered, but its newest reading is 1h older than this computer's clock. \
+          Its clock may be off, or it stopped taking readings."
+        ]
+    );
 }
