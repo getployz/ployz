@@ -434,7 +434,17 @@ pub(super) async fn install_docker(paths: &InstallPaths) -> Result<(), Error> {
         DOCKER_DAEMON_CONFIG,
         "write Docker configuration",
     )?;
-    systemctl("restart Docker", ["restart", "docker"])?;
+    // A Docker removed just before (`apt-get remove docker.io`) leaves docker.socket
+    // running. The new package changes its unit under it, which strands it without a
+    // listening socket, so docker.service fails to start until rate-limited.
+    systemctl(
+        "clear Docker failure",
+        ["reset-failed", "docker.socket", "docker.service"],
+    )?;
+    systemctl(
+        "restart Docker",
+        ["restart", "docker.socket", "docker.service"],
+    )?;
     verify_docker()
 }
 
@@ -833,7 +843,7 @@ mod tests {
                 }
                 assert_eq!(
                     log("systemctl"),
-                    "enable docker\nrestart docker\n",
+                    "enable docker\nreset-failed docker.socket docker.service\nrestart docker.socket docker.service\n",
                     "{name}"
                 );
                 let daemon_config: serde_json::Value =
