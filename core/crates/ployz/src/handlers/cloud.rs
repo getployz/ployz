@@ -366,7 +366,7 @@ where
     }
     let mut ready = wait_phase(
         matches,
-        LocalMachinePhase::Participating,
+        Awaited::Enrolled(assigned.id),
         "the joined Server did not become ready",
     )
     .await?;
@@ -525,7 +525,7 @@ where
     };
     let mut ready = wait_phase(
         matches,
-        LocalMachinePhase::Participating,
+        Awaited::Enrolled(machine.id),
         "the first Server did not become ready",
     )
     .await?;
@@ -838,24 +838,29 @@ async fn ensure_uninitialized(
     }
     crate::handlers::server::confirm(yes, "Reset this Server before joining the Cluster?")?;
     crate::handlers::server::leave(&mut client).await?;
-    wait_phase(
-        matches,
-        LocalMachinePhase::Uninitialized,
-        "The Server did not reset.",
-    )
-    .await
+    wait_phase(matches, Awaited::Uninitialized, "The Server did not reset.").await
+}
+
+/// What an enrollment waits for after leaving or joining.
+#[derive(Clone, Copy)]
+enum Awaited {
+    /// The Server has left, ready to enroll afresh.
+    Uninitialized,
+    /// This enrollment's Machine participates and lists itself.
+    Enrolled(ployz_core::MachineId),
 }
 
 async fn wait_phase(
     matches: &ArgMatches,
-    phase: LocalMachinePhase,
+    awaited: Awaited,
     timeout_message: &str,
 ) -> Result<Client, Error> {
-    let participating = phase == LocalMachinePhase::Participating;
-    let wait = if participating {
-        ployz_core::MACHINE_START_WAIT
-    } else {
-        Duration::from_secs(60)
+    let (phase, wait) = match awaited {
+        Awaited::Uninitialized => (LocalMachinePhase::Uninitialized, Duration::from_secs(60)),
+        Awaited::Enrolled(_) => (
+            LocalMachinePhase::Participating,
+            ployz_core::MACHINE_START_WAIT,
+        ),
     };
     crate::setup_retry::run(
         &mut (),
@@ -864,8 +869,8 @@ async fn wait_phase(
         ConnectError::is_setup_retryable,
         async |_| {
             let mut client = dial(matches).await?;
-            if participating {
-                crate::handlers::server::check_listed(&mut client).await?;
+            if let Awaited::Enrolled(expected) = awaited {
+                check_enrolled(&mut client, expected).await?;
                 return Ok(client);
             }
             let details = client
@@ -881,12 +886,32 @@ async fn wait_phase(
     )
     .await
     .map_err(|error| {
-        Error::from(error).context(if participating {
-            crate::handlers::server::readiness_timeout_message(timeout_message)
-        } else {
-            timeout_message.to_owned()
+        Error::from(error).context(match awaited {
+            Awaited::Enrolled(_) => {
+                crate::handlers::server::readiness_timeout_message(timeout_message)
+            }
+            Awaited::Uninitialized => timeout_message.to_owned(),
         })
     })
+}
+
+/// One readiness attempt pinned to the enrolled Machine. A re-dial can fall
+/// through to another Machine of the selection, which is not this enrollment's
+/// Server even when it lists itself.
+async fn check_enrolled(
+    client: &mut Client,
+    expected: ployz_core::MachineId,
+) -> Result<(), ConnectError> {
+    let details = client
+        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .await?;
+    let reached = details.machine.map_or(details.id, |machine| machine.id);
+    if reached != expected {
+        return Err(ConnectError::Attempt(
+            format!("reached Machine {reached}, not the enrolled Machine {expected}").into(),
+        ));
+    }
+    crate::handlers::server::check_listed(client).await
 }
 
 pub(super) fn group(command: Command) -> Command {
@@ -968,6 +993,69 @@ mod tests {
     #[tokio::test]
     async fn resumed_enrollment_joiner_waits_for_published_machine() {
         assert_resumed_enrollment_waits_for_published_machine(false).await;
+    }
+
+    #[tokio::test]
+    async fn readiness_refuses_another_machine_of_the_selection() {
+        use crate::connect::test_support::{unix_client, unix_daemon};
+        use ployz_core::{
+            MachineList, MachineObservation, MembershipObservation, RpcRequestBody, RpcResponse,
+        };
+
+        let enrolled = crate::global_fixtures::machine('a', "web-3");
+        let mut fallback = crate::global_fixtures::machine('b', "web-4");
+        fallback.runtime.daemon_version = "fixture".into();
+        let details = MachineDetails {
+            id: fallback.id,
+            phase: LocalMachinePhase::Participating,
+            public_key: fallback.public_key,
+            advertised_endpoints: Vec::new(),
+            machine: Some(fallback.clone()),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            management_clients: Vec::new(),
+            telemetry: None,
+            storage: None,
+            upgrade: None,
+            token: None,
+            sealing: None,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ployz.sock");
+        let server = {
+            let fallback = fallback.clone();
+            unix_daemon(&path, move |body| {
+                let details = details.clone();
+                let fallback = fallback.clone();
+                async move {
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "the fallback daemon answers only readiness reads"
+                    )]
+                    let response = match body {
+                        RpcRequestBody::Inspect(_) => RpcResponse::from(details),
+                        RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                            enrollment: None,
+                            machines: vec![MachineObservation::new(
+                                fallback,
+                                MembershipObservation::Up,
+                            )],
+                        }),
+                        other => panic!("unexpected RPC: {other:?}"),
+                    };
+                    Ok(response)
+                }
+            })
+        };
+        let mut client = unix_client(&path).await;
+        let refused = check_enrolled(&mut client, enrolled.id).await;
+        let accepted = check_enrolled(&mut client, fallback.id).await;
+        server.shutdown_background();
+        assert!(
+            matches!(refused, Err(ConnectError::Attempt(_))),
+            "a listed Machine other than the enrolled one is not ready: {refused:?}"
+        );
+        accepted.unwrap();
     }
 
     async fn assert_resumed_enrollment_waits_for_published_machine(founder: bool) {
