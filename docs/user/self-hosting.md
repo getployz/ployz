@@ -146,8 +146,7 @@ Compose uses `ployz-cloud-self-host` as the project name, even in another direct
 A second copy with that name replaces the first install's containers and reuses its database.
 Before starting a second install, set a unique `COMPOSE_PROJECT_NAME` in its `.env`, such as
 `COMPOSE_PROJECT_NAME=ployz-staging`. Compose uses it instead of the name in `compose.yml`.
-Set a different `WEB_PORT` too, and change or remove the `inngest` service's host port `8288`
-in the second compose file.
+Set a different `WEB_PORT` too.
 
 Keep the project name unchanged for an existing install. Changing it selects a different
 volume and makes the database appear empty. With a custom name, back up
