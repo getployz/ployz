@@ -694,17 +694,15 @@ async fn run_one(
         if waited.is_err() {
             return Err(uncertain_timeout(machine, attempt_id));
         }
+        // A restart answers again within a minute; a Server silent longer has gone away.
+        let wait = crate::setup_retry::WAIT.min(deadline.saturating_duration_since(Instant::now()));
         let polled = tokio::select! {
-            polled = client.poll_upgrade(
-                request.clone(),
-                machine,
-                deadline.saturating_duration_since(Instant::now()),
-            ) => polled,
+            polled = client.poll_upgrade(request.clone(), machine, wait) => polled,
             () = cancellation.cancelled() => return Err(stopped_following(machine, attempt_id, true)),
         };
         let observed = polled.map_err(|error| match error {
             crate::setup_retry::Error::Permanent(error) => error.into(),
-            exhausted => uncertain(machine, attempt_id, exhausted),
+            exhausted => went_away(machine, attempt_id, exhausted),
         })?;
         if observed.is_terminal() {
             return Ok(observed);
@@ -803,6 +801,22 @@ fn uncertain(
         format!(
             "Cannot tell whether Server {} finished upgrade {attempt_id}. Reconnect and compare it with the upgrade attempt `ployz server show {}` shows.",
             machine.name, machine.name,
+        ),
+        error,
+    )
+    .hint(journal_hint(attempt_id))
+}
+
+fn went_away(
+    machine: &Machine,
+    attempt_id: MachineUpgradeAttemptId,
+    error: crate::setup_retry::Error<ConnectError>,
+) -> Error {
+    let name = &machine.name;
+    Error::caused(
+        ployz_core::RpcErrorCode::Unavailable,
+        format!(
+            "Server {name} stopped answering during upgrade {attempt_id} and didn't answer again within a minute. It may have powered off or lost its network. Once it's back, `ployz server show {name}` shows how the upgrade ended."
         ),
         error,
     )
