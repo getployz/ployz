@@ -111,7 +111,19 @@ fn skip_interface(name: &str) -> bool {
 /// lookup only through a NAT64 gateway, which answers with the gateway's address.
 fn has_ipv4_route() -> bool {
     // Ask the kernel, so policy tables and split routes count, not only a main-table default.
-    ipv4_route(checked_command("ip", &["-4", "route", "get", "1.1.1.1"]))
+    any_ipv4_route(|destination| checked_command("ip", &["-4", "route", "get", destination]))
+}
+
+/// One public address in each half of IPv4, so a route refused to one destination, or a
+/// split route missing one half, doesn't read as having no IPv4 at all.
+const IPV4_ROUTE_PROBES: [&str; 2] = ["1.1.1.1", "149.112.112.112"];
+
+fn any_ipv4_route(
+    mut route_get: impl FnMut(&str) -> Result<std::process::Output, NetworkError>,
+) -> bool {
+    IPV4_ROUTE_PROBES
+        .iter()
+        .any(|destination| ipv4_route(route_get(destination)))
 }
 
 /// Only the kernel refusing the route means there is none. Anything else counts as a
@@ -206,6 +218,29 @@ mod tests {
             status: std::process::ExitStatus::default(),
             stdout: b"1.1.1.1 via 192.0.2.1 dev wg0 table 51820 src 192.0.2.8\n".to_vec(),
             stderr: Vec::new(),
+        })));
+    }
+
+    #[test]
+    fn one_refused_destination_is_not_a_missing_ipv4_route() {
+        let probe = |destination: &str| {
+            if destination == IPV4_ROUTE_PROBES[0] {
+                Err(NetworkError::Command {
+                    program: "ip".into(),
+                    stderr: "RTNETLINK answers: No route to host".into(),
+                })
+            } else {
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+            }
+        };
+        assert!(any_ipv4_route(probe));
+        assert!(!any_ipv4_route(|_| Err(NetworkError::Command {
+            program: "ip".into(),
+            stderr: "RTNETLINK answers: Network is unreachable".into(),
         })));
     }
 
