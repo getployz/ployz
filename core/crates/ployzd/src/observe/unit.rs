@@ -9,7 +9,7 @@ use crate::{
     runtime_unit::{self, UNIT_DIR, systemctl},
 };
 
-pub(crate) const UNIT_NAME: &str = "ployz-observe.service";
+const UNIT_NAME: &str = "ployz-observe.service";
 
 /// Write the runtime unit and start the Observe Store, restarting it when
 /// systemd reloaded the unit or it runs other software. A legacy unit in `/etc` shadows the runtime one until

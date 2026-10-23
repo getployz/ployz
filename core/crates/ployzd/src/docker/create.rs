@@ -11,9 +11,9 @@ use bollard::models::{
     NetworkingConfig, PortBinding, PortMap, ResourcesUlimits, RestartPolicy, RestartPolicyNameEnum,
 };
 use ployz_core::{
-    BindPropagation, BindRecursive, ContainerKind, EnvValue, HEALTHCHECK_DISABLE_SENTINEL,
-    HealthcheckSpec, HostBind, MachineGateway, MachineId, Namespace, PortPublication,
-    QualifiedService, ResolvedServiceSpec, ResolvedServiceVolumeGraph, TransportProtocol,
+    BindPropagation, BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec,
+    HostBind, MachineGateway, MachineId, Namespace, PortPublication, QualifiedService,
+    ResolvedServiceSpec, ResolvedServiceVolumeGraph, TransportProtocol,
 };
 
 use super::{
@@ -65,19 +65,6 @@ pub(super) fn ingress_sysctls(
     if kernel_supports_migrate_req {
         sysctls.insert(TCP_MIGRATE_REQ.into(), "1".into());
     }
-}
-
-/// Whether a `kind` Container of `spec` takes a Sealed env value.
-pub(super) fn holds_sealed(kind: ContainerKind, spec: &ResolvedServiceSpec) -> bool {
-    let hook = spec
-        .pre_deploy
-        .as_ref()
-        .filter(|_| kind == ContainerKind::PreDeployHook);
-    spec.container
-        .environment
-        .values()
-        .chain(hook.into_iter().flat_map(|hook| hook.environment.values()))
-        .any(EnvValue::is_sealed)
 }
 
 pub(super) fn container_create_body(
