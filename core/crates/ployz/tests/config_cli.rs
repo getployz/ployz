@@ -1059,6 +1059,39 @@ fn an_env_file_that_repeats_a_key_imports_its_last_value() {
     }
 }
 
+/// A teammate's history message or Config file name can't render reversed: each prints a
+/// bidi override as its escape, as `get` and `diff` do.
+#[test]
+fn a_bidi_override_in_a_message_or_config_file_name_prints_escaped() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
+    };
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let put = human(&["config", "put", "app", "a\u{202E}b.txt", "--from", from]);
+    ok(
+        &store,
+        &["deploy", "--skip-deploy", "--message", "fix \u{202E}evil"],
+    );
+    for shown in [
+        put,
+        human(&["config", "ls"]),
+        human(&["config", "inspect", "app"]),
+        human(&["history"]),
+    ] {
+        assert!(!shown.contains('\u{202E}'), "{shown}");
+    }
+    assert!(human(&["config", "ls"]).contains(r"a\u{202e}b.txt"));
+    assert!(human(&["history"]).contains(r"fix \u{202e}evil"));
+}
+
 #[test]
 fn an_env_value_prints_on_one_escaped_line_for_humans() {
     for store in &targets() {

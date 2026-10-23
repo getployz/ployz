@@ -477,7 +477,10 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                     .map_or("-", ployz_store::Principal::as_str)
                     .to_owned(),
                 summary(revision),
-                revision.message.clone().unwrap_or_else(|| "-".to_owned()),
+                revision
+                    .message
+                    .as_deref()
+                    .map_or_else(|| "-".to_owned(), crate::ui::escaped),
             ]);
         }
         return crate::ui::finish(&view, || {

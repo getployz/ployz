@@ -171,7 +171,8 @@ pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
     let file = file_name(matches)?;
     let content = String::from_utf8(bytes).map_err(|_| {
         Error::usage(format!(
-            "{file}: a Config file is UTF-8 text; this one is binary"
+            "{}: a Config file is UTF-8 text; this one is binary",
+            crate::ui::escaped(&file.to_string())
         ))
     })?;
     let mode = if matches.get_flag("executable") {
@@ -180,7 +181,10 @@ pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
         matches.get_one::<FileMode>("mode").copied()
     };
     let config = config_name(matches, "config")?;
-    let unchanged = format!("Config {config} already holds {file} as given");
+    let unchanged = format!(
+        "Config {config} already holds {} as given",
+        crate::ui::escaped(&file.to_string())
+    );
     let put = store::store(root)?.write(&PutConfigFile {
         environment: store::environment(matches)?,
         config,
@@ -267,7 +271,11 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         for file in &listing.config.files {
             crate::ui::stream(format_args!(
                 "\n{} ({} bytes, mode {}, uid {}, gid {})",
-                file.name, file.bytes, file.mode, file.uid, file.gid
+                crate::ui::escaped(&file.name.to_string()),
+                file.bytes,
+                file.mode,
+                file.uid,
+                file.gid
             ));
             if let Some(text) = view.contents.get(&file.name) {
                 crate::ui::stream(text);
@@ -350,7 +358,7 @@ fn files_word(config: &ConfigSummary) -> String {
     config
         .files
         .iter()
-        .map(|file| file.name.to_string())
+        .map(|file| crate::ui::escaped(&file.name.to_string()))
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -389,7 +397,9 @@ fn staged(
         for file in &result.config.files {
             crate::ui::stream(format_args!(
                 "  {} ({} bytes, mode {})",
-                file.name, file.bytes, file.mode
+                crate::ui::escaped(&file.name.to_string()),
+                file.bytes,
+                file.mode
             ));
         }
     })
