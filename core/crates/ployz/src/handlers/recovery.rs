@@ -62,15 +62,29 @@ fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
     let credential = server::signed_in(&runtime, matches)?;
     let code = read_code(matches, stdin)?;
     let recovered = runtime.block_on(async {
-        let first = recover_with(&mut client, &code, None).await;
-        match first {
-            Err(error) if refusal(&error) == Some(RecoveryRefusal::NoBackup) => {
-                let backup = cloud_backup(credential.as_ref()).await?;
-                recover_with(&mut client, &code, Some(backup)).await
-            }
-            other => other,
-        }
-        .map_err(recover_failure)
+        let refused = match recover_with(&mut client, &code, None).await {
+            Ok(recovered) => return Ok(recovered),
+            Err(error) => error,
+        };
+        let why = refusal(&refused);
+        let backup = if why == Some(RecoveryRefusal::NoBackup) {
+            cloud_backup(credential.as_ref()).await?.ok_or_else(|| {
+                Error::conflict(
+                    "Nothing to recover from: neither this Server nor Cloud holds a backup.",
+                )
+            })?
+        } else if why == Some(RecoveryRefusal::WrongCode) && credential.is_some() {
+            // A rotation may have left Cloud a backup under a newer code than the seed's.
+            let Some(backup) = cloud_backup(credential.as_ref()).await? else {
+                return Err(recover_failure(refused));
+            };
+            backup
+        } else {
+            return Err(recover_failure(refused));
+        };
+        recover_with(&mut client, &code, Some(backup))
+            .await
+            .map_err(recover_failure)
     })?;
     ui::fields(
         &json!({ "publicKey": recovered }),
@@ -269,7 +283,7 @@ fn recover_failure(error: ConnectError) -> Error {
     }
 }
 
-async fn cloud_backup(credential: Option<&Credential>) -> Result<SealingKeyBackup, Error> {
+async fn cloud_backup(credential: Option<&Credential>) -> Result<Option<SealingKeyBackup>, Error> {
     let Some(credential) = credential else {
         return Err(Error::coded(
             RpcErrorCode::Unauthenticated,
@@ -278,14 +292,9 @@ async fn cloud_backup(credential: Option<&Credential>) -> Result<SealingKeyBacku
         .hint(Hint::Next("ployz login".to_owned())));
     };
     let organization = cloud_account::acting_in(credential).await?;
-    recovery_row(credential, &organization.id)
+    Ok(recovery_row(credential, &organization.id)
         .await?
-        .and_then(|row| row.backup)
-        .ok_or_else(|| {
-            Error::conflict(
-                "Nothing to recover from: neither this Server nor Cloud holds a backup.",
-            )
-        })
+        .and_then(|row| row.backup))
 }
 
 #[derive(Deserialize)]
@@ -433,6 +442,11 @@ mod tests {
     }
 
     fn daemon(dir: &Path, held: SealingPublicKey, seed: bool) -> Daemon {
+        seeded_under(dir, held, seed.then_some(CODE))
+    }
+
+    /// A Server whose seed opens under `seed`, and any sent backup under [`CODE`].
+    fn seeded_under(dir: &Path, held: SealingPublicKey, seed: Option<&'static str>) -> Daemon {
         let socket = dir.join("ployzd.sock");
         let recoveries = Arc::new(Mutex::new(Vec::new()));
         let seen = recoveries.clone();
@@ -449,11 +463,13 @@ mod tests {
                     panic!("unexpected request: {body:?}");
                 };
                 seen.lock().unwrap().push(request.backup.clone());
-                if request.code.as_bytes() != CODE.as_bytes() {
+                let opens = match (&request.backup, seed) {
+                    (Some(_), _) => CODE,
+                    (None, Some(seed)) => seed,
+                    (None, None) => return Err(refused(RecoveryRefusal::NoBackup)),
+                };
+                if request.code.as_bytes() != opens.as_bytes() {
                     return Err(refused(RecoveryRefusal::WrongCode));
-                }
-                if request.backup.is_none() && !seed {
-                    return Err(refused(RecoveryRefusal::NoBackup));
                 }
                 Ok(RpcResponse::from(SealingKeyRecovered { public_key: held }))
             }
@@ -705,6 +721,62 @@ mod tests {
             Some(&json!("o1"))
         );
         cloud.never_saw(CODE);
+    }
+
+    #[test]
+    fn recover_opens_clouds_backup_when_the_code_was_rotated_past_the_seed() {
+        let cloud = cloud(|route, _| match route {
+            "POST /api/cli/sealing/recovery" => {
+                (200, recovery_row(key(1), Some(cloud_backup_bytes())))
+            }
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = seeded_under(dir.path(), key(1), Some("ZYXWVUTSRQPONMLKJIHGFEDCBA"));
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+
+        let (result, printed) = recover_json(&root, CODE);
+
+        result.unwrap();
+        assert_eq!(printed.unwrap(), json!({ "publicKey": key(1) }));
+        assert_eq!(
+            *daemon.recoveries.lock().unwrap(),
+            [None, Some(cloud_backup_bytes())]
+        );
+        cloud.never_saw(CODE);
+    }
+
+    #[test]
+    fn recover_names_a_wrong_code_that_opens_neither_backup() {
+        let cloud = cloud(|route, _| match route {
+            "POST /api/cli/sealing/recovery" => {
+                (200, recovery_row(key(1), Some(cloud_backup_bytes())))
+            }
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+        let wrong = "ZYXWVUTSRQPONMLKJIHGFEDCBA";
+
+        let (result, printed) = recover_json(&root, wrong);
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(error.to_string(), "That recovery code is wrong.");
+        assert_eq!(
+            *daemon.recoveries.lock().unwrap(),
+            [None, Some(cloud_backup_bytes())]
+        );
+        cloud.never_saw(wrong);
     }
 
     #[test]
