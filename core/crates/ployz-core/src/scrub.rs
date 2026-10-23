@@ -48,7 +48,7 @@ impl fmt::Debug for SealedValues {
 /// without rebuilding the regex.
 ///
 /// A value of at least `SHORT_VALUE` bytes is matched exact, base64 with and without
-/// padding, percent-encoded with upper and lower hex, and each of its lines that long on
+/// padding, percent-encoded with upper and lower hex, and each of its log rows that long on
 /// its own. A shorter value is matched only where its name labels it, `NAME = value`.
 pub struct SealedForms {
     /// Every long form in one alternation, longest first, so a value containing a shorter
@@ -73,9 +73,8 @@ impl SealedForms {
                 labelled.push(Labelled::new(name, value));
                 continue;
             }
-            let lines = value
-                .lines()
-                .filter(|line| line.len() >= SHORT_VALUE)
+            let lines = rows(value)
+                .filter(|row| row.len() >= SHORT_VALUE)
                 .map(str::to_owned);
             let encoded = [
                 value.clone(),
@@ -229,6 +228,19 @@ impl fmt::Debug for SealedForms {
             .collect();
         f.debug_tuple("SealedForms").field(&names).finish()
     }
+}
+
+/// Whether `value` spans more than one log row and one of them, not empty, is too short to
+/// match on its own, so LogHistory would show that row unscrubbed.
+#[must_use]
+pub fn has_short_row(value: &str) -> bool {
+    rows(value).nth(1).is_some() && rows(value).any(|row| (1..SHORT_VALUE).contains(&row.len()))
+}
+
+/// The rows LogHistory shows `value` on. Docker's log copier ends a line at each `\n`,
+/// drops the `\n` and keeps a `\r`, so a trailing `\n` starts no row.
+fn rows(value: &str) -> std::str::SplitTerminator<'_, char> {
+    value.split_terminator('\n')
 }
 
 fn marker(name: &str) -> Vec<u8> {

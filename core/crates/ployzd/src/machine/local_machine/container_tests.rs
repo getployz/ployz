@@ -1788,6 +1788,7 @@ fn a_sealed_value_the_spec_cannot_open_is_a_refusal_but_an_unreadable_key_is_an_
         (OpenError::BadName("A=B".into()), Some(unopenable)),
         (OpenError::Unbound("TOKEN".into()), Some(unopenable)),
         (OpenError::Unopenable("TOKEN".into()), Some(unopenable)),
+        (OpenError::ShortLine("TOKEN".into()), Some(unopenable)),
         (
             OpenError::KeyUnreadable(std::io::ErrorKind::PermissionDenied.into()),
             None,
