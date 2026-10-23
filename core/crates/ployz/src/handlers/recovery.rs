@@ -59,33 +59,37 @@ fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let runtime = runtime()?;
     let mut client = runtime.block_on(dial(matches, "ployz recover"))?;
-    let credential = server::signed_in(&runtime, matches)?;
     let code = read_code(matches, stdin)?;
-    let recovered = runtime.block_on(async {
-        let refused = match recover_with(&mut client, &code, None).await {
-            Ok(recovered) => return Ok(recovered),
-            Err(error) => error,
-        };
-        let why = refusal(&refused);
-        let backup = if why == Some(RecoveryRefusal::NoBackup) {
-            cloud_backup(credential.as_ref()).await?.ok_or_else(|| {
-                Error::conflict(
-                    "Nothing to recover from: neither this Server nor Cloud holds a backup.",
-                )
-            })?
-        } else if why == Some(RecoveryRefusal::WrongCode) && credential.is_some() {
-            // A rotation may have left Cloud a backup under a newer code than the seed's.
-            let Some(backup) = cloud_backup(credential.as_ref()).await? else {
+    let recovered = match runtime.block_on(recover_with(&mut client, &code, None)) {
+        Ok(recovered) => recovered,
+        Err(refused) => {
+            let why = refusal(&refused);
+            let backup = if why == Some(RecoveryRefusal::NoBackup) {
+                let credential = server::signed_in(&runtime, matches)?;
+                runtime
+                    .block_on(cloud_backup(credential.as_ref()))?
+                    .ok_or_else(|| {
+                        Error::conflict(
+                            "Nothing to recover from: neither this Server nor Cloud holds a backup.",
+                        )
+                    })?
+            } else if why == Some(RecoveryRefusal::WrongCode) {
+                // A rotation may have left Cloud a backup under a newer code than the seed's.
+                let Ok(Some(credential)) = server::signed_in(&runtime, matches) else {
+                    return Err(recover_failure(refused));
+                };
+                let Some(backup) = runtime.block_on(cloud_backup(Some(&credential)))? else {
+                    return Err(recover_failure(refused));
+                };
+                backup
+            } else {
                 return Err(recover_failure(refused));
             };
-            backup
-        } else {
-            return Err(recover_failure(refused));
-        };
-        recover_with(&mut client, &code, Some(backup))
-            .await
-            .map_err(recover_failure)
-    })?;
+            runtime
+                .block_on(recover_with(&mut client, &code, Some(backup)))
+                .map_err(recover_failure)?
+        }
+    };
     ui::fields(
         &json!({ "publicKey": recovered }),
         &Fields::new().field("Sealing key", recovered),
@@ -701,6 +705,33 @@ mod tests {
         result.unwrap();
         assert_eq!(printed.unwrap(), json!({ "publicKey": key(1) }));
         assert_eq!(*daemon.recoveries.lock().unwrap(), [None]);
+    }
+
+    #[test]
+    fn recover_from_the_seed_needs_no_usable_cloud_sign_in() {
+        for (code, opened) in [(CODE, true), ("ZYXWVUTSRQPONMLKJIHGFEDCBA", false)] {
+            let dir = config_dir(None, "");
+            std::fs::write(dir.path().join("cloud.json"), "not a sign-in").unwrap();
+            let daemon = daemon(dir.path(), key(1), true);
+            let root = root(
+                dir.path(),
+                Some(&daemon.socket),
+                &["recover", "--code-stdin"],
+            );
+
+            let (result, printed) = recover_json(&root, code);
+
+            if opened {
+                result.unwrap();
+                assert_eq!(printed.unwrap(), json!({ "publicKey": key(1) }));
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "That recovery code is wrong."
+                );
+            }
+            assert_eq!(*daemon.recoveries.lock().unwrap(), [None]);
+        }
     }
 
     #[test]
