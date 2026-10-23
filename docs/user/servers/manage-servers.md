@@ -207,16 +207,15 @@ Every server runs builds, runs services and takes web traffic. To turn one off, 
 [Ployz agent](../account/agent-sidebar.md) can change these too, but it can't turn web traffic
 back on: that starts the server's web server, which the switch below and `ployz server set` do.
 
+When `ployz server set` changes `--accepts-services`, it waits for the Server your CLI connects
+through to list the new setting before reporting the update. An immediate deploy through that
+same Server then sees the new setting. If the wait ends without confirmation, the command warns
+you. The target Server's record may have changed; check `ployz server ls` before deploying.
+
 Under **Services** on a server's page, turn off **Run services here** and nothing new starts on
 the server. What already runs there stays until you drain it, or until your next deploy moves it
 to your other servers. If no other server runs services, deploys fail until you turn the switch
 back on or add a server.
-
-When `ployz server set` changes `--accepts-services`, it waits for the Entry Server it used to
-list the new setting before reporting the update. An immediate deploy through that Entry Server
-then sees the new setting. If the Entry Server cannot confirm it within the wait, the command
-warns you. The target Server's record may have changed, but a deploy through the Entry Server may
-still see the old setting; check `ployz server ls` before deploying.
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,

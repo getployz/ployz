@@ -923,8 +923,14 @@ pub(crate) async fn apply_update(
             crate::cluster::wait_for_role(client, &machine.id, setting, &CancellationToken::new())
                 .await
     {
+        let reason = match error {
+            RoleWaitError::NotObserved(_) => "still hasn't listed its new services role".to_owned(),
+            error @ (RoleWaitError::Cancelled | RoleWaitError::Connect(_)) => {
+                format!("could not confirm its new services role ({error})")
+            }
+        };
         crate::ui::warn(format!(
-            "Server {} changed, but this Entry Server could not confirm its new services role ({error}). Check with ployz server ls before deploying.",
+            "Server {} changed, but the Server this command connects through {reason}. Check with ployz server ls before deploying.",
             machine.name
         ));
     }
@@ -1520,6 +1526,103 @@ mod tests {
                 .unwrap();
             server.abort();
         }
+    }
+
+    #[test]
+    fn setting_services_warns_when_the_entry_never_lists_the_new_role() {
+        use ployz_core::{
+            MachineList, MachineUpdated, MembershipObservation, OpaquePayload, RpcRequestBody,
+            RpcResponse,
+        };
+        use tonic::{Request, Response};
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        crate::ui::init(true, crate::ui::Color::Never);
+        let (result, captured) = crate::ui::captured(|| {
+            runtime.block_on(async {
+                let mut stale = web("machine-3", false, None, MembershipObservation::Up);
+                stale.machine.accepts_services = false;
+                let mut updated = stale.clone();
+                updated.machine.accepts_services = true;
+                let id = updated.machine.id;
+                let (mut client, server) = crate::connect::test_support::rpc_client(
+                    move |request: Request<OpaquePayload>| {
+                        let stale = stale.clone();
+                        let updated = updated.clone();
+                        async move {
+                            let response = match request.into_inner().decode_request().unwrap().body
+                            {
+                                RpcRequestBody::UpdateMachine(_) => {
+                                    RpcResponse::from(MachineUpdated {
+                                        machine: updated.machine,
+                                    })
+                                }
+                                RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                                    enrollment: None,
+                                    machines: vec![stale],
+                                }),
+                                other => panic!("unexpected RPC: {other:?}"),
+                            };
+                            Ok(Response::new(response.encode().unwrap()))
+                        }
+                    },
+                )
+                .await;
+                let root = crate::cli::command()
+                    .try_get_matches_from([
+                        "ployz",
+                        "server",
+                        "set",
+                        id.as_str(),
+                        "--accepts-services=true",
+                        "--json",
+                    ])
+                    .unwrap();
+                let recovery = root
+                    .subcommand_matches("server")
+                    .and_then(|server| server.subcommand_matches("set"))
+                    .unwrap()
+                    .clone();
+                let started = tokio::time::Instant::now();
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(41),
+                    apply_update(
+                        &mut client,
+                        MachineTarget::from(&id),
+                        MachineUpdate {
+                            accepts_services: Some(true),
+                            ..Default::default()
+                        },
+                        None,
+                        IngressImage::Given("caddy:2".into()),
+                        String::new(),
+                        recovery,
+                    ),
+                )
+                .await
+                .expect("server set finishes within the bounded wait");
+                assert!(started.elapsed() >= std::time::Duration::from_secs(30));
+                server.abort();
+                result
+            })
+        });
+        crate::ui::init(false, crate::ui::Color::Never);
+        result.unwrap();
+        let captured = captured.unwrap();
+        assert_eq!(
+            captured.pointer("/server/machine/accepts_services"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            captured.pointer("/warnings/0"),
+            Some(&json!(
+                "Server machine-3 changed, but the Server this command connects through still hasn't listed its new services role. Check with ployz server ls before deploying."
+            ))
+        );
     }
 
     /// Only a start that failed on its own, on the Server whose role this command turned on,
