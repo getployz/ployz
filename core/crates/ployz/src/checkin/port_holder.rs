@@ -36,7 +36,8 @@ fn bound_sockets(table: &str, port: u16) -> Vec<u64> {
         .collect()
 }
 
-/// The first process with an open descriptor on one of `sockets`, with its command name.
+/// The first process with an open descriptor on one of `sockets`, with its command name. One that
+/// exits before its name is read is skipped.
 fn owner(proc: &Path, sockets: &[String]) -> Option<(u32, String)> {
     fs::read_dir(proc).ok()?.flatten().find_map(|entry| {
         let pid = entry.file_name().to_str()?.parse().ok()?;
@@ -49,10 +50,12 @@ fn owner(proc: &Path, sockets: &[String]) -> Option<(u32, String)> {
                     .iter()
                     .any(|socket| target.as_os_str() == socket.as_str())
             });
-        holds.then(|| {
-            let name = fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
-            (pid, name.trim().to_owned())
-        })
+        if !holds {
+            return None;
+        }
+        let name = fs::read_to_string(entry.path().join("comm")).ok()?;
+        let name = name.trim();
+        (!name.is_empty()).then(|| (pid, name.to_owned()))
     })
 }
 

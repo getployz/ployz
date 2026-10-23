@@ -83,3 +83,12 @@ fn a_socket_no_process_holds_names_no_one() {
 
     assert_eq!(udp_holder(proc.path(), 51820), None);
 }
+
+#[test]
+fn a_holder_that_exits_before_its_name_is_read_names_no_one() {
+    let proc = proc_with(&[("00000000:CA6C", 46)], &[]);
+    process(proc.path(), 56, "ployz", &[46]);
+    fs::remove_file(proc.path().join("56/comm")).unwrap();
+
+    assert_eq!(udp_holder(proc.path(), 51820), None);
+}
