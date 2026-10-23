@@ -51,15 +51,22 @@ async function start(env: Record<string, string>) {
     },
     timeout: 20_000,
   });
-  return JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as { sdk: boolean };
+  // A console exporter prints spans too; the app's own line is the one that starts with {"sdk".
+  const line = stdout.split("\n").find((output) => output.startsWith('{"sdk"'));
+  return JSON.parse(line ?? "{}") as { sdk: boolean };
 }
 
 describe("web's telemetry bootstrap", () => {
-  it("loads no OpenTelemetry SDK when no OTLP endpoint is set", async () => {
+  it("loads no OpenTelemetry SDK when no OTLP endpoint is set", { timeout: 30_000 }, async () => {
     expect(await start({})).toEqual({ sdk: false });
+    expect(await start({ OTEL_TRACES_EXPORTER: "none" })).toEqual({ sdk: false });
   });
 
-  it("exports the app's spans when an OTLP endpoint is set", async () => {
+  it("starts the SDK for an exporter named outright, such as console", { timeout: 30_000 }, async () => {
+    expect(await start({ OTEL_TRACES_EXPORTER: "console" })).toEqual({ sdk: true });
+  });
+
+  it("exports the app's spans when an OTLP endpoint is set", { timeout: 30_000 }, async () => {
     const received: string[] = [];
     const collector = createServer((request: IncomingMessage, response) => {
       received.push(`${request.method} ${request.url}`);
