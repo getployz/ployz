@@ -21,12 +21,12 @@ Use one or two Machines at a time and vary several conditions on each. Order a M
 | ufw or nftables already on | Incus | cloud-init: `ufw default deny incoming; ufw allow 22; ufw --force enable` plus a custom `nft` table. Join a second Server through it and ping across `ployz-wg`. |
 | IPv6-only | Boat | Lab host has no IPv6. Point resolved at an IPv6 resolver and `iptables -I OUTPUT -o <v4 nic> -m conntrack --ctstate NEW -j REJECT`; dropping the v4 route cuts your SSH (#3154). |
 | Dual-stack | Boat | Every Boat sandbox. |
-| Root under 30 GiB | Incus | `-d root,size=20GiB`. `server add` accepts it by design; the Fleet row shows `disk_too_small`. |
+| Root under 30 GiB | Incus | `-d root,size=20GiB`. `server add` doesn't refuse it yet (documented); the Fleet row shows `disk_too_small`. |
 | Nearly full and full disk | Boat or Incus | `fallocate` to 2 GB free, then to 0; then `dd` to fill root's reserve too. Deploy a cached image and an uncached one. |
 | `/var/lib/docker` on its own disk | Incus | Attach a block volume, `mkfs.ext4`, mount it before install. Images still land in `/var/lib/containerd` on root (#3155). |
 | 1 GiB RAM | Incus | `limits.memory=1GiB`; join and run a Service. |
 | Slow or flaky network | Boat | `tc qdisc add dev <nic> root netem delay 300ms 100ms loss 5%`, then `delay 800ms 400ms loss 20%`, on both NICs, during install and deploy. |
-| Clock skew | Boat or Incus | `timedatectl set-ntp false; date -s '+3 min'`, then `+6 min`. Under 5 minutes passes; above it ends with `clock is …s off`. Restore with `set-ntp true`. |
+| Clock skew | Boat or Incus | `timedatectl set-ntp false; date -s '+3 min'`, then `+6 min`. In v0.3.1, +3 min passed and +6 min ended with `clock is 360s off`. Restore with `set-ntp true`. |
 | Non-root sudo user | Incus | cloud-init `users:` with `NOPASSWD` sudo and your key, then `ployz server add deploy@HOST`. Debian's cloud image has no sshd until you install `openssh-server`. |
 
 ## Lab
