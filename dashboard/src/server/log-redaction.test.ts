@@ -4,6 +4,7 @@ import { SqlError, UnknownError } from "effect/unstable/sql/SqlError";
 import { inspect } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { RedactedLogsLive, redactingLogger, redactSpanExits } from "#/server/log-redaction";
+import { loggableCause } from "#/server/public-error";
 
 const failedQuery = () => new EffectDrizzleQueryError({
   query: "insert into machine_enrollment_token (token_hash) values ($1)",
@@ -67,6 +68,37 @@ describe("redacted logs", () => {
     expect(text).not.toMatch(/secret-/u);
   });
 
+  it.each([
+    ["a symbol-keyed field", () => ({ [Symbol("error")]: failedQuery() })],
+    ["a Map's own field", () => Object.assign(new Map(), { error: failedQuery() })],
+    ["a getter", () => ({ get error() { return failedQuery(); } })],
+  ])("keeps a failed query behind %s out of the log", (_holder, value) => {
+    expect(logged(Effect.logWarning("A sweep failed.", value()))).not.toMatch(/secret-/u);
+  });
+
+  it.each([
+    ["a cause getter that throws", () => ({ get cause(): never { throw new Error("unreadable"); } })],
+    ["a Proxy whose keys throw", () => new Proxy({}, { ownKeys: () => { throw new Error("unreadable"); } })],
+    ["a failed query beside a getter that throws", () => ({ error: failedQuery(), get detail(): never { throw new Error("unreadable"); } })],
+  ])("logs %s without failing", (_holder, value) => {
+    const text = logged(Effect.logWarning("A sweep failed.", value()));
+
+    expect(text).toContain("A sweep failed.");
+    expect(text).not.toMatch(/secret-/u);
+  });
+
+  it("logs a large Map that holds no query without failing", () => {
+    const entries = new Map(Array.from({ length: 10_000 }, (_, at) => [`k${at}`, at]));
+
+    expect(logged(Effect.logWarning("Many entries.", entries))).toContain("Many entries.");
+  });
+
+  it("names a failed query in any field of a public boundary's cause", () => {
+    const loggable = loggableCause(Cause.die(new Error("wrapper", { cause: { error: failedQuery() } })));
+
+    expect(Cause.isCause(loggable) ? Cause.pretty(loggable) : loggable).not.toMatch(/secret-/u);
+  });
+
   it("logs an undefined value", () => {
     expect(logged(Effect.logWarning("Nothing to add.", undefined, { error: undefined }))).toContain("Nothing to add.");
   });
@@ -98,6 +130,32 @@ describe("redacted logs", () => {
     expect(recorded).toContain(SUMMARY);
     expect(recorded).not.toMatch(/secret-/u);
     expect(events[1]?.[2]?.["effect.cause"]).toContain(SUMMARY);
+  });
+
+  it("keeps a failed query in a log annotation out of the console and the span, and keeps the others", () => {
+    const lines: string[] = [];
+    const spies = (["log", "error", "warn", "info", "debug"] as const)
+      .map((level) => vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+        lines.push(args.map((arg) => inspect(arg, { depth: 8 })).join(" "));
+      }));
+    let events: Tracer.NativeSpan["events"] = [];
+    try {
+      Effect.runSync(Effect.gen(function* () {
+        yield* Effect.logWarning("A sweep failed.").pipe(Effect.annotateLogs({ organizationId: "org_1", error: failedQuery() }));
+        const span = yield* Effect.currentSpan;
+        if (span instanceof Tracer.NativeSpan) events = span.events;
+      }).pipe(Effect.withSpan("probe"), Effect.provide(RedactedLogsLive)));
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+
+    const printed = lines.join("\n");
+    const recorded = inspect(events, { depth: 8 });
+    expect(printed).toContain("org_1");
+    expect(printed).toContain(SUMMARY);
+    expect(printed).not.toMatch(/secret-/u);
+    expect(recorded).toContain("org_1");
+    expect(recorded).not.toMatch(/secret-/u);
   });
 
   it("ends a span that failed on a query with its summary, never its params", () => {

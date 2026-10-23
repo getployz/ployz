@@ -225,12 +225,54 @@ export function safeSummary(cause: unknown): string {
   return statement === undefined ? kind : `${kind} in ${statement}`;
 }
 
+/** How many values [`holdsQuery`] reads before it treats a value as holding a query. */
+const READABLE_FIELDS = 1024;
+
+function isObject(cause: unknown): cause is object {
+  return cause !== null && cause !== undefined && Object(cause) === cause;
+}
+
 /**
- * What a log may hold of `cause`: all of it, unless it may hold a failed query. Then every reason is named by
+ * Whether a failed query may be anywhere in `cause`: in a Cause, a `cause` chain, any own field, symbol-keyed or not,
+ * or a Map or Set entry. A value it cannot read whole counts as holding one: more than [`READABLE_FIELDS`] values, a
+ * getter other than an error's `stack`, or anything that throws. Getters are never called.
+ */
+export function holdsQuery(cause: unknown): boolean {
+  const seen = new Set<object>();
+  const pending: unknown[] = [cause];
+  const read = (cause: unknown) => {
+    pending.push(cause);
+    return pending.length <= READABLE_FIELDS;
+  };
+  try {
+    for (let at = 0; at < pending.length; at += 1) {
+      const value = pending[at];
+      if (!isObject(value) || seen.has(value)) continue;
+      seen.add(value);
+      if (mayCarryQuery(value)) return true;
+      for (const key of Reflect.ownKeys(value)) {
+        const field = Reflect.getOwnPropertyDescriptor(value, key);
+        if (field?.get !== undefined && !(key === "stack" && value instanceof Error)) return true;
+        if (!read(field?.value)) return true;
+      }
+      if (value instanceof Map) {
+        for (const [key, entry] of value) if (!read(key) || !read(entry)) return true;
+      } else if (value instanceof Set) {
+        for (const entry of value) if (!read(entry)) return true;
+      }
+    }
+  } catch {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * What a log may hold of `cause`: all of it, unless a failed query may be in it. Then every reason is named by
  * [`safeSummary`], and an interruption as such.
  */
 export function loggableCause(cause: Cause.Cause<unknown>): Cause.Cause<unknown> | string {
-  if (!mayCarryQuery(cause)) return cause;
+  if (!holdsQuery(cause)) return cause;
   return cause.reasons
     .map((reason) =>
       Cause.isDieReason(reason)
@@ -278,7 +320,7 @@ function reportUnexpectedCause(
   if (isExpectedFailure(cause)) return;
   report(
     "defect",
-    Option.isSome(decodeTaggedFailure(cause)) ? typedFailureSummary(cause) : mayCarryQuery(cause) ? safeSummary(cause) : cause,
+    Option.isSome(decodeTaggedFailure(cause)) ? typedFailureSummary(cause) : holdsQuery(cause) ? safeSummary(cause) : cause,
   );
 }
 
