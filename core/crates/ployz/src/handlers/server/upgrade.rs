@@ -1049,6 +1049,70 @@ mod tests {
         assert!(!outcome.unwrap_err().is_outcome());
     }
 
+    /// Accepts the upgrade, then never answers again, as a Server that lost power.
+    struct GoneAfterAccepting {
+        waits: Vec<Duration>,
+    }
+
+    impl UpgradeRequests for GoneAfterAccepting {
+        async fn request_upgrade(
+            &mut self,
+            request: RequestMachineUpgradeRequest,
+            _machine: &Machine,
+            _wait: Duration,
+        ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+            Ok(MachineUpgradeAttempt {
+                attempt_id: request.attempt_id,
+                target: MachineVersion::parse("1.2.3").unwrap(),
+                outcome: MachineUpgradeOutcome::Accepted,
+            })
+        }
+
+        async fn poll_upgrade(
+            &mut self,
+            _request: RequestMachineUpgradeRequest,
+            _machine: &Machine,
+            wait: Duration,
+        ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+            self.waits.push(wait);
+            Err(crate::setup_retry::Error::Exhausted {
+                operation: "RequestUpgrade".into(),
+                wait,
+                last: Some(ConnectError::EntryNotReady),
+                in_flight: true,
+            })
+        }
+
+        async fn move_ingress(&mut self, _image: IngressImage) -> Result<Option<Outcome>, Error> {
+            panic!("an unfinished upgrade does not move the Ingress Proxy")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_gone_mid_upgrade_is_given_up_on_within_a_minute() {
+        let mut client = GoneAfterAccepting { waits: Vec::new() };
+        let (result, outcome) = run_all(
+            &mut client,
+            &[machine('a', 1)],
+            MachineRelease::Stable,
+            IngressImage::Latest,
+            "ployz server upgrade stable a".into(),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(client.waits, [crate::setup_retry::WAIT]);
+        let error = outcome.unwrap_err();
+        assert!(!error.is_outcome());
+        let text = crate::ui::plain(&error);
+        assert!(
+            text.contains("Server a stopped answering during upgrade")
+                && text.contains("It may have powered off or lost its network.")
+                && text.contains("`ployz server show a`"),
+            "{text}"
+        );
+        assert!(result.is_some(), "the accepted attempt is kept");
+    }
+
     #[tokio::test]
     async fn ctrl_c_during_the_ingress_move_names_the_rerun() {
         struct Hangs;
