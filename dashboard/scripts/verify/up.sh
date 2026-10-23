@@ -243,6 +243,8 @@ until [ -f node_modules/.vite/deps/_metadata.json ]; do
   sleep 0.5
 done
 if [ -f "$run/idle.pid" ]; then kill -TERM -- "-$(cat "$run/idle.pid")" 2>/dev/null || true; rm -f "$run/idle.pid"; fi
+# reap.sh starts a dead watchdog again with this timeout, not whatever its own caller chose.
+echo "${VERIFY_IDLE_TIMEOUT:-900}" > "$run/idle-timeout"
 if [ "${VERIFY_IDLE_TIMEOUT:-900}" != 0 ]; then
   setsid nohup "$dash/scripts/verify/idle.sh" "$port" > "$run/idle.log" 2>&1 < /dev/null &
   echo $! > "$run/idle.pid"

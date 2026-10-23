@@ -1,25 +1,47 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const reap = resolve(import.meta.dirname, "../../scripts/verify/reap.sh");
 
-/** A `docker` that serves containers from `<root>/containers/<name>/{checkout,created}` and records each removal. */
+/**
+ * A `docker` that serves containers from `<root>/containers/<id>/{name,checkout,created}`, lists only labelled ones
+ * when `ps` filters by the label, and records each id it removes.
+ */
 const FAKE_DOCKER = `#!/usr/bin/env bash
 root=$FAKE_DOCKER_ROOT
 case "$1" in
-  ps) for dir in "$root"/containers/*/; do [ -f "$dir/checkout" ] && basename "$dir"; done ;;
+  ps)
+    labelled=0; for arg in "$@"; do [ "$arg" = label=ployz.verify.checkout ] && labelled=1; done
+    for dir in "$root"/containers/*/; do
+      [ -d "$dir" ] || continue
+      if [ "$labelled" = 0 ] || [ -f "$dir/checkout" ]; then basename "$dir"; fi
+    done ;;
   inspect)
-    format=$3 container=$4
+    format=$3 dir=$root/containers/$4
     case "$format" in
-      *Labels*) cat "$root/containers/$container/checkout" ;;
-      *Created*) cat "$root/containers/$container/created" ;;
+      *Labels*) cat "$dir/checkout" 2>/dev/null || echo ;;
+      *Created*) cat "$dir/created" ;;
+      *Name*) echo "/$(cat "$dir/name")" ;;
     esac ;;
-  rm) shift; for container in "$@"; do [ "$container" = --force ] && continue; rm -rf "\${root:?}/containers/$container"; echo "$container" >> "$root/removed"; done ;;
+  rm) shift; for id in "$@"; do [ "$id" = --force ] && continue; rm -rf "\${root:?}/containers/$id"; echo "$id" >> "$root/removed"; done ;;
 esac
 `;
+
+const children: { kill: () => void }[] = [];
+afterEach(() => {
+  for (const child of children.splice(0)) child.kill();
+});
+
+/** A live process whose command line is vite's, as up.sh starts it. */
+function vite(): number {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "node_modules/vite/bin/vite.js", "dev"], { stdio: "ignore" });
+  children.push(child);
+  if (child.pid === undefined) throw new Error("vite stand-in did not start");
+  return child.pid;
+}
 
 function host() {
   const root = mkdtempSync(join(tmpdir(), "verify-reap-"));
@@ -27,27 +49,33 @@ function host() {
   writeFileSync(join(root, "bin", "docker"), FAKE_DOCKER);
   chmodSync(join(root, "bin", "docker"), 0o755);
   mkdirSync(join(root, "containers"));
-  const container = (name: string, checkout: string | null, createdSecondsAgo: number) => {
-    mkdirSync(join(root, "containers", name));
-    if (checkout !== null) writeFileSync(join(root, "containers", name, "checkout"), checkout);
-    writeFileSync(join(root, "containers", name, "created"), new Date(Date.now() - createdSecondsAgo * 1000).toISOString());
+  const container = (id: string, checkout: string | null, createdSecondsAgo: number) => {
+    const dir = join(root, "containers", id);
+    mkdirSync(dir);
+    writeFileSync(join(dir, "name"), `ployz-verify-${id}`);
+    if (checkout !== null) writeFileSync(join(dir, "checkout"), checkout);
+    writeFileSync(join(dir, "created"), new Date(Date.now() - createdSecondsAgo * 1000).toISOString());
   };
-  /** A checkout whose verify run records `pids`, with an idle.sh that writes `idle-started` when run. */
-  const checkout = (name: string, pids: { readonly vite?: number; readonly idle?: number }) => {
+  /** A checkout whose verify run records `pids`, with an idle.sh that writes its port and timeout when run. */
+  const checkout = (name: string, run: { readonly vite?: number; readonly idle?: number; readonly timeout?: string }) => {
     const wt = join(root, name);
-    const run = join(wt, "dashboard", ".verify", "run");
-    mkdirSync(run, { recursive: true });
+    const dir = join(wt, "dashboard", ".verify", "run");
+    mkdirSync(dir, { recursive: true });
     mkdirSync(join(wt, "dashboard", "scripts", "verify"), { recursive: true });
-    writeFileSync(join(wt, "dashboard", "scripts", "verify", "idle.sh"), `#!/usr/bin/env bash\necho "$1" > "${run}/idle-started"\n`);
+    writeFileSync(
+      join(wt, "dashboard", "scripts", "verify", "idle.sh"),
+      `#!/usr/bin/env bash\necho "$1 $VERIFY_IDLE_TIMEOUT" > "${dir}/idle-started"\n`,
+    );
     chmodSync(join(wt, "dashboard", "scripts", "verify", "idle.sh"), 0o755);
-    writeFileSync(join(run, "env"), "PORT=4321\n");
-    if (pids.vite !== undefined) writeFileSync(join(run, "vite.pid"), `${pids.vite}\n`);
-    if (pids.idle !== undefined) writeFileSync(join(run, "idle.pid"), `${pids.idle}\n`);
-    return { wt, run };
+    writeFileSync(join(dir, "env"), "PORT=4321\n");
+    if (run.vite !== undefined) writeFileSync(join(dir, "vite.pid"), `${run.vite}\n`);
+    if (run.idle !== undefined) writeFileSync(join(dir, "idle.pid"), `${run.idle}\n`);
+    if (run.timeout !== undefined) writeFileSync(join(dir, "idle-timeout"), `${run.timeout}\n`);
+    return { wt, run: dir };
   };
-  const run = () => execFileSync(reap, [], {
+  const run = (env: Record<string, string> = {}) => execFileSync(reap, [], {
     encoding: "utf8",
-    env: { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}`, FAKE_DOCKER_ROOT: root },
+    env: { ...process.env, ...env, PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}`, FAKE_DOCKER_ROOT: root },
   });
   const removed = () => existsSync(join(root, "removed")) ? readFileSync(join(root, "removed"), "utf8").trim().split("\n").sort() : [];
   return { root, container, checkout, run, removed };
@@ -57,52 +85,109 @@ function host() {
 const DEAD = 4_194_304;
 
 describe("scripts/verify/reap.sh", () => {
-  it("removes the containers of a checkout that is gone", () => {
+  it("removes, by id, the containers of a checkout that is gone once past the grace", () => {
     const docker = host();
-    docker.container("ployz-verify-aaaaaaaaaa", join(docker.root, "deleted-worktree"), 30);
-    docker.container("ployz-verify-aaaaaaaaaa-mailpit", join(docker.root, "deleted-worktree"), 30);
+    docker.container("aaaaaaaaaa", join(docker.root, "deleted-worktree"), 3600);
+    docker.container("aaaaaaaaab", join(docker.root, "deleted-worktree"), 3600);
 
     const output = docker.run();
 
-    expect(docker.removed()).toEqual(["ployz-verify-aaaaaaaaaa", "ployz-verify-aaaaaaaaaa-mailpit"]);
-    expect(output).toContain("is gone");
+    expect(docker.removed()).toEqual(["aaaaaaaaaa", "aaaaaaaaab"]);
+    expect(output).toContain("reap: removed ployz-verify-aaaaaaaaaa (its checkout");
+  });
+
+  it("keeps a young container whose checkout is gone, and one whose checkout's parent this host cannot see", () => {
+    const docker = host();
+    docker.container("aaaaaaaaac", join(docker.root, "deleted-worktree"), 30);
+    docker.container("aaaaaaaaad", join(docker.root, "unmounted", "worktree"), 3600);
+
+    docker.run();
+
+    expect(docker.removed()).toEqual([]);
   });
 
   it("removes the containers of a checkout whose vite has stopped, once past the grace", () => {
     const docker = host();
     const { wt } = docker.checkout("stopped", { vite: DEAD, idle: DEAD });
-    docker.container("ployz-verify-bbbbbbbbbb", wt, 3600);
+    docker.container("bbbbbbbbbb", wt, 3600);
 
     docker.run();
 
-    expect(docker.removed()).toEqual(["ployz-verify-bbbbbbbbbb"]);
+    expect(docker.removed()).toEqual(["bbbbbbbbbb"]);
+  });
+
+  it("removes the containers of a checkout whose vite pid another process now has", () => {
+    const docker = host();
+    const { wt } = docker.checkout("reused", { vite: process.pid });
+    docker.container("bbbbbbbbbc", wt, 3600);
+
+    docker.run();
+
+    expect(docker.removed()).toEqual(["bbbbbbbbbc"]);
   });
 
   it("keeps a container an instance may still be starting", () => {
     const docker = host();
     const { wt } = docker.checkout("starting", {});
-    docker.container("ployz-verify-cccccccccc", wt, 30);
+    docker.container("cccccccccc", wt, 30);
 
     docker.run();
 
     expect(docker.removed()).toEqual([]);
   });
 
-  it("keeps a live instance and starts its watchdog again when it died", async () => {
+  it("starts a live instance's dead watchdog again with the timeout its up.sh chose", async () => {
     const docker = host();
-    const { wt, run } = docker.checkout("live", { vite: process.pid, idle: DEAD });
-    docker.container("ployz-verify-dddddddddd", wt, 3600);
+    const { wt, run } = docker.checkout("live", { vite: vite(), idle: DEAD, timeout: "7200" });
+    docker.container("dddddddddd", wt, 3600);
+
+    const output = docker.run({ VERIFY_IDLE_TIMEOUT: "0" });
+
+    expect(docker.removed()).toEqual([]);
+    expect(output).toContain("started the idle watchdog");
+    await vi.waitFor(() => expect(readFileSync(join(run, "idle-started"), "utf8").trim()).toBe("4321 7200"));
+  });
+
+  it.each([
+    ["its up.sh recorded no timeout", {}],
+    ["its up.sh kept it up", { timeout: "0" }],
+  ])("starts no watchdog for a live instance when %s", (_reason, recorded) => {
+    const docker = host();
+    const { wt, run } = docker.checkout("kept", { vite: vite(), idle: DEAD, ...recorded });
+    docker.container("dddddddddf", wt, 3600);
 
     const output = docker.run();
 
     expect(docker.removed()).toEqual([]);
-    expect(output).toContain("watchdog");
-    await vi.waitFor(() => expect(readFileSync(join(run, "idle-started"), "utf8").trim()).toBe("4321"));
+    expect(output).not.toContain("watchdog");
+    expect(existsSync(join(run, "idle-started"))).toBe(false);
+  });
+
+  it("starts no second watchdog while another reaper holds the checkout's lock", () => {
+    const docker = host();
+    const { wt, run } = docker.checkout("locked", { vite: vite(), idle: DEAD, timeout: "900" });
+    mkdirSync(join(run, "idle.lock"));
+    docker.container("ddddddddde", wt, 3600);
+
+    const output = docker.run();
+
+    expect(output).not.toContain("watchdog");
+    expect(readFileSync(join(run, "idle.pid"), "utf8").trim()).toBe(`${DEAD}`);
+  });
+
+  it("only lists what it would remove when dry", () => {
+    const docker = host();
+    docker.container("ffffffffff", join(docker.root, "deleted-worktree"), 3600);
+
+    const output = docker.run({ VERIFY_REAP_DRY: "1" });
+
+    expect(docker.removed()).toEqual([]);
+    expect(output).toContain("reap: would remove ployz-verify-ffffffffff");
   });
 
   it("leaves a container no checkout labelled alone", () => {
     const docker = host();
-    docker.container("ployz-verify-eeeeeeeeee", null, 86_400);
+    docker.container("eeeeeeeeee", null, 86_400);
 
     docker.run();
 
