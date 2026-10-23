@@ -293,6 +293,62 @@ pub(crate) fn shell_word(arg: &str) -> std::borrow::Cow<'_, str> {
     word.into()
 }
 
+/// `command` with each word that holds an [`unprintable`] character in [`shell_word`]'s
+/// `$'…'` form, so it shows safely and still pastes as the same command. Every other word
+/// stays as written; a word bash would read differently, or a command that doesn't parse,
+/// prints [`escaped`].
+pub(crate) fn pasteable(command: &str) -> String {
+    if !command.chars().any(unprintable) {
+        return command.to_owned();
+    }
+    let mut words = Vec::new();
+    let mut open: Option<String> = None;
+    // A quoted word can hold spaces, so a piece joins the next until it parses.
+    for piece in command.split(' ') {
+        let chunk = match open.take() {
+            Some(open) => format!("{open} {piece}"),
+            None => piece.to_owned(),
+        };
+        match shell_words::split(&chunk) {
+            Err(_) => open = Some(chunk),
+            Ok(_) if !chunk.chars().any(unprintable) => words.push(chunk),
+            Ok(parsed) => words.push(match parsed.as_slice() {
+                [word] if quoted_literally(&chunk) => shell_word(word).into_owned(),
+                _ => escaped(&chunk),
+            }),
+        }
+    }
+    match open {
+        Some(_) => escaped(command),
+        None => words.join(" "),
+    }
+}
+
+/// Whether bash reads `word` as [`shell_words::split`] does: outside single quotes it holds
+/// nothing bash would expand, glob or read as an operator, and no unquoted `=` that could
+/// make it an assignment. A backslash escapes the same in both, but one that ends `word`
+/// would join it to the next.
+fn quoted_literally(word: &str) -> bool {
+    let (mut single, mut double, mut escaping) = (false, false, false);
+    for c in word.chars() {
+        match c {
+            _ if escaping => escaping = false,
+            '\'' if !double => single = !single,
+            _ if single => {}
+            '\\' => escaping = true,
+            '"' => double = !double,
+            '$' | '`' | '!' => return false,
+            '~' | '*' | '?' | '[' | '{' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '='
+                if !double =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    !escaping
+}
+
 pub(crate) const REPLACED: char = '\u{FFFD}';
 
 pub(crate) fn printable(text: &str) -> String {
@@ -348,6 +404,68 @@ mod tests {
                 assert_eq!(output.stdout, word.as_bytes(), "{locale} {word:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_pasteable_command_escapes_only_the_words_that_need_it() {
+        let plain = "ployz set 'sentry.env.REDIS=VALUE' --env production";
+        assert_eq!(pasteable(plain), plain);
+        assert_eq!(
+            pasteable(&shell_words::join([
+                "ployz",
+                "config",
+                "put",
+                "app",
+                "a\u{202E}b.txt"
+            ])),
+            "ployz config put app $'a\\xe2\\x80\\xaeb.txt'"
+        );
+    }
+
+    #[test]
+    fn a_command_hint_never_pastes_as_a_different_command() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a\u{202E}bX"), "").unwrap();
+        // `ployz` prints `$NAME` first, so a leading assignment is seen as bash reads it.
+        let argv = |command: &str| {
+            let output = std::process::Command::new("bash")
+                .args([
+                    "-c",
+                    &format!("ployz() {{ printf '%s\\0' \"${{NAME-}}\" \"$@\"; }}; {command}"),
+                ])
+                .current_dir(dir.path())
+                .env("HOME", "/home/u")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{command}: {output:?}");
+            output.stdout
+        };
+        for hint in [
+            "ployz config put app \"$HOME/a\u{202E}b.txt\"",
+            "ployz config put app $'a\u{202E}b'",
+            "ployz config put app ~/a\u{202E}b",
+            "ployz config put app a\u{202E}b*",
+            "ployz config put app \"`printf x`a\u{202E}b\"",
+            "ployz config put app a\\ \u{202E}b",
+            "ployz config put app \"a\\\"\u{202E}b\\$\"",
+            "ployz config put app '$HOME/a\u{202E}b*'",
+            "ployz config put app 'it'\\''s\u{202E}b'",
+            "ployz config put app a\\'$HOME\u{202E}",
+            "ployz config put app \u{202E}\\ b",
+            "NAME=\"a\u{202E}b\" ployz deploy",
+            "NAME=a\u{202E}b ployz deploy",
+        ] {
+            let shown = pasteable(hint);
+            assert!(!shown.chars().any(unprintable), "{shown}");
+            assert!(
+                shown == escaped(hint) || argv(&shown) == argv(hint),
+                "{hint:?} shows as {shown}"
+            );
+        }
+        assert_eq!(
+            pasteable("ployz config put app '$HOME/a\u{202E}b*' 'it'\\''s\u{202E}b'"),
+            "ployz config put app $'$HOME/a\\xe2\\x80\\xaeb*' $'it\\'s\\xe2\\x80\\xaeb'"
+        );
     }
 
     fn written(table: &Table, aligned: bool) -> String {

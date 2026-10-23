@@ -538,21 +538,6 @@ pub(crate) fn typed_with(extra: &[&str]) -> String {
         .join(" ")
 }
 
-/// `command`, a [`shell_words::join`] line, for a person to paste: each word with an invisible
-/// character is written as its bytes, so it shows escaped and still reaches the command.
-pub(crate) fn pasteable(command: &str) -> String {
-    shell_words::split(command).map_or_else(
-        |_| crate::ui::escaped(command),
-        |words| {
-            words
-                .iter()
-                .map(|word| crate::ui::shell_word(word))
-                .collect::<Vec<_>>()
-                .join(" ")
-        },
-    )
-}
-
 fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
     let connect = matches.get_one::<String>("connect");
     let context = matches.try_get_one::<String>("context").ok().flatten();
@@ -724,22 +709,6 @@ mod tests {
         }
         let exact = read_bounded(&[b'a'; 10][..], 10).unwrap();
         assert_eq!(exact.as_deref(), Some(&[b'a'; 10][..]));
-    }
-
-    #[test]
-    fn a_pasteable_command_escapes_only_the_words_that_need_it() {
-        let plain = "ployz set 'sentry.env.REDIS=VALUE' --env production";
-        assert_eq!(pasteable(plain), plain);
-        assert_eq!(
-            pasteable(&shell_words::join([
-                "ployz",
-                "config",
-                "put",
-                "app",
-                "a\u{202E}b.txt"
-            ])),
-            "ployz config put app $'a\\xe2\\x80\\xaeb.txt'"
-        );
     }
 
     #[test]

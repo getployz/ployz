@@ -777,7 +777,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     };
     crate::ui::fields(&Next::new(&status, hint.clone()), &status_record(&status))?;
     if let Some(hint) = hint {
-        crate::ui::hint(&Hint::Next(super::pasteable(&hint)));
+        crate::ui::hint(&Hint::Next(hint));
     }
     if partial {
         return Err(Error::partial());
