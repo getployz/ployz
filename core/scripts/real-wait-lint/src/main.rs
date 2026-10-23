@@ -1415,6 +1415,64 @@ async fn waits() {
     }
 
     #[test]
+    fn a_failed_match_guard_runs_before_the_next_arm() {
+        let source = r#"
+#[tokio::test(start_paused = true)]
+async fn waits() {
+    match 0 {
+        _ if { tokio::time::resume(); false } => (),
+        _ => tokio::time::sleep(d).await,
+    }
+}
+"#;
+        assert_eq!(lint(source), ["6: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn a_break_out_of_a_labeled_block_falls_through_after_it() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    if ready() {
+        'done: {
+            tokio::time::pause();
+            break 'done;
+        }
+    } else {
+        return;
+    }
+    tokio::time::sleep(d).await;
+}
+"#;
+        assert_eq!(lint(source), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_awaited_async_block_ends_at_its_returns() {
+        let paused = r#"
+#[tokio::test]
+async fn waits() {
+    async {
+        if ready() { tokio::time::pause(); return; } else { tokio::time::pause(); return; }
+    }.await;
+    tokio::time::sleep(d).await;
+}
+"#;
+        assert_eq!(lint(paused), Vec::<String>::new());
+        let early = r#"
+#[tokio::test]
+async fn waits() {
+    async {
+        if ready() { return; }
+        tokio::time::pause();
+    }.await;
+    tokio::time::sleep(d).await;
+}
+"#;
+        assert_eq!(lint(early), ["8: real-clock sleep in test code"]);
+    }
+
+    #[test]
     fn a_resume_that_may_run_ends_paused_time() {
         let source = r#"
 #[tokio::test(start_paused = true)]
