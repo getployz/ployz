@@ -1292,6 +1292,7 @@ fn exited() -> ExecutionError {
         },
         out_of_memory: None,
         last_run: None,
+        departing: None,
     }
 }
 

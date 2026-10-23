@@ -369,6 +369,24 @@ impl Failure {
         machine: Option<MachineId>,
     ) -> Self {
         let (reason, cause) = match error {
+            // The Leave explains whatever the copy did, so nothing of it is a cause.
+            ExecutionError::Machine { error, .. } if let Some(departure) = error.departure() => (
+                format!(
+                    "Server {} was removed while the deploy ran",
+                    departure.server
+                ),
+                Vec::new(),
+            ),
+            ExecutionError::Health {
+                departing: Some(departure),
+                ..
+            } => (
+                format!(
+                    "Server {} was removed while the deploy ran",
+                    departure.server
+                ),
+                Vec::new(),
+            ),
             ExecutionError::Machine { error, .. } if let Some(refusal) = error.refusal() => {
                 let name = operations
                     .iter()
@@ -1318,6 +1336,51 @@ mod tests {
         ployz_core::MachineId::parse("1".repeat(32)).unwrap()
     }
 
+    /// A failure marked with the Leave that overlapped it names the removed Server
+    /// and nothing of what the copy did, whether the Server answered an error or an
+    /// unhealthy copy (#2924).
+    #[test]
+    fn a_failure_a_leave_overlapped_names_the_removed_server() {
+        let server = ployz_core::MachineName::parse("web-2").unwrap();
+        let failed = Failure::of(
+            &ExecutionError::Machine {
+                action: MachineAction::CreateContainer,
+                error: RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "detail temporarily unavailable".into(),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                }
+                .overlapping_leave(&server),
+            },
+            &[],
+        );
+        assert_eq!(
+            failed.reason,
+            "Server web-2 was removed while the deploy ran"
+        );
+        assert!(failed.cause.is_empty(), "{failed:?}");
+
+        let exited = Failure::of(
+            &ExecutionError::Health {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                failure: HealthFailure::Runtime {
+                    observation: ContainerRuntimeObservation::Exited { code: 0 },
+                    last_check: None,
+                },
+                out_of_memory: None,
+                last_run: None,
+                departing: Some(ployz_core::Departure { server }),
+            },
+            &[],
+        );
+        assert_eq!(
+            exited.reason,
+            "Server web-2 was removed while the deploy ran"
+        );
+        assert!(exited.cause.is_empty(), "{exited:?}");
+    }
+
     fn reason(observation: ContainerRuntimeObservation) -> String {
         failure(observation).reason
     }
@@ -1332,6 +1395,7 @@ mod tests {
                 },
                 out_of_memory: None,
                 last_run: None,
+                departing: None,
             },
             &[],
         )
@@ -1615,6 +1679,7 @@ mod tests {
                     exit_code: None,
                     last_line: Some(last_line.to_owned()),
                 }),
+                departing: None,
             },
             &[],
         )

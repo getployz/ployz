@@ -27,7 +27,8 @@ use self::rotation::RotationWant;
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{
-    ContainerCreated, ContainerRequest, ImageIngest, RotationTurn, Withdrawal, same_creation,
+    ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
+    same_creation,
 };
 use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
@@ -39,6 +40,26 @@ const SETTLE_POLL: Duration = Duration::from_millis(100);
 /// Reading a copy's sockets is cheap, so a short poll costs little and sets how late
 /// an idle copy is seen.
 const DRAIN_POLL: Duration = Duration::from_millis(50);
+
+/// Where a test holds an `ensure_container` call so a Leave can run against it.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnsurePausePoint {
+    /// Before any Docker work.
+    BeforeWork,
+    /// After the copy was created and started, before its health settles.
+    BeforeSettle,
+}
+
+/// A hold on `ensure_container`: the call signals `reached` at `point` and continues
+/// once `release` is notified.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct EnsurePause {
+    pub(crate) point: EnsurePausePoint,
+    pub(crate) reached: Arc<tokio::sync::Notify>,
+    pub(crate) release: Arc<tokio::sync::Notify>,
+}
 
 #[cfg(test)]
 static SETTLES: std::sync::Mutex<std::collections::BTreeMap<ContainerId, usize>> =
@@ -715,6 +736,18 @@ impl LocalMachine {
 
     /// Make one Container match `want` and answer with what is then observed.
     ///
+    /// A Leave stops and removes every copy itself, and this call answers exactly
+    /// what it saw: a want that runs a copy ([`ContainerWant::Running`]) waits for
+    /// the Leave's admission turn and runs as ever, a stop, a remove and a rotation
+    /// write run as ever, and a copy the Leave took answers as missing. When a
+    /// Running want did not deliver a running copy, by an error or by a verdict that
+    /// is not Healthy, and a Leave is under way or has committed as it returns, the
+    /// answer carries the Leave as an additive mark so the caller can name the cause:
+    /// the error becomes the source of [`Error::Departing`], and the verdict names
+    /// the Server under `departing`. A failed Leave leaves no mark. The mark never
+    /// replaces anything, so a caller removes the copy an answer names, or the slot
+    /// a failed start left, as it would for any failed start.
+    ///
     /// # Errors
     ///
     /// Returns when the Container cannot be observed as this Machine's own, Docker
@@ -723,7 +756,10 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<EnsuredContainer, Error> {
-        match want {
+        let runs = matches!(want, ContainerWant::Running { .. });
+        #[cfg(test)]
+        self.pause_for_test(EnsurePausePoint::BeforeWork).await;
+        let ensured = match want {
             ContainerWant::Out {
                 container,
                 allow_empty,
@@ -750,6 +786,50 @@ impl LocalMachine {
             }
             | ContainerWant::Stopped { .. }
             | ContainerWant::Gone { .. }) => self.ensure_docker(want).await,
+        };
+        if runs
+            && self
+                .containers
+                .as_ref()
+                .is_some_and(ContainerRuntime::departing)
+        {
+            return self.marked_departing(ensured);
+        }
+        ensured
+    }
+
+    /// `ensured`, marked with the Leave under way when it did not deliver a running
+    /// copy: an error becomes the source of [`Error::Departing`], and a verdict that
+    /// is not Healthy names the Server. A delivered copy, a refusal and a Machine with
+    /// no record answer as they were.
+    fn marked_departing(
+        &self,
+        ensured: Result<EnsuredContainer, Error>,
+    ) -> Result<EnsuredContainer, Error> {
+        let Some(server) = self.record().machine().map(|machine| machine.name.clone()) else {
+            return ensured;
+        };
+        let departure = ployz_core::Departure { server };
+        match ensured {
+            Err(source) => Err(Error::Departing {
+                server: departure.server,
+                source: Box::new(source),
+            }),
+            Ok(EnsuredContainer::Ensured {
+                now,
+                health: Some(mut health),
+            }) if health != HealthVerdict::Healthy => {
+                if let HealthVerdict::Failed { departing, .. }
+                | HealthVerdict::TimedOut { departing, .. } = &mut health
+                {
+                    *departing = Some(departure);
+                }
+                Ok(EnsuredContainer::Ensured {
+                    now,
+                    health: Some(health),
+                })
+            }
+            other => other,
         }
     }
 
@@ -798,6 +878,7 @@ impl LocalMachine {
                 .expect("settle counts are never poisoned")
                 .entry(*container_id)
                 .or_default() += 1;
+            self.pause_for_test(EnsurePausePoint::BeforeSettle).await;
         }
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
@@ -826,6 +907,7 @@ impl LocalMachine {
                     deadline_millis: u64::try_from(limit.as_millis()).ok(),
                     last_check,
                     oom_killed,
+                    departing: None,
                 });
             };
             let inspected = inspected?;
@@ -853,6 +935,7 @@ impl LocalMachine {
                         observation,
                         last_check,
                         oom_killed: inspected.oom_killed,
+                        departing: None,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::TimedOut {
@@ -863,6 +946,7 @@ impl LocalMachine {
                         deadline_millis,
                         last_check,
                         oom_killed: inspected.oom_killed,
+                        departing: None,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::Cancelled) => {
@@ -870,6 +954,7 @@ impl LocalMachine {
                         deadline_millis: None,
                         last_check: None,
                         oom_killed: false,
+                        departing: None,
                     });
                 }
             };
@@ -915,6 +1000,17 @@ impl LocalMachine {
             .get(container_id)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Tell the test this call reached `point`, then wait for its release.
+    #[cfg(test)]
+    async fn pause_for_test(&self, point: EnsurePausePoint) {
+        if let Some(pause) = &self.ensure_pause
+            && pause.point == point
+        {
+            pause.reached.notify_one();
+            pause.release.notified().await;
+        }
     }
 
     async fn converge_container(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {

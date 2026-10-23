@@ -12,17 +12,17 @@ use std::{
 use ployz_core::{
     ContainerId, ContainerObservation, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
     InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
-    MachineId, MachineIdentity, MachineList, MachineObservation, MachineToken, MachineUpdated,
-    ManagementAddress, ManagementClientLabel, MembershipEvidence, PublicIpDiscovery,
-    RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation, RttStatistics,
-    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
+    MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
+    MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
+    PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation,
+    RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use super::{
     EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError, local_runtime,
-    store::{Installation, Rediscovered},
+    store::{Installation, PreparedReset, Rediscovered},
 };
 
 use crate::{
@@ -49,6 +49,8 @@ pub struct LocalMachine {
     settled: container::SettledCreations,
     #[cfg(test)]
     peers: Option<PeerInspect>,
+    #[cfg(test)]
+    ensure_pause: Option<container::EnsurePause>,
 }
 
 const PEER_INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -66,6 +68,8 @@ pub(crate) type PeerInspect = std::sync::Arc<
 
 mod container;
 pub(crate) use container::CutRefusal;
+#[cfg(test)]
+pub(crate) use container::{EnsurePause, EnsurePausePoint};
 mod management_client;
 mod push_target;
 mod sealing;
@@ -137,6 +141,14 @@ pub enum Error {
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
+    /// A Leave was removing this Machine from the Cluster as the call failed with
+    /// `source`, so its answer is `source`'s, marked with the Server.
+    #[error("Server {server} is being removed from the Cluster")]
+    Departing {
+        server: MachineName,
+        #[source]
+        source: Box<Error>,
+    },
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error("push target {0}")]
@@ -185,7 +197,18 @@ impl LocalMachine {
             settled: container::SettledCreations::default(),
             #[cfg(test)]
             peers: None,
+            #[cfg(test)]
+            ensure_pause: None,
         }
+    }
+
+    /// Hold every `ensure_container` on this handle at `pause`'s point until the test
+    /// releases it; clones made before this call never pause.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn pausing_ensure_for_test(mut self, pause: container::EnsurePause) -> Self {
+        self.ensure_pause = Some(pause);
+        self
     }
 
     #[cfg(test)]
@@ -909,6 +932,33 @@ impl LocalMachine {
                 }
             })
             .await??;
+        // A resend on a Machine already resetting leaves it leaving whatever happens.
+        let began_reset = prepared_reset.is_some();
+        let departed = self.clear_out(prepared_reset, exit).await;
+        if departed.is_err()
+            && began_reset
+            && let Some(containers) = &self.containers
+        {
+            containers.departure_failed();
+        }
+        departed?;
+        let reset_warning = match publication {
+            Some(publication) => publication
+                .remove(&machine_id)
+                .await
+                .err()
+                .map(|error| ployz_core::error_chain::inline(&error)),
+            None => None,
+        };
+        Ok(leave_response(&self.owner, reset_warning))
+    }
+
+    /// Remove every managed Container, depart storage and commit the reset.
+    async fn clear_out(
+        &self,
+        prepared_reset: Option<PreparedReset>,
+        exit: StorageExit,
+    ) -> Result<(), Error> {
         if let Some(containers) = &self.containers
             && let Err(error) = containers.remove_all_managed().await
         {
@@ -920,15 +970,7 @@ impl LocalMachine {
                 .mutate(move |store| prepared_reset.commit(store))
                 .await??;
         }
-        let reset_warning = match publication {
-            Some(publication) => publication
-                .remove(&machine_id)
-                .await
-                .err()
-                .map(|error| ployz_core::error_chain::inline(&error)),
-            None => None,
-        };
-        Ok(leave_response(&self.owner, reset_warning))
+        Ok(())
     }
 }
 

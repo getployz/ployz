@@ -309,6 +309,9 @@ pub struct ContainerRuntime {
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
     sealing_key_dir: Option<PathBuf>,
     log_store: LogStore,
+    /// Set when a Leave begins removing every managed Container, and cleared only when
+    /// that Leave fails, so a committed Leave keeps it set.
+    departing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ContainerRuntime {
@@ -324,6 +327,7 @@ impl ContainerRuntime {
             stranded: Arc::default(),
             sealing_key_dir: None,
             log_store: LogStore::default(),
+            departing: Arc::default(),
         }
     }
 
@@ -338,6 +342,19 @@ impl ContainerRuntime {
     pub(crate) fn with_log_store(mut self, log_store: LogStore) -> Self {
         self.log_store = log_store;
         self
+    }
+
+    /// Whether a Leave is removing every managed Container here, or has committed. A
+    /// Container call that overlapped it met the Leave's stops.
+    #[must_use]
+    pub fn departing(&self) -> bool {
+        self.departing.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A Leave that failed leaves this Machine in the Cluster, taking Container work again.
+    pub fn departure_failed(&self) {
+        self.departing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub async fn floor_turn(&self) -> FloorTurn<'_> {
