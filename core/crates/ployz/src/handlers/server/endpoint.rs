@@ -63,7 +63,7 @@ impl Missed {
 
 /// The endpoint and the Servers that now dial the target at it.
 #[derive(Serialize)]
-pub(super) struct Seeding {
+pub(crate) struct Seeding {
     pub(super) address: SelectedEndpoint,
     pub(super) dialed_by: Vec<Dialer>,
     pub(super) failures: Vec<Missed>,

@@ -321,11 +321,16 @@ fn failure(outcome: &Outcome) -> Option<IngressFailure> {
 }
 
 fn classify(cause: String) -> IngressFailure {
-    if cause.contains("address already in use") || cause.contains("port is already allocated") {
+    if port_taken(&cause) {
         IngressFailure::PortTaken { cause }
     } else {
         IngressFailure::Failed { cause }
     }
+}
+
+/// Whether Docker's `cause` says something else holds a port the Ingress Proxy publishes.
+pub(crate) fn port_taken(cause: &str) -> bool {
+    cause.contains("address already in use") || cause.contains("port is already allocated")
 }
 
 async fn wanted(

@@ -224,3 +224,206 @@ async fn an_apply_that_leaves_a_server_unobserved_is_partial_and_a_failed_one_is
     server.abort();
     assert!(matches!(failed, crate::deploy::ApplyError::Failed(_)));
 }
+
+const PORT_TAKEN: &str = "failed to bind host port 0.0.0.0:80/tcp: address already in use";
+
+/// Server one, with web traffic `on` before the command.
+fn server_one(on: bool) -> ployz_core::MachineObservation {
+    let mut one = support::machine('a', "one");
+    one.machine.accepts_ingress = on;
+    one
+}
+
+/// Run `ployz server set one --accepts-ingress=true` against `service`. Its result, and
+/// whether web traffic is on for Server one afterwards.
+async fn turn_web_traffic_on(
+    service: support::DeployService,
+) -> (Result<(), crate::failure::Failure>, bool) {
+    let (mut client, server) = support::connected_in_memory(service).await;
+    let id = support::machine('a', "one").machine.id;
+    let root = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "server",
+            "set",
+            id.as_str(),
+            "--accepts-ingress=true",
+        ])
+        .unwrap();
+    let recovery = root
+        .subcommand_matches("server")
+        .and_then(|server| server.subcommand_matches("set"))
+        .unwrap()
+        .clone();
+    let result = crate::handlers::server::apply_update(
+        &mut client,
+        ployz_core::MachineTarget::from(&id),
+        ployz_core::MachineUpdate {
+            accepts_ingress: Some(true),
+            ..Default::default()
+        },
+        None,
+        crate::ingress::IngressImage::Given("caddy:2".into()),
+        format!("ployz server set {id} --accepts-ingress=true"),
+        recovery,
+    )
+    .await;
+    let machines = client.machines().await.unwrap();
+    server.abort();
+    let on = machines
+        .iter()
+        .find(|observed| observed.machine.id == id)
+        .unwrap()
+        .machine
+        .accepts_ingress;
+    (result, on)
+}
+
+/// Web traffic the command turned on goes back off when its Ingress Proxy is seen failing
+/// to start there, as the dashboard switch does, and the error says so with the real cause.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_whose_proxy_cannot_take_its_port_goes_back_off() {
+    let (result, on) =
+        turn_web_traffic_on(support::DeployService::new(server_one(false)).fail_starts(PORT_TAKEN))
+            .await;
+    let error = result.unwrap_err();
+    assert!(!on, "web traffic went back off");
+    let report = error.report();
+    assert_eq!(
+        report.message,
+        "Web traffic stays off on one: port 80 or 443 is in use. Free it, then try again."
+    );
+    assert!(
+        report.cause.iter().any(|cause| cause.contains(PORT_TAKEN)),
+        "{report:?}"
+    );
+    assert!(report.details.get("retry").is_some(), "{report:?}");
+}
+
+/// Any other failed start says what failed after the same words.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_whose_proxy_keeps_restarting_goes_back_off() {
+    let (result, on) =
+        turn_web_traffic_on(support::DeployService::new(server_one(false)).restart_containers())
+            .await;
+    let error = result.unwrap_err();
+    assert!(!on, "web traffic went back off");
+    assert!(
+        error
+            .report()
+            .message
+            .starts_with("Web traffic stays off on one; its Ingress Proxy didn't start: "),
+        "{:?}",
+        error.report()
+    );
+}
+
+/// A start whose outcome the CLI never saw, here because the Server's Containers couldn't be
+/// listed, leaves web traffic on and says the change landed.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_whose_proxy_start_went_unseen_stays_on() {
+    let one = server_one(false);
+    let id = one.machine.id;
+    let (result, on) =
+        turn_web_traffic_on(support::DeployService::new(one).fail_listing_on(id)).await;
+    let error = result.unwrap_err();
+    assert!(on, "web traffic stays on");
+    assert!(
+        error
+            .report()
+            .message
+            .starts_with("Server updated; the Ingress Proxy did not follow"),
+        "{:?}",
+        error.report()
+    );
+}
+
+/// A start whose answer was lost, as when the Server stops answering, may have run, so web
+/// traffic stays on.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_whose_proxy_start_went_unanswered_stays_on() {
+    let (result, on) = turn_web_traffic_on(
+        support::DeployService::new(server_one(false)).fail_starts("transport error"),
+    )
+    .await;
+    let error = result.unwrap_err();
+    assert!(on, "web traffic stays on");
+    assert!(
+        error
+            .report()
+            .message
+            .starts_with("Server updated; the Ingress Proxy did not follow"),
+        "{:?}",
+        error.report()
+    );
+}
+
+/// Web traffic that was already on before the command stays on: the command didn't turn it on.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_already_on_stays_on_when_its_proxy_cannot_start() {
+    let (result, on) =
+        turn_web_traffic_on(support::DeployService::new(server_one(true)).fail_starts(PORT_TAKEN))
+            .await;
+    let error = result.unwrap_err();
+    assert!(on, "web traffic stays on");
+    assert!(
+        error
+            .report()
+            .message
+            .starts_with("Server updated; the Ingress Proxy did not follow"),
+        "{:?}",
+        error.report()
+    );
+}
+
+/// When turning web traffic back off fails too, the error says both, and how to turn it off.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_that_cannot_go_back_off_says_both_failures() {
+    let (result, on) = turn_web_traffic_on(
+        support::DeployService::new(server_one(false))
+            .fail_starts(PORT_TAKEN)
+            .refuse_role_off("the Server's record is busy"),
+    )
+    .await;
+    let error = result.unwrap_err();
+    assert!(on, "web traffic is still on");
+    let report = error.report();
+    assert!(
+        report.message.starts_with(
+            "The Ingress Proxy didn't start on one, and turning web traffic back off failed, so it may still be on: "
+        ),
+        "{report:?}"
+    );
+    assert!(
+        report.cause.iter().any(|cause| cause.contains(PORT_TAKEN)),
+        "{report:?}"
+    );
+    assert_eq!(
+        report.details.pointer("/rollback_error/message"),
+        Some(&serde_json::json!("the Server's record is busy"))
+    );
+    let id = support::machine('a', "one").machine.id;
+    let next = report
+        .details
+        .get("next")
+        .and_then(|next| next.as_str())
+        .unwrap();
+    assert_eq!(
+        shell_words::split(next).unwrap(),
+        [
+            "ployz",
+            "server",
+            "set",
+            id.as_str(),
+            "--accepts-ingress=false"
+        ]
+    );
+}
+
+/// A start that works leaves web traffic on, as before.
+#[tokio::test(start_paused = true)]
+async fn web_traffic_whose_proxy_starts_stays_on() {
+    let (result, on) = turn_web_traffic_on(support::DeployService::new(server_one(false))).await;
+    result.expect("the Ingress Proxy starts");
+    assert!(on, "web traffic stays on");
+}

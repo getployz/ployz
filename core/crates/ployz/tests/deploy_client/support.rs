@@ -116,6 +116,10 @@ pub(super) struct DeployService {
     pull_failures: BTreeSet<MachineId>,
     /// What a rejected pull answers.
     pull_failure: RpcError,
+    /// The ingress role each `UpdateMachine` set, which `ListMachines` then answers.
+    ingress_roles: Arc<Mutex<BTreeMap<MachineId, bool>>>,
+    /// What an `UpdateMachine` turning the ingress role off answers instead.
+    role_off_refusal: Option<RpcError>,
 }
 
 #[derive(Clone, Debug)]
@@ -194,6 +198,8 @@ impl DeployService {
                 details: Value::Null,
                 cause: Vec::new(),
             },
+            ingress_roles: Arc::default(),
+            role_off_refusal: None,
         }
     }
 
@@ -399,6 +405,28 @@ impl DeployService {
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
         self.machines = machines;
         self
+    }
+
+    pub(super) fn refuse_role_off(mut self, message: &str) -> Self {
+        self.role_off_refusal = Some(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: message.into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        });
+        self
+    }
+
+    /// The Machines as `ListMachines` answers them, with each role `UpdateMachine` set.
+    fn listed_machines(&self) -> Vec<MachineObservation> {
+        let roles = self.ingress_roles.lock().unwrap();
+        let mut machines = self.machines.clone();
+        for observed in &mut machines {
+            if let Some(role) = roles.get(&observed.machine.id) {
+                observed.machine.accepts_ingress = *role;
+            }
+        }
+        machines
     }
 
     pub(super) fn fail_inspects(mut self, message: &str) -> Self {
@@ -777,7 +805,7 @@ impl FakeMachine for DeployService {
         }
         encoded(RpcResponse::from(MachineList {
             enrollment: None,
-            machines: self.machines.clone(),
+            machines: self.listed_machines(),
         }))
     }
 
@@ -1337,10 +1365,28 @@ impl FakeMachine for DeployService {
     }
     async fn update_machine(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        unused()
+        let machine_id = machine_from_metadata(&request)?;
+        let RpcRequestBody::UpdateMachine(update) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected update_machine"));
+        };
+        if let Some(role) = update.update.accepts_ingress {
+            if let (false, Some(refusal)) = (role, &self.role_off_refusal) {
+                return encoded(RpcResponse::from(refusal.clone()));
+            }
+            self.ingress_roles.lock().unwrap().insert(machine_id, role);
+        }
+        let machine = self
+            .listed_machines()
+            .into_iter()
+            .find(|observed| observed.machine.id == machine_id)
+            .ok_or_else(|| Status::not_found("no such Machine"))?
+            .machine;
+        encoded(RpcResponse::from(ployz_core::MachineUpdated { machine }))
     }
     async fn leave(
         &self,

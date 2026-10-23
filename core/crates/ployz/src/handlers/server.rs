@@ -26,6 +26,7 @@ use crate::{
     connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
+    ui::progress::NotRunning,
 };
 
 use super::{Error, leaf_matches, string_values, with_client};
@@ -851,7 +852,7 @@ fn unseeded(seeding: &endpoint::Seeding) -> Error {
 
 /// Update the target's record. With `seeding`, a target that cannot be reached still
 /// leaves the other Servers dialing it, and the command succeeds.
-async fn apply_update(
+pub(crate) async fn apply_update(
     client: &mut Client,
     selector: MachineTarget,
     update: MachineUpdate,
@@ -861,6 +862,7 @@ async fn apply_update(
     recovery: ArgMatches,
 ) -> Result<(), Error> {
     let accepts_ingress = update.accepts_ingress;
+    let turns_on = accepts_ingress == Some(true) && ingress_off(client, &selector).await;
     let public_ip_removed = update.public_ip == PublicIpUpdate::Remove;
     // Setting or clearing the public IP pins it, so daemon start no longer looks one up.
     let public_ip_pinned = update.public_ip != PublicIpUpdate::Keep;
@@ -872,7 +874,7 @@ async fn apply_update(
         )
         .await
         .map_err(|error| (error.unreplied(), RpcError::from(error)));
-    let machine = match (updated, &seeding) {
+    let mut machine = match (updated, &seeding) {
         (Ok(updated), _) => updated.machine,
         (Err((unreplied, error)), Some(seeding))
             if error.code == RpcErrorCode::Unavailable && !seeding.dialed_by.is_empty() =>
@@ -944,22 +946,106 @@ async fn apply_update(
         crate::ingress::follow_roles(client, ingress).await
     }
     .await;
+    let (ingress, follow_up) = match followed {
+        Ok(ingress) => (ingress, Ok(())),
+        Err(error) => {
+            let error = super::ingress_hints(error, |args| super::rerun(&recovery, args));
+            let not_running = error
+                .diagnostic()
+                .filter(|diagnostic| diagnostic.failed_machine == Some(machine.id))
+                .and_then(|diagnostic| diagnostic.not_running);
+            let error = match not_running {
+                Some(not_running) if turns_on && !error.is_interrupted() => {
+                    turn_back_off(client, &mut machine, not_running, error, rerun, &recovery).await
+                }
+                _ => ingress_incomplete("Server updated", error, rerun),
+            };
+            (None, Err(error))
+        }
+    };
     crate::ui::emit_committed(
         json!({
             "server": server_json(&machine),
             "endpoint": seeding,
             "public_ip_pinned": public_ip_pinned,
             "next": next,
-            "ingress": followed.as_ref().ok().and_then(Option::as_ref),
+            "ingress": ingress,
         }),
-        followed.map(drop).map_err(|error| {
-            ingress_incomplete(
-                "Server updated",
-                super::ingress_hints(error, |args| super::rerun(&recovery, args)),
-                rerun,
-            )
-        }),
+        follow_up,
     )
+}
+
+/// Whether the Server `selector` names is seen without the ingress role. A Server not read
+/// counts as having it, so a failed start never turns off a role this command didn't turn on.
+async fn ingress_off(client: &mut Client, selector: &MachineTarget) -> bool {
+    let Ok(machines) = client.machines().await else {
+        return false;
+    };
+    crate::cluster::visible_machine(selector, &machines)
+        .is_ok_and(|observed| !observed.machine.accepts_ingress)
+}
+
+/// Turn web traffic back off on `machine` after its Ingress Proxy was seen failing to start
+/// there, as the dashboard switch does, so the Server isn't advertised with nothing listening.
+/// `UpdateMachine` has no compare-and-set: this one-field patch overwrites a role another
+/// writer set since, and leaves every other field as it is.
+async fn turn_back_off(
+    client: &mut Client,
+    machine: &mut Machine,
+    not_running: NotRunning,
+    failed: Error,
+    rerun: String,
+    recovery: &ArgMatches,
+) -> Error {
+    let off = MachineUpdate {
+        accepts_ingress: Some(false),
+        ..MachineUpdate::default()
+    };
+    let name = machine.name.clone();
+    match client
+        .invoke_answered::<op::UpdateMachine>(
+            UpdateMachineRequest { update: off },
+            &MachineTarget::from(&machine.id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+    {
+        Ok(updated) => {
+            *machine = updated.machine;
+            let headline = match not_running {
+                NotRunning::PortTaken => format!(
+                    "Web traffic stays off on {name}: port 80 or 443 is in use. Free it, then try again."
+                ),
+                NotRunning::Stopped => super::ingress_headline(
+                    &format!("Web traffic stays off on {name}; its Ingress Proxy didn't start"),
+                    &failed,
+                ),
+            };
+            failed.context(headline).hint(Hint::Next(rerun))
+        }
+        Err(error) => {
+            let headline = super::ingress_headline(
+                &format!(
+                    "The Ingress Proxy didn't start on {name}, and turning web traffic back off \
+                     failed, so it may still be on"
+                ),
+                &failed,
+            );
+            let off = super::rerun(
+                recovery,
+                &[
+                    "server",
+                    "set",
+                    machine.id.as_str(),
+                    "--accepts-ingress=false",
+                ],
+            );
+            failed
+                .context(headline)
+                .with_detail("rollback_error", json!(RpcError::from(error)))
+                .hint(Hint::Next(off))
+        }
+    }
 }
 
 /// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.

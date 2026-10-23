@@ -4,7 +4,8 @@ use crate::{
     connect::Client,
     failure::Failure,
     ui::progress::{
-        Detail, Diagnostic, Frame, GraphService, LogTail, Row, Run, State, Subject, Timing, Work,
+        Detail, Diagnostic, Frame, GraphService, LogTail, NotRunning, Row, Run, State, Subject,
+        Timing, Work,
     },
 };
 use ployz_core::{
@@ -505,8 +506,22 @@ pub(super) fn failure(
         None => reason,
     });
     let lost_to_newer = matches!(error, ExecutionError::NewerServing { .. });
+    let not_running = match error {
+        ExecutionError::Machine { error, .. } => std::iter::once(&error.message)
+            .chain(&error.cause)
+            .any(|cause| crate::ingress::port_taken(cause))
+            .then_some(NotRunning::PortTaken),
+        ExecutionError::Health { failure, .. } => {
+            (!matches!(failure, HealthFailure::Cancelled)).then_some(NotRunning::Stopped)
+        }
+        ExecutionError::DependencyHealth { .. }
+        | ExecutionError::Hook { .. }
+        | ExecutionError::NewerServing { .. }
+        | ExecutionError::Cancelled => None,
+    };
     let mut diagnostic = Diagnostic {
         failed_machine: (!lost_to_newer).then_some(machine),
+        not_running,
         logs: if lost_to_newer { Vec::new() } else { tails },
         ..Diagnostic::default()
     };
