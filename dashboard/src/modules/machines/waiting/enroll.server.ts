@@ -13,7 +13,6 @@ import { machineNameFromHostname } from "#/modules/machines/waiting/names";
 import {
   COMMITTED_STAGES,
   ENROLL_MIN_CLI_VERSION,
-  joinCommitted,
   type EnrollInput,
   type EnrollInstruction,
   type EnrollmentRole,
@@ -471,31 +470,18 @@ export const cancelServerEnrollment = Effect.fn("ServerEnrollment.cancel")(funct
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [attempt] = yield* drizzle
-      .select({ id: serverEnrollment.id, open: sql<boolean>`${serverEnrollment.endedAt} is null` })
+      .select({ id: serverEnrollment.id, open: sql<boolean>`${serverEnrollment.endedAt} is null`, instruction: serverEnrollment.instruction })
       .from(serverEnrollment)
       .where(and(eq(serverEnrollment.organizationId, organization.id), eq(serverEnrollment.id, input.id)));
     if (attempt === undefined) return yield* new NotFound({ message: "No such enrollment." });
-    // Held through the cancel, so a join Cloud sends after this read waits, then finds the attempt ended.
-    const [held] = yield* drizzle
-      .select({
-        stage: serverEnrollment.stage,
-        instruction: serverEnrollment.instruction,
-        reportedAttemptId: waitingServer.reportedAttemptId,
-        reportedStage: waitingServer.reportedStage,
-      })
-      .from(serverEnrollment)
-      .innerJoin(waitingServer, eq(waitingServer.id, serverEnrollment.waitingServerId))
-      .where(and(eq(serverEnrollment.id, attempt.id), isNull(serverEnrollment.endedAt)))
-      .for("update", { of: serverEnrollment });
-    // Cancelling sends no Leave, so a join that may have committed would stay in the Cluster with the Sealing Key.
-    if (held !== undefined && joinCommitted({ id: attempt.id, stage: held.stage }, held)) {
-      const { name } = held.instruction;
+    const spared = attempt.open ? yield* cancelServerEnrollments(organization.id, [attempt.id]) : [];
+    if (spared.length > 0) {
+      const { name } = attempt.instruction;
       return yield* new Conflict({
         message: `${name} may already be in the Cluster: Cloud sent its join. Nothing cancelled. Once it has joined, remove it with ployz server rm ${name}.`,
         userFacing: true,
       });
     }
-    if (attempt.open) yield* cancelServerEnrollments(organization.id, [attempt.id]);
     return { id: attempt.id, cancelling: attempt.open };
   }));
 });

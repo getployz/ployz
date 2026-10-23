@@ -56,7 +56,6 @@ import { managementIdentity as managementIdentityOf } from "#/modules/machines/m
 import {
   decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS,
 } from "#/modules/machines/connections.server";
-import { recordJoinSent } from "#/modules/machines/waiting/enrollment-run.server";
 
 const TOKEN_PREFIX = "pmet_";
 
@@ -676,12 +675,9 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
         if (!current || current.removalStartedAt !== null || !credentialsMatch(yield* decryptPairingSecret(current.encryptedPairingSecret), pairing.secret)) {
           return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
         }
-        // Before the token: a cancel locks the attempt, then the token.
-        if (token.serverEnrollmentId !== null && !(yield* recordJoinSent(token.serverEnrollmentId))) {
-          return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
-        }
-        yield* requireUnspentClaim(input.token, input.identity.machineId);
+        // The slot's write takes the token's row lock first, so the claim read after it sees a cancel that expired the token.
         yield* holdJoinSlot(input.token);
+        yield* requireUnspentClaim(input.token, input.identity.machineId);
         return yield* reserveEnrollmentAssignment({
           organizationId: token.organizationId, pairing: pairing.secret,
           identity: request, snapshot,

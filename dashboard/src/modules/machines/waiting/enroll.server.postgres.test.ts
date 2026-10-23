@@ -19,7 +19,7 @@ import {
   readServerEnrollmentStatus,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
-import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, recordJoinSent, recordStage, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
+import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, recordStage, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
 import { listWaitingServers, showWaitingServer } from "#/modules/machines/waiting/waiting-servers.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
@@ -687,30 +687,46 @@ it("closes a cancelled attempt no run has bound, and says when there was nothing
     .toMatchObject({ _tag: "NotFound" });
 });
 
-it("refuses to cancel an attempt once Cloud sent its join, and Reject spares it, since the Server may already be in the Cluster", async () => {
+/** What a join saves before it sends Register: the token claimed by `machineId`, and that Machine's assignment. */
+const joinSaved = async (attemptId: string, machineId: string) => {
+  await harness.pool.query(
+    "update machine_enrollment_token set claimed_machine_id = $1, claimed_public_key = 'k', claimed_at = now() where server_enrollment_id = $2",
+    [machineId, attemptId],
+  );
+  await harness.pool.query(
+    "insert into enrollment_allocation (organization_id, cluster_key, assignments) values ($1, $2, $3)",
+    [adaOrg, "0".repeat(64), JSON.stringify([{ machine: { id: machineId } }])],
+  );
+};
+const tokenLive = async (attemptId: string) =>
+  (await harness.pool.query<{ live: boolean }>("select expires_at > now() as live from machine_enrollment_token where server_enrollment_id = $1", [attemptId])).rows[0]?.live;
+
+it("refuses to cancel an attempt whose join Cloud may have sent, and Reject spares it, since the Server may already be in the Cluster", async () => {
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
   await run(enroll([a]));
   const attemptId = await committing(a);
-  expect(await run(recordJoinSent(attemptId))).toBe(true);
+  await joinSaved(attemptId, "a".repeat(32));
   sent.mockClear();
   expect(await failure(cancelServerEnrollment(ada, { organizationSlug: "ada", id: attemptId }))).toMatchObject({
     _tag: "Conflict",
     message: "web-a may already be in the Cluster: Cloud sent its join. Nothing cancelled. Once it has joined, remove it with ployz server rm web-a.",
   });
   expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }))).toEqual({ rejected: 1 });
-  expect(await stages()).toEqual([{ state: "running", stage: "joining", ended_at: null }]);
+  expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);
+  expect(await tokenLive(attemptId)).toBe(true);
   expect(await outbox()).not.toContain("server/enrollment.cancel");
 });
 
-it("records no join for an attempt that already ended", async () => {
+it("expires a bound attempt's token as soon as Cancel is accepted, so no join can follow it", async () => {
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
-  const [started] = (await run(enroll([a]))).attempts;
-  const id = started?.id ?? "";
-  await run(cancelServerEnrollment(ada, { organizationSlug: "ada", id }));
-  expect(await run(recordJoinSent(id))).toBe(false);
-  expect((await attempts()).map((row) => row.state)).toEqual(["cancelled"]);
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  expect(await run(cancelServerEnrollment(ada, { organizationSlug: "ada", id: attemptId }))).toEqual({ id: attemptId, cancelling: true });
+  expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);
+  expect(await tokenLive(attemptId)).toBe(false);
+  expect(await outbox()).toContain("server/enrollment.cancel");
 });
 
 it("fails an attempt whose run failed before it bound the attempt", async () => {
