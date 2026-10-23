@@ -111,7 +111,26 @@ fn skip_interface(name: &str) -> bool {
 /// lookup only through a NAT64 gateway, which answers with the gateway's address.
 fn has_ipv4_route() -> bool {
     // Ask the kernel, so policy tables and split routes count, not only a main-table default.
-    any_ipv4_route(|destination| checked_command("ip", &["-4", "route", "get", destination]))
+    any_ipv4_route(|destination| {
+        let output = route_get_command(destination).output()?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            Err(NetworkError::Command {
+                program: "ip".into(),
+                stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
+            })
+        }
+    })
+}
+
+/// In the C locale, so [`ipv4_route`] can read the kernel's refusal.
+fn route_get_command(destination: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("ip");
+    command
+        .args(["-4", "route", "get", destination])
+        .env("LC_ALL", "C");
+    command
 }
 
 /// One public address in each half of IPv4, so a route refused to one destination, or a
@@ -219,6 +238,16 @@ mod tests {
             stdout: b"1.1.1.1 via 192.0.2.1 dev wg0 table 51820 src 192.0.2.8\n".to_vec(),
             stderr: Vec::new(),
         })));
+    }
+
+    #[test]
+    fn the_route_lookup_reports_in_english_whatever_the_daemons_locale() {
+        let command = route_get_command("1.1.1.1");
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "LC_ALL" && value == Some(std::ffi::OsStr::new("C")))
+        );
     }
 
     #[test]
