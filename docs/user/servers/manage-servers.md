@@ -279,7 +279,10 @@ server holds port 80, the switch goes back off and the section says why: **Could
 traffic · Port 80 is in use on web-1. Free it, then try again.** Fix the cause and click **Retry**.
 
 From the CLI, `ployz server set web-1 --accepts-ingress=false` turns the role off but leaves the web
-server running; use the switch to stop it.
+server running; use the switch to stop it. When `--accepts-ingress=true` can't start the web server,
+the command exits with code 3 and leaves the role on. The section then reads **Couldn't start web
+traffic · The web server isn't running on web-1.** Click **Retry** to start it from Ployz Cloud,
+which says why it can't start and turns the switch back off.
 
 ## Upgrade Ployz on a server
 

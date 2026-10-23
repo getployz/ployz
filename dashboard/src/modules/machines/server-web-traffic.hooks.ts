@@ -1,12 +1,21 @@
 import { useEffect, useState } from "react";
+import { useLiveQuery } from "@tanstack/react-db";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
 import type { WebTrafficWant } from "./server-web-traffic";
-import type { ServerStatus } from "./server-status";
-import { WEB_TRAFFIC_SETTLE_MS, type WebTrafficReach, webTrafficReach, webTrafficView, type WebTrafficView } from "./server-web-traffic-view";
+import { needsAttention, serverStatus, type ServerStatus } from "./server-status";
+import {
+  ingressProxyOn,
+  WEB_TRAFFIC_SETTLE_MS,
+  type WebTrafficReach,
+  webTrafficReach,
+  webTrafficView,
+  type WebTrafficView,
+} from "./server-web-traffic-view";
 import { requestServerWebTrafficServerFn } from "./server-web-traffic.functions";
 import { serverWebTrafficKeys, useServerWebTrafficChanges } from "./server-web-traffic.queries";
 
@@ -41,7 +50,8 @@ export function useServerWebTraffic(
 ): ServerWebTraffic {
   const queryClient = useQueryClient();
   const { servers: latest } = useServerWebTrafficChanges(organizationSlug);
-  const { published, incompleteIds } = useRuntimeStatus();
+  const { lensStatus, published, incompleteIds } = useRuntimeStatus();
+  const { data: runtimeServices = [] } = useLiveQuery(getRuntimeCollections(organizationSlug, useCollectionScope()).services);
   const [requested, setRequested] = useState<{ readonly id: string; readonly want: WebTrafficWant } | null>(null);
   const [open, setOpen] = useState(false);
   const [settledId, setSettledId] = useState<string | null>(null);
@@ -86,10 +96,14 @@ export function useServerWebTraffic(
 
   return {
     view: webTrafficView({
-      server: { id: server.id, acceptsIngress: machine.acceptsIngress, publicIp: machine.publicIp },
+      server: { id: server.id, name: server.name, acceptsIngress: machine.acceptsIngress, publicIp: machine.publicIp },
       latest,
       requested,
       settled: finished !== null && settledId === finished.attemptId,
+      // An offline Server, or a watch that isn't current, shows no proxy: that says nothing about the web server.
+      proxy: lensStatus === "observed" && !needsAttention(serverStatus(machine))
+        ? ingressProxyOn(server.id, runtimeServices, incompleteIds)
+        : "unknown",
     }),
     domains: published,
     partial: incompleteIds.machines.length > 0 || incompleteIds.containers.length > 0,

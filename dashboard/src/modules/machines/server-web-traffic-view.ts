@@ -1,5 +1,7 @@
 import type { LatestWebTrafficChanges, WebTrafficWant } from "#/modules/machines/server-web-traffic";
 import { needsAttention, type ServerStatus } from "#/modules/machines/server-status";
+import { SYSTEM_NAMESPACE } from "#/modules/machines/server-services";
+import type { RuntimeIncompleteIds, RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 
 /** What the Web traffic row shows: the switch's position, and the line under it. */
 export type WebTrafficView =
@@ -36,6 +38,23 @@ export const webTrafficReach = (
     : "last";
 };
 
+/** Whether the Server's Ingress Proxy is running, as the Runtime Watch saw it; `unknown` while it couldn't see it all. */
+export type IngressProxy = "running" | "down" | "unknown";
+
+const INGRESS = `${SYSTEM_NAMESPACE}/ingress`;
+
+export function ingressProxyOn(
+  machineId: string,
+  services: readonly Pick<RuntimeServiceRecord, "identity" | "containers">[],
+  incomplete: Pick<RuntimeIncompleteIds, "machines" | "containers">,
+): IngressProxy {
+  // An unread container carries no Machine id, so it could be this Server's Ingress Proxy.
+  if (incomplete.machines.includes(machineId) || incomplete.containers.length > 0) return "unknown";
+  const running = services.some((service) => service.identity === INGRESS && service.containers.some((container) =>
+    container.machineId === machineId && container.runtime?.state === "running"));
+  return running ? "running" : "down";
+}
+
 /** How long a finished change may take to show on the Server before the row trusts what the Server says instead. */
 export const WEB_TRAFFIC_SETTLE_MS = 30_000;
 
@@ -44,18 +63,24 @@ export const WEB_TRAFFIC_SETTLE_MS = 30_000;
  * asked for (`requested`, until its row arrives). A change under way shows as such; a finished one whose outcome the
  * Server hasn't shown yet keeps showing until `settled`. A failed change always shows its reason. After a failed stop
  * the role may be off while the web server still runs. After a failed start the role is on only when putting it back
- * failed too, and then your domains point at a Server whose web server may not run.
+ * failed too, and then your domains point at a Server whose web server may not run. A role on with no Ingress Proxy
+ * running reads as a failed start too, since the CLI's `server set` leaves the role on when the start fails.
  */
 export function webTrafficView(input: {
-  readonly server: { readonly id: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
+  readonly server: { readonly id: string; readonly name: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
   readonly latest: LatestWebTrafficChanges;
   readonly requested: { readonly id: string; readonly want: WebTrafficWant } | null;
   /** Whether the latest finished change has had its settle time. */
   readonly settled: boolean;
+  readonly proxy: IngressProxy;
 }): WebTrafficView {
-  const { server, latest, requested, settled } = input;
+  const { server, latest, requested, settled, proxy } = input;
   const observed: WebTrafficWant = server.acceptsIngress ? "on" : "off";
-  const steady: WebTrafficView = observed === "on" ? { kind: "on", address: server.publicIp } : { kind: "off" };
+  const steady: WebTrafficView = observed === "off"
+    ? { kind: "off" }
+    : proxy === "down"
+      ? { kind: "failed", want: "on", on: true, reason: `The web server isn’t running on ${server.name}.`, address: server.publicIp }
+      : { kind: "on", address: server.publicIp };
   const own = latest[server.id] ?? null;
   if (requested !== null && own?.attemptId !== requested.id) return requested.want === "on" ? { kind: "starting" } : { kind: "stopping" };
   if (own === null) return steady;
