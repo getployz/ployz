@@ -154,13 +154,13 @@ impl CorrosionConfig {
 
     fn install(&self) -> Result<InstalledFiles, Error> {
         create_private_dir(&self.paths.data_dir)?;
-        let refused = sync_writes(&self.paths.data_dir);
+        let refused = async_writes(&self.paths.data_dir);
         if let Some(first) = refused.first() {
             tracing::warn!(
                 data_dir = %self.paths.data_dir.display(),
                 refused = refused.len(),
                 error = %ployz_core::error_chain::inline(first),
-                "Corrosion's commits can be lost on power loss: files in its data directory do not write synchronously"
+                "files in Corrosion's data directory still write synchronously, which slows catch-up"
             );
         }
         create_private_dir(&self.paths.run_dir)?;
@@ -421,23 +421,30 @@ fn create_private_dir(path: &Path) -> Result<(), Error> {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("could not make {} write synchronously", path.display())]
+#[error("could not stop {} writing synchronously", path.display())]
 struct SyncWritesError {
     path: PathBuf,
     source: std::io::Error,
 }
 
-// Corrosion broadcasts a commit before SQLite syncs it, and peers never send a Machine its
-// own changes back, so a commit lost to power loss after broadcast is never recovered.
-fn sync_writes(dir: &Path) -> Vec<SyncWritesError> {
+// Earlier daemons set the synchronous-update flag on the whole store so a power cut could not
+// lose a commit Corrosion had broadcast. Each WAL page then waits for the disk, which slows the
+// large catch-up commits after a partition. A lost tail now comes back from peers under a new
+// actor (`lost_tail`), so the flag only costs.
+fn async_writes(dir: &Path) -> Vec<SyncWritesError> {
     let mut refused = Vec::new();
-    sync_tree(dir, OFlags::DIRECTORY, &mut refused);
-    refused.retain(|error| error.source.kind() != std::io::ErrorKind::NotFound);
+    clear_tree(dir, OFlags::DIRECTORY, &mut refused);
+    let unsupported = [rustix::io::Errno::OPNOTSUPP, rustix::io::Errno::NOTTY]
+        .map(|errno| Some(errno.raw_os_error()));
+    refused.retain(|error| {
+        error.source.kind() != std::io::ErrorKind::NotFound
+            && !unsupported.contains(&error.source.raw_os_error())
+    });
     refused
 }
 
-fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
-    if let Err(error) = set_sync_flag(dir, open) {
+fn clear_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
+    if let Err(error) = clear_sync_flag(dir, open) {
         refused.push(error);
     }
     let entries = match fs::read_dir(dir) {
@@ -464,10 +471,10 @@ fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
         let path = entry.path();
         match entry.file_type() {
             Ok(file_type) if file_type.is_dir() => {
-                sync_tree(&path, OFlags::DIRECTORY | OFlags::NOFOLLOW, refused)
+                clear_tree(&path, OFlags::DIRECTORY | OFlags::NOFOLLOW, refused)
             }
             Ok(file_type) if file_type.is_file() => {
-                if let Err(error) = set_sync_flag(&path, OFlags::NOFOLLOW) {
+                if let Err(error) = clear_sync_flag(&path, OFlags::NOFOLLOW) {
                     refused.push(error);
                 }
             }
@@ -477,7 +484,7 @@ fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
     }
 }
 
-fn set_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
+fn clear_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
     let set = || -> rustix::io::Result<()> {
         let fd = rustix::fs::open(
             path,
@@ -485,8 +492,8 @@ fn set_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
             Mode::empty(),
         )?;
         let flags = rustix::fs::ioctl_getflags(&fd)?;
-        if !flags.contains(IFlags::SYNC) {
-            rustix::fs::ioctl_setflags(&fd, flags | IFlags::SYNC)?;
+        if flags.contains(IFlags::SYNC) {
+            rustix::fs::ioctl_setflags(&fd, flags - IFlags::SYNC)?;
         }
         Ok(())
     };
@@ -702,71 +709,37 @@ mod tests {
     }
 
     #[test]
-    fn existing_store_files_write_synchronously() {
+    fn store_files_flagged_by_an_earlier_daemon_stop_writing_synchronously() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
         fs::create_dir(dir.join("snapshots")).unwrap();
         fs::write(dir.join("snapshots/old.db"), "").unwrap();
         fs::write(dir.join("store.db"), "").unwrap();
-
-        let refused = sync_writes(dir);
-        if refused.is_empty() {
-            for path in [
-                dir.to_path_buf(),
-                dir.join("snapshots"),
-                dir.join("snapshots/old.db"),
-                dir.join("store.db"),
-            ] {
-                let file = fs::File::open(&path).unwrap();
-                assert!(
-                    rustix::fs::ioctl_getflags(&file)
-                        .unwrap()
-                        .contains(IFlags::SYNC),
-                    "{} does not write synchronously",
-                    path.display()
-                );
-            }
-        } else {
-            let unsupported = [rustix::io::Errno::OPNOTSUPP, rustix::io::Errno::NOTTY]
-                .map(|errno| Some(errno.raw_os_error()));
-            assert!(refused.iter().any(|error| error.path == dir));
-            for error in &refused {
-                assert!(
-                    unsupported.contains(&error.source.raw_os_error()),
-                    "only the filesystem refusing the flag may leave files unflagged: {error}: {}",
-                    error.source
-                );
+        let paths = [
+            dir.to_path_buf(),
+            dir.join("snapshots"),
+            dir.join("snapshots/old.db"),
+            dir.join("store.db"),
+        ];
+        let flags = |path: &Path| rustix::fs::ioctl_getflags(fs::File::open(path).unwrap());
+        for path in &paths {
+            let Ok(current) = flags(path) else {
+                return;
+            };
+            if rustix::fs::ioctl_setflags(fs::File::open(path).unwrap(), current | IFlags::SYNC)
+                .is_err()
+            {
+                return;
             }
         }
-    }
 
-    #[test]
-    fn one_refused_file_leaves_the_rest_of_the_store_writing_synchronously() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path();
-        let refused = dir.join("refused");
-        fs::write(&refused, "").unwrap();
-        fs::set_permissions(&refused, fs::Permissions::from_mode(0o000)).unwrap();
-        let siblings: Vec<_> = (0..20).map(|n| dir.join(format!("store-{n}.db"))).collect();
-        for sibling in &siblings {
-            fs::write(sibling, "").unwrap();
-        }
+        assert!(async_writes(dir).is_empty());
 
-        let _ = sync_writes(dir);
-
-        let synchronous = |path: &Path| {
-            rustix::fs::ioctl_getflags(fs::File::open(path).unwrap())
-                .unwrap()
-                .contains(IFlags::SYNC)
-        };
-        if !synchronous(dir) {
-            return;
-        }
-        for sibling in &siblings {
+        for path in &paths {
             assert!(
-                synchronous(sibling),
-                "{} does not write synchronously",
-                sibling.display()
+                !flags(path).unwrap().contains(IFlags::SYNC),
+                "{} still writes synchronously",
+                path.display()
             );
         }
     }
