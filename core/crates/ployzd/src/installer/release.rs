@@ -90,7 +90,7 @@ impl ReleaseSource {
         match self {
             Self::Published => {
                 let client = download_client()?;
-                from_release_mirrors(&RELEASE_MIRRORS, &format!("v{target}/{file}"), |url| {
+                from_release_mirrors(RELEASE_MIRRORS, &format!("v{target}/{file}"), |url| {
                     get_if_present(&client, url)
                 })
                 .await

@@ -18,11 +18,12 @@ use tokio::{
 
 use super::get_if_present;
 
-/// A resolver that fails, finds no address, or never answers.
+/// A resolver that fails, finds no address, times out, or never answers.
 #[derive(Clone, Copy)]
 enum Dns {
     Fails,
     Empty,
+    TimesOut,
     Hangs,
 }
 
@@ -33,6 +34,7 @@ impl Resolve for Dns {
             match dns {
                 Dns::Fails => Err("no such host".into()),
                 Dns::Empty => Ok(Box::new(std::iter::empty()) as Addrs),
+                Dns::TimesOut => Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into()),
                 Dns::Hangs => std::future::pending().await,
             }
         })
@@ -42,7 +44,7 @@ impl Resolve for Dns {
 fn client(dns: Option<Dns>) -> reqwest::Client {
     let builder = reqwest::Client::builder()
         .no_proxy()
-        .connect_timeout(Duration::from_millis(200));
+        .connect_timeout(Duration::from_secs(1));
     match dns {
         Some(dns) => builder.dns_resolver(Arc::new(dns)),
         None => builder,
@@ -51,8 +53,12 @@ fn client(dns: Option<Dns>) -> reqwest::Client {
     .unwrap()
 }
 
-/// Serves `status` with body `body` to every request, counting them.
-async fn http(status: &'static str, body: &'static str) -> (String, Arc<AtomicUsize>) {
+/// Serves `status`, with any `headers`, and body `body` to every request, counting them.
+async fn http(
+    status: &'static str,
+    headers: String,
+    body: &'static str,
+) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(AtomicUsize::new(0));
@@ -63,13 +69,27 @@ async fn http(status: &'static str, body: &'static str) -> (String, Arc<AtomicUs
             let mut request = [0_u8; 1024];
             let _ = stream.read(&mut request).await;
             let response = format!(
-                "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes()).await;
         }
     });
     (format!("http://{address}"), requests)
+}
+
+/// The mirror a fallback reaches, counting its requests. Bound before any port a test
+/// closes, so it can never take that port.
+async fn fallback() -> (String, Arc<AtomicUsize>) {
+    http("200 OK", String::new(), "fallback").await
+}
+
+/// A loopback port nothing listens on.
+async fn refused() -> String {
+    let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = closed.local_addr().unwrap();
+    drop(closed);
+    format!("https://{address}")
 }
 
 /// An HTTPS listener whose certificate no client trusts.
@@ -96,13 +116,13 @@ async fn self_signed() -> SocketAddr {
     address
 }
 
-/// Fetch through `primary`, then a fallback mirror; the fallback's request count and the result.
+/// Fetch through `primary`, then `fallback`; the fallback's request count and the result.
 async fn through(
     client: &reqwest::Client,
     primary: &str,
+    (fallback, requests): (String, Arc<AtomicUsize>),
 ) -> (usize, Result<Option<Vec<u8>>, reqwest::Error>) {
-    let (fallback, requests) = http("200 OK", "fallback").await;
-    let result = ployz_core::from_release_mirrors(&[primary, &fallback], "v1.2.3/asset", |url| {
+    let result = ployz_core::from_release_mirrors([primary, &fallback], "v1.2.3/asset", |url| {
         get_if_present(client, url)
     })
     .await;
@@ -121,39 +141,58 @@ fn stayed((requests, result): (usize, Result<Option<Vec<u8>>, reqwest::Error>)) 
 
 #[tokio::test]
 async fn a_refused_connection_falls_back() {
-    let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = closed.local_addr().unwrap();
-    drop(closed);
-    fell_back(through(&client(None), &format!("https://{address}")).await);
+    let fallback = fallback().await;
+    fell_back(through(&client(None), &refused().await, fallback).await);
 }
 
 #[tokio::test]
 async fn a_name_that_does_not_resolve_falls_back() {
     let primary = "https://github.test";
-    fell_back(through(&client(Some(Dns::Fails)), primary).await);
+    fell_back(through(&client(Some(Dns::Fails)), primary, fallback().await).await);
     // A host without IPv4 finds no usable address for an IPv4-only name.
-    fell_back(through(&client(Some(Dns::Empty)), primary).await);
+    fell_back(through(&client(Some(Dns::Empty)), primary, fallback().await).await);
 }
 
 #[tokio::test]
 async fn an_untrusted_certificate_never_falls_back() {
     let address = self_signed().await;
-    let error = stayed(through(&client(None), &format!("https://{address}")).await);
-    assert!(!error.is_timeout(), "{error:?}");
+    let error = stayed(
+        through(
+            &client(None),
+            &format!("https://{address}"),
+            fallback().await,
+        )
+        .await,
+    );
+    let chain = ployz_core::error_chain::inline(&error);
+    assert!(chain.contains("certificate"), "{chain}");
 }
 
 #[tokio::test]
-async fn a_connect_timeout_never_falls_back() {
-    let error = stayed(through(&client(Some(Dns::Hangs)), "https://github.test").await);
+async fn a_timeout_never_falls_back() {
+    let primary = "https://github.test";
+    let error = stayed(through(&client(Some(Dns::Hangs)), primary, fallback().await).await);
+    assert!(error.is_timeout(), "{error:?}");
+    // A resolver's own timeout comes through as a DNS error, and still never falls back.
+    let error = stayed(through(&client(Some(Dns::TimesOut)), primary, fallback().await).await);
     assert!(error.is_timeout(), "{error:?}");
 }
 
 #[tokio::test]
 async fn a_server_error_never_falls_back() {
-    let (primary, _) = http("500 Internal Server Error", "broken").await;
-    let error = stayed(through(&client(None), &primary).await);
+    let (primary, _) = http("500 Internal Server Error", String::new(), "broken").await;
+    let error = stayed(through(&client(None), &primary, fallback().await).await);
     assert_eq!(
         error.status(),
         Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR)
     );
+}
+
+/// GitHub redirects every asset to its asset host; that host is the one that must answer.
+#[tokio::test]
+async fn an_unreachable_redirect_target_falls_back() {
+    let fallback = fallback().await;
+    let target = refused().await.replace("https://", "http://");
+    let (primary, _) = http("302 Found", format!("location: {target}/asset\r\n"), "").await;
+    fell_back(through(&client(None), &primary, fallback).await);
 }

@@ -10,30 +10,38 @@ pub const RELEASE_MIRRORS: [&str; 2] = [
 ];
 
 /// Fetch `asset`, a path under a release download base such as `v0.3.4/checksums.txt`, from
-/// each mirror in turn. A mirror is skipped only when [`mirror_unreachable`] says the request
-/// never reached it; any other failure, and the last mirror's result, is returned as is.
+/// the primary mirror, or from the fallback when [`release_mirror_unreachable`] says the
+/// request never reached the primary. Any other failure is returned as is.
 ///
 /// # Errors
 ///
-/// Returns the failure of the last mirror tried.
-pub async fn from_release_mirrors<T, E, F, Fut>(
-    mirrors: &[&str],
+/// Returns the failure of the last mirror tried. Its URL names that mirror.
+pub async fn from_release_mirrors<T, F, Fut>(
+    [primary, fallback]: [&str; 2],
     asset: &str,
     mut fetch: F,
-) -> Result<T, E>
+) -> Result<T, reqwest::Error>
 where
     F: FnMut(String) -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-    E: Error + 'static,
+    Fut: Future<Output = Result<T, reqwest::Error>>,
 {
-    let (last, earlier) = mirrors.split_last().expect("at least one release mirror");
-    for mirror in earlier {
-        match fetch(format!("{mirror}/{asset}")).await {
-            Err(error) if mirror_unreachable(&error) => {}
-            result => return result,
+    match fetch(format!("{primary}/{asset}")).await {
+        Err(error) if release_mirror_unreachable(&error) => {
+            fetch(format!("{fallback}/{asset}")).await
         }
+        result => result,
     }
-    fetch(format!("{last}/{asset}")).await
+}
+
+/// Whether a request failed while connecting, without a timeout, and [`mirror_unreachable`]
+/// says nothing answered. GitHub serves each asset through a redirect to its asset host, and
+/// reqwest follows it, so that host counts as the mirror: it is the one that must answer.
+///
+/// hyper-util reports only the first error when a name has several addresses of one family,
+/// so a refusal from one can stand for another's timeout. github.com has one of each.
+#[must_use]
+pub fn release_mirror_unreachable(error: &reqwest::Error) -> bool {
+    error.is_connect() && !error.is_timeout() && mirror_unreachable(error)
 }
 
 /// Whether a failed request never reached the mirror: its name didn't resolve to an address
@@ -114,40 +122,5 @@ mod tests {
         let tls = io::Error::new(io::ErrorKind::InvalidData, "invalid peer certificate");
         assert!(!mirror_unreachable(&Wrapped("client error", Some(tls))));
         assert!(!mirror_unreachable(&Wrapped("operation timed out", None)));
-    }
-
-    #[tokio::test]
-    async fn falls_back_only_past_an_unreachable_mirror() {
-        let unreachable = || {
-            Wrapped(
-                "tcp connect error",
-                Some(io::ErrorKind::NetworkUnreachable.into()),
-            )
-        };
-        let timed_out = || Wrapped("tcp connect error", Some(io::ErrorKind::TimedOut.into()));
-        let mirrors = ["https://first", "https://second"];
-        let mut tried = Vec::new();
-        let result = from_release_mirrors(&mirrors, "v1.2.3/checksums.txt", |url| {
-            tried.push(url.clone());
-            async move {
-                if url.starts_with("https://first") {
-                    Err(unreachable())
-                } else {
-                    Ok(url)
-                }
-            }
-        })
-        .await;
-        assert_eq!(result.unwrap(), "https://second/v1.2.3/checksums.txt");
-        assert_eq!(tried.len(), 2);
-
-        let mut tried = 0;
-        let result = from_release_mirrors(&mirrors, "x", |_| {
-            tried += 1;
-            async { Err::<(), _>(timed_out()) }
-        })
-        .await;
-        assert!(result.is_err());
-        assert_eq!(tried, 1, "a timeout never falls back");
     }
 }

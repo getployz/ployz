@@ -19,6 +19,7 @@ pub mod namespace;
 pub mod port_holder;
 mod ports;
 mod release;
+#[cfg(not(target_arch = "wasm32"))]
 mod release_mirror;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod routing;
@@ -45,6 +46,7 @@ pub use machine_telemetry::*;
 pub use namespace::*;
 pub use ports::*;
 pub use release::*;
+#[cfg(not(target_arch = "wasm32"))]
 pub use release_mirror::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use routing::*;
