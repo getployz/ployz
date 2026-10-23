@@ -16,17 +16,32 @@ use ployz_core::{ManagementAddress, MembershipEvidence, RttObservation, rtt_stat
 pub struct MembershipState {
     pub address: SocketAddr,
     pub evidence: MembershipEvidence,
+    /// When the gossip identity was made; a Machine's newest identity speaks for it.
+    pub identity_ts: u64,
 }
 
+/// One state per Machine address. A Machine that comes back under a new Corrosion actor
+/// leaves its old actors in gossip, Down, beside the new one at the same address, so the
+/// newest identity speaks for the Machine.
 pub(crate) fn membership_states_by_address(
     states: impl IntoIterator<Item = MembershipState>,
 ) -> BTreeMap<ManagementAddress, MembershipEvidence> {
-    states
+    let mut newest = BTreeMap::<ManagementAddress, MembershipState>::new();
+    for state in states {
+        let std::net::IpAddr::V6(address) = state.address.ip() else {
+            continue;
+        };
+        let address = ManagementAddress(address);
+        if newest
+            .get(&address)
+            .is_none_or(|kept| state.identity_ts > kept.identity_ts)
+        {
+            newest.insert(address, state);
+        }
+    }
+    newest
         .into_iter()
-        .filter_map(|state| match state.address.ip() {
-            std::net::IpAddr::V6(address) => Some((ManagementAddress(address), state.evidence)),
-            std::net::IpAddr::V4(_) => None,
-        })
+        .map(|(address, state)| (address, state.evidence))
         .collect()
 }
 
@@ -127,6 +142,8 @@ fn decode_membership_state(value: Value) -> Result<MembershipState, Error> {
     #[derive(Deserialize)]
     struct RawId {
         addr: SocketAddr,
+        #[serde(default)]
+        ts: u64,
     }
 
     let raw: RawState = serde_json::from_value(value)?;
@@ -139,6 +156,7 @@ fn decode_membership_state(value: Value) -> Result<MembershipState, Error> {
     Ok(MembershipState {
         address: raw.id.addr,
         evidence,
+        identity_ts: raw.id.ts,
     })
 }
 
@@ -176,7 +194,10 @@ mod tests {
         net::UnixListener,
     };
 
-    use super::{AdminClient, decode_member_rtt, decode_membership_state, decode_response};
+    use super::{
+        AdminClient, MembershipState, decode_member_rtt, decode_membership_state, decode_response,
+        membership_states_by_address,
+    };
     use crate::corrosion::{Error, IO_TIMEOUT};
 
     #[test]
@@ -185,6 +206,43 @@ mod tests {
             decode_response(b"not json"),
             Err(Error::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn a_machines_newest_gossip_identity_speaks_for_it() {
+        use ployz_core::{ManagementAddress, MembershipEvidence};
+        let address = format!("[fdcc::1]:{CORROSION_GOSSIP_PORT}")
+            .parse()
+            .unwrap();
+        let state = |evidence, identity_ts| MembershipState {
+            address,
+            evidence,
+            identity_ts,
+        };
+        let merged = |states: [MembershipState; 2]| {
+            membership_states_by_address(states)
+                .get(&ManagementAddress("fdcc::1".parse().unwrap()))
+                .cloned()
+        };
+        for states in [
+            [
+                state(MembershipEvidence::Up, 2),
+                state(MembershipEvidence::Down, 1),
+            ],
+            [
+                state(MembershipEvidence::Down, 1),
+                state(MembershipEvidence::Up, 2),
+            ],
+        ] {
+            assert_eq!(merged(states), Some(MembershipEvidence::Up));
+        }
+        assert_eq!(
+            merged([
+                state(MembershipEvidence::Suspect, 1),
+                state(MembershipEvidence::Down, 2)
+            ]),
+            Some(MembershipEvidence::Down)
+        );
     }
 
     #[test]
