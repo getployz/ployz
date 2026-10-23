@@ -310,6 +310,10 @@ There, Ployz keeps restarting, and `sudo journalctl -u ployz -n 50` says `UDP po
 by avahi-daemon (pid 812), so WireGuard can't listen`, or `by another program` when it can't tell
 which. Free the port the same way, and Ployz starts on its next restart.
 
+When `ss` lists the port with no program, another WireGuard interface, such as a tunnel set up with
+`wg-quick`, probably holds it. `sudo wg show all listen-port` names the interface. Move that
+tunnel to another port, or take it down.
+
 ## Ployz stops over a leftover network
 
 `sudo systemctl status ployz` shows the service failed with `status=78`, and its logs say

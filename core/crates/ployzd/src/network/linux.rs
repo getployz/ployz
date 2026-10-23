@@ -17,6 +17,7 @@ use bollard::{
 };
 use defguard_wireguard_rs::{
     InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi,
+    error::WireguardInterfaceError,
     host::{Host, Peer},
     key::Key,
     net::IpAddrMask,
@@ -303,7 +304,7 @@ impl NetworkPlane {
                     peers: Vec::new(),
                     mtu: Some(self.mtu),
                 })
-                .map_err(|error| self.port_clash().unwrap_or_else(|| error.into()))?;
+                .map_err(|error| self.port_clash(error))?;
         } else {
             self.wireguard.assign_address(&address)?;
             checked_command(
@@ -321,17 +322,17 @@ impl NetworkPlane {
         Ok(())
     }
 
-    /// Another program holds the WireGuard port, unless this interface listens on it already and
-    /// the setup failed after that.
-    fn port_clash(&self) -> Option<NetworkError> {
+    /// Names another program holding the WireGuard port, unless this interface listens on it
+    /// already and the setup failed after that.
+    fn port_clash(&self, failure: WireguardInterfaceError) -> NetworkError {
         let listening = self
             .wireguard
             .read_interface_data()
             .is_ok_and(|host| host.listen_port == WIREGUARD_PORT);
         if listening {
-            return None;
+            return failure.into();
         }
-        port_held_elsewhere(WIREGUARD_PORT)
+        port_held_elsewhere(WIREGUARD_PORT, failure)
     }
 
     fn apply_peers(&mut self, peers: &[MeshPeer], set: PeerSet) -> Result<(), NetworkError> {
