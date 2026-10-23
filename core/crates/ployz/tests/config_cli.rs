@@ -14,7 +14,7 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
 use ployz_core::config::{ClientSealedValue, ServiceGitAccess};
-use ployz_core::{RpcError, SealedIdentity};
+use ployz_core::{RpcError, RpcErrorCode, SealedIdentity};
 use ployz_store::{
     Actor, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, Command as StoreCommand,
     ConfigStore, DomainEvidence, Hostname, OrganizationId, Permission, Principal, Removal,
@@ -281,11 +281,20 @@ fn serve(
                                 "targets": ployz_store::View::SealingTargets(targets),
                             }),
                         ),
+                        // Cloud answers a Store's not_found with 404, as it does any read.
+                        Err(error) if error.code == RpcErrorCode::NotFound => {
+                            (404, json!({ "error": error }))
+                        }
                         Err(error) => (409, json!({ "error": error })),
                     }
                 }
             }
         }
+        // A Cloud from before the CLI sealed answers the unknown route as it does any.
+        (Some(_), "/api/config/sealing") => (
+            404,
+            json!({ "_tag": "PublicError", "code": "NOT_FOUND", "message": "Not found." }),
+        ),
         (Some(who), "/api/cli/organizations") => {
             let id = who.organization.as_str();
             let organization = json!({ "id": id, "slug": id, "name": id, "current": true });
@@ -466,6 +475,8 @@ fn evidence() -> Trusted {
         servers: Some(1),
         // Cloud sends what the token's member holds: here, everything.
         permissions: Some(Permission::ALL.iter().copied().collect()),
+        // Every write over `/api/config/write` is a CLI's.
+        from_cli: true,
         ..github()
     }
 }
@@ -8281,6 +8292,78 @@ fn set_refuses_a_new_secret_until_a_server_holds_the_sealing_key_and_writes_noth
     assert_eq!(missing["code"], json!("not_found"), "{missing}");
     // A plain variable still goes through: nothing to seal.
     ok(&cloud, &["set", "web.env.LOG_LEVEL=info"]);
+}
+
+#[test]
+fn set_fails_on_the_stores_not_found_from_sealing_and_writes_nothing() {
+    let keypair = Keypair::generate();
+    let state = SealingState::Ready(keypair.public().to_string());
+    let (cloud, _dir) = sealing_cloud(Some(state), true);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let writes = requests_to("/api/config/write").len();
+    let (code, refused) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret", "--env", "nope"],
+        "lost-s3cr3t\n",
+    );
+    assert_eq!(code, Some(1), "{refused}");
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(refused["error"]["code"], json!("not_found"), "{refused}");
+    assert_eq!(requests_to("/api/config/sealing").len(), 1);
+    assert_eq!(requests_to("/api/config/write").len(), writes);
+    cloud_never_saw("lost-s3cr3t");
+}
+
+#[test]
+fn an_old_clis_plain_text_secret_is_refused_with_the_update_once_the_organization_seals() {
+    // An old CLI asks Cloud nothing and sends plain text, as this one does when Cloud
+    // answers off.
+    let (cloud, _dir) = sealing_cloud(Some(SealingState::Off), true);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let (code, refused) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret"],
+        "old-s3cr3t\n",
+    );
+    assert_eq!(code, Some(1), "{refused}");
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(
+        refused["error"],
+        json!({
+            "code": "unsupported",
+            "message": "TOKEN: update ployz to set a Sealed value.",
+            "details": { "variable": "TOKEN", "next": "curl -fsSL https://ployz.sh | sh" },
+            "cause": [],
+        }),
+        "{refused}"
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let mut command = cloud.command(home.path());
+    command
+        .args(["set", "web.env.TOKEN", "--secret"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"old-s3cr3t\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("TOKEN: update ployz to set a Sealed value.")
+            && stderr.contains("next: curl -fsSL https://ployz.sh | sh"),
+        "{stderr}"
+    );
+    let missing = error(&cloud, &["get", "web.env.TOKEN"]);
+    assert_eq!(missing["code"], json!("not_found"), "{missing}");
 }
 
 #[test]

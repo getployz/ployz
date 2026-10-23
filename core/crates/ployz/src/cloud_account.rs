@@ -568,9 +568,51 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
     body: &impl Serialize,
     approval: Option<&str>,
 ) -> Result<T, StoreCallError> {
+    let (response, lost) =
+        config_store_response(credential, via, operation, body, approval).await?;
+    store_answer(credential, response, lost).await
+}
+
+/// [`config_store`] on a route a Cloud may predate: `None` when this Cloud has no
+/// `operation` route, the 404 `PublicError` `NOT_FOUND` it answers an unknown path
+/// with. A Store's own `not_found` travels as `{"error": …}` and stays a refusal.
+///
+/// # Errors
+///
+/// As [`config_store`].
+pub(crate) async fn config_store_if_routed<T: DeserializeOwned>(
+    credential: &Credential,
+    via: Via,
+    operation: &str,
+    body: &impl Serialize,
+) -> Result<Option<T>, StoreCallError> {
+    let (response, lost) = config_store_response(credential, via, operation, body, None).await?;
+    let status = response.status();
+    notice_revision(&response);
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| lost(credential.cloud(), error))?;
+    let unrouted = status == StatusCode::NOT_FOUND
+        && refusal(&bytes).is_none()
+        && public_error(&bytes)
+            .is_some_and(|error| error.code == ployz_core::RpcErrorCode::NotFound);
+    if unrouted {
+        return Ok(None);
+    }
+    stored(credential, status, &bytes).map(Some)
+}
+
+async fn config_store_response(
+    credential: &Credential,
+    via: Via,
+    operation: &str,
+    body: &impl Serialize,
+    approval: Option<&str>,
+) -> Result<(reqwest::Response, Lost), StoreCallError> {
     let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
     let url = format!("{}/api/config/{operation}", credential.cloud());
-    let lost = if operation == "write" {
+    let lost: Lost = if operation == "write" {
         cloud_login::lost
     } else {
         cloud_login::unreachable
@@ -579,7 +621,7 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
         .send()
         .await
         .map_err(|error| lost(credential.cloud(), error))?;
-    store_answer(credential, response, lost).await
+    Ok((response, lost))
 }
 
 /// How a request that failed in flight becomes a [`LoginError`]: [`cloud_login::lost`]
@@ -816,12 +858,20 @@ async fn store_answer<T: DeserializeOwned>(
         .bytes()
         .await
         .map_err(|error| lost(credential.cloud(), error))?;
+    stored(credential, status, &bytes)
+}
+
+fn stored<T: DeserializeOwned>(
+    credential: &Credential,
+    status: StatusCode,
+    bytes: &[u8],
+) -> Result<T, StoreCallError> {
     if !status.is_success() {
-        if let Some(refused) = refusal(&bytes) {
+        if let Some(refused) = refusal(bytes) {
             return Err(StoreCallError::Refused(refused));
         }
         if !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-            && let Some(refused) = public_error(&bytes)
+            && let Some(refused) = public_error(bytes)
         {
             return Err(StoreCallError::Refused(refused));
         }
@@ -829,7 +879,7 @@ async fn store_answer<T: DeserializeOwned>(
             return Err(LoginError::Unsupported(credential.cloud().to_owned()).into());
         }
     }
-    Ok(answer(credential, status, &bytes)?)
+    Ok(answer(credential, status, bytes)?)
 }
 
 /// Why a Server didn't count as reachable when Cloud tried it. One that answered
