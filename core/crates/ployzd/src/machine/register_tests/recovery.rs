@@ -15,7 +15,6 @@ use crate::machine_api::MachineApi;
 use crate::sealing_key::SealingKey;
 use crate::sealing_recovery::back_up;
 
-/// A founder that holds no Sealing Key and whose Cluster awaits `expected`.
 async fn awaiting(
     expected: SealingPublicKey,
     backup: Option<SealingKeyBackup>,

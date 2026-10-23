@@ -1903,7 +1903,6 @@ it.live(
 const sealingKey = (letter: string) => `${letter.repeat(43)}=`;
 const recoveryBackup = (fill: number) => Buffer.concat([Buffer.from([1]), Buffer.alloc(76, fill)]).toString("base64");
 
-/** `POST /api/cli/sealing/{path}`: its status, and its reply when it succeeds. */
 const sealing = Effect.fn(function* (path: "recovery" | "rotate", as: As, body: CliBody) {
   const headers = new Headers();
   const bearer = as.session ?? as.bearer;

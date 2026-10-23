@@ -144,7 +144,6 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
     for (const table of [organizationPairing, organizationMachine, clusterSealingKey, machineEnrollmentToken, enrollmentAllocation, machineRemoveAttempt]) {
       expect(yield* drizzle.select().from(table)).toEqual([]);
     }
-    // The Organization's Sealing Key and its recovery backup outlive the Cluster.
     expect(yield* drizzle.select({
       organizationId: organizationSealingKey.organizationId,
       publicKey: organizationSealingKey.publicKey,

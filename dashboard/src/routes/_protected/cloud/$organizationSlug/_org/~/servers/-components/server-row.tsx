@@ -42,7 +42,6 @@ const STORAGE = {
   unknown: <Badge variant="outline">Volume support unknown</Badge>,
 };
 
-/** Named on the row only when a Server lacks its Cluster's Sealing Key. */
 const SEALING = {
   held: null,
   needs_access: <Badge variant="warning">Needs access</Badge>,

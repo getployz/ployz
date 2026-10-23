@@ -59,9 +59,7 @@ pub enum ReportReply {
 /// How the fake Cloud answers the founder callback, after recording it.
 #[derive(Clone)]
 pub enum CallbackReply {
-    /// 200 with the request's `machineId`, as Cloud answers today.
     Echo,
-    /// `status` with an empty body.
     Status(u16),
     Body(serde_json::Value),
     Drop,

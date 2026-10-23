@@ -21,7 +21,6 @@ use ployz_core::{
     VolumeInventory, WRAP_SEALING_KEY_CAPABILITY, WireGuardPublicKey,
 };
 
-/// The Sealing Key the fake daemon wraps under any recovery code.
 pub fn fake_wrapped() -> SealingKeyWrapped {
     SealingKeyWrapped {
         public_key: SealingPublicKey::from_bytes([7; 32]),
