@@ -10,7 +10,8 @@ use std::{
 use futures_util::future::join_all;
 use ployz_core::{
     HOSTNAME_VERIFY_PATH, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication,
-    RequestedServiceSpec, VerifyAnswer, generated_refusal_reason, hostname_verdict, refusal_reason,
+    Refusal, RequestedServiceSpec, VerifyAnswer, generated_refusal_reason, hostname_verdict,
+    refusal_reason,
 };
 use reqwest::{Client, redirect::Policy};
 
@@ -57,6 +58,14 @@ fn warnings_from_targets<'a>(
             let HostnameVerdict::Refused(refusal) = verdict else {
                 return None;
             };
+            // The probe runs from this computer, not a Server, so its silence may be only this
+            // network's: an IPv4-only network can't reach a Server that has only IPv6.
+            if refusal == Refusal::Unreachable {
+                return Some(IngressDnsWarning(format!(
+                    "{hostname} did not answer on port 80 from this computer. \
+                     If other networks can't reach it either, open port 80 to this Cluster."
+                )));
+            }
             if cluster_domain.is_some_and(|cluster| is_generated(hostname, cluster)) {
                 return Some(IngressDnsWarning(generated_refusal_reason(
                     hostname,
@@ -280,6 +289,28 @@ mod tests {
                 "app.example.com redirects HTTP to HTTPS before reaching this Cluster. Exempt /.well-known/acme-challenge/* from HTTPS redirects in your proxy. A certificate cannot be issued until then.",
                 "mix.example.com does not resolve. Add a DNS record pointing at 192.0.2.1. A certificate cannot be issued until then.",
                 "plain.example.com answers from another server. Point it at 192.0.2.1.",
+            ]
+        );
+    }
+
+    #[test]
+    fn silence_is_reported_as_seen_from_this_computer_without_blaming_the_server() {
+        let cluster = ["2001:db8::1".parse().unwrap()];
+        let cluster_domain = explicit("acme.ployz.app");
+        let spec = requested(vec![
+            ingress(explicit("app.example.com"), HttpProtocol::Https),
+            ingress(explicit("web.acme.ployz.app"), HttpProtocol::Https),
+        ]);
+
+        let warnings = ingress_dns_warnings([&spec], &cluster, Some(&cluster_domain), |_| {
+            HostnameVerdict::Refused(Refusal::Unreachable)
+        });
+
+        assert_eq!(
+            warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "app.example.com did not answer on port 80 from this computer. If other networks can't reach it either, open port 80 to this Cluster.",
+                "web.acme.ployz.app did not answer on port 80 from this computer. If other networks can't reach it either, open port 80 to this Cluster.",
             ]
         );
     }
