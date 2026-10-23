@@ -151,6 +151,10 @@ where
     setup
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the enrollment carries its originating command and who reads its recovery code"
+)]
 async fn enroll_steps<Install, InstallFuture>(
     command: EnrollCommand,
     root: &ArgMatches,

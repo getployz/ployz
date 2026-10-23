@@ -1758,8 +1758,10 @@ mod tests {
                     MachineId::random(),
                     &credential,
                     None,
+                    None,
                 )
                 .await
+                .map(drop)
             };
             let message = result.unwrap_err().to_string();
             assert!(!message.contains("server add"), "{message}");

@@ -1,8 +1,7 @@
 use ployz_core::{
     AdvertisedEndpoint, MachineName, MachineRpc, MachineRpcClient, RecoverSealingKeyRequest,
     RecoveryCode, RecoveryRefusal, RecoverySeed, RpcErrorCode, RpcResponseBody, Sealing,
-    SealingKeyBackup,
-    SealingPublicKey, WrapSealingKeyRequest, op,
+    SealingKeyBackup, SealingPublicKey, WrapSealingKeyRequest, op,
 };
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Code, Request, transport::Server};
