@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::branch::RowRef;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
+use crate::variables::VariableKey;
 use crate::{Actor, branch};
 
 /// Where the secrets of one write land, asked before the CLI seals them.
@@ -74,6 +75,20 @@ pub struct SyncSealingTarget {
     pub service: Uuid,
     /// The variable's name.
     pub key: String,
+    /// The row as the Sync names it in a refusal.
+    pub label: String,
+}
+
+impl SyncSealingTarget {
+    /// `value`, once the Sync would seal it for this row.
+    ///
+    /// # Errors
+    /// What the Sync refuses in a secret's plain text, as it refuses it.
+    pub fn admit<'value>(&self, value: &'value str) -> Result<&'value str, RpcError> {
+        let key = VariableKey::parse(&self.key)?;
+        branch::admit_secret_text(&self.row, &self.label, &key, value)?;
+        Ok(value)
+    }
 }
 
 pub(crate) fn targets(

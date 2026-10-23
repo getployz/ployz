@@ -55,10 +55,10 @@ impl Store<'_> {
     ///
     /// # Errors
     /// `conflict` when the Organization seals on the client but has no Server; what
-    /// Cloud or the Store refused.
+    /// Cloud or the Store refused, the text included.
     pub(crate) fn seal_edit(&self, mut edit: Edit) -> Result<Edit, Error> {
         let mut plain = false;
-        edit.map_plaintext_secrets(|_, _, _| {
+        edit.map_plaintext_secrets(|_| {
             plain = true;
             Ok::<_, RpcError>(None)
         })?;
@@ -80,7 +80,8 @@ impl Store<'_> {
             return Err(unexpected("an Edit's targets"));
         };
         let environment_id = bound(&environment)?;
-        edit.map_plaintext_secrets(|service, key, plaintext| {
+        edit.map_plaintext_secrets(|secret| {
+            let service = secret.service();
             let Some(target) = services.iter().find(|target| &target.name == service) else {
                 return Err(Error::coded(
                     RpcErrorCode::NotFound,
@@ -95,7 +96,10 @@ impl Store<'_> {
                 environment: environment_id,
                 service: target.service,
             };
-            seal(&recipient, &identity, key, plaintext).map(Some)
+            let plaintext = secret
+                .admit()
+                .map_err(|error| self.fail(StoreCallError::Refused(error)))?;
+            seal(&recipient, &identity, secret.key(), plaintext).map(Some)
         })?;
         Ok(edit)
     }
@@ -146,6 +150,9 @@ impl Store<'_> {
                 environment,
                 service: target.service,
             };
+            let plaintext = target
+                .admit(plaintext)
+                .map_err(|error| self.fail(StoreCallError::Refused(error)))?;
             *value =
                 SecretValue::ClientSealed(seal(&recipient, &identity, &target.key, plaintext)?);
         }

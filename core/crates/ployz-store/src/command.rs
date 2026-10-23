@@ -24,7 +24,9 @@ pub use crate::review::publish::{
 pub use crate::service::{
     CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary,
 };
-pub use crate::settings::edit::{Change, Edit, Edited, SettingNote, TypedAddresses};
+pub use crate::settings::edit::{
+    Change, Edit, Edited, PlaintextSecret, SettingNote, TypedAddresses,
+};
 pub use crate::typed_address::Instead;
 pub use crate::volume::{
     CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeSharedWrites, SetVolumeStorage,

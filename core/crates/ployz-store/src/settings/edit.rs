@@ -41,16 +41,15 @@ pub struct Edit {
 
 impl Edit {
     /// Each new secret's plain text this edit carries, `{"secret": "…"}` in a `set`,
-    /// under `value`, or in a patch's `env`, replaced by what `seal` makes of it for
-    /// the Service and variable it lands in; `None` leaves the text for the Store to
-    /// seal. Anything else, such as a Service the Store won't find, is left for the
-    /// Store to judge.
+    /// under `value`, or in a patch's `env`, replaced by what `seal` makes of it;
+    /// `None` leaves the text for the Store to seal. Anything else, such as a Service
+    /// the Store won't find, is left for the Store to judge.
     ///
     /// # Errors
     /// What `seal` refuses, or a path or variable name the Store would refuse.
     pub fn map_plaintext_secrets<E: From<RpcError>>(
         &mut self,
-        mut seal: impl FnMut(&ServiceName, &str, &str) -> Result<Option<ClientSealedValue>, E>,
+        mut seal: impl FnMut(PlaintextSecret<'_>) -> Result<Option<ClientSealedValue>, E>,
     ) -> Result<(), E> {
         for change in &mut self.changes {
             match change {
@@ -58,7 +57,7 @@ impl Edit {
                     let Some(Target::Variable(key)) = path.target() else {
                         continue;
                     };
-                    seal_in(value, path.settings_of()?, key.as_str(), &mut seal)?;
+                    seal_in(value, path.settings_of()?, key, &mut seal)?;
                 }
                 Change::Patch { path, value } => {
                     let service = path.settings_of()?;
@@ -67,7 +66,7 @@ impl Edit {
                     };
                     for (key, value) in env {
                         let key = VariableKey::parse(key)?;
-                        seal_in(value, service, key.as_str(), &mut seal)?;
+                        seal_in(value, service, &key, &mut seal)?;
                     }
                 }
                 Change::Unset { .. } | Change::Rename { .. } => {}
@@ -77,13 +76,43 @@ impl Edit {
     }
 }
 
+/// A new secret's plain text in an [`Edit`], for the Service and variable it lands
+/// in. The text is readable only through [`Self::admit`], so whoever seals it runs
+/// the Store's own checks first.
+pub struct PlaintextSecret<'edit> {
+    service: &'edit ServiceName,
+    key: &'edit VariableKey,
+    text: &'edit str,
+}
+
+impl PlaintextSecret<'_> {
+    #[must_use]
+    pub fn service(&self) -> &ServiceName {
+        self.service
+    }
+
+    #[must_use]
+    pub fn key(&self) -> &str {
+        self.key.as_str()
+    }
+
+    /// The plain text, once the Store would seal it.
+    ///
+    /// # Errors
+    /// What the Store refuses in a new secret's plain text, as it refuses it.
+    pub fn admit(&self) -> Result<&str, RpcError> {
+        variables::admit_secret(self.key, self.text)?;
+        Ok(self.text)
+    }
+}
+
 /// `value`'s `{"secret": "…"}`, direct or under `value`, replaced by what `seal` makes
 /// of it.
 fn seal_in<E>(
     value: &mut Value,
     service: &ServiceName,
-    key: &str,
-    seal: &mut impl FnMut(&ServiceName, &str, &str) -> Result<Option<ClientSealedValue>, E>,
+    key: &VariableKey,
+    seal: &mut impl FnMut(PlaintextSecret<'_>) -> Result<Option<ClientSealedValue>, E>,
 ) -> Result<(), E> {
     let wrapped = matches!(value, Value::Object(fields) if !fields.contains_key("secret"));
     let slot = match value {
@@ -98,10 +127,11 @@ fn seal_in<E>(
         | Value::Array(_)
         | Value::Object(_) => value,
     };
-    let Some(plaintext) = variables::plaintext_secret(slot) else {
+    let Some(text) = variables::plaintext_secret(slot) else {
         return Ok(());
     };
-    if let Some(sealed) = seal(service, key, plaintext)? {
+    let secret = PlaintextSecret { service, key, text };
+    if let Some(sealed) = seal(secret)? {
         *slot = json!({ "secret": sealed });
     }
     Ok(())
