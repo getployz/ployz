@@ -46,6 +46,7 @@ function RouteComponent() {
     servers: servers.length,
     waiting: waiting.data?.length,
     enrolling: enrollments.data === undefined ? undefined : enrollingRows(enrollments.data.attempts).length,
+    founding: enrollments.data?.attempts.some((attempt) => attempt.role === "founder" && attempt.endedAt === null),
   });
   const upgrade = page.kind === "fleet" && !page.stale ? upgrades : null;
   // First run has its own install card; the dialog returns once a server has shown up.

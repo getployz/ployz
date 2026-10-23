@@ -10,14 +10,17 @@ export type ServersPageState =
   | { readonly kind: "first-run"; readonly intake: boolean }
   | { readonly kind: "fleet"; readonly intake: boolean; readonly stale: boolean };
 
-export function serversPageState({ list, servers, waiting, enrolling }: {
+export function serversPageState({ list, servers, waiting, enrolling, founding = false }: {
   list: ServerListState;
   servers: number;
   /** Undefined until Cloud answers. */
   waiting: number | undefined;
   enrolling: number | undefined;
+  /** The organization's first server is enrolling, so no server has joined for Cloud to reach yet. */
+  founding?: boolean;
 }): ServersPageState {
   const intake = (waiting ?? 0) + (enrolling ?? 0) > 0;
+  if (founding && list === "unreachable") return { kind: "first-run", intake };
   if (list === "loading" || list === "unreachable") return { kind: list, intake };
   // Without Cloud's answer, zero servers could still be a first arrival, so the first-run card would mislead.
   if (servers === 0) return waiting === undefined || enrolling === undefined ? { kind: "loading", intake } : { kind: "first-run", intake };
