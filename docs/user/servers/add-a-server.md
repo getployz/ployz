@@ -322,9 +322,10 @@ these there:
 
 Ployz downloads its releases from github.com, which has no IPv6 address. When a server can't reach
 github.com, the download goes through ployz.sh instead, which has one, so the install line still
-installs `ployz` on a server whose only route out is IPv6. Setting the server up needs more: Ployz
-pulls some of its images from ghcr.io, which has no IPv6 address either, so enrolling the server or
-running `ployz server add` can't finish. Do one of these first:
+installs `ployz` on a server whose only route out is IPv6. Setting the server up needs more: it
+downloads the Ployz daemon from github.com, and pulls some images from ghcr.io, which has no IPv6
+address either, so enrolling the server or running `ployz server add` can't finish. Do one of these
+first:
 
 - **Give the server an IPv4 address.** Most providers sell one as an add-on, such as a Hetzner
   Primary IPv4. The server is then dual-stack and installs like any other.
@@ -337,8 +338,8 @@ running `ployz server add` can't finish. Do one of these first:
   ([#3166](https://github.com/getployz/ployz/issues/3166)), and containers can't reach the DNS
   resolvers Docker gives them ([#3167](https://github.com/getployz/ployz/issues/3167)).
 
-Keep the IPv4 address or NAT64 for as long as the server runs Ployz, because upgrades can pull new
-images from ghcr.io.
+Keep the IPv4 address or NAT64 for as long as the server runs Ployz, because upgrades download from
+github.com and can pull new images from ghcr.io.
 
 ## Good to know
 

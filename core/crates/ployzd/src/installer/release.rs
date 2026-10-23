@@ -23,8 +23,6 @@ use ployz_core::{
 };
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz";
-/// Passes GitHub's release assets through over IPv6, for a Machine that can't connect to github.com.
-const RELEASE_FALLBACK: &str = "https://ployz.sh";
 const CHANNEL_URL: &str = "https://ployz.sh";
 /// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
 const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
@@ -91,15 +89,7 @@ impl ReleaseSource {
         stage: &'static str,
     ) -> Result<Option<Vec<u8>>, Error> {
         match self {
-            Self::Published => {
-                let path = format!("releases/download/v{target}/{file}");
-                fetch_if_present(
-                    &format!("{RELEASE_REPOSITORY}/{path}"),
-                    Some(&format!("{RELEASE_FALLBACK}/{path}")),
-                    stage,
-                )
-                .await
-            }
+            Self::Published => fetch_if_present(&release_url(target, file), stage).await,
             #[cfg(test)]
             Self::Local(directory) => match fs::read(directory.join(file)) {
                 Ok(bytes) => Ok(Some(bytes)),
@@ -173,18 +163,13 @@ fn parse_channel_version(value: &str) -> Result<MachineVersion, Error> {
 }
 
 pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
-    fetch_if_present(url, None, stage)
+    fetch_if_present(url, stage)
         .await?
         .ok_or_else(|| Error::ReleaseSelection(format!("{stage}: {url} was not found")))
 }
 
-/// Download `url`, or `None` when the server answers 404. `fallback` serves the same file when
-/// `url`'s host can't be resolved or connected.
-async fn fetch_if_present(
-    url: &str,
-    fallback: Option<&str>,
-    stage: &str,
-) -> Result<Option<Vec<u8>>, Error> {
+/// Download `url`, or `None` when the server answers 404.
+async fn fetch_if_present(url: &str, stage: &str) -> Result<Option<Vec<u8>>, Error> {
     let client = reqwest::Client::builder()
         .https_only(true)
         .connect_timeout(DOWNLOAD_TIMEOUT)
@@ -197,11 +182,7 @@ async fn fetch_if_present(
                 error = ployz_core::error_chain::inline(&error),
             ))
         })?;
-    let response = match (client.get(url).send().await, fallback) {
-        (Err(error), Some(fallback)) if error.is_connect() => client.get(fallback).send().await,
-        (sent, _) => sent,
-    }
-    .map_err(|error| {
+    let response = client.get(url).send().await.map_err(|error| {
         Error::ReleaseSelection(format!(
             "{stage}: {error}",
             error = ployz_core::error_chain::inline(&error),
@@ -226,6 +207,10 @@ async fn fetch_if_present(
                 error = ployz_core::error_chain::inline(&error),
             ))
         })
+}
+
+fn release_url(target: &MachineVersion, file: &str) -> String {
+    format!("{RELEASE_REPOSITORY}/releases/download/v{target}/{file}")
 }
 
 pub(super) async fn install_binaries(
