@@ -19,10 +19,9 @@ use tokio::{process::Command, time::timeout};
 use super::{Error, InstallPaths, daemon_archive, run_command};
 use ployz_core::{
     MachineRelease, MachineUpgradeStage, MachineVersion, RELEASE_SIGNATURE_ASSET,
-    from_release_mirrors, release_mirrors, verify_release_checksums,
+    from_release_mirrors, release_channel_url, release_mirrors, verify_release_checksums,
 };
 
-const CHANNEL_URL: &str = "https://ployz.sh";
 /// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
 const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -48,7 +47,7 @@ impl ReleaseSource {
         let bytes = match self {
             Self::Published => {
                 fetch(
-                    &format!("{CHANNEL_URL}/{pointer}"),
+                    &format!("{}/{pointer}", release_channel_url()),
                     "resolve release channel",
                 )
                 .await?

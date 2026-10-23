@@ -1,5 +1,6 @@
 //! Where release assets download from: GitHub, else ployz.sh when GitHub can't be reached,
-//! or the bases `PLOYZ_GITHUB_URL` and `PLOYZ_FALLBACK_URL` name.
+//! or the bases `PLOYZ_GITHUB_URL` and `PLOYZ_FALLBACK_URL` name; and where a Release
+//! Channel resolves: ployz.sh, or the base `PLOYZ_CHANNEL_URL` names.
 
 use std::{error::Error, future::Future, io};
 
@@ -14,6 +15,27 @@ pub const RELEASE_FALLBACK_URL: &str = "https://ployz.sh";
 /// downloads on another's behalf, such as the upgrade worker, takes them from it.
 pub const RELEASE_MIRROR_VARIABLES: [&str; 2] = ["PLOYZ_GITHUB_URL", "PLOYZ_FALLBACK_URL"];
 
+/// Serves each Release Channel's pointer, unless `PLOYZ_CHANNEL_URL` names another, as in
+/// install.sh.
+pub const RELEASE_CHANNEL_URL: &str = "https://ployz.sh";
+/// The variable that names the base Release Channel pointers resolve against.
+pub const RELEASE_CHANNEL_VARIABLE: &str = "PLOYZ_CHANNEL_URL";
+
+/// The base a Release Channel's pointer resolves against: `PLOYZ_CHANNEL_URL`, or ployz.sh
+/// when it is unset or empty, as in install.sh, so a soak can upgrade through a test channel.
+#[must_use]
+pub fn release_channel_url() -> String {
+    release_channel_url_from(|name| std::env::var(name).ok())
+}
+
+fn release_channel_url_from(var: impl Fn(&str) -> Option<String>) -> String {
+    let url = var(RELEASE_CHANNEL_VARIABLE).filter(|url| !url.is_empty());
+    url.as_deref()
+        .unwrap_or(RELEASE_CHANNEL_URL)
+        .trim_end_matches('/')
+        .to_owned()
+}
+
 /// Release download bases in the order a download tries them: `PLOYZ_GITHUB_URL`'s, then
 /// `PLOYZ_FALLBACK_URL`'s. An unset or empty variable is its default, as in install.sh, so
 /// a soak can point upgrades and bootstraps at a staged release.
@@ -22,12 +44,14 @@ pub fn release_mirrors() -> [String; 2] {
     release_mirrors_from(|name| std::env::var(name).ok())
 }
 
-/// The [`RELEASE_MIRROR_VARIABLES`] this process has set, for a process that downloads on
-/// its behalf: the upgrade worker, or the installer a remote `server add` runs.
+/// The [`RELEASE_MIRROR_VARIABLES`] and [`RELEASE_CHANNEL_VARIABLE`] this process has set,
+/// for a process that resolves or downloads a release on its behalf: the upgrade worker, or
+/// the installer a remote `server add` or a check-in runs.
 #[must_use]
 pub fn release_mirror_overrides() -> Vec<(&'static str, String)> {
     RELEASE_MIRROR_VARIABLES
         .into_iter()
+        .chain([RELEASE_CHANNEL_VARIABLE])
         .filter_map(|name| {
             std::env::var(name)
                 .ok()
@@ -142,6 +166,21 @@ mod tests {
             "tcp connect error",
             Some(io::Error::from_raw_os_error(code)),
         )
+    }
+
+    #[test]
+    fn the_release_channel_follows_the_install_sh_override() {
+        assert_eq!(release_channel_url_from(|_| None), "https://ployz.sh");
+        assert_eq!(
+            release_channel_url_from(|name| {
+                (name == "PLOYZ_CHANNEL_URL").then(|| "https://channels.example.test/".to_owned())
+            }),
+            "https://channels.example.test"
+        );
+        assert_eq!(
+            release_channel_url_from(|_| Some(String::new())),
+            "https://ployz.sh"
+        );
     }
 
     #[test]

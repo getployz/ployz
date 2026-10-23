@@ -398,11 +398,13 @@ To test a release before it's published, point the downloads at another copy of 
 `install.sh` does. Set `PLOYZ_GITHUB_URL` to a repository's base URL, such as
 `https://github.com/<owner>/<repo>`; Ployz downloads `<base>/releases/download/v<version>/...`.
 `PLOYZ_FALLBACK_URL` replaces `https://ployz.sh`, which Ployz uses only when the first can't be
-reached. Both must be `https://` URLs, and must hold no credentials: the server passes them to
-its upgrade process on the command line. Set them in `/etc/default/ployz` on the server and run
+reached. `PLOYZ_CHANNEL_URL` replaces `https://ployz.sh` where `stable` and `beta` resolve, so
+`ployz server upgrade stable` can follow a test channel's `v0/stable` pointer. All three must be
+`https://` URLs, and must hold no credentials: the server passes them to its upgrade process on
+the command line. Set them in `/etc/default/ployz` on the server and run
 `sudo systemctl restart ployz` for `ployz server upgrade`, and in your shell for
-`ployz server add --ssh` or `ployz server checkin --install`. Upgrade to an exact version: `stable` and `beta` still resolve on
-ployz.sh. The server still checks the release's signature.
+`ployz server add --ssh` or `ployz server checkin --install`. The server still checks the
+release's signature.
 
 `ployz server upgrade` works the same way whether automatic upgrades are on or off: your apps keep
 running and private DNS keeps answering (with the exceptions in
