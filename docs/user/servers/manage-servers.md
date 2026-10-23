@@ -401,7 +401,7 @@ To test a release before it's published, point the downloads at another copy of 
 reached. Both must be `https://` URLs, and must hold no credentials: the server passes them to
 its upgrade process on the command line. Set them in `/etc/default/ployz` on the server and run
 `sudo systemctl restart ployz` for `ployz server upgrade`, and in your shell for
-`ployz server add --ssh`. Upgrade to an exact version: `stable` and `beta` still resolve on
+`ployz server add --ssh` or `ployz server checkin --install`. Upgrade to an exact version: `stable` and `beta` still resolve on
 ployz.sh. The server still checks the release's signature.
 
 `ployz server upgrade` works the same way whether automatic upgrades are on or off: your apps keep

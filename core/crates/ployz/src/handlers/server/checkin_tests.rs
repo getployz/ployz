@@ -85,6 +85,7 @@ async fn the_unit_starts_the_loop_with_the_ployzd_install_chose() {
         chosen,
         Path::new("/etc/ployz/fleet-token"),
         "https://cloud.example",
+        &[],
     )
     .unwrap();
     let args = exec_start(&text);

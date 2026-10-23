@@ -787,19 +787,45 @@ fn the_check_in_unit_quotes_paths_and_refuses_values_that_break_it() {
         Path::new("/var/lib/ployz-checkin/ployzd"),
         Path::new("/etc/ployz/fleet-token"),
         "https://cloud.example/100%",
+        &[],
     )
     .unwrap();
     assert!(text.contains(
         "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\" --ployzd \"/var/lib/ployz-checkin/ployzd\"\n"
     ));
     assert!(text.contains("Environment=\"PLOYZ_CLOUD_URL=https://cloud.example/100%%\"\n"));
+    // Enrolling installs the release again, so the loop keeps the release mirror overrides.
+    let staged = unit::checkin(
+        Path::new("/usr/bin/ployz"),
+        Path::new("/d"),
+        Path::new("/t"),
+        "https://cloud.example",
+        &[(
+            "PLOYZ_GITHUB_URL",
+            "https://staging.example/100%".to_owned(),
+        )],
+    )
+    .unwrap();
+    assert!(staged.contains("Environment=\"PLOYZ_GITHUB_URL=https://staging.example/100%%\"\n"));
+    assert!(!text.contains("PLOYZ_GITHUB_URL"));
+    assert!(
+        unit::checkin(
+            Path::new("/usr/bin/ployz"),
+            Path::new("/d"),
+            Path::new("/t"),
+            "https://cloud.example",
+            &[("PLOYZ_GITHUB_URL", "https://a\"".to_owned())],
+        )
+        .is_err()
+    );
     for url in ["https://a\nExecStart=/bin/sh", "https://a\"", "https://a\\"] {
         assert!(
             unit::checkin(
                 Path::new("/usr/bin/ployz"),
                 Path::new("/d"),
                 Path::new("/t"),
-                url
+                url,
+                &[],
             )
             .is_err()
         );
@@ -1942,6 +1968,7 @@ fn the_check_in_unit_gives_up_after_repeated_failed_starts() {
         Path::new("/d"),
         Path::new("/t"),
         "https://cloud.example",
+        &[],
     )
     .unwrap();
     let unit_section = text.split("[Service]").next().unwrap();
