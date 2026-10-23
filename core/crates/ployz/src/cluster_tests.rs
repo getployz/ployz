@@ -693,3 +693,27 @@ async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
     assert_eq!(error.cause, ["entry Machine reconnect timed out"]);
     server.abort();
 }
+
+/// Parallel forgets through one busy entry, #2934: the entry's router says the Server didn't
+/// answer, so the entry itself answered, and reconnecting to it would outlast the read.
+#[tokio::test(start_paused = true)]
+async fn a_server_the_entry_reports_silent_reads_dead_without_reconnecting_to_the_entry() {
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(|rpc: tonic::Request<OpaquePayload>| async move {
+            let body = rpc.into_inner().decode_request().unwrap().body;
+            if matches!(body, ployz_core::RpcRequestBody::DescribeContract(_)) {
+                tokio::time::sleep(std::time::Duration::from_millis(4900)).await;
+                return Err(tonic::Status::unavailable("busy"));
+            }
+            Err(ployz_core::rpc::target_unanswered_status(
+                &std::io::Error::new(std::io::ErrorKind::TimedOut, "deadline has elapsed"),
+            ))
+        })
+        .await;
+    client.entry = Some(machine_id('a'));
+
+    let held = client.held_copies(&machine('b')).await;
+
+    assert!(matches!(held, Ok(HeldCopies::Dead)), "{held:?}");
+    server.abort();
+}
