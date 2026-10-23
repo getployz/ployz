@@ -1606,7 +1606,9 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             labels: Default::default(),
             accepts_builds: true,
             accepts_services: true,
-            accepts_ingress: true,
+            // An ingress Machine with no Ingress Proxy running makes a deploy look up the
+            // latest Caddy on Docker Hub, which these tests must not reach.
+            accepts_ingress: false,
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
