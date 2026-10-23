@@ -5,6 +5,8 @@ import { Effect } from "effect";
 import type { RunEnd } from "#/modules/inngest/attempt-lifecycle";
 import { createServerEnrollmentCancelEvent } from "#/modules/inngest/events";
 import type { MachineId } from "#/db/tables";
+import { decryptPairingSecret } from "#/modules/machines/connections.server";
+import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { enrollmentAllocation, machineEnrollmentToken } from "#/modules/machines/tables";
 import { committedAfter, ENROLLMENT_STAGES, type EnrollmentFailure, type EnrollmentStage } from "#/modules/machines/waiting/server-enrollment";
 import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
@@ -185,10 +187,16 @@ export const cancelServerEnrollments = Effect.fn("ServerEnrollment.cancelAttempt
   const tokenIds = locked.map((row) => row.tokenId);
   yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken)
     .where(inArray(machineEnrollmentToken.id, tokenIds)).orderBy(machineEnrollmentToken.id).for("update");
+  // Only the current pairing's assignments: a Machine keeps its ID across a pairing that was forgotten. Only a claimed token has one.
+  const [pairing] = yield* drizzle.select({ secret: organizationPairing.encryptedPairingSecret }).from(organizationPairing)
+    .where(and(eq(organizationPairing.organizationId, organizationId), exists(drizzle.select({ one: sql`1` }).from(machineEnrollmentToken)
+      .where(and(inArray(machineEnrollmentToken.id, tokenIds), isNotNull(machineEnrollmentToken.claimedMachineId))))));
+  const clusterKey = pairing === undefined ? null : hashEnrollmentToken(yield* decryptPairingSecret(pairing.secret));
   const sent = new Set((yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken).where(and(
     inArray(machineEnrollmentToken.id, tokenIds),
-    or(isNotNull(machineEnrollmentToken.joinedMachineId), exists(drizzle.select({ one: sql`1` }).from(enrollmentAllocation).where(and(
+    or(isNotNull(machineEnrollmentToken.joinedMachineId), clusterKey === null ? undefined : exists(drizzle.select({ one: sql`1` }).from(enrollmentAllocation).where(and(
       eq(enrollmentAllocation.organizationId, machineEnrollmentToken.organizationId),
+      eq(enrollmentAllocation.clusterKey, clusterKey),
       sql`${enrollmentAllocation.assignments} @> jsonb_build_array(jsonb_build_object('machine', jsonb_build_object('id', ${machineEnrollmentToken.claimedMachineId}::text)))`,
     )))),
   ))).map((row) => row.id));

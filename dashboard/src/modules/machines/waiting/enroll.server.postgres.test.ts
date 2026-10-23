@@ -687,21 +687,27 @@ it("closes a cancelled attempt no run has bound, and says when there was nothing
     .toMatchObject({ _tag: "NotFound" });
 });
 
-/** What a join saves before it sends Register: the token claimed by `machineId`, and that Machine's assignment. */
-const joinSaved = async (attemptId: string, machineId: string) => {
+const paired = () => harness.pool.query(
+  "insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id, founder_claim_machine_id) values ($1, $2, 'founder', $3, $3)",
+  [adaOrg, encryption.encrypt("ployz1:founded"), "f".repeat(32)],
+);
+
+/** What a join saves before it sends Register: the token claimed by `machineId`, and that Machine's assignment under `secret`'s pairing. */
+const joinSaved = async (attemptId: string, machineId: string, secret = "ployz1:founded") => {
   await harness.pool.query(
     "update machine_enrollment_token set claimed_machine_id = $1, claimed_public_key = 'k', claimed_at = now() where server_enrollment_id = $2",
     [machineId, attemptId],
   );
   await harness.pool.query(
     "insert into enrollment_allocation (organization_id, cluster_key, assignments) values ($1, $2, $3)",
-    [adaOrg, "0".repeat(64), JSON.stringify([{ machine: { id: machineId } }])],
+    [adaOrg, hashEnrollmentToken(secret), JSON.stringify([{ machine: { id: machineId } }])],
   );
 };
 const tokenLive = async (attemptId: string) =>
   (await harness.pool.query<{ live: boolean }>("select expires_at > now() as live from machine_enrollment_token where server_enrollment_id = $1", [attemptId])).rows[0]?.live;
 
 it("refuses to cancel an attempt whose join Cloud may have sent, and Reject spares it, since the Server may already be in the Cluster", async () => {
+  await paired();
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
   await run(enroll([a]));
@@ -716,6 +722,17 @@ it("refuses to cancel an attempt whose join Cloud may have sent, and Reject spar
   expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);
   expect(await tokenLive(attemptId)).toBe(true);
   expect(await outbox()).not.toContain("server/enrollment.cancel");
+});
+
+it("cancels an attempt whose Machine was assigned only under a pairing Cloud since forgot", async () => {
+  await paired();
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  await joinSaved(attemptId, "a".repeat(32), "ployz1:forgotten");
+  expect(await run(cancelServerEnrollment(ada, { organizationSlug: "ada", id: attemptId }))).toEqual({ id: attemptId, cancelling: true });
+  expect(await tokenLive(attemptId)).toBe(false);
 });
 
 it("expires a bound attempt's token as soon as Cancel is accepted, so no join can follow it", async () => {
