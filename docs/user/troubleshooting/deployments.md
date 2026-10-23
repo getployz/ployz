@@ -586,6 +586,11 @@ doesn't exist and for a private image you have no access to.
 - If the image is private, add **Registry credentials**, or replace a token that expired. See
   [Use a private image](../deploy/docker-image.md#use-a-private-image).
 
+**Failed at pull**, with `Registry host registry.example.com does not resolve. Check the image name, or this Server's DNS`
+
+The server couldn't look up the registry's hostname, so it never asked for the image. Check the
+registry part of the image name for typos. If the name is right, the server's DNS can't reach it.
+
 ## My server's disk is full
 
 **Failed at pull**, with `Server machine-3's disk is full: 48 MB free under /var/lib/containerd`

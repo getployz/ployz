@@ -1797,19 +1797,22 @@ impl RpcError {
     }
 
     /// `self` from a pull of `image` under `policy`, naming both when the answer is not
-    /// found. A registry answers not found for a missing tag and a private repository alike.
+    /// found or the registry refused it. A registry answers not found for a missing tag
+    /// and a private repository alike, and some, such as ghcr.io, answer `denied`.
     #[must_use]
     pub fn pulling(mut self, image: &str, policy: PullPolicy) -> Self {
-        if self.code == RpcErrorCode::NotFound && self.details.is_null() {
+        if self.details.is_null()
+            && (self.code == RpcErrorCode::NotFound || self.registry_refused())
+        {
             self.details = serde_json::json!({ MISSING_IMAGE: image, PULL_POLICY: policy });
         }
         self
     }
 
-    /// The image a not-found pull named through [`Self::pulling`].
+    /// The image a not-found or refused pull named through [`Self::pulling`].
     #[must_use]
     pub fn missing_image(&self) -> Option<MissingImage<'_>> {
-        if self.code != RpcErrorCode::NotFound {
+        if self.code != RpcErrorCode::NotFound && !self.registry_refused() {
             return None;
         }
         Some(MissingImage {
@@ -1821,6 +1824,26 @@ impl RpcError {
         })
     }
 
+    /// The registry host a failed pull could not look up, from Docker's error.
+    #[must_use]
+    pub fn unresolved_registry(&self) -> Option<&str> {
+        self.lines().find_map(|line| {
+            let (lookup, _) = line.split_once(": no such host")?;
+            let (_, host) = lookup.rsplit_once("lookup ")?;
+            host.split_whitespace().next()
+        })
+    }
+
+    /// Whether the registry refused a pull for want of access, whatever status Docker gave.
+    fn registry_refused(&self) -> bool {
+        self.lines()
+            .any(|line| REGISTRY_REFUSALS.iter().any(|sign| line.contains(sign)))
+    }
+
+    fn lines(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.message.as_str()).chain(self.cause.iter().map(String::as_str))
+    }
+
     /// The full disk a failed pull ran into, as [`DiskFull::details`] named it.
     #[must_use]
     pub fn disk_full(&self) -> Option<DiskFull> {
@@ -1829,6 +1852,12 @@ impl RpcError {
 }
 
 const MISSING_IMAGE: &str = "missing_image";
+/// What Docker prints when a registry refuses a pull for want of access.
+const REGISTRY_REFUSALS: [&str; 3] = [
+    "error from registry: denied",
+    "denied: requested access",
+    "unauthorized: ",
+];
 const PULL_POLICY: &str = "pull_policy";
 const DISK_FULL: &str = "disk_full";
 

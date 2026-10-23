@@ -400,6 +400,15 @@ impl Failure {
             ExecutionError::Machine {
                 action: MachineAction::PullImage,
                 error,
+            } if let Some(host) = error.unresolved_registry() => (
+                format!(
+                    "Registry host {host} does not resolve. Check the image name, or this Server's DNS"
+                ),
+                ployz_core::error_chain::causes(error),
+            ),
+            ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error,
             } if let Some(full) = error.disk_full() => (
                 match machine {
                     Some(id) => full.on(&server_of(&id.to_string(), operations)),
@@ -1586,5 +1595,56 @@ mod tests {
                 .cause
                 .is_empty()
         );
+    }
+
+    fn pull_failed(cause: &str) -> Failure {
+        let error = RpcError {
+            code: RpcErrorCode::Internal,
+            message: "api: pull image failed.".into(),
+            details: serde_json::Value::Null,
+            cause: vec![cause.to_owned()],
+        }
+        .pulling("ghcr.io/example/private:1", ployz_core::PullPolicy::Always);
+        Failure::of(
+            &ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error,
+            },
+            &[],
+        )
+    }
+
+    #[test]
+    fn a_registry_that_denies_the_pull_names_the_image_as_missing_or_private() {
+        for cause in [
+            "Docker responded with status code 500: error from registry: denied; denied",
+            "Docker responded with status code 500: Head \"https://registry.example.com/v2/app/manifests/1\": unauthorized: authentication required",
+        ] {
+            let failure = pull_failed(cause);
+            assert_eq!(
+                failure.reason,
+                "Image ghcr.io/example/private:1 not found, or its registry needs credentials",
+                "{cause}"
+            );
+            assert_eq!(failure.cause, [cause]);
+        }
+    }
+
+    #[test]
+    fn a_registry_host_that_does_not_resolve_is_named() {
+        let cause = "Docker responded with status code 500: Get \"https://registry.example.invalid/v2/\": dial tcp: lookup registry.example.invalid on 127.0.0.53:53: no such host";
+        let failure = pull_failed(cause);
+        assert_eq!(
+            failure.reason,
+            "Registry host registry.example.invalid does not resolve. Check the image name, or this Server's DNS"
+        );
+        assert_eq!(failure.cause, [cause]);
+    }
+
+    #[test]
+    fn a_local_permission_error_is_not_a_registry_refusal() {
+        let cause =
+            "Docker responded with status code 500: open /var/lib/docker/tmp/x: permission denied";
+        assert_eq!(pull_failed(cause).reason, "pull image failed");
     }
 }
