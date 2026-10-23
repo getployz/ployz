@@ -1,6 +1,3 @@
-//! `ployz recover` and `ployz recovery rotate`. The recovery code passes between a person
-//! and the Server's daemon: never argv, the environment, Cloud, or a log line.
-
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
@@ -127,7 +124,6 @@ pub(super) fn rotate(root: &ArgMatches) -> Result<(), Error> {
     print_code(public_key, &code)
 }
 
-/// The Sealing Key wrapped under `code`, for Cloud to keep until `ployz recover` needs it.
 pub(super) async fn wrap_sealing_key(
     client: &mut Client,
     code: &RecoveryCode,
@@ -154,8 +150,6 @@ fn print_code(public_key: SealingPublicKey, code: &RecoveryCode) -> Result<(), E
     Ok(())
 }
 
-/// The connection `--connect` or the context names, else the local socket. A Cloud-routed
-/// context is refused before any dial: the code never crosses a Management transport.
 async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
     let selected = crate::connect::resolve_connections(
         &config_path(matches)?,
@@ -275,7 +269,6 @@ fn recover_failure(error: ConnectError) -> Error {
     }
 }
 
-/// Cloud's backup for the signed-in organization, for a Server that lost its own.
 async fn cloud_backup(credential: Option<&Credential>) -> Result<SealingKeyBackup, Error> {
     let Some(credential) = credential else {
         return Err(Error::coded(
@@ -308,7 +301,6 @@ struct Rotated {
     digest: String,
 }
 
-/// Cloud's recovery row, or `None` when the route is dark or the organization has none.
 async fn recovery_row(
     credential: &Credential,
     organization_id: &str,
@@ -345,4 +337,559 @@ fn rotate_failure(error: LoginError) -> Error {
         ));
     }
     error.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use ployz_core::{RpcRequestBody, RpcResponse, SealingKeyRecovered, SealingKeyWrapped};
+    use serde_json::Value;
+
+    use super::*;
+    use crate::cloud_login::tests::fake_cloud;
+    use crate::connect::test_support::unix_daemon;
+    use crate::handlers::verbs;
+
+    const CODE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const CAPABILITY_LEN: usize = 86;
+
+    fn key(byte: u8) -> SealingPublicKey {
+        SealingPublicKey::from_bytes([byte; 32])
+    }
+
+    fn wrapped_backup() -> SealingKeyBackup {
+        SealingKeyBackup::from_bytes(b"wrapped under the new code".to_vec())
+    }
+
+    fn cloud_backup_bytes() -> SealingKeyBackup {
+        SealingKeyBackup::from_bytes(b"kept by cloud".to_vec())
+    }
+
+    struct Cloud {
+        url: String,
+        requests: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    fn cloud(reply: impl Fn(&str, &Value) -> (u16, Value) + Send + 'static) -> Cloud {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let url = fake_cloud(move |route, body| {
+            seen.lock()
+                .unwrap()
+                .push((route.to_owned(), body.to_owned()));
+            let body: Value = serde_json::from_str(body).unwrap();
+            reply(route, &body)
+        });
+        Cloud { url, requests }
+    }
+
+    impl Cloud {
+        fn routes(&self) -> Vec<String> {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(route, _)| route.clone())
+                .collect()
+        }
+
+        fn body_of(&self, route: &str) -> Value {
+            let requests = self.requests.lock().unwrap();
+            let (_, body) = requests
+                .iter()
+                .find(|(seen, _)| seen == route)
+                .unwrap_or_else(|| panic!("no request to {route}"));
+            serde_json::from_str(body).unwrap()
+        }
+
+        fn never_saw(&self, secret: &str) {
+            for (route, body) in self.requests.lock().unwrap().iter() {
+                assert!(!body.contains(secret), "{route} carried the code: {body}");
+            }
+        }
+    }
+
+    fn recovery_row(public_key: SealingPublicKey, backup: Option<SealingKeyBackup>) -> Value {
+        json!({ "publicKey": public_key, "backup": backup, "digest": "current-digest" })
+    }
+
+    fn digest_of(rotate_body: &Value) -> String {
+        let posted = RecoveryBackup {
+            public_key: serde_json::from_value(rotate_body.get("publicKey").unwrap().clone())
+                .unwrap(),
+            backup: serde_json::from_value(rotate_body.get("backup").unwrap().clone()).unwrap(),
+        };
+        posted.digest()
+    }
+
+    struct Daemon {
+        socket: PathBuf,
+        recoveries: Arc<Mutex<Vec<Option<SealingKeyBackup>>>>,
+        _runtime: tokio::runtime::Runtime,
+    }
+
+    fn daemon(dir: &Path, held: SealingPublicKey, seed: bool) -> Daemon {
+        let socket = dir.join("ployzd.sock");
+        let recoveries = Arc::new(Mutex::new(Vec::new()));
+        let seen = recoveries.clone();
+        let runtime = unix_daemon(&socket, move |body| {
+            let seen = seen.clone();
+            async move {
+                if let RpcRequestBody::WrapSealingKey(_) = body {
+                    return Ok(RpcResponse::from(SealingKeyWrapped {
+                        public_key: held,
+                        backup: wrapped_backup(),
+                    }));
+                }
+                let RpcRequestBody::RecoverSealingKey(request) = body else {
+                    panic!("unexpected request: {body:?}");
+                };
+                seen.lock().unwrap().push(request.backup.clone());
+                if request.code.as_bytes() != CODE.as_bytes() {
+                    return Err(refused(RecoveryRefusal::WrongCode));
+                }
+                if request.backup.is_none() && !seed {
+                    return Err(refused(RecoveryRefusal::NoBackup));
+                }
+                Ok(RpcResponse::from(SealingKeyRecovered { public_key: held }))
+            }
+        });
+        Daemon {
+            socket,
+            recoveries,
+            _runtime: runtime,
+        }
+    }
+
+    fn refused(refusal: RecoveryRefusal) -> tonic::Status {
+        ployz_core::rpc::hinted_status(
+            tonic::Code::FailedPrecondition,
+            &std::io::Error::other("refused"),
+            refusal.details(),
+        )
+    }
+
+    fn config_dir(cloud: Option<&str>, contexts: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = dir.path().join("config.yaml");
+        std::fs::write(&config, contexts).unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        if let Some(cloud) = cloud {
+            let stored = json!({
+                "state": "signed_in",
+                "cloud": cloud,
+                "token": "session-token",
+                "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+                "organization": { "id": "o1", "slug": "acme" },
+            });
+            std::fs::write(dir.path().join("cloud.json"), stored.to_string()).unwrap();
+        }
+        dir
+    }
+
+    fn root(dir: &Path, connect: Option<&Path>, tail: &[&str]) -> ArgMatches {
+        let config = dir.join("config.yaml");
+        let mut arguments = vec!["ployz", "--ployz-config", config.to_str().unwrap()];
+        let socket;
+        if let Some(connect) = connect {
+            socket = format!("unix://{}", connect.display());
+            arguments.push("--connect");
+            arguments.push(&socket);
+        }
+        arguments.extend(tail);
+        crate::cli::command()
+            .try_get_matches_from(arguments)
+            .unwrap()
+    }
+
+    fn rotate_json(root: &ArgMatches) -> (Result<(), Error>, Option<Value>) {
+        ui::init(true, ui::Color::Never);
+        ui::captured(|| rotate(root))
+    }
+
+    fn recover_json(root: &ArgMatches, stdin: &str) -> (Result<(), Error>, Option<Value>) {
+        ui::init(true, ui::Color::Never);
+        ui::captured(|| recover_from(root, Cursor::new(stdin.to_owned())))
+    }
+
+    fn dashless(code: &str) -> String {
+        code.chars().filter(|symbol| *symbol != '-').collect()
+    }
+
+    #[test]
+    fn rotate_prints_one_code_once_cloud_confirms_the_digest() {
+        let cloud = cloud(|route, body| match route {
+            "POST /api/cli/sealing/recovery" => (200, recovery_row(key(1), None)),
+            "POST /api/cli/sealing/rotate" => (200, json!({ "digest": digest_of(body) })),
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+
+        let (result, printed) = rotate_json(&root);
+
+        result.unwrap();
+        let printed = printed.unwrap();
+        let code = dashless(printed.get("recoveryCode").unwrap().as_str().unwrap());
+        RecoveryCode::parse(&code).unwrap();
+        assert_eq!(printed.get("publicKey"), Some(&json!(key(1))));
+        let rotate = cloud.body_of("POST /api/cli/sealing/rotate");
+        assert_eq!(rotate.get("organizationId"), Some(&json!("o1")));
+        assert_eq!(rotate.get("currentDigest"), Some(&json!("current-digest")));
+        assert_eq!(rotate.get("publicKey"), Some(&json!(key(1))));
+        assert_eq!(rotate.get("backup"), Some(&json!(wrapped_backup())));
+        cloud.never_saw(&code);
+    }
+
+    #[test]
+    fn rotate_prints_no_code_when_another_rotation_won() {
+        let cloud = cloud(|route, _| match route {
+            "POST /api/cli/sealing/recovery" => (200, recovery_row(key(1), None)),
+            "POST /api/cli/sealing/rotate" => (409, json!({ "error": "stale" })),
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+
+        let (result, printed) = rotate_json(&root);
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(error.report().code, RpcErrorCode::Conflict);
+        assert!(error.to_string().contains(ROTATE_AGAIN), "{error}");
+    }
+
+    #[test]
+    fn rotate_prints_no_code_when_cloud_lost_the_reply() {
+        let cloud = cloud(|route, _| match route {
+            "POST /api/cli/sealing/recovery" => (200, recovery_row(key(1), None)),
+            "POST /api/cli/sealing/rotate" => (200, json!({ "stored": true })),
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+
+        let (result, printed) = rotate_json(&root);
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(error.report().code, RpcErrorCode::Unavailable);
+        assert!(error.to_string().contains("didn't confirm"), "{error}");
+        assert!(error.to_string().contains(ROTATE_AGAIN), "{error}");
+    }
+
+    #[test]
+    fn rotate_prints_no_code_when_cloud_stored_another_backup() {
+        let cloud = cloud(|route, _| match route {
+            "POST /api/cli/sealing/recovery" => (200, recovery_row(key(1), None)),
+            "POST /api/cli/sealing/rotate" => (200, json!({ "digest": "someone else's" })),
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+
+        let (result, printed) = rotate_json(&root);
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(error.report().code, RpcErrorCode::Unavailable);
+        assert!(error.to_string().contains(ROTATE_AGAIN), "{error}");
+    }
+
+    #[test]
+    fn rotate_refuses_a_server_holding_another_key_than_cloud_backs_up() {
+        let cloud = cloud(|route, _| match route {
+            "POST /api/cli/sealing/recovery" => (200, recovery_row(key(2), None)),
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+
+        let (result, printed) = rotate_json(&root);
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(error.report().code, RpcErrorCode::Conflict);
+        assert!(error.to_string().contains("nothing was rotated"), "{error}");
+        assert_eq!(cloud.routes(), ["POST /api/cli/sealing/recovery"]);
+    }
+
+    #[test]
+    fn rotate_is_not_available_while_the_route_is_dark() {
+        let cloud = cloud(|_, _| (404, json!({ "error": "not found" })));
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+
+        let (result, printed) = rotate_json(&root);
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(error.report().code, RpcErrorCode::Unavailable);
+        assert!(error.to_string().contains("isn't available"), "{error}");
+    }
+
+    #[test]
+    fn rotate_needs_a_sign_in() {
+        let dir = config_dir(None, "");
+        let socket = dir.path().join("absent.sock");
+        let root = root(dir.path(), Some(&socket), &["recovery", "rotate"]);
+
+        let (result, printed) = rotate_json(&root);
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(error.report().code, RpcErrorCode::Unauthenticated);
+        assert!(
+            error
+                .hints()
+                .contains(&Hint::Next("ployz login".to_owned()))
+        );
+    }
+
+    #[test]
+    fn recover_opens_the_backup_the_server_kept() {
+        let dir = config_dir(None, "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+
+        let (result, printed) = recover_json(&root, "abcde-fghij-klmno-pqrst-uvwxyz\n");
+
+        result.unwrap();
+        assert_eq!(printed.unwrap(), json!({ "publicKey": key(1) }));
+        assert_eq!(*daemon.recoveries.lock().unwrap(), [None]);
+    }
+
+    #[test]
+    fn recover_retries_with_clouds_backup_when_the_server_has_none() {
+        let cloud = cloud(|route, _| match route {
+            "POST /api/cli/sealing/recovery" => {
+                (200, recovery_row(key(1), Some(cloud_backup_bytes())))
+            }
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = daemon(dir.path(), key(1), false);
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+
+        let (result, printed) = recover_json(&root, CODE);
+
+        result.unwrap();
+        assert_eq!(printed.unwrap(), json!({ "publicKey": key(1) }));
+        assert_eq!(
+            *daemon.recoveries.lock().unwrap(),
+            [None, Some(cloud_backup_bytes())]
+        );
+        assert_eq!(
+            cloud
+                .body_of("POST /api/cli/sealing/recovery")
+                .get("organizationId"),
+            Some(&json!("o1"))
+        );
+        cloud.never_saw(CODE);
+    }
+
+    #[test]
+    fn recover_has_nothing_to_open_when_neither_side_kept_a_backup() {
+        for reply in [(200, recovery_row(key(1), None)), (404, json!({}))] {
+            let cloud = cloud(move |_, _| reply.clone());
+            let dir = config_dir(Some(&cloud.url), "");
+            let daemon = daemon(dir.path(), key(1), false);
+            let root = root(
+                dir.path(),
+                Some(&daemon.socket),
+                &["recover", "--code-stdin"],
+            );
+
+            let (result, printed) = recover_json(&root, CODE);
+
+            let error = result.unwrap_err();
+            assert!(printed.is_none());
+            assert_eq!(error.report().code, RpcErrorCode::Conflict);
+            assert!(
+                error.to_string().contains("Nothing to recover from"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn recover_asks_for_a_sign_in_before_it_can_use_clouds_backup() {
+        let dir = config_dir(None, "");
+        let daemon = daemon(dir.path(), key(1), false);
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+
+        let (result, _) = recover_json(&root, CODE);
+
+        let error = result.unwrap_err();
+        assert_eq!(error.report().code, RpcErrorCode::Unauthenticated);
+        assert!(
+            error
+                .hints()
+                .contains(&Hint::Next("ployz login".to_owned()))
+        );
+    }
+
+    #[test]
+    fn recover_names_a_wrong_code() {
+        let dir = config_dir(None, "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+
+        let (result, printed) = recover_json(&root, "ZYXWVUTSRQPONMLKJIHGFEDCBA");
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(
+            error.report().code,
+            RpcErrorCode::InvalidArgument,
+            "{error}"
+        );
+        assert_eq!(error.to_string(), "That recovery code is wrong.");
+        assert!(matches!(error.hints().as_slice(), [Hint::Retry(_)]));
+    }
+
+    #[test]
+    fn recover_rejects_a_code_longer_than_stdin_allows() {
+        let dir = config_dir(None, "");
+        let daemon = daemon(dir.path(), key(1), true);
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+
+        let (result, _) = recover_json(&root, &"A".repeat(CODE_LIMIT + 1));
+
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.report().code,
+            RpcErrorCode::InvalidArgument,
+            "{error}"
+        );
+        assert!(error.to_string().contains("more than 256 bytes"), "{error}");
+        assert!(daemon.recoveries.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn neither_verb_runs_through_cloud() {
+        let contexts = format!(
+            "current_context: prod\ncontexts:\n  prod:\n    connections:\n      - management: ployz1:{}\n",
+            "A".repeat(CAPABILITY_LEN)
+        );
+        let cloud = cloud(|route, _| panic!("unexpected {route}"));
+        let dir = config_dir(Some(&cloud.url), &contexts);
+        for tail in [
+            &["recovery", "rotate"][..],
+            &["recover", "--code-stdin"][..],
+        ] {
+            let root = root(dir.path(), None, tail);
+
+            let (result, printed) = if tail.first() == Some(&"recover") {
+                recover_json(&root, CODE)
+            } else {
+                rotate_json(&root)
+            };
+
+            let error = result.unwrap_err();
+            assert!(printed.is_none());
+            assert_eq!(
+                error.report().code,
+                RpcErrorCode::InvalidArgument,
+                "{error}"
+            );
+            assert!(
+                error.to_string().contains("doesn't run through Cloud"),
+                "{error}"
+            );
+        }
+        assert!(cloud.routes().is_empty());
+    }
+
+    #[test]
+    fn the_code_has_no_argument_and_neither_verb_is_a_tool() {
+        let arguments: Vec<_> = recover_command(Command::new("recover"))
+            .get_arguments()
+            .filter(|argument| argument.get_id().as_str().contains("code"))
+            .map(|argument| {
+                (
+                    argument.get_id().to_string(),
+                    argument.get_action().takes_values(),
+                )
+            })
+            .collect();
+        assert_eq!(arguments, [("code-stdin".to_owned(), false)]);
+        assert!(verbs::RECOVER.tool.is_none());
+        assert!(verbs::RECOVERY_ROTATE.tool.is_none());
+        assert!(verbs::find("recover").is_some());
+        assert!(verbs::find("recovery rotate").is_some());
+    }
+
+    #[test]
+    fn a_person_sees_the_code_once_and_nowhere_else() {
+        // The code goes to the process's real stdout, so read it from a child run.
+        const CHILD: &str = "PLOYZ_RECOVERY_ROTATE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let cloud = cloud(|route, body| match route {
+                "POST /api/cli/sealing/recovery" => (200, recovery_row(key(1), None)),
+                "POST /api/cli/sealing/rotate" => (200, json!({ "digest": digest_of(body) })),
+                other => panic!("unexpected {other}"),
+            });
+            let dir = config_dir(Some(&cloud.url), "");
+            let daemon = daemon(dir.path(), key(1), true);
+            let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+            ui::init(false, ui::Color::Never);
+            rotate(&root).unwrap();
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "handlers::recovery::tests::a_person_sees_the_code_once_and_nowhere_else",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        let codes: Vec<_> = stdout
+            .lines()
+            .filter(|line| line.contains("Recovery code"))
+            .map(|line| dashless(line.rsplit(' ').next().unwrap()))
+            .collect();
+        let [code] = codes.as_slice() else {
+            panic!("expected one code line on stdout: {stdout}");
+        };
+        RecoveryCode::parse(code).unwrap();
+        assert!(!stderr.contains(code.as_str()), "{stderr}");
+        assert!(stderr.contains(KEEP_THE_CODE), "{stderr}");
+    }
 }
