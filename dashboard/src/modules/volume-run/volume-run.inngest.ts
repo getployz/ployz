@@ -689,12 +689,12 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     }), `${B.name} is still starting ${name}'s Service`);
     if (!started.ok) throw new NonRetriableError(started.message);
     await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
-    // A late start may have been made before its answer, so the time is an estimate that may run long. Times
-    // stamped by different workers can disagree; a negative one says nothing.
+    // A late start may have been made before its answer, and the cut's answer follows the stop, so the time is
+    // only an estimate either way. Times stamped by different workers can disagree; a negative one says nothing.
     const stopped = stoppedAt === null || started.at === undefined || started.at < stoppedAt ? null : formatDuration((started.at - stoppedAt) / 1000);
     downtime = stopped === null
       ? null
-      : started.late === true ? `${service} was stopped about ${stopped} or less (its start was retried)` : `${service} was stopped ${stopped}`;
+      : started.late === true ? `${service} was stopped about ${stopped} (its start was retried)` : `${service} was stopped ${stopped}`;
   } catch (error) {
     return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));
   }

@@ -80,7 +80,7 @@ web was stopped 26s.
 The last line says how long your service was down. `ployz volume runs data` keeps it as the
 move's message. If Ployz had to ask the new server again to start your service, for example
 because Ployz restarted there, it can't tell exactly when the service started. The line then
-says so: `web was stopped about 43s or less (its start was retried)`. While the old replica is stopped, `ployz status` names it as not serving, with the
+gives an estimate and says why: `web was stopped about 43s (its start was retried)`. While the old replica is stopped, `ployz status` names it as not serving, with the
 code it exited with. The row goes once the replica on `web-2` runs.
 
 The old server keeps an old copy, `data-web-1`. If the volume already has a mirror on `web-2`, the
