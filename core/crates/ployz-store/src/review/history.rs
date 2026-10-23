@@ -139,7 +139,7 @@ pub(crate) fn history(
     let limit = query.limit.unwrap_or(HISTORY_PAGE).max(1);
     // One extra row is the oldest shown revision's predecessor, and says more exist.
     let mut rows = tx.query(
-        "SELECT revision, intent, message, saved_by, saved_at FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC LIMIT ?2",
+        "SELECT revision, intent, message, saved_by, saved_at, value_changes FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC LIMIT ?2",
         &[
             environment.summary.id.as_str().into(),
             (i64::from(limit) + 1).into(),
@@ -159,8 +159,19 @@ pub(crate) fn history(
             environment.working = intent.clone();
             // The first revision is what it created, against an empty Environment.
             let empty = crate::scope::empty(environment.summary.name.as_str());
-            let baseline = previous.as_ref().map_or(&empty, |(_, baseline)| baseline);
-            let changes = review::saved_comparison(&environment, baseline)?;
+            let mut baseline = std::borrow::Cow::Borrowed(
+                previous.as_ref().map_or(&empty, |(_, baseline)| baseline),
+            );
+            let changed: Vec<(String, String)> = row
+                .optional_text(5)?
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|_| error::corrupt("Saved value changes"))?
+                .unwrap_or_default();
+            if !changed.is_empty() {
+                unscrub_changes(baseline.to_mut(), &environment.working, &changed);
+            }
+            let changes = review::saved_comparison(&environment, &baseline)?;
             revisions.push(SavedRevision {
                 revision,
                 message: row.optional_text(2)?.map(str::to_owned),
@@ -190,6 +201,46 @@ pub(crate) fn history(
         live,
         failed,
     })
+}
+
+/// Mark in `baseline` each value `changed` lists that sealing has since made equal
+/// to `saved`'s, so History shows that the version changed it. Both sides still show
+/// only that the value is sealed.
+fn unscrub_changes(
+    baseline: &mut SavedEnvironmentIntent,
+    saved: &SavedEnvironmentIntent,
+    changed: &[(String, String)],
+) {
+    for (service_id, variable_id) in changed {
+        let Some(now) = saved
+            .services
+            .iter()
+            .find(|service| &service.id == service_id)
+            .and_then(|service| service.variables.iter().find(|now| &now.id == variable_id))
+        else {
+            continue;
+        };
+        let Some(was) = baseline
+            .services
+            .iter_mut()
+            .find(|service| &service.id == service_id)
+            .and_then(|service| {
+                let index = service
+                    .variables
+                    .iter()
+                    .position(|was| was.id == now.id)
+                    .or_else(|| service.variables.iter().position(|was| was.key == now.key))?;
+                service.variables.get_mut(index)
+            })
+        else {
+            continue;
+        };
+        // The comparison counts a differing fingerprint as a changed value but never
+        // shows one, so this marks the row without revealing anything.
+        if was.value == now.value && was.value_fingerprint == now.value_fingerprint {
+            was.value_fingerprint = format!("{}:before", now.value_fingerprint);
+        }
+    }
 }
 
 pub(crate) fn preview(

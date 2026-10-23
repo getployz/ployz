@@ -864,9 +864,12 @@ pub(crate) fn publish(
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
     let accepted = (!accepted.is_empty())
         .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
+    let changed = latest.map_or_else(Vec::new, |latest| value_changes(&latest.intent, &intent));
+    let changed = (!changed.is_empty())
+        .then(|| serde_json::to_string(&changed).expect("value changes are JSON"));
     tx.execute(
-        "INSERT INTO config_saved (environment_id, revision, organization_id, intent, message, saved_by, saved_at, accepted_losses) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO config_saved (environment_id, revision, organization_id, intent, message, saved_by, saved_at, accepted_losses, value_changes) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         &[
             environment.as_str().into(),
             revision_param(revision)?.into(),
@@ -879,10 +882,39 @@ pub(crate) fn publish(
             who.principal.as_ref().map(crate::Principal::as_str).into(),
             crate::deployment::now().into(),
             accepted.as_deref().into(),
+            changed.as_deref().into(),
         ],
     )?;
     scrub_sealed(tx, environment)?;
     Ok((revision, true))
+}
+
+/// The `[service_id, variable_id]` of each variable whose value `saved` changed from
+/// `previous`, found as [`Scrub`] finds it: by ID, or else by key.
+fn value_changes(
+    previous: &SavedEnvironmentIntent,
+    saved: &SavedEnvironmentIntent,
+) -> Vec<(String, String)> {
+    let mut changed = Vec::new();
+    for service in &saved.services {
+        let Some(was) = previous.services.iter().find(|was| was.id == service.id) else {
+            continue;
+        };
+        for variable in &service.variables {
+            let before = was
+                .variables
+                .iter()
+                .find(|was| was.id == variable.id)
+                .or_else(|| was.variables.iter().find(|was| was.key == variable.key));
+            if before.is_some_and(|before| {
+                before.value != variable.value
+                    || before.value_fingerprint != variable.value_fingerprint
+            }) {
+                changed.push((service.id.clone(), variable.id.clone()));
+            }
+        }
+    }
+    changed
 }
 
 /// [`guard_source`] for saving `intent` over Saved State `latest`. Shipping asks it
