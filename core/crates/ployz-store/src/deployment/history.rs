@@ -337,6 +337,38 @@ pub(crate) fn failed(
         .is_some_and(|deployment| deployment.status == DeploymentStatus::Failed))
 }
 
+/// Whether Saved `revision` was only ever shipped by Deployments that ended having
+/// run nothing, and at least one shipped it: the save is all that is left of them.
+pub(crate) fn only_ran_nothing(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    revision: Revision,
+) -> Result<bool, RpcError> {
+    let rows = tx.query(
+        &format!(
+            "SELECT status, run FROM config_deployment \
+             WHERE environment_id = ?1 AND {NUMBERED} AND saved_revision = ?2"
+        ),
+        &[
+            environment.as_str().into(),
+            revision_param(revision)?.into(),
+        ],
+    )?;
+    if rows.is_empty() {
+        return Ok(false);
+    }
+    for row in &rows {
+        if row.variant::<DeploymentStatus>(0, "Deployment status")? != DeploymentStatus::Failed {
+            return Ok(false);
+        }
+        let run: Run = row.json(1, "Deployment run")?;
+        if !matches!(run.outcome, Some(Outcome::NotExecuted { .. })) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// `environment`'s latest numbered Deployment matching `condition`.
 pub(super) fn latest_where(
     tx: &mut dyn Tx,

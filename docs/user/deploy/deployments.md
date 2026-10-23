@@ -75,6 +75,9 @@ A new service's change starts with what it runs, its image or its repository and
 `ployz discard web.image` says so and names the command, `ployz discard web`.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
 Saving records that reversal; Discard on its row returns it to the latest saved value.
+A version that only a deploy that ran nothing saved, such as one refused because a server didn't
+answer, is the exception: discard its changes and nothing is left to show or save, since nothing
+of it ran.
 In the CLI, `ployz discard` with no path drops every staged change in the environment, including
 changes someone else staged from the dashboard or an agent, and lists each one it dropped. Pass a
 path, such as `ployz discard web.env.KEY`, to drop only that change. It also names each saved change

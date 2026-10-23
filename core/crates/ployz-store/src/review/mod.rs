@@ -310,7 +310,14 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
         || crate::scope::empty(environment.summary.name.as_str()),
         |saved| saved.intent.clone(),
     );
-    let draft = saved_comparison(environment, &baseline)?;
+    let mut draft = saved_comparison(environment, &baseline)?;
+    if draft.total_count > 0
+        && let Some(saved) = &saved
+        && crate::deployment::only_ran_nothing(tx, id, saved.revision)?
+    {
+        let baseline = before_ran_nothing(tx, environment, saved.revision)?;
+        draft = saved_comparison(environment, &baseline)?;
+    }
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
     by_name(&mut view.changes);
@@ -1064,15 +1071,54 @@ pub(crate) fn introductions(
     crate::scope::nodes(&rows, &environment.working, "Node Introduction")
 }
 
+/// The Saved State a draft compares against once it no longer matches `revision`, a
+/// revision only Deploys that ran nothing shipped: the newest one before it that a
+/// Deploy didn't save in vain, or none. A Deploy that ran nothing changes nothing.
+fn before_ran_nothing(
+    tx: &mut dyn Tx,
+    environment: &Environment,
+    mut revision: Revision,
+) -> Result<SavedEnvironmentIntent, RpcError> {
+    let id = &environment.summary.id;
+    loop {
+        let Some(saved) = saved_before(tx, id, Some(revision))? else {
+            return Ok(crate::scope::empty(environment.summary.name.as_str()));
+        };
+        if !crate::deployment::only_ran_nothing(tx, id, saved.revision)? {
+            return Ok(saved.intent);
+        }
+        revision = saved.revision;
+    }
+}
+
 pub(crate) fn latest_saved(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<Saved>, RpcError> {
-    let rows = tx.query(
-        "SELECT revision, intent, accepted_losses FROM config_saved WHERE environment_id = ?1 \
-         ORDER BY revision DESC LIMIT 1",
-        &[environment.as_str().into()],
-    )?;
+    saved_before(tx, environment, None)
+}
+
+/// The newest Saved revision before `before`, or the latest with `None`.
+fn saved_before(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    before: Option<Revision>,
+) -> Result<Option<Saved>, RpcError> {
+    let rows = match before {
+        None => tx.query(
+            "SELECT revision, intent, accepted_losses FROM config_saved WHERE environment_id = ?1 \
+             ORDER BY revision DESC LIMIT 1",
+            &[environment.as_str().into()],
+        )?,
+        Some(before) => tx.query(
+            "SELECT revision, intent, accepted_losses FROM config_saved WHERE environment_id = ?1 \
+             AND revision < ?2 ORDER BY revision DESC LIMIT 1",
+            &[
+                environment.as_str().into(),
+                crate::scope::revision_param(before)?.into(),
+            ],
+        )?,
+    };
     let Some(row) = rows.first() else {
         return Ok(None);
     };

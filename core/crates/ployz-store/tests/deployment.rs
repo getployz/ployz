@@ -2135,6 +2135,61 @@ fn nothing_executed_applies_nothing() {
     assert_eq!(changed(&store, &who), ["api", "web"]);
 }
 
+/// #3275: a Deploy saves Working State before it runs. Once the edits of one that ran
+/// nothing are discarded, nothing is left saved to undo or to save again.
+#[test]
+fn discarding_after_a_deploy_that_ran_nothing_leaves_nothing_saved() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["api", "web"]))
+        .unwrap();
+
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::NotExecuted("Storage capacity is unknown".into()),
+        )
+        .unwrap();
+    assert_eq!(changed(&store, &who), ["web"]);
+    // Retrying as is: the draft is the refused Deploy's save, so nothing is unsaved.
+    assert!(diff(&store, &who).draft_changes.is_empty());
+
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+    let view = diff(&store, &who);
+    assert!(view.changes.is_empty(), "{:?}", view.changes);
+    assert!(view.draft_changes.is_empty(), "{:?}", view.draft_changes);
+    assert_eq!(view.draft_count, 0);
+
+    // A new edit compares against what ran, not the save that ran nothing.
+    set_replicas(&store, &who, "web", 2);
+    let draft = diff(&store, &who).draft_changes;
+    let setting = &draft[0].settings[0];
+    assert_eq!(
+        (setting.before.clone(), setting.after.clone()),
+        (json!(1), json!(2))
+    );
+}
+
 #[test]
 fn admission_replays_supersedes_and_checks_the_reviewed_version() {
     let (store, who) = shop();
