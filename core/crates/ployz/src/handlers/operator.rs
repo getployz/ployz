@@ -439,8 +439,12 @@ async fn forward_exec(
     let mut written = ExecWriter::default();
     let (mut stdout, mut stderr) = (crate::ui::stdout_bytes(), std::io::stderr());
     while let Some(payload) = output.next().await {
-        let frame = match payload {
-            Ok(payload) => ExecResponseFrame::decode(&payload)?,
+        let frame = match payload.map(|payload| ExecResponseFrame::decode(&payload)) {
+            Ok(Ok(frame)) => frame,
+            Ok(Err(error)) => {
+                written.end(None, &mut stdout, &mut stderr)?;
+                return Err(error.into());
+            }
             Err(error) => {
                 written.end(None, &mut stdout, &mut stderr)?;
                 return Err(error.into());

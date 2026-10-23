@@ -30,7 +30,15 @@ pub(crate) fn attach(root: Command, published: &Published) -> Command {
         .commands
         .iter()
         .fold(root, |root, command| graft(root, &command.path, command));
-    groups.iter().fold(root, |root, path| described(root, path))
+    // Top-level `uptime` is the one such group the CLI can say more about.
+    groups
+        .iter()
+        .fold(root, |root, path| match path.as_slice() {
+            [name] if name == "uptime" => root.mut_subcommand(name, |group| {
+                group.about("See whether visitors reach a Service, from every region")
+            }),
+            _ => described(root, path),
+        })
 }
 
 fn find<'a>(root: &'a Command, path: &[String]) -> Option<&'a Command> {
@@ -38,8 +46,7 @@ fn find<'a>(root: &'a Command, path: &[String]) -> Option<&'a Command> {
         .try_fold(root, |command, name| command.find_subcommand(name))
 }
 
-/// A group only Cloud published has no description of its own. The CLI describes top-level
-/// `uptime`, and any other such group lists its commands.
+/// A group only Cloud published has no description of its own: it lists its commands.
 fn described(parent: Command, path: &[String]) -> Command {
     let [name, rest @ ..] = path else {
         let commands = parent
@@ -49,11 +56,6 @@ fn described(parent: Command, path: &[String]) -> Command {
             .join(", ");
         return parent.about(format!("Commands: {commands}"));
     };
-    if name == "uptime" && rest.is_empty() {
-        return parent.mut_subcommand(name.clone(), |group| {
-            group.about("See whether visitors reach a Service, from every region")
-        });
-    }
     parent.mut_subcommand(name.clone(), |group| described(group, rest))
 }
 
