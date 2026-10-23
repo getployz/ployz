@@ -17,6 +17,10 @@ The supervisor:
 4. Names which worker's run hosts a local Cloud. That run goes down last.
 5. Plans timed steps, such as cleanup and the end of the soak, as its own sends. A worker's in-session cron stays silent while the worker's thread is idle.
 
+## Real-world hosts
+
+Every soak and pre-release check gives one worker the [real-world hosts axis](real-world-hosts.md): messy hostnames, the newest and an older distribution, Docker or a firewall already there, IPv6-only, small and full disks, low RAM, a flaky network and clock skew, each driven through the install line, cloud-init and `ployz server add` to a first deploy.
+
 ## Reporting
 
 Workers keep findings in files and send the supervisor pointers, so the supervisor's context stays small and it triages with subagents.
