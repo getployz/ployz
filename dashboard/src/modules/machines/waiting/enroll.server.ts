@@ -495,7 +495,7 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     ))
     .orderBy(asc(serverEnrollment.requestedAt), asc(waitingServer.firstSeenAt), asc(waitingServer.id), asc(serverEnrollment.id));
   const { ahead, joining } = yield* readJoinStatus(organization.id);
-  const { hasFirst } = yield* enrollmentAuthority(organization.id, "preview");
+  const { founded, hasFirst } = yield* enrollmentAuthority(organization.id, "preview");
   const attempts = rows.map(({ instruction, report, ...row }): ServerEnrollmentView => ({
     ...row,
     name: instruction.name,
@@ -505,7 +505,7 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     requestedAt: row.requestedAt.toISOString(),
     endedAt: row.endedAt?.toISOString() ?? null,
   }));
-  return { attempts, hasFirst, joining };
+  return { attempts, founded, hasFirst, joining };
 });
 
 export const readServerEnrollments = Effect.fn("ServerEnrollment.read")(function* (

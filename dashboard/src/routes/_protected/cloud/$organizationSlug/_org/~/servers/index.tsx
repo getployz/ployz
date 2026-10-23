@@ -12,7 +12,7 @@ import { enrollingRows } from "./-components/enrolling-list";
 import { FirstRunCard } from "./-components/first-run-card";
 import { FleetHealth } from "./-components/fleet-health";
 import { SERVER_LIST, ServerRow } from "./-components/server-row";
-import { serversPageState } from "./-components/servers-page-state";
+import { foundingFirstServer, serversPageState } from "./-components/servers-page-state";
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 import { ServersUpgradeBar, useServersUpgrade } from "./-components/servers-upgrade";
@@ -46,7 +46,7 @@ function RouteComponent() {
     servers: servers.length,
     waiting: waiting.data?.length,
     enrolling: enrollments.data === undefined ? undefined : enrollingRows(enrollments.data.attempts).length,
-    founding: enrollments.data?.attempts.some((attempt) => attempt.role === "founder" && attempt.endedAt === null),
+    founding: foundingFirstServer(enrollments.data),
   });
   const upgrade = page.kind === "fleet" && !page.stale ? upgrades : null;
   // First run has its own install card; the dialog returns once a server has shown up.

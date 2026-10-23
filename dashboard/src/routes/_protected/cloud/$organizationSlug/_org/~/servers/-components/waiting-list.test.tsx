@@ -302,7 +302,7 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const waitingKey = waitingServersQueryOptions("ada").queryKey;
   const statusKey = serverEnrollmentsQueryOptions("ada").queryKey;
   client.setQueryData(waitingKey, [second]);
-  client.setQueryData(statusKey, { attempts: [attempt], hasFirst: true, joining: 0 });
+  client.setQueryData(statusKey, { attempts: [attempt], founded: true, hasFirst: true, joining: 0 });
   render(<QueryClientProvider client={client}><IntakeTray organizationSlug="ada" token={undefined} firstRun={false} /></QueryClientProvider>);
   expect(rowNames()).toEqual(["second"]);
   const waiting = deferred<WaitingServerView[]>();
@@ -313,7 +313,7 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const statusFetch = client.refetchQueries({ queryKey: statusKey });
   const returned: WaitingServerView = { ...first, arrivalAt: "2026-10-17T10:01:00Z", returned: { state: "failed", stage: "storage", message: "Disk missing" } };
   const endWaiting = () => act(async () => { waiting.resolve([second, returned]); await waitingFetch; });
-  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], hasFirst: true, joining: 0 }); await statusFetch; });
+  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], founded: true, hasFirst: true, joining: 0 }); await statusFetch; });
   if (order === "waiting-first") {
     await endWaiting();
     expect(rowNames()).toEqual(["second", "first"]);

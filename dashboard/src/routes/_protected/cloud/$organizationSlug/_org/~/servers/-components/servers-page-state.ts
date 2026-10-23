@@ -16,7 +16,7 @@ export function serversPageState({ list, servers, waiting, enrolling, founding =
   /** Undefined until Cloud answers. */
   waiting: number | undefined;
   enrolling: number | undefined;
-  /** The organization's first server is enrolling, so no server has joined for Cloud to reach yet. */
+  /** See {@link foundingFirstServer}. */
   founding?: boolean;
 }): ServersPageState {
   const intake = (waiting ?? 0) + (enrolling ?? 0) > 0;
@@ -25,4 +25,16 @@ export function serversPageState({ list, servers, waiting, enrolling, founding =
   // Without Cloud's answer, zero servers could still be a first arrival, so the first-run card would mislead.
   if (servers === 0) return waiting === undefined || enrolling === undefined ? { kind: "loading", intake } : { kind: "first-run", intake };
   return { kind: "fleet", intake, stale: list === "stale" };
+}
+
+/**
+ * The organization's first server is still enrolling and no cluster is founded, so there is nothing for Cloud to
+ * reach yet. A founder that resumes after founding leaves this false, so an outage still shows.
+ */
+export function foundingFirstServer(status: {
+  readonly founded: boolean;
+  readonly attempts: ReadonlyArray<{ readonly role: string; readonly endedAt: string | null }>;
+} | undefined): boolean {
+  if (status === undefined || status.founded) return false;
+  return status.attempts.some((attempt) => attempt.role === "founder" && attempt.endedAt === null);
 }
