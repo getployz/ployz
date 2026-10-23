@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket},
+    sync::{Arc, Condvar},
 };
 
 use tokio::{
@@ -26,8 +27,8 @@ thread_local! {
     pub(super) static IPV6_FAILS_WITH: Cell<Option<i32>> = const { Cell::new(None) };
     /// Gives compressed test windows a bind budget without waiting for D8's first attempt.
     pub(in crate::checkin) static LEAD: Cell<Option<Duration>> = const { Cell::new(None) };
-    /// Delays every bind by this long, the way a loaded host delays `open`.
-    pub(super) static BIND_STALL: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    /// Holds every bind until the test releases it, the way a loaded host delays `open`.
+    pub(super) static BIND_GATE: RefCell<Option<Arc<Gate>>> = const { RefCell::new(None) };
     pub(super) static STALL_PORT: Cell<Option<Port>> = const { Cell::new(None) };
     /// Hears each bind begin, which tells a test the binds before it have been handed out.
     pub(super) static BIND_BEGAN: RefCell<Option<std::sync::mpsc::Sender<()>>> =
@@ -37,19 +38,28 @@ thread_local! {
 pub(super) struct BindFaults {
     only_v6: bool,
     ipv6_error: Option<i32>,
-    stall: Duration,
+    gate: Option<Arc<Gate>>,
     port: Option<Port>,
     began: Option<std::sync::mpsc::Sender<()>>,
+    /// The gate an entered bind counts itself out on when it returns.
+    returns_to: Option<Arc<Gate>>,
 }
 
 impl BindFaults {
+    /// Runs on the runtime thread as `open` hands a bind out, so the gate knows every bind to wait
+    /// for before any of them starts.
     pub(super) fn capture() -> Self {
+        let gate = BIND_GATE.with_borrow(Clone::clone);
+        if let Some(gate) = &gate {
+            gate.update(|state| state.handed_out += 1);
+        }
         Self {
             only_v6: ONLY_V6_BY_DEFAULT.get(),
             ipv6_error: IPV6_FAILS_WITH.get(),
-            stall: BIND_STALL.get(),
+            gate,
             port: STALL_PORT.get(),
             began: BIND_BEGAN.with_borrow(Clone::clone),
+            returns_to: None,
         }
     }
 
@@ -60,9 +70,10 @@ impl BindFaults {
         Self {
             only_v6: ONLY_V6_BY_DEFAULT.replace(self.only_v6),
             ipv6_error: IPV6_FAILS_WITH.replace(self.ipv6_error),
-            stall: BIND_STALL.replace(self.stall),
+            gate: BIND_GATE.replace(self.gate.clone()),
             port: STALL_PORT.replace(self.port),
             began: BIND_BEGAN.replace(self.began.clone()),
+            returns_to: self.gate.clone(),
         }
     }
 }
@@ -71,9 +82,82 @@ impl Drop for BindFaults {
     fn drop(&mut self) {
         ONLY_V6_BY_DEFAULT.set(self.only_v6);
         IPV6_FAILS_WITH.set(self.ipv6_error);
-        BIND_STALL.set(self.stall);
+        BIND_GATE.set(self.gate.take());
         STALL_PORT.set(self.port);
         BIND_BEGAN.set(self.began.take());
+        if let Some(gate) = self.returns_to.take() {
+            gate.returned();
+        }
+    }
+}
+
+/// Where stalled binds wait for the test, and count themselves out once their socket is kept or
+/// closed.
+#[derive(Default)]
+pub(super) struct Gate {
+    state: Mutex<GateState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct GateState {
+    released: bool,
+    handed_out: usize,
+    /// Binds that reached the gate and waited on it.
+    held: usize,
+    returned: usize,
+}
+
+impl Gate {
+    pub(super) fn wait(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.held += 1;
+        let _released = self
+            .changed
+            .wait_while(state, |state| !state.released)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+
+    fn update(&self, change: impl FnOnce(&mut GateState)) {
+        change(&mut self.state.lock().unwrap_or_else(PoisonError::into_inner));
+        self.changed.notify_all();
+    }
+
+    fn returned(&self) {
+        self.update(|state| state.returned += 1);
+    }
+}
+
+/// Stalls binds until released. Dropping it releases them too, because the runtime's shutdown
+/// waits on every blocking bind, so a failing test still ends.
+struct StalledBinds(Arc<Gate>);
+
+impl StalledBinds {
+    fn new() -> Self {
+        let gate = Arc::new(Gate::default());
+        BIND_GATE.set(Some(Arc::clone(&gate)));
+        Self(gate)
+    }
+
+    /// Releases the stalled binds and waits until every bind `open` handed out has returned. Fails
+    /// when no bind was held, as when a loaded host delays `open` past its deadline before it binds,
+    /// because the test would then prove nothing.
+    fn release_until_returned(&self) {
+        self.0.update(|state| state.released = true);
+        let state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let (state, waited) = self
+            .0
+            .changed
+            .wait_timeout_while(state, PATIENCE, |state| state.returned < state.handed_out)
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(!waited.timed_out(), "a released bind never returned");
+        assert!(state.held > 0, "no bind reached the gate");
+    }
+}
+
+impl Drop for StalledBinds {
+    fn drop(&mut self) {
+        self.0.update(|state| state.released = true);
     }
 }
 
@@ -602,12 +686,12 @@ fn a_port_must_listen_three_seconds_before_the_window_ends() {
 async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
     let (udp, first, second) = (free_port(), free_port(), free_port());
     STALL_PORT.set(Some(Port::Tcp(second)));
-    BIND_STALL.set(Duration::from_millis(1_600));
+    let stalled = StalledBinds::new();
     LEAD.set(Some(Duration::from_millis(300)));
-    let started = std::time::Instant::now();
     let mut probes = Probes::default();
-    probes
-        .open(
+    tokio::time::timeout(
+        PATIENCE,
+        probes.open(
             handout(
                 "later-bind",
                 1_000,
@@ -616,17 +700,17 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
             ),
             &key(),
             Instant::now(),
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("open waited on the stalled bind");
     // `open` gave up on the stalled bind at its deadline, inside the window.
     assert!(std::net::TcpStream::connect(("127.0.0.1", first)).is_ok());
     assert!(!bindable(udp));
-    probes.finish().await;
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < Duration::from_millis(1_200),
-        "report finished after {elapsed:?}"
-    );
+    // The bind is still stalled, so a window that waited on it would never end.
+    tokio::time::timeout(PATIENCE, probes.finish())
+        .await
+        .expect("the window waited on the stalled bind");
     assert!(
         std::net::TcpStream::connect(("127.0.0.1", first)).is_err(),
         "the earlier listener outlived its window"
@@ -635,6 +719,7 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
         bindable(first) && bindable(udp),
         "ports were not released at expiry"
     );
+    stalled.release_until_returned();
     assert!(bindable(second));
     assert_eq!(
         probes.report().await.unwrap().bind_failed,
@@ -646,7 +731,7 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
 async fn a_listener_greets_cloud_while_a_later_bind_stalls() {
     let (first, second) = (free_port(), free_port());
     STALL_PORT.set(Some(Port::Tcp(second)));
-    BIND_STALL.set(Duration::from_millis(1_500));
+    let _stalled = StalledBinds::new();
     LEAD.set(Some(Duration::from_millis(1_000)));
     let expected = greeting("stalled", key().public_hex(), first).into_bytes();
     let (began, binds) = std::sync::mpsc::channel();
@@ -661,8 +746,9 @@ async fn a_listener_greets_cloud_while_a_later_bind_stalls() {
         std::io::Read::read_exact(&mut stream, &mut read).map(|()| read)
     });
     let mut probes = Probes::default();
-    probes
-        .open(
+    tokio::time::timeout(
+        PATIENCE,
+        probes.open(
             handout(
                 "stalled",
                 3_000,
@@ -671,8 +757,10 @@ async fn a_listener_greets_cloud_while_a_later_bind_stalls() {
             ),
             &key(),
             Instant::now(),
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("open waited on the stalled bind");
     let read = cloud.join().unwrap();
     probes.close().await;
     assert_eq!(read.expect("no greeting inside Cloud's read"), expected);
@@ -703,16 +791,21 @@ async fn a_bind_that_finishes_after_the_deadline_reports_as_failed_and_stays_ref
     let dir = tempfile::tempdir().unwrap();
     let tcp = free_port();
     LEAD.set(Some(Duration::from_millis(700)));
-    BIND_STALL.set(Duration::from_millis(500));
+    let stalled = StalledBinds::new();
     let mut probes = Probes::load(dir.path().join("probe.json"));
 
-    probes
-        .open(
+    tokio::time::timeout(
+        PATIENCE,
+        probes.open(
             handout("late", 1_000, &[Port::Tcp(tcp)], &[]),
             &key(),
             Instant::now(),
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("open waited on the stalled bind");
+    // `open` gave up at its deadline, so the bind finishes after it.
+    stalled.release_until_returned();
 
     assert!(TcpStream::connect(("127.0.0.1", tcp)).await.is_err());
     assert!(bindable(tcp));
@@ -727,22 +820,21 @@ async fn a_bind_that_finishes_after_the_deadline_reports_as_failed_and_stays_ref
 async fn a_bind_after_d8_s_only_attempt_reports_failed_in_a_short_window() {
     let dir = tempfile::tempdir().unwrap();
     let tcp = free_port();
-    BIND_STALL.set(Duration::from_millis(1_200));
+    let stalled = StalledBinds::new();
     let mut probes = Probes::load(dir.path().join("probe.json"));
-    let sent = std::time::Instant::now();
 
-    probes
-        .open(
+    tokio::time::timeout(
+        PATIENCE,
+        probes.open(
             handout("slow", 2_500, &[Port::Tcp(tcp)], &[]),
             &key(),
             Instant::now(),
-        )
-        .await;
-
-    assert!(
-        sent.elapsed() < Duration::from_millis(1_200),
-        "open waited on the stalled bind"
-    );
+        ),
+    )
+    .await
+    .expect("open waited on the stalled bind");
+    // The bind finishes inside the window but after the bind deadline, so it must not listen.
+    stalled.release_until_returned();
     assert!(std::net::TcpStream::connect(("127.0.0.1", tcp)).is_err());
     probes.finish().await;
     assert_eq!(
