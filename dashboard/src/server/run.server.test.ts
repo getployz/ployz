@@ -143,6 +143,17 @@ describe("Effect execution boundary", () => {
     await runtime.dispose();
   });
 
+  it("keeps a died NonRetriableError non-retriable but drops the query it wraps", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));
+
+    await expect(runInngest(Effect.die(new NonRetriableError("wrapper", { cause: failedQuery() })))).rejects.toSatisfy(
+      (cause: unknown) =>
+        cause instanceof NonRetriableError && cause.cause === undefined && !cause.message.includes("secret-param"),
+    );
+    await runtime.dispose();
+  });
+
   it("keeps the defect message and full cause at the Inngest boundary", async () => {
     const runtime = ManagedRuntime.make(Layer.empty);
     const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));

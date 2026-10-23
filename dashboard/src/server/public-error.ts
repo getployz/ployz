@@ -156,38 +156,38 @@ const decodeFailedQuery = Schema.decodeUnknownOption(
   Schema.Struct({ _tag: Schema.Literal("EffectDrizzleQueryError"), query: Schema.String }),
 );
 const decodeErrorName = Schema.decodeUnknownOption(Schema.Struct({ name: Schema.String }));
-/** String literals, dollar quotes and comments: words in them are values, not the statement. */
-const QUOTED = /'(?:[^']|'')*'|\$([A-Za-z_]\w*)?\$[\s\S]*?\$\1\$|\/\*[\s\S]*?\*\/|--[^\n]*/gu;
-const LEFT_OPEN = /'|\$[A-Za-z_]?\w*\$|\/\*|--/u;
+/** A quote, dollar quote, escape or comment: text past one may be a value, so no statement is named. */
+const UNREADABLE = /['\\`]|\$(?!\d)|\/\*|--|""/u;
 const NAME = String.raw`(?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*)`;
 const STATEMENT = new RegExp(String.raw`\b(?:insert\s+into|delete\s+from|update|from)\s+(${NAME}(?:\.${NAME})?)`, "iu");
 const VERB = /^\s*(?:with\b[\s\S]*?\)\s*)?(select|insert|update|delete)\b/iu;
-/** How many values [`causeValues`] reads before it treats a cause as unreadable. */
+/** How many values and Causes [`causeValues`] reads before it treats a cause as unreadable. */
 const READABLE_VALUES = 64;
 
 /**
- * A failed query's statement as its verb and first table, such as `insert machine_enrollment_token`. None when a
- * literal or comment is left open, since a value could then pass for a table.
+ * A failed query's statement as its verb and first table, such as `insert machine_enrollment_token`. None when the
+ * query holds a literal, comment or anything but `$n` params and plain identifiers, since a value could pass for a table.
  */
 function statementName(query: string): string | undefined {
-  const bare = query.replaceAll(QUOTED, " ");
-  if (LEFT_OPEN.test(bare)) return undefined;
-  const verb = VERB.exec(bare)?.[1];
-  const table = STATEMENT.exec(bare)?.[1]?.replaceAll('"', "");
+  if (UNREADABLE.test(query)) return undefined;
+  const verb = VERB.exec(query)?.[1];
+  const table = STATEMENT.exec(query)?.[1]?.replaceAll('"', "");
   if (verb === undefined || table === undefined) return undefined;
   return `${verb.toLowerCase()} ${table}`;
 }
 
 /**
- * Every value in `cause`: each reason of a Cause, and each `cause` a value wraps, all branches. None when there are
- * more than [`READABLE_VALUES`], so a cause too deep or cyclic to read is never taken as safe.
+ * Every value in `cause`: each reason of a Cause, and each `cause` a value wraps, all branches. None when it holds
+ * more than [`READABLE_VALUES`] values and Causes, so a cause too deep or cyclic to read is never taken as safe.
  */
 function causeValues(cause: unknown): unknown[] | undefined {
   const values: unknown[] = [];
   const pending: unknown[] = [cause];
+  let read = 0;
   for (let at = pending.shift(); at !== undefined || pending.length > 0; at = pending.shift()) {
-    if (values.length >= READABLE_VALUES) return undefined;
     if (at === undefined) continue;
+    read += 1;
+    if (read > READABLE_VALUES) return undefined;
     if (Cause.isCause(at)) {
       for (const reason of at.reasons) {
         if (Cause.isDieReason(reason)) pending.push(reason.defect);

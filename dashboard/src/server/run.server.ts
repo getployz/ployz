@@ -100,14 +100,17 @@ export function makeInngestEffectRunner<R>(runEffect: EffectRunner<R>) {
       return await runEffect(program);
     } catch (cause) {
       const failure = Cause.isCause(cause) ? Cause.squash(cause) : cause;
-      if (failure instanceof NonRetriableError) throw failure;
+      // Inngest keeps a thrown error's cause in its run history, so a redacted one goes without it.
+      const redacted = Cause.isCause(cause) && !Cause.isCause(loggableCause(cause));
+      if (failure instanceof NonRetriableError) {
+        throw redacted ? new NonRetriableError(describeCause(cause)) : failure;
+      }
       const message = Cause.isCause(cause)
         ? describeCause(cause)
         : cause instanceof Error
           ? cause.message
           : "Effect activity failed.";
-      // Inngest keeps a thrown error's cause in its run history, so a redacted one goes without it.
-      const attached = Cause.isCause(cause) && !Cause.isCause(loggableCause(cause)) ? {} : { cause };
+      const attached = redacted ? {} : { cause };
       if (isNonRetriableInngestCause(cause)) {
         throw new NonRetriableError(message, attached);
       }

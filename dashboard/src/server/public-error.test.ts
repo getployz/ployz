@@ -217,11 +217,18 @@ describe("encodePublicError", () => {
       return String(report.mock.calls[0]?.[1]);
     };
 
-    expect(named("select 'from secret_literal' from t")).toMatch(/ in select t$/u);
-    expect(named("select $tag$update secret_dollar$tag$ from t")).toMatch(/ in select t$/u);
-    expect(named("select 1 /* from secret_comment */ from t")).toMatch(/ in select t$/u);
-    expect(named("select 1 -- from secret_line\nfrom t")).toMatch(/ in select t$/u);
-    expect(named("select E'it\\'s from secret_open' from t")).not.toMatch(/secret_open| in /u);
+    expect(named('select "id" from "t" where "a" = $1')).toMatch(/ in select t$/u);
+    for (const query of [
+      "select 'from secret_literal' from t",
+      "select $tag$update secret_dollar$tag$ from t",
+      "select $é$from secret_dollar$é$ from t",
+      "select 1 /* outer /* inner */ from secret_comment */ from t",
+      "select 1 -- from secret_line\nfrom t",
+      "select E'it\\'s from secret_literal --' from t",
+      'select 1 from "has""quote"',
+    ]) {
+      expect(named(query), query).not.toMatch(/secret_| in /u);
+    }
   });
 
   it("names every reason beside a died query safely, and the interruption too", () => {
@@ -264,6 +271,17 @@ describe("encodePublicError", () => {
       "defect",
       "EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token",
     );
+  });
+
+  it("stops reading a cause that only ever holds itself", () => {
+    const report = vi.fn();
+    const reasons: Cause.Reason<never>[] = [];
+    const cyclic = Cause.fromReasons(reasons);
+    reasons.push(Cause.makeDieReason(cyclic));
+
+    encodePublicBoundaryError(Cause.die(cyclic), { report });
+
+    expect(report).toHaveBeenCalledOnce();
   });
 
   it("reports full defect and interruption causes separately while redacting transport", async () => {
