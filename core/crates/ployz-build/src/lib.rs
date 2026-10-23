@@ -79,7 +79,10 @@ pub fn is_builder_cache(volume: &str) -> bool {
     let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
     // Exactly as `builder_name` and `slot_name` write them: no leading zero, a uid's range,
     // and a slot within `known_slots`.
-    let uid = |part: &str| part.parse::<u32>().is_ok_and(|uid| uid.to_string() == part);
+    let uid = |part: &str| {
+        part.parse::<u32>()
+            .is_ok_and(|uid| uid != u32::MAX && uid.to_string() == part)
+    };
     let slot = |part: &str| {
         part.parse::<u8>()
             .is_ok_and(|slot| slot > 0 && slot.to_string() == part)

@@ -879,6 +879,7 @@ fn the_builder_cache_is_not_user_data() {
         "buildx_buildkit_ployz-1000-2560_state",
         "buildx_buildkit_ployz-01000-10_state",
         "buildx_buildkit_ployz-99999999999-10_state",
+        "buildx_buildkit_ployz-4294967295-10_state",
     ] {
         assert!(!super::is_builder_cache(data), "{data}");
     }
