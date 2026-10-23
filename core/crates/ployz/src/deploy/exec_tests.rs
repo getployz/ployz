@@ -373,6 +373,14 @@ impl Scripted {
         self
     }
 
+    /// A copy of `api` that `machine_id` no longer has: a stop or remove of it is
+    /// refused as not found, as a daemon whose Leave took it answers.
+    fn with_copy_gone(mut self, machine_id: &MachineId, container_id: &ContainerId) -> Self {
+        self = self.with_copy(machine_id, container_id, CopyRotation::Out);
+        self.record(*container_id, |copy| copy.present = false);
+        self
+    }
+
     /// A route read through `machine_id`, or through the entry when `None`.
     async fn read_at(
         &self,
@@ -1678,6 +1686,27 @@ fn listed(service: &QualifiedService, containers: Vec<ContainerObservation>) -> 
 
 fn failed(call: Call, message: &str) -> Step {
     Step(call, Reply::Error(error(message)))
+}
+
+/// Server lc-3, the one a Leave is removing in these tests.
+fn leaving() -> ployz_core::MachineName {
+    ployz_core::MachineName::parse("lc-3").unwrap()
+}
+
+/// The mark a Leave of Server lc-3 leaves on an answer.
+fn departure() -> ployz_core::Departure {
+    ployz_core::Departure { server: leaving() }
+}
+
+/// A Failed verdict, the copy exited 0 as a Leave's stop leaves it, marked with the
+/// Leave of Server lc-3.
+fn exited_leaving() -> HealthVerdict {
+    HealthVerdict::Failed {
+        observation: exited(0),
+        last_check: None,
+        oom_killed: false,
+        departing: Some(departure()),
+    }
 }
 
 /// A client that can't dial its entry again.

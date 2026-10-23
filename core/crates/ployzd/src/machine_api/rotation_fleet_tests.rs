@@ -20,10 +20,11 @@ use futures_util::{SinkExt, StreamExt};
 use ployz_core::{
     AdvertisedEndpoint, AnswerWhen, ConfiguredHealthcheck, ContainerId, ContainerLocator,
     ContainerNow, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation,
-    DeploymentLogId, EnsureContainerRequest, EnsuredContainer, HealthVerdict, HealthcheckCommand,
-    HealthcheckSpec, HttpHealthcheck, Machine, MachineId, MachineName, MachineRpc, MachineRuntime,
-    NewContainer, ProxyRoutes, QualifiedService, ReadRoutesRequest, ResolvedServiceSpec,
-    RoutesRead, RunRotation, RunTarget, WireGuardPublicKey, op, proxy_routes, service_containers,
+    Departure, DeploymentLogId, EnsureContainerRequest, EnsuredContainer, HealthVerdict,
+    HealthcheckCommand, HealthcheckSpec, HttpHealthcheck, Machine, MachineId, MachineName,
+    MachineRpc, MachineRuntime, NewContainer, ProxyRoutes, QualifiedService, ReadRoutesRequest,
+    ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RpcResponse, RpcResponseBody,
+    RunRotation, RunTarget, WireGuardPublicKey, op, proxy_routes, service_containers,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -44,7 +45,9 @@ use crate::docker::{
     test_support::{FakeDocker, fake_runtime_with, spec_with_sources},
 };
 use crate::ingress::PublishedRoutes;
-use crate::machine::{LocalMachineStore, RecordOwner};
+use crate::machine::{
+    EnsurePause, EnsurePausePoint, LocalMachineError, LocalMachineStore, RecordOwner,
+};
 use crate::route_acks::{DownMachines, load_down};
 
 const SETTLE: Duration = Duration::from_secs(10);
@@ -509,6 +512,18 @@ impl Node {
             .values()
             .find(|named| named["Id"] == id.as_str())
             .cloned()
+    }
+
+    /// The one copy this Machine's Docker holds.
+    fn only_copy(&self) -> ContainerId {
+        let named = self.fake.named_containers.as_ref().unwrap().lock().unwrap();
+        let mut ids = named
+            .values()
+            .map(|named| ContainerId::parse(named["Id"].as_str().unwrap()).unwrap());
+        let (Some(only), None) = (ids.next(), ids.next()) else {
+            panic!("expected one copy, got {}", named.len());
+        };
+        only
     }
 
     fn running(&self, container: ContainerId) -> bool {
@@ -2194,3 +2209,362 @@ async fn out_want_p95() {
 
 #[path = "volume_move_tests.rs"]
 mod volume_move;
+
+/// A Settled creation of `spec` on `node`, held at `point` until the test releases it.
+fn held_creation(
+    node: &Node,
+    key: &str,
+    spec: ResolvedServiceSpec,
+    point: EnsurePausePoint,
+) -> (
+    tokio::task::JoinHandle<Result<EnsuredContainer, LocalMachineError>>,
+    Arc<Notify>,
+    Arc<Notify>,
+) {
+    let mut new = new_copy(key, spec, 1);
+    new.answer = AnswerWhen::Settled;
+    new.deployment_id = Some(run("run-a"));
+    let reached = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let local = node
+        .service
+        .local
+        .clone()
+        .pausing_ensure_for_test(EnsurePause {
+            point,
+            reached: Arc::clone(&reached),
+            release: Arc::clone(&release),
+        });
+    let creating = tokio::spawn(async move {
+        local
+            .ensure_container(ContainerWant::Running {
+                container: RunTarget::New(new),
+                rotation: RunRotation::Pending,
+            })
+            .await
+    });
+    (creating, reached, release)
+}
+
+/// A Settled creation of `spec` on `node` over the wire, held at `point` until the test
+/// releases it.
+fn held_creation_on_wire(
+    node: &Node,
+    key: &str,
+    spec: ResolvedServiceSpec,
+    point: EnsurePausePoint,
+) -> (
+    tokio::task::JoinHandle<RpcResponse>,
+    Arc<Notify>,
+    Arc<Notify>,
+) {
+    let mut new = new_copy(key, spec, 1);
+    new.answer = AnswerWhen::Settled;
+    new.deployment_id = Some(run("run-a"));
+    let reached = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let mut service = node.service.clone();
+    service.local = service.local.pausing_ensure_for_test(EnsurePause {
+        point,
+        reached: Arc::clone(&reached),
+        release: Arc::clone(&release),
+    });
+    let creating = tokio::spawn(async move {
+        let want = ContainerWant::Running {
+            container: RunTarget::New(new),
+            rotation: RunRotation::Pending,
+        };
+        let request = op::EnsureContainer::into_request(EnsureContainerRequest { want });
+        service
+            .ensure_container(Request::new(request.encode().unwrap()))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+    });
+    (creating, reached, release)
+}
+
+/// A Leave on `node`. This fleet has no volume plugin, so a Leave that stopped and
+/// removed every copy fails at storage departure, and the Machine stays.
+async fn failed_leave(node: &Node) {
+    let left = node.service.local.leave(ployz_core::LeaveRequest {}).await;
+    assert!(left.is_err(), "{left:?}");
+}
+
+/// The Server took a Settled creation after `what`.
+async fn takes_creations_again(node: &Node, what: &str) {
+    let mut again = new_copy("again", spec("api"), 1);
+    again.answer = AnswerWhen::Settled;
+    let reply = node
+        .service
+        .local
+        .ensure_container(ContainerWant::Running {
+            container: RunTarget::New(again),
+            rotation: RunRotation::Pending,
+        })
+        .await;
+    assert!(
+        matches!(
+            reply,
+            Ok(EnsuredContainer::Ensured {
+                health: Some(HealthVerdict::Healthy),
+                ..
+            })
+        ),
+        "a Server takes Container work again after {what}: {reply:?}"
+    );
+}
+
+/// The mark a call that overlapped this fleet's Leave carries.
+fn local_departure() -> Departure {
+    Departure {
+        server: MachineName::parse("local").unwrap(),
+    }
+}
+
+/// `reply` as the error it carries.
+fn wire_error(reply: RpcResponse) -> RpcError {
+    let RpcResponseBody::Error(error) = reply.body else {
+        panic!("expected an error, got {reply:?}");
+    };
+    error
+}
+
+/// A creation that passed the entry check and waited while a Leave ran and failed
+/// still creates its copy on a Participating Server, so it keeps what it made and
+/// answers Healthy. Replacing that with the removal would strand a running copy the
+/// deploy never learns of (#2924).
+#[tokio::test]
+async fn a_creation_queued_behind_a_failed_leave_keeps_its_copy() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let (creating, reached, release) =
+        held_creation(node, "a", spec("api"), EnsurePausePoint::BeforeWork);
+    reached.notified().await;
+
+    failed_leave(node).await;
+    release.notify_one();
+    let reply = creating.await.unwrap();
+
+    let reply = reply.unwrap_or_else(|error| {
+        panic!("a creation after a failed Leave answers what it made: {error}")
+    });
+    assert!(
+        matches!(
+            reply,
+            EnsuredContainer::Ensured {
+                health: Some(HealthVerdict::Healthy),
+                ..
+            }
+        ),
+        "{reply:?}"
+    );
+    let a = present(&reply);
+    assert!(
+        node.running(a),
+        "the copy the creation answered keeps running"
+    );
+}
+
+/// While a Leave is under way only new Container work is refused. A stop or remove
+/// of a copy the Leave already took runs as it would for any missing copy, so a
+/// deploy tearing down old copies on a removed Server never reports them left
+/// running.
+#[tokio::test]
+async fn stop_and_remove_run_while_a_leave_is_under_way() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let a = fleet.pending(0, "a", "api", 1).await;
+
+    // The Leave's first step: every copy goes, and the mark says it is under way.
+    node.runtime.remove_all_managed().await.unwrap();
+    assert!(node.container(a).is_none());
+
+    let reply = node.service.local.ensure_container(stopped(a)).await;
+    let reply = reply.unwrap_or_else(|error| panic!("a stop during a Leave runs: {error}"));
+    refused(&reply, ContainerRefusalReason::NotFound);
+
+    let reply = node.service.local.ensure_container(gone(a)).await;
+    let reply = reply.unwrap_or_else(|error| panic!("a remove during a Leave runs: {error}"));
+    ensured(&reply);
+
+    let mut new = new_copy("b", spec("api"), 1);
+    new.answer = AnswerWhen::Settled;
+    let error = node
+        .service
+        .local
+        .ensure_container(ContainerWant::Running {
+            container: RunTarget::New(new),
+            rotation: RunRotation::Pending,
+        })
+        .await
+        .expect_err("new work waits for the Leave");
+    assert!(
+        error
+            .to_string()
+            .contains("Server local is being removed from the Cluster"),
+        "{error}"
+    );
+}
+
+/// A Leave that takes the copy while a deploy waits for it to settle: the creation
+/// answers what it saw, the copy gone, marked with the Leave that took it, so the
+/// deploy names the removal and not the app (#2924). Once a Leave fails, the Server
+/// takes Container work again.
+#[tokio::test]
+async fn a_leave_that_took_a_settling_copy_marks_the_answer() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let (settling, reached, release) = held_creation_on_wire(
+        node,
+        "a",
+        monitored_spec("api"),
+        EnsurePausePoint::BeforeSettle,
+    );
+    reached.notified().await;
+
+    // The Leave's first step: every copy goes, and the mark says it is under way.
+    node.runtime.remove_all_managed().await.unwrap();
+    release.notify_one();
+    let error = wire_error(settling.await.unwrap());
+
+    assert_eq!(error.code, RpcErrorCode::NotFound, "{error:?}");
+    assert_eq!(error.departure(), Some(local_departure()), "{error:?}");
+    failed_leave(node).await;
+    takes_creations_again(node, "a failed Leave").await;
+}
+
+/// A Leave that began after a creation passed the entry check and before it made
+/// its copy listed nothing to take, so the copy is the creation's to answer for. A
+/// copy that then fails health answers its own verdict, naming it, marked with the
+/// Leave, so the deploy removes the copy as it does any unhealthy one and names the
+/// removal (#2924).
+#[tokio::test]
+async fn a_leave_under_way_marks_the_unhealthy_copy_a_creation_it_let_through_made() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let (creating, reached, release) =
+        held_creation_on_wire(node, "a", checked_spec("api"), EnsurePausePoint::BeforeWork);
+    reached.notified().await;
+
+    node.runtime.remove_all_managed().await.unwrap();
+    node.fake.exit_on_start.store(true, Ordering::SeqCst);
+    release.notify_one();
+    let reply = creating.await.unwrap();
+
+    let ensured = reply.decode::<op::EnsureContainer>().unwrap();
+    let EnsuredContainer::Ensured {
+        now: ContainerNow::Present(observed),
+        health:
+            Some(HealthVerdict::Failed {
+                observation: ContainerRuntimeObservation::Exited { code: 1 },
+                departing,
+                ..
+            }),
+    } = &ensured
+    else {
+        panic!("the copy's own verdict names it: {ensured:?}");
+    };
+    assert_eq!(*departing, Some(local_departure()), "{ensured:?}");
+    assert_eq!(observed.container_id, node.only_copy());
+    assert!(
+        node.container(observed.container_id).is_some(),
+        "the copy the Leave never listed stays until something removes it"
+    );
+    node.fake.exit_on_start.store(false, Ordering::SeqCst);
+    failed_leave(node).await;
+    takes_creations_again(node, "a failed Leave").await;
+}
+
+/// A Docker error on a copy's health inspect while a Leave is under way answers that
+/// error as ever, marked with the Leave, and leaves the copy alone. When the Leave
+/// then fails at that copy's stop, the copy still runs on a Server that stays, and
+/// the deploy's usual cleanup of a failed start removes it (#2924).
+#[tokio::test]
+async fn a_docker_error_during_a_leave_keeps_its_answer_and_its_copy() {
+    // No rescans: the Leave's own listing is the one the hold catches.
+    let fleet = Fleet::rescanning(Duration::from_secs(3600)).await;
+    let node = fleet.node(0);
+    let (settling, reached, release) = held_creation_on_wire(
+        node,
+        "b",
+        monitored_spec("api"),
+        EnsurePausePoint::BeforeSettle,
+    );
+    reached.notified().await;
+    let b = node.only_copy();
+    assert!(node.running(b));
+
+    // The Leave lists its copies and is held there; its stop of B then fails.
+    let listing = Arc::new(tokio::sync::Barrier::new(2));
+    *node.fake.listed_hold.lock().unwrap() = Some(Arc::clone(&listing));
+    node.fake.refuse_stop.store(true, Ordering::SeqCst);
+    let local = node.service.local.clone();
+    let leaving = tokio::spawn(async move { local.leave(ployz_core::LeaveRequest {}).await });
+    listing.wait().await;
+
+    node.fake
+        .fail_inspect_once
+        .lock()
+        .unwrap()
+        .insert(b.to_string());
+    release.notify_one();
+    let error = wire_error(settling.await.unwrap());
+    assert_eq!(error.code, RpcErrorCode::Internal, "{error:?}");
+    assert_eq!(error.message, "Docker operation failed");
+    assert!(
+        error
+            .cause
+            .iter()
+            .any(|cause| cause.contains("detail temporarily unavailable")),
+        "the answer is Docker's own: {error:?}"
+    );
+    assert_eq!(error.departure(), Some(local_departure()), "{error:?}");
+
+    listing.wait().await;
+    let left = leaving.await.unwrap();
+    assert!(left.is_err(), "{left:?}");
+    assert!(
+        node.running(b),
+        "the copy the Leave failed to stop keeps running until the deploy removes it"
+    );
+    node.fake.refuse_stop.store(false, Ordering::SeqCst);
+    takes_creations_again(node, "a failed Leave").await;
+}
+
+/// A creation that passed the entry check and waited while a Leave ran and failed
+/// still runs on a Server that stays. When its copy then fails health, the answer
+/// is that copy's own verdict, naming it and marked with no Leave, so the deploy
+/// removes it as it would any unhealthy copy (#2924).
+#[tokio::test]
+async fn a_creation_queued_behind_a_failed_leave_answers_its_unhealthy_copy() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let (creating, reached, release) =
+        held_creation(node, "a", checked_spec("api"), EnsurePausePoint::BeforeWork);
+    reached.notified().await;
+
+    failed_leave(node).await;
+    node.fake.exit_on_start.store(true, Ordering::SeqCst);
+    release.notify_one();
+    let reply = creating.await.unwrap();
+
+    let reply = reply.unwrap_or_else(|error| {
+        panic!("a creation after a failed Leave answers the copy it made: {error}")
+    });
+    let EnsuredContainer::Ensured {
+        now: ContainerNow::Present(observed),
+        health: Some(HealthVerdict::Failed {
+            departing: None, ..
+        }),
+    } = &reply
+    else {
+        panic!("the copy's own verdict names it, unmarked: {reply:?}");
+    };
+    assert!(
+        node.container(observed.container_id).is_some(),
+        "the unhealthy copy stays until the deploy removes it"
+    );
+}

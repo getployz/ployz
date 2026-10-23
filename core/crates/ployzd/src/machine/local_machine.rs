@@ -49,6 +49,7 @@ pub struct LocalMachine {
     settled: container::SettledCreations,
     #[cfg(test)]
     peers: Option<PeerInspect>,
+    ensure_pause: Option<container::EnsurePause>,
 }
 
 const PEER_INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -66,6 +67,8 @@ pub(crate) type PeerInspect = std::sync::Arc<
 
 mod container;
 pub(crate) use container::CutRefusal;
+#[cfg(test)]
+pub(crate) use container::{EnsurePause, EnsurePausePoint};
 mod management_client;
 mod push_target;
 mod sealing;
@@ -185,7 +188,17 @@ impl LocalMachine {
             settled: container::SettledCreations::default(),
             #[cfg(test)]
             peers: None,
+            ensure_pause: None,
         }
+    }
+
+    /// Hold every `ensure_container` on this handle at `pause`'s point until the test
+    /// releases it; clones made before this call never pause.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn pausing_ensure_for_test(mut self, pause: container::EnsurePause) -> Self {
+        self.ensure_pause = Some(pause);
+        self
     }
 
     #[cfg(test)]

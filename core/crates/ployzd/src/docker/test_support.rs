@@ -35,6 +35,7 @@ pub(crate) struct FakeDocker {
     /// Volumes whose next Create fails after Docker recorded them without labels or options,
     /// as when the plugin dies inside Create and a later Get hands Docker the root.
     pub(crate) crash_inside_create: Arc<Mutex<BTreeSet<String>>>,
+    /// Volume names and Container IDs whose next inspect answers a Docker 500.
     pub(crate) fail_inspect_once: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) existing_container: Arc<Mutex<Option<serde_json::Value>>>,
     pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
@@ -217,6 +218,17 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     .into_response();
             };
             if method == Method::GET {
+                if container
+                    .get("Id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| fake.fail_inspect_once.lock().unwrap().remove(id))
+                {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"message":"detail temporarily unavailable"})),
+                    )
+                        .into_response();
+                }
                 if fake.stopped_once.lock().unwrap().remove(&name) {
                     containers.get_mut(&name).unwrap()["State"] =
                         serde_json::json!({"Status": "running", "Running": true});

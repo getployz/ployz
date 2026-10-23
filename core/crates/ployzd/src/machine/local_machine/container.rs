@@ -40,6 +40,26 @@ const SETTLE_POLL: Duration = Duration::from_millis(100);
 /// an idle copy is seen.
 const DRAIN_POLL: Duration = Duration::from_millis(50);
 
+/// Where a test holds an `ensure_container` call so a Leave can run against it.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnsurePausePoint {
+    /// Before any Docker work.
+    BeforeWork,
+    /// After the copy was created and started, before its health settles.
+    BeforeSettle,
+}
+
+/// A hold on `ensure_container`: the call signals `reached` at `point` and continues
+/// once `release` is notified.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct EnsurePause {
+    pub(crate) point: EnsurePausePoint,
+    pub(crate) reached: Arc<tokio::sync::Notify>,
+    pub(crate) release: Arc<tokio::sync::Notify>,
+}
+
 #[cfg(test)]
 static SETTLES: std::sync::Mutex<std::collections::BTreeMap<ContainerId, usize>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
@@ -723,6 +743,8 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<EnsuredContainer, Error> {
+        #[cfg(test)]
+        self.pause_for_test(EnsurePausePoint::BeforeWork).await;
         match want {
             ContainerWant::Out {
                 container,
@@ -798,6 +820,7 @@ impl LocalMachine {
                 .expect("settle counts are never poisoned")
                 .entry(*container_id)
                 .or_default() += 1;
+            self.pause_for_test(EnsurePausePoint::BeforeSettle).await;
         }
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
@@ -919,6 +942,17 @@ impl LocalMachine {
             .get(container_id)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Tell the test this call reached `point`, then wait for its release.
+    #[cfg(test)]
+    async fn pause_for_test(&self, point: EnsurePausePoint) {
+        if let Some(pause) = &self.ensure_pause
+            && pause.point == point
+        {
+            pause.reached.notify_one();
+            pause.release.notified().await;
+        }
     }
 
     async fn converge_container(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {

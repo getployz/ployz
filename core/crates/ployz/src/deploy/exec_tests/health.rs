@@ -708,3 +708,130 @@ async fn a_restored_copy_killed_for_memory_names_its_own_limit() {
 async fn a_restored_copy_killed_for_memory_under_an_unchanged_limit_names_it() {
     restored_oom_limit(16).await;
 }
+
+/// A Server removed before the deploy's copy began answers that it is being removed,
+/// and the deploy names that rather than any Container (#2924). A Conflict, so the
+/// deploy made nothing to clean up.
+#[tokio::test]
+async fn a_server_removed_before_its_copy_began_is_named() {
+    let machine = machine('1');
+    let plan = vec![run(
+        &machine,
+        spec(Some(0), Some(healthcheck()), None),
+        false,
+    )];
+    let client = Scripted::new(vec![Step(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        Reply::Error(RpcError::departing(&leaving())),
+    )]);
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = execute_with(&plan, &client, &CancellationToken::new()).await
+    else {
+        panic!("the deploy should fail");
+    };
+
+    let failure = ployz_store::Failure::of(&error, &[]);
+    assert_eq!(
+        failure.reason,
+        "Server lc-3 was removed while the deploy ran"
+    );
+    assert!(failure.cause.is_empty(), "{failure:?}");
+    client.assert_done();
+}
+
+/// A start that failed while its Server was being removed gets exactly the cleanup
+/// any failed start gets: the slot is discarded, so a copy the Leave never took is
+/// not left running should the Leave fail. The failure keeps its code and message,
+/// and the deploy names the removal (#2924).
+#[tokio::test]
+async fn a_start_that_failed_while_its_server_left_is_cleaned_up_as_ever() {
+    let machine = machine('1');
+    let plan = vec![run(
+        &machine,
+        spec(Some(0), Some(healthcheck()), None),
+        false,
+    )];
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Error(error("detail temporarily unavailable").overlapping_leave(&leaving())),
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = execute_with(&plan, &client, &CancellationToken::new()).await
+    else {
+        panic!("the deploy should fail");
+    };
+
+    let ExecutionError::Machine {
+        action: MachineAction::CreateContainer,
+        error: answered,
+    } = &error
+    else {
+        panic!("the start's own failure comes back: {error:?}");
+    };
+    assert_eq!(answered.code, RpcErrorCode::Internal);
+    assert_eq!(answered.message, "detail temporarily unavailable");
+    assert_eq!(
+        ployz_store::Failure::of(&error, &[]).reason,
+        "Server lc-3 was removed while the deploy ran"
+    );
+    client.assert_done();
+}
+
+/// A copy found unhealthy while its Server was being removed is answered by its own
+/// verdict, so the deploy removes it as it does any unhealthy copy, keeps the
+/// Container in the stored failure, and names the removal, not the exit (#2924).
+#[tokio::test]
+async fn a_copy_found_unhealthy_while_its_server_left_is_removed_and_the_removal_named() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = vec![run(
+        &machine,
+        spec(Some(0), Some(healthcheck()), None),
+        false,
+    )];
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Settled(new, exited_leaving()),
+        ),
+        ok(Call::Discard(machine, new)),
+    ]);
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = execute_with(&plan, &client, &CancellationToken::new()).await
+    else {
+        panic!("the deploy should fail");
+    };
+
+    assert_eq!(
+        error,
+        ExecutionError::Health {
+            container_id: new,
+            failure: HealthFailure::Runtime {
+                observation: exited(0),
+                last_check: None,
+            },
+            out_of_memory: None,
+            last_run: None,
+            departing: Some(departure()),
+        }
+    );
+    let failure = ployz_store::Failure::of(&error, &[]);
+    assert_eq!(
+        failure.reason,
+        "Server lc-3 was removed while the deploy ran"
+    );
+    assert!(failure.cause.is_empty(), "{failure:?}");
+    client.assert_done();
+}
