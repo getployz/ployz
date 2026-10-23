@@ -490,6 +490,34 @@ async fn catch_up_rejects_invalid_targets_without_retrying() {
     }
 }
 
+/// #2930: a recreated `store.db` holds only this Machine's row until gossip reaches it,
+/// while a removed Machine leaves its key behind.
+#[tokio::test]
+async fn a_store_has_held_another_machine_once_its_key_arrived() {
+    let own = MachineId::random();
+    let other = MachineId::random();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id);")
+        .unwrap();
+    db.execute(
+        "INSERT INTO machines__crsql_pks (id) VALUES (?)",
+        [own.to_string()],
+    )
+    .unwrap();
+    let (store, server) = identity_store(db).await;
+    assert!(!store.held_another_machine(&own).await.unwrap());
+    store
+        .api()
+        .execute([Statement::new(
+            "INSERT INTO machines__crsql_pks (id) VALUES (?)",
+            [json!(other)],
+        )])
+        .await
+        .unwrap();
+    assert!(store.held_another_machine(&own).await.unwrap());
+    server.abort();
+}
+
 #[tokio::test]
 async fn catch_up_waits_for_pending_target_transactions() {
     use super::{Statement, wait_for_catch_up};

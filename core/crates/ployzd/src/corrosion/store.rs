@@ -1012,6 +1012,24 @@ impl ReplicatedStore {
         }
     }
 
+    /// Whether this store has ever held a row for a Machine other than `own`. A removed
+    /// row keeps its cr-sqlite key, so only a store created afresh, before gossip
+    /// reaches it, reads `false` once another Machine exists.
+    pub(crate) async fn held_another_machine(&self, own: &MachineId) -> Result<bool, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT EXISTS (SELECT 1 FROM machines__crsql_pks WHERE id != ?) AS held",
+                [json!(own)],
+            ))
+            .await?;
+        match query.rows(["held"])?.as_slice() {
+            [[held]] if held.as_i64() == Some(0) => Ok(false),
+            [[held]] if held.as_i64() == Some(1) => Ok(true),
+            _ => Err(Error::Protocol("invalid held-another-Machine row".into())),
+        }
+    }
+
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
         let query = self
             .api

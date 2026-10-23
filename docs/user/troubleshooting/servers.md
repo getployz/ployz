@@ -400,6 +400,26 @@ don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
 answered but its cluster store wasn't running. If it was stopped, as by
 `docker stop ployz-corrosion`, Ployz starts it again within a few seconds; try again then.
 
+## A server's cluster store was lost
+
+```text
+error: this Server's Cluster store holds no other Server: it was recreated and can't reach them yet
+```
+
+A server keeps the cluster's shared state in `/var/lib/ployz/corrosion/store.db`. If that file is
+lost, for example after a power loss or a manual wipe, Ployz starts an empty one. The server keeps
+its tunnels to the other servers, and the empty store refills from them, usually within a minute.
+Until then, commands through that server fail with this error. Commands through another server
+still work.
+
+1. Wait a minute and try again.
+2. If it persists, run `ployz server ls` through another server. If this one shows `down` there,
+   make sure UDP 51820 is open between your servers, then restart Ployz on it with
+   `sudo systemctl restart ployz`.
+
+If you still have the old `store.db`, you don't need it back: the refilled store holds the same
+state.
+
 ## A server shows Offline
 
 The server's page says **Can't reach web-2**. Services that run only there are down. Stopping Ployz

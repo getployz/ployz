@@ -396,7 +396,7 @@ impl Daemon {
                 if let Some(network) = &mut network {
                     network
                         .run(
-                            machine_view.clone(),
+                            replicated_store.clone().zip(machine_view.clone()),
                             local.clone(),
                             endpoint_choices,
                             shutdown.clone(),
