@@ -221,7 +221,8 @@ fn first_snapshot_preserves_kernel_endpoint_and_updates_allowed_ips() {
                     .collect::<Vec<_>>(),
                 PeerSet::Bootstrap,
             );
-            let planned = snapshot_peers(&observer.id, &snapshot, &bootstrap, joining).unwrap();
+            let (planned, _) =
+                snapshot_peers(&observer.id, &snapshot, &bootstrap, joining, true).unwrap();
             let mut previous = Vec::new();
             seed_retained_selections(&planned, &mut previous, &installed, now);
             let (mut planned, _) = attach_peer_selections(planned, previous, &saved, now);
@@ -309,7 +310,8 @@ fn incomplete_snapshot_holds_peers_and_joining_keeps_bootstrap() {
                 &machine_id,
                 &snapshot,
                 std::slice::from_ref(&bootstrap),
-                joining
+                joining,
+                true
             )
             .is_none()
         );
@@ -320,14 +322,52 @@ fn incomplete_snapshot_holds_peers_and_joining_keeps_bootstrap() {
             &machine_id,
             &snapshot,
             std::slice::from_ref(&bootstrap),
+            true,
             true
         ),
-        Some(vec![bootstrap.clone()])
+        Some((vec![bootstrap.clone()], PeerSet::Snapshot))
     );
     assert_eq!(
-        snapshot_peers(&machine_id, &snapshot, &[bootstrap], false),
-        Some(Vec::new())
+        snapshot_peers(&machine_id, &snapshot, &[bootstrap], false, true),
+        Some((Vec::new(), PeerSet::Snapshot))
     );
+}
+
+/// #2930: a Server whose `store.db` was recreated reads only its own row. Removing every
+/// peer that row doesn't name cut its gossip, so the store could never refill.
+#[test]
+fn a_store_that_heard_from_no_peer_keeps_the_installed_peers() {
+    let remote = machine(1, WireGuardPublicKey([1; 32]));
+    let observer = machine(2, WireGuardPublicKey([2; 32]));
+    let bootstrap = peers_for(&observer.id, std::slice::from_ref(&remote));
+    let own_row_only = ReplicatedObservations {
+        observations: vec![observer.clone()],
+        incomplete_ids: Vec::new(),
+    };
+    let live = installed_peer(3);
+    for joining in [false, true] {
+        let (planned, set) =
+            snapshot_peers(&observer.id, &own_row_only, &bootstrap, joining, false).unwrap();
+        assert_eq!(planned, bootstrap);
+        let mut installed = HashMap::from([(live.public_key.clone(), live.clone())]);
+        reconcile(
+            &mut installed,
+            &planned
+                .iter()
+                .map(|peer| wireguard_peer(peer, peer.selected()))
+                .collect::<Vec<_>>(),
+            set,
+        );
+        assert!(installed.contains_key(&live.public_key));
+        assert!(installed.contains_key(&Key::new(remote.public_key.0)));
+    }
+    // Once the store has heard from a peer, its snapshot is the whole Cluster again.
+    let (planned, set) =
+        snapshot_peers(&observer.id, &own_row_only, &bootstrap, false, true).unwrap();
+    let mut installed = HashMap::from([(live.public_key.clone(), live.clone())]);
+    reconcile(&mut installed, &[], set);
+    assert!(planned.is_empty());
+    assert!(installed.is_empty());
 }
 
 #[test]

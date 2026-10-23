@@ -18,16 +18,38 @@ pub struct MembershipState {
     pub evidence: MembershipEvidence,
 }
 
+/// Each address's membership. A Server whose Corrosion store was recreated comes back
+/// as a new actor at the same address, and peers can keep the old one Down beside it,
+/// so the liveliest actor at an address speaks for it.
 pub(crate) fn membership_states_by_address(
     states: impl IntoIterator<Item = MembershipState>,
 ) -> BTreeMap<ManagementAddress, MembershipEvidence> {
-    states
-        .into_iter()
-        .filter_map(|state| match state.address.ip() {
-            std::net::IpAddr::V6(address) => Some((ManagementAddress(address), state.evidence)),
-            std::net::IpAddr::V4(_) => None,
-        })
-        .collect()
+    let mut by_address = BTreeMap::new();
+    for state in states {
+        let std::net::IpAddr::V6(address) = state.address.ip() else {
+            continue;
+        };
+        by_address
+            .entry(ManagementAddress(address))
+            .and_modify(|kept: &mut MembershipEvidence| {
+                if liveness(&state.evidence) < liveness(kept) {
+                    *kept = state.evidence.clone();
+                }
+            })
+            .or_insert(state.evidence);
+    }
+    by_address
+}
+
+/// Lower is livelier. A state this daemon doesn't recognize ranks above Down, which
+/// stays the last word only when every actor at the address agrees.
+fn liveness(evidence: &MembershipEvidence) -> u8 {
+    match evidence {
+        MembershipEvidence::Up => 0,
+        MembershipEvidence::Suspect => 1,
+        MembershipEvidence::Unrecognized { .. } => 2,
+        MembershipEvidence::Down => 3,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -176,7 +198,10 @@ mod tests {
         net::UnixListener,
     };
 
-    use super::{AdminClient, decode_member_rtt, decode_membership_state, decode_response};
+    use super::{
+        AdminClient, MembershipState, decode_member_rtt, decode_membership_state, decode_response,
+        membership_states_by_address,
+    };
     use crate::corrosion::{Error, IO_TIMEOUT};
 
     #[test]
@@ -185,6 +210,40 @@ mod tests {
             decode_response(b"not json"),
             Err(Error::Protocol(_))
         ));
+    }
+
+    /// A Server whose store was recreated and then restored leaves its old actor Down
+    /// beside the live one at the same address, in either order.
+    #[test]
+    fn a_live_actor_speaks_for_its_address_over_a_stale_one() {
+        use ployz_core::{ManagementAddress, MembershipEvidence};
+        let address = format!("[fdcc::2]:{CORROSION_GOSSIP_PORT}");
+        let state = |evidence| MembershipState {
+            address: address.parse().unwrap(),
+            evidence,
+        };
+        let key = ManagementAddress("fdcc::2".parse().unwrap());
+        for (states, expected) in [
+            (
+                vec![MembershipEvidence::Up, MembershipEvidence::Down],
+                MembershipEvidence::Up,
+            ),
+            (
+                vec![MembershipEvidence::Down, MembershipEvidence::Up],
+                MembershipEvidence::Up,
+            ),
+            (
+                vec![MembershipEvidence::Down, MembershipEvidence::Suspect],
+                MembershipEvidence::Suspect,
+            ),
+            (
+                vec![MembershipEvidence::Down, MembershipEvidence::Down],
+                MembershipEvidence::Down,
+            ),
+        ] {
+            let by_address = membership_states_by_address(states.clone().into_iter().map(state));
+            assert_eq!(by_address.get(&key), Some(&expected), "{states:?}");
+        }
     }
 
     #[test]

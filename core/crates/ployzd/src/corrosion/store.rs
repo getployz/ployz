@@ -1012,6 +1012,13 @@ impl ReplicatedStore {
         }
     }
 
+    /// Whether this store holds a change from any Machine but this one. A store created
+    /// afresh holds none until gossip reaches it.
+    pub(crate) async fn heard_from_peers(&self) -> Result<bool, Error> {
+        let local = self.local_actor().await?;
+        Ok(self.version().await?.keys().any(|actor| *actor != local))
+    }
+
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
         let query = self
             .api

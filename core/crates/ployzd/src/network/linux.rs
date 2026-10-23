@@ -40,14 +40,14 @@ use super::{
     peers_for,
 };
 use crate::{
-    corrosion::{MachineView, ReplicatedObservations},
+    corrosion::{MachineView, ReplicatedObservations, ReplicatedStore},
     machine::{LocalMachineBody, LocalMachineRecord, RecordOwner},
 };
 
 const NETWORK_MTU: u32 = 1420;
 const DOCKER_NETWORK_MANAGED_LABEL: &str = "ployzd.managed";
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PeerSet {
     Bootstrap,
     Snapshot,
@@ -145,12 +145,12 @@ impl NetworkPlane {
     /// operator's endpoint from `choices` goes to WireGuard at once.
     pub async fn run(
         &mut self,
-        machines: Option<MachineView>,
+        machines: Option<(ReplicatedStore, MachineView)>,
         local: RecordOwner,
         mut choices: mpsc::Receiver<EndpointChoice>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
-        let Some(machines) = machines else {
+        let Some((replicated, machines)) = machines else {
             drop(choices);
             shutdown.cancelled().await;
             return Ok(());
@@ -173,7 +173,7 @@ impl NetworkPlane {
                     if let Some(snapshot) = snapshot
                         && previous.as_ref() != Some(&snapshot)
                     {
-                        if let Err(error) = self.rebuild(&snapshot, &local).await {
+                        if let Err(error) = self.rebuild(&replicated, &snapshot, &local).await {
                             return Err(io::Error::other(error));
                         }
                         previous = Some(snapshot);
@@ -256,15 +256,27 @@ impl NetworkPlane {
 
     async fn rebuild(
         &mut self,
+        replicated: &ReplicatedStore,
         snapshot: &ReplicatedObservations<Machine, MachineId>,
         local: &RecordOwner,
     ) -> Result<(), NetworkError> {
+        let heard_from_peers = match replicated.heard_from_peers().await {
+            Ok(heard) => heard,
+            Err(error) => {
+                eprintln!(
+                    "failed to read which Machines this Corrosion store has heard from: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
+                return Ok(());
+            }
+        };
         let record = local.record();
-        let Some(planned) = snapshot_peers(
+        let Some((planned, set)) = snapshot_peers(
             &self.machine.id,
             snapshot,
             &self.bootstrap_peers,
             record.phase() == LocalMachinePhase::Joining,
+            heard_from_peers,
         ) else {
             return Ok(());
         };
@@ -274,7 +286,7 @@ impl NetworkPlane {
         let host = self.wireguard.read_interface_data()?;
         seed_retained_selections(&planned, &mut previous, &host.peers, now);
         let (planned, _) = attach_peer_selections(planned, previous, selected, now);
-        self.apply_peers(&planned, PeerSet::Snapshot)?;
+        self.apply_peers(&planned, set)?;
         self.endpoint_peers = planned;
         // Only an installed selection is worth remembering across a restart.
         for peer in &self.endpoint_peers {
@@ -1068,17 +1080,21 @@ fn seed_retained_selections(
     }
 }
 
+/// The peers a snapshot plans, and whether they replace the installed set. A store that
+/// holds nothing from another Machine, such as one recreated after its `store.db` was
+/// lost, can't say who left: it only adds, so the peers that carry its gossip stay.
 fn snapshot_peers(
     machine_id: &MachineId,
     snapshot: &ReplicatedObservations<Machine, MachineId>,
     bootstrap: &[MeshPeer],
     joining: bool,
-) -> Option<Vec<MeshPeer>> {
+    heard_from_peers: bool,
+) -> Option<(Vec<MeshPeer>, PeerSet)> {
     if !snapshot.incomplete_ids.is_empty() {
         return None;
     }
     let mut peers = peers_for(machine_id, &snapshot.observations);
-    if joining {
+    if joining || !heard_from_peers {
         let known = peers
             .iter()
             .map(|peer| peer.machine_id)
@@ -1090,7 +1106,12 @@ fn snapshot_peers(
                 .cloned(),
         );
     }
-    Some(peers)
+    let set = if heard_from_peers {
+        PeerSet::Snapshot
+    } else {
+        PeerSet::Bootstrap
+    };
+    Some((peers, set))
 }
 
 struct PeerChanges<'peers> {
