@@ -251,8 +251,9 @@ impl Client {
     /// cannot be paired with the wrong response.
     ///
     /// Transient transport drops (`Attempt`, tonic `Unavailable` / `DeadlineExceeded`)
-    /// redial the same connection and retry up to four times. Domain `Remote` errors
-    /// and other gRPC status codes are not retried.
+    /// redial the same connection and retry up to four times; a failure the entry's router
+    /// reported retries on the channel it came back on. Domain `Remote` errors and other gRPC
+    /// status codes are not retried.
     ///
     /// # Errors
     ///
@@ -404,6 +405,8 @@ impl Client {
                 Ok(response) => return Ok(response),
                 Err(error) => error,
             };
+            // The entry's router made this failure, so the channel to the entry works.
+            let entry_answered = error.routed_by_entry();
             let error = crate::connect::keep_target_reply(&mut reply, error);
             if error.retry() != ployz_core::Retry::Now {
                 return Err(crate::connect::keep_lost_call(lost, error));
@@ -415,7 +418,7 @@ impl Client {
                 return Err(crate::connect::keep_lost_call(lost, error));
             }
             tokio::time::sleep(delay).await;
-            redial = true;
+            redial = !entry_answered;
             if error.target_replied() {
                 // The target answered after the loss: that answer is the news now.
                 lost = None;
@@ -427,7 +430,8 @@ impl Client {
     }
 
     /// Only a deadline spent waiting on a confirmed entry is evidence the target is silent;
-    /// one spent reconnecting to the entry says nothing about it.
+    /// one spent reconnecting to the entry says nothing about it. An entry that just reported
+    /// the target silent on this channel counts as confirmed, as one a redial checked does.
     async fn bounded_attempt<T: Rpc>(
         &mut self,
         payload: &OpaquePayload,
@@ -1021,8 +1025,10 @@ impl Client {
                 let error = rpc_error(error);
                 Err(RpcError {
                     code: RpcErrorCode::Unavailable,
+                    // Often only the entry was busy, as when several forgets share it.
                     message: format!(
-                        "Cannot read the Volume copies Server {} holds. No changes made.",
+                        "Couldn't check whether Server {} holds Volume copies. No changes made. \
+                         Run the command again, one Server at a time if you're forgetting several.",
                         machine.machine.name
                     ),
                     details: Value::Null,

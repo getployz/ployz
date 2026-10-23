@@ -666,3 +666,61 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
     let answer = client.clone().entry_id().await.unwrap_err();
     assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
 }
+
+/// Parallel forgets through one entry: the Server's first answer is a retryable failure,
+/// and reconnecting to the busy entry outlasts the read, so whether it holds copies stays
+/// unknown.
+#[tokio::test(start_paused = true)]
+async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(|rpc: tonic::Request<OpaquePayload>| async move {
+            let body = rpc.into_inner().decode_request().unwrap().body;
+            if matches!(body, ployz_core::RpcRequestBody::DescribeContract(_)) {
+                tokio::time::sleep(std::time::Duration::from_millis(4900)).await;
+            }
+            Err(tonic::Status::unavailable("restarting"))
+        })
+        .await;
+    client.entry = Some(machine_id('a'));
+
+    let error = client.held_copies(&machine('b')).await.unwrap_err();
+
+    assert_eq!(
+        error.message,
+        "Couldn't check whether Server machine-b holds Volume copies. No changes made. Run the \
+         command again, one Server at a time if you're forgetting several."
+    );
+    assert_eq!(error.cause, ["entry Machine reconnect timed out"]);
+    server.abort();
+}
+
+/// Parallel forgets through one busy entry, #2934: the entry's router says the Server didn't
+/// answer, so the entry itself answered, and reconnecting to it would outlast the read.
+#[tokio::test(start_paused = true)]
+async fn a_server_the_entry_reports_silent_reads_dead_without_reconnecting_to_the_entry() {
+    let reconnects = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counted = std::sync::Arc::clone(&reconnects);
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: tonic::Request<OpaquePayload>| {
+            let counted = std::sync::Arc::clone(&counted);
+            async move {
+                let body = rpc.into_inner().decode_request().unwrap().body;
+                if matches!(body, ployz_core::RpcRequestBody::DescribeContract(_)) {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(4900)).await;
+                    return Err(tonic::Status::unavailable("busy"));
+                }
+                Err(ployz_core::rpc::target_unanswered_status(
+                    &std::io::Error::new(std::io::ErrorKind::TimedOut, "deadline has elapsed"),
+                ))
+            }
+        })
+        .await;
+    client.entry = Some(machine_id('a'));
+
+    let held = client.held_copies(&machine('b')).await;
+
+    assert!(matches!(held, Ok(HeldCopies::Dead)), "{held:?}");
+    assert_eq!(reconnects.load(std::sync::atomic::Ordering::SeqCst), 0);
+    server.abort();
+}

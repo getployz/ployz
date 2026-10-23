@@ -1205,3 +1205,30 @@ fn copies_left_running_take_the_check_mark_off_the_switched_row_and_count_in_the
         "{text}"
     );
 }
+
+#[test]
+fn an_interrupted_deploy_counts_its_cancelled_and_interrupted_rows() {
+    let mut frame = frame(State::Cancelled);
+    let mut unchanged = frame.rows.first().unwrap().clone();
+    unchanged.state = State::Unchanged;
+    let mut interrupted = frame.rows.first().unwrap().clone();
+    interrupted.state = State::Interrupted;
+    frame.rows.extend([unchanged, interrupted]);
+    let mut written = Vec::new();
+    finish(
+        &mut written,
+        &frame,
+        &frame,
+        Disposition::LocalInterrupted,
+        None,
+        false,
+        &NoticeHistory::default(),
+    )
+    .unwrap();
+    let text = String::from_utf8(written).unwrap();
+    assert!(
+        text.contains("1 unchanged · 1 cancelled · 1 interrupted · across 1 server\n"),
+        "{text}"
+    );
+    assert!(!text.contains("owned work"), "{text}");
+}

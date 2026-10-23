@@ -484,6 +484,18 @@ pub(super) fn execute(
         }
         if let Err(error) = settled {
             let interrupted = signal.is_cancelled();
+            // A newer Deployment that took over the Environment left this one unknown:
+            // name it rather than the store's refusal to record.
+            let newer = (!interrupted
+                && followed.view.deployment.status == DeploymentStatus::Unknown)
+                .then(|| taken_over_by(store, &followed.view))
+                .flatten();
+            let error = match newer {
+                Some(newer) => {
+                    progress::replaced(&followed.view, &newer, |args| super::rerun(matches, args))
+                }
+                None => error,
+            };
             finish_progress(
                 &mut followed,
                 if interrupted {
@@ -887,6 +899,28 @@ fn ahead(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
         .min_by_key(|older| older.number)
 }
 
+/// The newer Deployment that took `view`'s Environment over, among its newest page,
+/// the latest and those in flight. None when none did or the read fails.
+fn taken_over_by(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
+    let page = store
+        .read(&DeploymentsQuery {
+            environment: EnvironmentRef {
+                project: Some(view.environment.project.clone()),
+                environment: Some(view.environment.name.clone()),
+            },
+            limit: None,
+            cursor: None,
+        })
+        .ok()?;
+    let candidates: Vec<DeploymentSummary> = page
+        .deployments
+        .into_iter()
+        .chain(page.latest)
+        .chain(page.in_flight)
+        .collect();
+    progress::taker(view, &candidates).cloned()
+}
+
 /// What took superseded `view`'s place, among the latest and those in flight.
 enum Replacement {
     /// The newest newer Deployment that ships every Service `view` targeted: follow it.
@@ -1100,13 +1134,13 @@ fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, U
             let mut client = super::server::connect(matches, context)
                 .await
                 .map_err(|error| Unchecked {
-                    cause: crate::ingress::unchecked(&error, None),
+                    cause: crate::ingress::unchecked(&error, None, None),
                     silent: super::server::Silent::of(&error),
                 })?;
             let server = client.server();
             crate::ingress::planned_slots(&mut client)
                 .await
-                .map_err(|error| unchecked(crate::ingress::unchecked(&error, server)))
+                .map_err(|error| unchecked(crate::ingress::unchecked(&error, server, None)))
         })
 }
 

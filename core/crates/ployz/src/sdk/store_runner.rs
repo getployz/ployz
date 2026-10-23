@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError,
-    FailedOperation, HealthFailure, LastRun, MachineId, MachineObservation, Operator,
+    FailedOperation, HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator,
     QualifiedService, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LogText, SealedValues, Withheld};
@@ -582,6 +582,20 @@ struct Run {
     runner: RunnerId,
 }
 
+fn ingress_failure_message<'a>(
+    client: &Client,
+    machine_names: &'a BTreeMap<MachineId, MachineName>,
+) -> impl FnOnce(crate::failure::Failure) -> String + 'a {
+    let server = client.server();
+    let known = client
+        .connection()
+        .machine_id()
+        .copied()
+        .or_else(|| client.entry_machine())
+        .and_then(|id| machine_names.get_key_value(&id));
+    move |failure| crate::ingress::unchecked(&failure, server, known)
+}
+
 impl Run {
     async fn execute(
         &self,
@@ -643,7 +657,8 @@ impl Run {
                     Vec::new()
                 };
                 if self.status().await.ok() != Some(DeploymentStatus::Cancelling) {
-                    self.fill_ingress(session).await;
+                    self.fill_ingress(session, prepared.preview.machine_names())
+                        .await;
                 }
                 self.record(RunEvidence::Executed {
                     progress,
@@ -657,16 +672,20 @@ impl Run {
         }
     }
 
-    async fn fill_ingress(&self, session: &Session) {
+    async fn fill_ingress(
+        &self,
+        session: &Session,
+        machine_names: &BTreeMap<MachineId, ployz_core::MachineName>,
+    ) {
         let filled = match session.client() {
             Ok(mut client) => {
-                let server = client.server();
+                let message = ingress_failure_message(&client, machine_names);
                 let stop = CancellationToken::new();
                 self.renewing(crate::ingress::fill_slots(&mut client, &stop), || {
                     stop.cancel()
                 })
                 .await
-                .map_err(|failure| crate::ingress::unchecked(&failure, server))
+                .map_err(message)
             }
             Err(error) => Err(crate::ui::row(&error)),
         };

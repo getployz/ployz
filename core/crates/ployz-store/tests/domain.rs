@@ -109,6 +109,7 @@ fn cloud() -> Trusted {
             ingress_addresses: vec!["203.0.113.7".into()],
             lookups: Vec::new(),
             published: Vec::new(),
+            ..DomainEvidence::default()
         },
         ..Trusted::default()
     }

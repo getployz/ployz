@@ -581,6 +581,87 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
 }
 
 #[test]
+fn a_volume_never_mounts_over_the_kernel_filesystems_or_another_mount() {
+    let (store, who) = shop();
+    let create = |n: u8, name: &str, at: &str| {
+        store
+            .write(
+                &who,
+                &CreateVolume {
+                    shared_writes: false,
+                    storage_locked: false,
+                    restored_from: None,
+                    storage: ployz_core::config::VolumeKind::Docker {},
+                    id: VolumeId::parse(format!("00000000-0000-4000-8000-0000000000{n:02}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: VolumeName::parse(name).unwrap(),
+                    mounts: vec![Mount {
+                        service: ServiceName::parse("web").unwrap(),
+                        path: at.into(),
+                    }],
+                },
+            )
+            .map(|_| ())
+    };
+    let set = |at: &str, to: &str| {
+        edit(
+            &store,
+            &who,
+            Change::Set {
+                path: path(at),
+                value: json!(to),
+            },
+        )
+    };
+
+    for at in ["/proc", "/sys/fs", "/dev/shm", "/proc/", "/var/../dev"] {
+        let refused = create(10, "kernel", at).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{at}");
+        assert!(
+            refused.message.contains("which the kernel fills"),
+            "{}",
+            refused.message
+        );
+    }
+
+    for at in ["/data", "/data/", "/data/.", "//data"] {
+        let refused = create(10, "again", at).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Conflict, "{at}");
+        assert_eq!(
+            refused.message,
+            "web already mounts Volume data at /data; pick another directory"
+        );
+    }
+    assert_eq!(listed(&store, &who).len(), 1);
+
+    create(11, "logs", "/devices").unwrap();
+    let moved = set("web.mounts.logs", "/data/").unwrap_err();
+    assert_eq!(moved.code, RpcErrorCode::Conflict);
+    let kernel = set("web.mounts.logs", "/sys").unwrap_err();
+    assert_eq!(kernel.code, RpcErrorCode::InvalidArgument);
+
+    // A Volume moving to another spelling of its own path is not a clash.
+    set("web.mounts.data", "/data/").unwrap();
+
+    // Mounts are judged where the whole edit leaves them, whatever order it applies them.
+    let patch = |mounts: Value| {
+        edit(
+            &store,
+            &who,
+            Change::Patch {
+                path: path("web"),
+                value: json!({ "mounts": mounts }),
+            },
+        )
+    };
+    patch(json!({ "data": "/devices", "logs": "/data" })).unwrap();
+    patch(json!({ "data": "/archive", "logs": "/devices" })).unwrap();
+    let both = patch(json!({ "data": "/same", "logs": "/same/" })).unwrap_err();
+    assert_eq!(both.code, RpcErrorCode::Conflict);
+}
+
+#[test]
 fn an_undeployed_volume_is_removed_without_servers() {
     let (store, who) = shop();
     let removed = store
@@ -2041,4 +2122,87 @@ fn shared_writes_applies_at_once_and_is_no_diff_row() {
         )
         .unwrap();
     assert!(!listed(&store, &who)[0].volume.shared_writes);
+}
+
+/// A Deploy or Save at a stale version is refused for the version. When the fresh
+/// review deletes data, the refusal hands back the version that binds that loss and
+/// the Volumes to accept, so one retry with both goes through.
+#[test]
+fn a_stale_version_hands_back_the_version_that_binds_the_fresh_loss() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    let stale = diff(&store, &who).version;
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    let bound = admit(&store, &who, 2, &[], Some(observed(&['a'])))
+        .unwrap_err()
+        .details["version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let save_at = |version: &str, accept: &[&str]| {
+        store.write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: Some(version.to_owned()),
+                message: None,
+                accept_volume_loss: accept
+                    .iter()
+                    .map(|name| VolumeName::parse(*name).unwrap())
+                    .collect(),
+            },
+            &Trusted {
+                volumes: Some(observed(&['a'])),
+                ..Trusted::default()
+            },
+        )
+    };
+    let deploy = admit_at(
+        &store,
+        &who,
+        2,
+        &["data"],
+        Some(observed(&['a'])),
+        Some(stale.clone()),
+    )
+    .unwrap_err();
+    let save = save_at(&stale, &["data"]).unwrap_err();
+    for refused in [deploy, save] {
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert_eq!(refused.details["volume_loss"]["version"], json!(bound));
+        assert_eq!(refused.details["volume_loss"]["accept"], json!(["data"]));
+        assert_eq!(
+            refused.details["volume_loss"]["volumes"][0]["name"],
+            json!("data")
+        );
+    }
+
+    // Without the observation that finds the data, it is the plain conflict.
+    let unobserved = admit_at(&store, &who, 2, &["data"], None, Some(stale.clone())).unwrap_err();
+    assert_eq!(unobserved.code, RpcErrorCode::Conflict);
+    assert!(
+        unobserved.details.get("volume_loss").is_none(),
+        "{unobserved:?}"
+    );
+
+    admit_at(
+        &store,
+        &who,
+        2,
+        &["data"],
+        Some(observed(&['a'])),
+        Some(bound),
+    )
+    .unwrap();
 }

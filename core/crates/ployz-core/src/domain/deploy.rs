@@ -967,7 +967,7 @@ impl Display for DeployWarning {
             ),
             Self::IngressHostname { message } => f.write_str(message),
             Self::ObserverRelativeHostnameConflict => f.write_str(
-                "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness.",
+                "Some Server observations are incomplete, so hostname conflicts weren't fully checked. Resolve the observation warnings, then deploy again.",
             ),
             Self::SkippedDependencyHealth {
                 dependent,

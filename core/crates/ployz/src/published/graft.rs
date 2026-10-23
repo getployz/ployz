@@ -30,7 +30,15 @@ pub(crate) fn attach(root: Command, published: &Published) -> Command {
         .commands
         .iter()
         .fold(root, |root, command| graft(root, &command.path, command));
-    groups.iter().fold(root, |root, path| described(root, path))
+    // Top-level `uptime` is the one such group the CLI can say more about.
+    groups
+        .iter()
+        .fold(root, |root, path| match path.as_slice() {
+            [name] if name == "uptime" => root.mut_subcommand(name, |group| {
+                group.about("See whether visitors reach a Service, from every region")
+            }),
+            _ => described(root, path),
+        })
 }
 
 fn find<'a>(root: &'a Command, path: &[String]) -> Option<&'a Command> {
@@ -188,6 +196,19 @@ mod tests {
         assert_eq!(
             show.get_one::<String>("environment").map(String::as_str),
             Some("staging")
+        );
+    }
+
+    #[test]
+    fn uptime_says_what_it_is_for() {
+        let root = attach(crate::cli::compiled(), &published());
+        let about = root
+            .find_subcommand("uptime")
+            .and_then(Command::get_about)
+            .map(ToString::to_string);
+        assert_eq!(
+            about.as_deref(),
+            Some("See whether visitors reach a Service, from every region")
         );
     }
 

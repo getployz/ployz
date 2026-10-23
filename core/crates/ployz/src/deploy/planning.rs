@@ -118,7 +118,7 @@ impl DeployPlan {
         &self.registry_auth
     }
 
-    pub(super) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
+    pub(crate) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
         &self.machine_names
     }
 

@@ -48,7 +48,11 @@ fn deploy_warning_display_is_the_cli_line_body() {
     );
     assert_eq!(
         DeployWarning::ObserverRelativeHostnameConflict.to_string(),
-        "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness."
+        "Some Server observations are incomplete, so hostname conflicts weren't fully checked. Resolve the observation warnings, then deploy again."
+    );
+    assert_eq!(
+        serde_json::to_value(DeployWarning::ObserverRelativeHostnameConflict).unwrap(),
+        serde_json::json!({"type": "observer_relative_hostname_conflict"})
     );
 }
 

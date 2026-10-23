@@ -180,6 +180,9 @@ pub(crate) fn create_volume(
             ));
         }
     }
+    for mount in &create.mounts {
+        refuse_shared_path(&environment, &mount.service, &create.name)?;
+    }
     scope::save_working(tx, &mut environment)?;
     scope::introduce(tx, who, &environment.summary.id, scope::Node::Volume(&node))?;
     if create.storage_locked {
@@ -385,10 +388,69 @@ pub(crate) fn attach(
     if node.volume_attachments.contains(&mount) {
         return Ok(false);
     }
+    let at = mount.container_path();
+    if let Some(kernel) = crate::config_item::kernel_filled(&at) {
+        return Err(error::invalid(
+            format!(
+                "{service}.mounts.{volume}: {at} is under {kernel}, which the kernel fills, so it can't hold a Volume"
+            ),
+            json!({ "example": "/var/lib/data" }),
+        ));
+    }
     node.volume_attachments
         .retain(|mount| mount.volume_resource_id != id);
     node.volume_attachments.push(mount);
     Ok(true)
+}
+
+/// Refuse `service` mounting Volume `volume` where it already mounts another Volume
+/// or a Config. Judged once a whole write is applied, so mounts that trade places
+/// in one edit pass.
+pub(crate) fn refuse_shared_path(
+    environment: &Environment,
+    service: &ServiceName,
+    volume: &VolumeName,
+) -> Result<(), RpcError> {
+    let id = &environment.volume(volume)?.resource_id;
+    let node = environment.service(service)?;
+    let Some(at) = node
+        .volume_attachments
+        .iter()
+        .find(|mount| &mount.volume_resource_id == id)
+        .map(VolumeAttachment::container_path)
+    else {
+        return Ok(());
+    };
+    let working = &environment.working;
+    let same_volume = node
+        .volume_attachments
+        .iter()
+        .filter(|held| &held.volume_resource_id != id && held.container_path() == at)
+        .find_map(|held| {
+            working
+                .volumes
+                .iter()
+                .find(|other| other.resource_id == held.volume_resource_id)
+                .map(|other| format!("Volume {}", other.name))
+        });
+    let same_config = node
+        .config_attachments
+        .iter()
+        .filter(|held| held.mount_dir.as_str() == at)
+        .find_map(|held| {
+            working
+                .configs
+                .iter()
+                .find(|config| config.resource_id == held.config_resource_id)
+                .map(|config| format!("Config {}", config.name))
+        });
+    match same_volume.or(same_config) {
+        Some(what) => Err(error::conflict(
+            format!("{service} already mounts {what} at {at}; pick another directory"),
+            json!({ "service": service, "dir": at }),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Detach Volume `volume` from `service`; the Volume and its data stay. Returns

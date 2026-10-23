@@ -62,18 +62,24 @@ export function publishedOf(frame: RuntimeWatchView): PublishedHostname[] {
 }
 
 /**
- * One Runtime Watch frame: the Cluster's certificates, its ingress Servers' public addresses, and the hostnames its
- * Services publish. Nothing when no Cluster answers, so the Store reads its certificates as unobserved.
+ * What one Runtime Watch frame says of the domains: the Cluster's certificates and those it couldn't read, how many
+ * Servers take ingress when it could read every Machine and their public addresses, and the hostnames its Services publish.
  */
-const observeCluster = Effect.fn("ConfigStore.observeCluster")(function* (organizationId: string) {
-  const frame = yield* firstRuntimeFrame(organizationId);
-  if (frame === null) return null;
+export function observedOf(frame: RuntimeWatchView) {
+  const ingress = frame.machines.filter(({ machine }) => machine.accepts_ingress);
   return {
     certificates: frame.certificates,
-    ingress_addresses: frame.machines.flatMap(({ machine }) =>
-      machine.accepts_ingress && machine.public_ip !== null ? [machine.public_ip] : []),
+    incomplete_certificates: frame.incomplete_ids.certificates,
+    ingress_servers: frame.incomplete_ids.machines.length === 0 ? ingress.length : undefined,
+    ingress_addresses: ingress.flatMap(({ machine }) => machine.public_ip !== null ? [machine.public_ip] : []),
     published: publishedOf(frame),
   };
+}
+
+/** The Cluster's {@link observedOf}; nothing when no Cluster answers, so the Store reads its certificates as unobserved. */
+const observeCluster = Effect.fn("ConfigStore.observeCluster")(function* (organizationId: string) {
+  const frame = yield* firstRuntimeFrame(organizationId);
+  return frame === null ? null : observedOf(frame);
 }, Effect.catch((error) =>
   Effect.logWarning("No runtime frame for domain statuses; they read as unobserved.", error).pipe(Effect.as(null))));
 

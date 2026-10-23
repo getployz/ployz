@@ -1087,6 +1087,13 @@ impl ConnectError {
         }
     }
 
+    /// The entry's router made this status for a target that didn't answer, and it came back
+    /// over a working channel: the entry itself answered.
+    pub(crate) fn routed_by_entry(&self) -> bool {
+        matches!(self, Self::Rpc(error)
+            if error.routed_unanswered && !error.local && !error.session_closed)
+    }
+
     /// The read's whole budget ran out without a reply, or the entry's router could not
     /// get one from the target. A status a daemon sent, or a failure reaching the entry,
     /// says nothing about whether the target lives.

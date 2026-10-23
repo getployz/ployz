@@ -164,5 +164,11 @@ can't reference it, and it replaces a variable of yours with that name.
   one, so Ployz refuses such a value when you set it, and refuses a deploy where references
   make one longer. When a secret makes it longer, the Deployment fails before anything runs and
   names the variable. Put a large value in a [Config](configs.md) file instead.
+- **A service's variables should total at most 2 MiB.** Linux passes a program its variables and
+  arguments together in a quarter of its stack limit, counting a few bytes more per variable for
+  its bookkeeping. With Docker's default 8 MiB stack, that's 2 MiB, so a `set` whose plain values take a
+  service past it, including `set --from-env-file`, lands with a note naming the total. Past
+  6 MiB no server can start it, so Ployz refuses such a `set`, and a deploy where references or
+  secrets resolve past it. Move bulk settings into a [Config](configs.md) file.
 
 Next: [add a database](databases.md).

@@ -655,6 +655,14 @@ pub(super) fn lower(
         .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
         .map(|service| service.id.as_str())
         .collect();
+    // Only the Services this Deployment starts must fit a Container's environment.
+    for service in &saved.services {
+        if (!narrowed || targeted.contains(&service.id.as_str()))
+            && let Some(env) = resolved.env.get(&service.id)
+        {
+            variables::refuse_too_big(service.config.private_dns.as_str(), env)?;
+        }
+    }
     let snapshots: Vec<(ServiceConfig, LowerDeploymentSnapshot)> = compiled
         .node_snapshots
         .into_iter()

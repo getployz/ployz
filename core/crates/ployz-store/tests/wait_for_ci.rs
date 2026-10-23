@@ -908,6 +908,28 @@ fn an_environment_with_only_a_hold_has_no_deployment_yet() {
     );
 }
 
+/// A Deployment number the Environment never had names the list of its
+/// Deployments, in the same Project and Environment.
+#[test]
+fn a_missing_deployment_number_names_the_scoped_list() {
+    let (store, who, _) = waiting();
+    let shown = refused(tool(
+        &store,
+        &who,
+        "deployment_show",
+        json!({ "deployment": 999 }),
+    ));
+    assert_eq!(shown.code, RpcErrorCode::NotFound);
+    assert_eq!(shown.message, "shop/production has no Deployment #999");
+    assert_eq!(
+        shown.next,
+        [ployz_store::tools::Call::new(
+            "deployment_list",
+            json!({ "project": "shop", "environment": "production" })
+        )]
+    );
+}
+
 /// With Deployment #1 queued and a hold pushed after it, the agent's default
 /// Deployment is #1: `deployment_show {}` shows it and `deployment_cancel {}` cancels it,
 /// leaving the hold waiting.

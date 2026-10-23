@@ -364,6 +364,8 @@ context's name as a positional argument.
 
 A command prints its result on stdout and everything else on stderr: progress, warnings, the
 `next:` line, prompts and errors. `ployz service ls > services.txt` saves only the table.
+`ployz logs` reading your servers prints each line on the stream your app wrote it to, so add
+`2>&1` to pipe every line; see [Logs](../observe/logs.md#read-retained-logs-from-the-cli).
 
 A list is an aligned table in a terminal. Piped, it is tab-separated with an uppercase header
 row, so `ployz service ls | cut -f1` prints the names. An empty list prints one sentence on
@@ -606,6 +608,9 @@ number; one that would overwrite draft changes refuses and names them first.
 When a deploy would delete a volume's data, `ployz deploy` and `ployz deploy --skip-deploy` stop
 and print the command to run instead. It names each volume that loses data, like
 `ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if
-you mean it. If Ployz can't check your servers for that data and you passed `--connect`, the
+you mean it. If the environment changed since, the command refuses and prints it again at the new
+version. When the new version deletes only volumes you already accepted, that command names them
+and goes through in one step. Otherwise it leaves them out: run it to see what the new version
+deletes, and accept that from the command it prints then. If Ployz can't check your servers for that data and you passed `--connect`, the
 refusal names the address you gave when Ployz doesn't know which server that is. With `--json`,
 the error's `cause` lists it.

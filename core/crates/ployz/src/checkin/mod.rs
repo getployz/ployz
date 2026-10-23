@@ -7,6 +7,7 @@
 
 mod client;
 mod enroll;
+mod port_holder;
 mod probe;
 pub(crate) mod unit;
 mod wire;
@@ -43,6 +44,7 @@ const REFUSED_ONCE: &str =
 const GAVE_UP: &str = "Preparation stopped mid-step on every try. Run sudo ployz server checkin --install to try again.";
 const STALE_PLOYZD: &str = "ployzd_outdated";
 const IN_ANOTHER_CLUSTER: &str = "in_another_cluster";
+const WIREGUARD_PORT_IN_USE: &str = "wireguard_port_in_use";
 pub(crate) const NO_CLUSTER: &str = "No cluster yet";
 pub(crate) const NO_CLUSTER_WHY: &str = "Enroll one server in Ployz Cloud to start it.";
 
@@ -178,6 +180,10 @@ pub(crate) trait Host {
     async fn discard_zfs_build(&self) -> Result<(), String>;
     /// The name this Server holds in the cluster it already participates in.
     async fn participating(&self) -> Option<String>;
+    /// The program holding UDP [`ployz_core::WIREGUARD_PORT`], which ployzd needs for WireGuard.
+    fn wireguard_port_holder(&self) -> Option<String> {
+        None
+    }
 }
 
 pub(crate) struct System {
@@ -269,6 +275,10 @@ impl Host for System {
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
         enroll::discard_zfs_build(&self.ployzd).await
+    }
+
+    fn wireguard_port_holder(&self) -> Option<String> {
+        port_holder::udp_holder(Path::new("/proc"), ployz_core::WIREGUARD_PORT)
     }
 
     async fn participating(&self) -> Option<String> {
@@ -741,6 +751,11 @@ impl InstallPass {
     }
 }
 
+/// Whether this host joined through `attempt`: it didn't fail, and the daemon now participates.
+pub(crate) async fn joined<H: Host>(host: &H, attempt: Option<&Attempt>) -> bool {
+    attempt.is_some_and(|attempt| attempt.failure.is_none()) && host.participating().await.is_some()
+}
+
 /// The pass an explicit `--install` makes. It leaves preparation alone, since the token may yet be
 /// refused; `restart_preparation` runs once Cloud has answered.
 pub(crate) async fn install_pass<H: Host>(
@@ -878,6 +893,16 @@ async fn check_in<H: Host>(
         None
     };
     status.blockers.extend(member.clone());
+    // Someone else on WireGuard's port leaves ployzd crash-looping once it starts.
+    let port_taken = host.wireguard_port_holder().map(|holder| Issue {
+        code: WIREGUARD_PORT_IN_USE.to_owned(),
+        message: format!(
+            "UDP port {} is in use by {holder}. Ployz needs it for WireGuard. Free it, for \
+             example by restarting that program.",
+            ployz_core::WIREGUARD_PORT
+        ),
+    });
+    status.blockers.extend(port_taken.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
         .await
         .unwrap_or_else(|_| {
@@ -900,6 +925,7 @@ async fn check_in<H: Host>(
     let mut report = probe.report(host.hostname(), state.as_ref(), confirmed);
     report.blockers.extend(stale);
     report.blockers.extend(member);
+    report.blockers.extend(port_taken);
     status.blockers.clone_from(&report.blockers);
     let request = CheckinRequest {
         protocol_version: wire::PROTOCOL_VERSION,
@@ -918,12 +944,7 @@ async fn check_in<H: Host>(
     let throttled = matches!(reply, client::Reply::Throttled(..));
     let next = match reply {
         client::Reply::Answer(Answer::Wait(_))
-            if !installing
-                && status
-                    .attempt
-                    .as_ref()
-                    .is_some_and(|attempt| attempt.failure.is_none())
-                && host.participating().await.is_some() =>
+            if !installing && joined(host, status.attempt.as_ref()).await =>
         {
             status.answer = Seen::Joined;
             Next::Enrolled

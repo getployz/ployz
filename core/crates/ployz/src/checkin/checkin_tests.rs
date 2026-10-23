@@ -73,6 +73,7 @@ struct FakeHost {
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
     member_of_cluster_as: Option<String>,
+    wireguard_port_holder: Option<String>,
 }
 
 impl Host for FakeHost {
@@ -130,6 +131,10 @@ impl Host for FakeHost {
 
     async fn participating(&self) -> Option<String> {
         self.member_of_cluster_as.clone()
+    }
+
+    fn wireguard_port_holder(&self) -> Option<String> {
+        self.wireguard_port_holder.clone()
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -2506,6 +2511,35 @@ async fn a_server_in_another_cluster_is_blocked_before_enroll() {
     assert!(request.contains("ployz server rm box-1"), "{request}");
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Blocked");
+}
+
+#[tokio::test]
+async fn a_program_on_the_wireguard_port_blocks_the_server_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    let host = FakeHost {
+        wireguard_port_holder: Some("avahi-daemon (pid 812)".to_owned()),
+        ..FakeHost::default()
+    };
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(
+        request.contains(r#""code":"wireguard_port_in_use""#),
+        "{request}"
+    );
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline().title, "Blocked");
+    assert_eq!(
+        status
+            .blockers
+            .last()
+            .map(|blocker| blocker.message.as_str()),
+        Some(
+            "UDP port 51820 is in use by avahi-daemon (pid 812). Ployz needs it for WireGuard. \
+             Free it, for example by restarting that program."
+        )
+    );
 }
 
 #[tokio::test]

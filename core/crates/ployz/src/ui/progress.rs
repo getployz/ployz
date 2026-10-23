@@ -169,7 +169,11 @@ impl GraphService {
             | State::Unknown
             | State::Excluded => state.word(),
         };
-        if self.total == 0 || (*state == State::NotAttempted && self.ready == 0) {
+        // A rollback with no new copy serving restores every old one: 0/N would read as none.
+        if self.total == 0
+            || (*state == State::NotAttempted && self.ready == 0)
+            || (*state == State::Running(RowPhase::Compensating) && self.ready == 0)
+        {
             word.to_owned()
         } else if matches!(state, State::Failed | State::Cancelled | State::Interrupted) {
             format!("{word} ({}/{} ready)", self.ready, self.total)
@@ -1271,6 +1275,8 @@ fn finish(
         "running",
         "unchanged",
         "failed",
+        "cancelled",
+        "interrupted",
         "warning",
         "not attempted",
         "unknown",
@@ -1326,7 +1332,7 @@ fn finish(
         Disposition::LocalInterrupted => {
             writeln!(
                 writer,
-                "Interrupted after waiting for owned work to report its outcome."
+                "Interrupted after the steps under way reported their outcome."
             )
         }
         Disposition::Settled | Disposition::UpToDate => Ok(()),

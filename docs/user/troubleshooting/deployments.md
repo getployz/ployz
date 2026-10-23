@@ -18,7 +18,10 @@ the deploy has Volumes to create, and a large image can hold it there for minute
 whose pull policy is Never has nothing to pull and reads plain `waiting`. A booting Service counts each Server whose new
 Containers are ready, so it can read `booting 1/3` while the others boot. Once every
 Server is ready it reads `switching N/N` until they switch together, then
-`switched N/N`. A row whose new Containers already serve shows a `draining old` line
+`switched N/N`. Under Stop first or Rolling, a new Container that fails its health check, or
+can't start after Ployz stopped the old one, makes the row read `rolling back` while Ployz undoes
+that Server's change, such as `rolling back (1 failed)`. It counts the Servers
+whose new Container already serves, as in `rolling back 1/2`, and shows no count when none does. A row whose new Containers already serve shows a `draining old` line
 while the deploy removes Containers it no longer needs, which waits until every Server routes to the new ones. Old copies that a
 replacement leaves behind drain on each Server after the switch, so they show in
 `ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,
@@ -66,6 +69,10 @@ directory; `ployz deploy` would ship the last upload that built. `up` leaves out
 lines when the deploy failed. When a newer deployment, such as a push, takes the place of the
 one you were following without shipping all of its services, the CLI says
 `Deployment #3 was superseded by #4 (push bbe4f9e).` and points at `ployz deployment show 4`.
+When a newer deploy takes over the environment while one running on your machine is still going,
+yours stops at its next step, and the CLI says `Deployment #3 was replaced by #4 before it
+finished.` and points at `ployz deployment show 4`. What #3 changed before it stopped shows as
+unknown.
 
 A failed deploy exits with code 1. A Deployment that applied but whose result is missing
 a Server, or that left an old container running because its Server didn't answer, exits
@@ -84,13 +91,17 @@ the next progress update or heartbeat, using the Machine ID if it still lacks a 
 Interactive progress can show it at once. If following stops first while progress is showing,
 the warning still prints.
 
+If Ployz cannot read every required Server's Containers and Volumes while deploying a Service
+with an ingress hostname, it warns that hostname conflicts were not fully checked. Resolve the
+observation warnings, then deploy again.
+
 If Cloud stops answering while the CLI follows a Deployment, the command exits 1 with
 `Stopped following Deployment #N; it keeps running in Ployz Cloud.` and an `inspect:` line
 for `ployz deployment show N`. Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment
 keeps running. The command returns its last known result when one is available, including
 a completion observed during interruption. An active
 Cloud request can take up to 15 seconds to return. For local execution, Ctrl-C requests
-cancellation and waits for owned work and cleanup to settle. Server enrollment that
+cancellation and waits for the steps under way and their cleanup to settle. Server enrollment that
 already committed remains committed; follow the recovery hint if Global catch-up or
 web traffic setup was interrupted.
 
@@ -586,6 +597,14 @@ doesn't exist and for a private image you have no access to.
   published on the registry.
 - If the image is private, add **Registry credentials**, or replace a token that expired. See
   [Use a private image](../deploy/docker-image.md#use-a-private-image).
+
+A server that can't look up a hostname while pulling says so instead:
+
+**Failed at pull**, with `Host registry.example.invalid does not resolve, so the image could not be pulled. Check the image's registry, or this Server's DNS`
+
+The host is usually the registry in the image name, so check that part for typos. It can also be
+the registry's sign-in service or a proxy the server pulls through. If the name is right, the
+server's DNS can't resolve it.
 
 ## My server's disk is full
 

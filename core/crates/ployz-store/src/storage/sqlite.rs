@@ -40,7 +40,7 @@ impl Sqlite {
         &self,
         write: bool,
         work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
-    ) -> Result<T, RpcError> {
+    ) -> Result<T, Failed> {
         // A panic mid-transaction dropped it, which rolled it back: the connection is sound.
         let mut connection = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let behavior = if write {
@@ -51,24 +51,70 @@ impl Sqlite {
         };
         let transaction = connection
             .transaction_with_behavior(behavior)
-            .map_err(storage_error)?;
-        let value = work(&mut SqliteTx(&transaction))?;
-        transaction.commit().map_err(storage_error)?;
+            .map_err(|source| failed(source, false))?;
+        let mut tx = SqliteTx {
+            transaction: &transaction,
+            schema: None,
+        };
+        let value = match work(&mut tx) {
+            Ok(value) => value,
+            // Work that got past a schema failure, or changed it, failed for another reason.
+            Err(error) if tx.schema.as_ref() == Some(&error) => {
+                return Err(Failed::Schema(error));
+            }
+            Err(error) => return Err(Failed::Other(error)),
+        };
+        transaction
+            .commit()
+            .map_err(|source| failed(source, false))?;
         Ok(value)
     }
 }
 
-struct SqliteTx<'tx>(&'tx rusqlite::Transaction<'tx>);
+/// Why a transaction failed.
+pub(super) enum Failed {
+    /// SQLite refused this binary's SQL against the database's schema: a table or
+    /// column it names is missing, or a row breaks a NOT NULL, CHECK or foreign key.
+    /// That SQL runs clean on the schema it ships with, so a migration it doesn't
+    /// know may have changed this one.
+    Schema(RpcError),
+    Other(RpcError),
+}
+
+struct SqliteTx<'tx> {
+    transaction: &'tx rusqlite::Transaction<'tx>,
+    /// The last schema failure this transaction returned.
+    schema: Option<RpcError>,
+}
+
+impl SqliteTx<'_> {
+    fn fail(&mut self, source: rusqlite::Error, preparing: bool) -> RpcError {
+        match failed(source, preparing) {
+            Failed::Schema(error) => {
+                self.schema = Some(error.clone());
+                error
+            }
+            Failed::Other(error) => error,
+        }
+    }
+}
 
 impl Tx for SqliteTx<'_> {
     fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
-        self.0
-            .execute(sql, rusqlite::params_from_iter(params))
-            .map_err(storage_error)
+        let transaction = self.transaction;
+        let mut statement = transaction
+            .prepare(sql)
+            .map_err(|source| self.fail(source, true))?;
+        statement
+            .execute(rusqlite::params_from_iter(params))
+            .map_err(|source| self.fail(source, false))
     }
 
     fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError> {
-        let mut statement = self.0.prepare(sql).map_err(storage_error)?;
+        let transaction = self.transaction;
+        let mut statement = transaction
+            .prepare(sql)
+            .map_err(|source| self.fail(source, true))?;
         let columns = statement.column_count();
         statement
             .query_map(rusqlite::params_from_iter(params), |row| {
@@ -87,13 +133,15 @@ impl Tx for SqliteTx<'_> {
                     .collect::<Result<Vec<_>, _>>()
                     .map(Row)
             })
-            .map_err(storage_error)?
+            .map_err(|source| self.fail(source, false))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(storage_error)
+            .map_err(|source| self.fail(source, false))
     }
 
     fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
-        self.0.execute_batch(sql).map_err(storage_error)
+        self.transaction
+            .execute_batch(sql)
+            .map_err(|source| self.fail(source, false))
     }
 }
 
@@ -104,6 +152,30 @@ impl ToSql for Param<'_> {
             Self::Int(value) => ToSqlOutput::Borrowed(ValueRef::Integer(*value)),
             Self::NullText | Self::NullInt => ToSqlOutput::Borrowed(ValueRef::Null),
         })
+    }
+}
+
+/// `source` as the Store's error, and whether it is a [`Failed::Schema`]. A generic
+/// SQL error counts only while `preparing`: SQLite raises one for a missing table or
+/// column then, and for a function failing on a value once the statement runs.
+fn failed(source: rusqlite::Error, preparing: bool) -> Failed {
+    let schema = if let rusqlite::Error::SqliteFailure(failure, _)
+    | rusqlite::Error::SqlInputError { error: failure, .. } = &source
+    {
+        matches!(
+            failure.extended_code,
+            ffi::SQLITE_CONSTRAINT_NOTNULL
+                | ffi::SQLITE_CONSTRAINT_CHECK
+                | ffi::SQLITE_CONSTRAINT_FOREIGNKEY
+        ) || (preparing && failure.code == ErrorCode::Unknown)
+    } else {
+        false
+    };
+    let error = storage_error(source);
+    if schema {
+        Failed::Schema(error)
+    } else {
+        Failed::Other(error)
     }
 }
 

@@ -572,6 +572,26 @@ async fn mock_machine() -> (
     (session, server, one.machine.id)
 }
 
+#[tokio::test]
+async fn a_runner_names_its_entry_after_a_plain_transport_failure() {
+    let (session, server, machine_id) = mock_machine().await;
+    let client = session.client().unwrap();
+    assert_eq!(client.entry_machine(), Some(machine_id));
+    assert_eq!(client.server().as_deref(), Some(machine_id.as_str()));
+    let names = BTreeMap::from([(machine_id, MachineName::parse("machine-1").unwrap())]);
+    let failure = crate::failure::Failure::from(crate::connect::ConnectError::Rpc(
+        crate::connect::TransportError::budget_expired("no reply"),
+    ));
+
+    assert_eq!(
+        ingress_failure_message(&client, &names)(failure),
+        "Server machine-1 isn't answering (no reply)"
+    );
+
+    session.close().await;
+    server.abort();
+}
+
 fn lines(log: &LogText) -> Vec<String> {
     match log {
         LogText::Shown(excerpt) => excerpt.lines().to_vec(),
@@ -1236,15 +1256,20 @@ async fn only_a_removed_services_left_copy_may_leave_it_empty() {
 #[test]
 fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
     let machine = |c: char| ployz_core::MachineId::parse(c.to_string().repeat(32)).unwrap();
-    let short = || {
-        crate::deploy::DeployError::Plan(crate::deploy::PlanError::Storage {
-            machine_id: machine('a'),
-            machine: ployz_core::MachineName::parse("machine-1").unwrap(),
-            source: ployz_core::StorageCapacityError::InsufficientStorage {
-                required_growth_bytes: 4 << 30,
-                available_bytes: 1 << 30,
-                reserve_bytes: 0,
-            },
+    let storage = || crate::deploy::PlanError::Storage {
+        machine_id: machine('a'),
+        machine: ployz_core::MachineName::parse("machine-1").unwrap(),
+        source: ployz_core::StorageCapacityError::InsufficientStorage {
+            required_growth_bytes: 4 << 30,
+            available_bytes: 1 << 30,
+            reserve_bytes: 0,
+        },
+    };
+    let short = || crate::deploy::DeployError::Plan(storage());
+    let wrapped = || {
+        crate::deploy::DeployError::Plan(crate::deploy::PlanError::Service {
+            service: "web".into(),
+            source: Box::new(storage()),
         })
     };
     let deleting = |on: char| {
@@ -1255,10 +1280,16 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
     };
     let note = " Volumes this deploy deletes free their space only after it succeeds, so they don't make room for its new volumes.";
 
-    // Planned directly, and planned after a Build, which rewrites the error's details.
+    // Planned directly, and planned after a Build, which rewrites the error's details;
+    // each also wrapped in the Service it was planned for.
     for refused in [
         crate::sdk::Unprepared::from(short()),
+        crate::sdk::Unprepared::from(wrapped()),
         crate::sdk::unprepared(crate::sdk::prepare::PreparationError::Plan(short()), false),
+        crate::sdk::unprepared(
+            crate::sdk::prepare::PreparationError::Plan(wrapped()),
+            false,
+        ),
     ] {
         let plain = Failure::from(&refused.error).reason;
         let failure = refused_before_deletes(&refused, &deleting('a'));

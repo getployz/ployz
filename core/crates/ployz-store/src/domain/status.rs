@@ -92,11 +92,18 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
             );
         }
     }
-    // Every domain lands on the same ingress Servers.
+    // Every domain lands on the same ingress Servers. Without a Cluster Domain, whose
+    // status says it, the Runtime Watch's ingress Servers do.
+    let standalone = match evidence.ingress_servers {
+        Some(0) => Some(ClusterDomainStatus::NoServers),
+        Some(_) if evidence.ingress_addresses.is_empty() => Some(ClusterDomainStatus::NoPublicIp),
+        _ => None,
+    };
     let cluster = evidence
         .cluster_domain
         .as_ref()
-        .map(|cluster| &cluster.status);
+        .map(|cluster| &cluster.status)
+        .or(standalone.as_ref());
     match cluster {
         Some(ClusterDomainStatus::NoServers) => {
             return attention("No Server receives traffic", Some(DomainAction::AddServer));
@@ -147,10 +154,8 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
         }
         DomainName::Custom { hostname } => hostname,
     };
-    let certificate = evidence
-        .certificates
-        .as_deref()
-        .and_then(|certificates| certificate_for(hostname, certificates));
+    let observed = observed_certificate(hostname, evidence);
+    let certificate = observed.flatten();
     let ready = certificate
         .is_some_and(|certificate| certificate.status == CertificateAvailability::Available);
     let lookup = evidence
@@ -182,7 +187,7 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
     if let Some(blocked) = port_80 {
         return blocked;
     }
-    if evidence.certificates.is_none() {
+    if observed.is_none() {
         return setting_up("Ployz can't see the Servers right now");
     }
     if ready {
@@ -235,22 +240,40 @@ fn dns_action(hostname: &Hostname, evidence: &DomainEvidence) -> Option<DomainAc
 }
 
 /// A custom hostname's certificate: its own, else the `*.parent` wildcard that serves it.
-fn certificate_for<'evidence>(
+/// None when it can't be told: the Servers couldn't be seen, or the row of the certificate
+/// that would serve it couldn't be read.
+fn observed_certificate<'evidence>(
     hostname: &Hostname,
-    certificates: &'evidence [CertificateObservation],
-) -> Option<&'evidence CertificateObservation> {
-    let host = IngressHost::parse(hostname.as_str()).ok()?;
-    let covers = |certificate: &&CertificateObservation, wildcard: bool| {
-        certificate.hostname.is_wildcard() == wildcard && certificate.hostname.covers(&host)
+    evidence: &'evidence DomainEvidence,
+) -> Option<Option<&'evidence CertificateObservation>> {
+    let certificates = evidence.certificates.as_deref()?;
+    let Ok(host) = IngressHost::parse(hostname.as_str()) else {
+        return Some(None);
     };
-    certificates
-        .iter()
-        .find(|certificate| covers(certificate, false))
-        .or_else(|| {
-            certificates
-                .iter()
-                .find(|certificate| covers(certificate, true))
-        })
+    let covers = |certificate: &CertificateHost, wildcard: bool| {
+        certificate.is_wildcard() == wildcard && certificate.covers(&host)
+    };
+    let unread = |wildcard| {
+        evidence
+            .incomplete_certificates
+            .iter()
+            .any(|certificate| covers(certificate, wildcard))
+    };
+    let find = |wildcard| {
+        certificates
+            .iter()
+            .find(|certificate| covers(&certificate.hostname, wildcard))
+    };
+    if let Some(own) = find(false) {
+        return Some(Some(own));
+    }
+    if unread(false) {
+        return None;
+    }
+    match find(true) {
+        None if unread(true) => None,
+        wildcard => Some(wildcard),
+    }
 }
 
 /// Whether DNS sends `lookup`'s hostname to these Servers; none when the evidence
@@ -360,7 +383,85 @@ mod tests {
             ingress_addresses: vec!["203.0.113.7".into()],
             lookups: Vec::new(),
             published: Vec::new(),
+            ..DomainEvidence::default()
         }
+    }
+
+    fn certificate_host(name: &str) -> CertificateHost {
+        serde_json::from_value(serde_json::json!(name)).unwrap()
+    }
+
+    #[test]
+    fn a_certificate_whose_row_is_unread_reads_unobserved_not_absent() {
+        let domain = custom("app.example.com");
+        let unobserved = setting_up("Ployz can't see the Servers right now");
+        let mut own = evidence(None);
+        own.incomplete_certificates = vec![certificate_host("app.example.com")];
+        assert_eq!(status(&domain, Deployed::Yes, &own), unobserved);
+        let mut wildcard = evidence(None);
+        wildcard.incomplete_certificates = vec![certificate_host("*.example.com")];
+        assert_eq!(status(&domain, Deployed::Yes, &wildcard), unobserved);
+        // Its own certificate serves it, whatever the wildcard's row says.
+        let mut issued = evidence(Some(("available", None)));
+        issued.incomplete_certificates = vec![certificate_host("*.example.com")];
+        assert_eq!(
+            status(&domain, Deployed::Yes, &issued).0,
+            DomainStatus::Ready
+        );
+        // Its own unread row may hold the certificate that serves it, ahead of the wildcard.
+        let mut shadowed = evidence(None);
+        shadowed.certificates = Some(vec![
+            serde_json::from_value(serde_json::json!({
+                "hostname": "*.example.com",
+                "status": "available",
+                "backoff": null,
+            }))
+            .unwrap(),
+        ]);
+        shadowed.incomplete_certificates = vec![certificate_host("app.example.com")];
+        assert_eq!(status(&domain, Deployed::Yes, &shadowed), unobserved);
+        shadowed.incomplete_certificates.clear();
+        assert_eq!(
+            status(&domain, Deployed::Yes, &shadowed).0,
+            DomainStatus::Ready
+        );
+        // Another hostname's unread row says nothing about this one.
+        let mut other = evidence(None);
+        other.incomplete_certificates = vec![certificate_host("shop.example.org")];
+        assert_eq!(
+            status(&domain, Deployed::Yes, &other),
+            setting_up("Issuing certificate")
+        );
+    }
+
+    #[test]
+    fn without_a_cluster_domain_the_ingress_servers_say_whether_traffic_lands() {
+        let domain = custom("app.example.com");
+        let standalone = |servers: Option<u32>, addresses: &[&str]| {
+            let mut evidence = evidence(Some(("available", None)));
+            evidence.cluster_domain = None;
+            evidence.ingress_servers = servers;
+            evidence.ingress_addresses = addresses.iter().map(|&address| address.into()).collect();
+            status(&domain, Deployed::Yes, &evidence)
+        };
+        assert_eq!(
+            standalone(Some(0), &[]),
+            attention("No Server receives traffic", Some(DomainAction::AddServer))
+        );
+        assert_eq!(
+            standalone(Some(1), &[]),
+            attention("No ingress Server has a public IP", None)
+        );
+        assert_eq!(standalone(Some(1), &["203.0.113.7"]).0, DomainStatus::Ready);
+        // Unobserved Servers say nothing, as before.
+        assert_eq!(standalone(None, &[]).0, DomainStatus::Ready);
+        // Cloud's Cluster Domain status speaks for the Servers when there is one.
+        let mut cloud = evidence(Some(("available", None)));
+        cloud.ingress_servers = Some(0);
+        assert_eq!(
+            status(&domain, Deployed::Yes, &cloud).0,
+            DomainStatus::Ready
+        );
     }
 
     #[test]
