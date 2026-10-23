@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
-import { SealError } from "#/modules/variables/seal.client";
+import { SealError } from "#/modules/sealing/seal-error";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
 import { diffQuery, environmentSettingsQuery, environmentsQuery, refetchStoreViews, storeViewOptions, useStoreView } from "./store-view.queries";

@@ -4,7 +4,7 @@ import type { Change, ConfigCommand, ConfigWritten, EnvironmentRef } from "@ploy
 import { toast } from "sonner";
 import { isUnauthorized } from "#/lib/error-message";
 import { observeFailure, type Persistable } from "#/collections/query-collection";
-import { SealError } from "#/modules/variables/seal.client";
+import { SealError } from "#/modules/sealing/seal-error";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";

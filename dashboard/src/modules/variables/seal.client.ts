@@ -1,3 +1,5 @@
+import { SealError } from "#/modules/sealing/seal-error";
+
 /** HPKE `info` and the first associated-data field of a value sealed to a Cluster's Sealing Key. */
 const SEALED_VALUE_INFO = "ployz-sealed-v1";
 /** The Store's `MAX_ENV_STRING`: Linux passes at most 128 KiB per variable, `KEY=value` and its NUL included. */
@@ -30,9 +32,6 @@ function hasShortRow(value: string) {
     return bytes >= 1 && bytes < SHORT_ROW;
   });
 }
-
-/** Why a Sealed value wasn't sent, in words a toast can show: never the value. */
-export class SealError extends Error {}
 
 let suite: Promise<import("@hpke/core").CipherSuite> | undefined;
 
