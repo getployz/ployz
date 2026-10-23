@@ -408,6 +408,23 @@ mod tests {
             status(&domain, Deployed::Yes, &issued).0,
             DomainStatus::Ready
         );
+        // Its own unread row may hold the certificate that serves it, ahead of the wildcard.
+        let mut shadowed = evidence(None);
+        shadowed.certificates = Some(vec![
+            serde_json::from_value(serde_json::json!({
+                "hostname": "*.example.com",
+                "status": "available",
+                "backoff": null,
+            }))
+            .unwrap(),
+        ]);
+        shadowed.incomplete_certificates = vec![certificate_host("app.example.com")];
+        assert_eq!(status(&domain, Deployed::Yes, &shadowed), unobserved);
+        shadowed.incomplete_certificates.clear();
+        assert_eq!(
+            status(&domain, Deployed::Yes, &shadowed).0,
+            DomainStatus::Ready
+        );
         // Another hostname's unread row says nothing about this one.
         let mut other = evidence(None);
         other.incomplete_certificates = vec![certificate_host("shop.example.org")];
