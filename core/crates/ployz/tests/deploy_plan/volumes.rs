@@ -2150,3 +2150,66 @@ fn a_silent_volume_server_blocks_only_the_service_that_mounts_its_volume() {
         );
     }
 }
+
+/// A Volume that sits on an answering Machine it can't use there still refuses the
+/// whole Deploy under the runner: only a Volume on a down or silent Server waits.
+#[test]
+fn a_volume_on_an_answering_server_it_cannot_use_still_refuses_under_the_runner() {
+    let intent = automatic_provisioned_intent();
+    let mut pinned = machine('1', "pinned");
+    pinned.storage = Some(MachineStorageObservation::Stateless);
+    let mut other = machine('2', "other");
+    other.storage = Some(MachineStorageObservation::Ready);
+    let mut existing = provisioned_row('1');
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
+    let snapshot = DeploySnapshot {
+        machines: vec![pinned, other],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing])
+            .expect("valid Volume Snapshot fixture"),
+        ..storage_snapshot()
+    };
+
+    let preview = runner_preview(&intent, &snapshot);
+    assert!(preview.is_err(), "{:?}", preview.map(|plan| plan.blocked));
+}
+
+/// A Service blocked because its Volume's Server is silent gives back what its
+/// placement took, so a later Service can use the same host port there.
+#[test]
+fn a_service_blocked_on_a_silent_volume_server_gives_back_its_host_port() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    db.ports.push(host_port(8080));
+    let mut web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    web.ports.push(host_port(8080));
+    web.placement.constraints =
+        [PlacementConstraint::parse(format!("node.id == {}", machine_id('2'))).unwrap()].into();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &web],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    snapshot.storage_capacity.remove(&machine_id('2'));
+
+    let preview = runner_preview(&intent, &snapshot).unwrap_or_else(|error| panic!("{error:?}"));
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, db.name);
+    assert!(
+        operations(&preview)
+            .iter()
+            .any(|operation| operation.service_name() == Some(&web.name)
+                && operation.machine_id() == machine_id('2')),
+        "{:?}",
+        operations(&preview)
+    );
+}

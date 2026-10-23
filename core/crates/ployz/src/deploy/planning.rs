@@ -827,16 +827,39 @@ fn hostname_policy_for(
 }
 
 /// Whether `error` says only that the Service's Volume sits on a Machine that can't
-/// take it now: down, or silent this Deploy. Configuration that matches no Machine
-/// still fails the Deploy.
-fn volume_server_away(error: &PlanError) -> bool {
+/// take it now: down, or silent this Deploy. Configuration that matches no Machine,
+/// or a Volume on a Machine that answered, still fails the Deploy.
+fn volume_server_away(error: &PlanError, snapshot: &DeploySnapshot) -> bool {
     let PlanError::NoEligibleMachines { constraints } = error else {
         return false;
     };
+    let away = |name: &ployz_core::MachineName| {
+        snapshot
+            .machines
+            .iter()
+            .find(|machine| &machine.machine.name == name)
+            .is_some_and(|machine| {
+                machine.membership == MembershipObservation::Down
+                    || snapshot.silent(machine)
+                    || storage::capacity(snapshot, machine).is_err()
+            })
+    };
     let constraints = constraints.as_slice();
-    constraints
+    let located = constraints
         .iter()
-        .any(|constraint| matches!(constraint, EliminatingConstraint::VolumeAlreadyOn { .. }))
+        .filter_map(|constraint| {
+            if let EliminatingConstraint::VolumeAlreadyOn { located_on, .. } = constraint {
+                Some(located_on)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    !located.is_empty()
+        && located
+            .iter()
+            .flat_map(|machines| machines.iter())
+            .all(away)
         && constraints.iter().all(|constraint| {
             matches!(
                 constraint,
@@ -976,6 +999,9 @@ fn assemble_plan(
             continue;
         }
         let first = service_operations.len();
+        // Placement spends capacity and host ports as it goes, so a Service blocked once
+        // it is placed puts back the budget it found.
+        let before = intent.options.block_unmountable.then(|| budget.clone());
         let operations = match plan_one_service(
             spec,
             &intent.namespace,
@@ -1000,7 +1026,9 @@ fn assemble_plan(
                 budget.release(&spec.name);
                 continue;
             }
-            Err(error) if intent.options.block_unmountable && volume_server_away(&error) => {
+            Err(error)
+                if intent.options.block_unmountable && volume_server_away(&error, snapshot) =>
+            {
                 blocked.push(BlockedService {
                     service: spec.name.clone(),
                     error: error.into_rpc_error(),
@@ -1025,6 +1053,9 @@ fn assemble_plan(
                 service: spec.name.clone(),
                 error: error.into_rpc_error(),
             });
+            if let Some(before) = before {
+                budget = before;
+            }
             budget.release(&spec.name);
             continue;
         }
