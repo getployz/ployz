@@ -1269,15 +1269,14 @@ mod set_volume_copy {
         let draining = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
             "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":400}});
 
-        let hung_up = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            set_copy(&service, draining),
-        )
-        .await;
-        assert!(
-            hung_up.is_err(),
-            "the cut finished inside its drain: {hung_up:?}"
-        );
+        // Hang up once the cut is draining, not after a fixed wait: on a loaded runner the
+        // cut may not have begun by then, and the undo would run before it.
+        tokio::select! {
+            finished = set_copy(&service, draining) => {
+                panic!("the cut finished inside its drain: {finished:?}")
+            }
+            () = drain_started(&service, &holder) => {}
+        }
         let undo = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
             "want":{"kind":"writer", "at":"7", "epoch":1,
                 "start":{"kind":"kept", "container_id":holder.to_string()}}});
