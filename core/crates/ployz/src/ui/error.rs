@@ -191,8 +191,9 @@ fn pasteable(command: &str) -> String {
 }
 
 /// Whether bash reads `word` as [`shell_words::split`] does: outside single quotes it holds
-/// nothing bash would expand, glob or read as an operator. A backslash escapes the same in
-/// both, but one that ends `word` would join it to the next.
+/// nothing bash would expand, glob or read as an operator, and no unquoted `=` that could
+/// make it an assignment. A backslash escapes the same in both, but one that ends `word`
+/// would join it to the next.
 fn quoted_literally(word: &str) -> bool {
     let (mut single, mut double, mut escaping) = (false, false, false);
     for c in word.chars() {
@@ -203,7 +204,9 @@ fn quoted_literally(word: &str) -> bool {
             '\\' => escaping = true,
             '"' => double = !double,
             '$' | '`' | '!' => return false,
-            '~' | '*' | '?' | '[' | '{' | ';' | '&' | '|' | '<' | '>' | '(' | ')' if !double => {
+            '~' | '*' | '?' | '[' | '{' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '='
+                if !double =>
+            {
                 return false;
             }
             _ => {}
@@ -223,16 +226,21 @@ fn inline(error: Chain<'_>) -> String {
 }
 
 /// Foreign text on one line: a registry's `denied\ndenied` would break the
-/// indented line it lands in. Repeated lines print once. A trim keeps an [`unprintable`]
-/// character other than a tab, so [`escaped`] can show it.
+/// indented line it lands in. Repeated lines print once.
 fn one_line(text: &str) -> String {
+    joined(text.lines().map(str::trim))
+}
+
+/// [`one_line`] for the human `cause:` line: a trim keeps an [`unprintable`] character
+/// other than a tab, so [`escaped`] can show it.
+fn shown_line(text: &str) -> String {
     let blank = |c: char| c == '\t' || (c.is_whitespace() && !unprintable(c));
+    joined(text.split('\n').map(|line| line.trim_matches(blank)))
+}
+
+fn joined<'a>(trimmed: impl Iterator<Item = &'a str>) -> String {
     let mut lines: Vec<&str> = Vec::new();
-    for line in text
-        .split('\n')
-        .map(|line| line.trim_matches(blank))
-        .filter(|line| !line.is_empty())
-    {
+    for line in trimmed.filter(|line| !line.is_empty()) {
         if lines.last() != Some(&line) {
             lines.push(line);
         }
@@ -325,7 +333,7 @@ pub fn write(
             out,
             "  {} {}",
             Tone::Bad.paint("cause:"),
-            escaped(&one_line(cause))
+            escaped(&shown_line(cause))
         )?;
     }
     for hint in hints {
@@ -407,6 +415,18 @@ mod tests {
             String::from_utf8(out.into_inner()).unwrap(),
             "error: Config app has no file a.txt\\u{d}\n  Shown as stored.\n  \
              cause: refused a.txt\\u{d}; denied\n"
+        );
+    }
+
+    #[test]
+    fn a_foreign_line_end_trims_off_the_one_line_form() {
+        let error = io::Error::other("refused a.txt\r\n\tdenied \r\n");
+        assert_eq!(chain_text(&error), "refused a.txt; denied");
+        assert_eq!(row(&error), "refused a.txt; denied");
+        let wire = serde_json::to_value(rpc_error(ployz_core::RpcErrorCode::Internal, &error));
+        assert_eq!(
+            wire.unwrap().pointer("/message").unwrap(),
+            "refused a.txt; denied"
         );
     }
 
@@ -523,9 +543,13 @@ mod tests {
     fn a_command_hint_never_pastes_as_a_different_command() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a\u{202E}bX"), "").unwrap();
+        // `ployz` prints `$NAME` first, so a leading assignment is seen as bash reads it.
         let argv = |command: &str| {
             let output = std::process::Command::new("bash")
-                .args(["-c", &format!("printf '%s\\0' {command}")])
+                .args([
+                    "-c",
+                    &format!("ployz() {{ printf '%s\\0' \"${{NAME-}}\" \"$@\"; }}; {command}"),
+                ])
                 .current_dir(dir.path())
                 .env("HOME", "/home/u")
                 .output()
@@ -545,6 +569,8 @@ mod tests {
             "ployz config put app 'it'\\''s\u{202E}b'",
             "ployz config put app a\\'$HOME\u{202E}",
             "ployz config put app \u{202E}\\ b",
+            "NAME=\"a\u{202E}b\" ployz deploy",
+            "NAME=a\u{202E}b ployz deploy",
         ] {
             let shown = pasteable(hint);
             assert!(!shown.chars().any(unprintable), "{shown}");

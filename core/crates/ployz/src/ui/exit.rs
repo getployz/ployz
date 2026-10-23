@@ -314,6 +314,30 @@ mod tests {
     }
 
     #[test]
+    fn a_carriage_return_shows_as_its_code_and_json_keeps_it_raw() {
+        let failure = Failure::from(RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "Config app has no file a.txt\r\nIt was removed.".into(),
+            details: json!({}),
+            cause: vec!["refused a.txt\r\n".into()],
+        });
+        let object: Value = serde_json::from_str(&end(&failure, Mode::Json, false).stdout).unwrap();
+        assert_eq!(
+            object.pointer("/error/message").unwrap(),
+            "Config app has no file a.txt\r\nIt was removed."
+        );
+        assert_eq!(
+            object.pointer("/error/cause").unwrap(),
+            &json!(["refused a.txt\r\n"])
+        );
+        assert_eq!(
+            end(&failure, Mode::Plain, false).stderr,
+            "error: Config app has no file a.txt\\u{d}\nIt was removed.\n  \
+             cause: refused a.txt\\u{d}\n"
+        );
+    }
+
+    #[test]
     fn a_wrapper_that_repeats_its_source_prints_once() {
         let inner = Failure::caused(RpcErrorCode::Internal, "Could not save the context.", Os);
         let failure = inner.context("Server removed; local context cleanup failed.");
