@@ -425,10 +425,7 @@ pub(crate) fn attach(
                 json!({ "example": "/etc/app" }),
             )
         })?;
-    if let Some(kernel) = ["/proc", "/sys", "/dev"]
-        .into_iter()
-        .find(|kernel| dir.as_str() == *kernel || dir.as_str().starts_with(&format!("{kernel}/")))
-    {
+    if let Some(kernel) = kernel_filled(dir.as_str()) {
         return Err(error::invalid(
             format!(
                 "{service}.configs.{config}: {} is under {kernel}, which the kernel fills, so it can't hold a Config",
@@ -484,6 +481,15 @@ pub(crate) fn attach(
         return Err(error);
     }
     Ok(true)
+}
+
+/// The kernel filesystem that canonical directory `dir` is in or under, if any.
+/// Nothing mounted there survives the kernel's own mount.
+pub(crate) fn kernel_filled(dir: &str) -> Option<&'static str> {
+    ["/proc", "/sys", "/dev"].into_iter().find(|kernel| {
+        dir.strip_prefix(kernel)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
 }
 
 fn oversized(
