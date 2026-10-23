@@ -453,13 +453,23 @@ impl PrepState {
 }
 
 impl Probe {
-    pub(super) fn report(self, hostname: String, prep: Option<&PrepState>) -> HostReport {
+    /// `preparing` is whether `ployz-prepare` is running now.
+    pub(super) fn report(
+        self,
+        hostname: String,
+        prep: Option<&PrepState>,
+        preparing: bool,
+    ) -> HostReport {
         let Self { facts, assessment } = self;
         let Assessment {
             mut blockers,
             mut warnings,
             zfs,
         } = assessment;
+        // Part-way through Ployz's own install, dpkg has registered Docker before its unit starts.
+        if preparing && prep.is_none_or(|prep| matches!(prep.docker.step, DockerStep::Installing)) {
+            blockers.retain(|issue| issue.code != "docker_stopped");
+        }
         let compatible = !blockers
             .iter()
             .any(|issue| issue.code.starts_with("docker_") || issue.code.starts_with("buildx_"));

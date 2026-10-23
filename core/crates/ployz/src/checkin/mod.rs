@@ -891,7 +891,7 @@ async fn check_in<H: Host>(
             return (next, Some(status));
         }
     };
-    let mut report = probe.report(host.hostname(), state.as_ref());
+    let mut report = probe.report(host.hostname(), state.as_ref(), running);
     report.blockers.extend(stale);
     report.blockers.extend(member);
     status.blockers.clone_from(&report.blockers);
