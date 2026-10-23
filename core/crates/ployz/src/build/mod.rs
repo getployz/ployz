@@ -231,6 +231,7 @@ fn capture_target(
             let file = inputs.dockerfile(&dockerfile)?;
             if !sealed.is_empty() {
                 refuse_declared_args(&file, sealed.keys())?;
+                args.insert(SEALED_HASH_ARG.into(), sealed_hash(&sealed));
             }
             // Both context and recipe live directly beneath source/.
             let dockerfile = Path::new("..").join(file.file_name().expect("captured recipe"));
@@ -311,6 +312,24 @@ fn refuse_declared_args<'name>(
 fn fingerprint(value: &EnvValue) -> String {
     let encoded = serde_json::to_vec(value).expect("sealed values encode");
     Sha256::digest(encoded)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The build arg a Dockerfile may declare right above the RUN that mounts a
+/// Sealed value, so a re-sealed value reruns that step. BuildKit never keys
+/// its cache on a secret mount's contents.
+const SEALED_HASH_ARG: &str = "PLOYZ_SEALED_HASH";
+
+/// One digest over every Sealed value's fingerprint, the same fingerprints
+/// Railpack's `secrets-hash` folds in. Never a plaintext.
+fn sealed_hash(sealed: &BTreeMap<String, EnvValue>) -> String {
+    let fingerprints = sealed
+        .iter()
+        .map(|(name, value)| format!("{name}={}\n", fingerprint(value)))
+        .collect::<String>();
+    Sha256::digest(fingerprints)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
@@ -857,6 +876,43 @@ mod tests {
             fingerprint
         });
         assert_ne!(fingerprints[0], fingerprints[1]);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
+    fn a_dockerfile_reading_a_sealed_value_gets_one_hash_of_its_fingerprints() {
+        let root = tempfile::tempdir().unwrap();
+        let hashes = [7, 8].map(|byte| {
+            let (intent, sealed) = sealed_intent(byte);
+            let captured =
+                capture_one(&intent, dockerfile_spec(root.path(), MOUNTING_DOCKERFILE)).unwrap();
+            let recipe = recipe(&captured);
+            let hash = recipe["services"]["api"]["build"]["args"]["PLOYZ_SEALED_HASH"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert_eq!(hash.len(), 64, "{hash}");
+            let ciphertext = serde_json::to_string(&sealed).unwrap();
+            assert!(!hash.contains(&ciphertext));
+            assert_ne!(hash, fingerprint(&sealed));
+            hash
+        });
+        assert_ne!(hashes[0], hashes[1]);
+        // Railpack keys its own cache through `secrets-hash`.
+        let (intent, _) = sealed_intent(7);
+        let captured = capture_one(
+            &intent,
+            BuildSpec {
+                context: root.path().to_owned(),
+                recipe: Recipe::Railpack { command: None },
+            },
+        )
+        .unwrap();
+        let compose = fs::read_to_string(captured.inputs.root().join("compose.yaml")).unwrap();
+        let railpack =
+            fs::read_to_string(captured.inputs.root().join("private/railpack.json")).unwrap();
+        assert!(!compose.contains("PLOYZ_SEALED_HASH"), "{compose}");
+        assert!(!railpack.contains("PLOYZ_SEALED_HASH"), "{railpack}");
     }
 
     #[test]
