@@ -716,7 +716,7 @@ pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str,
 }
 
 /// A Machine as every `server` command prints it: its WireGuard public key in base64,
-/// as `wg` prints it, and without its Sealing state, which no released verb shows.
+/// as `wg` prints it, and without its Sealing state.
 pub(super) fn machine_json(machine: &Machine) -> Value {
     let mut value = serde_json::to_value(machine).expect("a Machine serializes");
     if let Value::Object(fields) = &mut value {

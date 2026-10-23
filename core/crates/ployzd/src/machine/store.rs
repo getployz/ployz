@@ -42,7 +42,6 @@ pub struct LocalMachineStore {
     // transfers, which run side by side while all exclusive work waits for them.
     pub(super) admission_lock: Arc<tokio::sync::RwLock<()>>,
     pub(super) mutation_gate: crate::mutation::MutationGate,
-    /// Follows every Sealing Key write this store makes, for the publisher.
     pub(super) sealing: tokio::sync::watch::Sender<Option<ployz_core::Sealing>>,
 }
 
