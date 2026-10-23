@@ -24,3 +24,11 @@ test("zero servers waits for Cloud before offering first run", () => {
   expect(serversPageState({ list: "live", servers: 0, waiting: undefined, enrolling: 0 })).toEqual({ kind: "loading", intake: false });
   expect(serversPageState({ list: "live", servers: 2, waiting: undefined, enrolling: undefined })).toEqual({ kind: "fleet", intake: false, stale: false });
 });
+
+test("the first server's enrollment shows its progress, not unreachable, before anything has joined", () => {
+  expect(serversPageState({ list: "unreachable", servers: 0, waiting: 0, enrolling: 1, founding: true })).toEqual({ kind: "first-run", intake: true });
+});
+
+test("a server that joined and stopped answering is unreachable", () => {
+  expect(serversPageState({ list: "unreachable", servers: 0, waiting: 0, enrolling: 1, founding: false })).toEqual({ kind: "unreachable", intake: true });
+});
