@@ -21,7 +21,7 @@ pub async fn discover_network(
 ) -> Result<DiscoveredNetwork, NetworkError> {
     let mut addresses = routable_interface_addresses()?;
     let public_ip = match public_ip {
-        PublicIpDiscovery::Auto => discover_public_ip().await,
+        PublicIpDiscovery::Auto => discover_public_ip(has_ipv4_route()).await,
         PublicIpDiscovery::Disabled => None,
         PublicIpDiscovery::Override(address) => Some(address),
     };
@@ -103,32 +103,45 @@ fn skip_interface(name: &str) -> bool {
         })
 }
 
-fn public_ip_lookups(_ipv4_route: bool) -> &'static [&'static str] {
-    &[
-        "https://api.ipify.org",
-        "https://ipinfo.io/ip",
-        "http://ip-api.com/line/?fields=query",
-    ]
+/// Whether this server reaches IPv4 itself. One without that route reaches an IPv4
+/// lookup only through a NAT64 gateway, which answers with the gateway's address. An
+/// unreadable route table counts as a route, as before.
+fn has_ipv4_route() -> bool {
+    checked_command("ip", &["-4", "-json", "route", "show", "default"])
+        .ok()
+        .and_then(|output| serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout).ok())
+        .is_none_or(|routes| !routes.is_empty())
 }
 
-fn own_public_ip(found: IpAddr, _ipv4_route: bool) -> Option<IpAddr> {
-    Some(found)
+fn public_ip_lookups(ipv4_route: bool) -> &'static [&'static str] {
+    if ipv4_route {
+        &[
+            "https://api.ipify.org",
+            "https://ipinfo.io/ip",
+            "http://ip-api.com/line/?fields=query",
+        ]
+    } else {
+        &["https://api6.ipify.org"]
+    }
 }
 
-async fn discover_public_ip() -> Option<IpAddr> {
+/// `found`, unless it is an IPv4 address this server can't own: without an IPv4 route
+/// it is a NAT64 gateway's.
+fn own_public_ip(found: IpAddr, ipv4_route: bool) -> Option<IpAddr> {
+    (ipv4_route || found.is_ipv6()).then_some(found)
+}
+
+async fn discover_public_ip(ipv4_route: bool) -> Option<IpAddr> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .ok()?;
-    for url in [
-        "https://api.ipify.org",
-        "https://ipinfo.io/ip",
-        "http://ip-api.com/line/?fields=query",
-    ] {
-        if let Ok(response) = client.get(url).send().await
+    for url in public_ip_lookups(ipv4_route) {
+        if let Ok(response) = client.get(*url).send().await
             && let Ok(response) = response.error_for_status()
             && let Ok(body) = response.text().await
             && let Ok(address) = body.trim().parse()
+            && let Some(address) = own_public_ip(address, ipv4_route)
         {
             return Some(address);
         }
