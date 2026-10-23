@@ -13,10 +13,15 @@ export async function onRequest({ request, params }) {
   if (!ASSET.test(path)) {
     return new Response("Not found\n", { status: 404 });
   }
-  const upstream = await fetch(RELEASES + path, {
-    method: request.method,
-    headers: { "user-agent": "ployz.sh-releases" },
-  });
+  let upstream;
+  try {
+    upstream = await fetch(RELEASES + path, {
+      method: request.method,
+      headers: { "user-agent": "ployz.sh-releases" },
+    });
+  } catch {
+    return new Response("Could not reach GitHub releases\n", { status: 502 });
+  }
   const headers = new Headers({ "cache-control": "no-store" });
   for (const name of PASSED) {
     const value = upstream.headers.get(name);

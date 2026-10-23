@@ -46,6 +46,7 @@ cat > "$TMP/bin/curl" <<'EOF'
 echo "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
 # Like curl when nothing answers on any address it resolved: no HTTP status, exit 7.
 [ -z "${FAKE_UNREACHABLE:-}" ] || { printf 000; exit 7; }
+case "$*" in *"${FAKE_UNREACHABLE_HOST:-unset.invalid}"/*) printf 000; exit 7 ;; esac
 write_out=
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -76,12 +77,26 @@ for platform in Linux:x86_64 Linux:aarch64 Darwin:x86_64 Darwin:arm64; do
     [ "$("$TMP/install/ployz" --version)" = 1.2.3 ]
 done
 
-# By default the release comes from ployz.sh, which serves GitHub's assets over IPv6 too.
-env -u PLOYZ_GITHUB_URL PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
-    FAKE_CURL_LOG="$TMP/default-urls" INSTALL_BIN_DIR="$TMP/install" sh "$ROOT/install.sh" 1.2.3 > /dev/null
-for asset in checksums.txt checksums.txt.minisig ployz_linux_amd64.tar.gz; do
-    grep -Fq "https://ployz.sh/releases/download/v1.2.3/$asset" "$TMP/default-urls" ||
-        { cat "$TMP/default-urls" >&2; exit 1; }
+# The release comes from github.com, and through ployz.sh only when github.com can't be reached, as
+# on a server with only IPv6.
+for reach in github fallback; do
+    rm -f "$TMP/urls"
+    env -u PLOYZ_GITHUB_URL -u PLOYZ_FALLBACK_URL PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 \
+        FAKE_RELEASE="$TMP/release" FAKE_CURL_LOG="$TMP/urls" INSTALL_BIN_DIR="$TMP/install" \
+        FAKE_UNREACHABLE_HOST=$([ "$reach" = github ] || echo github.com) sh "$ROOT/install.sh" 1.2.3 \
+        > /dev/null 2>&1
+    [ "$("$TMP/install/ployz" --version)" = 1.2.3 ]
+    case $reach in
+        github) from=https://github.com/getployz/ployz/releases/download/v1.2.3 ;;
+        fallback) from=https://ployz.sh/releases/download/v1.2.3 ;;
+    esac
+    for asset in checksums.txt checksums.txt.minisig ployz_linux_amd64.tar.gz; do
+        grep -Fq "$from/$asset" "$TMP/urls" || { cat "$TMP/urls" >&2; exit 1; }
+    done
+    if [ "$reach" = github ] && grep -Fq https://ployz.sh/releases "$TMP/urls"; then
+        cat "$TMP/urls" >&2
+        exit 1
+    fi
 done
 
 pack_release 9.9.9
@@ -134,7 +149,7 @@ if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/nonex
     echo "installed a release that doesn't exist" >&2
     exit 1
 fi
-grep -Fqx "ERROR: There's no Ployz release 0.3.0-beta.99. Releases: https://github.com/getployz/ployz/releases" "$TMP/error"
+grep -Fqx "ERROR: There's no Ployz release 0.3.0-beta.99. Releases: https://example.invalid/releases" "$TMP/error"
 : > "$FAKE_CURL_LOG"
 if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" FAKE_CURL_LOG="$FAKE_CURL_LOG" \
     INSTALL_BIN_DIR="$TMP/nonexistent" PLOYZ_GITHUB_URL=https://example.invalid \

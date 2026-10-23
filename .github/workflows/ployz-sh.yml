@@ -14,7 +14,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ployz-sh-cloudflare
+  # Per ref, so a preview never cancels a production deploy waiting its turn.
+  group: ployz-sh-cloudflare-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -24,8 +25,8 @@ jobs:
       url: https://ployz.sh
     runs-on: ubuntu-latest
     steps:
-      # main deploys production. Running this workflow on another branch deploys that branch as a
-      # Pages preview, at <branch>.ployz-sh.pages.dev.
+      # Only the main branch deploys production. Running this workflow on any other ref deploys it as
+      # a Pages preview named preview-<ref>, such as preview-heads-my-branch.ployz-sh.pages.dev.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Fetch channel pointers
         run: |
@@ -38,7 +39,13 @@ jobs:
         run: PLOYZ_SH_CHANNELS_DIR=dist/channels-src bash core/scripts/stage-ployz-sh-site.sh
       - name: Name the Pages branch
         id: target
-        run: printf 'branch=%s\n' "$(printf %s "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9-' -)" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            branch=main
+          else
+            branch=preview-$(printf %s "${GITHUB_REF#refs/}" | tr -c 'A-Za-z0-9-' -)
+          fi
+          printf 'branch=%s\n' "$branch" >> "$GITHUB_OUTPUT"
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
         with:

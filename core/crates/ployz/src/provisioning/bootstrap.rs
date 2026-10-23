@@ -17,6 +17,8 @@ use tokio::time::timeout;
 use super::ProvisionError;
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz";
+/// Passes GitHub's release assets through over IPv6, for a server that can't connect to github.com.
+const RELEASE_FALLBACK: &str = "https://ployz.sh";
 pub(super) const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A verified copy of this CLI release's daemon, owned by a private directory.
@@ -30,10 +32,6 @@ impl Bootstrap {
     /// Download, checksum, and extract this release's bootstrap for a Linux architecture.
     pub(super) async fn acquire(architecture: &str) -> Result<Self, ProvisionError> {
         let archive_name = daemon_archive(architecture)?;
-        let base = format!(
-            "{RELEASE_REPOSITORY}/releases/download/v{}",
-            env!("CARGO_PKG_VERSION")
-        );
         let client = reqwest::Client::builder()
             .https_only(true)
             .connect_timeout(Duration::from_secs(10))
@@ -44,21 +42,34 @@ impl Bootstrap {
                 stage: "build bootstrap download client",
                 source,
             })?;
+        let asset = |file: &str| {
+            let path = format!("releases/download/v{}/{file}", env!("CARGO_PKG_VERSION"));
+            (
+                format!("{RELEASE_REPOSITORY}/{path}"),
+                format!("{RELEASE_FALLBACK}/{path}"),
+            )
+        };
+        let (url, fallback) = asset(archive_name);
         let archive = download(
             &client,
-            &format!("{base}/{archive_name}"),
+            &url,
+            Some(&fallback),
             "download bootstrap daemon archive",
         )
         .await?;
+        let (url, fallback) = asset("checksums.txt");
         let checksums = download(
             &client,
-            &format!("{base}/checksums.txt"),
+            &url,
+            Some(&fallback),
             "download bootstrap release checksums",
         )
         .await?;
+        let (url, fallback) = asset(RELEASE_SIGNATURE_ASSET);
         let signature = download_if_present(
             &client,
-            &format!("{base}/{RELEASE_SIGNATURE_ASSET}"),
+            &url,
+            Some(&fallback),
             "download bootstrap release checksums signature",
         )
         .await?;
@@ -182,14 +193,25 @@ pub(super) async fn verify_command_version(
     }
 }
 
+/// Requests `url`, or `fallback` when `url`'s host can't be resolved or connected.
+async fn send(
+    client: &reqwest::Client,
+    url: &str,
+    fallback: Option<&str>,
+) -> reqwest::Result<reqwest::Response> {
+    match (client.get(url).send().await, fallback) {
+        (Err(error), Some(fallback)) if error.is_connect() => client.get(fallback).send().await,
+        (sent, _) => sent,
+    }
+}
+
 async fn download(
     client: &reqwest::Client,
     url: &str,
+    fallback: Option<&str>,
     stage: &'static str,
 ) -> Result<Vec<u8>, ProvisionError> {
-    client
-        .get(url)
-        .send()
+    send(client, url, fallback)
         .await
         .map_err(|source| ProvisionError::BootstrapDownload { stage, source })?
         .error_for_status()
@@ -204,11 +226,10 @@ async fn download(
 async fn download_if_present(
     client: &reqwest::Client,
     url: &str,
+    fallback: Option<&str>,
     stage: &'static str,
 ) -> Result<Option<Vec<u8>>, ProvisionError> {
-    let response = client
-        .get(url)
-        .send()
+    let response = send(client, url, fallback)
         .await
         .map_err(|source| ProvisionError::BootstrapDownload { stage, source })?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -367,23 +388,51 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
         let url = serve_status("404 Not Found").await;
-        let absent = download_if_present(&client, &url, "signature")
+        let absent = download_if_present(&client, &url, None, "signature")
             .await
             .unwrap();
         assert_eq!(absent, None);
 
         let url = serve_status("200 OK").await;
-        let present = download_if_present(&client, &url, "signature")
+        let present = download_if_present(&client, &url, None, "signature")
             .await
             .unwrap();
         assert_eq!(present.as_deref(), Some(b"body".as_slice()));
 
         let url = serve_status("500 Internal Server Error").await;
-        let failed = download_if_present(&client, &url, "signature").await;
+        let failed = download_if_present(&client, &url, None, "signature").await;
         assert!(matches!(
             failed,
             Err(ProvisionError::BootstrapDownload {
                 stage: "signature",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_release_host_falls_back_and_an_answering_one_does_not() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        // Nothing listens on a port whose listener was dropped, so connecting is refused, as
+        // connecting to github.com is on a server without IPv4.
+        let refused = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}/checksums.txt", listener.local_addr().unwrap())
+        };
+
+        let fallback = serve_status("200 OK").await;
+        let fetched = download(&client, &refused, Some(&fallback), "checksums")
+            .await
+            .unwrap();
+        assert_eq!(fetched, b"body");
+
+        let failing = serve_status("500 Internal Server Error").await;
+        let fallback = serve_status("200 OK").await;
+        let failed = download(&client, &failing, Some(&fallback), "checksums").await;
+        assert!(matches!(
+            failed,
+            Err(ProvisionError::BootstrapDownload {
+                stage: "checksums",
                 ..
             })
         ));

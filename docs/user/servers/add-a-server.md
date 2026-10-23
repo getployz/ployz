@@ -320,10 +320,11 @@ these there:
 
 ## IPv6-only servers
 
-The install line works on a server whose only route out is IPv6, because ployz.sh serves Ployz's
-releases over IPv6. Upgrades download from there too. Setting the server up needs more: Ployz pulls
-some of its images from ghcr.io, which has no IPv6 address, so `ployz server add` can't reach it.
-Do one of these first:
+Ployz downloads its releases from github.com, which has no IPv6 address. When a server can't reach
+github.com, the download goes through ployz.sh instead, which has one, so the install line still
+installs `ployz` on a server whose only route out is IPv6. Setting the server up needs more: Ployz
+pulls some of its images from ghcr.io, which has no IPv6 address either, so enrolling the server or
+running `ployz server add` can't finish. Do one of these first:
 
 - **Give the server an IPv4 address.** Most providers sell one as an add-on, such as a Hetzner
   Primary IPv4. The server is then dual-stack and installs like any other.
