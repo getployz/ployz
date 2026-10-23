@@ -202,7 +202,7 @@ describe("VariableRow", () => {
   });
 
   it("says a secret is Not set, and Set value seals the one typed", async () => {
-    const onSealVariable = vi.fn();
+    const onSealVariable = vi.fn(() => ({ isPersisted: { promise: Promise.resolve() } }));
     render(<VariableRow variable={{ ...sealedVariable(), value: { type: "sealed", notSet: true } }} collection={collection}
       onSealVariable={onSealVariable} />);
     expect(screen.getByText("Not set")).toBeTruthy();
@@ -215,6 +215,25 @@ describe("VariableRow", () => {
 
     expect(onSealVariable).toHaveBeenCalledWith(expect.objectContaining({ key: "API_KEY", value: { type: "plain", value: "prod-key" } }));
     expect(collection.update).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Value of API_KEY")).toBeNull();
+  });
+
+  it("reopens Set value with what was typed when the seal is refused", async () => {
+    let fail = (_error: Error) => {};
+    const write = new Promise<void>((_resolve, reject) => { fail = reject; });
+    render(<VariableRow variable={{ ...sealedVariable(), value: { type: "sealed", notSet: true } }} collection={collection}
+      onSealVariable={() => ({ isPersisted: { promise: write } })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Set value" }));
+    const input = screen.getByLabelText("Value of API_KEY");
+    fireEvent.change(input, { target: { value: "prod-key" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.queryByLabelText("Value of API_KEY")).toBeNull();
+
+    await act(async () => {
+      fail(new Error("refused"));
+      await write.catch(() => {});
+    });
+    expect(screen.getByLabelText<HTMLInputElement>("Value of API_KEY").value).toBe("prod-key");
   });
 
   it("pins a variable marked Never sync, and its menu syncs it again", async () => {

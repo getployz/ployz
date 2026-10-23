@@ -8,10 +8,11 @@ import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field
 import { Input } from "#/components/ui/input";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import { sealedValueProblem, warmSealing } from "#/modules/variables/seal.client";
 import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
 import { parseDisplayToParts } from "#/modules/variables/variable-template";
 import { variableKeyError, type VariableRecord } from "#/modules/variables/variables";
-import type { VariableAddInput } from "#/components/variables/variables-panel";
+import type { SealedControls, VariableAddInput } from "#/components/variables/variables-panel";
 
 type VariableAddFormDefaults = {
   defaultExported: boolean;
@@ -80,7 +81,7 @@ export function VariableAddForm({
   variables,
   onCreateVariable,
   onCancel,
-  allowSealOnCreate,
+  sealing,
   defaultExported,
   supportsExport,
   valueTargets,
@@ -93,7 +94,8 @@ export function VariableAddForm({
   onCancel: () => void;
   /** What was typed before a refusal. */
   initial?: VariableAddInput;
-  allowSealOnCreate: boolean;
+  /** Offers Sealed; none: the form adds plain variables only. */
+  sealing?: SealedControls;
   defaultExported: boolean;
   supportsExport: boolean;
   valueTargets?: ReferenceTarget[];
@@ -114,9 +116,11 @@ export function VariableAddForm({
 
   const typedKey = state.key.trim().toUpperCase();
   const keyError = typedKey ? variableKeyError(typedKey) : null;
-  const valueError = state.sealed
-    ? state.value.includes("${{") ? "A sealed value is stored as-is. Untick Sealed to use a reference." : null
-    : referenceError(state.value, serviceNames);
+  const valueError = !state.sealed
+    ? referenceError(state.value, serviceNames)
+    : sealing?.state === "ready"
+      ? sealedValueProblem(typedKey, state.value)
+      : state.value.includes("${{") ? "A sealed value is stored as-is. Untick Sealed to use a reference." : null;
 
   function handleAdd() {
     const key = typedKey;
@@ -198,23 +202,29 @@ export function VariableAddForm({
           )}
           {valueError ? <FieldError>{valueError}</FieldError> : null}
         </Field>
-        {allowSealOnCreate || supportsExport ? (
+        {sealing || supportsExport ? (
           <FieldGroup>
-            {allowSealOnCreate ? (
-              <Field orientation="horizontal">
+            {sealing ? (
+              <Field orientation="horizontal" data-disabled={sealing.state === "no_server" && !state.sealed ? true : undefined}>
                 <Checkbox
                   id="new-variable-sealed"
                   checked={state.sealed}
-                  onCheckedChange={(checked) =>
+                  // A Sealed draft back from a refusal can still be unticked.
+                  disabled={sealing.state === "no_server" && !state.sealed}
+                  onCheckedChange={(checked) => {
+                    warmSealing();
                     dispatch({
                       type: "sealedChanged",
                       checked: Boolean(checked),
-                    })
-                  }
+                    });
+                  }}
                 />
                 <FieldLabel htmlFor="new-variable-sealed">
                   Sealed
                 </FieldLabel>
+                {sealing.state === "no_server" ? (
+                  <span className="text-sm text-muted-foreground">· Needs a server. {sealing.addServer}</span>
+                ) : null}
               </Field>
             ) : null}
             {supportsExport ? (

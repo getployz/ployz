@@ -6,8 +6,10 @@ import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter, variableReferrers } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useSealing } from "#/modules/variables/sealing";
+import { Link } from "@tanstack/react-router";
 import { BracesIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
+import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Empty,
   EmptyDescription,
@@ -18,6 +20,7 @@ import { Separator } from "#/components/ui/separator";
 import { TabsContent } from "#/components/ui/tabs";
 import {
   VariablesPanel,
+  type SealedControls,
   type VariableAddInput,
 } from "#/components/variables/variables-panel";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row";
@@ -25,6 +28,8 @@ import type { PlainVariableRecord, VariableRecord, VariableWriter } from "#/modu
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { RawEditorDiff } from "#/modules/variables/variable-raw-editor";
 import { ServiceVariablesRawEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditor";
+
+const LINK = buttonVariants({ variant: "link", size: "sm", className: "h-auto p-0" });
 
 /** A Config Store Service's variables: each edit is one optimistic write of `SERVICE.env.KEY`; a secret never reads back. */
 export function StoreServiceVariablesTab({ organizationSlug, environment, service, services, settings, changes, broken }: {
@@ -53,7 +58,10 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
       managed={<ManagedVariables managed={storeManagedExports(service, settings.environment)} />}
       valueTargets={storeReferenceTargets(settings, services, service.id)}
       serviceNames={services.map((listed) => listed.name)}
-      allowSealOnCreate
+      sealing={{
+        state: sealing.state,
+        addServer: <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK}>Add server</Link>,
+      }}
       onCreateVariable={({ key, value, sealed, exported }) => writer.create(key, value, sealed, exported)}
       onSealVariable={(variable) => writer.seal(variable.key, variable.value.value)}
       onUpdateMetadata={(variable, patch) => writer.export(variable.key, patch.exported ?? variable.exported)}
@@ -67,7 +75,7 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
 
 /** A Service's variables tab: its variables, the raw editor and the variables Ployz adds. */
 function ServiceVariablesView({
-  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, onNeverSync, onRename, referrersOf, allowSealOnCreate = false,
+  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, onNeverSync, onRename, referrersOf, sealing,
 }: {
   variables: VariableRecord[];
   writer: VariableWriter;
@@ -76,13 +84,13 @@ function ServiceVariablesView({
   valueTargets: ReferenceTarget[];
   serviceNames: readonly string[];
   onCreateVariable: (input: VariableAddInput) => Persistable;
-  onSealVariable: (variable: PlainVariableRecord) => void;
+  onSealVariable: (variable: PlainVariableRecord) => Persistable;
   onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   onApplyRaw: (diff: RawEditorDiff) => Persistable;
   onNeverSync: (variable: VariableRecord, marked: boolean) => void;
   onRename: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
   referrersOf: (variable: VariableRecord) => readonly string[];
-  allowSealOnCreate?: boolean;
+  sealing: SealedControls;
 }) {
   const [rawEditorOpen, setRawEditorOpen] = useState(false);
   return (
@@ -90,7 +98,7 @@ function ServiceVariablesView({
       <VariablesPanel
         variables={variables}
         collection={writer}
-        allowSealOnCreate={allowSealOnCreate}
+        sealing={sealing}
         countNoun="Service Variable"
         onCreateVariable={onCreateVariable}
         onSealVariable={onSealVariable}
