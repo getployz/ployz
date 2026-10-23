@@ -40,7 +40,7 @@ pub struct EnrollListen {
     paths: Arc<Mutex<Vec<String>>>,
     posts: Arc<Mutex<Vec<serde_json::Value>>>,
     callbacks: Arc<Mutex<Vec<serde_json::Value>>>,
-    callback_status: Arc<AtomicU16>,
+    callback_reply: Arc<Mutex<CallbackReply>>,
     publications: Arc<Mutex<Vec<serde_json::Value>>>,
     publication_status: Arc<AtomicU16>,
     cli: Arc<Mutex<CliReplies>>,
@@ -53,6 +53,18 @@ pub struct EnrollListen {
 #[derive(Clone, Copy)]
 pub enum ReportReply {
     Status(u16),
+    Hang,
+}
+
+/// How the fake Cloud answers the founder callback, after recording it.
+#[derive(Clone)]
+pub enum CallbackReply {
+    /// 200 with the request's `machineId`, as Cloud answers today.
+    Echo,
+    /// `status` with an empty body.
+    Status(u16),
+    Body(serde_json::Value),
+    Drop,
     Hang,
 }
 
@@ -109,11 +121,11 @@ impl EnrollListen {
         let publication_code = Arc::clone(&publication_status);
         let publications = Arc::new(Mutex::new(Vec::new()));
         let recorded_publications = Arc::clone(&publications);
-        let callback_status = Arc::new(AtomicU16::new(200));
+        let callback_reply = Arc::new(Mutex::new(CallbackReply::Echo));
         let recorded_paths = Arc::clone(&paths);
         let recorded_posts = Arc::clone(&posts);
         let recorded_callbacks = Arc::clone(&callbacks);
-        let callback_code = Arc::clone(&callback_status);
+        let reply_callback = Arc::clone(&callback_reply);
         let replies = Arc::new(Mutex::new(replies));
         let cli = Arc::new(Mutex::new(CliReplies::default()));
         let cli_replies = Arc::clone(&cli);
@@ -213,13 +225,29 @@ impl EnrollListen {
                         continue;
                     }
                     events.record("callback");
-                    recorded_callbacks
-                        .lock()
-                        .unwrap()
-                        .push(enroll_json_body(raw));
-                    let status = callback_code.load(Ordering::SeqCst);
-                    let reason = if status == 200 { "OK" } else { "Error" };
-                    write_http(&mut stream, status, reason, &[]).await;
+                    recorded_callbacks.lock().unwrap().push(body.clone());
+                    let reply = reply_callback.lock().unwrap().clone();
+                    match reply {
+                        CallbackReply::Echo => {
+                            let echo = serde_json::json!({ "machineId": body.get("machineId") });
+                            let echo = serde_json::to_vec(&echo).unwrap();
+                            write_http(&mut stream, 200, "OK", &echo).await;
+                        }
+                        CallbackReply::Status(status) => {
+                            write_http(&mut stream, status, "Error", &[]).await;
+                        }
+                        CallbackReply::Body(value) => {
+                            let echo = serde_json::to_vec(&value).unwrap();
+                            write_http(&mut stream, 200, "OK", &echo).await;
+                        }
+                        CallbackReply::Drop => drop(stream),
+                        CallbackReply::Hang => {
+                            tokio::spawn(async move {
+                                let _held = stream;
+                                std::future::pending::<()>().await;
+                            });
+                        }
+                    }
                     continue;
                 }
                 let post = enroll_json_body(raw);
@@ -233,7 +261,7 @@ impl EnrollListen {
             paths,
             posts,
             callbacks,
-            callback_status,
+            callback_reply,
             publications,
             publication_status,
             cli,
@@ -287,7 +315,11 @@ impl EnrollListen {
     }
 
     pub fn set_callback_status(&self, status: u16) {
-        self.callback_status.store(status, Ordering::SeqCst);
+        self.set_callback_reply(CallbackReply::Status(status));
+    }
+
+    pub fn set_callback_reply(&self, reply: CallbackReply) {
+        *self.callback_reply.lock().unwrap() = reply;
     }
 }
 

@@ -12,13 +12,22 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerDetails, ContainerId, ContainerKind, ContainerList,
     ContainerLocator, ContainerNow, ContainerObservation, ContainerRuntimeObservation,
     ContainerWant, ContractDescription, CopyRotation, CreationKey, DESCRIBE_CONTRACT_CAPABILITY,
-    EnrollAs, EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
-    LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
-    MachineNow, MachineObservation, MachineToken, MembershipObservation, NewContainer,
-    OpaquePayload, PROTOCOL_MAJOR, Registered, RoutesRead, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RunRotation, RunTarget, SetManagementClientResponse, VolumeInventory,
-    WireGuardPublicKey,
+    ENROLL_FOR_RECOVERY_CAPABILITY, EnrollAs, EnrollRequest, Enrolled, EnsuredContainer,
+    HealthObservation, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId,
+    MachineImages, MachineList, MachineName, MachineNow, MachineObservation, MachineToken,
+    MembershipObservation, NewContainer, OpaquePayload, PROTOCOL_MAJOR, RecoverySeed, Registered,
+    RoutesRead, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunRotation, RunTarget,
+    SealingKeyBackup, SealingKeyWrapped, SealingPublicKey, SetManagementClientResponse,
+    VolumeInventory, WRAP_SEALING_KEY_CAPABILITY, WireGuardPublicKey,
 };
+
+/// The Sealing Key the fake daemon wraps under any recovery code.
+pub fn fake_wrapped() -> SealingKeyWrapped {
+    SealingKeyWrapped {
+        public_key: SealingPublicKey::from_bytes([7; 32]),
+        backup: SealingKeyBackup::from_bytes(b"wrapped sealing key".to_vec()),
+    }
+}
 
 /// The Management Capability the fake daemon mints for any Management Client Set.
 pub fn fixture_capability() -> ployz_core::ManagementCapability {
@@ -37,7 +46,7 @@ mod inspect_telemetry_fixture;
 #[path = "servers.rs"]
 mod servers;
 
-pub use enroll_http::{EnrollListen, EventLog, ReportReply};
+pub use enroll_http::{CallbackReply, EnrollListen, EventLog, ReportReply};
 pub use servers::{cli, serve_local_machine, serve_machine};
 
 pub const TOKEN: &str = "pmet_test";
@@ -126,6 +135,9 @@ struct JoinInner {
     assigned_membership: Mutex<MembershipObservation>,
     listed: Mutex<Vec<MachineObservation>>,
     own_id: Mutex<Option<MachineId>>,
+    recovery_rpcs: AtomicBool,
+    recovery_seeds: Mutex<Vec<RecoverySeed>>,
+    wrap_calls: AtomicUsize,
 }
 
 impl JoinDaemon {
@@ -167,6 +179,9 @@ impl JoinDaemon {
                 assigned_membership: Mutex::new(MembershipObservation::Up),
                 listed: Mutex::new(Vec::new()),
                 own_id: Mutex::new(None),
+                recovery_rpcs: AtomicBool::new(false),
+                recovery_seeds: Mutex::new(Vec::new()),
+                wrap_calls: AtomicUsize::new(0),
             }),
         }
     }
@@ -244,6 +259,19 @@ impl JoinDaemon {
     pub fn with_events(self, events: EventLog) -> Self {
         *self.inner.events.lock().unwrap() = events;
         self
+    }
+
+    pub fn with_recovery_rpcs(self) -> Self {
+        self.inner.recovery_rpcs.store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn recovery_seeds(&self) -> Vec<RecoverySeed> {
+        self.inner.recovery_seeds.lock().unwrap().clone()
+    }
+
+    pub fn wrap_calls(&self) -> usize {
+        self.inner.wrap_calls.load(Ordering::SeqCst)
     }
 
     pub fn lose_lifecycle_reply(self) -> Self {
@@ -490,15 +518,21 @@ impl FakeMachine for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let mut capabilities = vec![DESCRIBE_CONTRACT_CAPABILITY];
+        if self.inner.recovery_rpcs.load(Ordering::SeqCst) {
+            capabilities.extend([ENROLL_FOR_RECOVERY_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY]);
+        }
         rpc_ok(ContractDescription {
             machine_id: self.inner.registration.assigned_machine.id,
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: self.inner.daemon_version.lock().unwrap().clone(),
-            capabilities: [
-                ployz_core::CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY)
-                    .expect("catalogued capability names are valid"),
-            ]
-            .into(),
+            capabilities: capabilities
+                .into_iter()
+                .map(|name| {
+                    ployz_core::CapabilityName::parse(name)
+                        .expect("catalogued capability names are valid")
+                })
+                .collect(),
         })
     }
 
@@ -645,111 +679,49 @@ impl FakeMachine for JoinDaemon {
         let RpcRequestBody::Enroll(enroll) = decoded.body else {
             return Err(Status::invalid_argument("expected Enroll"));
         };
-        if let EnrollAs::Member { .. } = enroll.role {
-            self.inner.join_attempts.fetch_add(1, Ordering::SeqCst);
+        self.apply_enroll(enroll)
+    }
+
+    async fn enroll_for_recovery(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !self.inner.recovery_rpcs.load(Ordering::SeqCst) {
+            return Err(Status::unimplemented("EnrollForRecovery"));
         }
-        let stored = self.inner.enrolled.lock().unwrap().clone();
-        if self.inner.joined.load(Ordering::SeqCst) {
-            if stored == Some((enroll.clone(), self.public_key())) {
-                return rpc_ok(Enrolled::Enrolled {
-                    machine: self.inner.current_machine.lock().unwrap().clone(),
-                });
-            }
-            let current = self.inner.current_machine.lock().unwrap().clone();
-            return rpc_ok(Enrolled::Refused {
-                now: MachineNow {
-                    id: current.id,
-                    phase: LocalMachinePhase::Participating,
-                    machine: Some(current),
-                },
-                error: RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "this Machine already holds a different enrollment".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                },
-            });
-        }
-        let machine = match enroll.role.clone() {
-            EnrollAs::Member { registration } => {
-                if registration.assigned_machine.public_key != self.public_key() {
-                    return rpc_ok(RpcError {
-                        code: RpcErrorCode::InvalidArgument,
-                        message: "assigned public key does not match this Machine".into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    });
-                }
-                let machine = registration.assigned_machine.clone();
-                *self.inner.join_request.lock().unwrap() = Some(MemberEnroll { registration });
-                machine
-            }
-            EnrollAs::Founder {
-                name,
-                cluster_network,
-                initial_policy,
-                public_ip,
-                advertised_endpoints,
-            } => {
-                let mut machine = self.inner.current_machine.lock().unwrap().clone();
-                machine.name = name.clone();
-                machine.labels = initial_policy.labels.clone();
-                machine.accepts_builds = initial_policy.accepts_builds;
-                machine.accepts_services = initial_policy.accepts_services;
-                machine.accepts_ingress = initial_policy.accepts_ingress;
-                self.inner
-                    .initialize_requests
-                    .lock()
-                    .unwrap()
-                    .push(FounderEnroll {
-                        initial_policy,
-                        name,
-                        cluster_network,
-                        public_ip,
-                        advertised_endpoints,
-                        wireguard_mtu: enroll.wireguard_mtu,
-                    });
-                self.record("initialize");
-                machine
-            }
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::EnrollForRecovery(request) = decoded.body else {
+            return Err(Status::invalid_argument("expected EnrollForRecovery"));
         };
-        *self.inner.current_machine.lock().unwrap() = machine.clone();
-        *self.inner.enrolled.lock().unwrap() = Some((enroll.clone(), self.public_key()));
-        self.inner.joined.store(true, Ordering::SeqCst);
-        match enroll.role {
-            EnrollAs::Member { .. } => {
-                if self
-                    .inner
-                    .lose_lifecycle_reply
-                    .swap(false, Ordering::SeqCst)
-                {
-                    return Err(Status::unavailable("lost lifecycle reply"));
-                }
-            }
-            EnrollAs::Founder { .. } => {
-                if self
-                    .inner
-                    .replace_identity_on_initialize
-                    .swap(false, Ordering::SeqCst)
-                {
-                    *self.inner.public_key.lock().unwrap() = WireGuardPublicKey([99; 32]);
-                    return Err(Status::unavailable(
-                        "another operator replaced this Machine",
-                    ));
-                }
-                if self
-                    .inner
-                    .lose_initialize_reply
-                    .swap(false, Ordering::SeqCst)
-                {
-                    self.inner
-                        .startup_inspect_failures
-                        .store(1, Ordering::SeqCst);
-                    return Err(Status::unavailable("lost Initialize reply"));
-                }
-            }
+        self.record("enroll_for_recovery");
+        self.inner
+            .recovery_seeds
+            .lock()
+            .unwrap()
+            .push(request.recovery);
+        self.apply_enroll(request.enroll)
+    }
+
+    async fn wrap_sealing_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !self.inner.recovery_rpcs.load(Ordering::SeqCst) {
+            return Err(Status::unimplemented("WrapSealingKey"));
         }
-        rpc_ok(Enrolled::Enrolled { machine })
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::WrapSealingKey(_) = decoded.body else {
+            return Err(Status::invalid_argument("expected WrapSealingKey"));
+        };
+        self.record("wrap_sealing_key");
+        self.inner.wrap_calls.fetch_add(1, Ordering::SeqCst);
+        rpc_ok(fake_wrapped())
     }
 
     async fn update_machine(
@@ -1080,5 +1052,119 @@ pub fn founder_machine() -> Machine {
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
         build_concurrency: None,
+    }
+}
+
+impl JoinDaemon {
+    #[expect(
+        clippy::result_large_err,
+        reason = "MachineRpc uses tonic::Status as the error type"
+    )]
+    fn apply_enroll(&self, enroll: EnrollRequest) -> Result<Response<OpaquePayload>, Status> {
+        if let EnrollAs::Member { .. } = enroll.role {
+            self.inner.join_attempts.fetch_add(1, Ordering::SeqCst);
+        }
+        let stored = self.inner.enrolled.lock().unwrap().clone();
+        if self.inner.joined.load(Ordering::SeqCst) {
+            if stored == Some((enroll.clone(), self.public_key())) {
+                return rpc_ok(Enrolled::Enrolled {
+                    machine: self.inner.current_machine.lock().unwrap().clone(),
+                });
+            }
+            let current = self.inner.current_machine.lock().unwrap().clone();
+            return rpc_ok(Enrolled::Refused {
+                now: MachineNow {
+                    id: current.id,
+                    phase: LocalMachinePhase::Participating,
+                    machine: Some(current),
+                },
+                error: RpcError {
+                    code: RpcErrorCode::Conflict,
+                    message: "this Machine already holds a different enrollment".into(),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                },
+            });
+        }
+        let machine = match enroll.role.clone() {
+            EnrollAs::Member { registration } => {
+                if registration.assigned_machine.public_key != self.public_key() {
+                    return rpc_ok(RpcError {
+                        code: RpcErrorCode::InvalidArgument,
+                        message: "assigned public key does not match this Machine".into(),
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    });
+                }
+                let machine = registration.assigned_machine.clone();
+                *self.inner.join_request.lock().unwrap() = Some(MemberEnroll { registration });
+                machine
+            }
+            EnrollAs::Founder {
+                name,
+                cluster_network,
+                initial_policy,
+                public_ip,
+                advertised_endpoints,
+            } => {
+                let mut machine = self.inner.current_machine.lock().unwrap().clone();
+                machine.name = name.clone();
+                machine.labels = initial_policy.labels.clone();
+                machine.accepts_builds = initial_policy.accepts_builds;
+                machine.accepts_services = initial_policy.accepts_services;
+                machine.accepts_ingress = initial_policy.accepts_ingress;
+                self.inner
+                    .initialize_requests
+                    .lock()
+                    .unwrap()
+                    .push(FounderEnroll {
+                        initial_policy,
+                        name,
+                        cluster_network,
+                        public_ip,
+                        advertised_endpoints,
+                        wireguard_mtu: enroll.wireguard_mtu,
+                    });
+                self.record("initialize");
+                machine
+            }
+        };
+        *self.inner.current_machine.lock().unwrap() = machine.clone();
+        *self.inner.enrolled.lock().unwrap() = Some((enroll.clone(), self.public_key()));
+        self.inner.joined.store(true, Ordering::SeqCst);
+        match enroll.role {
+            EnrollAs::Member { .. } => {
+                if self
+                    .inner
+                    .lose_lifecycle_reply
+                    .swap(false, Ordering::SeqCst)
+                {
+                    return Err(Status::unavailable("lost lifecycle reply"));
+                }
+            }
+            EnrollAs::Founder { .. } => {
+                if self
+                    .inner
+                    .replace_identity_on_initialize
+                    .swap(false, Ordering::SeqCst)
+                {
+                    *self.inner.public_key.lock().unwrap() = WireGuardPublicKey([99; 32]);
+                    return Err(Status::unavailable(
+                        "another operator replaced this Machine",
+                    ));
+                }
+                if self
+                    .inner
+                    .lose_initialize_reply
+                    .swap(false, Ordering::SeqCst)
+                {
+                    self.inner
+                        .startup_inspect_failures
+                        .store(1, Ordering::SeqCst);
+                    return Err(Status::unavailable("lost Initialize reply"));
+                }
+            }
+        }
+        rpc_ok(Enrolled::Enrolled { machine })
     }
 }

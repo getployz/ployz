@@ -4,13 +4,17 @@ use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, MachineId, MachineName, MachineToken,
-    ManagementCapability, Registered, SealingPublicKey, StorageChoice, WireGuardPublicKey,
+    ManagementCapability, RecoverySeed, Registered, SealingKeyBackup, SealingPublicKey,
+    StorageChoice, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
+pub(crate) mod recovery_compat;
+
 const DEFAULT_RETRY_AFTER: u64 = 2;
 const PROTOCOL_VERSION: u8 = 1;
+const RECOVERY_SUPPORT: u8 = 1;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long an enroll request waits for Cloud's answer. Cloud reads its database
@@ -182,6 +186,8 @@ pub(crate) struct EnrollIdentity {
     memory_total_bytes: Option<u64>,
     disk_total_bytes: Option<u64>,
     disk_available_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_support: Option<u8>,
 }
 
 fn serialize_as_wireguard_base64<S>(
@@ -200,6 +206,7 @@ impl EnrollIdentity {
         token: &MachineToken,
         requested_storage: StorageChoice,
         initial_policy: ployz_core::InitialMachinePolicy,
+        recovery_supported: bool,
     ) -> Self {
         Self {
             machine_id: token.id,
@@ -213,6 +220,7 @@ impl EnrollIdentity {
             memory_total_bytes: token.memory_total_bytes,
             disk_total_bytes: token.disk_total_bytes,
             disk_available_bytes: token.disk_available_bytes,
+            recovery_support: recovery_supported.then_some(RECOVERY_SUPPORT),
         }
     }
 }
@@ -233,7 +241,16 @@ pub(crate) enum Outcome {
         mode: InitializeMode,
         pairing: CloudPairing,
         storage: ployz_core::StoragePreparation,
+        recovery: Option<Recovery>,
     },
+}
+
+/// What Cloud asks of the founder's Sealing Key: back a new one up under a
+/// recovery code, or recover the Organization's existing one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Recovery {
+    BackUp,
+    Seed(RecoverySeed),
 }
 
 /// Whether Cloud granted a new Founding Claim or resumed the current one.
@@ -251,6 +268,7 @@ pub(crate) enum Response {
         mode: InitializeMode,
         pairing: CloudPairing,
         storage: ployz_core::StoragePreparation,
+        recovery: Option<Recovery>,
     },
     NotYet {
         retry_after: Duration,
@@ -338,7 +356,39 @@ enum EnrollWire {
         pairing: CloudPairing,
         #[serde(default, deserialize_with = "deserialize_storage")]
         storage: ployz_core::StoragePreparation,
+        #[serde(default)]
+        recovery: Option<RecoveryWire>,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+enum RecoveryWire {
+    BackUp,
+    Seed {
+        expected_public_key: SealingPublicKey,
+        #[serde(default)]
+        backup: Option<SealingKeyBackup>,
+    },
+}
+
+impl From<RecoveryWire> for Recovery {
+    fn from(wire: RecoveryWire) -> Self {
+        match wire {
+            RecoveryWire::BackUp => Self::BackUp,
+            RecoveryWire::Seed {
+                expected_public_key,
+                backup,
+            } => Self::Seed(RecoverySeed {
+                expected_public_key,
+                backup,
+            }),
+        }
+    }
 }
 
 /// Enroll URL: host without a scheme is HTTPS. The token travels only as a bearer header,
@@ -381,6 +431,35 @@ struct EnrollCallback<'a> {
     pairing_credential: &'a PairingCredential,
     #[serde(skip_serializing_if = "Option::is_none")]
     sealing: Option<Sealing>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_backup: Option<&'a RecoveryBackup>,
+}
+
+/// The founder's Sealing Key wrapped under its recovery code, for Cloud to store.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecoveryBackup {
+    pub(crate) public_key: SealingPublicKey,
+    pub(crate) backup: SealingKeyBackup,
+}
+
+impl RecoveryBackup {
+    /// Lowercase hex SHA-256 of the envelope bytes: what Cloud echoes once it stored them.
+    #[must_use]
+    pub(crate) fn digest(&self) -> String {
+        use sha2::Digest as _;
+
+        hex::encode(sha2::Sha256::digest(self.backup.as_bytes()))
+    }
+}
+
+/// Cloud's answer to enrollment completion.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CallbackReply {
+    pub(crate) machine_id: MachineId,
+    #[serde(default)]
+    pub(crate) recovery_backup_digest: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -441,11 +520,13 @@ pub(crate) async fn enroll(
                 mode,
                 pairing,
                 storage,
+                recovery,
             } => {
                 return Ok(Outcome::Initialize {
                     mode,
                     pairing,
                     storage,
+                    recovery,
                 });
             }
             Response::NotYet {
@@ -483,7 +564,7 @@ pub(crate) async fn enroll(
 ///
 /// # Errors
 ///
-/// HTTP failure.
+/// HTTP failure, or a reply Cloud's `/api/enroll/callback` never sends.
 pub(crate) async fn callback(
     command: Command,
     url: &str,
@@ -491,15 +572,18 @@ pub(crate) async fn callback(
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
     sealing: Option<ployz_core::Sealing>,
-) -> Result<(), Error> {
+    recovery_backup: Option<&RecoveryBackup>,
+) -> Result<CallbackReply, Error> {
     let body = EnrollCallback {
         stage: None,
         capability: None,
         machine_id,
         pairing_credential,
         sealing: sealing.map(Sealing::from),
+        recovery_backup,
     };
-    post_callback(command, url, token, &body, "enrollment completion").await
+    let reply = post_callback(command, url, token, &body, "enrollment completion").await?;
+    Ok(serde_json::from_slice(&reply)?)
 }
 
 /// Publish a candidate against the authenticated enrollment attempt before completion.
@@ -517,8 +601,11 @@ pub(crate) async fn publish(
         machine_id,
         pairing_credential,
         sealing: None,
+        recovery_backup: None,
     };
-    post_callback(command, url, token, &body, "candidate publication").await
+    post_callback(command, url, token, &body, "candidate publication")
+        .await
+        .map(|_| ())
 }
 
 async fn post_callback(
@@ -527,7 +614,7 @@ async fn post_callback(
     token: &CloudEnrollToken,
     body: &EnrollCallback<'_>,
     operation: &'static str,
-) -> Result<(), Error> {
+) -> Result<Vec<u8>, Error> {
     let http = http_client()?;
     crate::setup_retry::run(
         &mut (),
@@ -542,24 +629,21 @@ async fn post_callback(
                 )
         },
         async |_| {
-            post_json(&http, url, token, body)
-                .await
-                .map(|_| ())
-                .map_err(|error| {
-                    let Error::Status { status, body } = error else {
-                        return error;
-                    };
-                    if crate::cloud_login::cloud_message(body.as_bytes())
-                        .is_some_and(|message| message.starts_with(CLOUD_CANT_REACH))
-                    {
-                        return Error::CloudCantReach;
-                    }
-                    // Both stages carry credentials; a server may echo them in any encoding.
-                    Error::Status {
-                        status,
-                        body: format!("{operation} rejected"),
-                    }
-                })
+            post_json(&http, url, token, body).await.map_err(|error| {
+                let Error::Status { status, body } = error else {
+                    return error;
+                };
+                if crate::cloud_login::cloud_message(body.as_bytes())
+                    .is_some_and(|message| message.starts_with(CLOUD_CANT_REACH))
+                {
+                    return Error::CloudCantReach;
+                }
+                // Both stages carry credentials; a server may echo them in any encoding.
+                Error::Status {
+                    status,
+                    body: format!("{operation} rejected"),
+                }
+            })
         },
     )
     .await
@@ -700,6 +784,7 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             resumed,
             pairing,
             storage,
+            recovery,
         } => Ok(Response::Initialize {
             mode: if resumed {
                 InitializeMode::Resume
@@ -708,6 +793,7 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             },
             pairing,
             storage,
+            recovery: recovery.map(Recovery::from),
         }),
     }
 }
@@ -1072,8 +1158,11 @@ mod tests {
             },
             StorageChoice::None,
             Default::default(),
+            false,
         )
     }
+
+    const ACCEPTED: &[u8] = br#"{"machineId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#;
 
     fn join_body() -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
@@ -1397,10 +1486,12 @@ mod tests {
                 // Keep the first response open until the retry has succeeded.
                 let (mut retry, _) = listener.accept().await.unwrap();
                 read_http(&mut retry).await;
-                let body = b"{}".to_vec();
-                tokio::io::AsyncWriteExt::write_all(&mut retry, &http_response(200, "OK", &body))
-                    .await
-                    .unwrap();
+                tokio::io::AsyncWriteExt::write_all(
+                    &mut retry,
+                    &http_response(200, "OK", ACCEPTED),
+                )
+                .await
+                .unwrap();
                 drop(held);
             });
             tokio::time::timeout(Duration::from_secs(25), async {
@@ -1426,6 +1517,7 @@ mod tests {
                         MachineId::random(),
                         &PairingCredential::parse("pairing-secret").unwrap(),
                         None,
+                        None,
                     )
                     .await
                     .unwrap();
@@ -1447,7 +1539,7 @@ mod tests {
                     read_http(&mut stream).await;
                     tokio::io::AsyncWriteExt::write_all(
                         &mut stream,
-                        &http_response(status, reason, b"{}"),
+                        &http_response(status, reason, ACCEPTED),
                     )
                     .await
                     .unwrap();
@@ -1475,8 +1567,10 @@ mod tests {
                     MachineId::random(),
                     &credential,
                     None,
+                    None,
                 )
                 .await
+                .map(drop)
             };
             result.unwrap();
             server.await.unwrap();
@@ -1533,7 +1627,7 @@ mod tests {
                     bodies.push(read_json_body(&mut stream).await);
                     tokio::io::AsyncWriteExt::write_all(
                         &mut stream,
-                        &http_response(status, reason, b"{}"),
+                        &http_response(status, reason, ACCEPTED),
                     )
                     .await
                     .unwrap();
@@ -1548,6 +1642,7 @@ mod tests {
                 MachineId::random(),
                 &credential,
                 Some(sealing),
+                None,
             )
             .await
             .unwrap();
@@ -1606,8 +1701,10 @@ mod tests {
                     MachineId::random(),
                     &credential,
                     None,
+                    None,
                 )
                 .await
+                .map(drop)
             };
             let error = result.unwrap_err();
             if body != cant_reach {
@@ -1717,8 +1814,10 @@ mod tests {
                         MachineId::random(),
                         &credential,
                         None,
+                        None,
                     )
-                    .await,
+                    .await
+                    .map(drop),
                     "enrollment completion",
                 )
             };
@@ -1781,6 +1880,7 @@ mod tests {
             },
             StorageChoice::Zfs,
             Default::default(),
+            false,
         );
         let json = serde_json::to_value(&identity).unwrap();
         assert_eq!(json.get("protocolVersion"), Some(&serde_json::json!(1)));

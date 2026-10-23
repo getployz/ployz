@@ -1,4 +1,8 @@
 # Start the tests that wait 10s or longer first, so a run never ends waiting on one alone.
 [[profile.default.overrides]]
-filter = "test(=an_unmounted_config_edits_while_another_service_mounts_too_much)"
+filter = """
+test(=an_unmounted_config_edits_while_another_service_mounts_too_much)
+| test(=recovery::back_up_with_a_dropped_echo_retries_then_exits_without_a_code)
+| test(=recovery::back_up_with_a_hanging_echo_retries_then_exits_without_a_code)
+"""
 priority = 100
