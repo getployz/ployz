@@ -27,7 +27,7 @@ const KEEP_UNDER_PRESSURE: usize = 1;
 const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// Below this free share of the Docker root, keep only [`KEEP_UNDER_PRESSURE`].
 const PRESSURE_FREE_PERCENT: u64 = 20;
-/// Below this free under the Docker root, a failed layer write is a full disk.
+/// Below this free where a pull writes, a failed layer write is a full disk.
 const DISK_FULL_FREE_BYTES: u64 = 1_000_000_000;
 /// ENOSPC, as Docker words it.
 const OUT_OF_SPACE: &str = "no space left on device";
@@ -37,6 +37,8 @@ const LAYER_WRITES: [&str; 3] = [
     "failed to register layer",
     "failed commit on ref",
 ];
+/// Where containerd keeps the image store Ployz has Docker use.
+const CONTAINERD_ROOT: &str = "/var/lib/containerd";
 /// How long a failed pull waits on `docker info` before reporting the failure as is.
 const DISK_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -69,24 +71,29 @@ impl ContainerRuntime {
         ))
     }
 
-    /// `error` from a registry or peer pull, as a full disk when the Docker root has
-    /// almost no free space left: containerd then fails mid-extract with whatever
-    /// call ran out. A `docker info` that fails or stalls past [`DISK_READ_BOUND`]
-    /// leaves `error` as it is.
+    /// `error` from a registry or peer pull, as a full disk when the Docker root or
+    /// containerd's store, where Docker keeps images, has almost no free space left:
+    /// containerd then fails mid-extract with whatever call ran out. A directory it
+    /// can't measure, such as a Docker root `docker info` doesn't answer within
+    /// [`DISK_READ_BOUND`], is left out; with none, `error` stays as it is.
     pub(crate) async fn pull_failure(&self, error: Error) -> Error {
-        if pulled(&error).is_none() {
+        if disk_sign(&error).is_none() {
             return error;
         }
-        let free = tokio::time::timeout(DISK_READ_BOUND, self.docker.client.info())
+        let docker_root = tokio::time::timeout(DISK_READ_BOUND, self.docker.client.info())
             .await
             .ok()
             .and_then(Result::ok)
-            .and_then(|info| info.docker_root_dir)
-            .and_then(|root| {
-                let (_, free_bytes) = crate::host_capacity::filesystem_space(&root).ok()?;
-                Some((root, free_bytes))
-            });
-        pull_failure(error, free)
+            .and_then(|info| info.docker_root_dir);
+        let spaces: Vec<_> = docker_root
+            .into_iter()
+            .chain([CONTAINERD_ROOT.to_owned()])
+            .filter_map(|dir| {
+                let (_, free_bytes) = crate::host_capacity::filesystem_space(&dir).ok()?;
+                Some((dir, free_bytes))
+            })
+            .collect();
+        pull_failure(error, &spaces)
     }
 
     /// Unix seconds this Machine last tagged the image, when Docker recorded it.
@@ -201,42 +208,58 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
         .collect()
 }
 
-/// What a failed pull printed, and whether a failed layer write in it may be read as
-/// a full disk; none for an error no full disk explains, a registry's not-found
-/// answer among them, whatever its text says, so the CLI names the missing image.
-/// A peer pull cut short also fails its layer commit, so there only ENOSPC counts.
-fn pulled(error: &Error) -> Option<(String, bool)> {
+/// What in a failed pull's output points at a full disk.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiskSign {
+    /// Docker said the device is out of space.
+    OutOfSpace,
+    /// containerd failed writing a registry layer, which a full disk explains only
+    /// when the Docker root has almost no free space left.
+    LayerWrite,
+}
+
+/// The sign of a full disk in a failed pull; none for an error no full disk
+/// explains, a registry's not-found answer among them, whatever its text says, so
+/// the CLI names the missing image. A peer pull cut short also fails its layer
+/// commit, so there only ENOSPC counts.
+fn disk_sign(error: &Error) -> Option<DiskSign> {
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "only a failed pull can be a full disk"
     )]
-    match error {
+    let (message, layer_rule) = match error {
         Error::ImagePull(docker) if !crate::docker_image::is_not_found(docker) => {
-            Some((docker.to_string(), true))
+            (docker.to_string(), true)
         }
-        Error::PeerPull(printed) => Some((printed.clone(), false)),
-        _ => None,
+        Error::PeerPull(printed) => (printed.clone(), false),
+        _ => return None,
+    };
+    if message.contains(OUT_OF_SPACE) {
+        Some(DiskSign::OutOfSpace)
+    } else if layer_rule && LAYER_WRITES.iter().any(|write| message.contains(write)) {
+        Some(DiskSign::LayerWrite)
+    } else {
+        None
     }
 }
 
 /// A registry or peer pull is the full disk, with Docker's error as its cause, when
 /// Docker says the device is out of space, or when containerd failed writing a
-/// registry layer with `free` under [`DISK_FULL_FREE_BYTES`]: it then fails with
-/// whatever call ran out. Any other failure stays itself.
-fn pull_failure(error: Error, free: Option<(String, u64)>) -> Error {
-    let Some((message, layer_rule)) = pulled(&error) else {
+/// registry layer with under [`DISK_FULL_FREE_BYTES`] free: it then fails with
+/// whatever call ran out. The disk named is the fullest of `spaces`, each a
+/// directory the pull writes under and its free bytes. Any other failure stays itself.
+fn pull_failure(error: Error, spaces: &[(String, u64)]) -> Error {
+    let Some(sign) = disk_sign(&error) else {
         return error;
     };
-    let out_of_space = message.contains(OUT_OF_SPACE);
-    let layer_write = layer_rule && LAYER_WRITES.iter().any(|write| message.contains(write));
-    match free {
-        Some((docker_root, free_bytes))
-            if out_of_space || (layer_write && free_bytes < DISK_FULL_FREE_BYTES) =>
+    match spaces.iter().min_by_key(|(_, free_bytes)| *free_bytes) {
+        Some((dir, free_bytes))
+            if sign == DiskSign::OutOfSpace || *free_bytes < DISK_FULL_FREE_BYTES =>
         {
             Error::DiskFull {
                 full: DiskFull {
-                    docker_root,
-                    free_bytes,
+                    docker_root: dir.clone(),
+                    free_bytes: *free_bytes,
                 },
                 source: if let Error::ImagePull(docker) = error {
                     Box::new(docker)
@@ -390,7 +413,7 @@ mod tests {
         };
         let error = pull_failure(
             Error::ImagePull(lchown),
-            Some(("/var/lib/docker".into(), free_bytes)),
+            &[("/var/lib/docker".into(), free_bytes)],
         );
         ployz_store::Failure::of(
             &ployz_core::ExecutionError::Machine {
@@ -423,7 +446,7 @@ mod tests {
     fn failed_peer_pull(printed: &str, free_bytes: u64) -> ployz_store::Failure {
         let error = pull_failure(
             Error::PeerPull(printed.into()),
-            Some(("/var/lib/docker".into(), free_bytes)),
+            &[("/var/lib/docker".into(), free_bytes)],
         );
         ployz_store::Failure::of(
             &ployz_core::ExecutionError::Machine {
@@ -469,7 +492,7 @@ mod tests {
     fn a_peer_pull_on_a_full_disk_answers_the_disk_it_ran_out_on() {
         let error = pull_failure(
             Error::PeerPull(PEER_EXTRACT.into()),
-            Some(("/var/lib/docker".into(), 0)),
+            &[("/var/lib/docker".into(), 0)],
         );
         let answered = ployz_core::RpcError::from(&error);
         assert_eq!(answered.code, ployz_core::RpcErrorCode::Internal);
@@ -477,6 +500,28 @@ mod tests {
             answered.disk_full(),
             Some(DiskFull {
                 docker_root: "/var/lib/docker".into(),
+                free_bytes: 0,
+            })
+        );
+    }
+
+    /// Docker keeps images in containerd's store, which is often on another disk
+    /// than the Docker root (#3155).
+    #[test]
+    fn a_pull_names_the_disk_that_ran_out_not_the_docker_roots() {
+        let error = pull_failure(
+            Error::ImagePull(streamed(
+                "failed to copy: failed to send write: write /var/lib/containerd/io.containerd.content.v1.content/ingest/ab/data: no space left on device",
+            )),
+            &[
+                ("/var/lib/docker".into(), 39_789_000_000),
+                ("/var/lib/containerd".into(), 0),
+            ],
+        );
+        assert_eq!(
+            ployz_core::RpcError::from(&error).disk_full(),
+            Some(DiskFull {
+                docker_root: "/var/lib/containerd".into(),
                 free_bytes: 0,
             })
         );
@@ -524,7 +569,7 @@ mod tests {
     fn reason(error: DockerError, free_bytes: u64) -> String {
         let error = pull_failure(
             Error::ImagePull(error),
-            Some(("/var/lib/docker".into(), free_bytes)),
+            &[("/var/lib/docker".into(), free_bytes)],
         );
         ployz_store::Failure::of(
             &ployz_core::ExecutionError::Machine {

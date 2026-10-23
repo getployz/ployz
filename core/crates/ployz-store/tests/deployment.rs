@@ -5204,6 +5204,56 @@ fn a_full_disk_names_itself_at_the_pull_step_and_keeps_dockers_error() {
     assert_eq!(step, Some(FailedAt::Pull));
 }
 
+/// Several Servers ran the deploy and one filled up: the reason says which.
+#[test]
+fn a_full_disk_names_the_server_that_ran_out() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let prepared: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{
+            "index": 0, "machine_id": "a".repeat(32), "machine_name": "machine-3",
+            "service_name": "web", "operation": operation("web"), "status": {"type": "pending"}
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(prepared))
+        .unwrap();
+    let full = json!({
+        "type": "machine", "action": "PullImage",
+        "error": {
+            "code": "internal",
+            "message": "The Server's disk is full: 0 MB free under /var/lib/containerd",
+            "details": {"disk_full": {"docker_root": "/var/lib/containerd", "free_bytes": 0}},
+            "cause": ["Docker stream error: failed to copy: no space left on device"],
+        }
+    });
+    let executed = RunEvidence::Executed {
+        progress: Vec::new(),
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [],
+            "failed": {"type": "operation", "operation": operation("web"), "error": full},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, executed).unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.deployment.outcome else {
+        panic!("an executed outcome");
+    };
+    assert_eq!(
+        reason.as_deref(),
+        Some("Server machine-3's disk is full: 0 MB free under /var/lib/containerd")
+    );
+}
+
 #[test]
 fn a_failed_row_records_the_step_it_failed_at() {
     let health = json!({"type": "failed", "error": {

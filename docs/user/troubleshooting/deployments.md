@@ -576,16 +576,20 @@ doesn't exist and for a private image you have no access to.
 
 ## My server's disk is full
 
-**Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
+**Failed at pull**, with `Server machine-3's disk is full: 48 MB free under /var/lib/containerd`
 
-The server ran out of disk space while it downloaded an image, from its registry or from another
-server that already had it. A deploy downloads every image it
+The named server ran out of disk space while it downloaded an image, from its registry or from
+another server that already had it. A deploy downloads every image it
 needs before it changes any service, so none of the deploy's services changed and the versions
 already running keep running. The cause line under it is Docker's own error.
 
+The directory is the one on the full disk. Docker keeps images under `/var/lib/containerd`, and
+everything else under `/var/lib/docker`. These can be on different disks.
+
 - Free space on that server: remove files you don't need, or remove old images with
   `docker image prune`.
-- Give the server a bigger disk if it fills up again.
+- Give the server a bigger disk if it fills up again. If you mount a data disk for Docker, mount
+  one at `/var/lib/containerd` too. A data disk at `/var/lib/docker` alone doesn't hold images.
 - Run the deploy again.
 
 ## Deploy says a service has nothing to run
