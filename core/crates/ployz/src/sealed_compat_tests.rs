@@ -35,7 +35,7 @@ pub(crate) async fn fleet(b_claims: &[&str]) -> Fleet {
     .await
 }
 
-async fn listing(machines: Vec<MachineObservation>) -> Fleet {
+pub(crate) async fn listing(machines: Vec<MachineObservation>) -> Fleet {
     let id = machine('a', "machine-a").id;
     let ensure_calls = Arc::new(AtomicUsize::new(0));
     let sent = ensure_calls.clone();
@@ -99,7 +99,7 @@ pub(crate) fn spec(sealed: bool) -> ResolvedServiceSpec {
         .unwrap()
 }
 
-fn want(spec: ResolvedServiceSpec) -> ContainerWant {
+pub(crate) fn want(spec: ResolvedServiceSpec) -> ContainerWant {
     ContainerWant::Running {
         container: RunTarget::New(NewContainer {
             r#gen: ployz_core::Gen::FIRST,
