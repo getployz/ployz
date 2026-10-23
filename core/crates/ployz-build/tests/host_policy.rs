@@ -483,6 +483,45 @@ fn opened_values_are_private_files_for_the_solve_and_vanish_when_it_fails() {
 }
 
 #[test]
+fn opened_values_vanish_from_a_retained_unknown_root() {
+    let docker = RECORDING_FAILING_DOCKER
+        .replace("$BUILDER", &ployz_build::builder_name())
+        .replace(
+            " 'buildx bake')",
+            " 'buildx rm') [ -f \"$root/seen-secret\" ] && { echo 'injected removal failure' >&2; exit 1; } ;;\n 'buildx bake')",
+        );
+    let host = Host::new(&docker);
+    let capture = sealed_capture(&host);
+    let admission = Admission::try_acquire_with(&host.policy).unwrap();
+    let mut upload = admission.upload().unwrap();
+    remote::upload(&capture, |input| upload.accept(input)).unwrap();
+    let opened = BTreeMap::from([("NPM_TOKEN".to_owned(), "opened-token".to_owned())]);
+    let error = upload
+        .execute(
+            &definition(Output::Load),
+            Some(&host.policy.docker),
+            &opened,
+            &|_| {},
+        )
+        .err()
+        .unwrap();
+    assert!(error.is_unknown(), "{error}");
+    assert_eq!(
+        fs::read_to_string(host.file("seen-secret")).unwrap(),
+        "opened-token"
+    );
+    let upload_root = host.file("build-upload");
+    assert!(upload_root.is_dir(), "an uncertain upload root is retained");
+    assert!(!upload_root.join("private/sealed").exists());
+    assert!(
+        Admission::try_acquire_with(&host.policy)
+            .err()
+            .unwrap()
+            .is_unknown()
+    );
+}
+
+#[test]
 fn a_capture_naming_a_sealed_value_nobody_opened_is_refused_before_docker() {
     let host = Host::new("echo 'docker must not run' >&2; exit 1");
     let capture = sealed_capture(&host);
