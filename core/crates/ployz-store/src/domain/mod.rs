@@ -12,8 +12,8 @@ use ployz_core::config::{
     ServiceSettingChange,
 };
 use ployz_core::{
-    CertificateAvailability, CertificateFailureKind, CertificateObservation, DomainPrefix,
-    IngressHost, Namespace, RpcError, ServiceName,
+    CertificateAvailability, CertificateFailureKind, CertificateHost, CertificateObservation,
+    DomainPrefix, IngressHost, Namespace, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -45,6 +45,16 @@ pub struct DomainEvidence {
     /// Cluster couldn't be observed.
     #[serde(default)]
     pub certificates: Option<Vec<CertificateObservation>>,
+    /// Certificates the Runtime Watch listed but couldn't read: unobserved, never absent.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<CertificateHost>>", optional)]
+    pub incomplete_certificates: Vec<CertificateHost>,
+    /// How many Servers accept ingress, as the Runtime Watch reported them; none when the
+    /// Cluster couldn't be observed. Read only without a Cluster Domain, whose status
+    /// already says it.
+    #[serde(default)]
+    #[ts(optional)]
+    pub ingress_servers: Option<u32>,
     /// Public addresses of the Servers that accept ingress.
     #[serde(default)]
     pub ingress_addresses: Vec<String>,
