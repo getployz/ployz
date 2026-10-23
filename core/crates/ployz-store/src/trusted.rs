@@ -81,6 +81,12 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(as = "Option<Asks>", optional)]
     pub asks: Asks,
+    /// Whether the write came over HTTPS from the CLI, which seals its own secrets
+    /// once the Organization seals on the client: a plain-text secret from one that
+    /// doesn't is refused with the update to run.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub from_cli: bool,
 }
 
 /// Whether Cloud asks a human before a publication destroys something, and which

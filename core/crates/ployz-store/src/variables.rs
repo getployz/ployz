@@ -23,7 +23,7 @@ use serde_json::{Map, Value, json};
 use crate::scope::Environment;
 use crate::sealing::{SealingKey, plain_fingerprint};
 use crate::typed_address::{self, Typed};
-use crate::{client_sealed, error};
+use crate::{client_sealed, error, old_cli};
 
 /// A variable's name: letters, digits and `_`, not starting with a digit, at most
 /// 128 characters. Stored uppercase, as the dashboard stores it.
@@ -141,14 +141,15 @@ pub(crate) fn find<'intent>(
 
 /// Set variable `key` of `service` from `value`: text, `{"secret": true}` to keep
 /// a secret, `{"secret": "…"}` to seal a new one, or `{"value": …, "exported": …}`
-/// with either field. Returns whether Working State changed, and the Typed
-/// Addresses in a new value.
+/// with either field. A new secret's plain text passes `guard` first. Returns
+/// whether Working State changed, and the Typed Addresses in a new value.
 pub(crate) fn set(
     environment: &mut Environment,
     service: &ServiceName,
     key: &VariableKey,
     value: Value,
     sealing: &SealingKey,
+    guard: old_cli::Guard,
     client_sealed: impl FnOnce() -> Result<bool, RpcError>,
 ) -> Result<(bool, Option<Typed>), RpcError> {
     refuse_reserved(key)?;
@@ -243,7 +244,10 @@ pub(crate) fn set(
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
             (stored(parts), fingerprint, typed)
         }
-        (Some(Input::Seal(plaintext)), _) => seal(plaintext)?,
+        (Some(Input::Seal(plaintext)), _) => {
+            guard.admit(key.as_str(), client_sealed)?;
+            seal(plaintext)?
+        }
         (Some(Input::ClientSealed(value)), _) => {
             let receiver = client_sealed::Receiver {
                 environment: &environment.summary.id,
@@ -712,14 +716,30 @@ pub(crate) fn unset(
     Ok(*variables != before)
 }
 
+/// The plain text `value` asks [`set`] to seal: `{"secret": "…"}` with text in it.
+pub(crate) fn plaintext_secret(value: &Value) -> Option<&str> {
+    match value {
+        Value::Object(fields) if fields.len() == 1 => match fields.get("secret") {
+            Some(Value::String(plaintext)) if !plaintext.is_empty() => Some(plaintext),
+            Some(_) | None => None,
+        },
+        Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_) => None,
+    }
+}
+
 fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
+    if let Some(plaintext) = plaintext_secret(&value) {
+        return Ok(Input::Seal(plaintext.to_owned()));
+    }
     match value {
         Value::String(text) => Ok(Input::Text(text)),
         Value::Object(fields) if fields.len() == 1 => match fields.get("secret") {
             Some(Value::Bool(_)) => Ok(Input::Keep),
-            Some(Value::String(plaintext)) if !plaintext.is_empty() => {
-                Ok(Input::Seal(plaintext.clone()))
-            }
             Some(Value::Object(asked))
                 if asked.len() == 1 && asked.get("generate") == Some(&Value::Bool(true)) =>
             {

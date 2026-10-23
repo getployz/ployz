@@ -12,7 +12,8 @@ use ployz_core::{EnvValue, RpcError, RpcErrorCode, SealedIdentity, ServiceName};
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
     DiffQuery, Edit, Edited, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId,
-    ProjectId, ProjectName, RunnerId, ServiceLineageId, SettingPath,
+    ProjectId, ProjectName, RunnerId, SealingService, SealingTargetsQuery, SealingTargetsView,
+    ServiceLineageId, SettingPath, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -537,4 +538,156 @@ fn a_port_that_reads_a_sealed_value_is_refused_at_claim() {
         "{error:?}"
     );
     assert!(!format!("{error:?}").contains("AQEB"), "{error:?}");
+}
+
+/// `path` set to `value` by the CLI, as Cloud marks a write over HTTPS from it.
+fn cli(store: &ConfigStore, changes: Vec<Change>) -> Result<Edited, RpcError> {
+    store.write_trusted(
+        &who(),
+        &Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes,
+        },
+        &Trusted {
+            from_cli: true,
+            ..Trusted::default()
+        },
+    )
+}
+
+fn set_change(path: &str, value: Value) -> Change {
+    Change::Set {
+        path: SettingPath::parse(path).unwrap(),
+        value,
+    }
+}
+
+#[test]
+fn an_old_cli_s_plain_text_secret_is_refused_only_with_the_flag_on_and_only_a_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    cli(
+        &store,
+        vec![set_change("web.env.PASSWORD", json!({ "secret": SECRET }))],
+    )
+    .unwrap();
+    assert_eq!(value(&store, "web.env.PASSWORD"), json!({ "secret": true }));
+
+    backend::sealed_variables_on(&url, "org");
+    let refused = |changes: Vec<Change>, key: &str| {
+        let error = cli(&store, changes).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Unsupported, "{error:?}");
+        assert_eq!(
+            error.message,
+            format!("{key}: update ployz to set a Sealed value")
+        );
+        assert_eq!(
+            error.details,
+            json!({ "variable": key, "next": "curl -fsSL https://ployz.sh | sh" })
+        );
+        assert!(!format!("{error:?}").contains(SECRET), "{error:?}");
+    };
+    refused(
+        vec![set_change("web.env.TOKEN", json!({ "secret": SECRET }))],
+        "TOKEN",
+    );
+    refused(
+        vec![set_change(
+            "web.env.TOKEN",
+            json!({ "value": { "secret": SECRET }, "exported": true }),
+        )],
+        "TOKEN",
+    );
+    refused(
+        vec![Change::Patch {
+            path: SettingPath::parse("web").unwrap(),
+            value: json!({ "env": { "TOKEN": { "secret": SECRET } } }),
+        }],
+        "TOKEN",
+    );
+    // A secret set again is a new one too.
+    refused(
+        vec![set_change(
+            "web.env.PASSWORD",
+            json!({ "secret": "another" }),
+        )],
+        "PASSWORD",
+    );
+    let absent = store
+        .read(
+            &who(),
+            &EnvironmentQuery {
+                path: Some(SettingPath::parse("web.env.TOKEN").unwrap()),
+                ..EnvironmentQuery::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(absent.code, RpcErrorCode::NotFound, "{absent:?}");
+    // Everything but new plain text passes: a kept secret, a generated one, a registry
+    // credential, a value sealed in the browser, and text that isn't a secret.
+    for (path, value) in [
+        ("web.env.PASSWORD", json!({ "secret": true })),
+        (
+            "web.env.GENERATED",
+            json!({ "secret": { "generate": true } }),
+        ),
+        (
+            "web.registryCredential",
+            json!({ "secret": "registry-token" }),
+        ),
+        ("web.env.PASSWORD", password(1)),
+        ("web.env.PLAIN", json!("plain text")),
+    ] {
+        cli(&store, vec![set_change(path, value)]).unwrap();
+    }
+    // Not from the CLI, the Store still seals plain text itself.
+    set(&store, "web.env.TOKEN", json!({ "secret": SECRET }));
+    assert_eq!(value(&store, "web.env.TOKEN"), json!({ "secret": true }));
+}
+
+#[test]
+fn sealing_targets_name_the_organization_the_environment_and_each_service_by_id() {
+    let store = backend::open();
+    shop(&store);
+    let view = store
+        .read(
+            &who(),
+            &SealingTargetsQuery::Edit {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    let SealingTargetsView::Edit {
+        organization,
+        environment,
+        services,
+    } = view
+    else {
+        panic!("{view:?}");
+    };
+    assert_eq!(organization, "org");
+    assert_eq!(environment.id.as_str(), uuid(2));
+    assert_eq!(environment.project.as_str(), "shop");
+    assert_eq!(
+        services,
+        [SealingService {
+            name: ServiceName::parse("web").unwrap(),
+            service: uuid(3).parse().unwrap(),
+        }]
+    );
+    let missing = store
+        .read(
+            &who(),
+            &SealingTargetsQuery::Edit {
+                environment: EnvironmentRef {
+                    project: Some(ProjectName::parse("nothing").unwrap()),
+                    environment: None,
+                },
+            },
+        )
+        .unwrap_err();
+    assert_eq!(missing.code, RpcErrorCode::NotFound, "{missing:?}");
 }

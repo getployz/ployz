@@ -5,6 +5,7 @@
 //! Environment's lock, so edits to different Settings never overwrite each other.
 //! A caller may pass the revision it read; the edit then refuses if Working State moved.
 
+use ployz_core::config::ClientSealedValue;
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -36,6 +37,74 @@ pub struct Edit {
     /// Every Setting set must apply to the source the whole edit leaves, and no path is
     /// changed twice.
     pub changes: Vec<Change>,
+}
+
+impl Edit {
+    /// Each new secret's plain text this edit carries, `{"secret": "…"}` in a `set`,
+    /// under `value`, or in a patch's `env`, replaced by what `seal` makes of it for
+    /// the Service and variable it lands in; `None` leaves the text for the Store to
+    /// seal. Anything else, such as a Service the Store won't find, is left for the
+    /// Store to judge.
+    ///
+    /// # Errors
+    /// What `seal` refuses, or a path or variable name the Store would refuse.
+    pub fn map_plaintext_secrets<E: From<RpcError>>(
+        &mut self,
+        mut seal: impl FnMut(&ServiceName, &str, &str) -> Result<Option<ClientSealedValue>, E>,
+    ) -> Result<(), E> {
+        for change in &mut self.changes {
+            match change {
+                Change::Set { path, value } => {
+                    let Some(Target::Variable(key)) = path.target() else {
+                        continue;
+                    };
+                    seal_in(value, path.settings_of()?, key.as_str(), &mut seal)?;
+                }
+                Change::Patch { path, value } => {
+                    let service = path.settings_of()?;
+                    let Some(env) = value.get_mut("env").and_then(Value::as_object_mut) else {
+                        continue;
+                    };
+                    for (key, value) in env {
+                        let key = VariableKey::parse(key)?;
+                        seal_in(value, service, key.as_str(), &mut seal)?;
+                    }
+                }
+                Change::Unset { .. } | Change::Rename { .. } => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `value`'s `{"secret": "…"}`, direct or under `value`, replaced by what `seal` makes
+/// of it.
+fn seal_in<E>(
+    value: &mut Value,
+    service: &ServiceName,
+    key: &str,
+    seal: &mut impl FnMut(&ServiceName, &str, &str) -> Result<Option<ClientSealedValue>, E>,
+) -> Result<(), E> {
+    let wrapped = matches!(value, Value::Object(fields) if !fields.contains_key("secret"));
+    let slot = match value {
+        Value::Object(fields) if wrapped => match fields.get_mut("value") {
+            Some(value) => value,
+            None => return Ok(()),
+        },
+        Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_) => value,
+    };
+    let Some(plaintext) = variables::plaintext_secret(slot) else {
+        return Ok(());
+    };
+    if let Some(sealed) = seal(service, key, plaintext)? {
+        *slot = json!({ "secret": sealed });
+    }
+    Ok(())
 }
 
 /// One change, addressed as `SERVICE.SETTING`, or as `SERVICE` for a patch.
@@ -462,10 +531,16 @@ impl Editing<'_> {
                 ));
             }
             (Some(Target::Variable(key)), Some(value)) => {
-                let (changed, typed) =
-                    variables::set(environment, service, key, value, self.sealing, || {
-                        crate::client_sealed::enabled(&mut *self.tx, &self.who.organization)
-                    })?;
+                let guard = crate::old_cli::Guard::from(self.trusted);
+                let (changed, typed) = variables::set(
+                    environment,
+                    service,
+                    key,
+                    value,
+                    self.sealing,
+                    guard,
+                    || crate::client_sealed::enabled(&mut *self.tx, &self.who.organization),
+                )?;
                 self.typed_addresses
                     .extend(typed.map(|Typed { services, instead }| TypedAddresses {
                         path: path.clone(),
