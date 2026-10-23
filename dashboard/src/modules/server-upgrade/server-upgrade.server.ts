@@ -34,7 +34,7 @@ import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/serv
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { Database } from "#/server/database.server";
 
-/** The daemon reads its Release Channel pointers here (core `CHANNEL_URL`). */
+/** The daemon reads its Release Channel pointers here by default (core `RELEASE_CHANNEL_URL`). */
 const CHANNEL_URL = "https://ployz.sh";
 const POINTER_CACHE_MS = 5 * 60_000;
 // ponytail: one process-wide cache of a public, tiny pointer per path; a handful of paths, nothing to evict.

@@ -148,6 +148,7 @@ fn upgrade_attempt_contract() {
             )
             .env("PATH", &commands)
             .env("PLOYZ_GITHUB_URL", "https://example.test/staging")
+            .env("PLOYZ_CHANNEL_URL", "https://channels.example.test")
             .env_remove("PLOYZ_FALLBACK_URL")
             .output()
             .unwrap();
@@ -301,6 +302,8 @@ async fn run_contract_case(case: &str) {
                 attempt_id.as_str(),
                 // The worker downloads the release, so it reads the daemon's mirror overrides.
                 "--setenv=PLOYZ_GITHUB_URL=https://example.test/staging",
+                // A channel upgrade resolves its version there too.
+                "--setenv=PLOYZ_CHANNEL_URL=https://channels.example.test",
             ] {
                 assert!(log.contains(required), "missing {required}: {log}");
             }

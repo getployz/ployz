@@ -2,6 +2,7 @@
 
 import fcntl
 import hashlib
+import os
 import platform
 from pathlib import Path
 import re
@@ -9,12 +10,37 @@ import shutil
 import tarfile
 
 
+def override(name, default):
+    """install.sh's `${NAME:-default}`: an unset or empty variable is its default."""
+    return (os.environ.get(name) or default).rstrip("/")
+
+
+REPOSITORY = "https://github.com/getployz/ployz"
+
+
+def download_base(version):
+    """Where a release's assets download from: PLOYZ_GITHUB_URL's releases, as in install.sh."""
+    return f"{override('PLOYZ_GITHUB_URL', REPOSITORY)}/releases/download/v{version}/"
+
+
+def staged():
+    """A cache suffix for releases taken from PLOYZ_GITHUB_URL: a staged copy of a version is a
+    different release until it is published, so it caches apart."""
+    repository = override("PLOYZ_GITHUB_URL", REPOSITORY)
+    return "" if repository == REPOSITORY else "-" + hashlib.sha256(repository.encode()).hexdigest()[:12]
+
+
+def mirror_environment():
+    """`NAME=value` for the guest installer, so it downloads from the same staged copy."""
+    return [] if not staged() else [f"PLOYZ_GITHUB_URL={override('PLOYZ_GITHUB_URL', REPOSITORY)}"]
+
+
 def resolve(source, commands, core):
     """The exact release a daemon source names: stable, beta or a version."""
     if source in ["stable", "beta"]:
         major = re.search(r'^version = "(\d+)\.', (core / "Cargo.toml").read_text(), re.M).group(1)
         version = commands(["curl", "-fsSL", "--max-time", "30",
-                            f"https://ployz.sh/v{major}/{source}"]).stdout.decode().strip().removeprefix("v")
+                            f"{override('PLOYZ_CHANNEL_URL', 'https://ployz.sh')}/v{major}/{source}"]).stdout.decode().strip().removeprefix("v")
         if version.split(".", 1)[0] != major:
             raise RuntimeError("The release channel returned a version on another major line")
         if source == "stable" and "-" in version:
@@ -34,9 +60,9 @@ def acquire(version, commands, artifacts, name="ployzd"):
     arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
     if not arch:
         raise RuntimeError("Release verification needs an amd64 or arm64 Linux host")
-    cache = Path.home() / ".cache" / "ployz" / "verify" / "releases" / f"{version}-{arch}"
+    base = download_base(version)
+    cache = Path.home() / ".cache" / "ployz" / "verify" / "releases" / f"{version}-{arch}{staged()}"
     cache.mkdir(parents=True, exist_ok=True)
-    base = f"https://github.com/getployz/ployz/releases/download/v{version}/"
     artifacts.mkdir(parents=True, exist_ok=True)
     with (cache / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

@@ -181,7 +181,8 @@ class Provider:
         corrosion = re.search(r'pub const IMAGE: &str = "([^"]+)"',
                               (self.core / "crates/ployzd/src/corrosion/service.rs").read_text()).group(1)
         release = self.run["bootstrap_release"]
-        fingerprint = hashlib.sha256(guest.read_bytes() + corrosion.encode() + release.encode() + b"published").hexdigest()[:12]
+        fingerprint = hashlib.sha256(guest.read_bytes() + corrosion.encode() + release.encode() + b"published"
+                                     + releases.staged().encode()).hexdigest()[:12]
         self.run["image"] = "ployz-verify-" + fingerprint
         # One shared prepared image per recipe; simultaneous runs don't bake it twice.
         cache = Path.home() / ".cache" / "ployz" / "verify"
@@ -209,7 +210,8 @@ class Provider:
                 releases.acquire(release, self.commands, artifacts)
                 self.push(node, artifacts / "ployzd", "/opt/ployz-verify/ployzd")
                 self.push(node, guest, "/opt/ployz-verify/prepare-guest.sh")
-                self.exec(node, ["bash", "/opt/ployz-verify/prepare-guest.sh", release, corrosion], timeout=1200)
+                self.exec(node, ["env", *releases.mirror_environment(), "bash", "/opt/ployz-verify/prepare-guest.sh", release, corrosion],
+                          timeout=1200)
                 self.incus("stop", node["name"], "--timeout", "30")
                 self.incus("publish", node["name"], "--alias", image, "--compression", "none", timeout=300)
             finally:
