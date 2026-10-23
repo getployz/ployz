@@ -649,7 +649,8 @@ and the server is gone but still listed.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
-data stay on the disk. If it says `Ployz mutation or installation is active; retry uninstall`,
+data stay on the disk. It also removes the server's Fleet Token and its check-in identity, so
+installing it again with a Fleet Token checks it in as a new host, as on any other server. If it says `Ployz mutation or installation is active; retry uninstall`,
 wait for the upgrade or install to finish and run it again. Nothing was removed.
 
 ## Forget a server that is gone
