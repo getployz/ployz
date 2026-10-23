@@ -156,7 +156,8 @@ type Gated =
   | { denied: StoreRefusal }
   | { result: StoreResult<ConfigWritten>; nothingDestroyed: boolean };
 
-const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand, approvalId: string | null) {
+/** A gated Store write as `caller`: refused if it carries a secret, else redeemed or asked for, then sent to the Store. */
+export const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand, approvalId: string | null) {
   // Before any approval is redeemed or asked for: no human approves a secret through an agent.
   const secret = agentSecretRefusal(asked);
   if (secret !== null) return { result: { ok: false, refusal: secret }, nothingDestroyed: false } satisfies Gated;
