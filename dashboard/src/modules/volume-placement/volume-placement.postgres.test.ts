@@ -3,6 +3,7 @@ import { ConfigProvider, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { refusedPublicly, statusFor } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
@@ -10,13 +11,14 @@ import { InngestClient } from "#/modules/inngest/client";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import {
-  deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stagePlacement, stampPlacements, writeAdmitted,
+  deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stagePlacement, stageRestore, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
@@ -47,6 +49,8 @@ describe("volume placement", () => {
   let inFlight: boolean;
   let status: string;
   let unreadable: boolean;
+  // The Store refuses reading the Environment's Volumes with this code: removed, say, since the page loaded.
+  let refusing: string | null;
   let deleting: boolean;
   // Runs once, as the Store answers `query`: a Deploy admitted while the edit is between its check and its write.
   let between: { readonly query: string; readonly run: () => Promise<void> } | null;
@@ -66,6 +70,7 @@ describe("volume placement", () => {
             await admit();
           }
           if (query.query === "deployment" && unreadable) throw new RpcError({ code: "unavailable", message: "Store down", details: null });
+          if (query.query === "volumes" && refusing !== null) throw new RpcError({ code: refusing, message: "Environment shop/production is gone", details: null });
           if (query.query === "namespaces") {
             return { namespaces: ["production", "staging"].map((name) => ({ namespace: `shop-${name}`, project: "shop", environment: name })) };
           }
@@ -94,6 +99,7 @@ describe("volume placement", () => {
     inFlight = true;
     status = "running";
     unreadable = false;
+    refusing = null;
     deleting = false;
     between = null;
     await harness.pool.query(`
@@ -152,6 +158,31 @@ describe("volume placement", () => {
     expect(await run(discardPlacement(organizationId, null, volumeId, environment)))
       .toMatchObject({ ok: false, refusal: { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { primary: web("web-2") }, deploymentId: "dep-1" }]);
+  });
+
+  it("answers a Store refusal of staging with the CLI's status, not a 500, and never its message", async () => {
+    const answered = async (code: string, staging: () => Effect.Effect<unknown, unknown, Database | CloudStore | StoreWrites>) => {
+      refusing = code;
+      return encodePublicError(await run(staging().pipe(refusedPublicly, Effect.flip)));
+    };
+    const placement = () => stagePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] });
+    const restore = () => stageRestore(organizationId, null, { volumeId, environment, guid: "point", name: "point", at: 0 });
+    // As the CLI answers each code, except that Cloud's own credential failing isn't the user's session, and a 501 has
+    // no public error.
+    const statuses: ReadonlyArray<readonly [string, number, number]> = [
+      ["invalid_argument", 422, 422], ["not_found", 404, 404], ["unknown_command", 404, 404],
+      ["conflict", 409, 409], ["ambiguous", 409, 409], ["confirmation_required", 409, 409], ["approval_required", 409, 409], ["channel_mismatch", 409, 409],
+      ["forbidden", 403, 403], ["approval_denied", 403, 403], ["claim_required", 403, 403], ["unavailable", 503, 503],
+      ["unauthenticated", 401, 500], ["unsupported", 501, 500], ["internal", 500, 500], ["constructor", 500, 500],
+    ];
+    for (const [code, cli, browser] of statuses) {
+      expect(statusFor(code), code).toBe(cli);
+      for (const staging of [placement, restore]) {
+        const error = await answered(code, staging);
+        expect(statusForPublicError(error), code).toBe(browser);
+        expect(error.message).not.toContain("shop/production");
+      }
+    }
   });
 
   it("refuses edits and Discard when the Store can't say whether the Deploy still runs", async () => {

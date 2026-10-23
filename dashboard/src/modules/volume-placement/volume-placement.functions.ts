@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
+import { refusedPublicly } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireAccess } from "#/modules/organization/access.server";
 import { deleteCopy, placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
@@ -32,6 +33,7 @@ export const stagePlacementServerFn = createServerFn({ method: "POST" })
     Effect.flatMap(({ organization }) => data.staged === null
       ? stagePlacement(organization.id, data)
       : unlessPlacementRefused(organization.id, stagePlacement(organization.id, data))),
+    refusedPublicly,
   )));
 
 export const discardPlacementServerFn = createServerFn({ method: "POST" })
@@ -39,6 +41,7 @@ export const discardPlacementServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(VolumeInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap((access) => discardPlacement(access.organization.id, access, data.volumeId, data.environment)),
+    refusedPublicly,
   )));
 
 export const stageRestoreServerFn = createServerFn({ method: "POST" })
@@ -46,6 +49,7 @@ export const stageRestoreServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(StageRestoreInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap((access) => unlessPlacementRefused(access.organization.id, stageRestore(access.organization.id, access, data))),
+    refusedPublicly,
   )));
 
 export const stageOffServerServerFn = createServerFn({ method: "POST" })
@@ -55,9 +59,10 @@ export const stageOffServerServerFn = createServerFn({ method: "POST" })
     Effect.flatMap(({ organization }) => placementRefusal(organization.id).pipe(Effect.flatMap((refusal) => refusal === null
       ? stageOffServer(organization.id, data.server, data.accepting, data.unrouted)
       : Effect.fail(new Conflict({ userFacing: true, message: refusal.message }))))),
+    refusedPublicly,
   )));
 
 export const deleteCopyServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(DeleteCopyInput))
-  .handler(({ context, data }) => runActor(context, deleteCopy(context.actor, data)));
+  .handler(({ context, data }) => runActor(context, refusedPublicly(deleteCopy(context.actor, data))));
