@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use clap::{ArgMatches, Command};
 use ployz_core::{
-    RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal, RpcErrorCode, SealingKeyBackup,
-    SealingPublicKey, WrapSealingKeyRequest, op,
+    DescribeContractRequest, RECOVER_SEALING_KEY_CAPABILITY, RecoverSealingKeyRequest,
+    RecoveryCode, RecoveryRefusal, RpcErrorCode, SealingKeyBackup, SealingPublicKey,
+    WRAP_SEALING_KEY_CAPABILITY, WrapSealingKeyRequest, op,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -73,6 +74,11 @@ fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let runtime = runtime()?;
     let mut client = runtime.block_on(dial(matches, "ployz recover"))?;
+    runtime.block_on(require(
+        &mut client,
+        RECOVER_SEALING_KEY_CAPABILITY,
+        "ployz recover",
+    ))?;
     let code = read_code(matches, stdin)?;
     let recovered = match runtime.block_on(recover_with(&mut client, &code, None)) {
         Ok(recovered) => recovered,
@@ -129,6 +135,11 @@ fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> 
         .hint(Hint::Next("ployz login".to_owned())));
     };
     let mut client = runtime.block_on(dial(matches, "ployz recovery rotate"))?;
+    runtime.block_on(require(
+        &mut client,
+        WRAP_SEALING_KEY_CAPABILITY,
+        "ployz recovery rotate",
+    ))?;
     let (public_key, code) = runtime.block_on(async {
         let organization = cloud_account::acting_in(&credential).await?;
         let row = recovery_row(&credential, &organization.id)
@@ -206,6 +217,24 @@ async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
     }
     let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
     Ok(crate::connect::connect_selected_in_order(selected, Arc::new(connector)).await?)
+}
+
+/// Refuses a Server whose daemon predates `capability`, naming the Server.
+async fn require(client: &mut Client, capability: &str, verb: &str) -> Result<(), Error> {
+    let contract = client
+        .call_repeatable::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .await?;
+    if contract.supports(capability) {
+        return Ok(());
+    }
+    Err(Error::detailed(
+        RpcErrorCode::Unsupported,
+        format!(
+            "Server {} needs a newer daemon for {verb}. Update ployzd there, then run it again.",
+            contract.machine_id
+        ),
+        json!({ "capability": capability, "target": contract.machine_id }),
+    ))
 }
 
 fn cloud_routed(verb: &str) -> Error {
@@ -390,12 +419,15 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use ployz_core::{RpcRequestBody, RpcResponse, SealingKeyRecovered, SealingKeyWrapped};
+    use ployz_core::{
+        CapabilityName, ContractDescription, MachineId, RpcRequestBody, RpcResponse,
+        SealingKeyRecovered, SealingKeyWrapped,
+    };
     use serde_json::Value;
 
     use super::*;
     use crate::cloud_login::tests::fake_cloud;
-    use crate::connect::test_support::unix_daemon;
+    use crate::connect::test_support::unix_daemon_describing;
     use crate::handlers::verbs;
 
     const CODE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -473,6 +505,7 @@ mod tests {
 
     struct Daemon {
         socket: PathBuf,
+        machine_id: MachineId,
         requests: Arc<AtomicUsize>,
         recoveries: Arc<Mutex<Vec<Option<SealingKeyBackup>>>>,
         _runtime: tokio::runtime::Runtime,
@@ -484,16 +517,45 @@ mod tests {
 
     /// A Server whose seed opens under `seed`, and any sent backup under [`CODE`].
     fn seeded_under(dir: &Path, held: SealingPublicKey, seed: Option<&'static str>) -> Daemon {
+        advertising(
+            dir,
+            held,
+            seed,
+            &[WRAP_SEALING_KEY_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY],
+        )
+    }
+
+    /// [`seeded_under`] advertising only `capabilities`, and answering the rest
+    /// `unimplemented` as a daemon that predates them does.
+    fn advertising(
+        dir: &Path,
+        held: SealingPublicKey,
+        seed: Option<&'static str>,
+        capabilities: &'static [&'static str],
+    ) -> Daemon {
         let socket = dir.join("ployzd.sock");
+        let contract = ContractDescription {
+            machine_id: MachineId::random(),
+            protocol_major: ployz_core::PROTOCOL_MAJOR,
+            daemon_version: "fixture".into(),
+            capabilities: capabilities
+                .iter()
+                .map(|capability| CapabilityName::parse(*capability).unwrap())
+                .collect(),
+        };
+        let machine_id = contract.machine_id;
         let requests = Arc::new(AtomicUsize::new(0));
         let counted = requests.clone();
         let recoveries = Arc::new(Mutex::new(Vec::new()));
         let seen = recoveries.clone();
-        let runtime = unix_daemon(&socket, move |body| {
+        let runtime = unix_daemon_describing(&socket, contract, move |body| {
             counted.fetch_add(1, Ordering::SeqCst);
             let seen = seen.clone();
             async move {
                 if let RpcRequestBody::WrapSealingKey(_) = body {
+                    if !capabilities.contains(&WRAP_SEALING_KEY_CAPABILITY) {
+                        return Err(tonic::Status::unimplemented(WRAP_SEALING_KEY_CAPABILITY));
+                    }
                     return Ok(RpcResponse::from(SealingKeyWrapped {
                         public_key: held,
                         backup: wrapped_backup(),
@@ -502,6 +564,9 @@ mod tests {
                 let RpcRequestBody::RecoverSealingKey(request) = body else {
                     panic!("unexpected request: {body:?}");
                 };
+                if !capabilities.contains(&RECOVER_SEALING_KEY_CAPABILITY) {
+                    return Err(tonic::Status::unimplemented(RECOVER_SEALING_KEY_CAPABILITY));
+                }
                 seen.lock().unwrap().push(request.backup.clone());
                 let opens = match (&request.backup, seed) {
                     (Some(_), _) => CODE,
@@ -516,6 +581,7 @@ mod tests {
         });
         Daemon {
             socket,
+            machine_id,
             requests,
             recoveries,
             _runtime: runtime,
@@ -733,6 +799,34 @@ mod tests {
     }
 
     #[test]
+    fn rotate_names_a_server_whose_daemon_cannot_wrap() {
+        let cloud = cloud(|route, _| panic!("unexpected {route}"));
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = advertising(
+            dir.path(),
+            key(1),
+            Some(CODE),
+            &[RECOVER_SEALING_KEY_CAPABILITY],
+        );
+        let root = root(dir.path(), Some(&daemon.socket), ROTATE);
+
+        let (result, printed) = rotate_json(&root);
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(error.report().code, RpcErrorCode::Unsupported, "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Server {} needs a newer daemon for ployz recovery rotate. Update ployzd there, then run it again.",
+                daemon.machine_id
+            )
+        );
+        assert!(cloud.routes().is_empty());
+        assert_eq!(daemon.requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn rotate_needs_a_sign_in() {
         let dir = config_dir(None, "");
         let socket = dir.path().join("absent.sock");
@@ -926,6 +1020,36 @@ mod tests {
                 .hints()
                 .contains(&Hint::Next("ployz login".to_owned()))
         );
+    }
+
+    #[test]
+    fn recover_names_a_server_whose_daemon_cannot_recover() {
+        let dir = config_dir(None, "");
+        let daemon = advertising(
+            dir.path(),
+            key(1),
+            Some(CODE),
+            &[WRAP_SEALING_KEY_CAPABILITY],
+        );
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+
+        let (result, printed) = recover_json(&root, CODE);
+
+        let error = result.unwrap_err();
+        assert!(printed.is_none());
+        assert_eq!(error.report().code, RpcErrorCode::Unsupported, "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Server {} needs a newer daemon for ployz recover. Update ployzd there, then run it again.",
+                daemon.machine_id
+            )
+        );
+        assert_eq!(daemon.requests.load(Ordering::SeqCst), 0);
     }
 
     #[test]

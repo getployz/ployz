@@ -69,7 +69,7 @@ const organizationOwnedWithoutChangeLog = {
   server_enrollment: "One host's Server Enrollment, read by its run, the host's check-in and the enrollments route; no view reads it, so it needs no change log.",
   cluster_sealing_key: "Each pairing's Sealing public key, read only by enrollment completion to keep the first one; no view reads it, so it needs no change log.",
   cluster_sealing_key_generator: "The Machine each pairing chose to generate its Sealing Key, read only by the Sealing Key backfill; no view reads it, so it needs no change log.",
-  organization_sealing_key: "The Organization's Sealing public key and its recovery backup, read only by enrollment to seed a founder's recovery, by the Sealing Key backfill, and by the CLI's recover and rotate routes; no view reads it, so it needs no change log.",
+  organization_sealing_key: "The Organization's Sealing public key and its recovery backup, read only by enrollment, to seed and record a founder's recovery, by the Sealing Key backfill, and by the CLI's recover and rotate routes; no view reads it, so it needs no change log.",
   fleet_token_join: "A Fleet Token's joined hosts, kept past the enrollment sweep and read only to count its used total; no view reads it, so it needs no change log.",
   fleet_token_attempt: "The hosts a Fleet Token has started an enrollment for, kept past their waiting rows and read only to refuse a second arrival; no view reads it, so it needs no change log.",
   anonymous_teardown: "How long a lapsed agent sandbox has waited on its Servers, read only by its teardown; no view reads it, so it needs no change log.",
