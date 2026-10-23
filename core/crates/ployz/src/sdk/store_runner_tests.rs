@@ -803,6 +803,43 @@ fn separately_uploaded() -> Claimed {
 }
 
 #[test]
+fn a_sealed_build_with_no_server_in_its_walk_fails_saying_it_runs_on_a_server() {
+    let mut claimed = separately_uploaded();
+    claimed.sources.push(
+        serde_json::from_value(serde_json::json!({
+            "service": "api",
+            "repository": "acme/api",
+            "repository_id": 42,
+            "access": { "type": "public" },
+            "branch": "main",
+            "root_dir": "/",
+            "dockerfile_path": null,
+            "commit": "a".repeat(40),
+            "builders": [],
+            "preferred_machine": null,
+            "sealed": "NPM_TOKEN",
+            "status": "pending",
+            "message": "GitHub has no ployz-build.yml workflow",
+        }))
+        .unwrap(),
+    );
+    let Err(Unbuilt::Failed(message)) = targets(
+        &claimed,
+        Sources {
+            checkouts: BTreeMap::new(),
+            upload: Some(PathBuf::from("/extracted")),
+        },
+    ) else {
+        panic!("a sealed build no Server takes fails");
+    };
+    assert_eq!(
+        message,
+        "Build failed. api: Builds that read a sealed value run on your server. \
+         No other Builder in your Build Order can take it"
+    );
+}
+
+#[test]
 fn a_full_deploy_builds_each_uploaded_service_from_its_own_upload() {
     let claimed = separately_uploaded();
     let extracted = PathBuf::from("/extracted");
