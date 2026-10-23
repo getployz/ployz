@@ -34,6 +34,7 @@ let notSet = 0;
 /** Edits not yet saved, and the latest Save when part of it is left to deploy. */
 let stagedChanges: number | undefined;
 let undeployedSave: number | null = null;
+let ranNothingSave: number | null = null;
 /** A write the Store hasn't answered for yet. */
 let busy: ReadonlySet<Busy> = new Set();
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
@@ -46,6 +47,7 @@ beforeEach(() => {
   notSet = 0;
   stagedChanges = undefined;
   undeployedSave = null;
+  ranNothingSave = null;
   busy = new Set();
   localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
@@ -70,7 +72,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canSave
         <button type="button" onClick={() => setAgent(!agent)}>Agent</button>
         {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
         <section aria-label="Canvas"><div ref={setSlot} /></section>
-        <BottomBar groups={groups} totalChanges={totalChanges} stagedChanges={stagedChanges} undeployedSave={undeployedSave} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
+        <BottomBar groups={groups} totalChanges={totalChanges} stagedChanges={stagedChanges} undeployedSave={undeployedSave} ranNothingSave={ranNothingSave} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
           onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} latest={lists.latest} storage={storage} notes={{}} notSet={notSet} busy={busy}
           proposals={{ included: [] }} />
         <Outlet />
@@ -206,6 +208,18 @@ it("names a Save no Deploy ships as not deployed, apart from staged changes, wit
   expect(staged.queryByText("1 change")).toBeNull();
   fireEvent.click(staged.getByRole("button", { name: /^Deploy/ }));
   expect(onDeploy).toHaveBeenCalledOnce();
+});
+
+it("says a Save whose Deploy ran nothing never reached a server, in the bar and in Details", async () => {
+  stagedChanges = 0;
+  undeployedSave = 4;
+  ranNothingSave = 4;
+  open(canvasUrl, [replicas], 1);
+  const staged = await bar();
+  expect(staged.getAllByText("Save #4 · its deploy ran nothing")).toHaveLength(2);
+  expect(staged.queryByText("Save #4 not deployed")).toBeNull();
+  await act(async () => { fireEvent.click(staged.getByRole("button", { name: "Details" })); });
+  expect(await screen.findByText(/Save #4's deploy ran nothing, so none of its changes reached a server\./)).toBeTruthy();
 });
 
 it("says a Deploy in flight ships the Save, as that Deployment's status reads, never not running", async () => {

@@ -64,11 +64,16 @@ choose **Discard all changes**.
 **Discard all changes** returns everything to your latest saved version, including a staged
 rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
 version. When part of your latest saved version is not deployed, for example because its deploy failed,
-the bottom bar shows **Save #4 not deployed** with **Deploy** instead of a change count. While a
+the bottom bar shows **Save #4 not deployed** with **Deploy** instead of a change count. A deploy
+saves your changes before it starts, so one that ran nothing, for example because it was refused
+while a server didn't answer, still leaves them saved. The bar then says **Save #4 · its deploy ran
+nothing**, and `ployz diff` says `Saved as version #4. Its deploy ran nothing, so none of these
+changes reached a server.` After you discard such changes, `ployz diff` and `ployz discard` name the
+save as one whose deploy ran nothing beside each change they could bring back. While a
 deploy of it is queued or running, for example `ployz deploy web` deploying web and the services
 it references, the bar shows that deploy's status instead, **Queued**, **Preparing** or **Deploying · Save #4**, with **Deploy
 next** for the rest. A deploy still waiting for CI isn't queued yet, so the bar keeps **Save #4 not
-deployed**. Neither its **⋮** menu nor Details offers **Discard all** then, since nothing is left to
+deployed**, or **Save #4 · its deploy ran nothing** after one that ran nothing. Neither its **⋮** menu nor Details offers **Discard all** then, since nothing is left to
 discard.
 A new service's change starts with what it runs, its image or its repository and branch, such as
 `web.image: null → "nginx:1"`. Those rows have no Discard of their own: discard the service.

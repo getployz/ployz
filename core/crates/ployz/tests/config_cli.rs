@@ -4029,6 +4029,67 @@ fn a_member_names_a_preferred_builder_for_cloud_to_resolve() {
     );
 }
 
+/// #3275: a Deploy saves first, so one that ran nothing leaves its save behind. Discard
+/// and diff say that save's deploy ran nothing, not that it was never deployed.
+#[test]
+fn a_save_whose_deploy_ran_nothing_says_so() {
+    fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        let Written::Deployment(admitted) = written else {
+            return;
+        };
+        if admitted.number == Some(1) {
+            succeed(store, &admitted.id);
+            return;
+        }
+        let runner = RunnerId::parse("refusing-worker").unwrap();
+        store.claim(&admitted.id, &runner).unwrap();
+        let evidence = serde_json::from_value(json!({"evidence": "not_executed", "value": {
+            "reason": "Storage capacity is unknown", "cause": []
+        }}))
+        .unwrap();
+        store.record(&admitted.id, &runner, evidence).unwrap();
+    }
+    let cloud = Target::Cloud {
+        url: fake_cloud_with_dispatch(worker),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    ok(&cloud, &["deploy"]);
+    ok(&cloud, &["set", "web.replicas=3"]);
+    let (code, refused) = ployz(Some(&cloud), &["deploy"]);
+    assert_eq!(code, Some(1), "{refused}");
+
+    let text = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = cloud.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", said(&output));
+        said(&output)
+    };
+    let refused = text(&["diff"]);
+    assert!(
+        refused.contains(
+            "Saved as version #2. Its deploy ran nothing, so none of these changes reached a server."
+        ),
+        "{refused}"
+    );
+    let discarded = text(&["discard"]);
+    assert!(
+        discarded.contains(
+            "web has changes in saved #2, whose deploy ran nothing, so discarding undoes them. Bring them back: ployz discard web"
+        ),
+        "{discarded}"
+    );
+    let diff = text(&["diff"]);
+    assert!(
+        diff.contains(
+            "Saved #2 holds changes above that its deploy never ran; a new save or deploy leaves them behind."
+        ),
+        "{diff}"
+    );
+    assert_eq!(ok(&cloud, &["diff"])["saved_ran_nothing"], json!(true));
+}
+
 #[test]
 fn deployment_text_shows_the_deepest_cause_and_json_keeps_the_chain() {
     fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {

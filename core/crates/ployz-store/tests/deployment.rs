@@ -2135,6 +2135,72 @@ fn nothing_executed_applies_nothing() {
     assert_eq!(changed(&store, &who), ["api", "web"]);
 }
 
+/// #3275: a Deploy saves Working State before it runs. When it runs nothing, the save
+/// still holds its changes, and the review says they never ran.
+#[test]
+fn a_save_whose_deploy_ran_nothing_is_marked_in_the_review() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["api", "web"]))
+        .unwrap();
+    assert!(!diff(&store, &who).saved_ran_nothing);
+
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::NotExecuted("Storage capacity is unknown".into()),
+        )
+        .unwrap();
+    assert!(diff(&store, &who).saved_ran_nothing);
+
+    let discarded = store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(discarded.saved_ran_nothing);
+    // Saved #2 still holds the change, so it stays reviewable; the mark says it never ran.
+    let view = diff(&store, &who);
+    assert!(view.changes.is_empty());
+    let setting = &view.draft_changes[0].settings[0];
+    assert_eq!(
+        (
+            setting.path.as_str(),
+            setting.before.clone(),
+            setting.after.clone()
+        ),
+        ("web.replicas", json!(3), json!(1))
+    );
+    assert!(view.saved_ran_nothing);
+
+    // Deploying it again, and it running, clears the mark.
+    admit(&store, &who, 3, &[], None).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &a, succeeded(&["api", "web"]))
+        .unwrap();
+    assert!(!diff(&store, &who).saved_ran_nothing);
+}
+
 #[test]
 fn admission_replays_supersedes_and_checks_the_reviewed_version() {
     let (store, who) = shop();

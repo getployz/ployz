@@ -168,10 +168,18 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 super::store::fix_broken(matches, reference)
             ));
         }
+        let saved = view.saved.map_or(0, |saved| saved.0);
         if view.published && !view.changes.is_empty() {
+            if view.saved_ran_nothing {
+                crate::ui::stream(format_args!(
+                    "Saved as version #{saved}. Its deploy ran nothing, so none of these changes reached a server."
+                ));
+            } else {
+                crate::ui::stream(format_args!("Saved as version #{saved}. Not deployed."));
+            }
+        } else if view.saved_ran_nothing && !view.reversals().is_empty() {
             crate::ui::stream(format_args!(
-                "Saved as version #{}. Not deployed.",
-                view.saved.map_or(0, |saved| saved.0)
+                "Saved #{saved} holds changes above that its deploy never ran; a new save or deploy leaves them behind."
             ));
         }
         if let Some(hint) = &hint {
@@ -273,7 +281,7 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
                     "Nothing differs from what is deployed in {where_}."
                 ));
             }
-            comes_back(&backs, saved);
+            comes_back(&backs, saved, discarded.saved_ran_nothing);
         });
     }
     let hint = next(matches, &["diff"]);
@@ -297,7 +305,7 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
                 shown(dropped).join(", ")
             )),
         }
-        comes_back(&backs, saved);
+        comes_back(&backs, saved, discarded.saved_ran_nothing);
         crate::ui::hint(&crate::ui::Hint::Inspect(hint));
     })
 }
@@ -360,21 +368,38 @@ impl<'a> Back<'a> {
 }
 
 /// One line per saved change the draft no longer holds, with the discard that brings it back.
-fn comes_back(backs: &[Back<'_>], saved: u64) {
+/// `ran_nothing`: every deploy of that save ran nothing, so say so rather than "never deployed".
+fn comes_back(backs: &[Back<'_>], saved: u64, ran_nothing: bool) {
     for back in backs {
         let (name, command) = (back.name, &back.command);
-        let (what, again) = match back.change.lifecycle {
-            ReviewLifecycleKind::Delete => (
+        let (what, again) = match (back.change.lifecycle, ran_nothing) {
+            (ReviewLifecycleKind::Delete, false) => (
                 format!("is in saved #{saved} but was never deployed, so discarding removes it"),
                 "Bring it back",
             ),
-            ReviewLifecycleKind::Create => (
+            (ReviewLifecycleKind::Delete, true) => (
+                format!("is in saved #{saved}, whose deploy ran nothing, so discarding removes it"),
+                "Bring it back",
+            ),
+            (ReviewLifecycleKind::Create, false) => (
                 format!("is removed in saved #{saved} but still deployed, so discarding keeps it"),
                 "Remove it again",
             ),
-            ReviewLifecycleKind::Update => (
+            (ReviewLifecycleKind::Create, true) => (
+                format!(
+                    "is removed in saved #{saved}, whose deploy ran nothing, so discarding keeps it"
+                ),
+                "Remove it again",
+            ),
+            (ReviewLifecycleKind::Update, false) => (
                 format!(
                     "has changes in saved #{saved} that were never deployed, so discarding undoes them"
+                ),
+                "Bring them back",
+            ),
+            (ReviewLifecycleKind::Update, true) => (
+                format!(
+                    "has changes in saved #{saved}, whose deploy ran nothing, so discarding undoes them"
                 ),
                 "Bring them back",
             ),
