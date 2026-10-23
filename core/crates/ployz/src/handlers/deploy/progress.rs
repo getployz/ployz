@@ -516,29 +516,31 @@ fn superseded(
 }
 
 /// The Deployment among `candidates` that took `view`'s Environment over: the first
-/// newer one that started after it and executed. None when none did, as when
-/// `view`'s claim lapsed while a newer one waited or was refused at its claim.
+/// newer one to start after it, when it executed and `candidates` holds every number
+/// up to it. None when that is not established, as when `view`'s claim lapsed while
+/// a newer one waited, or the first to start never executed: a later one is never
+/// named in its place.
 pub(super) fn taker<'a>(
     view: &DeploymentView,
     candidates: &'a [DeploymentSummary],
 ) -> Option<&'a DeploymentSummary> {
     let ours = &view.deployment;
-    candidates
+    let number = ours.number?;
+    let first = candidates
         .iter()
-        .filter(|newer| newer.number > ours.number && newer.started_at >= ours.started_at)
-        .filter(|newer| newer.started_at.is_some())
-        .filter(|newer| {
-            !matches!(
-                newer.status,
-                DeploymentStatus::Queued
-                    | DeploymentStatus::WaitingForCi
-                    | DeploymentStatus::Superseded
-            ) && !matches!(
-                newer.outcome,
-                Some(ployz_store::Outcome::NotExecuted { .. })
-            )
-        })
-        .min_by_key(|newer| newer.number)
+        .filter(|newer| newer.number > ours.number && newer.started_at.is_some())
+        .filter(|newer| newer.started_at >= ours.started_at)
+        .min_by_key(|newer| newer.number)?;
+    let read_all = (number + 1..first.number?).all(|between| {
+        candidates
+            .iter()
+            .any(|candidate| candidate.number == Some(between))
+    });
+    let executed = !matches!(
+        first.outcome,
+        Some(ployz_store::Outcome::NotExecuted { .. })
+    );
+    (read_all && executed).then_some(first)
 }
 
 /// A newer Deployment took over this Environment while this one ran, so what it did
@@ -1639,18 +1641,27 @@ mod tests {
         });
         let took_over = numbered(8, DeploymentStatus::Applied, Some(120));
         let after_it = numbered(9, DeploymentStatus::Running, Some(130));
+        let named = |candidates: &[DeploymentSummary]| {
+            taker(&view, candidates).and_then(|newer| newer.number)
+        };
 
-        // A lapsed claim with only an older, a queued or a refused one names none.
+        // A lapsed claim with only an older or a queued one names none.
+        assert_eq!(named(&[older.clone(), queued.clone()]), None);
+        // The first newer one that started took over, whatever came after it.
         assert_eq!(
-            taker(&view, &[older.clone(), queued.clone(), refused]),
-            None
-        );
-        // Of those that started, the first took over.
-        assert_eq!(
-            taker(&view, &[after_it.clone(), queued, took_over.clone(), older])
-                .and_then(|newer| newer.number),
+            named(&[
+                after_it.clone(),
+                queued.clone(),
+                took_over.clone(),
+                older.clone()
+            ]),
             Some(8)
         );
+        // When the first that started never ran, it may still have taken over: no
+        // later one is named in its place.
+        assert_eq!(named(&[after_it.clone(), refused, older]), None);
+        // Nor when the read missed a Deployment between this one and the first named.
+        assert_eq!(named(&[after_it]), None);
         let failure = replaced(&view, &took_over, command);
         let details = failure.report().details;
         assert_eq!(details.get("deployment"), Some(&json!(view.deployment.id)));
