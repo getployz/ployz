@@ -26,6 +26,7 @@ import {
   type DeploymentTrigger,
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
+import { Conflict, Forbidden, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
@@ -170,7 +171,40 @@ function statusFor(code: string) {
   }
 }
 
-export const refusedPublicly = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect;
+/**
+ * A Store refusal as a user's request answers it, in the categories `statusFor` gives the CLI. A refusal outside them,
+ * such as `internal`, stays a 500.
+ */
+export function publicRefusal(error: StoreRefused) {
+  const { message } = error;
+  switch (error.code) {
+    case "invalid_argument":
+      return new Validation({ userFacing: true, message });
+    case "not_found":
+    case "unknown_command":
+      return new NotFound({ message });
+    case "conflict":
+    case "ambiguous":
+    case "confirmation_required":
+    case "approval_required":
+    case "channel_mismatch":
+      return new Conflict({ userFacing: true, message });
+    case "unauthenticated":
+      return new Unauthorized();
+    case "forbidden":
+    case "approval_denied":
+    case "claim_required":
+      return new Forbidden({ userFacing: true, message });
+    case "unavailable":
+      return new Unavailable({ userFacing: true, message });
+    default:
+      return error;
+  }
+}
+
+/** `effect`, answering a Store refusal with its own status rather than a 500. */
+export const refusedPublicly = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.mapError((error) => error instanceof StoreRefused ? publicRefusal(error) : error));
 
 /** A Cloud command's refusal also names its `field`, what fits there and whether it wrote, as Store tools refuse. */
 export function refusal(error: StoreRefusal | CommandRefusal) {
