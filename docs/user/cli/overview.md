@@ -606,6 +606,8 @@ number; one that would overwrite draft changes refuses and names them first.
 When a deploy would delete a volume's data, `ployz deploy` and `ployz deploy --skip-deploy` stop
 and print the command to run instead. It names each volume that loses data, like
 `ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if
-you mean it. If Ployz can't check your servers for that data and you passed `--connect`, the
+you mean it. If the environment changed since, the command refuses and prints it again at the new
+version without the volumes. Run that to see what the new version deletes, and accept it from the
+command it prints then. If Ployz can't check your servers for that data and you passed `--connect`, the
 refusal names the address you gave when Ployz doesn't know which server that is. With `--json`,
 the error's `cause` lists it.
