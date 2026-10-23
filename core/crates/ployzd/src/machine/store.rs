@@ -459,7 +459,13 @@ impl LocalMachineStore {
             return Err(StoreError::NotParticipating);
         };
         let pinned = self.record.pinned_addresses;
-        if !pinned.public_ip && discovered.public_ip.is_none() && machine.public_ip.is_some() {
+        // Without an IPv4 route, a stored IPv4 public IP was a NAT64 gateway's.
+        let foreign = !discovered.ipv4_route && machine.public_ip.is_some_and(|ip| ip.is_ipv4());
+        if !pinned.public_ip
+            && discovered.public_ip.is_none()
+            && machine.public_ip.is_some()
+            && !foreign
+        {
             return Ok(Rediscovered::PublicIpLookupFailed);
         }
         let update = MachineUpdate {
@@ -467,6 +473,7 @@ impl LocalMachineStore {
                 Some(address) if !pinned.public_ip && machine.public_ip != Some(address) => {
                     PublicIpUpdate::Set(address)
                 }
+                None if !pinned.public_ip && foreign => PublicIpUpdate::Remove,
                 _ => PublicIpUpdate::Keep,
             },
             advertised_endpoints: (!pinned.advertised_endpoints
