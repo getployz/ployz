@@ -97,6 +97,10 @@ fix Docker and run the command again. Or uninstall Docker, and Ployz installs a 
   Amazon Linux's `docker`, is often older: remove it with `sudo dnf remove docker` or
   `sudo apt-get remove docker.io`, then run the command again.
 
+  Ployz 0.3.2 and earlier then fail to start the Docker they install: `restart Docker: Job for
+  docker.service failed`. Run `sudo systemctl reset-failed docker.socket docker.service` and
+  `sudo systemctl restart docker.socket docker.service`, then run the command again.
+
 - `Docker Buildx ... is too old: Ployz needs Buildx 0.18 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.`
 
   Upgrade the buildx plugin along with Docker, or uninstall Docker.

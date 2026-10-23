@@ -435,10 +435,10 @@ pub(super) async fn install_docker(paths: &InstallPaths) -> Result<(), Error> {
         "write Docker configuration",
     )?;
     // A Docker removed just before (`apt-get remove docker.io`) leaves docker.socket
-    // running; the new package replaces its unit and the socket loses its listener,
-    // so docker.service fails to start until rate-limited. Restart both from clean.
+    // running. The new package changes its unit under it, which strands it without a
+    // listening socket, so docker.service fails to start until rate-limited.
     systemctl(
-        "restart Docker",
+        "clear Docker failure",
         ["reset-failed", "docker.socket", "docker.service"],
     )?;
     systemctl(
@@ -841,9 +841,6 @@ mod tests {
                 ] {
                     assert!(packages.contains(&package), "{name}: {package}");
                 }
-                // A Docker removed before the install can leave docker.socket running
-                // with no listening socket once the new package replaces its unit,
-                // and the failed starts in between leave docker.service rate-limited.
                 assert_eq!(
                     log("systemctl"),
                     "enable docker\nreset-failed docker.socket docker.service\nrestart docker.socket docker.service\n",
