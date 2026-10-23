@@ -127,7 +127,7 @@ pub enum Error {
     ManagementRevoked,
     #[error("only Cloud manages slots")]
     OnlyCloudManagesSlots,
-    #[error("device- slots change only through `ployz devices`")]
+    #[error("device- slots change only through `ployz device`")]
     DeviceSlot,
     #[error("only an approved Device manages Devices")]
     NeedsFullScope,
