@@ -106,17 +106,25 @@ pub struct DrainReport {
 impl DrainReport {
     /// Every chosen Service left the Server, every moved copy's old copy stopped, every
     /// copy left Out there is gone, the Drain ran to its end, and what remains was
-    /// observed.
+    /// observed. Another Server's move that failed and left nothing behind is reported,
+    /// but is that Server's to finish.
     #[must_use]
     pub fn complete(&self) -> bool {
         let Remaining::Observed { services, .. } = &self.remaining else {
             return false;
         };
+        let done = |outcome: &DrainOutcome| match outcome {
+            DrainOutcome::Failed { moves, failure } => {
+                failure.clean_elsewhere(&self.server.id)
+                    && moves.iter().all(|step| step.old == OldCopyEnd::Stopped)
+            }
+            outcome => outcome.complete(),
+        };
         self.stopped.is_none()
             && self
                 .services
                 .iter()
-                .all(|service| service.outcome.complete() && !services.contains(&service.service))
+                .all(|service| done(&service.outcome) && !services.contains(&service.service))
     }
 }
 
@@ -538,26 +546,16 @@ async fn execute<C: DrainClient>(
             // Listed before the move, so a copy the move itself leaves Out is reported
             // once, by the move, and not waited on twice. A failed listing leaves the
             // copies to `remaining`, which still finds the Service there.
-            let listed = behind
+            let left_behind = behind
                 .alongside(&mut record, client.copies_on(&server.id, service))
-                .await;
-            let left_behind = listed.as_deref().unwrap_or_default();
+                .await
+                .unwrap_or_default();
             let converged = behind
                 .alongside(&mut record, client.converge(service, cancellation))
                 .await;
             let (shape, moves) = match converged {
                 Converged::Moved { moves } => (Shape::Moved, moves),
                 Converged::NothingToMove => (Shape::Done(DrainOutcome::NothingToMove), Vec::new()),
-                // Another Server's failed move is its own Drain's to report, unless it kept a
-                // copy here from moving. A failed listing can't tell, so the failure stays.
-                Converged::Failed { moves, failure }
-                    if failure.server().is_some_and(|from| from.id != server.id)
-                        && listed
-                            .as_ref()
-                            .is_ok_and(|copies| moved_all(copies, &moves, &server.id)) =>
-                {
-                    (Shape::Moved, moves)
-                }
                 Converged::Failed { moves, failure } => (Shape::Failed(failure), moves),
                 Converged::Stays { reason } => {
                     (Shape::Done(DrainOutcome::Stays { reason }), Vec::new())
@@ -627,16 +625,6 @@ async fn execute<C: DrainClient>(
         stopped,
         remaining,
     }
-}
-
-/// Whether a convergence moved every copy on `server` it had to, those still routed or
-/// never yet admitted.
-fn moved_all(copies: &[Copy], moves: &[Moving], server: &MachineId) -> bool {
-    let movable = copies
-        .iter()
-        .filter(|copy| matches!(copy.rotation, CopyRotation::In | CopyRotation::Pending))
-        .count();
-    moves.iter().filter(|step| step.from.id == *server).count() >= movable
 }
 
 #[derive(Default)]
