@@ -595,6 +595,30 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
 }
 
 #[tokio::test]
+async fn a_shared_redial_whose_daemon_will_not_say_which_machine_it_is_keeps_the_old_channel() {
+    let (mut client, _old) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::not_found("answered by the old daemon"))
+    })
+    .await;
+    let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
+        let refused = ployz_core::RpcResponse::from(unavailable("not this Machine's caller"));
+        Ok(tonic::Response::new(refused.encode().unwrap()))
+    })
+    .await;
+    client.entry = Some(machine_id('a'));
+    client.connector = crate::connect::test_support::connector(other.channel());
+
+    let refused = client.redial_shared().await;
+
+    assert!(
+        matches!(refused, Err(ConnectError::Remote(_))),
+        "{refused:?}"
+    );
+    let answer = client.clone().entry_id().await.unwrap_err();
+    assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
+}
+
+#[tokio::test]
 async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
     let (mut client, _old) = crate::connect::test_support::rpc_client(|_| async {
         Err(tonic::Status::not_found("answered by the old daemon"))
