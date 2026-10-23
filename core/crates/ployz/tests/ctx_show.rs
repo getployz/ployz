@@ -60,6 +60,14 @@ fn ctx_with(
 
 #[test]
 fn signed_out_ctx_names_no_sign_in_and_login() {
+    // The default daemon socket can't be redirected, so a host running ployzd
+    // has a local route and this signed-out-with-no-route case can't occur.
+    if std::path::Path::new("/run/ployz/ployz.sock")
+        .try_exists()
+        .unwrap_or(true)
+    {
+        return;
+    }
     let human = ctx(false, None);
     let stdout = String::from_utf8(human.stdout).unwrap();
     let stderr = String::from_utf8(human.stderr).unwrap();
