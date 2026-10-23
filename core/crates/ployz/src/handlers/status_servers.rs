@@ -111,9 +111,12 @@ pub(super) fn attention(
             runtime.block_on(async {
                 match server::reach_or_silent(leaf, context).await? {
                     Some(Reach::Dial(mut client)) => {
-                        let observed = observe(&mut client, namespace, rolling_out).await?;
-                        let disks = client.observe_docker_disks(&observed.machines).await;
-                        Ok(Some((observed, disks)))
+                        let machines = client.machines().await.map_err(Error::from)?;
+                        let (observed, disks) = tokio::join!(
+                            observe(&client, machines.clone(), namespace, rolling_out),
+                            client.observe_docker_disks(&machines),
+                        );
+                        Ok(Some((observed?, disks)))
                     }
                     Some(Reach::Ask(_)) | None => Ok(None),
                 }
@@ -231,11 +234,11 @@ enum Copies {
 }
 
 async fn observe(
-    client: &mut crate::connect::Client,
+    client: &crate::connect::Client,
+    machines: Vec<MachineObservation>,
     namespace: &Namespace,
     rolling_out: Option<String>,
 ) -> Result<Observed, Error> {
-    let machines = client.machines().await?;
     if let Some(deployment) = rolling_out {
         return Ok(Observed {
             machines,
@@ -244,7 +247,6 @@ async fn observe(
     }
     // Read before listing, so a routed copy the listing lacks was removed, not created since.
     let routed = {
-        let client = &*client;
         let up = machines
             .iter()
             .filter(|observed| observed.invites_rpc())
@@ -285,7 +287,6 @@ async fn observe(
         service.identity.namespace == *namespace
             && !serving_containers(&service.containers).is_empty()
     });
-    let client = &*client;
     let reads = match reader {
         Some(reader) => {
             stream::iter(services)

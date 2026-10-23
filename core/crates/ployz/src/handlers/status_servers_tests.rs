@@ -266,7 +266,7 @@ fn status_names_a_server_whose_docker_disk_is_nearly_full() {
         json!([{
             "reason": "disk_full",
             "message": "Its disk is nearly full: 30 MB free for Docker. \
-                        Deploys onto it fail until you free space.",
+                        Pulling an image onto it can fail until you free space.",
             "machine": "machine-1",
             "free_bytes": 30_000_000,
         }])

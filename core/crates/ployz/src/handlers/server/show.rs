@@ -28,8 +28,11 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         let (machines, storage, disks) = match connect_or_none(leaf, context).await? {
             Some(mut client) => {
                 let mut machines = client.machines().await?;
-                let storage = client.observe_machine_storage(&mut machines).await;
-                let disks = client.observe_docker_disks(&machines).await;
+                let listed = machines.clone();
+                let (storage, disks) = tokio::join!(
+                    client.observe_machine_storage(&mut machines),
+                    client.observe_docker_disks(&listed),
+                );
                 (machines, storage, disks)
             }
             None => (Vec::new(), StorageGaps::default(), Vec::new()),
@@ -220,7 +223,7 @@ impl fmt::Display for FullDisk<'_> {
         }
         write!(
             f,
-            "disk is nearly full: {} free for Docker. Deploys onto it fail until you free space.",
+            "disk is nearly full: {} free for Docker. Pulling an image onto it can fail until you free space.",
             size(self.free_bytes)
         )
     }
@@ -757,7 +760,7 @@ mod tests {
             ),
             (
                 roomy.id,
-                ployz_core::ByteCapacity::parse(24_000_000_000, 12_000_000_000).unwrap(),
+                ployz_core::ByteCapacity::parse(24_000_000_000, 1_000_000_000).unwrap(),
             ),
         ];
         let machines = [full, roomy, unread]
@@ -770,7 +773,7 @@ mod tests {
             named,
             [
                 "Server machine-1's disk is nearly full: 30 MB free for Docker. \
-              Deploys onto it fail until you free space."
+              Pulling an image onto it can fail until you free space."
             ]
         );
     }

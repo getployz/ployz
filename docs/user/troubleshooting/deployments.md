@@ -593,12 +593,14 @@ everything else under `/var/lib/docker`. These can be on different disks.
 - Run the deploy again.
 
 You can catch a filling disk before a deploy fails on it. `ployz status` lists the server under
-**needs attention** with `Its disk is nearly full: 48 MB free for Docker. Deploys onto it fail
-until you free space.`, and `ployz server ls` prints the same as a warning. Both flag a server with
-less than 1 GB free under Docker's root directory, usually `/var/lib/docker`. They don't measure
-`/var/lib/containerd` when it is on a different disk. In `ployz status --json` the row has reason
-`disk_full`, the server in `machine`, and the free space in `free_bytes`. It doesn't change status's
-exit code. A server that doesn't answer within 3 seconds isn't checked, and nothing says so.
+**needs attention** with `Its disk is nearly full: 48 MB free for Docker. Pulling an image onto it
+can fail until you free space.`, and `ployz server ls` warns `Server machine-3's disk is nearly
+full: …`. Both flag a server with less than 1 GB free under Docker's root directory, usually
+`/var/lib/docker`. They don't measure `/var/lib/containerd` when it is on a different disk. In
+`ployz status --json` the row has reason `disk_full`, the server in `machine`, and the free space in
+`free_bytes`. It doesn't change status's exit code. A server that is down, can't reach Docker, or
+doesn't answer within 3 seconds isn't checked, and nothing says so. Signed in with a Read only or
+Deploy token, status asks Cloud instead of your servers, and checks no disk.
 
 ## Deploy says a service has nothing to run
 
