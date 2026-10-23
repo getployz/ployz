@@ -161,7 +161,7 @@ pub(crate) fn numbered(
         return Err(match query.number {
             Some(number) => error::not_found(
                 format!("{project}/{name} has no Deployment #{number}"),
-                json!({ "next": "ployz deployment ls" }),
+                json!({ "next": format!("ployz deployment ls --project {project} --env {name}") }),
             ),
             None => error::not_found(
                 format!("{project}/{name} has no Deployment yet"),

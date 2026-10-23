@@ -139,7 +139,7 @@ $ ployz deployment show 9999
 stderr:
 ```
 error: shop/production has no Deployment #9999
-next: ployz deployment ls
+next: ployz deployment ls --project shop --env production
 ```
 
 ### deployment cancel of an applied Deployment 
@@ -417,7 +417,7 @@ $ ployz --json deployment show 9999
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"next":"ployz deployment ls"},"message":"shop/production has no Deployment #9999"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz deployment ls --project shop --env production"},"message":"shop/production has no Deployment #9999"}}
 ```
 
 ### deployment cancel of an applied Deployment --json

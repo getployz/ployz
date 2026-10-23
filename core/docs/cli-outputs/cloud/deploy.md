@@ -261,7 +261,7 @@ $ ployz deployment show 99
 stderr:
 ```
 error: shop/production has no Deployment #99
-next: ployz deployment ls
+next: ployz deployment ls --project shop --env production
 ```
 
 ### deployment show unknown number --json
@@ -273,7 +273,7 @@ $ ployz deployment show 99 --json
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"next":"ployz deployment ls"},"message":"shop/production has no Deployment #99"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz deployment ls --project shop --env production"},"message":"shop/production has no Deployment #99"}}
 ```
 
 ### deployment show garbage id
@@ -476,7 +476,7 @@ $ ployz deployment redeploy 99
 stderr:
 ```
 error: shop/production has no Deployment #99
-next: ployz deployment ls
+next: ployz deployment ls --project shop --env production
 ```
 
 ## deploy

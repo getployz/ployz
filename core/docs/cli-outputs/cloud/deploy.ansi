@@ -211,17 +211,17 @@ Deployment #1 of shop/production: queued
 
 === deployment show unknown number :: $ ployz deployment show 99
 error: shop/production has no Deployment #99
-next: ployz deployment ls
+next: ployz deployment ls --project shop --env production
 
 === deployment show unknown number --json :: $ ployz deployment show 99 --json
-{"error":{"cause":[],"code":"not_found","details":{"next":"ployz deployment ls"},"message":"shop/production has no Deployment #99"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz deployment ls --project shop --env production"},"message":"shop/production has no Deployment #99"}}
 
 === deployment show garbage id :: $ ployz deployment show not-an-id
 error: Expected a Deployment ID or number
 
 === deployment redeploy, unknown :: $ ployz deployment redeploy 99
 error: shop/production has no Deployment #99
-next: ployz deployment ls
+next: ployz deployment ls --project shop --env production
 
 === deploy --plan :: $ ployz deploy --plan
 worker (update)

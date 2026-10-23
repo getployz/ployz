@@ -37,7 +37,7 @@ error: No Deployment 00000000-0000-0000-0000-000000000000
 
 === deployment show of an unknown number  :: $ ployz deployment show 9999
 error: shop/production has no Deployment #9999
-next: ployz deployment ls
+next: ployz deployment ls --project shop --env production
 
 === deployment cancel of an applied Deployment  :: $ ployz deployment cancel 97ef0635-e637-491b-a6f9-b81bf29d92bf
 error: This Deployment already ended
@@ -115,7 +115,7 @@ error: invalid time "yesterday" for --since: expected a relative duration, RFC 3
 {"error":{"cause":[],"code":"not_found","details":{},"message":"No Deployment 00000000-0000-0000-0000-000000000000"}}
 
 === deployment show of an unknown number --json :: $ ployz --json deployment show 9999
-{"error":{"cause":[],"code":"not_found","details":{"next":"ployz deployment ls"},"message":"shop/production has no Deployment #9999"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz deployment ls --project shop --env production"},"message":"shop/production has no Deployment #9999"}}
 
 === deployment cancel of an applied Deployment --json :: $ ployz --json deployment cancel 97ef0635-e637-491b-a6f9-b81bf29d92bf
 {"error":{"cause":[],"code":"conflict","details":{"deployment":"97ef0635-e637-491b-a6f9-b81bf29d92bf","next":"ployz deployment show 31"},"message":"This Deployment already ended"}}
