@@ -134,13 +134,15 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
         )
     };
     let by_id = "a".repeat(32);
+    // The retry runs the same command again, naming the Service as it was typed.
+    let by_id_retry = format!("retry: ployz exec -T {by_id} --connect tcp://");
     let cases = [
         (
             vec![web('b', running())],
             1,
             Some((
                 "The container for app/web stopped; exec ended.",
-                "ployz exec app/web",
+                "retry: ployz exec -T app/web --connect tcp://",
             )),
         ),
         (
@@ -190,7 +192,7 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
             running(),
         )],
         1,
-        Some(("stopped; exec ended.", "retry: ployz exec app/web")),
+        Some(("stopped; exec ended.", by_id_retry.as_str())),
     )]);
     for (selector, after, exit, said) in cases {
         let mut service = DiscoveryService::new(test_description());
@@ -318,7 +320,9 @@ async fn cli_exec_retry_repeats_the_scope_flags_it_was_given() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(
-        stderr.contains("retry: ployz exec --project shop --env staging shop-staging/web-1"),
+        stderr.contains(&format!(
+            "retry: ployz exec -T web-1 --connect tcp://{address} --project shop --env staging -- true"
+        )),
         "{stderr}"
     );
 }
