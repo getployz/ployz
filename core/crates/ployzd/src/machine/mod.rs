@@ -170,6 +170,10 @@ pub struct LocalMachineRecord {
     /// Where the observe process pushes crash events. Absent means buffer only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     push_target: Option<Url>,
+    /// Whether every live `device-` slot was written through Device approval. Absent on
+    /// records from before Devices were Full-only, when any client could name one.
+    #[serde(default)]
+    device_slots_vetted: bool,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -493,6 +497,7 @@ impl LocalMachineRecord {
             selected_endpoints: BTreeMap::new(),
             pinned_addresses: PinnedAddresses::default(),
             push_target: None,
+            device_slots_vetted: true,
         })
     }
 
@@ -589,6 +594,7 @@ impl LocalMachineRecord {
             selected_endpoints: self.selected_endpoints,
             pinned_addresses: self.pinned_addresses,
             push_target: self.push_target,
+            device_slots_vetted: self.device_slots_vetted,
         }
     }
 }
