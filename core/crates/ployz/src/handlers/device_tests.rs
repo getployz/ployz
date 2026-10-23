@@ -168,6 +168,20 @@ async fn one_failing_machine_is_a_partial_result_that_names_it() {
         .collect();
     assert_eq!(failed, [id('2')]);
     assert!(settled.gaps.omitted.is_empty());
+    assert!(settled.table().is_some());
+    assert_eq!(settled.gaps.outcome().unwrap_err().printed_exit(), Some(3));
+    server.abort();
+}
+
+#[tokio::test]
+async fn when_no_machine_answers_only_the_gaps_print() {
+    let (mut client, server) = cluster([Daemon::Unreachable; 3]).await;
+
+    let settled = set_everywhere(&mut client, approve()).await.unwrap();
+
+    assert!(settled.answers.is_empty());
+    assert_eq!(settled.gaps.failures.len(), 3);
+    assert!(settled.table().is_none());
     assert_eq!(settled.gaps.outcome().unwrap_err().printed_exit(), Some(3));
     server.abort();
 }

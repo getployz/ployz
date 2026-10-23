@@ -353,7 +353,11 @@ struct Answer {
 }
 
 impl Settled {
-    fn finish(&self) -> Result<(), Error> {
+    /// None when no Server answered, since the gap warnings name every one.
+    fn table(&self) -> Option<Table> {
+        if self.answers.is_empty() && !self.gaps.is_complete() {
+            return None;
+        }
         let mut table = Table::new(["SERVER", "RESULT"], "No servers answered.");
         for answer in &self.answers {
             let (result, tone) = match answer.set {
@@ -364,8 +368,15 @@ impl Settled {
             };
             table.row([Cell::from(&answer.server), Cell::status(result, tone)]);
         }
+        Some(table)
+    }
+
+    fn finish(&self) -> Result<(), Error> {
+        let table = self.table();
         ui::finish_fanout("machines", &self.answers, &self.gaps, || {
-            ui::rows(&table);
+            if let Some(table) = &table {
+                ui::rows(table);
+            }
         })
     }
 }
