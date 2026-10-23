@@ -456,7 +456,7 @@ fn web_3_failed() -> MoveFailure {
 }
 
 #[tokio::test]
-async fn another_server_s_failed_move_after_this_server_s_copy_moved_is_left_to_its_drain() {
+async fn another_server_s_failed_move_is_reported_without_failing_this_drain() {
     let mut client = Scripted {
         observations: [nothing_left()].into(),
         convergences: [Converged::Failed {
@@ -464,69 +464,60 @@ async fn another_server_s_failed_move_after_this_server_s_copy_moved_is_left_to_
             failure: web_3_failed(),
         }]
         .into(),
-        copies: [Ok(vec![left_on_server(CopyRotation::In)])].into(),
-        ..Scripted::default()
-    };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    assert_eq!(outcomes(&report), [entry("web", moved())]);
-    assert!(report.complete());
-}
-
-#[tokio::test]
-async fn another_server_s_failed_move_that_kept_this_server_s_copy_is_reported() {
-    let failed = || DrainOutcome::Failed {
-        moves: Vec::new(),
-        failure: web_3_failed(),
-    };
-    // The copy here never moved, or the Drain couldn't list what was here.
-    for copies in [
-        Ok(vec![left_on_server(CopyRotation::In)]),
-        Err(RpcError {
-            code: ployz_core::RpcErrorCode::Unavailable,
-            message: "the listing failed".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
-    ] {
-        let mut client = Scripted {
-            observations: [Ok(vec![qualified("web")])].into(),
-            convergences: [Converged::Failed {
-                moves: Vec::new(),
-                failure: web_3_failed(),
-            }]
-            .into(),
-            copies: [copies].into(),
-            ..Scripted::default()
-        };
-        let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-        assert_eq!(outcomes(&report), [entry("web", failed())]);
-        assert!(!report.complete());
-    }
-}
-
-#[tokio::test]
-async fn another_server_s_old_copy_left_running_is_still_reported() {
-    let proxies = Unconfirmed::Proxies {
-        servers: Vec::new(),
-    };
-    let stuck = Move {
-        old: running(proxies),
-        ..a_move_off_web_3()
-    };
-    let mut client = Scripted {
-        observations: [nothing_left()].into(),
-        convergences: [Converged::Moved {
-            moves: vec![stuck.clone()],
-        }]
-        .into(),
         ..Scripted::default()
     };
     let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
-        [entry("web", DrainOutcome::Moved { moves: vec![stuck] })]
+        [entry(
+            "web",
+            DrainOutcome::Failed {
+                moves: one_move(),
+                failure: web_3_failed(),
+            }
+        )]
     );
-    assert!(!report.complete());
+    assert!(report.complete());
+}
+
+#[tokio::test]
+async fn another_server_s_failed_move_fails_this_drain_when_something_was_left() {
+    let Move { from, to, .. } = a_move_off_web_3();
+    let left = [
+        // A copy here stayed.
+        (web_3_failed(), Ok(vec![qualified("web")])),
+        // This Drain's own cancellation, or a replacement it started, are its to report.
+        (
+            MoveFailure::Cancelled {
+                from: from.clone(),
+                to: to.clone(),
+                replacement_removed: true,
+            },
+            nothing_left(),
+        ),
+        (
+            MoveFailure::NotServing {
+                from,
+                to,
+                detail: "never became healthy".into(),
+                replacement_removed: false,
+            },
+            nothing_left(),
+        ),
+    ];
+    for (failure, remaining) in left {
+        let mut client = Scripted {
+            observations: [remaining].into(),
+            convergences: [Converged::Failed {
+                moves: one_move(),
+                failure: failure.clone(),
+            }]
+            .into(),
+            ..Scripted::default()
+        };
+        let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+        assert!(!report.complete(), "{failure:?}");
+    }
 }
 
 #[tokio::test]
