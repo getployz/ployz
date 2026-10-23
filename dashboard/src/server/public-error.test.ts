@@ -1,4 +1,6 @@
+import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import { Cause, Data } from "effect";
+import { SqlError, UnknownError } from "effect/unstable/sql/SqlError";
 import { describe, expect, it, vi } from "vitest";
 import {
   Conflict,
@@ -89,19 +91,32 @@ describe("encodePublicError", () => {
     });
   });
 
-  it("does not report expected typed failures", () => {
+  it("does not report a refusal with a public category", () => {
     const report = vi.fn();
 
-    publicErrorResponse(
-      new DatabaseFailure({
-        cause: new Error("offline"),
-        providerBody: "provider-token",
-        secret: "application-secret",
-      }),
-      { report },
-    );
+    const response = publicErrorResponse(new Conflict({ message: "Taken." }), { report });
 
     expect(report).not.toHaveBeenCalled();
+    expect(response.status).toBe(409);
+  });
+
+  it("reports a failed query once by its tags and SQLSTATE, never the row it wrote, and still answers 500", async () => {
+    const report = vi.fn();
+    const failedQuery = new EffectDrizzleQueryError({
+      query: "insert into machine_enrollment_token (token_hash) values ($1)",
+      params: ["secret-param"],
+      cause: Cause.fail(new SqlError({ reason: new UnknownError({ cause: { code: "P0001", message: "secret-message" } }) })),
+    });
+
+    const response = publicErrorResponse(failedQuery, { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith("defect", "EffectDrizzleQueryError > SqlError > UnknownError (P0001)");
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      _tag: "PublicError",
+      code: "INTERNAL",
+      message: "The request could not be completed.",
+    });
   });
 
   it("reports full defect and interruption causes separately while redacting transport", async () => {

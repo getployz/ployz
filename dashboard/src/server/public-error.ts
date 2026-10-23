@@ -92,6 +92,12 @@ const decodeServerLacks = Schema.decodeUnknownOption(
 const decodeTaggedFailure = Schema.decodeUnknownOption(
   Schema.Struct({ _tag: Schema.String }),
 );
+const decodeErrorCode = Schema.decodeUnknownOption(
+  Schema.Struct({ code: Schema.String }),
+);
+const decodeNestedCause = Schema.decodeUnknownOption(
+  Schema.Struct({ cause: Schema.Unknown }),
+);
 const decodeValidationIssues = Schema.decodeUnknownOption(
   Schema.Array(Schema.Struct({ message: Schema.String })),
 );
@@ -114,15 +120,26 @@ function publicCategory(cause: unknown): PublicErrorCategory {
 }
 
 function isExpectedFailure(cause: unknown): boolean {
-  if (
-    Option.isSome(decodePublicFailure(cause)) ||
-    Option.isSome(decodeTaggedFailure(cause))
-  ) {
-    return true;
-  }
-  return isTanStackValidationError(
+  return Option.isSome(decodePublicFailure(cause)) || isTanStackValidationError(
     cause instanceof Error ? cause.message : undefined,
   );
+}
+
+/**
+ * A typed failure with no public category, named by its tags and error code alone: its fields, such as a failed
+ * query's params, can hold secrets.
+ */
+function typedFailureSummary(cause: unknown): string {
+  const tags: string[] = [];
+  let code: string | undefined;
+  for (let at: unknown = cause, depth = 0; at !== undefined && depth < 8; depth += 1) {
+    const tagged = decodeTaggedFailure(at);
+    if (Option.isSome(tagged)) tags.push(tagged.value._tag);
+    code ??= Option.getOrUndefined(decodeErrorCode(at))?.code;
+    const next = Option.getOrUndefined(decodeNestedCause(at))?.cause;
+    at = Cause.isCause(next) ? Cause.squash(next) : next;
+  }
+  return code === undefined ? tags.join(" > ") : `${tags.join(" > ")} (${code})`;
 }
 
 type PublicErrorReport = (
@@ -158,7 +175,8 @@ function reportUnexpectedCause(
     }
     if (reported) return;
   }
-  if (!isExpectedFailure(cause)) report("defect", cause);
+  if (isExpectedFailure(cause)) return;
+  report("defect", Option.isSome(decodeTaggedFailure(cause)) ? typedFailureSummary(cause) : cause);
 }
 
 function userFacingMessage(cause: unknown, fallback: string): string {
