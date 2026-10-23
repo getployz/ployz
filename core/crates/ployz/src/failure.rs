@@ -594,9 +594,9 @@ fn machine_selector_code(error: &MachineSelectorError) -> RpcErrorCode {
 fn operator_code(error: &OperatorError) -> RpcErrorCode {
     match error {
         OperatorError::Connect(error) => connect_code(error),
-        OperatorError::Rpc(error) | OperatorError::StartExec { source: error, .. } => {
-            error.to_rpc_error().code
-        }
+        OperatorError::Rpc(error)
+        | OperatorError::StartExec { source: error, .. }
+        | OperatorError::ExecConnectionLost { source: error, .. } => error.to_rpc_error().code,
         OperatorError::Selector(error) => code(error),
         OperatorError::NotRunning { .. } => RpcErrorCode::NotFound,
         OperatorError::MachineSelector(error) => machine_selector_code(error),

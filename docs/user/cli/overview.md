@@ -488,7 +488,10 @@ reaches whichever one runs. When `ployz exec` stops before your command does,
 because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
 command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command
 you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a` and `b` running.
-With a TTY, Ctrl-C reaches the command as a keypress first.
+With a TTY, Ctrl-C reaches the command as a keypress first. When the connection drops, exec
+exits 1 with `Lost the connection to machine-1; exec ended, but the command may still be running
+there.` The server stops the command as above once it notices the connection is gone, and until
+then the command goes on.
 
 A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
 `service add` and other changes exit 1 with `Cloud ... stopped answering after it got this
