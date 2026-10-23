@@ -149,9 +149,9 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
         // One receipt for this run: a retry of the same request replays, not repeats.
         id: Some(SyncId::parse(uuid::Uuid::new_v4().to_string())?),
     };
-    let request = store.seal_sync_values(request)?;
-    let synced = store.try_write(&request).map_err(|error| {
-        // Stale, nothing to sync, or no such row: the plan shows what there is now.
+    // Stale, nothing to sync, or no such row: the plan shows what there is now.
+    // Sealing resolves the rows and version as the write does, so it fails the same.
+    let fail = |error| {
         store.fail(store::with_next(
             error,
             |refusal| {
@@ -163,7 +163,9 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
             },
             plan_next,
         ))
-    })?;
+    };
+    let request = store.seal_sync_values(request, fail)?;
+    let synced = store.try_write(&request).map_err(fail)?;
     synced_out(matches, &synced)
 }
 
