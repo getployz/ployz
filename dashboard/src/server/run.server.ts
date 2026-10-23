@@ -6,6 +6,7 @@ import { NonRetriableError } from "inngest";
 import type { ManagedRuntime } from "effect";
 import { parseErrorEvidence } from "#/lib/error-evidence";
 import { asRecord } from "#/lib/json";
+import { runRedactedLog } from "#/server/log-redaction";
 import { loggableCause, PublicErrorCategory } from "#/server/public-error";
 import { AppRuntime, type AppServices } from "#/server/runtime.server";
 
@@ -77,9 +78,7 @@ export function makeEffectRunner<R, ER>(runtime: Runtime<R, ER>) {
     const failure = Cause.findErrorOption(exit.cause);
     if (Option.isSome(failure)) {
       if (Cause.hasDies(exit.cause)) {
-        Effect.runFork(
-          Effect.logError("Defect shadowed by a typed failure.", loggableCause(exit.cause)),
-        );
+        runRedactedLog(Effect.logError("Defect shadowed by a typed failure.", exit.cause));
       }
       throw failure.value;
     }
