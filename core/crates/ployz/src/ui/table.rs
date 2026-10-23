@@ -264,6 +264,91 @@ pub(crate) fn escaped(text: &str) -> String {
         .collect()
 }
 
+/// `text` [`escaped`] line by line, so it keeps its line breaks.
+pub(crate) fn escaped_lines(text: &str) -> String {
+    text.split('\n').map(escaped).collect::<Vec<_>>().join("\n")
+}
+
+/// `arg` as one shell word: a word with an [`unprintable`] character in `$'…'` form, so it
+/// shows as its bytes and pastes back as itself.
+pub(crate) fn shell_word(arg: &str) -> std::borrow::Cow<'_, str> {
+    use std::fmt::Write as _;
+    if !arg.chars().any(unprintable) {
+        return shell_words::quote(arg);
+    }
+    let mut word = String::from("$'");
+    for c in arg.chars() {
+        match c {
+            '\\' | '\'' => word.extend(['\\', c]),
+            c if !unprintable(c) => word.push(c),
+            // Bash decodes \u by the locale; bytes read the same under any.
+            _ => {
+                for byte in c.encode_utf8(&mut [0; 4]).bytes() {
+                    let _ = write!(word, "\\x{byte:02x}");
+                }
+            }
+        }
+    }
+    word.push('\'');
+    word.into()
+}
+
+/// `command` with each word that holds an [`unprintable`] character in [`shell_word`]'s
+/// `$'…'` form, so it shows safely and still pastes as the same command. Every other word
+/// stays as written; a word bash would read differently, or a command that doesn't parse,
+/// prints [`escaped`].
+pub(crate) fn pasteable(command: &str) -> String {
+    if !command.chars().any(unprintable) {
+        return command.to_owned();
+    }
+    let mut words = Vec::new();
+    let mut open: Option<String> = None;
+    // A quoted word can hold spaces, so a piece joins the next until it parses.
+    for piece in command.split(' ') {
+        let chunk = match open.take() {
+            Some(open) => format!("{open} {piece}"),
+            None => piece.to_owned(),
+        };
+        match shell_words::split(&chunk) {
+            Err(_) => open = Some(chunk),
+            Ok(_) if !chunk.chars().any(unprintable) => words.push(chunk),
+            Ok(parsed) => words.push(match parsed.as_slice() {
+                [word] if quoted_literally(&chunk) => shell_word(word).into_owned(),
+                _ => escaped(&chunk),
+            }),
+        }
+    }
+    match open {
+        Some(_) => escaped(command),
+        None => words.join(" "),
+    }
+}
+
+/// Whether bash reads `word` as [`shell_words::split`] does: outside single quotes it holds
+/// nothing bash would expand, glob or read as an operator, and no unquoted `=` that could
+/// make it an assignment. A backslash escapes the same in both, but one that ends `word`
+/// would join it to the next.
+fn quoted_literally(word: &str) -> bool {
+    let (mut single, mut double, mut escaping) = (false, false, false);
+    for c in word.chars() {
+        match c {
+            _ if escaping => escaping = false,
+            '\'' if !double => single = !single,
+            _ if single => {}
+            '\\' => escaping = true,
+            '"' => double = !double,
+            '$' | '`' | '!' => return false,
+            '~' | '*' | '?' | '[' | '{' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '='
+                if !double =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    !escaping
+}
+
 pub(crate) const REPLACED: char = '\u{FFFD}';
 
 pub(crate) fn printable(text: &str) -> String {
@@ -275,6 +360,113 @@ pub(crate) fn printable(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_warning_prints_an_invisible_character_as_its_code_and_keeps_its_lines() {
+        assert_eq!(
+            escaped_lines("Left KEY empty in app/a\u{202E}b.txt: it is not set.\nDeploy\r again."),
+            "Left KEY empty in app/a\\u{202e}b.txt: it is not set.\nDeploy\\u{d} again."
+        );
+        assert_eq!(
+            escaped_lines("Docker volume (not recommended)"),
+            "Docker volume (not recommended)"
+        );
+    }
+
+    #[test]
+    fn a_retry_line_escapes_what_would_steer_the_terminal() {
+        assert_eq!(shell_word("web-*"), "'web-*'");
+        assert_eq!(shell_word("web-1"), "web-1");
+        assert_eq!(shell_word("web\u{1b}[31m'1"), "$'web\\x1b[31m\\'1'");
+        assert_eq!(shell_word("evil\u{202E}1\\"), "$'evil\\xe2\\x80\\xae1\\\\'");
+        assert_eq!(
+            shell_word("a\u{85}\u{E0001}"),
+            "$'a\\xc2\\x85\\xf3\\xa0\\x80\\x81'"
+        );
+    }
+
+    #[test]
+    fn bash_reads_a_retry_word_back_as_the_same_bytes_in_any_locale() {
+        let words = [
+            "a\u{85}b",
+            "evil\u{202E}1",
+            "\u{E0001}tag\u{85}a",
+            "\u{1F600}\u{1b}[0m\u{1F600}",
+        ];
+        for locale in ["C", "C.UTF-8"] {
+            for word in words {
+                let output = std::process::Command::new("bash")
+                    .args(["-c", &format!("printf %s {}", shell_word(word))])
+                    .env("LC_ALL", locale)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{locale} {word:?}");
+                assert_eq!(output.stdout, word.as_bytes(), "{locale} {word:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_pasteable_command_escapes_only_the_words_that_need_it() {
+        let plain = "ployz set 'sentry.env.REDIS=VALUE' --env production";
+        assert_eq!(pasteable(plain), plain);
+        assert_eq!(
+            pasteable(&shell_words::join([
+                "ployz",
+                "config",
+                "put",
+                "app",
+                "a\u{202E}b.txt"
+            ])),
+            "ployz config put app $'a\\xe2\\x80\\xaeb.txt'"
+        );
+    }
+
+    #[test]
+    fn a_command_hint_never_pastes_as_a_different_command() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a\u{202E}bX"), "").unwrap();
+        // `ployz` prints `$NAME` first, so a leading assignment is seen as bash reads it.
+        let argv = |command: &str| {
+            let output = std::process::Command::new("bash")
+                .args([
+                    "-c",
+                    &format!("ployz() {{ printf '%s\\0' \"${{NAME-}}\" \"$@\"; }}; {command}"),
+                ])
+                .current_dir(dir.path())
+                .env("HOME", "/home/u")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{command}: {output:?}");
+            output.stdout
+        };
+        for hint in [
+            "ployz config put app \"$HOME/a\u{202E}b.txt\"",
+            "ployz config put app $'a\u{202E}b'",
+            "ployz config put app ~/a\u{202E}b",
+            "ployz config put app a\u{202E}b*",
+            "ployz config put app \"`printf x`a\u{202E}b\"",
+            "ployz config put app a\\ \u{202E}b",
+            "ployz config put app \"a\\\"\u{202E}b\\$\"",
+            "ployz config put app '$HOME/a\u{202E}b*'",
+            "ployz config put app 'it'\\''s\u{202E}b'",
+            "ployz config put app a\\'$HOME\u{202E}",
+            "ployz config put app \u{202E}\\ b",
+            "NAME=\"a\u{202E}b\" ployz deploy",
+            "NAME=a\u{202E}b ployz deploy",
+        ] {
+            let shown = pasteable(hint);
+            assert!(!shown.chars().any(unprintable), "{shown}");
+            assert!(
+                shown == escaped(hint) || argv(&shown) == argv(hint),
+                "{hint:?} shows as {shown}"
+            );
+        }
+        assert_eq!(
+            pasteable("ployz config put app '$HOME/a\u{202E}b*' 'it'\\''s\u{202E}b'"),
+            "ployz config put app $'$HOME/a\\xe2\\x80\\xaeb*' $'it\\'s\\xe2\\x80\\xaeb'"
+        );
+    }
 
     fn written(table: &Table, aligned: bool) -> String {
         let mut out = anstream::StripStream::new(Vec::new());

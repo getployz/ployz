@@ -15,7 +15,7 @@ use std::{
 use ployz_core::{MachineFailure, MachineId, MachineName, PartialResult, RpcError};
 use serde::Serialize;
 
-use super::{Fields, Hint, Mode, Table, Tone};
+use super::{Fields, Hint, Mode, Table, Tone, escaped_lines};
 use crate::failure::Failure;
 
 thread_local! {
@@ -87,7 +87,12 @@ pub(crate) fn record_warning(warning: String) {
 
 /// A warning on stderr that the JSON result already carries elsewhere.
 fn flag(warning: &str) {
-    let _ = writeln!(anstream::stderr(), "{} {warning}", Tone::Change.paint("!"));
+    let _ = writeln!(
+        anstream::stderr(),
+        "{} {}",
+        Tone::Change.paint("!"),
+        escaped_lines(warning)
+    );
 }
 
 /// Run a command as one step of another: the JSON result it would print is

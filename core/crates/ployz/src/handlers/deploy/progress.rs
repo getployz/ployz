@@ -57,7 +57,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                     .blocked
                     .iter()
                     .find(|entry| entry.service == *runtime)
-                    .map(|entry| entry.error.message.clone())
+                    .map(|entry| crate::ui::escaped(&entry.error.message))
             });
             row.detail = blocked.or_else(|| {
                 build.map(|build| {
@@ -888,6 +888,31 @@ mod tests {
                 .any(|hint| matches!(hint, Hint::Retry(_))),
             "{:?}",
             failure.hints()
+        );
+    }
+
+    #[test]
+    fn a_blocked_reason_prints_an_invisible_character_as_its_code() {
+        let mut view = view();
+        view.runtime_names.clear();
+        view.nodes = serde_json::from_value(json!([
+            {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "db", "outcome": "not_attempted", "rows": []}
+        ]))
+        .unwrap();
+        view.preview = Some(
+            serde_json::from_value(json!({
+                "namespace": "shop-production", "warnings": [], "operations": [],
+                "blocked": [{
+                    "service": "db",
+                    "error": {"code": "conflict", "message": "Config app has no file a\u{202E}b.txt", "details": {}}
+                }]
+            }))
+            .unwrap(),
+        );
+
+        assert_eq!(
+            details(&view),
+            [Some("Config app has no file a\\u{202e}b.txt".to_owned())]
         );
     }
 

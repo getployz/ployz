@@ -1107,6 +1107,36 @@ fn a_bidi_override_in_a_message_or_config_file_name_prints_escaped() {
 }
 
 #[test]
+fn a_store_error_prints_a_bidi_override_escaped_and_json_keeps_it_raw() {
+    for store in &targets() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let from = file.path().to_str().unwrap();
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["config", "add", "app"]);
+        ok(
+            store,
+            &["config", "put", "app", "a\u{202E}b.txt", "--from", from],
+        );
+        for args in [
+            &["config", "rm-file", "app", "a\u{202E}b.txt.missing"][..],
+            &["config", "put", "app", "a\u{202E}b.txt/x", "--from", from],
+        ] {
+            let refused = error(store, args);
+            let message = refused["message"].as_str().unwrap();
+            assert!(message.contains("a\u{202E}b.txt"), "{refused}");
+            let home = tempfile::tempdir().unwrap();
+            let output = store.command(home.path()).args(args).output().unwrap();
+            assert!(!output.status.success(), "{output:?}");
+            let shown = String::from_utf8(output.stdout).unwrap()
+                + &String::from_utf8(output.stderr).unwrap();
+            assert!(!shown.contains('\u{202E}'), "{shown}");
+            assert!(shown.contains(r"error: Config app has"), "{shown}");
+            assert!(shown.contains(r"a\u{202e}b.txt"), "{shown}");
+        }
+    }
+}
+
+#[test]
 fn an_env_value_prints_on_one_escaped_line_for_humans() {
     for store in &targets() {
         shop_with_web(store);

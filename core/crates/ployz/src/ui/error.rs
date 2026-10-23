@@ -4,7 +4,7 @@ use std::io;
 
 use serde_json::{Map, Value};
 
-use super::Tone;
+use super::{Tone, escaped, pasteable, unprintable};
 
 /// Most choices a `valid:` line lists before it says how many more there are.
 pub const VALID_SHOWN: usize = 8;
@@ -58,19 +58,23 @@ impl Hint {
         }
     }
 
+    /// What the reader sees: a command they can paste, or names [`escaped`] to read as stored.
     fn text(&self) -> String {
         match self {
             Self::Next(command)
             | Self::Inspect(command)
             | Self::Retry(command)
-            | Self::Undo(command) => command.clone(),
-            Self::Closest(name) => format!("did you mean {name}?"),
-            Self::Valid(names) => match names.split_at_checked(VALID_SHOWN) {
-                Some((shown, rest)) if !rest.is_empty() => {
-                    format!("{}, and {} more", shown.join(", "), rest.len())
+            | Self::Undo(command) => pasteable(command),
+            Self::Closest(name) => format!("did you mean {}?", escaped(name)),
+            Self::Valid(names) => {
+                let names: Vec<_> = names.iter().map(|name| escaped(name)).collect();
+                match names.split_at_checked(VALID_SHOWN) {
+                    Some((shown, rest)) if !rest.is_empty() => {
+                        format!("{}, and {} more", shown.join(", "), rest.len())
+                    }
+                    _ => names.join(", "),
                 }
-                _ => names.join(", "),
-            },
+            }
         }
     }
 
@@ -80,9 +84,10 @@ impl Hint {
     ///
     /// Returns the writer's error.
     pub fn write(&self, out: &mut dyn io::Write) -> io::Result<()> {
+        let text = self.text();
         match self.label() {
-            Some(label) => writeln!(out, "{} {}", Tone::Label.paint(label), self.text()),
-            None => writeln!(out, "{}", self.text()),
+            Some(label) => writeln!(out, "{} {text}", Tone::Label.paint(label)),
+            None => writeln!(out, "{text}"),
         }
     }
 
@@ -167,8 +172,19 @@ fn inline(error: Chain<'_>) -> String {
 /// Foreign text on one line: a registry's `denied\ndenied` would break the
 /// indented line it lands in. Repeated lines print once.
 fn one_line(text: &str) -> String {
+    joined(text.lines().map(str::trim))
+}
+
+/// [`one_line`] for the human `cause:` line: a trim keeps an [`unprintable`] character
+/// other than a tab, so [`escaped`] can show it.
+fn shown_line(text: &str) -> String {
+    let blank = |c: char| c == '\t' || (c.is_whitespace() && !unprintable(c));
+    joined(text.split('\n').map(|line| line.trim_matches(blank)))
+}
+
+fn joined<'a>(trimmed: impl Iterator<Item = &'a str>) -> String {
     let mut lines: Vec<&str> = Vec::new();
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in trimmed.filter(|line| !line.is_empty()) {
         if lines.last() != Some(&line) {
             lines.push(line);
         }
@@ -234,7 +250,8 @@ pub(crate) fn chain_text(error: Chain<'_>) -> String {
 }
 
 /// Write the human error: `error:` with our sentence, one `cause:` line with the
-/// deepest source, then the hints. `--json` keeps every cause.
+/// deepest source, then the hints. Each line is [`escaped`] so a name from the Store reads
+/// as stored, and a command hint is [`pasteable`]. `--json` keeps every cause, and the raw text.
 ///
 /// # Errors
 ///
@@ -245,7 +262,7 @@ pub fn write(
     cause: Option<&str>,
     hints: &[Hint],
 ) -> io::Result<()> {
-    let mut lines = message.lines();
+    let mut lines = message.split_terminator('\n').map(escaped);
     writeln!(
         out,
         "{} {}",
@@ -256,7 +273,12 @@ pub fn write(
         writeln!(out, "{line}")?;
     }
     if let Some(cause) = cause {
-        writeln!(out, "  {} {}", Tone::Bad.paint("cause:"), one_line(cause))?;
+        writeln!(
+            out,
+            "  {} {}",
+            Tone::Bad.paint("cause:"),
+            escaped(&shown_line(cause))
+        )?;
     }
     for hint in hints {
         hint.write(out)?;
@@ -320,6 +342,144 @@ mod tests {
         assert_eq!(
             String::from_utf8(out.into_inner()).unwrap(),
             "error: Could not create the Container.\n  cause: error from registry: denied; denied\n"
+        );
+    }
+
+    #[test]
+    fn a_carriage_return_prints_as_its_code() {
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "Config app has no file a.txt\r\n  Shown as stored.\n",
+            Some("refused a.txt\r\n\tdenied \n"),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            "error: Config app has no file a.txt\\u{d}\n  Shown as stored.\n  \
+             cause: refused a.txt\\u{d}; denied\n"
+        );
+    }
+
+    #[test]
+    fn a_foreign_line_end_trims_off_the_one_line_form() {
+        let error = io::Error::other("refused a.txt\r\n\tdenied \r\n");
+        assert_eq!(chain_text(&error), "refused a.txt; denied");
+        assert_eq!(row(&error), "refused a.txt; denied");
+        let wire = serde_json::to_value(rpc_error(ployz_core::RpcErrorCode::Internal, &error));
+        assert_eq!(
+            wire.unwrap().pointer("/message").unwrap(),
+            "refused a.txt; denied"
+        );
+    }
+
+    #[test]
+    fn an_invisible_character_prints_as_its_code_once() {
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "Config app has no file a\u{202E}b.txt\nAlready shown: a\\u{202e}b.txt",
+            Some("refused a\u{202E}b.txt"),
+            &[
+                Hint::Closest("a\u{202E}b.txt".into()),
+                Hint::Next("ployz config rm-file app a\u{202E}b.txt".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            "error: Config app has no file a\\u{202e}b.txt\n\
+             Already shown: a\\u{202e}b.txt\n  \
+             cause: refused a\\u{202e}b.txt\n\
+             did you mean a\\u{202e}b.txt?\n\
+             next: ployz config rm-file app $'a\\xe2\\x80\\xaeb.txt'\n"
+        );
+    }
+
+    #[test]
+    fn a_command_hint_quotes_an_invisible_character_so_it_pastes_back() {
+        let name = "a\u{202E}b.txt";
+        let config = format!("/tmp/{name}/config.yaml");
+        let next = ["ployz", "config", "rm-file", "app", name];
+        let retry = ["ployz", "--ployz-config", config.as_str(), "deploy"];
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "Config app has no file.",
+            None,
+            &[
+                Hint::Next(shell_words::join(next)),
+                Hint::Retry(shell_words::join(retry)),
+                Hint::Undo("ployz config rm-file app 'a\u{202E}b.txt".into()),
+            ],
+        )
+        .unwrap();
+        let shown = String::from_utf8(out.into_inner()).unwrap();
+        assert_eq!(
+            shown,
+            "error: Config app has no file.\n\
+             next: ployz config rm-file app $'a\\xe2\\x80\\xaeb.txt'\n\
+             retry: ployz --ployz-config $'/tmp/a\\xe2\\x80\\xaeb.txt/config.yaml' deploy\n\
+             undo: ployz config rm-file app 'a\\u{202e}b.txt\n"
+        );
+        for (line, words) in shown.lines().skip(1).zip([&next[..], &retry[..]]) {
+            let (_, command) = line.split_once(": ").unwrap();
+            let parsed = std::process::Command::new("bash")
+                .args(["-c", &format!("printf '%s\\0' {command}")])
+                .output()
+                .unwrap();
+            assert!(parsed.status.success(), "{parsed:?}");
+            let parsed = String::from_utf8(parsed.stdout).unwrap();
+            assert_eq!(
+                parsed
+                    .trim_end_matches('\0')
+                    .split('\0')
+                    .collect::<Vec<_>>(),
+                words
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_hint_without_an_invisible_character_prints_as_built() {
+        let hints = [
+            "unset PLOYZ_TOKEN && ployz login",
+            "ployz config put app 'a b.txt' --from \"./x y\"",
+            "ployz  env sync --undo $'a\\xe2\\x80\\xaeb'",
+            "ployz logs web",
+        ];
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "Refused.",
+            None,
+            &[
+                Hint::Next(hints[0].into()),
+                Hint::Retry(hints[1].into()),
+                Hint::Undo(hints[2].into()),
+                Hint::Inspect(hints[3].into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            format!(
+                "error: Refused.\nnext: {}\nretry: {}\nundo: {}\ninspect: {}\n",
+                hints[0], hints[1], hints[2], hints[3]
+            )
+        );
+    }
+
+    #[test]
+    fn only_the_word_with_an_invisible_character_is_requoted() {
+        let mut out = anstream::StripStream::new(Vec::new());
+        Hint::Next("cd \"x y\" && ployz  rm a\u{202E}b".into())
+            .write(&mut out)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            "next: cd \"x y\" && ployz  rm $'a\\xe2\\x80\\xaeb'\n"
         );
     }
 

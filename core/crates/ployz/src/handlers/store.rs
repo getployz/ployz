@@ -927,7 +927,7 @@ pub(crate) fn broken_line(
     format!(
         "{}; deploys skip it until you change it: {}",
         crate::ui::escaped(&reference.to_string()),
-        super::pasteable(&fix_broken(matches, reference))
+        crate::ui::pasteable(&fix_broken(matches, reference))
     )
 }
 

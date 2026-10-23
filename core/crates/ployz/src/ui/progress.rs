@@ -13,7 +13,7 @@ use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::{Mode, Tone};
+use super::{Mode, Tone, escaped_lines};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const REDRAW: Duration = Duration::from_millis(100);
@@ -1113,7 +1113,11 @@ fn flush_deferred(
         writeln!(
             writer,
             "{}",
-            paint(&format!("! {warning}"), Tone::Change, color)
+            paint(
+                &format!("! {}", escaped_lines(&warning.to_string())),
+                Tone::Change,
+                color
+            )
         )?;
         printed.raw.push(warning.clone());
         if let Some(cause) = observation_detail(warning) {
@@ -1200,6 +1204,7 @@ fn notices(frame: &Frame, settled: bool, printed: &NoticeHistory) -> Vec<String>
                 format!("Server {label}: deployment observations are incomplete ({details})")
             })
         })
+        .map(|notice| escaped_lines(&notice))
         .collect()
 }
 
