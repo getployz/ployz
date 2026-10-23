@@ -1017,6 +1017,10 @@ mod tests {
             (&["server", "ls"], Some("b")),
             (&["ps"], Some("b")),
             (&["deploy"], Some("b")),
+            (&["device", "request"], None),
+            (&["device", "ls"], Some("b")),
+            (&["device", "rm", "mmg42klgyq"], Some("b")),
+            (&["device", "approve", "mmg42klgyq"], Some("b")),
         ] {
             let argv = args
                 .iter()

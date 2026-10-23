@@ -242,13 +242,26 @@ fn each_device_command_parses_and_reaches_its_connection() {
     });
     std::fs::write(dir.path().join("cloud.json"), signed_in.to_string()).unwrap();
     let config = dir.path().join("config.yaml");
-    let connect = format!("unix://{}", dir.path().join("absent.sock").display());
+    let socket = dir.path().join("absent.sock");
+    std::fs::write(
+        &config,
+        format!(
+            "contexts:\n  staging:\n    connections:\n      - unix: {}\n",
+            socket.display()
+        ),
+    )
+    .unwrap();
+    let connect = format!("unix://{}", socket.display());
     let code = key(0).code().to_string();
-    for (args, handler) in [
+    for ((args, handler), via) in [
         (vec!["ls"], list as fn(&ArgMatches) -> Result<(), Error>),
         (vec!["rm", &code], remove),
         (vec!["approve", &code], super::approve),
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|leaf| {
+        [["--connect", connect.as_str()], ["--context", "staging"]].map(|via| (leaf.clone(), via))
+    }) {
         let root = crate::cli::command()
             .try_get_matches_from(
                 [
@@ -259,7 +272,7 @@ fn each_device_command_parses_and_reaches_its_connection() {
                 ]
                 .into_iter()
                 .chain(args.iter().copied())
-                .chain(["--connect", &connect]),
+                .chain(via),
             )
             .unwrap();
 
@@ -267,7 +280,7 @@ fn each_device_command_parses_and_reaches_its_connection() {
 
         assert_eq!(
             message, "Ployz couldn't reach your Server's daemon.",
-            "{args:?}"
+            "{args:?} {via:?}"
         );
     }
 }
