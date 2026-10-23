@@ -194,9 +194,9 @@ const finish = ({ step, runEffect, run, runId }: RunSteps, id: string, message: 
 /**
  * One SetVolumeCopy. A Machine answers Busy while a Container step or another switch holds the Volume, so the run
  * sleeps and asks again with the same request, which spends no retry. `at` is when the Machine answered, in ms. A
- * retried attempt's answer is `late`: the attempt before may have made the change and lost the answer, so `at` is
- * only the latest the change could have been made. A step an older version of this function memoized has no `at`,
- * or none on a retried attempt.
+ * retried attempt's answer is `late`: the attempt before may have made the change and lost the answer, so the
+ * change may have been made before `at`. A step an older version of this function memoized has no `late`, and has
+ * no `at` if it ran on a retried attempt.
  */
 async function settle({ step, runEffect, run, runId, attempt }: RunSteps, id: string, ask: Effect.Effect<CopyAnswer, Error, AppServices>, still: string) {
   for (let check = 0; check < BUSY_CHECKS; check += 1) {
@@ -689,10 +689,12 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     }), `${B.name} is still starting ${name}'s Service`);
     if (!started.ok) throw new NonRetriableError(started.message);
     await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
-    // A late start's time only bounds the downtime from above.
-    downtime = stoppedAt === null || started.at === undefined
+    // A late start may have been made before its answer, so the time is an estimate that may run long. Times
+    // stamped by different workers can disagree; a negative one says nothing.
+    const stopped = stoppedAt === null || started.at === undefined || started.at < stoppedAt ? null : formatDuration((started.at - stoppedAt) / 1000);
+    downtime = stopped === null
       ? null
-      : `${service} was stopped ${started.late === true ? "at most " : ""}${formatDuration((started.at - stoppedAt) / 1000)}`;
+      : started.late === true ? `${service} was stopped about ${stopped} or less (its start was retried)` : `${service} was stopped ${stopped}`;
   } catch (error) {
     return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));
   }

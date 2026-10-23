@@ -2568,7 +2568,7 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
-    it("a start whose answer was lost says at most how long the Service was stopped once its retried attempt answers", async () => {
+    it("a start whose answer was lost says about how long the Service was stopped, or less, once its retried attempt answers", async () => {
       let clock = 0;
       const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
       try {
@@ -2590,7 +2590,7 @@ describe("volume runs", () => {
         const retried = await execute(run.id, "run-1", memoized, volumeId, undefined, 1);
 
         expect(retried.result).toEqual({ runId: run.id, moved: "fsn-2" });
-        expect(await rows()).toMatchObject([{ state: "done", message: "web was stopped at most 43s" }]);
+        expect(await rows()).toMatchObject([{ state: "done", message: "web was stopped about 43s or less (its start was retried)" }]);
       } finally {
         now.mockRestore();
       }
