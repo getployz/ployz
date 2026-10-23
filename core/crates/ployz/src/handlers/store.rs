@@ -432,7 +432,7 @@ impl<'m> Store<'m> {
         })
     }
 
-    /// The Servers' certificates and ingress addresses, through `--connect` or the
+    /// The Servers' certificates, ingress Servers and their addresses, through `--connect` or the
     /// context: never Cloud's Server Access, whose Cluster isn't this Store's. Servers
     /// this can't reach leave the certificates unobserved. DNS failures reach a status
     /// through the certificate attempts that met them.
@@ -453,14 +453,21 @@ impl<'m> Store<'m> {
         let frame = runtime
             .block_on(async { tokio::time::timeout(OBSERVE_DOMAINS_TIMEOUT, observe).await });
         if let Ok(Some(frame)) = frame {
-            evidence.ingress_addresses = frame
+            let ingress = frame
                 .machines
                 .iter()
-                .filter(|observed| observed.machine.accepts_ingress)
+                .filter(|observed| observed.machine.accepts_ingress);
+            evidence.ingress_servers = frame
+                .incomplete_ids
+                .machines
+                .is_empty()
+                .then(|| u32::try_from(ingress.clone().count()).unwrap_or(u32::MAX));
+            evidence.ingress_addresses = ingress
                 .filter_map(|observed| observed.machine.public_ip)
                 .map(|address| address.to_string())
                 .collect();
             evidence.certificates = Some(frame.certificates);
+            evidence.incomplete_certificates = frame.incomplete_ids.certificates;
         }
         evidence
     }

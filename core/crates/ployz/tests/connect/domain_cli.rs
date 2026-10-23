@@ -107,7 +107,7 @@ fn applied(store: &Path) {
         .unwrap();
 }
 
-/// A Server whose certificate for [`HOST`] is issued, and a Store whose deployed
+/// An ingress Server with a public IP and an issued certificate for [`HOST`], and a Store whose deployed
 /// Service `web` has that domain.
 async fn live_domain() -> (
     tempfile::TempDir,
@@ -116,7 +116,9 @@ async fn live_domain() -> (
 ) {
     let service = DiscoveryService::new(test_description());
     let mut frame = empty_watch_frame();
-    frame.machines.push(machine('a', "one"));
+    let mut ingress = machine('a', "one");
+    ingress.machine.public_ip = Some("203.0.113.7".parse().unwrap());
+    frame.machines.push(ingress);
     frame.certificates.push(CertificateObservation {
         hostname: CertificateHost::from(IngressHost::parse(HOST).unwrap()),
         status: CertificateAvailability::Available,
