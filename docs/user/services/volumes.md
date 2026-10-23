@@ -43,12 +43,16 @@ it started creating the volume, the limit stays fixed in the panel. Once the vol
 can grow it on Ployz Cloud while its service keeps running. Type a larger **Storage limit** there
 and click **Grow**. The panel shows the resize until it ends. Before you confirm,
 it refuses a smaller limit, a server whose Ployz is too old to grow it or that isn't reporting to
-Cloud, and a size a server reports no room for. You can also grow it from the CLI:
+Cloud, and a size a server reports no room for. You can also grow it from the CLI, which goes through
+Ployz Cloud too:
 
 ```sh
 # Grow the data volume to 20 GB on every server that holds a copy
 ployz volume set data --size 20 --wait
 ```
+
+Without Ployz Cloud, a deployed volume keeps its limit: `ployz volume set --size` refuses and
+says so.
 
 Ployz grows each mirror first and the copy your service writes to last. If one server holding
 a copy has no room, Ployz refuses the whole resize, names that server, and the volume keeps its

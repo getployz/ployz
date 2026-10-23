@@ -243,14 +243,11 @@ fn a_deployed_volume_resizes_only_with_ployz_cloud() {
     )
     .unwrap_err()
     .report();
-    let Err(moving) = cloud(store.backend()) else {
-        panic!("the in-process Store has no Volume runs");
-    };
-    let moving = moving.report();
-    assert_eq!(error.code, RpcErrorCode::Unsupported);
+    let refused =
+        "Resizing deployed Volume data needs Ployz Cloud; without it, data keeps its 5 GB limit.";
     assert_eq!(
-        (&error.code, &error.message),
-        (&moving.code, &moving.message)
+        (&error.code, error.message.as_str()),
+        (&RpcErrorCode::Unsupported, refused)
     );
     let settle = super::super::set_storage(
         &root,
@@ -261,8 +258,8 @@ fn a_deployed_volume_resizes_only_with_ployz_cloud() {
     .unwrap_err()
     .report();
     assert_eq!(
-        (&settle.code, &settle.message),
-        (&moving.code, &moving.message)
+        (&settle.code, settle.message.as_str()),
+        (&RpcErrorCode::Unsupported, refused)
     );
 }
 
