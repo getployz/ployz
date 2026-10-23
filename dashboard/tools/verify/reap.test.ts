@@ -75,7 +75,7 @@ function host() {
   };
   const run = (env: Record<string, string> = {}) => execFileSync(reap, [], {
     encoding: "utf8",
-    env: { ...process.env, ...env, PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}`, FAKE_DOCKER_ROOT: root },
+    env: { ...process.env, ...env, PATH: `${join(root, "bin")}:${process.env["PATH"] ?? ""}`, FAKE_DOCKER_ROOT: root },
   });
   const removed = () => existsSync(join(root, "removed")) ? readFileSync(join(root, "removed"), "utf8").trim().split("\n").sort() : [];
   return { root, container, checkout, run, removed };
