@@ -587,6 +587,31 @@ pub(crate) fn destructive(
     )
 }
 
+/// Add to `stale`, the conflict for a stale version, what the fresh review deletes:
+/// `probe` is [`destructive`] run at no version and with nothing accepted. When it
+/// asks to confirm a loss, its version, Volumes and names to accept go in
+/// `details.volume_loss`, so one retry with both goes through. Anything else it
+/// says leaves the conflict as it was.
+pub(crate) fn with_loss(
+    mut stale: RpcError,
+    probe: Result<Vec<crate::VolumeLoss>, RpcError>,
+) -> RpcError {
+    if let Err(asked) = probe
+        && asked.code == ployz_core::RpcErrorCode::ConfirmationRequired
+        && let Some(details) = stale.details.as_object_mut()
+    {
+        details.insert(
+            "volume_loss".to_owned(),
+            json!({
+                "version": asked.details.get("version"),
+                "volumes": asked.details.get("volumes"),
+                "accept": asked.details.get("accept"),
+            }),
+        );
+    }
+    stale
+}
+
 /// The losses saved with `saved` as consent for its next Deploy.
 pub(crate) fn consent(saved: Option<&Saved>) -> &[crate::VolumeLoss] {
     saved.map_or(&[], |saved| saved.accepted.as_slice())

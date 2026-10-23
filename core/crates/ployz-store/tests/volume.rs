@@ -2123,3 +2123,86 @@ fn shared_writes_applies_at_once_and_is_no_diff_row() {
         .unwrap();
     assert!(!listed(&store, &who)[0].volume.shared_writes);
 }
+
+/// A Deploy or Save at a stale version is refused for the version. When the fresh
+/// review deletes data, the refusal hands back the version that binds that loss and
+/// the Volumes to accept, so one retry with both goes through.
+#[test]
+fn a_stale_version_hands_back_the_version_that_binds_the_fresh_loss() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    let stale = diff(&store, &who).version;
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    let bound = admit(&store, &who, 2, &[], Some(observed(&['a'])))
+        .unwrap_err()
+        .details["version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let save_at = |version: &str, accept: &[&str]| {
+        store.write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: Some(version.to_owned()),
+                message: None,
+                accept_volume_loss: accept
+                    .iter()
+                    .map(|name| VolumeName::parse(*name).unwrap())
+                    .collect(),
+            },
+            &Trusted {
+                volumes: Some(observed(&['a'])),
+                ..Trusted::default()
+            },
+        )
+    };
+    let deploy = admit_at(
+        &store,
+        &who,
+        2,
+        &["data"],
+        Some(observed(&['a'])),
+        Some(stale.clone()),
+    )
+    .unwrap_err();
+    let save = save_at(&stale, &["data"]).unwrap_err();
+    for refused in [deploy, save] {
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert_eq!(refused.details["volume_loss"]["version"], json!(bound));
+        assert_eq!(refused.details["volume_loss"]["accept"], json!(["data"]));
+        assert_eq!(
+            refused.details["volume_loss"]["volumes"][0]["name"],
+            json!("data")
+        );
+    }
+
+    // Without the observation that finds the data, it is the plain conflict.
+    let unobserved = admit_at(&store, &who, 2, &["data"], None, Some(stale.clone())).unwrap_err();
+    assert_eq!(unobserved.code, RpcErrorCode::Conflict);
+    assert!(
+        unobserved.details.get("volume_loss").is_none(),
+        "{unobserved:?}"
+    );
+
+    admit_at(
+        &store,
+        &who,
+        2,
+        &["data"],
+        Some(observed(&['a'])),
+        Some(bound),
+    )
+    .unwrap();
+}
