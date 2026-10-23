@@ -108,13 +108,21 @@ fn skip_interface(name: &str) -> bool {
 }
 
 /// Whether this server reaches IPv4 itself. One without that route reaches an IPv4
-/// lookup only through a NAT64 gateway, which answers with the gateway's address. An
-/// unreadable route table counts as a route, as before.
+/// lookup only through a NAT64 gateway, which answers with the gateway's address.
 fn has_ipv4_route() -> bool {
-    checked_command("ip", &["-4", "-json", "route", "show", "default"])
-        .ok()
-        .and_then(|output| serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout).ok())
-        .is_none_or(|routes| !routes.is_empty())
+    // Ask the kernel, so policy tables and split routes count, not only a main-table default.
+    ipv4_route(checked_command("ip", &["-4", "route", "get", "1.1.1.1"]))
+}
+
+/// Only the kernel refusing the route means there is none. Anything else counts as a
+/// route, as before.
+fn ipv4_route(lookup: Result<std::process::Output, NetworkError>) -> bool {
+    match lookup {
+        Err(NetworkError::Command { stderr, .. }) => {
+            !(stderr.contains("Network is unreachable") || stderr.contains("No route to host"))
+        }
+        _ => true,
+    }
 }
 
 fn public_ip_lookups(ipv4_route: bool) -> &'static [&'static str] {
@@ -177,6 +185,28 @@ mod tests {
                 .all(|url| url.contains("api6."))
         );
         assert!(public_ip_lookups(true).contains(&"https://api.ipify.org"));
+    }
+
+    #[test]
+    fn only_a_refused_route_lookup_means_no_ipv4_route() {
+        let refused = |stderr: &str| {
+            Err(NetworkError::Command {
+                program: "ip".into(),
+                stderr: stderr.into(),
+            })
+        };
+        assert!(!ipv4_route(refused(
+            "RTNETLINK answers: Network is unreachable"
+        )));
+        assert!(!ipv4_route(refused("RTNETLINK answers: No route to host")));
+        assert!(ipv4_route(refused("RTNETLINK answers: Invalid argument")));
+        assert!(ipv4_route(Err(std::io::Error::other("no ip").into())));
+        // A policy table or a 0.0.0.0/1 split resolves here, with no main-table default.
+        assert!(ipv4_route(Ok(std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: b"1.1.1.1 via 192.0.2.1 dev wg0 table 51820 src 192.0.2.8\n".to_vec(),
+            stderr: Vec::new(),
+        })));
     }
 
     #[test]
