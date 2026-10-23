@@ -1795,6 +1795,74 @@ fn machine_administration_requests_round_trip_as_typed_payloads() {
 }
 
 #[test]
+fn sealing_key_backfill_rpcs_have_one_typed_wire_contract() {
+    let machine = MachineId::parse(MACHINE_ID).unwrap();
+    let public_key = ployz_core::SealingPublicKey::from_bytes([9; 32]);
+    let sealed = ployz_core::SealedSealingKey::from_bytes(vec![1, 2, 3]);
+
+    assert_eq!(
+        op::GenerateSealingKey::into_request(ployz_core::GenerateSealingKeyRequest {})
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::GenerateSealingKey(ployz_core::GenerateSealingKeyRequest {})
+    );
+    let share = ployz_core::ShareSealingKeyRequest {
+        machine,
+        public_key: ployz_core::WireGuardPublicKey([7; 32]),
+    };
+    assert_eq!(
+        op::ShareSealingKey::into_request(share.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::ShareSealingKey(share)
+    );
+    let install = ployz_core::InstallSealingKeyRequest {
+        from: machine,
+        sealed: sealed.clone(),
+        public_key,
+    };
+    assert_eq!(
+        op::InstallSealingKey::into_request(install.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::InstallSealingKey(install)
+    );
+
+    let held = ployz_core::SealingKeyHeld { public_key };
+    assert_eq!(
+        RpcResponse::from(held)
+            .decode::<op::GenerateSealingKey>()
+            .unwrap(),
+        held
+    );
+    assert_eq!(
+        RpcResponse::from(held)
+            .decode::<op::InstallSealingKey>()
+            .unwrap(),
+        held
+    );
+    let shared = ployz_core::SealingKeyShared { sealed };
+    assert_eq!(
+        RpcResponse::from(shared.clone())
+            .decode::<op::ShareSealingKey>()
+            .unwrap(),
+        shared
+    );
+    let wire = serde_json::to_value(RpcResponse::from(shared)).unwrap();
+    assert_eq!(wire.pointer("/kind"), Some(&json!("sealing_key_shared")));
+    assert_eq!(wire.pointer("/payload/sealed"), Some(&json!("AQID")));
+}
+
+#[test]
 fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
     let attempt_id = MachineUpgradeAttemptId::parse(MACHINE_ID).unwrap();
     let request = RequestMachineUpgradeRequest {

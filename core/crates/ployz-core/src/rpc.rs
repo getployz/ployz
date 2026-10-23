@@ -11,8 +11,10 @@ use std::{
 use ts_rs::TS;
 
 mod build_grant;
+mod sealing;
 mod upgrade;
 pub use build_grant::*;
+pub use sealing::*;
 pub use upgrade::*;
 
 use ipnet::Ipv4Net;
@@ -1550,6 +1552,8 @@ define_responses! {
     RoutedAddresses(RoutedAddresses) => "routed_addresses";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
+    SealingKeyHeld(SealingKeyHeld) => "sealing_key_held";
+    SealingKeyShared(SealingKeyShared) => "sealing_key_shared";
     Left(Left) => "left";
     Forgotten(Forgotten) => "forgotten";
     MetricHistoryReply(MetricHistoryReply) => "metric_history";

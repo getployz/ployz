@@ -20,7 +20,9 @@ use crate::{
     corrosion::{AdminClient, CertificateMaterial, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
-    machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
+    machine::{
+        LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, SealingError, StoreError,
+    },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     route_acks::{Ackers, routed},
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
@@ -619,6 +621,39 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn generate_sealing_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .generate_sealing_key(expect::<op::GenerateSealingKey>(request)?)
+                .await,
+        )
+    }
+
+    async fn share_sealing_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .share_sealing_key(expect::<op::ShareSealingKey>(request)?)
+                .await,
+        )
+    }
+
+    async fn install_sealing_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .install_sealing_key(expect::<op::InstallSealingKey>(request)?)
+                .await,
+        )
+    }
+
     async fn request_machine_upgrade(
         &self,
         request: Request<OpaquePayload>,
@@ -920,6 +955,32 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
         ),
         LocalMachineError::Upgrade(error) => respond(upgrade_error(error)),
+        LocalMachineError::Sealing(error) => respond(sealing_error(error)),
+    }
+}
+
+fn sealing_error(error: SealingError) -> RpcError {
+    use ployz_core::SealingRefusal as Refusal;
+    let (code, refusal) = match &error {
+        SealingError::Unreadable(_) | SealingError::Unwritable(_) => {
+            (RpcErrorCode::Internal, Refusal::Unreadable)
+        }
+        SealingError::Published(_) => (RpcErrorCode::Conflict, Refusal::Published),
+        SealingError::AwaitsRecovery(_) => (RpcErrorCode::Conflict, Refusal::AwaitsRecovery),
+        SealingError::NotHeld => (RpcErrorCode::Conflict, Refusal::NotHeld),
+        SealingError::HeldAnother { .. } => (RpcErrorCode::Conflict, Refusal::HeldAnother),
+        SealingError::UnknownMachine(_) => (RpcErrorCode::NotFound, Refusal::UnknownMachine),
+        SealingError::WireGuardKeyMismatch(_) => {
+            (RpcErrorCode::Conflict, Refusal::WireGuardKeyMismatch)
+        }
+        SealingError::Unopenable { .. } => (RpcErrorCode::InvalidArgument, Refusal::Unopenable),
+        SealingError::SealedAnother { .. } => {
+            (RpcErrorCode::InvalidArgument, Refusal::SealedAnother)
+        }
+    };
+    RpcError {
+        details: refusal.details(),
+        ..RpcError::caused(code, &error)
     }
 }
 

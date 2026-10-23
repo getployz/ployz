@@ -24,6 +24,7 @@ use super::{ApiClient, ReplicatedStore};
 struct ClusterKv {
     network: Option<String>,
     sealing_public_key: tokio::sync::watch::Sender<Option<String>>,
+    sealing_awaits_recovery: Option<String>,
     machines: BTreeMap<String, String>,
     containers: BTreeMap<String, (String, String)>,
     volumes: BTreeMap<(String, String), String>,
@@ -55,6 +56,7 @@ impl ClusterKv {
         Self {
             network: Some("10.210.0.0/16".into()),
             sealing_public_key: tokio::sync::watch::Sender::new(None),
+            sealing_awaits_recovery: None,
             machines: BTreeMap::new(),
             containers: BTreeMap::new(),
             volumes: BTreeMap::new(),
@@ -222,6 +224,10 @@ impl FakeCluster {
         let mut published = self.kv.lock().unwrap().sealing_public_key.subscribe();
         let key = published.wait_for(Option::is_some).await.unwrap();
         key.clone().unwrap()
+    }
+
+    pub(crate) fn write_sealing_awaits_recovery(&self, key: &str) {
+        self.kv.lock().unwrap().sealing_awaits_recovery = Some(key.to_owned());
     }
 
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
@@ -420,7 +426,14 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                 kv.volumes.get(&key).map(|volume| vec![json!(volume)]),
             )
         }
-        "SELECT value FROM cluster WHERE key = ?" => events(&["value"], Vec::new()),
+        "SELECT value FROM cluster WHERE key = ?" => {
+            let value = match text_param(&statement.params, 0) {
+                "sealing_public_key" => kv.sealing_public_key.borrow().clone(),
+                "sealing_awaits_recovery" => kv.sealing_awaits_recovery.clone(),
+                _ => None,
+            };
+            events(&["value"], value.map(|value| vec![json!(value)]))
+        }
         "SELECT value FROM cluster WHERE key = 'network'" => events(
             &["value"],
             kv.network.iter().map(|network| vec![json!(network)]),

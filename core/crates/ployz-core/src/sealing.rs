@@ -107,6 +107,11 @@ pub enum Sealing {
     /// The Machine joined without receiving the key and cannot open sealed
     /// values until a member hands it over.
     NeedsAccess,
+    /// The Cluster lost its key: no Machine may generate another until the one it
+    /// published, `public_key`, is recovered.
+    AwaitsRecovery {
+        public_key: SealingPublicKey,
+    },
 }
 
 #[cfg(test)]
@@ -137,6 +142,13 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Sealing::NeedsAccess).unwrap(),
             serde_json::json!({ "kind": "needs_access" })
+        );
+        let awaits = Sealing::AwaitsRecovery {
+            public_key: SealingPublicKey::from_bytes([2; 32]),
+        };
+        assert_eq!(
+            serde_json::to_value(awaits).unwrap(),
+            serde_json::json!({ "kind": "awaits_recovery", "public_key": STANDARD.encode([2; 32]) })
         );
     }
 

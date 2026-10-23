@@ -398,7 +398,9 @@ impl From<ployz_core::Sealing> for Sealing {
     fn from(sealing: ployz_core::Sealing) -> Self {
         match sealing {
             ployz_core::Sealing::Held { public_key } => Self::Held { public_key },
-            ployz_core::Sealing::NeedsAccess => Self::NeedsAccess,
+            ployz_core::Sealing::NeedsAccess | ployz_core::Sealing::AwaitsRecovery { .. } => {
+                Self::NeedsAccess
+            }
         }
     }
 }
@@ -1516,6 +1518,10 @@ mod tests {
             ),
             (
                 ployz_core::Sealing::NeedsAccess,
+                serde_json::json!({ "kind": "needs_access" }),
+            ),
+            (
+                ployz_core::Sealing::AwaitsRecovery { public_key },
                 serde_json::json!({ "kind": "needs_access" }),
             ),
         ] {

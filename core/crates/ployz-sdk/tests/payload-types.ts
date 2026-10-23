@@ -1,6 +1,8 @@
 // Compile-time checks over the generated declarations and the hand-written
 // façade. `tsc --noEmit` over this file is the TypeScript-side guard.
 import type {
+  BackfillSealingKeyReport,
+  BackfillSealingKeyRequest,
   ClusterTeardown,
   ConfigMount,
   ConfigSpec,

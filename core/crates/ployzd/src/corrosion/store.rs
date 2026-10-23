@@ -198,6 +198,9 @@ impl MachinePublicationGuard<'_> {
     }
 }
 
+pub(crate) const SEALING_PUBLIC_KEY_CLUSTER_KEY: &str = "sealing_public_key";
+pub(crate) const SEALING_AWAITS_RECOVERY_CLUSTER_KEY: &str = "sealing_awaits_recovery";
+
 impl ReplicatedStore {
     #[must_use]
     pub(crate) fn new(api: ApiClient) -> Self {
@@ -291,6 +294,57 @@ impl ReplicatedStore {
             )])
             .await?;
         Ok(())
+    }
+
+    /// The Cluster's published Sealing public key, or `None` for a Cluster
+    /// founded before Sealing Keys existed and not yet backfilled.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion query fails, or the stored value
+    /// is not a Sealing public key.
+    pub async fn sealing_public_key(&self) -> Result<Option<SealingPublicKey>, Error> {
+        self.sealing_cluster_key(SEALING_PUBLIC_KEY_CLUSTER_KEY, "Sealing public key")
+            .await
+    }
+
+    /// The Sealing public key a recovery is waiting on, written when the
+    /// Cluster lost its key.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion query fails, or the stored value
+    /// is not a Sealing public key.
+    pub async fn sealing_awaits_recovery(&self) -> Result<Option<SealingPublicKey>, Error> {
+        self.sealing_cluster_key(
+            SEALING_AWAITS_RECOVERY_CLUSTER_KEY,
+            "Sealing public key awaiting recovery",
+        )
+        .await
+    }
+
+    async fn sealing_cluster_key(
+        &self,
+        key: &str,
+        what: &str,
+    ) -> Result<Option<SealingPublicKey>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = ?",
+                [json!(key)],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        let Some([value]) = rows.first() else {
+            return Ok(None);
+        };
+        SealingPublicKey::try_from(text(value, what)?.to_owned())
+            .map(Some)
+            .map_err(|error| {
+                Error::Protocol(format!(
+                    "invalid {what}: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                ))
+            })
     }
 
     /// The published Cluster network, or `None` before the founder's
