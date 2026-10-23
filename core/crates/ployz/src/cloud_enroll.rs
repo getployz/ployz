@@ -1581,12 +1581,12 @@ mod tests {
                 loop {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     read_http(&mut stream).await;
-                    tokio::io::AsyncWriteExt::write_all(
+                    // A client the deadline cut has gone; the next attempt must still connect.
+                    let _ = tokio::io::AsyncWriteExt::write_all(
                         &mut stream,
                         &http_response(503, "Service Unavailable", body),
                     )
-                    .await
-                    .unwrap();
+                    .await;
                 }
             });
             let credential = PairingCredential::parse("pairing-secret").unwrap();
