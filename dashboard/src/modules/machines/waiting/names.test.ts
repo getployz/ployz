@@ -9,7 +9,7 @@ it("names a token with two lowercase words joined by a hyphen", () => {
 
 // The same table as MachineName::from_hostname in ployz-core, so Cloud plans the name the Machine takes.
 it.each([
-  ["HP-WIN11", "hp-win11"],
+  ["MY-SERVER", "my-server"],
   ["vultr1", "vultr1"],
   ["my_box__01", "my-box-01"],
   ["web.example.com", "web-example-com"],

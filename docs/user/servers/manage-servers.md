@@ -82,7 +82,7 @@ Bare `--first` enrolls only the oldest match. `--all` selects every waiting serv
 how many came from each provider, including **Unknown**.
 
 `--name 'web-{n}'` numbers the planned names. Without it, each server is named after its
-hostname, lowercased with other characters turned into hyphens (`HP-WIN11` becomes `hp-win11`).
+hostname, lowercased with other characters turned into hyphens (`MY-SERVER` becomes `my-server`).
 Selection takes names or hostnames, never IDs. `--storage zfs` is the default. It uses a spare
 disk when available and falls back to Docker volumes where ZFS cannot run. Add
 `--no-spare-disk` to keep ZFS on the main disk, or `--no-fallback` to skip servers that cannot

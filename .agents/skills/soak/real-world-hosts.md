@@ -1,6 +1,6 @@
 # Real-world hosts axis
 
-Users enroll machines that a lab never makes: a desktop named `HP-WIN11`, distro Docker, a full disk, an FQDN hostname. Every soak and every pre-release check runs this axis against the release under test. It drives the user paths only, each through to a first deploy:
+Users enroll machines that a lab never makes: a desktop named `MY-SERVER`, distro Docker, a full disk, an FQDN hostname. Every soak and every pre-release check runs this axis against the release under test. It drives the user paths only, each through to a first deploy:
 
 - the install line (`curl -fsSL https://ployz.sh | sudo sh -s -- VERSION --enroll`, token at the prompt);
 - cloud-init user data with `PLOYZ_FLEET_TOKEN`;
@@ -13,7 +13,7 @@ Use one or two Machines at a time and vary several conditions on each. Order a M
 
 | Condition | Platform | How |
 |---|---|---|
-| Hostname with capitals, an FQDN, 64 characters | Incus or Boat | `hostnamectl set-hostname HP-WIN11` or `web-1.example.com`; `hostname $(printf 'a%.0s' {1..64})`. Ployz reads `/proc/sys/kernel/hostname`. Enroll with Names: Hostnames. |
+| Hostname with capitals, an FQDN, 64 characters | Incus or Boat | `hostnamectl set-hostname MY-SERVER` or `web-1.example.com`; `hostname $(printf 'a%.0s' {1..64})`. Ployz reads `/proc/sys/kernel/hostname`. Enroll with Names: Hostnames. |
 | Underscore or unicode hostname | (none) | `hostnamectl` strips `_` and unicode; `hostname` refuses unicode on Ubuntu 26.04. Confirm, then mark it unreachable. |
 | Newest Ubuntu, newest Debian, an older LTS | Incus | `images:ubuntu/26.04/cloud`, `images:debian/13/cloud`, `images:ubuntu/22.04/cloud`. Boat has only Ubuntu 24.04 and nested Debian 12. |
 | Docker already installed, current | Boat | The bare base runs Docker with buildx and the containerd store. |
