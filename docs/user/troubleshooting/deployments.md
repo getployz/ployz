@@ -528,9 +528,8 @@ count, goes back into routing. To tell the two apart, Ployz asks the server that
 replica for its full settings, variable values and config file contents included. So if a deploy
 changed only those and couldn't replace the replica on a server, for example because that server
 was unreachable, the old replica serves there once the server is back, until a restart or the next
-deploy, and a restart keeps it out. If the newer replica's server is up but doesn't answer, the
-restart keeps the old replica out too and says that server `didn't answer whether it replaced this
-one`. Run the restart again once it answers, or deploy the service to replace the old replica.
+deploy, and a restart keeps it out. If that server doesn't answer within a few seconds, Ployz
+can't tell, and the restart routes the old replica as before. Deploy the service to replace it.
 
 ## Ployz restarted on a server during my deploy
 

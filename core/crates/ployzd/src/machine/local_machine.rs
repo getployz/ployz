@@ -51,6 +51,8 @@ pub struct LocalMachine {
     peers: Option<PeerInspect>,
 }
 
+const PEER_INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// How a test answers another Machine's copy in place of the mesh.
 #[cfg(test)]
 pub(crate) type PeerInspect = std::sync::Arc<
@@ -357,7 +359,8 @@ impl LocalMachine {
     }
 
     /// `container` as `machine` observes it now, with the environment and Config content
-    /// a store row drops. `None` when it didn't answer.
+    /// a store row drops. `None` when it didn't answer within [`PEER_INSPECT_TIMEOUT`], so
+    /// the two guard reads of one In fit the caller's wait.
     pub(crate) async fn inspect_peer(
         &self,
         machine: MachineId,
@@ -372,7 +375,7 @@ impl LocalMachine {
             .observations
             .iter()
             .find(|peer| peer.id == machine)?;
-        crate::boot_pass::inspect_peer(peer, container).await
+        crate::boot_pass::inspect_peer(peer, container, PEER_INSPECT_TIMEOUT).await
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {

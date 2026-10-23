@@ -82,21 +82,13 @@ struct Routed {
 /// read again under it.
 enum GuardReads {
     None,
-    /// Every copy's row, for the OlderThanIn guard, and what each remote newer
-    /// sibling's owner said of its full spec.
-    NewerIn(Vec<ContainerObservation>, BTreeMap<ContainerId, Confirmed>),
+    /// Every copy's row, for the OlderThanIn guard, and the full spec each remote newer
+    /// sibling's owner answered with.
+    NewerIn(
+        Vec<ContainerObservation>,
+        BTreeMap<ContainerId, ResolvedServiceSpec>,
+    ),
     LastIn(Routed),
-}
-
-/// A remote newer sibling's full spec, as its owner answers for it.
-enum Confirmed {
-    Spec(Box<ResolvedServiceSpec>),
-    /// The owner no longer reports the copy In at the row's gen.
-    NotIn,
-    /// The owner's Machine is Down, so the copy serves no one.
-    Down,
-    /// The owner didn't answer.
-    Unanswered,
 }
 
 enum Written {
@@ -331,7 +323,7 @@ impl LocalMachine {
         Ok(match want {
             RotationWant::In { run } => {
                 let observed = self.replicated()?.containers().await?.observations;
-                let confirmed = self.confirm_newer(copy, run.as_ref(), &observed).await?;
+                let confirmed = self.confirm_newer(copy, run.as_ref(), &observed).await;
                 GuardReads::NewerIn(observed, confirmed)
             }
             RotationWant::Out { allow_empty: false } => {
@@ -375,41 +367,33 @@ impl LocalMachine {
     /// Deploy restores the copy it held after starting a replacement it forced or that
     /// a limits change needed. A replicated row carries no environment or Config
     /// content, so for a newer copy on another Machine the full spec its owner
-    /// `confirmed` decides. One whose Machine is Up but didn't answer refuses too, so a
-    /// copy an environment-only Deploy replaced can't come back In unseen.
+    /// `confirmed` decides. An owner that didn't answer shows nothing, so its copy
+    /// counts only by its row, as before.
     async fn newer_in(
         &self,
         copy: &CopyState,
         run: Option<&DeploymentLogId>,
         observed: Vec<ContainerObservation>,
-        confirmed: &BTreeMap<ContainerId, Confirmed>,
+        confirmed: &BTreeMap<ContainerId, ResolvedServiceSpec>,
     ) -> Result<Option<ContainerRefusal>, Error> {
         let machine_id = self.record().id();
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let published = published_spec(copy.spec.clone());
-        let mut newer = Vec::new();
-        let mut unanswered = None;
-        for observed in observed.into_iter().filter(|observed| {
-            observed.machine_id != machine_id
-                && is_sibling(copy, observed)
-                && *observed.rotation() == CopyRotation::In
-                && observed.copy_gen() > copy.r#gen
-        }) {
-            let newer_copy = (observed.container_id, observed.copy_gen());
-            if created_by(observed.deploy_label().as_ref(), run)
-                || supersedes(&observed.resolved_spec, &published)
-            {
-                newer.push(newer_copy);
-                continue;
-            }
-            match confirmed.get(&observed.container_id) {
-                Some(Confirmed::Spec(spec)) if supersedes(spec, &copy.spec) => {
-                    newer.push(newer_copy);
-                }
-                Some(Confirmed::Unanswered) => unanswered = Some(observed),
-                Some(Confirmed::Spec(_) | Confirmed::NotIn | Confirmed::Down) | None => {}
-            }
-        }
+        let mut newer = observed
+            .into_iter()
+            .filter(|observed| {
+                observed.machine_id != machine_id
+                    && is_sibling(copy, observed)
+                    && *observed.rotation() == CopyRotation::In
+                    && observed.copy_gen() > copy.r#gen
+                    && (created_by(observed.deploy_label().as_ref(), run)
+                        || supersedes(&observed.resolved_spec, &published)
+                        || confirmed
+                            .get(&observed.container_id)
+                            .is_some_and(|spec| supersedes(spec, &copy.spec)))
+            })
+            .map(|observed| (observed.container_id, observed.copy_gen()))
+            .collect::<Vec<_>>();
         for local in containers.service_copies(&copy.service).await? {
             if local.rotation != CopyRotation::In
                 || Some(local.container_id) == copy.id
@@ -426,27 +410,13 @@ impl LocalMachine {
                 newer.push((local.container_id, local.r#gen));
             }
         }
-        if let Some((id, r#gen)) = newer.into_iter().max_by_key(|(_, r#gen)| *r#gen) {
-            return Ok(Some(refuse(
+        let newer = newer.into_iter().max_by_key(|(_, r#gen)| *r#gen);
+        Ok(newer.map(|(id, r#gen)| {
+            refuse(
                 ContainerRefusalReason::OlderThanIn,
                 format!(
                     "copy {id} of {} is In at gen {}, newer than this copy's gen {}",
                     copy.service, r#gen, copy.r#gen
-                ),
-            )));
-        }
-        Ok(unanswered.map(|observed| {
-            refuse(
-                ContainerRefusalReason::OlderThanIn,
-                format!(
-                    "copy {} of {} is In at gen {}, newer than this copy's gen {}, and its \
-                     Machine {} didn't answer whether it replaced this one; try again when \
-                     that Machine answers",
-                    observed.container_id,
-                    copy.service,
-                    observed.copy_gen(),
-                    copy.r#gen,
-                    observed.machine_id
                 ),
             )
         }))
@@ -454,51 +424,36 @@ impl LocalMachine {
 
     /// Asks the owner of each remote newer In sibling that neither `run` nor its row
     /// shows replaced `copy` for its full spec. A row carries no environment or Config
-    /// content, so only the owner's answer shows a change to those alone.
+    /// content, so only the owner's answer shows a change to those alone. An owner that
+    /// doesn't answer, or no longer reports the copy In at the row's gen, shows nothing,
+    /// so it leaves the copy to the rest of the guard, as before.
     async fn confirm_newer(
         &self,
         copy: &CopyState,
         run: Option<&DeploymentLogId>,
         observed: &[ContainerObservation],
-    ) -> Result<BTreeMap<ContainerId, Confirmed>, Error> {
+    ) -> BTreeMap<ContainerId, ResolvedServiceSpec> {
         let machine_id = self.record().id();
         let published = published_spec(copy.spec.clone());
-        let unseen = observed
-            .iter()
-            .filter(|observed| {
-                observed.machine_id != machine_id
-                    && is_sibling(copy, observed)
-                    && *observed.rotation() == CopyRotation::In
-                    && observed.copy_gen() > copy.r#gen
-                    && !created_by(observed.deploy_label().as_ref(), run)
-                    && !supersedes(&observed.resolved_spec, &published)
-            })
-            .collect::<Vec<_>>();
-        if unseen.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let down = self.route_membership().await?.down;
-        Ok(join_all(unseen.into_iter().map(|row| async {
-            let confirmed = if down.contains(&row.machine_id) {
-                Confirmed::Down
-            } else {
-                match self.inspect_peer(row.machine_id, row.container_id).await {
-                    Some(answer)
-                        if answer.machine_id == row.machine_id
-                            && *answer.rotation() == CopyRotation::In
-                            && answer.copy_gen() == row.copy_gen() =>
-                    {
-                        Confirmed::Spec(Box::new(answer.into_parts().resolved_spec))
-                    }
-                    Some(_) => Confirmed::NotIn,
-                    None => Confirmed::Unanswered,
-                }
-            };
-            (row.container_id, confirmed)
+        let unseen = observed.iter().filter(|observed| {
+            observed.machine_id != machine_id
+                && is_sibling(copy, observed)
+                && *observed.rotation() == CopyRotation::In
+                && observed.copy_gen() > copy.r#gen
+                && !created_by(observed.deploy_label().as_ref(), run)
+                && !supersedes(&observed.resolved_spec, &published)
+        });
+        join_all(unseen.map(|row| async {
+            let answer = self.inspect_peer(row.machine_id, row.container_id).await?;
+            (answer.machine_id == row.machine_id
+                && *answer.rotation() == CopyRotation::In
+                && answer.copy_gen() == row.copy_gen())
+            .then(|| (row.container_id, answer.into_parts().resolved_spec))
         }))
         .await
         .into_iter()
-        .collect())
+        .flatten()
+        .collect()
     }
 
     /// Only copies some ack row names can pass, so only those rows are read.

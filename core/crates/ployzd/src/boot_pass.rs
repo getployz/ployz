@@ -539,7 +539,7 @@ impl BootHost for DaemonHost {
             .observations
             .iter()
             .find(|peer| peer.id == machine)?;
-        inspect_peer(peer, container).await
+        inspect_peer(peer, container, INSPECT_TIMEOUT).await
     }
 
     async fn ensure(&self, want: ContainerWant) -> Result<EnsuredContainer, LocalMachineError> {
@@ -575,14 +575,15 @@ async fn target_versions(address: SocketAddr) -> Result<BTreeMap<String, i64>, P
         .ok_or(PeerError::NoEnrollment)
 }
 
-/// `container` as `peer` observes it, over the mesh within [`INSPECT_TIMEOUT`]. The
-/// answer keeps the environment and Config content. `None` when it didn't answer.
+/// `container` as `peer` observes it, over the mesh within `wait`. The answer keeps the
+/// environment and Config content. `None` when it didn't answer.
 pub(crate) async fn inspect_peer(
     peer: &Machine,
     container: ContainerId,
+    wait: Duration,
 ) -> Option<ContainerObservation> {
     let address = SocketAddr::new(IpAddr::V6(peer.management_address().0), MACHINE_API_PORT);
-    match tokio::time::timeout(INSPECT_TIMEOUT, inspect_on(address, container)).await {
+    match tokio::time::timeout(wait, inspect_on(address, container)).await {
         Ok(Ok(copy)) => Some(copy),
         Ok(Err(error)) => {
             tracing::debug!(error = %ployz_core::error_chain::inline(&error), "could not inspect {container} on {}", peer.name);

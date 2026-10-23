@@ -1958,14 +1958,9 @@ mod rotation_commands {
         let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
         assert!(message.contains(&newer.to_string()), "{message}");
 
-        // Its owner up but silent can't show the copy kept the same spec, so it refuses.
+        // An owner that doesn't answer shows nothing, so the copy comes back In as before
+        // rather than be taken for replaced.
         fleet.silence(1);
-        let reply = ensure(fleet.node(0), into(older, Some(run("restart")), restart())).await;
-        let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
-        assert!(message.contains("didn't answer"), "{message}");
-
-        // A Down Machine's copy serves no one, so it doesn't keep this one out.
-        fleet.down(1);
         let reply = ensure(fleet.node(0), into(older, Some(run("restart")), restart())).await;
         assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
     }
