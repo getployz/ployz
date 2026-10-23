@@ -2221,7 +2221,7 @@ fn an_old_cli_s_plain_text_for_a_synced_secret_is_refused_once_the_flag_is_on() 
         .write_trusted(&who, &with_value("web.env.TOKEN"), &cli)
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Unsupported, "{error:?}");
-    assert_eq!(error.message, "TOKEN: update ployz to set a Sealed value");
+    assert_eq!(error.message, "TOKEN: update ployz to set a Sealed value.");
     assert_eq!(error.details["next"], "curl -fsSL https://ployz.sh | sh");
     assert!(!format!("{error:?}").contains("plain-value"), "{error:?}");
     assert_eq!(

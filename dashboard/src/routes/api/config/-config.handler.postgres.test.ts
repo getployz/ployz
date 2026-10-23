@@ -117,7 +117,7 @@ it.live("once the Organization seals on the client, a value the CLI sealed is sa
       assert.deepStrictEqual([saved.status, "staged" in saved.json && saved.json.staged], [200, ["web.env.TOKEN"]]);
       const refused = yield* send("write", set("OTHER", { secret: "plain-s3cr3t" }));
       assert.deepStrictEqual([refused.status, refused.json], [501, {
-        error: { code: "unsupported", message: "OTHER: update ployz to set a Sealed value", details: { variable: "OTHER", next: UPDATE } },
+        error: { code: "unsupported", message: "OTHER: update ployz to set a Sealed value.", details: { variable: "OTHER", next: UPDATE } },
       }]);
       const after = yield* settings;
       assert.deepStrictEqual(after["web.env.TOKEN"], { secret: true });
