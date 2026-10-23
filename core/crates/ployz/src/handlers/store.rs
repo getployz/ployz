@@ -633,7 +633,7 @@ impl<'m> Store<'m> {
             && !accept.is_empty()
         {
             error.message = format!(
-                "{}. The command below still deletes the data of {}.",
+                "{}. The command below still accepts deleting the data of {}.",
                 error.message.trim_end_matches('.'),
                 accept.join(", ")
             );
@@ -1889,7 +1889,7 @@ mod tests {
         assert_eq!(
             message,
             "The Environment changed after this review. Review the latest changes and try \
-             again. The command below still deletes the data of big1."
+             again. The command below still accepts deleting the data of big1."
         );
         assert_eq!(
             hints,
