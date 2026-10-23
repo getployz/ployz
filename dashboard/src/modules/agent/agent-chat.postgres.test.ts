@@ -39,7 +39,7 @@ const Outcome = Schema.fromJsonString(Schema.Struct({
   value: Schema.optional(Schema.Unknown),
   nothing_destroyed: Schema.optional(Schema.Literal(true)),
   cancelled: Schema.optional(Schema.Boolean),
-  refusal: Schema.optional(Schema.Struct({ code: Schema.String, message: Schema.String })),
+  refusal: Schema.optional(Schema.Struct({ code: Schema.String, message: Schema.String, writes: Schema.optional(Schema.String) })),
 }));
 
 /**
@@ -292,7 +292,7 @@ it.live("the model repeats an approved Cloud command that refused once it ran un
 
     const resumed = yield* resume("resolved", {}, model);
     expect(resumed.interrupts).toEqual([]);
-    const refused = { ok: false, refusal: { message: "Only an owner can make or remove an owner." } };
+    const refused = { ok: false, refusal: { message: "Only an owner can make or remove an owner.", writes: "unknown" } };
     expect(resumed.results).toMatchObject([refused, refused]);
     expect(resumed.heard.join("")).not.toContain(approval.id);
     expect(yield* pending).toEqual([]);

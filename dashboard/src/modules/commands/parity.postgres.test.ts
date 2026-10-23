@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import type { JsonValue } from "@ployz/sdk";
 import { EventType, type StreamChunk } from "@tanstack/ai";
 import { fakeText } from "@tanstack/ai/testing";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { asRecord } from "#/lib/json";
@@ -278,7 +278,7 @@ const approvedPromotion = Effect.fn(function* (provided: Effect.Success<ReturnTy
     const { drizzle } = yield* Database;
     const [bob] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
     yield* drizzle.insert(member).values({ userId: bob?.id ?? expect.fail("no person"), organizationId: ORGANIZATION, role: "owner" });
-    yield* drizzle.update(member).set({ role: "member" }).where(eq(member.userId, userId));
+    yield* drizzle.update(member).set({ role: "member" }).where(and(eq(member.userId, userId), eq(member.organizationId, ORGANIZATION)));
     return yield* drizzle.insert(operationApprovals).values({
       organizationId: ORGANIZATION, subject: asked.subject, requestedByUserId: userId, via: "agent", credentialKind: "session", credentialId: session,
       command: "set", digest: operationDigest(asked), status: "approved", decidedByUserId: userId, decidedAt: new Date(),
