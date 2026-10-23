@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::task::JoinSet;
 
 use super::{Error, config_path, leaf_matches, runtime, server};
-use crate::cli::positional;
+use crate::cli::{base, positional};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::connect::Client;
@@ -31,19 +31,17 @@ pub(crate) fn request_command(command: Command) -> Command {
 }
 
 pub(crate) fn approve_command(command: Command) -> Command {
-    command
-        .about("Approve a device on every server")
+    base(command, "Approve a device on every server")
         .after_help(concat!("Examples:\n", "  ployz device approve mmg42klgyq"))
         .arg(positional("code", true).help("The code ployz device request printed"))
 }
 
 pub(crate) fn list_command(command: Command) -> Command {
-    command.about("List approved devices")
+    base(command, "List approved devices")
 }
 
 pub(crate) fn remove_command(command: Command) -> Command {
-    command
-        .about("Remove a device from every server")
+    base(command, "Remove a device from every server")
         .after_help(concat!("Examples:\n", "  ployz device rm mmg42klgyq"))
         .arg(positional("code", true).help("The device's code, from ployz device ls"))
 }
@@ -93,7 +91,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
         let settled = approve_with(&credential, code, async |request| {
-            let mut client = server::connect_full(leaf, None).await?;
+            let mut client = server::connect_full(leaf, context(leaf)).await?;
             set_everywhere(&mut client, request).await
         })
         .await?;
@@ -105,7 +103,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let code = typed_code(leaf)?;
     runtime()?.block_on(async {
-        let mut client = server::connect_full(leaf, None).await?;
+        let mut client = server::connect_full(leaf, context(leaf)).await?;
         set_everywhere(&mut client, SetDeviceRequest::Remove { code })
             .await?
             .finish()
@@ -115,7 +113,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
 pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     runtime()?.block_on(async {
-        let mut client = server::connect(leaf, None).await?;
+        let mut client = server::connect(leaf, context(leaf)).await?;
         let reach = Reach::of(&mut client).await?;
         let (answers, gaps) = reach
             .fan_out(|machine_id| devices_on(client.clone(), machine_id))
@@ -148,6 +146,10 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
             ui::rows(&table);
         })
     })
+}
+
+fn context(leaf: &ArgMatches) -> Option<&str> {
+    leaf.get_one::<String>("context").map(String::as_str)
 }
 
 fn typed_code(leaf: &ArgMatches) -> Result<DeviceCode, Error> {
