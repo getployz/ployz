@@ -1,6 +1,7 @@
 use ployz_core::{
     AdvertisedEndpoint, MachineName, MachineRpc, MachineRpcClient, RecoverSealingKeyRequest,
-    RecoveryCode, RecoveryRefusal, RecoverySeed, RpcErrorCode, RpcResponseBody, SealingKeyBackup,
+    RecoveryCode, RecoveryRefusal, RecoverySeed, RpcErrorCode, RpcResponseBody, Sealing,
+    SealingKeyBackup,
     SealingPublicKey, WrapSealingKeyRequest, op,
 };
 use tokio_stream::wrappers::TcpListenerStream;
@@ -119,6 +120,53 @@ async fn a_wrapped_key_recovers_onto_a_founder_awaiting_it_and_is_published() {
     holder_server.abort();
     server.abort();
     let _ = std::fs::remove_dir_all(holder_dir);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn the_published_row_follows_what_the_machine_holds_of_the_sealing_key() {
+    use std::time::Duration;
+
+    let key = SealingKey::generate();
+    let code = RecoveryCode::generate();
+    let (local, replicated, dir, server) =
+        awaiting(key.public_key(), Some(back_up(&key, &code))).await;
+    let id = local.owner().record().id();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = crate::corrosion::MachineView::start(replicated.clone(), shutdown.clone());
+    let publisher = tokio::spawn(crate::corrosion::run_machine_publisher(
+        Some((replicated.clone(), view)),
+        local.owner().clone(),
+        crate::corrosion::LiveRuntime::unobserved(),
+        shutdown.clone(),
+    ));
+    let published = |expected: Option<Sealing>| {
+        let replicated = replicated.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let row = replicated.machine(id.as_str()).await.unwrap();
+                    if row.is_some_and(|machine| machine.runtime.sealing == expected) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{expected:?} was never published"));
+        }
+    };
+
+    published(Some(Sealing::NeedsAccess)).await;
+    recover(&local, &code, None).await.unwrap();
+    published(Some(Sealing::Held {
+        public_key: key.public_key(),
+    }))
+    .await;
+
+    shutdown.cancel();
+    publisher.await.unwrap().unwrap();
+    server.abort();
     let _ = std::fs::remove_dir_all(dir);
 }
 

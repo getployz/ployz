@@ -37,6 +37,7 @@ pub struct ReplicatedStore {
 pub(crate) struct RuntimeOverlay {
     pub(crate) running_builds: u32,
     pub(crate) pool_committable_bytes: Option<u64>,
+    pub(crate) sealing: Option<ployz_core::Sealing>,
 }
 
 pub(crate) struct MachinePublicationGuard<'a> {
@@ -79,6 +80,7 @@ impl MachinePublicationGuard<'_> {
                 let mut machine = machine.clone();
                 machine.runtime.running_builds = overlay.running_builds;
                 machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
+                machine.runtime.sealing = overlay.sealing;
                 machine.runtime.management_identity = Some(local.management_secret().public_key());
                 Some(machine)
             }

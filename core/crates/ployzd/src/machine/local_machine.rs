@@ -455,19 +455,9 @@ impl LocalMachine {
         ) {
             return None;
         }
-        match SealingKey::load(self.owner.data_dir()) {
-            Ok(Some(key)) => Some(ployz_core::Sealing::Held {
-                public_key: key.public_key(),
-            }),
-            Ok(None) => self.lacking_key().await,
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                tracing::warn!(%error, "this Machine's Sealing Key is unusable");
-                self.lacking_key().await
-            }
-            Err(error) => {
-                tracing::warn!(%error, "could not read the Sealing Key");
-                None
-            }
+        match SealingKey::observe(self.owner.data_dir()) {
+            Some(ployz_core::Sealing::NeedsAccess) => self.lacking_key().await,
+            observed => observed,
         }
     }
 

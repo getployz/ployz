@@ -151,7 +151,12 @@ impl LocalMachine {
                 .into());
             }
             Some(_) => {}
-            None => SealingKey::set(data_dir, Some(&key)).map_err(Error::Unwritable)?,
+            None => {
+                self.owner
+                    .mutate(move |store| store.set_sealing_key(Some(&key)))
+                    .await?
+                    .map_err(Error::Unwritable)?;
+            }
         }
         replicated.publish_sealing_public_key(expected).await?;
         tracing::info!(

@@ -42,6 +42,8 @@ pub struct LocalMachineStore {
     // transfers, which run side by side while all exclusive work waits for them.
     pub(super) admission_lock: Arc<tokio::sync::RwLock<()>>,
     pub(super) mutation_gate: crate::mutation::MutationGate,
+    /// Follows every Sealing Key write this store makes, for the publisher.
+    pub(super) sealing: tokio::sync::watch::Sender<Option<ployz_core::Sealing>>,
 }
 
 pub(crate) struct PreparedReset {
@@ -237,6 +239,7 @@ impl LocalMachineStore {
             admission_lock: Arc::new(tokio::sync::RwLock::new(())),
             run_dir: run_dir.clone(),
             mutation_gate: crate::mutation::MutationGate::new(&run_dir, &data_dir),
+            sealing: tokio::sync::watch::Sender::new(SealingKey::observe(&data_dir)),
         };
         if store.record.phase() == LocalMachinePhase::Resetting {
             return Ok(Opened::Resetting(InterruptedReset(store)));
@@ -459,9 +462,16 @@ impl LocalMachineStore {
         installed.body = installation.body;
         installed.wireguard_mtu = installation.wireguard_mtu;
         installed.pinned_addresses = installation.pinned;
-        SealingKey::set(&self.data_dir, installation.sealing_key.as_ref())?;
+        self.set_sealing_key(installation.sealing_key.as_ref())?;
         save(&self.data_dir, &installed)?;
         self.record = installed;
+        Ok(())
+    }
+
+    pub(crate) fn set_sealing_key(&self, key: Option<&SealingKey>) -> io::Result<()> {
+        SealingKey::set(&self.data_dir, key)?;
+        self.sealing
+            .send_replace(SealingKey::observe(&self.data_dir));
         Ok(())
     }
 

@@ -239,6 +239,7 @@ async fn publication_guard_rechecks_the_local_phase() {
             RuntimeOverlay {
                 running_builds: 2,
                 pool_committable_bytes: Some(7 << 30),
+                sealing: None,
             }
         ),
         Some(observed)

@@ -6,7 +6,7 @@ use hpke::{
     Deserializable, Kem as _, OpModeR, OpModeS, Serializable, aead::ChaCha20Poly1305,
     kdf::HkdfSha256, kem::X25519HkdfSha256,
 };
-use ployz_core::{SealedSealingKey, SealingPublicKey, WireGuardPublicKey};
+use ployz_core::{SealedSealingKey, Sealing, SealingPublicKey, WireGuardPublicKey};
 use rand_core::{OsRng, TryRngCore as _};
 use thiserror::Error;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -57,6 +57,25 @@ impl SealingKey {
                 }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
+        }
+    }
+
+    /// What the Machine at `data_dir` holds of the Sealing Key; `None` when the file
+    /// could not be read at all.
+    pub(crate) fn observe(data_dir: &Path) -> Option<Sealing> {
+        match Self::load(data_dir) {
+            Ok(Some(key)) => Some(Sealing::Held {
+                public_key: key.public_key(),
+            }),
+            Ok(None) => Some(Sealing::NeedsAccess),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                tracing::warn!(%error, "this Machine's Sealing Key is unusable");
+                Some(Sealing::NeedsAccess)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not read the Sealing Key");
+                None
+            }
         }
     }
 
