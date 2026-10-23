@@ -1197,8 +1197,8 @@ fn running(stored: &Stored) -> Result<(), RpcError> {
     match stored.summary.status {
         DeploymentStatus::Running | DeploymentStatus::Cancelling => Ok(()),
         DeploymentStatus::Unknown => Err(error::conflict(
-            "This Deployment's runner lost it, or another took over, so its outcome stays \
-             unknown. Start a new Deployment",
+            "This Deployment stopped holding its Environment, or a newer one took over, so \
+             its outcome stays unknown. Start a new Deployment",
             json!({ "deployment": stored.summary.id }),
         )),
         DeploymentStatus::Applied | DeploymentStatus::Failed | DeploymentStatus::Cancelled => {

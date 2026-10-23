@@ -484,6 +484,18 @@ pub(super) fn execute(
         }
         if let Err(error) = settled {
             let interrupted = signal.is_cancelled();
+            // A newer Deployment that took over the Environment left this one unknown:
+            // name it rather than the store's refusal to record.
+            let newer = (!interrupted
+                && followed.view.deployment.status == DeploymentStatus::Unknown)
+                .then(|| replacement(store, &followed.view).ok().flatten())
+                .flatten();
+            let error = match newer {
+                Some(Replacement::Follow(newer) | Replacement::Name(newer)) => {
+                    progress::replaced(&followed.view, &newer, |args| super::rerun(matches, args))
+                }
+                None => error,
+            };
             finish_progress(
                 &mut followed,
                 if interrupted {

@@ -66,6 +66,9 @@ directory; `ployz deploy` would ship the last upload that built. `up` leaves out
 lines when the deploy failed. When a newer deployment, such as a push, takes the place of the
 one you were following without shipping all of its services, the CLI says
 `Deployment #3 was superseded by #4 (push bbe4f9e).` and points at `ployz deployment show 4`.
+When a newer deploy takes over the environment while yours is still running, yours stops, and
+the CLI says `Deployment #3 was replaced by #4 before it finished.` and points at
+`ployz deployment show 4`. What #3 changed before it stopped shows as unknown.
 
 A failed deploy exits with code 1. A Deployment that applied but whose result is missing
 a Server, or that left an old container running because its Server didn't answer, exits

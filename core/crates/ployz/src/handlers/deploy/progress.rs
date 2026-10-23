@@ -515,6 +515,33 @@ fn superseded(
     .hint(Hint::Inspect(inspect))
 }
 
+/// A newer Deployment took over this Environment while this one ran, so what it did
+/// stays unknown. Deploying again would only redo the newer one.
+pub(super) fn replaced(
+    view: &DeploymentView,
+    newer: &DeploymentSummary,
+    command: impl Fn(&[&str]) -> String,
+) -> Failure {
+    let shown = target(newer);
+    Failure::coded(
+        RpcErrorCode::Conflict,
+        format!(
+            "Deployment {} was replaced by {} before it finished.",
+            view.deployment.label(),
+            newer.label()
+        ),
+    )
+    .hint(Hint::Inspect(command(&[
+        "deployment",
+        "show",
+        shown.as_str(),
+        "--project",
+        view.environment.project.as_str(),
+        "--env",
+        view.environment.name.as_str(),
+    ])))
+}
+
 fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> String) -> Failure {
     let (reason, cause) = match &view.deployment.outcome {
         Some(
@@ -1535,6 +1562,26 @@ mod tests {
         assert_eq!(
             hints(&alone),
             ["inspect: ployz deployment ls --project shop --env production"]
+        );
+    }
+
+    #[test]
+    fn a_deployment_another_took_over_names_it_and_never_mentions_a_runner() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Unknown;
+        view.deployment.outcome = None;
+        let mut newer = view.deployment.clone();
+        newer.number = Some(8);
+        let failure = replaced(&view, &newer, command);
+        let text = crate::ui::plain(&failure);
+        assert!(
+            text.contains("Deployment #7 was replaced by #8 before it finished."),
+            "{text}"
+        );
+        assert!(!text.contains("runner"), "{text}");
+        assert_eq!(
+            hints(&failure),
+            ["inspect: ployz deployment show 8 --project shop --env production"]
         );
     }
 
