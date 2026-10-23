@@ -299,6 +299,12 @@ fn railpack(
         if !root.join(&recipe.context).is_dir() {
             return Err("Railpack context must be a captured directory".into());
         }
+        for name in recipe.sealed.keys() {
+            if !crate::valid_name(name) || recipe.variables.contains_key(name) {
+                return Err("Railpack sealed variables require distinct valid names".into());
+            }
+            contained(root, &crate::sealed_file(name), "private", true)?;
+        }
         let service = mapping(
             services
                 .get(recipe.name.as_str())
@@ -543,6 +549,68 @@ mod tests {
             )
             .unwrap();
             assert!(validate_capture(&root, &definition).is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sealed_secrets_must_already_be_opened_files_under_private() {
+        let root =
+            std::env::temp_dir().join(format!("ployz-sealed-recipe-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("private/docker")).unwrap();
+        fs::write(root.join("private/docker/config.json"), "{}").unwrap();
+        fs::create_dir(root.join("source")).unwrap();
+        let definition = Definition {
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
+            targets: vec![crate::Target {
+                name: "api".into(),
+                platforms: Vec::new(),
+            }],
+            output: crate::Output::Load,
+            no_cache: false,
+            pull: false,
+        };
+        // A Dockerfile recipe names the file the Builder writes before validation.
+        fs::write(
+            root.join("compose.yaml"),
+            format!(
+                "services:\n  api:\n    build: {{context: source, secrets: [NPM_TOKEN]}}\nsecrets:\n  NPM_TOKEN: {{file: {}}}\n",
+                crate::sealed_file("NPM_TOKEN").display()
+            ),
+        )
+        .unwrap();
+        assert!(
+            validate_capture(&root, &definition).is_err(),
+            "missing opened file"
+        );
+        fs::create_dir(root.join("private/sealed")).unwrap();
+        fs::write(root.join(crate::sealed_file("NPM_TOKEN")), "opened").unwrap();
+        validate_capture(&root, &definition).unwrap();
+        // A Railpack recipe names it through `sealed`.
+        fs::write(
+            root.join("compose.yaml"),
+            "services:\n  api:\n    build: {context: source}\n",
+        )
+        .unwrap();
+        for (sealed, variables, ok) in [
+            (r#"{"NPM_TOKEN":"fp"}"#, "{}", true),
+            (r#"{"MISSING":"fp"}"#, "{}", false),
+            (r#"{"NPM_TOKEN":"fp"}"#, r#"{"NPM_TOKEN":"text"}"#, false),
+            (r#"{"../NPM_TOKEN":"fp"}"#, "{}", false),
+        ] {
+            fs::write(
+                root.join("private/railpack.json"),
+                format!(
+                    r#"[{{"name":"api","context":"source","variables":{variables},"sealed":{sealed},"refresh_cache":false}}]"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                validate_capture(&root, &definition).is_ok(),
+                ok,
+                "{sealed} {variables}"
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }

@@ -396,7 +396,12 @@ fn receive_and_execute(
         context.source.port = proxy.port;
         proxies.push(proxy);
     }
-    let result = upload.execute(&definition, Some(&policy.docker), &progress);
+    let result = upload.execute(
+        &definition,
+        Some(&policy.docker),
+        &Default::default(),
+        &progress,
+    );
     match result {
         Ok(completed) => {
             if !definition.retained_tags.is_empty() {
