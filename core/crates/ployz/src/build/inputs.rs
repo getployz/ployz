@@ -208,6 +208,16 @@ impl BuildInputs {
         self.private(&self.root.join("private/railpack.json"), &bytes)
     }
 
+    /// Keep the Build's Sealed values, still sealed, in private upload material.
+    ///
+    /// # Errors
+    /// Fails if the private file cannot be written.
+    pub(super) fn sealed(&self, capture: &super::SealedCapture<'_>) -> Result<(), Error> {
+        let bytes =
+            serde_json::to_vec(capture).map_err(|error| input_error(io::Error::other(error)))?;
+        self.private(&self.root.join("private/sealed.json"), &bytes)
+    }
+
     /// Write the captured Buildx file beside its sources.
     ///
     /// # Errors

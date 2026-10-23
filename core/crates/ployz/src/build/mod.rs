@@ -11,9 +11,11 @@ use ployz_build::{
     remote::{Definition, Outcome},
 };
 use ployz_core::{
-    DeployIntent, MachineId, Placement, RequestedServiceSpec, ServiceName, config::BuildMethod,
+    DeployIntent, DockerfileFacts, EnvValue, MachineId, Placement, RequestedServiceSpec,
+    ServiceName, config::BuildMethod,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use inputs::BuildInputs;
@@ -130,8 +132,10 @@ struct CapturedTarget {
 }
 
 /// Freeze each Service's source and effective variables before any Build runs.
-/// Service variables become build variables; a Railpack command is added as
+/// Text variables become build variables; a Railpack command is added as
 /// `RAILPACK_BUILD_CMD`. Build variables may be exposed in build output or history.
+/// Sealed values stay sealed in private material and reach the Build only as
+/// secret mounts the Builder opens.
 ///
 /// # Errors
 /// Rejects Services absent from `intent`, unreadable or unstable source files, and
@@ -170,12 +174,28 @@ fn capture_target(
         reference.repository(),
         uuid::Uuid::new_v4()
     );
-    let mut args: BTreeMap<String, String> = service
-        .container
-        .environment
-        .iter()
-        .filter_map(|(key, value)| Some((key.clone(), value.text()?.to_owned())))
-        .collect();
+    let mut args = BTreeMap::new();
+    let mut sealed = BTreeMap::new();
+    for (key, value) in &service.container.environment {
+        match value.text() {
+            Some(text) => {
+                args.insert(key.clone(), text.to_owned());
+            }
+            None => {
+                sealed.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    if !sealed.is_empty() {
+        inputs.sealed(&SealedCapture {
+            identity: service
+                .container
+                .sealed_identity
+                .as_ref()
+                .ok_or_else(|| invalid("a sealed value needs the Deploy's Environment"))?,
+            values: &sealed,
+        })?;
+    }
     let name = service.name.to_string();
     let (build_method, context, dockerfile) = match spec.recipe {
         Recipe::Railpack { command } => {
@@ -189,7 +209,10 @@ fn capture_target(
                 name: name.clone(),
                 context: context.clone(),
                 variables: std::mem::take(&mut args),
-                sealed: BTreeMap::new(),
+                sealed: sealed
+                    .iter()
+                    .map(|(name, value)| (name.clone(), fingerprint(value)))
+                    .collect(),
                 refresh_cache: false,
             })?;
             (BuildMethod::Railpack, context, None)
@@ -197,6 +220,9 @@ fn capture_target(
         Recipe::Dockerfile(dockerfile) => {
             let context = inputs.context(&spec.context, &dockerfile)?;
             let file = inputs.dockerfile(&dockerfile)?;
+            if !sealed.is_empty() {
+                refuse_declared_args(&file, sealed.keys())?;
+            }
             // Both context and recipe live directly beneath source/.
             let dockerfile = Path::new("..").join(file.file_name().expect("captured recipe"));
             (
@@ -207,6 +233,16 @@ fn capture_target(
         }
     };
     inputs.verify()?;
+    let secrets = match build_method {
+        BuildMethod::Dockerfile => sealed
+            .keys()
+            .map(|name| {
+                let file = ployz_build::sealed_file(name);
+                (name.as_str(), CapturedSecret { file })
+            })
+            .collect(),
+        BuildMethod::Railpack => BTreeMap::new(),
+    };
     let recipe = CapturedFile {
         services: BTreeMap::from([(
             name.as_str(),
@@ -216,10 +252,12 @@ fn capture_target(
                     context,
                     dockerfile,
                     args,
+                    secrets: secrets.keys().map(ToString::to_string).collect(),
                     tags: vec![image.clone(), retained_tag.clone()],
                 },
             },
         )]),
+        secrets,
     };
     // Buildx interpolates the recipe. Escape dollars so captured values cannot
     // pick up an execution host value or lose a literal dollar.
@@ -241,10 +279,53 @@ fn capture_target(
     })
 }
 
+/// A Sealed value a Dockerfile declares as `ARG` would reach BuildKit as a
+/// build arg, which records it in the image. Only a secret mount may read it.
+fn refuse_declared_args<'name>(
+    dockerfile: &Path,
+    mut sealed: impl Iterator<Item = &'name String>,
+) -> Result<(), Error> {
+    let contents = std::fs::read_to_string(dockerfile)
+        .map_err(|error| Error::Io(format!("read captured Dockerfile: {error}")))?;
+    let declared = DockerfileFacts::parse(&contents).args;
+    match sealed.find(|name| declared.contains(*name)) {
+        Some(name) => Err(invalid(format!(
+            "{name} is sealed. Read it with RUN --mount=type=secret,id={name},env={name}."
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// What the Builder sees of a Sealed value: a digest of its ciphertext, so a
+/// re-sealed value changes the Build's cache key and nothing else does.
+fn fingerprint(value: &EnvValue) -> String {
+    let encoded = serde_json::to_vec(value).expect("sealed values encode");
+    Sha256::digest(encoded)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// `private/sealed.json`: the Sealed values a Build reads, still sealed, in
+/// the shape the Builder's env opening already accepts.
+#[derive(Serialize)]
+pub(super) struct SealedCapture<'value> {
+    identity: &'value ployz_core::SealedIdentity,
+    values: &'value BTreeMap<String, EnvValue>,
+}
+
 /// The Buildx file BuildKit reads, one Service per capture.
 #[derive(Serialize)]
 struct CapturedFile<'target> {
     services: BTreeMap<&'target str, CapturedService<'target>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    secrets: BTreeMap<&'target str, CapturedSecret>,
+}
+
+/// One Sealed value as a Compose secret: the file the Builder opens it into.
+#[derive(Serialize)]
+struct CapturedSecret {
+    file: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -260,6 +341,8 @@ struct CapturedRecipe {
     dockerfile: Option<PathBuf>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     args: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secrets: Vec<String>,
     tags: Vec<String>,
 }
 
@@ -606,6 +689,214 @@ mod tests {
                 .unwrap()
                 .contains("private-token")
         );
+    }
+
+    /// `api` with one Text and one Sealed variable, sealed for a test identity.
+    fn sealed_intent(ciphertext: u8) -> (DeployIntent, EnvValue) {
+        let mut intent = intent(&["api"]);
+        let sealed = EnvValue::Sealed(ployz_core::SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![ciphertext; 48]),
+            scope: ployz_core::SealedScope::Shared,
+            key: "NPM_TOKEN".into(),
+        });
+        let container = &mut intent.target.first_mut().unwrap().container;
+        container
+            .environment
+            .insert("NPM_TOKEN".into(), sealed.clone());
+        container
+            .environment
+            .insert("PLAIN".into(), "visible".into());
+        container.sealed_identity = Some(ployz_core::SealedIdentity {
+            organization: "org_test".into(),
+            environment: uuid::Uuid::from_u128(1),
+            service: uuid::Uuid::from_u128(2),
+        });
+        (intent, sealed)
+    }
+
+    fn dockerfile_spec(root: &Path, dockerfile: &str) -> BuildSpec {
+        let source = root.join("repository");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("Dockerfile"), dockerfile).unwrap();
+        BuildSpec {
+            context: source.clone(),
+            recipe: Recipe::Dockerfile(source.join("Dockerfile")),
+        }
+    }
+
+    const MOUNTING_DOCKERFILE: &str =
+        "FROM scratch\nRUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN true\n";
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
+    fn a_sealed_value_rides_sealed_in_private_material_and_mounts_as_a_secret() {
+        let root = tempfile::tempdir().unwrap();
+        let (intent, sealed) = sealed_intent(7);
+        let captured =
+            capture_one(&intent, dockerfile_spec(root.path(), MOUNTING_DOCKERFILE)).unwrap();
+        let recipe = recipe(&captured);
+        let build = &recipe["services"]["api"]["build"];
+        assert_eq!(build["args"]["PLAIN"], "visible");
+        assert!(build["args"].get("NPM_TOKEN").is_none());
+        assert_eq!(
+            build["secrets"],
+            serde_norway::to_value(["NPM_TOKEN"]).unwrap()
+        );
+        assert_eq!(
+            recipe["secrets"]["NPM_TOKEN"]["file"],
+            ployz_build::sealed_file("NPM_TOKEN").to_str().unwrap()
+        );
+        let ciphertext = serde_json::to_string(&sealed).unwrap();
+        let compose = fs::read_to_string(captured.inputs.root().join("compose.yaml")).unwrap();
+        assert!(!compose.contains(&ciphertext), "{compose}");
+        let private: serde_json::Value = serde_json::from_slice(
+            &fs::read(captured.inputs.root().join("private/sealed.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(private["identity"]["organization"], "org_test");
+        assert_eq!(
+            serde_json::from_value::<EnvValue>(private["values"]["NPM_TOKEN"].clone()).unwrap(),
+            sealed
+        );
+        assert!(private["values"].get("PLAIN").is_none());
+        // The Builder opens the value into the named file before validation.
+        let definition = Definition {
+            targets: vec![captured.target.clone()],
+            retained_tags: vec![captured.retained_tag.clone()],
+            image_contexts: BTreeMap::new(),
+            output: Output::Load,
+            no_cache: false,
+            pull: false,
+        };
+        assert!(
+            ployz_build::remote::validate_capture(captured.inputs.root(), &definition).is_err()
+        );
+        let opened = captured.inputs.root().join("private/sealed");
+        fs::create_dir(&opened).unwrap();
+        fs::write(opened.join("NPM_TOKEN"), "opened").unwrap();
+        ployz_build::remote::validate_capture(captured.inputs.root(), &definition).unwrap();
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
+    fn a_sealed_part_of_a_template_is_carried_whole() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut intent, sealed) = sealed_intent(7);
+        let EnvValue::Sealed(part) = sealed else {
+            unreachable!()
+        };
+        let template = EnvValue::Template(ployz_core::Template {
+            template: vec![
+                ployz_core::EnvPart::Text("https://registry.test/?token=".into()),
+                ployz_core::EnvPart::Sealed(part),
+            ],
+        });
+        let container = &mut intent.target.first_mut().unwrap().container;
+        container
+            .environment
+            .insert("NPM_TOKEN".into(), template.clone());
+        let captured =
+            capture_one(&intent, dockerfile_spec(root.path(), MOUNTING_DOCKERFILE)).unwrap();
+        let private: serde_json::Value = serde_json::from_slice(
+            &fs::read(captured.inputs.root().join("private/sealed.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_value::<EnvValue>(private["values"]["NPM_TOKEN"].clone()).unwrap(),
+            template
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
+    fn a_railpack_build_names_sealed_values_by_fingerprint_only() {
+        let root = tempfile::tempdir().unwrap();
+        let fingerprints = [7, 8].map(|byte| {
+            let (intent, sealed) = sealed_intent(byte);
+            let captured = capture_one(
+                &intent,
+                BuildSpec {
+                    context: root.path().to_owned(),
+                    recipe: Recipe::Railpack { command: None },
+                },
+            )
+            .unwrap();
+            let railpack = fs::read(captured.inputs.root().join("private/railpack.json")).unwrap();
+            let private: serde_json::Value = serde_json::from_slice(&railpack).unwrap();
+            assert_eq!(private[0]["variables"]["PLAIN"], "visible");
+            assert!(private[0]["variables"].get("NPM_TOKEN").is_none());
+            let ciphertext = serde_json::to_string(&sealed).unwrap();
+            assert!(!String::from_utf8(railpack).unwrap().contains(&ciphertext));
+            let fingerprint = private[0]["sealed"]["NPM_TOKEN"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert_eq!(fingerprint.len(), 64, "{fingerprint}");
+            assert!(captured.inputs.root().join("private/sealed.json").is_file());
+            fingerprint
+        });
+        assert_ne!(fingerprints[0], fingerprints[1]);
+    }
+
+    #[test]
+    fn a_build_without_sealed_values_captures_what_it_always_did() {
+        let root = tempfile::tempdir().unwrap();
+        let mut intent = intent(&["api"]);
+        intent
+            .target
+            .first_mut()
+            .unwrap()
+            .container
+            .environment
+            .insert("PLAIN".into(), "visible".into());
+        let captured =
+            capture_one(&intent, dockerfile_spec(root.path(), "FROM scratch\n")).unwrap();
+        let compose = fs::read_to_string(captured.inputs.root().join("compose.yaml")).unwrap();
+        let expected = format!(
+            "services:\n  api:\n    image: registry.invalid/api:1\n    build:\n      context: source/0\n      dockerfile: ../1\n      args:\n        PLAIN: visible\n        PORT: '8080'\n      tags:\n      - registry.invalid/api:1\n      - {}\n",
+            captured.retained_tag
+        );
+        assert_eq!(compose, expected);
+        assert!(!captured.inputs.root().join("private/sealed.json").exists());
+    }
+
+    #[test]
+    fn a_dockerfile_declaring_a_sealed_value_as_arg_is_refused_by_name() {
+        let root = tempfile::tempdir().unwrap();
+        let (intent, sealed) = sealed_intent(7);
+        let ciphertext = serde_json::to_string(&sealed).unwrap();
+        for dockerfile in [
+            "FROM scratch\nARG NPM_TOKEN\n",
+            "FROM scratch\nARG NPM_TOKEN=default\n",
+            "FROM scratch AS base\narg PLAIN NPM_TOKEN\nFROM scratch\n",
+        ] {
+            let error = capture_one(&intent, dockerfile_spec(root.path(), dockerfile))
+                .err()
+                .unwrap()
+                .to_string();
+            assert_eq!(
+                error,
+                "invalid Build: NPM_TOKEN is sealed. Read it with RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN.",
+                "{dockerfile}"
+            );
+            assert!(!error.contains(&ciphertext));
+            assert!(!error.contains("visible"));
+        }
+        for dockerfile in [MOUNTING_DOCKERFILE, "FROM scratch\nARG PLAIN\n"] {
+            capture_one(&intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_sealed_value_without_an_identity_cannot_be_captured() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut intent, _) = sealed_intent(7);
+        intent.target.first_mut().unwrap().container.sealed_identity = None;
+        let error = capture_one(&intent, dockerfile_spec(root.path(), MOUNTING_DOCKERFILE))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("Environment"), "{error}");
     }
 
     #[test]
