@@ -543,6 +543,61 @@ fn too_long(key: &str, value: &str) -> bool {
     key.len() + value.len() + 2 > MAX_ENV_STRING
 }
 
+/// The most Linux passes a program for its variables and arguments together: a quarter
+/// of the default 8 MiB stack. Each `KEY=value` string counts with its NUL and an
+/// 8-byte pointer to it. A Container given more never starts.
+const MAX_ENV_TOTAL: usize = 2 * 1024 * 1024;
+
+/// What `KEY=value` takes of [`MAX_ENV_TOTAL`].
+const fn env_bytes(key: usize, value: usize) -> usize {
+    key + 1 + value + 1 + 8
+}
+
+/// Refuse `service`'s environment when its variables, at `bytes`, are past
+/// [`MAX_ENV_TOTAL`].
+fn too_big(service: &str, bytes: usize) -> Result<(), RpcError> {
+    if bytes <= MAX_ENV_TOTAL {
+        return Ok(());
+    }
+    Err(error::invalid(
+        format!(
+            "{service}: too big for a Container's environment: its variables take {} KiB, and Linux passes at most {} KiB of variables and arguments together",
+            bytes.div_ceil(1024),
+            MAX_ENV_TOTAL / 1024
+        ),
+        json!({ "service": service, "bytes": bytes, "limit": MAX_ENV_TOTAL }),
+    ))
+}
+
+/// Refuse `service` holding more variable text than a Container's environment takes.
+/// Counts only what Working State knows: literal values and a template's text, not
+/// secrets or what references resolve to, which deploy checks.
+pub(crate) fn refuse_too_big(
+    environment: &Environment,
+    service: &ServiceName,
+) -> Result<(), RpcError> {
+    let bytes = environment
+        .service(service)?
+        .variables
+        .iter()
+        .map(|variable| {
+            let known = match &variable.value {
+                SavedVariableValue::Literal { value } => value.len(),
+                SavedVariableValue::Template { parts } => parts
+                    .iter()
+                    .map(|part| match part {
+                        ValuePart::Text { value } => value.len(),
+                        ValuePart::Ref { .. } => 0,
+                    })
+                    .sum(),
+                SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue => 0,
+            };
+            env_bytes(variable.key.len(), known)
+        })
+        .sum();
+    too_big(service.as_str(), bytes)
+}
+
 /// Plain and secret values must survive the container's environment unchanged.
 ///
 /// # Errors
@@ -835,6 +890,12 @@ pub(crate) fn resolve(
                 env.insert(key.clone(), value);
             }
         }
+        too_big(
+            config.settings.private_dns.as_str(),
+            env.iter()
+                .map(|(key, value)| env_bytes(key.len(), value.len()))
+                .sum(),
+        )?;
         if !not_set.is_empty() {
             resolved.not_set.insert(node.node_id.clone(), not_set);
         }

@@ -227,6 +227,63 @@ fn a_value_too_long_for_the_environment_is_refused_when_set() {
     }
 }
 
+/// Linux passes a program its variables and arguments together in at most 2 MiB: each
+/// `KEY=value` string with its NUL, and an 8-byte pointer to it.
+fn env_bytes(keys: impl Iterator<Item = String>, value: usize) -> usize {
+    keys.map(|key| key.len() + 1 + value + 1 + 8).sum()
+}
+
+#[test]
+fn an_environment_too_big_for_a_container_is_refused_when_set() {
+    let store = backend::open();
+    shop(&store);
+    let value = "x".repeat(600);
+    let paths: Vec<String> = (0..4000).map(|n| format!("web.env.V{n}")).collect();
+    let changes: Vec<(&str, Value)> = paths
+        .iter()
+        .map(|path| (path.as_str(), json!(value)))
+        .collect();
+    let before = get(&store, None);
+    let error = set(&store, &changes).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    let kib = env_bytes((0..4000).map(|n| format!("V{n}")), 600).div_ceil(1024);
+    assert_eq!(
+        error.message,
+        format!(
+            "web: too big for a Container's environment: its variables take {kib} KiB, and Linux passes at most 2048 KiB of variables and arguments together"
+        )
+    );
+    assert_eq!(get(&store, None), before);
+
+    // What fits is judged where the whole edit leaves it.
+    set(&store, &changes[..3000]).unwrap();
+    let mut swap = vec![(changes[0].0, json!(""))];
+    swap.extend(changes[3000..3001].iter().cloned());
+    set(&store, &swap).unwrap();
+}
+
+#[test]
+fn references_that_resolve_too_big_for_a_container_refuse_the_deploy() {
+    let store = backend::open();
+    shop(&store);
+    let paths: Vec<String> = (0..25).map(|n| format!("web.env.R{n}")).collect();
+    let mut changes: Vec<(&str, Value)> = paths
+        .iter()
+        .map(|path| (path.as_str(), json!("${{ api.HALF }}")))
+        .collect();
+    changes.push(("api.env.HALF", json!("x".repeat(100 * 1024))));
+    set(&store, &changes).unwrap();
+    let error = admit(&store, 1).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    let kib = env_bytes((0..25).map(|n| format!("R{n}")), 100 * 1024).div_ceil(1024);
+    assert_eq!(
+        error.message,
+        format!(
+            "web: too big for a Container's environment: its variables take {kib} KiB, and Linux passes at most 2048 KiB of variables and arguments together"
+        )
+    );
+}
+
 #[test]
 fn a_reference_that_resolves_too_long_refuses_the_deploy() {
     let store = backend::open();

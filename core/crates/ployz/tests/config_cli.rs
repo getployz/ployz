@@ -7464,6 +7464,22 @@ fn an_unreadable_input_keeps_its_error_code() {
         refused["message"],
         format!("Can't read the env file {missing}")
     );
+    assert_eq!(
+        refused["cause"],
+        json!(["No such file or directory (os error 2)"])
+    );
+    let folder = dir.path().to_str().unwrap();
+    let refused = failed_on(
+        store,
+        &["set", "web", "--from-env-file", folder],
+        null(),
+        "invalid_argument",
+    );
+    assert_eq!(
+        refused["message"],
+        format!("Can't read the env file {folder}")
+    );
+    assert_eq!(refused["cause"], json!(["Is a directory (os error 21)"]));
 
     let locked = dir.path().join("locked.yml");
     std::fs::write(&locked, "a: 1\n").unwrap();

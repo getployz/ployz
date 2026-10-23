@@ -164,5 +164,10 @@ can't reference it, and it replaces a variable of yours with that name.
   one, so Ployz refuses such a value when you set it, and refuses a deploy where references
   make one longer. When a secret makes it longer, the Deployment fails before anything runs and
   names the variable. Put a large value in a [Config](configs.md) file instead.
+- **A service's variables total at most 2 MiB.** Linux passes a program its variables and
+  arguments together in 2 MiB, counting a few bytes more per variable for its bookkeeping. Ployz
+  refuses a `set`, including `set --from-env-file`, that takes a service past that, naming the
+  total. It also refuses a deploy where references or secrets take it past. Move bulk settings
+  into a [Config](configs.md) file.
 
 Next: [add a database](databases.md).
