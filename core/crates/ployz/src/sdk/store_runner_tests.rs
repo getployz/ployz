@@ -141,7 +141,7 @@ async fn a_refusal_that_fails_the_same_way_again_is_recorded_as_one() {
     let refusal = DeployError::Plan(PlanError::DependencyCycle {
         service: "app".into(),
     });
-    run.unprepared(&BTreeSet::new(), Unprepared::from(refusal))
+    run.unprepared(&BTreeSet::new(), &[], Unprepared::from(refusal))
         .await
         .unwrap();
     let view = run
@@ -1230,5 +1230,47 @@ async fn only_a_removed_services_left_copy_may_leave_it_empty() {
             BTreeSet::from([crate::global_fixtures::container_id('c')]),
             "{outcome:?}"
         );
+    }
+}
+
+#[test]
+fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
+    let machine = |c: char| ployz_core::MachineId::parse(c.to_string().repeat(32)).unwrap();
+    let short = crate::deploy::PlanError::Storage {
+        machine_id: machine('a'),
+        machine: ployz_core::MachineName::parse("machine-1").unwrap(),
+        source: ployz_core::StorageCapacityError::InsufficientStorage {
+            required_growth_bytes: 4 << 30,
+            available_bytes: 1 << 30,
+            reserve_bytes: 0,
+        },
+    }
+    .into_rpc_error();
+    let deleting = |on: char| {
+        vec![ployz_core::DockerVolumeId {
+            machine_id: machine(on),
+            name: "vs-production-m1".parse().unwrap(),
+        }]
+    };
+
+    let failure = refused_before_deletes(&short, &deleting('a'));
+    assert!(
+        failure.reason.ends_with(
+            "Volumes this deploy deletes free their space only after it succeeds, so they don't count here. Deploy the deletions before the new Volumes."
+        ),
+        "{}",
+        failure.reason
+    );
+    assert!(
+        failure
+            .reason
+            .starts_with("Machine machine-1: Not enough disk space")
+    );
+
+    for unchanged in [
+        refused_before_deletes(&short, &deleting('b')),
+        refused_before_deletes(&short, &[]),
+    ] {
+        assert_eq!(unchanged, Failure::from(&short));
     }
 }
