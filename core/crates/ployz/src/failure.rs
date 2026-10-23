@@ -529,6 +529,7 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
         return match error {
             crate::cluster::RoleWaitError::Connect(error) => connect_code(error),
             crate::cluster::RoleWaitError::NotObserved(_)
+            | crate::cluster::RoleWaitError::ChangeNotObserved
             | crate::cluster::RoleWaitError::Cancelled => RpcErrorCode::Unavailable,
         };
     }

@@ -861,13 +861,7 @@ pub(crate) async fn apply_update(
     rerun: String,
     recovery: ArgMatches,
 ) -> Result<(), Error> {
-    let services_role = update.accepts_services.map(|accepts| {
-        if accepts {
-            crate::cluster::RoleSetting::ServicesOn
-        } else {
-            crate::cluster::RoleSetting::ServicesOff
-        }
-    });
+    let planned = crate::cluster::PlannedChange::of(&update);
     let accepts_ingress = update.accepts_ingress;
     let was_off = match accepts_ingress {
         Some(true) => ingress_off(client, &selector).await,
@@ -918,15 +912,22 @@ pub(crate) async fn apply_update(
         }
         (Err((_, error)), _) => return Err(error.into()),
     };
-    if let Some(setting) = services_role
-        && let Err(error) =
-            crate::cluster::wait_for_role(client, &machine.id, setting, &CancellationToken::new())
-                .await
+    // A deploy right after this plans from the Entry's list, so wait until it lists the change.
+    let listed = if planned.is_empty() {
+        Ok(())
+    } else {
+        crate::cluster::wait_for_change(client, &machine, &planned, &CancellationToken::new()).await
+    };
+    // Turning ingress on reports a change the Entry missed as an unfinished follow-up instead.
+    if accepts_ingress != Some(true)
+        && let Err(error) = &listed
     {
         let reason = match error {
-            RoleWaitError::NotObserved(_) => "still hasn't listed its new services role".to_owned(),
+            RoleWaitError::NotObserved(_) | RoleWaitError::ChangeNotObserved => {
+                "still hasn't listed the change".to_owned()
+            }
             error @ (RoleWaitError::Cancelled | RoleWaitError::Connect(_)) => {
-                format!("could not confirm its new services role ({error})")
+                format!("could not confirm the change ({error})")
             }
         };
         crate::ui::warn(format!(
@@ -956,18 +957,11 @@ pub(crate) async fn apply_update(
         }));
     }
     let followed = async {
-        crate::cluster::wait_for_role(
-            client,
-            &machine.id,
-            crate::cluster::RoleSetting::IngressOn,
-            &CancellationToken::new(),
-        )
-        .await
-        .map_err(|error| match error {
+        listed.map_err(|error| match error {
             RoleWaitError::Connect(error) => Error::from(error),
-            error @ (RoleWaitError::NotObserved(_) | RoleWaitError::Cancelled) => {
-                Error::from(error)
-            }
+            error @ (RoleWaitError::NotObserved(_)
+            | RoleWaitError::ChangeNotObserved
+            | RoleWaitError::Cancelled) => Error::from(error),
         })?;
         crate::ingress::follow_roles(client, ingress).await
     }
@@ -1549,7 +1543,8 @@ mod tests {
 
         let zone = MachineLabelKey::parse("zone").unwrap();
         let east = MachineLabelValue::parse("east").unwrap();
-        let cases: [(&str, fn(&mut Machine), MachineUpdate); 3] = [
+        type Case = (&'static str, fn(&mut Machine), MachineUpdate);
+        let cases: [Case; 3] = [
             (
                 "a new label",
                 |machine| {
@@ -1593,6 +1588,10 @@ mod tests {
                     let stale = stale.clone();
                     let updated = updated.clone();
                     async move {
+                        #[expect(
+                            clippy::wildcard_enum_match_arm,
+                            reason = "server set sends only the update and the list"
+                        )]
                         let response = match request.into_inner().decode_request().unwrap().body {
                             RpcRequestBody::UpdateMachine(_) => RpcResponse::from(MachineUpdated {
                                 machine: updated.machine,
@@ -1746,7 +1745,7 @@ mod tests {
         assert_eq!(
             captured.pointer("/warnings/0"),
             Some(&json!(
-                "Server machine-3 changed, but the Server this command connects through still hasn't listed its new services role. Check with ployz server ls before deploying."
+                "Server machine-3 changed, but the Server this command connects through still hasn't listed the change. Check with ployz server ls before deploying."
             ))
         );
     }

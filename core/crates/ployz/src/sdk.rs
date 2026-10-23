@@ -1041,6 +1041,7 @@ impl Session {
             .map_err(|error| match error {
                 crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
+                | crate::cluster::RoleWaitError::ChangeNotObserved
                 | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
             })?;
             crate::ingress::fill_slots(&mut client, cancel)
@@ -1077,6 +1078,7 @@ impl Session {
             .map_err(|error| match error {
                 crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
+                | crate::cluster::RoleWaitError::ChangeNotObserved
                 | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
             })?;
             crate::drain::retirement::retire_ingress_proxy(&client, &id, cancel).await
