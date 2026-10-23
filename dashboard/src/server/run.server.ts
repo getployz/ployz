@@ -6,7 +6,7 @@ import { NonRetriableError } from "inngest";
 import type { ManagedRuntime } from "effect";
 import { parseErrorEvidence } from "#/lib/error-evidence";
 import { asRecord } from "#/lib/json";
-import { PublicErrorCategory } from "#/server/public-error";
+import { loggableCause, PublicErrorCategory } from "#/server/public-error";
 import { AppRuntime, type AppServices } from "#/server/runtime.server";
 
 type Runtime<R, ER> = Pick<ManagedRuntime.ManagedRuntime<R, ER>, "runPromiseExit">;
@@ -41,6 +41,8 @@ export function isNonRetriableInngestCause(cause: unknown): boolean {
 }
 
 function describeCause(cause: Cause.Cause<unknown>) {
+  const loggable = loggableCause(cause);
+  if (!Cause.isCause(loggable)) return loggable;
   const squashed = Cause.squash(cause);
   return squashed instanceof Error && squashed.message.length > 0
     ? squashed.message
@@ -76,7 +78,7 @@ export function makeEffectRunner<R, ER>(runtime: Runtime<R, ER>) {
     if (Option.isSome(failure)) {
       if (Cause.hasDies(exit.cause)) {
         Effect.runFork(
-          Effect.logError("Defect shadowed by a typed failure.", exit.cause),
+          Effect.logError("Defect shadowed by a typed failure.", loggableCause(exit.cause)),
         );
       }
       throw failure.value;

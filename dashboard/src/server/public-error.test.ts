@@ -183,6 +183,30 @@ describe("encodePublicError", () => {
     expect(response.status).toBe(500);
   });
 
+  it("reports a query that died by its kind and statement, never its params or message", () => {
+    const report = vi.fn();
+    const died = Cause.die(failedQuery());
+
+    const error = encodePublicBoundaryError(died, { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      "defect",
+      "EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token",
+    );
+    expect(error.code).toBe("INTERNAL");
+  });
+
+  it("names a died failure that wraps a query by its tags and the query's statement", () => {
+    const report = vi.fn();
+
+    encodePublicBoundaryError(Cause.die(new CollectionReadFailure({ cause: failedQuery() })), { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      "defect",
+      "CollectionReadFailure > EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token",
+    );
+  });
+
   it("reports full defect and interruption causes separately while redacting transport", async () => {
     const report = vi.fn();
     const defect = Cause.die(new Error("provider-token"));

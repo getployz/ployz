@@ -1,6 +1,8 @@
 import { Cause, Context, Data, Effect, Layer, ManagedRuntime, Schema } from "effect";
 import { NonRetriableError } from "inngest";
-import { describe, expect, it } from "vitest";
+import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
+import { SqlError, UnknownError } from "effect/unstable/sql/SqlError";
+import { describe, expect, it, vi } from "vitest";
 import {
   isNonRetriableInngestCause,
   makeEffectRunner,
@@ -22,6 +24,12 @@ class TerminalProviderFailure extends Data.TaggedError("TerminalProviderFailure"
   readonly retriable: false;
   readonly failureCode: string;
 }> {}
+
+const failedQuery = () => new EffectDrizzleQueryError({
+  query: "insert into machine_enrollment_token (token_hash) values ($1)",
+  params: ["secret-param"],
+  cause: Cause.fail(new SqlError({ reason: new UnknownError({ cause: { code: "P0001", message: "secret-message" } }) })),
+});
 
 describe("Effect execution boundary", () => {
   it("reuses one managed scope and releases it on dispose", async () => {
@@ -94,6 +102,43 @@ describe("Effect execution boundary", () => {
       Effect.ensuring(Effect.die("finalizer-defect")),
     );
     await expect(run(program)).rejects.toBeInstanceOf(ExpectedFailure);
+    await runtime.dispose();
+  });
+
+  it("logs a query that died under a typed failure without its params or message", async () => {
+    const lines: string[] = [];
+    const capture = (...args: unknown[]) => {
+      lines.push(args.map((arg) => Cause.isCause(arg) ? Cause.pretty(arg) : String(JSON.stringify(arg) ?? arg)).join(" "));
+    };
+    const spies = (["log", "error", "warn", "info", "debug"] as const).map((level) => vi.spyOn(console, level).mockImplementation(capture));
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const run = makeEffectRunner(runtime);
+
+    try {
+      await expect(run(Effect.fail(new ExpectedFailure()).pipe(Effect.ensuring(Effect.die(failedQuery())))))
+        .rejects.toBeInstanceOf(ExpectedFailure);
+      await vi.waitFor(() => expect(lines.join("\n")).toContain("Defect shadowed by a typed failure."));
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+      await runtime.dispose();
+    }
+
+    const logged = lines.join("\n");
+    expect(logged).toContain("Defect shadowed by a typed failure.");
+    expect(logged).toContain("insert machine_enrollment_token");
+    expect(logged).not.toContain("secret-param");
+    expect(logged).not.toContain("secret-message");
+  });
+
+  it("names a query that died at the Inngest boundary without its params", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));
+
+    await expect(runInngest(Effect.die(failedQuery()))).rejects.toSatisfy(
+      (cause: unknown) =>
+        cause instanceof Error &&
+        cause.message === "EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token",
+    );
     await runtime.dispose();
   });
 

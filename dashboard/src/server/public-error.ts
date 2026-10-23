@@ -133,15 +133,69 @@ const SQLSTATE = /^[0-9A-Z]{5}$/u;
 function typedFailureSummary(cause: unknown): string {
   const tags: string[] = [];
   let code: string | undefined;
-  for (let at: unknown = cause, depth = 0; at !== undefined && depth < 8; depth += 1) {
+  for (const at of causeChain(cause)) {
     const tagged = decodeTaggedFailure(at);
     if (Option.isSome(tagged)) tags.push(IDENTIFIER.test(tagged.value._tag) ? tagged.value._tag : "?");
     const found = Option.getOrUndefined(decodeErrorCode(at))?.code;
     if (found !== undefined && SQLSTATE.test(found)) code ??= found;
+  }
+  return code === undefined ? tags.join(" > ") : `${tags.join(" > ")} (${code})`;
+}
+
+/** `cause`, then each `cause` it wraps, a few deep. */
+function* causeChain(cause: unknown) {
+  for (let at: unknown = cause, depth = 0; at !== undefined && depth < 8; depth += 1) {
+    yield at;
     const next = Option.getOrUndefined(decodeNestedCause(at))?.cause;
     at = Cause.isCause(next) ? Cause.squash(next) : next;
   }
-  return code === undefined ? tags.join(" > ") : `${tags.join(" > ")} (${code})`;
+}
+
+const QUERY_FAILURES = new Set(["EffectDrizzleQueryError", "SqlError"]);
+const decodeFailedQuery = Schema.decodeUnknownOption(
+  Schema.Struct({ _tag: Schema.Literal("EffectDrizzleQueryError"), query: Schema.String }),
+);
+const STATEMENT = /\b(insert\s+into|delete\s+from|update|from)\s+((?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*)(?:\.(?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*))?)/iu;
+const VERB = /^\s*(?:with\b[\s\S]*?\)\s*)?(select|insert|update|delete)\b/iu;
+
+/** A failed query's statement as its verb and first table, such as `insert machine_enrollment_token`. */
+function statementName(query: string): string | undefined {
+  const verb = VERB.exec(query)?.[1] ?? STATEMENT.exec(query)?.[1]?.split(/\s/u)[0];
+  const table = STATEMENT.exec(query)?.[2]?.replaceAll('"', "");
+  if (verb === undefined || table === undefined) return undefined;
+  return `${verb.toLowerCase()} ${table}`;
+}
+
+/**
+ * A value that carries a failed query, named by its tags, SQLSTATE and statement: the query's message holds its
+ * params, and the database's message can quote the values it refused.
+ */
+function failedQuerySummary(cause: unknown): string | undefined {
+  const chain = [...causeChain(cause)];
+  const carriesQuery = chain.some((at) => {
+    const tagged = decodeTaggedFailure(at);
+    return Option.isSome(tagged) && QUERY_FAILURES.has(tagged.value._tag);
+  });
+  if (!carriesQuery) return undefined;
+  const query = chain.map((at) => Option.getOrUndefined(decodeFailedQuery(at))?.query).find((at) => at !== undefined);
+  const statement = query === undefined ? undefined : statementName(query);
+  const summary = typedFailureSummary(cause);
+  return statement === undefined ? summary : `${summary} in ${statement}`;
+}
+
+/**
+ * What a log may hold of `cause`: all of it, unless a failure or defect in it carries a failed query. Then each
+ * reason is named by [`failedQuerySummary`] or, when it carries none, by its pretty form.
+ */
+export function loggableCause(cause: Cause.Cause<unknown>): Cause.Cause<unknown> | string {
+  const reasons = cause.reasons.map((reason) => {
+    const value = Cause.isDieReason(reason) ? reason.defect : Cause.isFailReason(reason) ? reason.error : undefined;
+    return { reason, summary: value === undefined ? undefined : failedQuerySummary(value) };
+  });
+  if (reasons.every(({ summary }) => summary === undefined)) return cause;
+  return reasons
+    .map(({ reason, summary }) => summary ?? Cause.pretty(Cause.fromReasons([reason])))
+    .join("\n");
 }
 
 type PublicErrorReport = (
@@ -168,7 +222,7 @@ function reportUnexpectedCause(
   if (Cause.isCause(cause)) {
     let reported = false;
     if (Cause.hasDies(cause)) {
-      report("defect", cause);
+      report("defect", loggableCause(cause));
       reported = true;
     }
     if (Cause.hasInterrupts(cause)) {
