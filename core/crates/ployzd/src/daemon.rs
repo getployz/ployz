@@ -872,6 +872,12 @@ fn notify(state: NotifyState<'_>) {
 }
 
 const SYSTEMD_START_TIMEOUT_EXTENSION: Duration = Duration::from_secs(30);
+/// systemd counts each extension from when it reads it, so a renewal sent as the last one runs
+/// out loses to a late wakeup under the IO load that makes a start slow.
+const SYSTEMD_START_TIMEOUT_RENEWAL: Duration = Duration::from_secs(15);
+const _: () = assert!(
+    SYSTEMD_START_TIMEOUT_RENEWAL.as_secs() * 2 <= SYSTEMD_START_TIMEOUT_EXTENSION.as_secs()
+);
 
 #[must_use]
 struct SystemdStartTimeoutExtend {
@@ -905,7 +911,7 @@ fn extend_systemd_start_timeout(what: &'static str) -> SystemdStartTimeoutExtend
                     );
                     return;
                 }
-                tokio::time::sleep(SYSTEMD_START_TIMEOUT_EXTENSION).await;
+                tokio::time::sleep(SYSTEMD_START_TIMEOUT_RENEWAL).await;
             }
         }),
     }
