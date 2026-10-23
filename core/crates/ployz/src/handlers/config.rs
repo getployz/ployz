@@ -529,6 +529,7 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         changes,
     };
     let store = store(root)?;
+    let edit = store.seal_edit(edit)?;
     let edited = store
         .try_write(&edit)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "get")))?;

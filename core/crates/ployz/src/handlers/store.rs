@@ -1,6 +1,8 @@
 //! The Config Store access every authoring command shares: which Store, which
 //! Organization, the `--project`/`--env` scope, and IDs for creates.
 
+mod sealing;
+
 use clap::{Arg, ArgMatches};
 use ployz_core::RpcErrorCode;
 use std::path::Path;
