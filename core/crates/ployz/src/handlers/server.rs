@@ -87,10 +87,10 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
         .ok_or_else(no_servers)
 }
 
-/// [`connect`] for what needs Full scope: exec, tunnels and the Device roster. Cloud's own
-/// capability can't do these, so through Cloud this device dials as its Device. Without a
-/// Device key, the current context or local daemon goes first: over SSH on a Server, that
-/// approves the first Device.
+/// [`connect`] for what needs Full scope: exec, tunnels and the Device roster. The current
+/// context or local daemon goes first, so over SSH on a Server that approves the first
+/// Device. Otherwise Cloud's own capability can't do these, so through Cloud this device
+/// dials as its Device.
 pub(super) async fn connect_full(
     matches: &ArgMatches,
     context: Option<&str>,
@@ -104,12 +104,10 @@ pub(super) async fn connect_full(
         Err(LoginError::SignedOut) => return connect(matches, context).await,
         Err(error) => return Err(error.into()),
     };
-    let device = super::device::key::load(&super::device::key::path(&config))?;
-    if device.is_none()
-        && let Ok(client) = super::connect_context(matches, None).await
-    {
+    if let Ok(client) = super::connect_context(matches, None).await {
         return Ok(client);
     }
+    let device = super::device::key::load(&super::device::key::path(&config))?;
     let mut access = cloud_account::server_access(&credential).await?;
     if let Some(secret) = device {
         access.connections = access
