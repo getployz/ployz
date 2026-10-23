@@ -258,10 +258,13 @@ so; the next drain removes it, along with any old container an earlier drain lef
 container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`
 names a draining container only when the service has too few others serving.
 If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
-reads **Drain again**. Turning services back on doesn't move anything back.
+reads **Drain again**. One failure doesn't count: a drain also moves containers off other servers whose
+services are off, and when one of those moves fails without leaving anything behind, its row says the
+service still runs on that server, but that failure alone doesn't make this server's drain incomplete. Turning services back on doesn't
+move anything back.
 
 `ployz server drain web-2` does the same from the CLI and exits non-zero if anything stayed or
-failed. It waits for an approval first when a global service would run on no other server (see
+failed, apart from that other server's move. It waits for an approval first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it

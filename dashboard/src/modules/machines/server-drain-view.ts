@@ -116,7 +116,10 @@ export function drainSummary(report: DrainReport, serverName: string): string {
   const leftAlone = remaining.kind === "observed" ? remaining.unchosen.length : 0;
   if (report.complete && leftAlone === 0) {
     if (services.length === 0) return "Nothing was running here";
-    return count("moved", "retired", "old_copies") > 0 ? `Everything moved off ${serverName}` : "Nothing needed to move";
+    // A failed row in a complete Drain is another server's move, beside this one's.
+    const movedHere = count("moved", "retired", "old_copies") > 0
+      || services.some((entry) => entry.result === "failed" && entry.moves.length > 0);
+    return movedHere ? `Everything moved off ${serverName}` : "Nothing needed to move";
   }
   const parts = [
     count("moved") > 0 ? `${count("moved")} moved` : null,

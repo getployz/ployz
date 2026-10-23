@@ -471,6 +471,95 @@ async fn another_server_s_old_copy_left_running_is_still_reported() {
     assert!(!report.complete());
 }
 
+fn web_3_failed() -> MoveFailure {
+    let Move { from, to, .. } = a_move_off_web_3();
+    MoveFailure::ReadImage {
+        from,
+        to,
+        detail: "web-3 did not answer".into(),
+    }
+}
+
+#[tokio::test]
+async fn another_server_s_failed_move_is_reported_without_failing_this_drain() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Failed {
+            moves: one_move(),
+            failure: web_3_failed(),
+        }]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry(
+            "web",
+            DrainOutcome::Failed {
+                moves: one_move(),
+                failure: web_3_failed(),
+            }
+        )]
+    );
+    assert!(report.complete());
+}
+
+#[tokio::test]
+async fn another_server_s_failed_move_fails_this_drain_when_something_was_left() {
+    let Move { from, to, .. } = a_move_off_web_3();
+    let left = [
+        // A copy here stayed.
+        (web_3_failed(), Ok(vec![qualified("web")])),
+        // This Drain's own cancellation, or a replacement it started, are its to report.
+        (
+            MoveFailure::Cancelled {
+                from: from.clone(),
+                to: to.clone(),
+                replacement_removed: true,
+            },
+            nothing_left(),
+        ),
+        (
+            MoveFailure::NotServing {
+                from,
+                to,
+                detail: "never became healthy".into(),
+                replacement_removed: false,
+            },
+            nothing_left(),
+        ),
+    ];
+    let stuck = Move {
+        old: running(Unconfirmed::Proxies {
+            servers: Vec::new(),
+        }),
+        ..a_move_off_web_3()
+    };
+    let left = left
+        .into_iter()
+        .map(|(failure, remaining)| (failure, one_move(), remaining))
+        // Another Server's old copy this convergence left running.
+        .chain([(
+            web_3_failed(),
+            [one_move(), vec![stuck]].concat(),
+            nothing_left(),
+        )]);
+    for (failure, moves, remaining) in left {
+        let mut client = Scripted {
+            observations: [remaining].into(),
+            convergences: [Converged::Failed {
+                moves,
+                failure: failure.clone(),
+            }]
+            .into(),
+            ..Scripted::default()
+        };
+        let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+        assert!(!report.complete(), "{failure:?}");
+    }
+}
+
 #[tokio::test]
 async fn only_another_server_s_moves_beside_an_out_copy_report_just_the_old_copy() {
     let mut client = Scripted {
