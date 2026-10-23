@@ -7,7 +7,7 @@ use ployz_core::{
     ContainerAction, ContainerId, ContainerKind, InspectContainerRequest, Machine, MachineId,
     MachineTarget, Namespace, ResolvedServiceSpec, ServiceId, ServiceSelector, op, select_service,
 };
-use ployz_testkit::{Cluster, ClusterPlan};
+use ployz_testkit::{Cluster, ClusterPlan, poll_until};
 
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
@@ -210,18 +210,16 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if client
+    poll_until(
+        Duration::from_secs(15),
+        "every Service is removed",
+        async || {
+            client
                 .live_services(ployz_core::EnvironmentValues::Redacted)
                 .await
                 .is_ok_and(|live| live.services().is_empty())
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
+        },
+    )
     .await
     .unwrap();
 }
@@ -446,26 +444,25 @@ async fn wait_for_services(
     service_count: usize,
     container_count: usize,
 ) -> ployz_core::LiveServices<ployz_core::RpcError> {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
+    poll_until(
+        Duration::from_secs(30),
+        &format!("{service_count} Services with {container_count} Containers"),
+        async || {
             // Included: callers compare resolved specs that differ only by environment.
-            if let Ok(live) = client
+            let live = client
                 .live_services(ployz_core::EnvironmentValues::Included)
                 .await
-                && live.services().len() == service_count
-                && live
-                    .containers
-                    .successes
-                    .iter()
-                    .map(|success| success.value.len())
-                    .sum::<usize>()
-                    == container_count
-            {
-                return live;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
+                .ok()?;
+            let containers = live
+                .containers
+                .successes
+                .iter()
+                .map(|success| success.value.len())
+                .sum::<usize>();
+            (live.services().len() == service_count && containers == container_count)
+                .then_some(live)
+        },
+    )
     .await
     .unwrap()
 }

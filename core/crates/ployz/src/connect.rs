@@ -52,6 +52,12 @@ pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
 
 pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a targeted read waits before the target counts as silent.
+pub(crate) fn target_read_timeout() -> Duration {
+    crate::cli::env::seconds(crate::cli::env::TARGET_READ_TIMEOUT_SECONDS)
+        .unwrap_or(TARGET_RPC_TIMEOUT)
+}
+
 /// While a call is open, the client pings the entry daemon after this long without a
 /// read, and fails an open call within interval + timeout of its last read: an entry
 /// that lost power or its network ends a Deploy instead of hanging it.
@@ -1182,6 +1188,13 @@ impl TransportError {
             || self.session_closed
             || self.message.is_empty()
             || !self.detailed)
+    }
+
+    /// The call's path to its target went away: the client's connection or stream broke, the
+    /// call was cancelled, its session closed, or the entry marked the target silent or unreached.
+    /// A status tonic or the daemon made, such as a decode failure, is not one.
+    pub(crate) fn connection_lost(&self) -> bool {
+        self.unanswered || self.session_closed || self.routed_unanswered || self.routed_unreached
     }
 
     pub(crate) fn budget_expired(message: &str) -> Self {

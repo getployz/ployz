@@ -3,6 +3,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     os::unix::fs::PermissionsExt,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -15,6 +16,7 @@ use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
+    sync::Notify,
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -118,22 +120,29 @@ impl Harness {
     }
 
     async fn wait_for_replicas(&self, count: usize) {
-        let deadline = Instant::now() + SETTLE;
-        loop {
+        eventually(move || async move {
             let answers = self.answers().await;
             if answers
                 .as_ref()
                 .is_some_and(|answers| answers.len() == count)
             {
-                return;
+                return Ok(());
             }
-            assert!(
-                Instant::now() < deadline,
+            Err(format!(
                 "expected {count} replicas, last answer {answers:?}, statuses {:?}",
                 self.keeper.statuses()
-            );
-            tokio::time::sleep(TICK).await;
-        }
+            ))
+        })
+        .await;
+    }
+
+    async fn ticks(&self, count: u64) {
+        let mut ticks = self.keeper.subscribe_ticks();
+        let from = *ticks.borrow_and_update();
+        tokio::time::timeout(SETTLE, ticks.wait_for(|ticks| *ticks >= from + count))
+            .await
+            .expect("the process kept ticking")
+            .unwrap();
     }
 }
 
@@ -211,7 +220,7 @@ async fn keeps_the_last_projection_while_corrosion_is_down() {
     wait_for_status(&harness.keeper, "reconnecting to Corrosion").await;
     for _ in 0..5 {
         assert_eq!(harness.answers().await.map(|a| a.len()), Some(2));
-        tokio::time::sleep(TICK).await;
+        harness.ticks(1).await;
     }
 
     shutdown.cancel();
@@ -252,15 +261,16 @@ async fn a_rotated_token_reconnects_on_the_tick() {
     let rotated = "b".repeat(64);
     fs::write(&harness.spec.corrosion.token_file, &rotated).unwrap();
 
-    let deadline = Instant::now() + SETTLE;
-    while !harness.cluster.subscription_tokens().contains(&rotated) {
-        assert!(
-            Instant::now() < deadline,
-            "{:?}",
-            harness.cluster.subscription_tokens()
-        );
-        tokio::time::sleep(TICK).await;
-    }
+    let (cluster, rotated) = (&harness.cluster, &rotated);
+    eventually(move || async move {
+        let tokens = cluster.subscription_tokens();
+        if tokens.contains(rotated) {
+            Ok(())
+        } else {
+            Err(format!("subscribed with {tokens:?}"))
+        }
+    })
+    .await;
     harness.publish_replicas(3).await;
     harness.wait_for_replicas(3).await;
 
@@ -278,7 +288,7 @@ async fn a_failed_rebuild_is_retried_on_the_tick() {
 
     harness.cluster.fail_snapshots(true);
     harness.publish_replicas(3).await;
-    tokio::time::sleep(TICK * 4).await;
+    harness.ticks(4).await;
     assert_eq!(harness.answers().await.map(|a| a.len()), Some(2));
 
     harness.cluster.fail_snapshots(false);
@@ -292,7 +302,7 @@ async fn a_failed_rebuild_is_retried_on_the_tick() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn drains_an_in_flight_forwarded_query_on_sigterm() {
     let mut harness = Harness::new();
-    let upstream = slow_upstream(SILENCE).await;
+    let (upstream, asked, answer) = held_upstream().await;
     harness.spec.upstreams = vec![upstream];
     harness.spec_file.publish(Some(&harness.spec)).unwrap();
     harness.publish_replicas(1).await;
@@ -305,8 +315,11 @@ async fn drains_an_in_flight_forwarded_query_on_sigterm() {
         .send_to(&query(FORWARDED), harness.listen())
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::timeout(SETTLE, asked.notified())
+        .await
+        .expect("the forwarded query never reached the upstream");
     shutdown.cancel();
+    answer.notify_one();
     let answered = recv(&client, SETTLE)
         .await
         .expect("the in-flight query is answered");
@@ -372,7 +385,7 @@ async fn an_unreadable_spec_idles_until_a_readable_one_arrives() {
     fs::write(harness.spec_file.path(), "not json").unwrap();
     let process = harness.spawn(&CancellationToken::new());
     wait_for_status(&harness.keeper, "idle").await;
-    tokio::time::sleep(TICK * 5).await;
+    harness.ticks(5).await;
     assert!(
         !process.is_finished(),
         "an unreadable spec ended the process"
@@ -468,7 +481,7 @@ async fn abdicates_only_when_the_installed_binary_cannot_serve_dns() {
         &harness.exe,
         "[ \"$1\" = dns ] && [ \"$2\" = --probe ] && exit 0; exit 1",
     );
-    tokio::time::sleep(TICK * 4).await;
+    harness.ticks(4).await;
     assert!(
         !process.is_finished(),
         "a serving successor must not end the process"
@@ -498,7 +511,7 @@ async fn an_inconclusive_probe_is_retried_on_the_next_tick() {
 
     install(&harness.exe, "exit 2");
     fs::set_permissions(&harness.exe, fs::Permissions::from_mode(0o644)).unwrap();
-    tokio::time::sleep(TICK * 4).await;
+    harness.ticks(4).await;
     assert!(
         !process.is_finished(),
         "a probe that could not run must not end the process"
@@ -516,19 +529,38 @@ async fn an_inconclusive_probe_is_retried_on_the_next_tick() {
 }
 
 async fn wait_for_status(keeper: &MemoryKeeper, status: &str) {
-    let deadline = Instant::now() + SETTLE;
-    while !keeper.statuses().iter().any(|seen| seen == status) {
-        assert!(Instant::now() < deadline, "{:?}", keeper.statuses());
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let mut statuses = keeper.subscribe_statuses();
+    let seen = tokio::time::timeout(
+        SETTLE,
+        statuses.wait_for(|statuses| statuses.iter().any(|seen| seen == status)),
+    )
+    .await;
+    assert!(seen.is_ok(), "{:?}", keeper.statuses());
 }
 
 /// A child another test forks keeps a copy of every socket this process had
 /// open until it execs or exits, so a released port frees a moment later.
 async fn wait_for_free_port(listen: SocketAddrV4) {
+    eventually(move || async move {
+        Listeners::bind(listen)
+            .map(drop)
+            .map_err(|error| format!("{listen} stayed busy: {error}"))
+    })
+    .await;
+}
+
+async fn eventually<F, Fut>(mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     let deadline = Instant::now() + SETTLE;
-    while let Err(error) = Listeners::bind(listen) {
-        assert!(Instant::now() < deadline, "{listen} stayed busy: {error}");
+    loop {
+        let Err(last) = check().await else {
+            return;
+        };
+        assert!(Instant::now() < deadline, "{last}");
+        // real-wait: polls sockets and the fake Corrosion, which emit no event here
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -595,15 +627,21 @@ async fn recv_tcp(stream: &mut TcpStream, within: Duration) -> Option<Message> {
     Some(Message::from_vec(&response).unwrap())
 }
 
-async fn slow_upstream(delay: Duration) -> SocketAddr {
+/// An upstream that signals `asked` on each query and answers it only once
+/// `answer` is notified.
+async fn held_upstream() -> (SocketAddr, Arc<Notify>, Arc<Notify>) {
     let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let address = socket.local_addr().unwrap();
+    let asked = Arc::new(Notify::new());
+    let answer = Arc::new(Notify::new());
+    let (signal, release) = (asked.clone(), answer.clone());
     tokio::spawn(async move {
         let mut buf = [0u8; 4096];
         loop {
             let (len, peer) = socket.recv_from(&mut buf).await.unwrap();
             let mut message = Message::from_vec(buf.get(..len).unwrap()).unwrap();
-            tokio::time::sleep(delay).await;
+            signal.notify_one();
+            release.notified().await;
             message.metadata = Metadata::response_from_request(&message.metadata);
             let name = message.queries.first().unwrap().name().clone();
             message.add_answer(Record::from_rdata(
@@ -617,5 +655,5 @@ async fn slow_upstream(delay: Duration) -> SocketAddr {
                 .unwrap();
         }
     });
-    address
+    (address, asked, answer)
 }

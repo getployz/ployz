@@ -305,18 +305,28 @@ fn serve(
                 "uninstall_url": "https://github.com/organizations/acme/settings/installations/7",
             }),
         ),
-        (Some(who), "/api/cli/server-access") if who.organization.as_str() == "linus" => (
-            403,
-            json!({ "error": {
-                "code": "forbidden",
-                "message": "Server access needs an admin. Ask an owner or admin of acme.",
-                "details": { "organization": "acme" },
-            } }),
-        ),
+        (Some(who), "/api/cli/server-access")
+            if who.organization.as_str() == "linus"
+                || runtime_refusal(who.organization.as_str()).is_some() =>
+        {
+            (
+                403,
+                json!({ "error": {
+                    "code": "forbidden",
+                    "message": "Server access needs an admin. Ask an owner or admin of acme.",
+                    "details": { "organization": "acme" },
+                } }),
+            )
+        }
         (Some(_), "/api/cli/server-access") => (
             200,
             json!({ "connections": [{ "tcp": engine() }], "unreachable": [] }),
         ),
+        (Some(who), "/api/cli/agent/ask")
+            if let Some(refused) = runtime_refusal(who.organization.as_str()) =>
+        {
+            refused
+        }
         (Some(_), "/api/cli/agent/ask") => (200, servers_read(&body)),
         (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
             approvals.run(&method, route, &body, approval.as_deref())
@@ -329,6 +339,41 @@ fn serve(
         "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     )
+}
+
+/// How this Cloud refuses every runtime read in Organization `organization`, which it
+/// also refuses Server access. `stagehand` acts with a deploy token held to staging,
+/// which Cloud refuses each Namespace no Deployment has fixed, its own included.
+fn runtime_refusal(organization: &str) -> Option<(u16, Value)> {
+    let (status, code, message, details) = match organization {
+        "stagehand" => (
+            403,
+            "forbidden",
+            "This token can deploy only to staging.",
+            json!({ "environments": ["staging"] }),
+        ),
+        "serverless" => (
+            409,
+            "conflict",
+            "This Organization has no servers yet. Add one from a terminal; staging still works without one.",
+            json!({ "fix": { "fix": "connect_servers" } }),
+        ),
+        "unanswered" => (
+            503,
+            "unavailable",
+            "Your servers aren't answering. Try again once they are.",
+            json!({ "fix": { "fix": "connect_servers" } }),
+        ),
+        "unpermitted" => (
+            403,
+            "forbidden",
+            "This token's grant doesn't include servers:read.",
+            json!({ "permission": "servers:read" }),
+        ),
+        _ => return None,
+    };
+    let error = json!({ "code": code, "message": message, "details": details });
+    Some((status, json!({ "error": error })))
 }
 
 /// What this Cloud's Servers answer when Cloud reads them: `web-1` has one log line
@@ -414,6 +459,7 @@ struct Approvals {
     calls: std::sync::Mutex<Vec<(String, String, Value)>>,
     runs: std::sync::Mutex<Vec<String>>,
     bodies: std::sync::Mutex<Vec<Value>>,
+    ran: std::sync::Condvar,
 }
 
 impl Approvals {
@@ -484,6 +530,17 @@ impl Approvals {
         self.bodies.lock().unwrap().clone()
     }
 
+    fn wait_for_run(&self, run: &str) {
+        let runs = self.runs.lock().unwrap();
+        let (runs, waited) = self
+            .ran
+            .wait_timeout_while(runs, std::time::Duration::from_secs(30), |runs| {
+                !runs.iter().any(|seen| seen == run)
+            })
+            .unwrap();
+        assert!(!waited.timed_out(), "never ran {run}: {runs:?}");
+    }
+
     fn run(&self, method: &str, route: &str, body: &[u8], approval: Option<&str>) -> (u16, Value) {
         let carried = approval
             .map(|id| format!(" approved by {id}"))
@@ -492,6 +549,7 @@ impl Approvals {
             .lock()
             .unwrap()
             .push(format!("{method} {route}{carried}"));
+        self.ran.notify_all();
         let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         self.bodies.lock().unwrap().push(body.clone());
         let segments: Vec<&str> = route.split('/').collect();
@@ -1444,6 +1502,7 @@ fn server_access(
             while reader.read_line(&mut line).unwrap() > 2 {
                 line.clear();
             }
+            // real-wait: a slow Cloud reply is what the CLI process must wait out.
             std::thread::sleep(delay);
             write!(
                 stream,
@@ -1840,6 +1899,72 @@ fn an_agent_adds_checks_and_removes_domains() {
         let removed = ok(store, &["domain", "rm", domain]);
         assert_eq!(removed["domain"]["port"], json!(8080));
         assert_eq!(removed["next"], json!("ployz deploy"));
+    }
+}
+
+#[test]
+fn domain_add_explains_invalid_custom_hostnames() {
+    let long_label = format!("{}.example.com", "a".repeat(64));
+    let long_name = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(62)
+    );
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx"]);
+        for (host, reason) in [
+            ("1.2.3.4", "IP address"),
+            ("127.1", "IP address"),
+            ("1.2.3.4.5", "IP address"),
+            ("-foo.com", "start or end with a hyphen"),
+            ("foo..com", "empty label"),
+            ("foo.-bar.com", "start or end with a hyphen"),
+            ("2001:db8::1", "IP address"),
+            ("[::1]", "IP address"),
+            ("ployz.app", "reserved"),
+            ("a.ployz.app", "reserved"),
+            ("xn--zz.com", "punycode"),
+            ("*.example.com", "Add each hostname"),
+            (long_label.as_str(), "label is too long"),
+            (long_name.as_str(), "hostname is too long"),
+            ("https://x.example.com", "scheme"),
+            ("host.com:8080", "port"),
+            ("x.example.com/path", "path"),
+            ("under_score.example.com", "underscore"),
+        ] {
+            let refused = failed(store, &["domain", "add", "web", "--", host], 2);
+            assert_eq!(
+                refused["code"],
+                json!("invalid_argument"),
+                "{host}: {refused}"
+            );
+            assert!(
+                refused["message"].as_str().unwrap().contains(reason),
+                "{host}: {refused}"
+            );
+        }
+        assert_eq!(ok(store, &["get", "web.domains"])["domains"], json!([]));
+    }
+}
+
+#[test]
+fn domain_add_normalizes_a_trailing_root_dot() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx"]);
+        for (typed, stored) in [
+            ("App.Example.com.", "app.example.com"),
+            ("пример.рф.", "xn--e1afmkfd.xn--p1ai"),
+            ("xn--e1afmkfd.xn--p1ai", "xn--e1afmkfd.xn--p1ai"),
+        ] {
+            assert_eq!(
+                ok(store, &["domain", "add", "web", typed])["domain"]["hostname"],
+                json!(stored)
+            );
+        }
     }
 }
 
@@ -2275,6 +2400,7 @@ fn starting_a_queued_deployment_with_no_server_left_refuses_at_once() {
             started.kill().unwrap();
             panic!("deployment start was still following a Deployment no Server can run");
         }
+        // real-wait: polls the CLI child, which signals nothing before it exits.
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let output = started.wait_with_output().unwrap();
@@ -4272,6 +4398,50 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
                 .to_owned()
         )
     );
+}
+
+#[test]
+fn a_staging_token_is_refused_logs_of_another_environment_with_nothing_deployed() {
+    let stagehand = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_stagehand",
+    };
+    ok(&stagehand, &["project", "new", "shop"]);
+    for args in [&["logs"][..], &["ps"]] {
+        let refused = error(&stagehand, args);
+        assert_eq!(
+            (&refused["code"], &refused["message"], &refused["details"]),
+            (
+                &json!("forbidden"),
+                &json!("This token can deploy only to staging."),
+                &json!({ "environments": ["staging"] }),
+            ),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn logs_of_an_environment_with_nothing_deployed_stay_empty_unless_its_scope_refuses() {
+    let stagehand = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_stagehand",
+    };
+    ok(&stagehand, &["project", "new", "shop"]);
+    ok(&stagehand, &["env", "new", "staging"]);
+    // Cloud refuses the token's own Namespace too until a Deployment fixes it.
+    assert_eq!(
+        ok(&stagehand, &["logs", "--env", "staging"]),
+        json!({ "logs": [] })
+    );
+    for token in ["ployz_serverless", "ployz_unanswered", "ployz_unpermitted"] {
+        let target = Target::Cloud {
+            url: fake_cloud(),
+            token,
+        };
+        ok(&target, &["project", "new", "shop"]);
+        assert_eq!(ok(&target, &["logs"]), json!({ "logs": [] }), "{token}");
+    }
 }
 
 #[test]
@@ -6569,16 +6739,7 @@ fn stopping_a_cloud_drain_chosen_by_id_names_the_server_not_its_id() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let followed = "GET server-drains/drn_running".to_owned();
-    while !approvals.runs().contains(&followed) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the CLI never followed the drain: {:?}",
-            approvals.runs()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    approvals.wait_for_run("GET server-drains/drn_running");
     let pid = rustix::process::Pid::from_raw(child.id().try_into().unwrap()).unwrap();
     rustix::process::kill_process(pid, rustix::process::Signal::INT).unwrap();
     let output = child.wait_with_output().unwrap();
@@ -6718,16 +6879,7 @@ fn ctrl_c_stops_following_a_cleanup_cloud_keeps_running() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let following = "GET namespace-cleanups/cln_slow".to_owned();
-    let started = std::time::Instant::now();
-    while !approvals.runs().contains(&following) {
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(30),
-            "{:?}",
-            approvals.runs()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    approvals.wait_for_run("GET namespace-cleanups/cln_slow");
     let pid = child.id().to_string();
     assert!(
         Command::new("kill")
@@ -6736,24 +6888,15 @@ fn ctrl_c_stops_following_a_cleanup_cloud_keeps_running() {
             .unwrap()
             .success()
     );
-    let interrupted = std::time::Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if interrupted.elapsed() > std::time::Duration::from_secs(5) {
-            child.kill().unwrap();
-            panic!("still following 5s after Ctrl-C: {:?}", approvals.runs());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut child_stderr = child.stderr.take().unwrap();
+    let (exited, exit) = std::sync::mpsc::channel();
+    std::thread::spawn(move || exited.send(child.wait().unwrap()));
+    let Ok(status) = exit.recv_timeout(std::time::Duration::from_secs(5)) else {
+        Command::new("kill").args(["-KILL", &pid]).status().unwrap();
+        panic!("still following 5s after Ctrl-C: {:?}", approvals.runs());
     };
     let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
+    child_stderr.read_to_string(&mut stderr).unwrap();
     assert_eq!(status.code(), Some(130), "{stderr}");
     assert!(
         stderr.contains(
@@ -7078,6 +7221,7 @@ fn ployz_on(
             child.wait().unwrap();
             panic!("{args:?} still reading after 15 s");
         }
+        // real-wait: polls the CLI child, which signals nothing before it exits.
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let output = child.wait_with_output().unwrap();

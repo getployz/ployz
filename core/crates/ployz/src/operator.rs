@@ -494,7 +494,8 @@ pub struct LogInput {
 pub enum LogFault {
     /// A stream failed, or its Server sent an error.
     Error(String),
-    /// A Server stopped answering; its stream sent nothing for the stall timeout.
+    /// A Server stopped answering: its stream sent nothing for the stall timeout, or the
+    /// connection it came over was lost.
     Stalled(ployz_core::MachineId),
 }
 
@@ -1307,6 +1308,11 @@ fn merge_logs_with_options(
                             LogState::Live | LogState::Stalled => source.state = LogState::Live,
                         }
                         match entry {
+                            // No status came back, as when a daemon restarts under the stream.
+                            Err(LogError::Transport(error)) if error.connection_lost() => {
+                                source.state = LogState::Closed;
+                                if output_sender.send(Err(LogFault::Stalled(source.machine))).await.is_err() { return }
+                            }
                             Err(error) => if output_sender.send(Err(LogFault::Error(format!("{}: {error}", source.identity)))).await.is_err() { return },
                             Ok(entry) => match &entry.body {
                                 LogBody::Error(error) => if output_sender.send(Err(LogFault::Error(format!("{}: {error}", source.identity)))).await.is_err() { return },

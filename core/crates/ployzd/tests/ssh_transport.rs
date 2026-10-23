@@ -239,6 +239,7 @@ fn wait_for_port(address: SocketAddr) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while TcpStream::connect(address).is_err() {
         assert!(Instant::now() < deadline, "sshd did not start");
+        // real-wait: sshd is a child process that signals readiness only by accepting.
         thread::sleep(Duration::from_millis(10));
     }
 }

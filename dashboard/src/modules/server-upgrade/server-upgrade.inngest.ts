@@ -2,7 +2,11 @@ import type { MachineId, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
-import { createServerUpgradeRequestedEvent, serverUpgradeRequestedEventType } from "#/modules/inngest/events";
+import {
+  createSealingKeyEnsureRequestedEvent,
+  createServerUpgradeRequestedEvent,
+  serverUpgradeRequestedEventType,
+} from "#/modules/inngest/events";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
@@ -29,7 +33,7 @@ import {
 import { AppConfig } from "#/server/config.server";
 import type { runInngestEffect } from "#/server/run.server";
 
-type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
+type StepTools = Pick<PloyzStepTools, "run" | "sendEvent" | "sleep">;
 type EffectRunner = typeof runInngestEffect;
 
 const POLL_INTERVAL_MS = 15_000;
@@ -88,6 +92,8 @@ export async function executeRollOutServerUpgrade(
       new Map(failed.flatMap(({ machineId, name }) => name === undefined ? [] : [[machineId, name]])),
     )));
   }
+  await step.sendEvent("ensure-cluster-sealing-key",
+    createSealingKeyEnsureRequestedEvent({ organizationId: request.organizationId }));
   return { results };
 }
 

@@ -1,17 +1,11 @@
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, fs, path::Path, sync::Arc, time::Duration};
 
 use ployz::{
     build::{BuildSpec, CapturedBuild, Recipe},
     sdk::{PreparationInput, PreparedDeploy, Session},
 };
 use ployz_core::{DeployOutcome, RpcError};
-use ployz_testkit::{Cluster, ClusterPlan};
+use ployz_testkit::{Cluster, ClusterPlan, poll_until};
 use serde_json::{Value, json};
 
 #[path = "build_layer3/remote.rs"]
@@ -98,15 +92,13 @@ async fn railpack_preparation_preserves_variables_cache_and_failure_boundaries()
     let before = containers();
     assert_eq!(before.lines().count(), 1);
     let id = before.trim();
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if cluster.docker(0, &["exec", id, "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>r.text()).then(t=>{if(t!=='changed')process.exit(1)})"]).is_ok() { break; }
-        assert!(
-            Instant::now() < deadline,
-            "deployed application did not serve its built variable"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    poll_until(
+        Duration::from_secs(15),
+        "deployed application serves its built variable",
+        async || cluster.docker(0, &["exec", id, "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>r.text()).then(t=>{if(t!=='changed')process.exit(1)})"]),
+    )
+    .await
+    .unwrap();
     fs::write(
         root.join("build.js"),
         "throw new Error('expected compilation failure');",

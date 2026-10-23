@@ -294,9 +294,15 @@ impl Stored {
 
     /// Each run's exit the harvester kept, and the exit `meta.json` holds
     /// when the harvester missed it, as while `ployz observe` was down.
+    /// A restarted harvester keeps a `die` Docker sends again, perhaps with
+    /// an OOM kill the first copy could not see, so one exit is one row.
     fn read_exits(&self, best: &mut Best<'_>) {
-        let kept: Vec<RunExit> =
-            run_exits(&fs::read(self.dir.join(EXITS_FILE)).unwrap_or_default()).collect();
+        let mut kept = BTreeMap::<i64, RunExit>::new();
+        for exit in run_exits(&fs::read(self.dir.join(EXITS_FILE)).unwrap_or_default()) {
+            kept.entry(exit.ts)
+                .and_modify(|kept| kept.oom_killed |= exit.oom_killed)
+                .or_insert(exit);
+        }
         let finished = self
             .meta
             .finished_at
@@ -305,13 +311,13 @@ impl Stored {
             .and_then(|at| at.timestamp_nanos_opt());
         // Docker sets FinishedAt before it sends the `die` the harvester keeps.
         let missed = finished
-            .filter(|finished| !kept.iter().any(|exit| exit.ts >= *finished))
+            .filter(|finished| !kept.keys().any(|ts| ts >= finished))
             .map(|ts| RunExit {
                 ts,
                 exit_code: self.meta.exit_code,
                 oom_killed: self.meta.oom_killed,
             });
-        for (n, exit) in kept.into_iter().chain(missed).enumerate() {
+        for (n, exit) in kept.into_values().chain(missed).enumerate() {
             let key = Key {
                 ts: exit.ts,
                 container: self.id,
@@ -983,6 +989,51 @@ pub(crate) mod tests {
             })
             .collect();
         assert_eq!(exits, [T0 + 10, T0 + 20]);
+    }
+
+    #[test]
+    fn an_exit_kept_again_shows_once_with_the_oom_kill_any_copy_saw() {
+        let store = Store::new();
+        let id = store.container('c', "web");
+        store.file(&id, 0, &[line(T0, "first")]);
+        let kept = [
+            (T0 + 10, false),
+            (T0 + 10, true),
+            (T0 + 20, true),
+            (T0 + 20, false),
+            (T0 + 30, false),
+            (T0 + 30, false),
+        ]
+        .map(|(ts, oom_killed)| {
+            serde_json::to_string(&RunExit {
+                ts,
+                exit_code: Some(137),
+                oom_killed,
+            })
+            .unwrap()
+                + "\n"
+        });
+        std::fs::write(store.root.container(&id).join("exits.jsonl"), kept.concat()).unwrap();
+
+        for direction in [LogDirection::Forward, LogDirection::Backward] {
+            let mut exits: Vec<_> = store
+                .page(request(direction, 100))
+                .rows
+                .into_iter()
+                .filter_map(|row| {
+                    let HistoryRow::Exit { ts, oom_killed, .. } = row else {
+                        return None;
+                    };
+                    Some((ts, oom_killed))
+                })
+                .collect();
+            exits.sort_unstable();
+            assert_eq!(
+                exits,
+                [(T0 + 10, true), (T0 + 20, true), (T0 + 30, false)],
+                "{direction:?}"
+            );
+        }
     }
 
     #[test]

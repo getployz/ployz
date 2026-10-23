@@ -131,8 +131,11 @@ describe("roll-out-server-upgrade", () => {
     function: createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "server/upgrade.requested", data }],
     // Each poll's sleep ends at once; `outliveAfterPolls` moves the clock instead.
-    steps: frame.machines.flatMap(({ machine }) =>
-      Array.from({ length: 80 }, (_, poll) => ({ id: `wait-${machine.id}-${poll}`, handler: () => undefined }))),
+    steps: [
+      ...frame.machines.flatMap(({ machine }) =>
+        Array.from({ length: 80 }, (_, poll) => ({ id: `wait-${machine.id}-${poll}`, handler: () => undefined }))),
+      { id: "ensure-cluster-sealing-key", handler: () => ({ ids: [] }) },
+    ],
   }).execute();
   const server = (digit: string, name: string, version: string, extra: { membership?: string; runningBuilds?: number } = {}) => {
     const machine = runtimeWatchMachineFixture(serverId(digit), name);
@@ -671,6 +674,7 @@ describe("roll-out-server-upgrade", () => {
             return memoized;
           },
           sleep: async () => undefined,
+          sendEvent: async () => ({ ids: [] }),
         };
         const event = { data: { organizationId, machineId: null, trigger: "automatic", userId: null } };
 

@@ -13,7 +13,7 @@ use ployz_core::{
     ContainerId, ContainerKind, InspectContainerRequest, ListMachinesRequest, Machine, MachineId,
     MachineTarget, Namespace, RequestedServiceSpec, ResolvedServiceSpec, ServiceId, op,
 };
-use ployz_testkit::{Cluster, ClusterPlan};
+use ployz_testkit::{Cluster, ClusterPlan, poll_until};
 use tokio_util::sync::CancellationToken;
 
 // Reads the request before answering: a reply sent before the request arrives makes Caddy
@@ -518,8 +518,7 @@ async fn running(
     services: &[ServiceId],
     count: usize,
 ) -> BTreeMap<ContainerId, ployz_core::ContainerObservation> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
+    poll_until(Duration::from_secs(60), "running Containers", async || {
         let live = client
             .live_services(ployz_core::EnvironmentValues::Redacted)
             .await
@@ -539,15 +538,16 @@ async fn running(
             .map(|container| (container.container_id, container))
             .collect::<BTreeMap<_, _>>();
         if running.len() == count {
-            return running;
+            Ok(running)
+        } else {
+            Err(format!(
+                "expected {count} running Containers, saw {}",
+                running.len()
+            ))
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "expected {count} running Containers, saw {}",
-            running.len()
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    })
+    .await
+    .unwrap()
 }
 
 fn on(
@@ -600,40 +600,44 @@ async fn wait_routed(
     index: usize,
     containers: &BTreeMap<ContainerId, ployz_core::ContainerObservation>,
 ) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        if let Ok(config) = cluster.ingress_proxy_config(index)
-            && containers.values().all(|container| {
-                container
-                    .address
-                    .is_some_and(|address| config.contains(&format!("{}:8080", address.0)))
-            })
-        {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "web-1's Ingress Proxy never routed to every Container"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    poll_until(
+        Duration::from_secs(90),
+        "web-1's Ingress Proxy routes to every Container",
+        async || match cluster.ingress_proxy_config(index) {
+            Ok(config)
+                if containers.values().all(|container| {
+                    container
+                        .address
+                        .is_some_and(|address| config.contains(&format!("{}:8080", address.0)))
+                }) =>
+            {
+                Ok(())
+            }
+            Ok(config) => Err(config),
+            Err(error) => Err(format!(
+                "Ingress Proxy configuration was unavailable: {error}"
+            )),
+        },
+    )
+    .await
+    .unwrap();
 }
 
 async fn wait_accepts_services(client: &mut ployz::connect::Client, id: &MachineId, accepts: bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let machines = client
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .unwrap()
-            .machines;
-        if machines
-            .iter()
-            .any(|machine| machine.machine.id == *id && machine.machine.accepts_services == accepts)
-        {
-            return;
-        }
-        assert!(tokio::time::Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    poll_until(
+        Duration::from_secs(30),
+        "Machine's accepts_services flag",
+        async || {
+            let machines = client
+                .call::<op::ListMachines>(ListMachinesRequest {}, None)
+                .await
+                .unwrap()
+                .machines;
+            machines.iter().any(|machine| {
+                machine.machine.id == *id && machine.machine.accepts_services == accepts
+            })
+        },
+    )
+    .await
+    .unwrap();
 }

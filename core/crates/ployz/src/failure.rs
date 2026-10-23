@@ -93,14 +93,9 @@ impl Failure {
         self
     }
 
-    /// Whether a command failed because the Ployz config has no contexts.
-    pub(crate) fn has_no_contexts(&self) -> bool {
-        std::iter::successors(self.source(), |&link| link.source()).any(|link| {
-            matches!(
-                link.downcast_ref::<ContextError>(),
-                Some(ContextError::NoContexts(_))
-            )
-        })
+    pub(crate) fn context_error(&self) -> Option<&ContextError> {
+        std::iter::successors(self.source(), |&link| link.source())
+            .find_map(|link| link.downcast_ref::<ContextError>())
     }
 
     /// End the process with `code`, whatever it printed already said: the remote
@@ -1194,7 +1189,8 @@ mod tests {
                 },
                 ConfigError::Parse {
                     path: "c".into(),
-                    line: Some(1),
+                    line: String::new(),
+                    source: serde_norway::from_str::<String>("[").unwrap_err(),
                 },
                 ConfigError::PrivatePermissions("c".into()),
                 ConfigError::EmptyCurrentContext("c".into()),
@@ -1594,6 +1590,20 @@ mod tests {
         assert_eq!(
             report.message,
             "Only a signed-in person can make or revoke tokens; run `ployz login`."
+        );
+    }
+
+    #[test]
+    fn a_cloud_rate_limit_reads_as_unavailable() {
+        let failure = Failure::from(LoginError::Status {
+            status: 429,
+            body: r#"{"_tag":"PublicError","code":"RATE_LIMITED","message":"Too many failed sign-ins from this address. Try again in 42 seconds."}"#.into(),
+        });
+        let report = failure.report();
+        assert_eq!(report.code, RpcErrorCode::Unavailable);
+        assert_eq!(
+            report.message,
+            "Too many failed sign-ins from this address. Try again in 42 seconds."
         );
     }
 }

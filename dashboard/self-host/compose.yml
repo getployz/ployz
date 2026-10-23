@@ -46,15 +46,14 @@ services:
   inngest:
     image: inngest/inngest:v1.45.1
     restart: unless-stopped
-    command: [inngest, start]
+    # Internal only: web and worker reach it on the compose network. Postgres allows 100 connections
+    # for Cloud and Inngest together, and Inngest's own default would take them all.
+    command: [inngest, start, --postgres-max-open-conns, '4', --postgres-max-idle-conns, '2']
     environment:
       INNGEST_EVENT_KEY: ${INNGEST_EVENT_KEY:?}
       INNGEST_SIGNING_KEY: ${INNGEST_SIGNING_KEY:?}
       INNGEST_POSTGRES_URI: postgres://ployz:${POSTGRES_PASSWORD:?}@postgres:5432/inngest
       INNGEST_REDIS_URI: redis://redis:6379
-    ports:
-      # Inngest UI and API for the operator only; the worker uses the internal network.
-      - '127.0.0.1:8288:8288'
     depends_on:
       postgres:
         condition: service_healthy

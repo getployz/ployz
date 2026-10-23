@@ -17,8 +17,9 @@ your other servers on a private network.
 - **A main disk of 30 GiB or more.** Ployz keeps a quarter of the disk, at least 10 GiB, free for
   the system. On EC2, raise the root volume from its 8 GB default when you launch the instance.
 - **Root**, or a user that can run `sudo`.
-- **Outbound internet access**, and a **public IP address** on at least one server so visitors
-  can reach your apps.
+- **Outbound internet access over IPv4**, and a **public IP address** on at least one server so
+  visitors can reach your apps. A server with only IPv6 needs NAT64 and DNS64; see
+  [IPv6-only servers](#ipv6-only-servers).
 
 You don't need Docker: Ployz installs it if it's missing.
 
@@ -39,7 +40,9 @@ A script, such as cloud-init or `ssh host '...'`, has no terminal to answer the 
 `export PLOYZ_ENROLL_TOKEN=pmet_…` before the line: it keeps that variable through `sudo`. You can
 also pipe the token to `sudo ployz server add --token-stdin` after the install part of the line.
 
-The server takes its hostname as its name; to choose another, run
+The server takes its hostname as its name, lowercased, with anything else a name can't hold, such
+as `_` or `.`, turned into `-`; `MY-SERVER` becomes `my-server`. The line prints the name it chose.
+To choose another, run
 `ployz server add --command --name web-1` and the printed line keeps the name. It keeps every other
 flag that shapes the server too, such as `--storage`, `--label-add` or `--accepts-ingress`. When it
 finishes, the server shows on the **Servers** page, ready for builds, services and web traffic. If
@@ -47,6 +50,24 @@ it doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md)
 
 Add more servers the same way, even at different providers. Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
+
+## Add a standalone server
+
+To start a Cluster outside Ployz Cloud, run this on the Linux server:
+
+```sh
+sudo ployz server add --standalone --context NAME
+```
+
+From your computer, give the server's SSH destination instead:
+
+```sh
+ployz server add --standalone root@HOST --context NAME
+```
+
+No Cloud sign-in or enrollment token is needed. A new or empty context gets its first
+Server and becomes the current context. To add another Server to a context that already
+has connections, use the SSH form. It joins the existing Cluster.
 
 ## Add servers from the dashboard
 
@@ -297,7 +318,33 @@ these there:
 | TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic |
 | UDP 51820 | Your other servers | Services on different servers reaching each other |
 
+## IPv6-only servers
+
+Ployz downloads its releases from github.com and some of its images from ghcr.io, and neither has
+an IPv6 address. A server whose only route out is IPv6 can't reach them, so the install stops:
+
+```
+ERROR: Can't reach github.com, which serves Ployz releases: this server has no IPv4 route, and github.com has no IPv6 address. Give the server outbound IPv4, or NAT64 and DNS64: https://ployz.dev/docs/servers/add-a-server#ipv6-only-servers
+```
+
+Do one of these, then run the install line again:
+
+- **Give the server an IPv4 address.** Most providers sell one as an add-on, such as a Hetzner
+  Primary IPv4. The server is then dual-stack and installs like any other.
+- **Use NAT64 and DNS64.** DNS64 answers an IPv6 address for names that only have IPv4 ones, and
+  NAT64 carries that traffic to IPv4. You need both, and they must agree on the prefix: a DNS64
+  resolver alone, such as a public one, gives addresses nothing answers unless a NAT64 gateway
+  serves its prefix. Use your provider's NAT64 and DNS64, or a public service that runs both.
+  With both in place, the install line works and a single server sets up and runs. Behind
+  NAT64, the server advertises the gateway's IPv4 address as its own
+  ([#3166](https://github.com/getployz/ployz/issues/3166)), and containers can't reach the DNS
+  resolvers Docker gives them ([#3167](https://github.com/getployz/ployz/issues/3167)).
+
+Keep the IPv4 address or NAT64 for as long as the server runs Ployz. Ployz upgrades download from
+github.com too.
+
 ## Good to know
+
 
 - **Operating system updates stay with you.** Ployz doesn't install them.
 - **Already running Docker?** Ployz keeps it and its settings, if it's Docker 29.2 or newer

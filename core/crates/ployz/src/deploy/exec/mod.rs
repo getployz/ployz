@@ -224,6 +224,11 @@ pub(crate) trait MachineOperations {
     ) -> Result<RoutesRead, RpcError>;
     /// [`Self::read_routes`] as the entry Machine this client reaches reads it.
     async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
+    /// Dial the entry Machine again on the same connection, after the session a call
+    /// went out on closed. None when this client can't.
+    async fn redial(&self) -> Option<Result<(), RpcError>> {
+        None
+    }
 }
 
 impl MachineOperations for Client {
@@ -384,6 +389,14 @@ impl MachineOperations for Client {
         .await
     }
 
+    async fn redial(&self) -> Option<Result<(), RpcError>> {
+        Some(
+            self.redial_shared()
+                .await
+                .map_err(crate::connect::rpc_error),
+        )
+    }
+
     async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         self.invoke_entry::<op::ReadRoutes>(
             ReadRoutesRequest {
@@ -497,10 +510,42 @@ impl From<ExecutionError> for OperationFailure {
 
 // Wait out a target daemon restart on the same Machine. A new Container's
 // creation key makes a resent Running find the Container the lost reply made.
-// Do not walk to another connection; that is a different command-entry problem.
+// An entry daemon restart closes the session every call goes out on, so the
+// same connection is dialed again. Do not walk to another connection; that is
+// a different command-entry problem.
 struct RestartTolerant<'a, C> {
     inner: &'a C,
     cancellation: &'a CancellationToken,
+    /// How many times the entry was dialed again. Calls that met the same closed
+    /// session dial it once between them.
+    sessions: tokio::sync::Mutex<u64>,
+}
+
+impl<'a, C: MachineOperations> RestartTolerant<'a, C> {
+    fn new(inner: &'a C, cancellation: &'a CancellationToken) -> Self {
+        Self {
+            inner,
+            cancellation,
+            sessions: tokio::sync::Mutex::new(0),
+        }
+    }
+
+    async fn session(&self) -> u64 {
+        *self.sessions.lock().await
+    }
+
+    /// Dial the entry again, unless another call already has since `seen`.
+    async fn redial(&self, seen: u64) -> Option<Result<(), RpcError>> {
+        let mut sessions = self.sessions.lock().await;
+        if *sessions != seen {
+            return Some(Ok(()));
+        }
+        let answer = self.inner.redial().await;
+        if matches!(answer, Some(Ok(()))) {
+            *sessions += 1;
+        }
+        answer
+    }
 }
 
 impl Client {
@@ -555,9 +600,19 @@ macro_rules! restart_policy {
             )*
         }
     };
-    (@send wait $self:ident $name:ident $($arg:ident)*) => {
-        wait_out_restart($self.cancellation, || $self.inner.$name($(Clone::clone(&$arg)),*)).await
-    };
+    (@send wait $self:ident $name:ident $($arg:ident)*) => {{
+        let seen = &std::sync::atomic::AtomicU64::new($self.session().await);
+        wait_out_restart(
+            $self.cancellation,
+            || $self.inner.$name($(Clone::clone(&$arg)),*),
+            move || async move {
+                let answer = $self.redial(seen.load(std::sync::atomic::Ordering::Relaxed)).await;
+                seen.store($self.session().await, std::sync::atomic::Ordering::Relaxed);
+                answer
+            },
+        )
+        .await
+    }};
     (@send once($reason:literal) $self:ident $name:ident $($arg:ident)*) => {
         $self.inner.$name($($arg),*).await
     };
@@ -579,12 +634,14 @@ restart_policy! {
     wait fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
 }
 
-async fn wait_out_restart<T, Fut>(
+async fn wait_out_restart<T, Fut, Redial>(
     cancellation: &CancellationToken,
     mut op: impl FnMut() -> Fut,
+    mut redial: impl FnMut() -> Redial,
 ) -> Result<T, RpcError>
 where
     Fut: Future<Output = Result<T, RpcError>>,
+    Redial: Future<Output = Option<Result<(), RpcError>>>,
 {
     let deadline = Instant::now() + RESTART_WAIT;
     // A Machine that answered on an earlier attempt was not silent throughout: its
@@ -604,32 +661,63 @@ where
         // Whether to send again follows what this attempt met. A resend that didn't reach
         // the Machine reports the earlier loss instead of itself.
         let closed = crate::connect::on_closed_session(&error);
+        // A closed session says nothing of the Machine, so it is never kept as its answer.
         let (error, retry) = match &lost {
-            Some(lost) if error.never_reached() => (lost.clone(), error.code.retry()),
-            _ if error.target_unanswered() => {
+            Some(lost) if error.never_reached() || closed => (lost.clone(), error.code.retry()),
+            _ if error.target_unanswered() || closed => {
                 let error = answer.clone().unwrap_or(error);
                 let retry = error.code.retry();
                 (error, retry)
             }
             _ => {
+                // A lost reply isn't the Machine's answer either: a later silence is
+                // stronger news, as `keep_lost_call` holds.
                 if !error.reply_lost() {
                     lost = None;
+                    answer = Some(error.clone());
                 }
-                answer = Some(error.clone());
                 let retry = error.code.retry();
                 (error, retry)
             }
         };
         let again = retry != Retry::Never
-            && !closed
-            && !crate::connect::on_closed_session(&error)
             && Instant::now() < deadline
-            && !cancellation.is_cancelled();
+            && !cancellation.is_cancelled()
+            // Nothing sent on a closed session reaches a daemon again.
+            && (!closed || redialed(&mut redial, deadline, cancellation).await);
         if !again {
             return Err(error);
         }
         tokio::select! {
             () = cancellation.cancelled() => return Err(error),
+            () = tokio::time::sleep(RESTART_POLL) => {}
+        }
+    }
+}
+
+/// Dial the entry again until it answers, `deadline` passes or the Deploy is
+/// cancelled. False then, or when the client can't dial again.
+async fn redialed<Redial>(
+    redial: &mut impl FnMut() -> Redial,
+    deadline: Instant,
+    cancellation: &CancellationToken,
+) -> bool
+where
+    Redial: Future<Output = Option<Result<(), RpcError>>>,
+{
+    loop {
+        let answer = tokio::select! {
+            () = cancellation.cancelled() => return false,
+            answer = tokio::time::timeout_at(deadline, redial()) => answer,
+        };
+        match answer {
+            Ok(Some(Ok(()))) => return true,
+            Ok(Some(Err(_))) => {}
+            Ok(None) | Err(_) => return false,
+        }
+        tokio::select! {
+            () = cancellation.cancelled() => return false,
+            () = tokio::time::sleep_until(deadline) => return false,
             () = tokio::time::sleep(RESTART_POLL) => {}
         }
     }
@@ -709,10 +797,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let slots = Slots::new(run.as_str(), &plan.namespace, operations);
     let progress = Progress::new(plan.pending_rows(), tx);
     progress.emit();
-    let client = RestartTolerant {
-        inner: client,
-        cancellation,
-    };
+    let client = RestartTolerant::new(client, cancellation);
     let mut completed = BTreeSet::new();
     let tasks = operations
         .iter()
@@ -2634,10 +2719,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     (from, old): (&MachineId, &ContainerId),
     cancellation: &CancellationToken,
 ) -> Result<(ContainerId, Option<DeploymentLogId>), MoveContainerError> {
-    let client = RestartTolerant {
-        inner: client,
-        cancellation,
-    };
+    let client = RestartTolerant::new(client, cancellation);
     let global = spec.mode == ployz_core::ServiceMode::Global;
     let key = if global {
         crate::cluster::global_creation_key(spec)

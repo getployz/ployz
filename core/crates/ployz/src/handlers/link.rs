@@ -600,6 +600,21 @@ struct ThisServer {
     /// `ployz server rm` resets it. The stopped loop never rewrites its record.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     left: bool,
+    /// A check-in loop ran here and none runs now, so the record no longer changes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stopped: bool,
+}
+
+impl ThisServer {
+    fn read(checkin: LocalCheckin, left: bool, loop_stopped: bool) -> Self {
+        // A loop that ended or joined meant to stop; one that didn't left its last answer behind.
+        let stopped = loop_stopped && checkin.answer != Seen::Joined && !checkin.headline().ended;
+        Self {
+            checkin,
+            left,
+            stopped,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -622,6 +637,7 @@ const RECENT: usize = 5;
 /// `ployz status`: one call that orients an agent.
 pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    crate::context::Config::load_or_empty(config_path(matches)?)?;
     let this_server = this_server();
     let store = reachable(root)?;
     let identity = store.as_ref().map(identity).transpose()?;
@@ -789,7 +805,8 @@ fn this_server() -> Option<ThisServer> {
                     )
                 })
         });
-    Some(ThisServer { checkin, left })
+    let stopped = crate::checkin::loop_stopped(Path::new(Paths::CHECKIN_DIR));
+    Some(ThisServer::read(checkin, left, stopped))
 }
 
 #[cfg(test)]
@@ -824,7 +841,10 @@ fn status_record(status: &Status) -> Fields {
             "this server",
             Cell::status("Not in a Cluster", Tone::Change),
         );
-    } else if let Some(ThisServer { checkin, .. }) = &status.this_server {
+    } else if let Some(ThisServer {
+        checkin, stopped, ..
+    }) = &status.this_server
+    {
         let crate::checkin::Headline {
             title: headline,
             ended,
@@ -834,12 +854,23 @@ fn status_record(status: &Status) -> Fields {
             (_, true) => Tone::Bad,
             (_, false) => Tone::Change,
         };
-        record.push("this server", Cell::status(headline, tone));
+        if *stopped {
+            record.push("this server", Cell::status("Check-in stopped", Tone::Bad));
+            record.push("last answer", Cell::status(headline, tone));
+        } else {
+            record.push("this server", Cell::status(headline, tone));
+        }
         for blocker in &checkin.blockers {
             record.push("blocked", Cell::status(&blocker.message, Tone::Bad));
         }
         if let Some(message) = checkin.message.as_deref().filter(|_| checkin.says_why()) {
             record.push("reason", message);
+        }
+        if *stopped {
+            record.push(
+                "check-in",
+                "Not running. See why with `sudo systemctl status ployz-checkin`, then run `sudo ployz server checkin --install`.",
+            );
         }
         record.push(
             "checked in",
@@ -1156,12 +1187,26 @@ mod tests {
         "attempt": {"attemptId": "attempt-1", "stage": "publishing"}
     }"#;
 
+    /// The check-in record of a host still waiting for approval.
+    const WAITING: &str = r#"{
+        "answer": "wait",
+        "at": "2026-10-22T01:21:48Z",
+        "prep": {"docker": "ready", "zfs": "ready"},
+        "blockers": [],
+        "prepare_retries": 0
+    }"#;
+
     fn status_on(left: bool) -> String {
+        status_of(JOINED, left, false)
+    }
+
+    fn status_of(record: &str, left: bool, stopped: bool) -> String {
         let status = Status {
-            this_server: Some(ThisServer {
-                checkin: serde_json::from_str(JOINED).unwrap(),
+            this_server: Some(ThisServer::read(
+                serde_json::from_str(record).unwrap(),
                 left,
-            }),
+                stopped,
+            )),
             identity: None,
             scope: Scope {
                 project: None,
@@ -1188,6 +1233,68 @@ mod tests {
             status_on(false).starts_with("this server = Joined\nchecked in = "),
             "{}",
             status_on(false)
+        );
+    }
+
+    /// The record a loop left when it found no ployzd and exited.
+    const NO_PLOYZD: &str = r#"{
+        "answer": "no_ployzd",
+        "message": "No ployzd on PATH. Run sudo ployz server checkin --install.",
+        "at": "2026-10-22T01:21:48Z",
+        "blockers": [],
+        "prepare_retries": 0
+    }"#;
+
+    const STOPPED: &str = "check-in = Not running. See why with `sudo systemctl status ployz-checkin`, then run `sudo ployz server checkin --install`.\n";
+
+    #[test]
+    fn a_waiting_server_whose_check_in_loop_stopped_says_so_and_what_it_last_saw() {
+        assert!(
+            status_of(WAITING, false, true).starts_with(&format!(
+                "this server = Check-in stopped\nlast answer = Waiting for approval\n{STOPPED}checked in = "
+            )),
+            "{}",
+            status_of(WAITING, false, true)
+        );
+        assert!(
+            status_of(WAITING, false, false)
+                .starts_with("this server = Waiting for approval\nchecked in = "),
+            "{}",
+            status_of(WAITING, false, false)
+        );
+        assert!(status_of(JOINED, false, true).starts_with("this server = Joined\n"));
+    }
+
+    #[test]
+    fn json_says_stopped_only_where_the_text_does() {
+        let json = |record| {
+            serde_json::to_value(ThisServer::read(
+                serde_json::from_str(record).unwrap(),
+                false,
+                true,
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            json(WAITING).get("stopped"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert!(json(JOINED).get("stopped").is_none());
+        assert!(
+            json(&WAITING.replace(r#""wait""#, r#""stop""#))
+                .get("stopped")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_stopped_loop_keeps_the_reason_it_recorded() {
+        assert!(
+            status_of(NO_PLOYZD, false, true).starts_with(&format!(
+                "this server = Check-in stopped\nlast answer = No ployzd\nreason = No ployzd on PATH. Run sudo ployz server checkin --install.\n{STOPPED}checked in = "
+            )),
+            "{}",
+            status_of(NO_PLOYZD, false, true)
         );
     }
 }

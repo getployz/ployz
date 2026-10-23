@@ -109,6 +109,7 @@ async fn fake_docker(
 
 fn slow_body(delay: Duration, body: serde_json::Value) -> Response {
     let body = futures_util::stream::once(async move {
+        // real-wait: outlasts the daemon's real-clock inspect deadline across the fake's TCP socket.
         tokio::time::sleep(delay).await;
         Ok::<_, std::io::Error>(Bytes::from(body.to_string()))
     });

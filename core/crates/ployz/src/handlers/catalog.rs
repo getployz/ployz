@@ -187,7 +187,7 @@ fn walk(
 
 fn args(verb: Option<&Verb>, command: &Command, shared: &[&str]) -> Vec<ArgEntry> {
     let visible = |arg: &&Arg| {
-        !shared.contains(&arg.get_id().as_str())
+        (!shared.contains(&arg.get_id().as_str()) || !arg.is_global_set())
             && !arg.is_hide_set()
             && !matches!(
                 arg.get_action(),
@@ -528,6 +528,29 @@ fn stored_paths() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_stays_in_the_catalog_only_for_commands_that_accept_it() {
+        let entries = commands();
+        for (command, accepts) in [
+            ("server ls", true),
+            ("ps", true),
+            ("deploy", true),
+            ("status", true),
+            ("config ls", false),
+            ("org ls", false),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.command == command)
+                .unwrap();
+            assert_eq!(
+                entry.args.iter().any(|arg| arg.name == "--context"),
+                accepts,
+                "{command}"
+            );
+        }
+    }
 
     #[test]
     fn explain_service_lists_every_setting_with_its_default() {

@@ -252,6 +252,7 @@ async fn wait_for_machines<'a>(
             {
                 return;
             }
+            // real-wait: polls the Docker Corrosion's API; gossip from its peer emits no event here
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })

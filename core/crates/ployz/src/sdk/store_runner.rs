@@ -609,7 +609,7 @@ impl Run {
         };
         let prepared = match prepared {
             Ok(prepared) => prepared,
-            Err(unprepared) => return self.unprepared(&earlier, unprepared).await,
+            Err(unprepared) => return self.unprepared(&earlier, &deletes, unprepared).await,
         };
         let summary = self
             .record(RunEvidence::Prepared(prepared.preview().clone()))
@@ -900,15 +900,15 @@ impl Run {
     async fn unprepared(
         &self,
         earlier: &BTreeSet<ServiceName>,
+        deletes: &[ployz_core::DockerVolumeId],
         unprepared: Unprepared,
     ) -> Result<DeploymentSummary, RpcError> {
-        let Unprepared { error, same_again } = unprepared;
-        match needs_upload(&error) {
+        match needs_upload(&unprepared.error) {
             Some(services) => self.unbuilt(upload_needed(earlier, services)).await,
             None => {
                 self.not_executed(Failure {
-                    same_again,
-                    ..Failure::from(&error)
+                    same_again: unprepared.same_again,
+                    ..refused_before_deletes(&unprepared, deletes)
                 })
                 .await
             }
@@ -1484,6 +1484,23 @@ pub(super) fn log_line(event: &Value) -> String {
         return format!("{} {name}\n", if cached { "CACHED" } else { "DONE" });
     }
     String::new()
+}
+
+/// `unprepared` as a Failure. A Server short of storage whose Volumes this Deploy also
+/// deletes is told why they don't help: they are deleted only once the Deploy succeeds.
+fn refused_before_deletes(
+    unprepared: &Unprepared,
+    deletes: &[ployz_core::DockerVolumeId],
+) -> Failure {
+    let mut failure = Failure::from(&unprepared.error);
+    if let Some(short) = unprepared.short_of_storage
+        && deletes.iter().any(|volume| volume.machine_id == short)
+    {
+        failure.reason.push_str(
+            " Volumes this deploy deletes free their space only after it succeeds, so they don't make room for its new volumes.",
+        );
+    }
+    failure
 }
 
 /// Delete exactly the Docker Volumes admission accepted, never others of the same

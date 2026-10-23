@@ -23,7 +23,8 @@ use super::{ApiClient, ReplicatedStore};
 #[derive(Clone)]
 struct ClusterKv {
     network: Option<String>,
-    sealing_public_key: Option<String>,
+    sealing_public_key: tokio::sync::watch::Sender<Option<String>>,
+    sealing_awaits_recovery: Option<String>,
     machines: BTreeMap<String, String>,
     containers: BTreeMap<String, (String, String)>,
     volumes: BTreeMap<(String, String), String>,
@@ -35,6 +36,8 @@ struct ClusterKv {
     subscriptions: bool,
     snapshots_fail: bool,
     tokens: Vec<String>,
+    /// Counts subscription requests, so a test awaits a subscribe instead of polling.
+    subscribed: tokio::sync::watch::Sender<usize>,
     held: Option<HeldQuery>,
 }
 
@@ -52,7 +55,8 @@ impl ClusterKv {
         let (certificate_changes, _) = broadcast::channel(16);
         Self {
             network: Some("10.210.0.0/16".into()),
-            sealing_public_key: None,
+            sealing_public_key: tokio::sync::watch::Sender::new(None),
+            sealing_awaits_recovery: None,
             machines: BTreeMap::new(),
             containers: BTreeMap::new(),
             volumes: BTreeMap::new(),
@@ -63,6 +67,7 @@ impl ClusterKv {
             subscriptions,
             snapshots_fail: false,
             tokens: Vec::new(),
+            subscribed: tokio::sync::watch::Sender::new(0),
             held: None,
         }
     }
@@ -140,6 +145,8 @@ pub(crate) struct FakeCluster {
     address: SocketAddr,
     kv: Arc<Mutex<ClusterKv>>,
     runtime: Option<tokio::runtime::Runtime>,
+    /// Disconnects once the serving task, and with it the listener, is dropped.
+    serving: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 impl FakeCluster {
@@ -149,6 +156,7 @@ impl FakeCluster {
             address: listener.local_addr().unwrap(),
             kv: Arc::new(Mutex::new(ClusterKv::new(true))),
             runtime: None,
+            serving: None,
         };
         cluster.serve(listener);
         cluster
@@ -166,9 +174,13 @@ impl FakeCluster {
         ReplicatedStore::new(ApiClient::http1(self.address, &self.token()).unwrap())
     }
 
+    /// Returns once the address is free to bind again.
     pub(crate) fn stop(&mut self) {
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
+        }
+        if let Some(serving) = self.serving.take() {
+            let _ = serving.recv();
         }
     }
 
@@ -208,12 +220,23 @@ impl FakeCluster {
         let _ = kv.machine_changes.send(());
     }
 
-    pub(crate) fn sealing_public_key(&self) -> Option<String> {
-        self.kv.lock().unwrap().sealing_public_key.clone()
+    pub(crate) async fn sealing_public_key(&self) -> String {
+        let mut published = self.kv.lock().unwrap().sealing_public_key.subscribe();
+        let key = published.wait_for(Option::is_some).await.unwrap();
+        key.clone().unwrap()
+    }
+
+    pub(crate) fn write_sealing_awaits_recovery(&self, key: &str) {
+        self.kv.lock().unwrap().sealing_awaits_recovery = Some(key.to_owned());
     }
 
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
         self.kv.lock().unwrap().tokens.clone()
+    }
+
+    pub(crate) async fn subscriptions(&self, count: usize) {
+        let mut subscribed = self.kv.lock().unwrap().subscribed.subscribe();
+        subscribed.wait_for(|seen| *seen >= count).await.unwrap();
     }
 
     fn serve(&mut self, listener: std::net::TcpListener) {
@@ -224,11 +247,14 @@ impl FakeCluster {
             .build()
             .unwrap();
         let kv = self.kv.clone();
+        let (serving, stopped) = std::sync::mpsc::channel();
         runtime.spawn(async move {
+            let _serving = serving;
             let listener = TcpListener::from_std(listener).unwrap();
             axum::serve(listener, router(kv)).await.unwrap();
         });
         self.runtime = Some(runtime);
+        self.serving = Some(stopped);
     }
 }
 
@@ -276,6 +302,7 @@ async fn subscriptions(
 ) -> Result<Body, StatusCode> {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
     let mut kv = kv.lock().unwrap();
+    kv.subscribed.send_modify(|seen| *seen += 1);
     if let Some(token) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -399,7 +426,14 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                 kv.volumes.get(&key).map(|volume| vec![json!(volume)]),
             )
         }
-        "SELECT value FROM cluster WHERE key = ?" => events(&["value"], Vec::new()),
+        "SELECT value FROM cluster WHERE key = ?" => {
+            let value = match text_param(&statement.params, 0) {
+                "sealing_public_key" => kv.sealing_public_key.borrow().clone(),
+                "sealing_awaits_recovery" => kv.sealing_awaits_recovery.clone(),
+                _ => None,
+            };
+            events(&["value"], value.map(|value| vec![json!(value)]))
+        }
         "SELECT value FROM cluster WHERE key = 'network'" => events(
             &["value"],
             kv.network.iter().map(|network| vec![json!(network)]),
@@ -455,8 +489,9 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     "INSERT INTO cluster (key, value) VALUES ('sealing_public_key', ?)",
                 ) =>
             {
-                if kv.sealing_public_key.is_none() {
-                    kv.sealing_public_key = Some(text_param(&statement.params, 0).to_owned());
+                if kv.sealing_public_key.borrow().is_none() {
+                    kv.sealing_public_key
+                        .send_replace(Some(text_param(&statement.params, 0).to_owned()));
                 }
             }
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {

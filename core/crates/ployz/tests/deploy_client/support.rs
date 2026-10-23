@@ -6,7 +6,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
 };
 
 use ployz::{
@@ -66,12 +65,13 @@ pub(super) struct DeployService {
     runtime: ContainerRuntimeObservation,
     /// Docker OOM-killed a process of each Container, as its inspect reports.
     oom_killed: bool,
+    /// Once released, a Starting Container turns healthy and starts serving.
+    health_release: Option<Arc<tokio::sync::watch::Sender<bool>>>,
+    health_waits: Arc<tokio::sync::Notify>,
     /// Docker restarted each Container after its exit, and the new run printed `booting`.
     rebooted: bool,
     /// Between that exit and `booting`, a run exited having printed nothing.
     silent_run: bool,
-    /// When a Starting Container turns healthy and starts serving.
-    healthy_at: Option<tokio::time::Instant>,
     /// The Machine answers an In ask without a health verdict and leaves the copy where it was.
     unread_health: bool,
     effective_healthcheck: Option<HealthcheckSpec>,
@@ -104,6 +104,7 @@ pub(super) struct DeployService {
     rotations: Arc<Mutex<BTreeMap<ContainerId, Rotated>>>,
     /// Copies that were In and left: a proxy that never drops a route keeps them.
     unrouted: Arc<Mutex<BTreeSet<ContainerId>>>,
+    unroutes: Arc<tokio::sync::Notify>,
     /// What each proxy last routed, kept by the real rule.
     served: Arc<Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>>,
     /// Machines whose proxy adds copies as they go In but never drops one.
@@ -159,9 +160,10 @@ impl DeployService {
                 health: HealthObservation::Healthy,
             },
             oom_killed: false,
+            health_release: None,
+            health_waits: Arc::new(tokio::sync::Notify::new()),
             rebooted: false,
             silent_run: false,
-            healthy_at: None,
             unread_health: false,
             effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
@@ -180,6 +182,7 @@ impl DeployService {
             copies: Arc::new(Mutex::new(BTreeMap::new())),
             rotations: Arc::new(Mutex::new(BTreeMap::new())),
             unrouted: Arc::new(Mutex::new(BTreeSet::new())),
+            unroutes: Arc::new(tokio::sync::Notify::new()),
             served: Arc::default(),
             sticky_proxies: BTreeSet::new(),
             image_pulls: Arc::new(Mutex::new(Vec::new())),
@@ -252,13 +255,25 @@ impl DeployService {
         self
     }
 
-    /// Containers report Starting until `after` passes.
-    pub(super) fn turn_healthy_after(mut self, after: Duration) -> Self {
+    /// Containers report Starting until [`Self::release_health`].
+    pub(super) fn turn_healthy_on_release(mut self) -> Self {
         self.runtime = ContainerRuntimeObservation::Running {
             health: HealthObservation::Starting,
         };
-        self.healthy_at = Some(tokio::time::Instant::now() + after);
+        self.health_release = Some(Arc::new(tokio::sync::watch::Sender::new(false)));
         self
+    }
+
+    pub(super) fn release_health(&self) {
+        self.health_release
+            .as_ref()
+            .expect("turn_healthy_on_release")
+            .send_replace(true);
+    }
+
+    /// Returns once a health wait has begun, even one that began before this call.
+    pub(super) async fn health_waited(&self) {
+        self.health_waits.notified().await;
     }
 
     /// Containers report `healthcheck` as the one Docker runs for them.
@@ -269,8 +284,9 @@ impl DeployService {
 
     fn current_runtime(&self) -> ContainerRuntimeObservation {
         if self
-            .healthy_at
-            .is_some_and(|at| tokio::time::Instant::now() >= at)
+            .health_release
+            .as_ref()
+            .is_some_and(|released| *released.borrow())
         {
             ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
@@ -281,10 +297,11 @@ impl DeployService {
     }
 
     /// The verdict a Machine answers a health wait with; a held health wait times
-    /// out at its healthcheck's deadline, and without one never answers.
+    /// out at once when its healthcheck has a deadline, and without one never answers.
     async fn settle(&self) -> HealthVerdict {
-        if let Some(at) = self.healthy_at {
-            tokio::time::sleep_until(at).await;
+        self.health_waits.notify_one();
+        if let Some(released) = &self.health_release {
+            let _ = released.subscribe().wait_for(|released| *released).await;
         }
         let observation = self.current_runtime();
         let ContainerRuntimeObservation::Running { health } = &observation else {
@@ -302,7 +319,6 @@ impl DeployService {
             else {
                 return std::future::pending().await;
             };
-            tokio::time::sleep(deadline).await;
             return HealthVerdict::TimedOut {
                 deadline_millis: u64::try_from(deadline.as_millis()).ok(),
                 last_check: None,
@@ -420,6 +436,18 @@ impl DeployService {
         self.unrouted.clone()
     }
 
+    pub(super) async fn unrouted_copy(&self, container_id: &ContainerId) {
+        loop {
+            let unrouted = self.unroutes.notified();
+            tokio::pin!(unrouted);
+            unrouted.as_mut().enable();
+            if self.unrouted.lock().unwrap().contains(container_id) {
+                return;
+            }
+            unrouted.await;
+        }
+    }
+
     pub(super) fn created_namespaces(&self) -> Arc<Mutex<Vec<Namespace>>> {
         self.created_namespaces.clone()
     }
@@ -469,6 +497,7 @@ impl DeployService {
     fn rotate(&self, container_id: ContainerId, rotation: CopyRotation) {
         if self.rotation(&container_id) == CopyRotation::In && rotation != CopyRotation::In {
             self.unrouted.lock().unwrap().insert(container_id);
+            self.unroutes.notify_waiters();
         }
         let identity = self.identity(&container_id);
         let mut rotations = self.rotations.lock().unwrap();

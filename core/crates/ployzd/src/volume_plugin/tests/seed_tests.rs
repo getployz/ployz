@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::copy_tests::receive_ready;
+use super::copy_tests::{eventually, let_requests_act, poll, receive_ready};
 use super::inspect_tests::{set_property, start};
 use super::*;
 
@@ -15,19 +15,17 @@ fn seed(guid: u64) -> Value {
 
 /// Resends the seed until its reply stops showing a copy in flight.
 async fn settled(socket: &Path) -> Value {
-    for _ in 0..200 {
+    poll(async || {
         let reply = post(socket, "/Volume.Seed", seed(77)).await;
         let copy = reply
             .pointer("/Ok/copy")
             .unwrap_or_else(|| panic!("{reply}"));
         let copying = copy.get("kind").is_some_and(|kind| kind == "slot")
             && copy.pointer("/pull/failure").is_none_or(Value::is_null);
-        if !copying {
-            return reply;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("seed copy never settled");
+        (!copying).then_some(reply)
+    })
+    .await
+    .expect("seed copy never settled")
 }
 
 fn assert_landed(test: &TestDir) {
@@ -216,12 +214,10 @@ async fn a_seed_whose_plugin_restarted_after_the_receive_lands_on_resend() {
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     post(&socket, "/Volume.Seed", seed(77)).await;
-    for _ in 0..200 {
-        if snapshot_names(&test, "tank/ployz-mirror/seed/fs") == ["w-1-1"] {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually("the seed's receive", || {
+        snapshot_names(&test, "tank/ployz-mirror/seed/fs") == ["w-1-1"]
+    })
+    .await;
     server.abort();
     let _ = server.await;
     fs::remove_file(&socket).unwrap();
@@ -259,15 +255,12 @@ async fn seed_finishes_an_interrupted_landing_on_resend() {
     )
     .unwrap();
 
-    let mut interrupted = Value::Null;
-    for _ in 0..200 {
-        interrupted = post(&socket, "/Volume.Seed", seed(77)).await;
-        if interrupted.get("Err").is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(interrupted.get("Err").is_some(), "{interrupted}");
+    let interrupted = poll(async || {
+        let reply = post(&socket, "/Volume.Seed", seed(77)).await;
+        reply.get("Err").is_some().then_some(reply)
+    })
+    .await;
+    assert!(interrupted.is_some(), "the landing never failed");
     assert!(
         test.0.join("seed-volume").exists(),
         "the landing stopped after the rename"
@@ -399,13 +392,11 @@ async fn completed_seed(test: &TestDir, into: &str, point: &str, guid: &str) -> 
     let request = json!({"name": "data", "into": into, "guid": guid});
     post(&socket, "/Volume.Seed", request).await;
     let verified = format!("get -Hp -o value refquota tank/ployz-mirror/{into}/fs");
-    for _ in 0..300 {
-        if commands(test).contains(&verified) {
-            return socket;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("the seed of {into} never finished its receive");
+    eventually(&format!("the seed of {into}'s receive"), || {
+        commands(test).contains(&verified)
+    })
+    .await;
+    socket
 }
 
 #[tokio::test]
@@ -476,12 +467,10 @@ async fn departure_keeps_a_seed_whose_receive_exited_before_its_run_finished() {
     let (socket, _server) = start(&test, USABLE_POOL, &[]);
     post(&socket, "/Volume.Seed", seed(77)).await;
     let landed = test.0.join("props/tank/ployz-mirror/seed/fs/snapshots");
-    for _ in 0..300 {
-        if fs::read_to_string(&landed).is_ok_and(|snapshots| snapshots.contains("@w-1-1")) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually("the seed's receive", || {
+        fs::read_to_string(&landed).is_ok_and(|snapshots| snapshots.contains("@w-1-1"))
+    })
+    .await;
     set_property(
         &test,
         "tank/ployz/data",
@@ -493,7 +482,7 @@ async fn departure_keeps_a_seed_whose_receive_exited_before_its_run_finished() {
         let socket = socket.clone();
         async move { post(&socket, "/Storage.Demote", json!(null)).await }
     });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let_requests_act(Duration::from_millis(200)).await;
     let _ = fs::remove_file(test.0.join("props/stall-command"));
     let reply = departure.await.unwrap();
     assert_eq!(
@@ -523,12 +512,7 @@ async fn departure_demotes_the_others_and_names_a_seed_whose_receive_will_not_st
     storage.stop_deadline = Duration::from_millis(300);
     let server = tokio::spawn(serve(listener, storage));
     post(&socket, "/Volume.Seed", seed(77)).await;
-    for _ in 0..300 {
-        if commands(&test).contains(stuck) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually("the stalled command", || commands(&test).contains(stuck)).await;
 
     let reply = tokio::time::timeout(
         Duration::from_secs(5),

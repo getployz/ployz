@@ -79,9 +79,11 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let hostname = matches
         .get_one::<String>("host")
         .map(|host| {
-            // A rejected hostname is never echoed.
-            Hostname::parse(host.as_str())
-                .map_err(|_| Error::usage("Expected a hostname like app.example.com"))
+            let value = host.trim();
+            let value = value.strip_suffix('.').unwrap_or(value);
+            Hostname::parse(value)
+                .or_else(|_| Hostname::parse_custom(host))
+                .map_err(Error::from)
         })
         .transpose()?;
     let prefix = matches

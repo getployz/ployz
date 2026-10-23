@@ -12,7 +12,7 @@ use ployz::{
     connect::{SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
 };
-use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE};
+use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE, poll_until};
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -282,18 +282,16 @@ async fn wait_for_web(
     web_containers: &impl Fn(&ployz_core::LiveServices<ployz_core::RpcError>) -> usize,
     count: usize,
 ) {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(live) = client
+    poll_until(
+        Duration::from_secs(30),
+        &format!("{count} web Containers"),
+        async || {
+            client
                 .live_services(ployz_core::EnvironmentValues::Included)
                 .await
-                && web_containers(&live) == count
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
+                .is_ok_and(|live| web_containers(&live) == count)
+        },
+    )
     .await
     .unwrap();
 }

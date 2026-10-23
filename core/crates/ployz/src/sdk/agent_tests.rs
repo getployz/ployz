@@ -17,7 +17,6 @@ use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
 use ployz_store::tools::{
     LineCap, LogText, LogsQuery, SealedValues, ServerName, ServerRef, Timestamp, Withheld,
 };
-use tokio::time::Instant;
 
 use super::{
     NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, remove_one, report,
@@ -523,16 +522,22 @@ async fn a_removal_of_a_stopped_in_copy_takes_it_out_then_removes_it() {
     assert!(removed.lock().unwrap().contains(&container_id('1')));
 }
 
-// Real Machines are on the network, so these wait in real time with short healthchecks.
 // The shared wait's own tests cover deadlines past the Serving wait in paused time.
 #[tokio::test]
 async fn a_start_returns_only_once_its_healthcheck_passes() {
     let service = support::DeployService::new(support::machine('a', "one"))
         .with_rotation(container_id('1'), CopyRotation::Held(run()))
-        .turn_healthy_after(Duration::from_millis(1_500));
-    let begun = Instant::now();
-    assert_eq!(started(service).await, Started::Serving);
-    assert!(begun.elapsed() >= Duration::from_millis(1_500));
+        .turn_healthy_on_release();
+    let start = tokio::spawn(started(service.clone()));
+    tokio::time::timeout(Duration::from_secs(30), service.health_waited())
+        .await
+        .expect("the start never waited for health");
+    assert!(
+        !start.is_finished(),
+        "returned before the healthcheck passed"
+    );
+    service.release_health();
+    assert_eq!(start.await.unwrap(), Started::Serving);
 }
 
 #[tokio::test]
@@ -549,13 +554,7 @@ async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline(
             retries: None,
             deadline_millis: Some(1_000),
         }));
-    let begun = Instant::now();
     assert_eq!(started(service).await, Started::Unhealthy);
-    let waited = begun.elapsed();
-    assert!(
-        (Duration::from_secs(1)..Duration::from_secs(5)).contains(&waited),
-        "{waited:?}"
-    );
 }
 
 fn logs_query(server: Option<ServerRef>, sealed: Option<&[&str]>) -> LogsAsk {

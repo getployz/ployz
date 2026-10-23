@@ -131,7 +131,8 @@ struct Scripted {
     copies: VecDeque<Result<Vec<Copy>, RpcError>>,
     ends: VecDeque<OldCopyEnd>,
     let_go: Vec<Copy>,
-    retire_time: Duration,
+    /// How long an old copy takes to retire; `None` retires it at once.
+    retire_delay: Option<fn() -> tokio::time::Sleep>,
     last_in: Vec<QualifiedService>,
     calls: Arc<Mutex<Vec<String>>>,
 }
@@ -143,11 +144,13 @@ impl Scripted {
             .into_iter()
             .map(|Move { from, to, old }| {
                 let calls = Arc::clone(&self.calls);
-                let retire_time = self.retire_time;
+                let retire_delay = self.retire_delay;
                 let refused = self.last_in.contains(service);
                 let service = service.clone();
                 let old = async move {
-                    tokio::time::sleep(retire_time).await;
+                    if let Some(delay) = retire_delay {
+                        delay().await;
+                    }
                     if refused {
                         return Err(LastIn);
                     }
@@ -399,6 +402,105 @@ async fn a_move_beside_an_out_copy_reports_the_move_then_the_old_copy() {
     assert!(
         !report.complete(),
         "an old copy left running keeps the drain open"
+    );
+}
+
+/// A move off another draining Server, as a concurrent standalone Drain's convergence
+/// of the same Service makes.
+fn a_move_off_web_3() -> Move {
+    Move {
+        from: MachineRef {
+            id: MachineId::parse("c".repeat(32)).unwrap(),
+            name: MachineName::parse("web-3").unwrap(),
+        },
+        to: MachineRef {
+            id: MachineId::parse("a".repeat(32)).unwrap(),
+            name: MachineName::parse("web-1").unwrap(),
+        },
+        old: OldCopyEnd::Stopped,
+    }
+}
+
+#[tokio::test]
+async fn a_drain_reports_only_the_moves_off_its_own_server() {
+    let both = [one_move(), vec![a_move_off_web_3()]].concat();
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [
+            Converged::Moved { moves: both },
+            Converged::Moved {
+                moves: vec![a_move_off_web_3()],
+            },
+        ]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [
+            entry("web", moved()),
+            entry("api", DrainOutcome::NothingToMove)
+        ]
+    );
+    assert!(report.complete());
+}
+
+#[tokio::test]
+async fn another_server_s_old_copy_left_running_is_still_reported() {
+    let proxies = Unconfirmed::Proxies {
+        servers: Vec::new(),
+    };
+    let stuck = Move {
+        old: running(proxies),
+        ..a_move_off_web_3()
+    };
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Moved {
+            moves: vec![stuck.clone()],
+        }]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry("web", DrainOutcome::Moved { moves: vec![stuck] })]
+    );
+    assert!(!report.complete());
+}
+
+#[tokio::test]
+async fn only_another_server_s_moves_beside_an_out_copy_report_just_the_old_copy() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Moved {
+            moves: vec![a_move_off_web_3()],
+        }]
+        .into(),
+        copies: [Ok(vec![left_on_server(CopyRotation::Out)])].into(),
+        ends: [OldCopyEnd::Stopped].into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry(
+            "web",
+            DrainOutcome::OldCopies {
+                ends: vec![OldCopyEnd::Stopped],
+            },
+        )]
+    );
+    assert!(
+        client
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call == "gone app/web"),
+        "the other Server's old copy was still waited for"
     );
 }
 
@@ -772,7 +874,7 @@ async fn old_copy_retires_overlap_the_next_move() {
             Converged::Moved { moves: one_move() },
         ]
         .into(),
-        retire_time: Duration::from_secs(5),
+        retire_delay: Some(|| tokio::time::sleep(Duration::from_secs(5))),
         ..Scripted::default()
     };
     let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
@@ -798,7 +900,7 @@ async fn an_old_copy_refused_out_keeps_its_move_and_stays() {
             Converged::Moved { moves: one_move() },
         ]
         .into(),
-        retire_time: Duration::from_secs(5),
+        retire_delay: Some(|| tokio::time::sleep(Duration::from_secs(5))),
         last_in: vec![qualified("web")],
         ..Scripted::default()
     };

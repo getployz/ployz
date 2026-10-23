@@ -395,10 +395,10 @@ async fn volume_ensure_failure_is_reported_on_the_container_operation() {
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn created_but_unverified_volume_fails_the_container_operation() {
     let machine = machine('a', "one");
-    let (mut client, server) = connected(
+    let (mut client, server) = connected_in_memory(
         DeployService::new(machine)
             .fail_create_volume_verification("Docker inspect response was malformed"),
     )
@@ -1007,8 +1007,8 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     );
 
     // Cancelled while it runs, the runner stops it.
-    let (held, held_server) =
-        listening(DeployService::new(machine('a', "one")).hold_health()).await;
+    let holding = DeployService::new(machine('a', "one")).hold_health();
+    let (held, held_server) = listening(holding.clone()).await;
     let second = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
     let mut admit = Deploy {
         id: second.clone(),
@@ -1035,14 +1035,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         vec![ployz::context::Connection::tcp(held)],
         Ok(Default::default()),
     ));
-    while store
-        .read(&who, &ployz_store::DeploymentQuery { id: second.clone() })
-        .unwrap()
-        .preview
-        .is_none()
-    {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    holding.health_waited().await;
     store
         .write(
             &who,

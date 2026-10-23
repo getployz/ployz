@@ -491,7 +491,7 @@ fn log_stream_status_prints_the_message_not_transport_metadata() {
     assert_eq!(error.to_string(), "invalid log time \"notatime\"");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls() {
     let first_metadata = metadata("first");
     let first = vec![
@@ -578,6 +578,56 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         b"nine"
     );
     assert!(stalled_then_closed.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn a_followed_server_whose_stream_breaks_stopped_answering() {
+    // What a daemon restart leaves on its open log streams: the client's stream fails, no status.
+    let broken = tonic::Status::from_error(Box::new(std::io::Error::other(
+        "h2 protocol error: error reading a body from connection",
+    )));
+    let mut follow = merge_logs(
+        vec![
+            input(
+                "ok-1-production/lg/lg-e89a",
+                vec![Err(LogError::from(broken))],
+            ),
+            LogInput {
+                machine: machine_id('b'),
+                ..input(
+                    "ok-1-production/db/db-0b5c",
+                    vec![Ok(log(metadata("db"), 9, b"nine"))],
+                )
+            },
+        ],
+        CancellationToken::new(),
+    );
+    assert_eq!(
+        follow.recv().await.unwrap().unwrap_err(),
+        LogFault::Stalled(machine_id('a'))
+    );
+    assert_eq!(
+        output_bytes(&follow.recv().await.unwrap().unwrap()),
+        b"nine"
+    );
+    assert!(follow.recv().await.is_none());
+
+    // A status the client made itself names its own failure and ends the follow.
+    let too_large = tonic::Status::out_of_range("Error, encoded message length too large");
+    let mut decode = merge_logs(
+        vec![input(
+            "ok-1-production/lg/lg-e89a",
+            vec![Err(LogError::from(too_large))],
+        )],
+        CancellationToken::new(),
+    );
+    let Err(LogFault::Error(error)) = decode.recv().await.unwrap() else {
+        panic!("expected the decode error")
+    };
+    assert!(
+        error.contains("encoded message length too large"),
+        "{error}"
+    );
 }
 
 #[tokio::test]

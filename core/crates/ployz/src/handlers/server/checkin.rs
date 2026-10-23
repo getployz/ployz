@@ -23,6 +23,7 @@ use crate::checkin::{
 };
 use crate::cli::{base, env, switch, value};
 use crate::cloud_login::DEFAULT_CLOUD;
+use crate::ui::Hint;
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SKIP_ZFS: &str = "PLOYZ_SKIP_ZFS";
@@ -97,6 +98,22 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         };
         return runtime.block_on(install(&mut client, &key, &paths, install_with));
     }
+    // Held before startup writes a record: a second loop overwrites nothing, and a failed start
+    // reads as stopped.
+    let _running = match checkin::hold_loop(&paths) {
+        Ok(Some(running)) => Some(running),
+        Ok(None) => {
+            return Err(
+                Error::coded(RpcErrorCode::Conflict, "A check-in loop already runs here.")
+                    .hint(Hint::Inspect("sudo systemctl status ployz-checkin".into())),
+            );
+        }
+        // Its records then say it ran unlocked, so `status` claims nothing about it.
+        Err(error) => {
+            crate::ui::warn(format!("Could not hold the check-in loop's lock: {error}"));
+            None
+        }
+    };
     let Some((ployzd, token)) = runtime.block_on(loop_start(
         &System::with(PathBuf::new()),
         matches,

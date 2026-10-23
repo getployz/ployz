@@ -569,7 +569,10 @@ async fn execute<C: DrainClient>(
             let only_leftovers = matches!(shape, Shape::Done(DrainOutcome::NothingToMove))
                 && (held || !out.is_empty());
             if !only_leftovers {
-                behind.moved(service.clone(), shape, moves);
+                // Rows for the leftovers follow, so a convergence that moved only other
+                // Servers' copies adds none of its own.
+                let beside_leftovers = held || !out.is_empty();
+                behind.moved_beside(service.clone(), shape, moves, beside_leftovers);
             }
             if held {
                 behind.done(service.clone(), DrainOutcome::Held);
@@ -627,6 +630,8 @@ struct Pending {
     service: QualifiedService,
     shape: Shape,
     moves: Vec<Step>,
+    /// The Service's leftover rows follow this one.
+    beside_leftovers: bool,
 }
 
 enum Shape {
@@ -654,6 +659,16 @@ impl Behind {
     }
 
     fn moved(&mut self, service: QualifiedService, shape: Shape, moves: Vec<Moving>) {
+        self.moved_beside(service, shape, moves, false);
+    }
+
+    fn moved_beside(
+        &mut self,
+        service: QualifiedService,
+        shape: Shape,
+        moves: Vec<Moving>,
+        beside_leftovers: bool,
+    ) {
         let entry = self.flushed + self.entries.len();
         let moves = moves
             .into_iter()
@@ -672,6 +687,7 @@ impl Behind {
             service,
             shape,
             moves,
+            beside_leftovers,
         });
     }
 
@@ -714,27 +730,36 @@ impl Behind {
                 service,
                 shape,
                 moves,
+                beside_leftovers,
             } = self.entries.pop_front().expect("just checked");
             self.flushed += 1;
             let mut last_in = false;
+            // A convergence moves every draining Server's copies. A concurrent Drain's
+            // moves are its own to report, though this one waited for their old copies;
+            // another Server's old copy left behind is still news here.
             let moves = moves
                 .into_iter()
                 .map(|Step { from, to, old }| {
+                    let refused = old.as_ref().is_some_and(Result::is_err);
                     let old = match old.expect("flushed once every old copy ended") {
                         Ok(old) => old,
-                        Err(LastIn) => {
-                            last_in = true;
-                            OldCopyEnd::In {
-                                unconfirmed: Unconfirmed::Failed {
-                                    detail: format!(
-                                        "{} still counted it as the last copy serving",
-                                        from.name
-                                    ),
-                                },
-                            }
-                        }
+                        Err(LastIn) => OldCopyEnd::In {
+                            unconfirmed: Unconfirmed::Failed {
+                                detail: format!(
+                                    "{} still counted it as the last copy serving",
+                                    from.name
+                                ),
+                            },
+                        },
                     };
-                    Move { from, to, old }
+                    (Move { from, to, old }, refused)
+                })
+                .filter(|(step, _)| {
+                    step.from.id == record.server.id || step.old != OldCopyEnd::Stopped
+                })
+                .map(|(step, refused)| {
+                    last_in |= refused;
+                    step
                 })
                 .collect::<Vec<_>>();
             let refused = || MoveFailure::Refused {
@@ -749,6 +774,8 @@ impl Behind {
                     },
                     false,
                 ),
+                Shape::Moved if moves.is_empty() && beside_leftovers => continue,
+                Shape::Moved if moves.is_empty() => (DrainOutcome::NothingToMove, false),
                 Shape::Moved => (DrainOutcome::Moved { moves }, false),
                 Shape::Failed(failure) => (DrainOutcome::Failed { moves, failure }, last_in),
                 Shape::Interrupted => (DrainOutcome::Interrupted { moves }, last_in),

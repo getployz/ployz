@@ -97,6 +97,10 @@ fix Docker and run the command again. Or uninstall Docker, and Ployz installs a 
   Amazon Linux's `docker`, is often older: remove it with `sudo dnf remove docker` or
   `sudo apt-get remove docker.io`, then run the command again.
 
+  Ployz 0.3.2 and earlier then fail to start the Docker they install: `restart Docker: Job for
+  docker.service failed`. Run `sudo systemctl reset-failed docker.socket docker.service` and
+  `sudo systemctl restart docker.socket docker.service`, then run the command again.
+
 - `Docker Buildx ... is too old: Ployz needs Buildx 0.18 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.`
 
   Upgrade the buildx plugin along with Docker, or uninstall Docker.
@@ -170,10 +174,10 @@ which voids every token made before. A token works for 24 hours. Run
 
 ## The server's name is invalid
 
-You'll see `invalid Machine Name "web-1.example.com"`.
+You'll see `invalid Machine Name "Web_1"`, with the closest valid name, `web-1`, below it.
 
-The server takes its hostname as its name, and a name must be one lowercase word: letters, digits
-and hyphens, up to 63 characters. Add `--name web-1` to the end of the command and run it again.
+A name must be one lowercase word: letters, digits and hyphens, up to 63 characters. Only a name
+you pass with `--name` is refused; pass the suggested name and run the command again.
 
 ## The server is already initialised
 
@@ -207,7 +211,11 @@ prepares Docker and ZFS meanwhile.
    `sudo journalctl -u ployz-prepare -n 200`. A failed preparation is retried 10 minutes later,
    up to three times. Once you've fixed the cause, `sudo ployz server checkin --install` starts it
    again right away. Preparation that stopped mid-step on every try reads as failed.
-3. `sudo systemctl status ployz-checkin` says whether the loop is running at all.
+3. `Check-in stopped` means the loop isn't running, so nothing checks in and, a few minutes
+   later, Ployz Cloud shows the server Offline. `last answer` is what it saw before it stopped,
+   and `checked in` says when. `sudo systemctl status ployz-checkin` says why it stopped, and
+   `sudo ployz server checkin --install` starts it again. Run `ployz status` with `sudo`: only
+   root can tell whether the loop runs.
 4. `Can't reach Cloud` means the server can't reach Ployz Cloud over HTTPS, or something in
    between, such as a proxy, answered instead. It keeps trying every minute.
 5. `Clock is off` means Ployz Cloud refused the check-in and the server's clock is more than 4

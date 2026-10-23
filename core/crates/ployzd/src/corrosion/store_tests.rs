@@ -298,6 +298,7 @@ async fn publisher_republishes_when_pool_committable_bytes_change() {
     let id = owner.record().id();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let view = crate::corrosion::MachineView::start(replicated.clone(), shutdown.clone());
+    let mut machines = view.watch();
     let (committable, observed) = tokio::sync::watch::channel(None);
     let publisher = tokio::spawn(crate::corrosion::run_machine_publisher(
         Some((replicated.clone(), view)),
@@ -305,22 +306,20 @@ async fn publisher_republishes_when_pool_committable_bytes_change() {
         crate::corrosion::LiveRuntime::new(tokio::sync::watch::channel(0).1, observed),
         shutdown.clone(),
     ));
-    let published = |expected: Option<u64>| {
-        let replicated = replicated.clone();
-        async move {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    let row = replicated.machine(id.as_str()).await.unwrap();
-                    if row.is_some_and(|machine| machine.runtime.pool_committable_bytes == expected)
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap_or_else(|_| panic!("{expected:?} was never published"));
-        }
+    let mut published = async |expected: Option<u64>| {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            machines.wait_for(|snapshot| {
+                snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.observations.iter().any(|machine| {
+                        machine.id == id && machine.runtime.pool_committable_bytes == expected
+                    })
+                })
+            }),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{expected:?} was never published"))
+        .unwrap();
     };
 
     published(None).await;
@@ -370,13 +369,10 @@ async fn publisher_publishes_the_founders_sealing_public_key() {
         shutdown.clone(),
     ));
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while cluster.sealing_public_key() != Some(held.to_string()) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the founder's Sealing public key was never published");
+    let published = tokio::time::timeout(Duration::from_secs(5), cluster.sealing_public_key())
+        .await
+        .expect("the founder's Sealing public key was never published");
+    assert_eq!(published, held.to_string());
 
     shutdown.cancel();
     publisher.await.unwrap().unwrap();
@@ -404,6 +400,32 @@ async fn publishing_a_sealing_public_key_never_replaces_the_clusters() {
         .rows(["value"])
         .unwrap();
     assert_eq!(rows, [[json!(first.to_string())]]);
+    task.abort();
+}
+
+#[tokio::test]
+async fn the_sealing_readers_report_the_clusters_key_and_its_recovery_marker() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(store.sealing_public_key().await.unwrap(), None);
+    assert_eq!(store.sealing_awaits_recovery().await.unwrap(), None);
+
+    let published = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let awaited = ployz_core::SealingPublicKey::from_bytes([4; 32]);
+    store.publish_sealing_public_key(published).await.unwrap();
+    store
+        .api()
+        .execute([Statement::new(
+            "INSERT INTO cluster (key, value) VALUES ('sealing_awaits_recovery', ?)",
+            [json!(awaited.to_string())],
+        )])
+        .await
+        .unwrap();
+
+    assert_eq!(store.sealing_public_key().await.unwrap(), Some(published));
+    assert_eq!(
+        store.sealing_awaits_recovery().await.unwrap(),
+        Some(awaited)
+    );
     task.abort();
 }
 

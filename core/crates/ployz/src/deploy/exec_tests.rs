@@ -94,10 +94,10 @@ enum Reply {
     Listed(Vec<ContainerObservation>),
     Created(ContainerId),
     Settled(ContainerId, HealthVerdict),
-    CreatedLater(ContainerId),
-    CreatedAfter(ContainerId, std::time::Duration),
-    /// Absent, once `delay` has passed.
-    OkAfter(std::time::Duration),
+    /// Created once the test's own delay ends.
+    CreatedAfter(ContainerId, fn() -> tokio::time::Sleep),
+    /// Absent once the test's own delay ends.
+    OkAfter(fn() -> tokio::time::Sleep),
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
@@ -283,6 +283,9 @@ struct Scripted {
     moves: Mutex<Vec<Move>>,
     /// Each live proxy's route once each move was applied.
     listed: Mutex<Vec<BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>>>,
+    /// What dialing the entry again answers; none when this client can't.
+    redial: Option<Result<(), RpcError>>,
+    redials: Mutex<usize>,
 }
 
 impl Scripted {
@@ -327,6 +330,8 @@ impl Scripted {
             store_reads: Mutex::new(0),
             moves: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
+            redial: None,
+            redials: Mutex::new(0),
         }
     }
 
@@ -835,7 +840,6 @@ impl Scripted {
                     Reply::Error(error) => return Err(error),
                     Reply::Pending => std::future::pending().await,
                     Reply::Listed(_)
-                    | Reply::CreatedLater(_)
                     | Reply::CreatedAfter(..)
                     | Reply::OkAfter(_)
                     | Reply::Observed(..)
@@ -991,8 +995,7 @@ impl Scripted {
         let healthy = settled.then_some(HealthVerdict::Healthy);
         let reply = self.next(call.clone());
         let container_id = match &reply {
-            Reply::Created(id) | Reply::Settled(id, _) | Reply::CreatedLater(id) => Some(*id),
-            Reply::CreatedAfter(id, _) => Some(*id),
+            Reply::Created(id) | Reply::Settled(id, _) | Reply::CreatedAfter(id, _) => Some(*id),
             Reply::Ok
             | Reply::OkAfter(_)
             | Reply::Listed(_)
@@ -1025,17 +1028,13 @@ impl Scripted {
                 assert!(settled, "only a Settled creation answers a verdict");
                 ensured(present(&container_id), Some(verdict))
             }
-            Reply::CreatedLater(container_id) => {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                ensured(present(&container_id), healthy)
-            }
             Reply::CreatedAfter(container_id, delay) => {
-                tokio::time::sleep(delay).await;
+                delay().await;
                 ensured(present(&container_id), healthy)
             }
             Reply::Ok => ensured(ContainerNow::Absent { of }, None),
             Reply::OkAfter(delay) => {
-                tokio::time::sleep(delay).await;
+                delay().await;
                 ensured(ContainerNow::Absent { of }, None)
             }
             Reply::Error(error) => Err(error),
@@ -1093,6 +1092,12 @@ fn edge_refusal(refused: ployz_core::RotationRefusal) -> ContainerRefusal {
 }
 
 impl MachineOperations for Scripted {
+    async fn redial(&self) -> Option<Result<(), RpcError>> {
+        let answer = self.redial.clone()?;
+        *self.redials.lock().unwrap() += 1;
+        Some(answer)
+    }
+
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
@@ -1131,7 +1136,6 @@ impl MachineOperations for Scripted {
             Reply::Ok
             | Reply::Created(_)
             | Reply::Settled(..)
-            | Reply::CreatedLater(_)
             | Reply::CreatedAfter(..)
             | Reply::OkAfter(_)
             | Reply::Observed(..)
@@ -1293,7 +1297,6 @@ impl MachineOperations for Scripted {
             | Reply::Listed(_)
             | Reply::Created(_)
             | Reply::Settled(..)
-            | Reply::CreatedLater(_)
             | Reply::CreatedAfter(..)
             | Reply::OkAfter(_) => {
                 panic!("scripted inspect requires Observed or Error")
@@ -1354,7 +1357,6 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         Reply::Listed(_)
         | Reply::Created(_)
         | Reply::Settled(..)
-        | Reply::CreatedLater(_)
         | Reply::CreatedAfter(..)
         | Reply::OkAfter(_)
         | Reply::Observed(..)
@@ -1622,10 +1624,6 @@ fn ok(call: Call) -> Step {
     Step(call, Reply::Ok)
 }
 
-fn ok_after(call: Call, delay: std::time::Duration) -> Step {
-    Step(call, Reply::OkAfter(delay))
-}
-
 fn created(call: Call, container_id: &ContainerId) -> Step {
     Step(call, Reply::Created(*container_id))
 }
@@ -1644,10 +1642,6 @@ fn unhealthy_run(machine: MachineId, container_id: &ContainerId) -> Step {
     )
 }
 
-fn created_later(call: Call, container_id: &ContainerId) -> Step {
-    Step(call, Reply::CreatedLater(*container_id))
-}
-
 fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {
     Step(call, Reply::Observed(runtime, None, None))
 }
@@ -1662,6 +1656,11 @@ fn listed(service: &QualifiedService, containers: Vec<ContainerObservation>) -> 
 
 fn failed(call: Call, message: &str) -> Step {
     Step(call, Reply::Error(error(message)))
+}
+
+/// A client that can't dial its entry again.
+async fn no_redial() -> Option<Result<(), RpcError>> {
+    None
 }
 
 fn unavailable(message: &str) -> RpcError {
@@ -1848,10 +1847,14 @@ async fn a_lost_answer_outlasts_a_resend_that_never_reached_the_server() {
         )
     };
     let mut replies = vec![unreached(), lost()];
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        let reply = replies.pop().unwrap_or_else(unreached);
-        async move { Err::<(), _>(reply) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            let reply = replies.pop().unwrap_or_else(unreached);
+            async move { Err::<(), _>(reply) }
+        },
+        no_redial,
+    )
     .await
     .unwrap_err();
     assert!(error.reply_lost(), "{error:?}");
@@ -1897,20 +1900,28 @@ async fn a_lost_answer_never_hides_a_closed_session_or_a_refused_key() {
 
     let started = tokio::time::Instant::now();
     let mut replies = vec![closed, lost.clone()];
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        let reply = replies.pop().expect("no resend after a closed session");
-        async move { Err::<(), _>(reply) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            let reply = replies.pop().expect("no resend after a closed session");
+            async move { Err::<(), _>(reply) }
+        },
+        no_redial,
+    )
     .await
     .unwrap_err();
     assert!(error.reply_lost(), "{error:?}");
     assert!(started.elapsed() < RESTART_WAIT, "{:?}", started.elapsed());
 
     let mut replies = vec![refused_key, lost];
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        let reply = replies.pop().expect("no resend after a refused key");
-        async move { Err::<(), _>(reply) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            let reply = replies.pop().expect("no resend after a refused key");
+            async move { Err::<(), _>(reply) }
+        },
+        no_redial,
+    )
     .await
     .unwrap_err();
     assert!(error.message.contains("Permission denied"), "{error:?}");

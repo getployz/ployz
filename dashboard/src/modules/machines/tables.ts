@@ -506,3 +506,19 @@ export const clusterSealingKey = pgTable(
     check("cluster_sealing_key_public_key_check", sql`${table.publicKey} ~ '^[A-Za-z0-9+/]{43}=$'`),
   ],
 );
+
+export const clusterSealingKeyGenerator = pgTable(
+  "cluster_sealing_key_generator",
+  {
+    organizationId: uuid("organization_id").notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    clusterKey: text("cluster_key").notNull(),
+    machineId: text("machine_id").notNull().$type<MachineId>(),
+    createdAt,
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.clusterKey] }),
+    check("cluster_sealing_key_generator_cluster_key_check", sql`${table.clusterKey} ~ '^[0-9a-f]{64}$'`),
+    check("cluster_sealing_key_generator_machine_id_check", sql`${table.machineId} ~ '^[0-9a-f]{32}$'`),
+  ],
+);

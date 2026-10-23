@@ -279,6 +279,20 @@ pub(crate) struct Subscription {
 }
 
 impl Subscription {
+    /// A subscription already past its snapshot that reads raw event lines from `chunks`.
+    #[cfg(test)]
+    pub(crate) fn streaming(
+        chunks: impl Stream<Item = Result<Bytes, io::Error>> + Send + 'static,
+    ) -> Self {
+        Self {
+            lines: FramedRead::new(
+                StreamReader::new(Box::pin(chunks) as ByteStream),
+                LinesCodec::new_with_max_length(8 * 1024 * 1024),
+            ),
+            snapshot_in_progress: false,
+        }
+    }
+
     pub(crate) fn snapshot_in_progress(&self) -> bool {
         self.snapshot_in_progress
     }
@@ -525,6 +539,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server_in_flight = in_flight.clone();
+        // Each query holds its slot until the client has filled every one, so the burst
+        // overlaps as much as the client allows. A shed query releases them too, so a client
+        // that overshoots fails instead of hanging.
+        let (saturated, saturated_rx) = tokio::sync::watch::channel(false);
         let server = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -532,9 +550,14 @@ mod tests {
                     "/v1/queries",
                     post(move || {
                         let in_flight = server_in_flight.clone();
+                        let saturated = saturated.clone();
+                        let mut saturated_rx = saturated_rx.clone();
                         async move {
                             use std::sync::atomic::Ordering;
                             let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                            if now >= super::MAX_IN_FLIGHT.min(CORROSION_ROUTE_LIMIT + 1) {
+                                saturated.send_replace(true);
+                            }
                             let response = if now > CORROSION_ROUTE_LIMIT {
                                 (
                                     axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -542,7 +565,7 @@ mod tests {
                                 )
                                     .into_response()
                             } else {
-                                tokio::time::sleep(Duration::from_millis(20)).await;
+                                saturated_rx.wait_for(|full| *full).await.unwrap();
                                 "{\"columns\":[\"x\"]}\n{\"eoq\":{\"time\":0.0}}\n".into_response()
                             };
                             in_flight.fetch_sub(1, Ordering::SeqCst);

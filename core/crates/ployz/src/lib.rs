@@ -31,6 +31,7 @@ mod provisioning;
 mod published;
 pub mod sdk;
 mod sealed_compat;
+pub mod sealing_backfill;
 pub mod service;
 mod setup_report;
 mod setup_retry;

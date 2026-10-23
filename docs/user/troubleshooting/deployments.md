@@ -379,9 +379,11 @@ When the connection drops in the middle of a step, the deploy can't tell whether
 it. It says so instead of blaming the step: `db: The connection to Server web-1 dropped during
 pull image, so it may have happened anyway`, with `cause: connection lost`. Your image and your
 change are fine, so the deploy doesn't point you at them. A step that created or started a
-replica may have left the new replica running beside the old one. It takes no traffic, and
-`ployz status` names it as `1 copy no deploy brought into routing takes no traffic`. The
-next deploy removes it.
+replica may have left the new replica running beside the old one. If only Ployz on that server
+restarted, as after a crash, the deploy connects to it again for up to a minute: it removes the new
+replica, or carries on and finishes. Otherwise the new replica takes no traffic, `ployz status`
+names it as `1 copy no deploy brought into routing takes no traffic`, and the next deploy removes
+it.
 
 ## My upload or log stream fails on a slow connection
 
@@ -507,11 +509,12 @@ the old replica keeps serving there, and a restart routes it again. Deploy the s
 
 `cause: connection to the daemon closed` or `cause: stream closed because of a broken pipe`
 
-Ployz restarted on the server your deploy connects through, as it does during an upgrade. The
-deploy fails, usually within seconds (2–12 s in our tests) and within about a minute at most. It
-exits 1, and the deployment reads Failed. Deploy again,
-or redeploy the failed deployment, and Ployz finishes the switch and removes what the failed deploy
-left behind:
+Ployz restarted on the server your deploy connects through, as it does during an upgrade or after
+a crash. The deploy connects to it again for up to a minute. If the restart didn't cut off a step's
+answer, the deploy carries on and finishes. If it did, as for a replica being created at that
+moment, the deploy removes the new replicas, exits 1 within about a minute, and the deployment
+reads Failed. Deploy again, or redeploy the failed deployment, and Ployz finishes the switch and
+removes anything the failed deploy left behind:
 
 ```sh
 ployz deploy
@@ -573,16 +576,20 @@ doesn't exist and for a private image you have no access to.
 
 ## My server's disk is full
 
-**Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
+**Failed at pull**, with `Server machine-3's disk is full: 48 MB free under /var/lib/containerd`
 
-The server ran out of disk space while it downloaded an image, from its registry or from another
-server that already had it. A deploy downloads every image it
+The named server ran out of disk space while it downloaded an image, from its registry or from
+another server that already had it. A deploy downloads every image it
 needs before it changes any service, so none of the deploy's services changed and the versions
 already running keep running. The cause line under it is Docker's own error.
 
+The directory is the one on the full disk. Docker keeps images under `/var/lib/containerd`, and
+everything else under `/var/lib/docker`. These can be on different disks.
+
 - Free space on that server: remove files you don't need, or remove old images with
   `docker image prune`.
-- Give the server a bigger disk if it fills up again.
+- Give the server a bigger disk if it fills up again. If you mount a data disk for Docker, mount
+  one at `/var/lib/containerd` too. A data disk at `/var/lib/docker` alone doesn't hold images.
 - Run the deploy again.
 
 ## Deploy says a service has nothing to run

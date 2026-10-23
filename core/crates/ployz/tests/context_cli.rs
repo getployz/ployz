@@ -1093,3 +1093,234 @@ fn ambiguous_management_labels_fail_without_mutation_and_index_selects_the_secon
         vec![second, first]
     );
 }
+
+#[test]
+fn context_config_selection_works_before_between_and_after_commands() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    Config::new(
+        &path,
+        Some("default".into()),
+        BTreeMap::from([
+            (
+                "default".into(),
+                Context {
+                    connections: Vec::new(),
+                },
+            ),
+            (
+                "verify".into(),
+                Context {
+                    connections: Vec::new(),
+                },
+            ),
+        ]),
+    )
+    .save()
+    .unwrap();
+    let run = ployz_with(&path, &[("PLOYZ_CONTEXT", "default")]);
+    for args in [
+        &["-c", "verify", "server", "ls"][..],
+        &["--context=verify", "server", "ls"],
+        &["server", "--context", "verify", "ls"],
+        &["server", "ls", "--context", "verify"],
+    ] {
+        let output = run(&[args, &["--json"]].concat());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {json}");
+        assert_eq!(
+            json.pointer("/error/message").unwrap().as_str().unwrap(),
+            "Context verify has no Servers.",
+            "{args:?}: {json}"
+        );
+        assert_eq!(
+            json.pointer("/error/details/next")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            format!(
+                "ployz --ployz-config {} server add --standalone --context verify",
+                path.display()
+            ),
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn context_config_corrupt_yaml_keeps_its_line_and_parser_cause() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    fs::write(&path, "current_context: [[[\nbad line\n").unwrap();
+    let run = ployz_with(&path, &[]);
+    for args in [&["ctx", "ls"][..], &["status"]] {
+        let output = run(&[args, &["--json"]].concat());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {json}");
+        assert_eq!(
+            json.pointer("/error/message").unwrap().as_str().unwrap(),
+            format!("Could not parse Ployz config {} (line 1).", path.display()),
+            "{json}"
+        );
+        let causes = json.pointer("/error/cause").unwrap().as_array().unwrap();
+        assert!(!causes.is_empty(), "{json}");
+        assert!(
+            causes
+                .last()
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .contains("current_context"),
+            "{json}"
+        );
+        let human = run(args);
+        let stderr = String::from_utf8(human.stderr).unwrap();
+        assert!(stderr.contains("(line 1)."), "{stderr}");
+        assert!(stderr.contains("cause:"), "{stderr}");
+        assert!(!stderr.contains("ployz login"), "{stderr}");
+    }
+}
+
+#[test]
+fn context_config_status_reports_read_errors_but_allows_a_missing_config() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    let run = ployz_with(&path, &[]);
+    assert!(run(&["status", "--json"]).status.success());
+    fs::create_dir(&path).unwrap();
+    let output = run(&["status", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/message").unwrap().as_str().unwrap(),
+        format!("Could not read Ployz config {}.", path.display()),
+        "{json}"
+    );
+}
+
+#[test]
+fn context_config_empty_context_names_the_next_step_for_runtime_commands() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    Config::new(
+        &path,
+        Some("verify".into()),
+        BTreeMap::from([(
+            "verify".into(),
+            Context {
+                connections: Vec::new(),
+            },
+        )]),
+    )
+    .save()
+    .unwrap();
+    let run = ployz_with(&path, &[]);
+    for args in [
+        &["server", "ls"][..],
+        &["ps"],
+        &["ctx", "use", "verify", "--connection", "1"],
+    ] {
+        let output = run(args);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("error: Context verify has no Servers."),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("next: ployz")
+                && stderr.contains("server add --standalone --context verify"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("no connections found"), "{stderr}");
+    }
+}
+
+#[test]
+fn context_config_management_refuses_explicit_context_before_mutation() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    let config = Config::new(
+        &path,
+        Some("default".into()),
+        ["default", "other"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.into(),
+                    Context {
+                        connections: vec![
+                            Connection::unix(format!("/tmp/{name}-1.sock")).unwrap(),
+                            Connection::unix(format!("/tmp/{name}-2.sock")).unwrap(),
+                        ],
+                    },
+                )
+            })
+            .collect(),
+    );
+    config.save().unwrap();
+    let run = ployz_with(&path, &[]);
+    for args in [
+        &["ctx", "use", "--connection", "2"][..],
+        &["ctx", "rm", "default"],
+        &["ctx", "ls"],
+    ] {
+        for (args, message) in [
+            (
+                [&["-c", "other"][..], args, &["--json"]].concat(),
+                "doesn't use a context",
+            ),
+            (
+                [args, &["-c", "other", "--json"]].concat(),
+                "unexpected argument '-c' found",
+            ),
+        ] {
+            let output = run(&args);
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(output.status.code(), Some(2), "{args:?}: {json}");
+            assert_eq!(
+                json.pointer("/error/code").unwrap().as_str().unwrap(),
+                "invalid_argument",
+                "{args:?}: {json}"
+            );
+            assert!(
+                json.pointer("/error/message")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .contains(message),
+                "{args:?}: {json}"
+            );
+            assert_eq!(Config::load(&path).unwrap(), config, "{args:?}");
+        }
+    }
+}
+
+#[test]
+fn context_config_cloud_commands_refuse_root_context_in_the_process() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    let run = ployz_with(&path, &[]);
+    for args in [&["org", "ls"][..], &["config", "ls"]] {
+        let output = run(&[&["-c", "x"], args, &["--json"]].concat());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{json}");
+        assert!(
+            json.pointer("/error/message")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .contains("doesn't use a context"),
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn context_config_status_accepts_a_zero_byte_config() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.yaml");
+    fs::write(&path, "").unwrap();
+    let output = ployz_with(&path, &[])(&["status", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+}

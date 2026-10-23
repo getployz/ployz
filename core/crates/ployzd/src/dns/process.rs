@@ -477,6 +477,7 @@ impl Tick<'_> {
                 }
             }
             self.upstreams.reload_if_changed();
+            keeper.ticked();
         }
     }
 }
@@ -532,6 +533,7 @@ async fn idle_until_spec(
         if let Ok(Some(_)) = fixture.spec.read() {
             return Ok(DnsExit::SpecChanged);
         }
+        fixture.keeper.ticked();
     }
 }
 

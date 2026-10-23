@@ -23,6 +23,11 @@ The line installs the stable release to `/usr/local/bin`. For the beta channel, 
 curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
 ```
 
+The install script checks that the release is signed by Ployz before it installs anything. It needs
+OpenSSL 3, which current Linux releases include, or [minisign](https://jedisct1.github.io/minisign/).
+On macOS, run `brew install minisign` first. Without either, it stops with
+`Cannot verify the release signature: install OpenSSL 3 or minisign, then rerun`.
+
 ## Sign in
 
 1. Run `ployz login`. It prints a code and opens your browser.
@@ -210,7 +215,8 @@ shows each server's newest 200 lines at most, with sealed variables scrubbed, an
 `--until`, `--machine` or a container name. Name the environment with `--project` and `--env`
 if the directory isn't linked. A server that doesn't answer Ployz Cloud is named, and the command
 exits 3, as it does when Ployz reads your servers itself. A `deploy` token reads only its own environment, so
-`ployz logs --env production` with a staging token fails with `This token can deploy only to staging.` See
+`ployz logs --env production` with a staging token fails with `This token can deploy only to staging.`,
+even before anything is deployed to production. See
 [Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
 
 Pick a member by email or by name. When two members share a name, the command refuses with
@@ -331,6 +337,13 @@ with: `ployz logout` doesn't revoke it.
 When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying
 error, such as the operating system's or the server's own message.
 
+Commands that take `--context` accept it before or after the command. For example,
+`ployz --context verify server ls` and `ployz server ls --context verify` act on the same
+Servers. `-c` is the short form. Commands that use only Ployz Cloud refuse a context.
+`ctx ls`, `ctx use`, and `ctx rm` also refuse `--context`; `ctx use` and `ctx rm` take the
+context's name as a positional argument.
+`PLOYZ_CONTEXT` applies only to commands that take `--context`.
+
 A command prints its result on stdout and everything else on stderr: progress, warnings, the
 `next:` line, prompts and errors. `ployz service ls > services.txt` saves only the table.
 
@@ -355,6 +368,9 @@ While a deployment runs, status skips the copy check on purpose, and that alone 
 through its local socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
 Cloud for server access once per run. The first `ployz status` or other server command for a
 sign-in or token also waits while Cloud sets up your access on each server.
+
+`ployz status` fails with exit code 1 if the Ployz config exists but cannot be read or parsed.
+The error names the file and keeps the underlying error as its cause. A missing config is allowed.
 
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
@@ -437,6 +453,11 @@ selection flags.
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.
 
+After 20 failed sign-ins in a minute, or 100 in an hour, from one address, Ployz Cloud refuses
+the commands it serves from that address for a while, even one with a working token. The command
+fails with `Too many failed sign-ins from this address. Try again in 55 minutes.` Wait that long,
+and fix what keeps failing first, such as a script that still sends a revoked token.
+
 Add `--json` to any command to get one JSON object instead of text. A stream, such as `ployz logs`,
 prints JSON Lines instead: one object per line. If the command fails before it prints anything,
 that object is `{"error": {...}}`. A stream that fails after it printed names the failure on stderr
@@ -460,7 +481,10 @@ Scripts can tell failures apart by exit code:
 `ployz exec` exits with your command's own exit code. When the container stops under it,
 because a deploy replaced it or the service was stopped, it exits 1 with
 `The container for web stopped; exec ended.` A `retry:` line follows when another container of the
-service runs, and running it again attaches there. When `ployz exec` stops before your command does,
+service runs. It is the command you ran: the `-T` you typed, the `--context`, `--connect`,
+`--project` and `--env` you gave as flags or variables, and the `-- command`, like
+`retry: ployz exec -T web -- sleep 120`. Running it attaches there. It names no container, so it
+reaches whichever one runs. When `ployz exec` stops before your command does,
 because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
 command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command
 you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a` and `b` running.

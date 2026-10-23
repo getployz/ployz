@@ -578,9 +578,9 @@ async fn a_slow_pending_removal_completes_before_any_sibling_goes_out() {
     let routed = container('b');
     let client = Scripted::new(vec![
         observed(Call::Inspect(machine, pending), running()),
-        ok_after(
+        Step(
             Call::Remove(machine, pending),
-            2 * crate::deploy::cleanup::ACK_WAIT,
+            Reply::OkAfter(|| tokio::time::sleep(2 * crate::deploy::cleanup::ACK_WAIT)),
         ),
         observed(Call::Inspect(machine, routed), running()),
         ok(Call::Remove(machine, routed)),
@@ -1249,7 +1249,9 @@ async fn a_service_flips_as_soon_as_its_own_replicas_are_up() {
     let client = Scripted::new(vec![
         Step(
             Call::Run(machine, ContainerKind::ServiceContainer),
-            Reply::CreatedAfter(container('a'), std::time::Duration::from_secs(30)),
+            Reply::CreatedAfter(container('a'), || {
+                tokio::time::sleep(std::time::Duration::from_secs(30))
+            }),
         ),
         created(
             Call::Run(machine, ContainerKind::ServiceContainer),
@@ -1287,7 +1289,9 @@ async fn a_failed_group_removes_a_container_a_sibling_starts_afterwards() {
         failed(Call::Stop(machine, stopped), "stop failed"),
         Step(
             Call::Run(machine, ContainerKind::ServiceContainer),
-            Reply::CreatedAfter(late, std::time::Duration::from_millis(5)),
+            Reply::CreatedAfter(late, || {
+                tokio::time::sleep(std::time::Duration::from_millis(5))
+            }),
         ),
         ok(Call::Discard(machine, late)),
     ]);

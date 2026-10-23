@@ -53,6 +53,8 @@ mod container;
 pub(crate) use container::CutRefusal;
 mod management_client;
 mod push_target;
+mod sealing;
+pub(crate) use sealing::Error as SealingError;
 mod upgrade;
 
 #[derive(Clone)]
@@ -145,6 +147,8 @@ pub enum Error {
     Upgrade(#[from] crate::installer::upgrade::Error),
     #[error(transparent)]
     Seal(#[from] crate::sealing_key::SealError),
+    #[error(transparent)]
+    Sealing(#[from] SealingError),
 }
 
 impl LocalMachine {
@@ -436,11 +440,11 @@ impl LocalMachine {
             storage,
             upgrade,
             token,
-            sealing: self.sealing(record.phase()),
+            sealing: self.sealing(record.phase()).await,
         })
     }
 
-    fn sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
+    async fn sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
         if !matches!(
             phase,
             LocalMachinePhase::Joining | LocalMachinePhase::Participating
@@ -451,13 +455,33 @@ impl LocalMachine {
             Ok(Some(key)) => Some(ployz_core::Sealing::Held {
                 public_key: key.public_key(),
             }),
-            Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
+            Ok(None) => self.lacking_key().await,
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 tracing::warn!(%error, "this Machine's Sealing Key is unusable");
-                Some(ployz_core::Sealing::NeedsAccess)
+                self.lacking_key().await
             }
             Err(error) => {
                 tracing::warn!(%error, "could not read the Sealing Key");
+                None
+            }
+        }
+    }
+
+    /// A published key overrides the recovery marker, as Generate reads them.
+    async fn lacking_key(&self) -> Option<ployz_core::Sealing> {
+        let Ok(replicated) = self.replicated() else {
+            return Some(ployz_core::Sealing::NeedsAccess);
+        };
+        let awaited = match replicated.sealing_public_key().await {
+            Ok(Some(_)) => Ok(None),
+            Ok(None) => replicated.sealing_awaits_recovery().await,
+            Err(error) => Err(error),
+        };
+        match awaited {
+            Ok(Some(public_key)) => Some(ployz_core::Sealing::AwaitsRecovery { public_key }),
+            Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
+            Err(error) => {
+                tracing::warn!(%error, "could not read whether the Cluster awaits recovery");
                 None
             }
         }
@@ -1139,6 +1163,9 @@ mod tests {
             let shutdown = shutdown.clone();
             async move { local.rediscover_addresses(shutdown).await }
         });
+        // Paused across the Busy retries at 250ms and 750ms, which never leave the
+        // runtime; resumed before the apply waits on the record owner's thread.
+        tokio::time::pause();
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let held = owner
             .record()
@@ -1147,6 +1174,7 @@ mod tests {
             .advertised_endpoints
             .clone();
         drop(upgrade);
+        tokio::time::resume();
         tokio::time::timeout(std::time::Duration::from_secs(10), rediscovery)
             .await
             .unwrap()

@@ -97,6 +97,7 @@ export const serverWebTrafficRequestedEvent = "server/web-traffic.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
+export const sealingKeyEnsureRequestedEvent = "sealing-key/ensure.requested";
 export const uptimeBackfillRequestedEvent = "uptime/backfill.requested";
 export const observeCrashReceivedEvent = "observe/crash.received";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
@@ -190,6 +191,10 @@ export type ServiceActRequestedEventData = {
 };
 
 export type ClusterDomainSyncRequestedEventData = {
+  organizationId: string;
+};
+
+export type SealingKeyEnsureRequestedEventData = {
   organizationId: string;
 };
 
@@ -388,6 +393,10 @@ export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
   { schema: staticSchema<ClusterDomainSyncRequestedEventData>() },
 );
+export const sealingKeyEnsureRequestedEventType = eventType(
+  sealingKeyEnsureRequestedEvent,
+  { schema: staticSchema<SealingKeyEnsureRequestedEventData>() },
+);
 export const uptimeBackfillRequestedEventType = eventType(
   uptimeBackfillRequestedEvent,
   { schema: staticSchema<UptimeBackfillRequestedEventData>() },
@@ -552,6 +561,10 @@ export function createClusterDomainSyncRequestedEvent(
   data: ClusterDomainSyncRequestedEventData,
 ) {
   return { name: clusterDomainSyncRequestedEvent, data } as const;
+}
+
+export function createSealingKeyEnsureRequestedEvent(data: SealingKeyEnsureRequestedEventData) {
+  return { name: sealingKeyEnsureRequestedEvent, data } as const;
 }
 
 export function createOrganizationBillingSyncRequestedEvent(
@@ -725,6 +738,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createVolumeRunRequestedEvent>
   | ReturnType<typeof createVolumeRunTakenEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
+  | ReturnType<typeof createSealingKeyEnsureRequestedEvent>
   | ReturnType<typeof createObserveCrashReceivedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

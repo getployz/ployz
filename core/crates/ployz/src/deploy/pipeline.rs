@@ -255,6 +255,14 @@ impl DeployError {
     pub(crate) fn same_again(&self) -> bool {
         matches!(self, Self::Plan(plan) if plan.same_again())
     }
+
+    /// The Server a plan refusal found short of storage.
+    pub(crate) fn short_of_storage(&self) -> Option<ployz_core::MachineId> {
+        match self {
+            Self::Plan(plan) => plan.short_of_storage(),
+            Self::Connect(_) | Self::Namespace(_) => None,
+        }
+    }
 }
 
 impl From<DeployError> for RpcError {

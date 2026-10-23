@@ -885,6 +885,7 @@ fn a_postgres_restart_fails_no_command_after_it() {
         .get::<_, i64>(0)
         > 0
     {
+        // real-wait: Postgres ends the terminated sessions on its own and signals no one.
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     store.write(&who, &create_project("blog")).unwrap();

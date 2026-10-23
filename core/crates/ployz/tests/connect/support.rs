@@ -122,10 +122,11 @@ impl WatchHub {
         receiver
     }
 
-    fn live_count(&self) -> usize {
-        let mut live = self.live.lock().unwrap();
-        live.retain(|sender| !sender.is_closed());
-        live.len()
+    async fn all_closed(&self) {
+        let live = self.live.lock().unwrap().clone();
+        for sender in live {
+            sender.closed().await;
+        }
     }
 }
 
@@ -352,8 +353,8 @@ impl DiscoveryService {
         self.watch.push(WatchEvent::Fail(status));
     }
 
-    pub(super) fn live_watch_senders(&self) -> usize {
-        self.watch.live_count()
+    pub(super) async fn watch_rpcs_dropped(&self) {
+        self.watch.all_closed().await;
     }
 
     pub(super) fn end_watch(&self) {
@@ -1343,6 +1344,7 @@ impl FakeMachine for DiscoveryService {
         else {
             panic!("expected a routes read");
         };
+        // real-wait: a slow routes reply is what a CLI process under test must wait out.
         tokio::time::sleep(self.routes_delay).await;
         Ok(Response::new(
             RpcResponse::from(self.routes(&read.service))

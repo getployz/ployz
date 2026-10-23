@@ -1334,6 +1334,7 @@ mod tests {
             // The old process exits with the resend in flight.
             old.shutdown_background();
             std::fs::remove_file(&path).unwrap();
+            // real-wait: keeps the daemon socket missing across a client retry; a connect to a missing socket emits no event
             tokio::time::sleep(Duration::from_secs(2)).await;
             daemon(
                 &path,

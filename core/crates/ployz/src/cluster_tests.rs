@@ -545,3 +545,86 @@ async fn a_redial_the_new_daemon_refuses_forgets_the_machine_it_replaced() {
     assert_eq!(redialed_into_a_refusal(false).await, None);
     assert_eq!(redialed_into_a_refusal(true).await, None);
 }
+
+#[tokio::test]
+async fn a_redial_whose_entry_fails_its_check_leaves_every_clone_on_the_old_channel() {
+    let (mut client, _old) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::not_found("answered by the old daemon"))
+    })
+    .await;
+    let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::unavailable("not ready"))
+    })
+    .await;
+    client.connector = crate::connect::test_support::connector(other.channel());
+    let clone = client.clone();
+
+    assert!(client.redial_shared().await.is_err());
+
+    let answer = clone.entry_id().await.unwrap_err();
+    assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
+}
+
+#[tokio::test]
+async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_channel() {
+    let (mut client, _old) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::not_found("answered by the old daemon"))
+    })
+    .await;
+    let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
+        let described = ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+            machine_id: machine_id('b'),
+            protocol_major: ployz_core::PROTOCOL_MAJOR,
+            daemon_version: "test".into(),
+            capabilities: Default::default(),
+        });
+        Ok(tonic::Response::new(described.encode().unwrap()))
+    })
+    .await;
+    client.entry = Some(machine_id('a'));
+    client.connector = crate::connect::test_support::connector(other.channel());
+
+    let refused = client.redial_shared().await;
+
+    assert!(
+        matches!(refused, Err(ConnectError::IdentityMismatch { .. })),
+        "{refused:?}"
+    );
+    let answer = client.clone().entry_id().await.unwrap_err();
+    assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
+}
+
+#[tokio::test]
+async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
+    let (mut client, _old) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::not_found("answered by the old daemon"))
+    })
+    .await;
+    let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
+        let described = ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+            machine_id: machine_id('b'),
+            protocol_major: ployz_core::PROTOCOL_MAJOR,
+            daemon_version: "test".into(),
+            capabilities: Default::default(),
+        });
+        Ok(tonic::Response::new(described.encode().unwrap()))
+    })
+    .await;
+    client.entry = Some(machine_id('a'));
+    client.confirmed = Some(machine_id('a'));
+    client.connector = crate::connect::test_support::connector(other.channel());
+
+    // As a Server reset under `server add` does, the endpoint now answers as another
+    // Machine; the retry follows it. A clone whose last redial failed has forgotten
+    // its entry, and still moves only itself.
+    let mut forgot = client.clone();
+    forgot.entry = None;
+    for mut retrying in [client.clone(), forgot] {
+        retrying.redial().await.unwrap();
+        assert_eq!(retrying.entry_machine(), Some(machine_id('b')));
+        assert_eq!(retrying.entry_id().await.unwrap(), machine_id('b'));
+    }
+
+    let answer = client.clone().entry_id().await.unwrap_err();
+    assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
+}

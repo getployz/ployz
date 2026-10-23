@@ -171,7 +171,9 @@ fn a_hostname_two_requested_services_claim_fails_the_same_way_again() {
             to: ServiceName::parse("api").unwrap(),
         },
     };
-    let Unprepared { error, same_again } = prepared(conflict());
+    let Unprepared {
+        error, same_again, ..
+    } = prepared(conflict());
     assert!(same_again);
     assert_eq!(error.code, RpcErrorCode::Internal);
     assert!(
@@ -187,7 +189,9 @@ fn a_hostname_two_requested_services_claim_fails_the_same_way_again() {
     );
     assert_eq!(error.details.get("same_again"), Some(&Value::Bool(true)));
     // An image-only Deploy plans without preparing: its refusal says the same.
-    let Unprepared { error, same_again } = planned(conflict());
+    let Unprepared {
+        error, same_again, ..
+    } = planned(conflict());
     assert!(same_again);
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert_eq!(error.details.get("same_again"), Some(&Value::Bool(true)));
@@ -244,10 +248,14 @@ fn a_refusal_a_retry_may_get_past_does_not_claim_to_fail_the_same_way_again() {
         },
     ] {
         let message = refusal.to_string();
-        let Unprepared { error, same_again } = planned(refusal.clone());
+        let Unprepared {
+            error, same_again, ..
+        } = planned(refusal.clone());
         assert!(!same_again, "{message}");
         assert_eq!(error.details, Value::Null, "{message}");
-        let Unprepared { error, same_again } = prepared(refusal);
+        let Unprepared {
+            error, same_again, ..
+        } = prepared(refusal);
         assert!(!same_again, "{message}");
         assert_eq!(error.details.get("same_again"), None, "{message}");
     }

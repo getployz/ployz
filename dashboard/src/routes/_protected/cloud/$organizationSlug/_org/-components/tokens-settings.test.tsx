@@ -66,6 +66,22 @@ it("deploys to the first Environment that arrives while the dialog is open", asy
   expect(screen.getByRole("button", { name: "Make token" }).hasAttribute("disabled")).toBe(false);
 });
 
+it("says a Deploy token reaches its Environment in every project that has one", async () => {
+  const { queryClient, scope } = await openNewToken(null);
+  const project = asTestDouble<ProjectsView["projects"][number]>();
+  const shared: StoreResult<{ view: "projects" } & ProjectsView> = {
+    ok: true,
+    value: { view: "projects", projects: [project({ name: "shop", environments: ["production", "fix-api"] }), project({ name: "blog", environments: ["production"] })] },
+  };
+  act(() => queryClient.setQueryData(storeViewOptions("ada", scope, projectsQuery()).queryKey, shared));
+  fireEvent.change(screen.getByLabelText("Access"), { target: { value: "deploy" } });
+  fireEvent.change(screen.getByLabelText("Environment"), { target: { value: "production" } });
+
+  expect(screen.getByRole("option", { name: "production (blog, shop)" })).toBeDefined();
+  expect(screen.getByRole("option", { name: "fix-api (shop)" })).toBeDefined();
+  expect(screen.getByText("It can deploy to production in blog and shop.")).toBeDefined();
+});
+
 it("makes one token when Make token is double-clicked", async () => {
   const { create, made } = await openNewToken();
   const submit = screen.getByRole("button", { name: "Make token" });

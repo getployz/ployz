@@ -13,6 +13,7 @@ use axum::{body::Body, extract::Request, response::IntoResponse};
 use tokio::{net::TcpListener, process::Command, sync::Semaphore};
 
 use super::super::transfer::{Receives, ZfsChild};
+use super::copy_tests::{eventually, poll};
 use super::*;
 
 const BOUND: u64 = 1_073_741_824;
@@ -68,12 +69,6 @@ fn gated(test: &TestDir, zfs: &Path) -> PathBuf {
     wrapper
 }
 
-async fn until(mut done: impl FnMut() -> bool) {
-    while !done() {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-}
-
 #[tokio::test]
 async fn an_inspect_a_breaking_receive_lands_between_answers_the_copy_before_or_after_it() {
     let (port, stream) = held_source("break\n").await;
@@ -90,7 +85,10 @@ async fn an_inspect_a_breaking_receive_lands_between_answers_the_copy_before_or_
 
     let pull = json!({"name": "data", "from": "::1", "target": "w-1-1"});
     post(&socket, "/Volume.Copy.Pull", pull).await;
-    until(|| test.0.join("props/receive-ready").exists()).await;
+    eventually("the receive's dataset", || {
+        test.0.join("props/receive-ready").exists()
+    })
+    .await;
     let before = inspect().await;
 
     fs::write(test.0.join("gate"), "").unwrap();
@@ -98,9 +96,12 @@ async fn an_inspect_a_breaking_receive_lands_between_answers_the_copy_before_or_
         let socket = socket.clone();
         async move { post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await }
     });
-    until(|| during.is_finished() || test.0.join("gate-reached").exists()).await;
+    eventually("the Inspect at its gate", || {
+        during.is_finished() || test.0.join("gate-reached").exists()
+    })
+    .await;
     stream.add_permits(1);
-    until(|| !receives.running(&name)).await;
+    eventually("the receive's finish", || !receives.running(&name)).await;
     fs::remove_file(test.0.join("gate")).unwrap();
     let during = during.await.unwrap();
     let after = inspect().await;
@@ -138,8 +139,11 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
 
     let pull = json!({"name": "data", "from": "::1", "target": "w-1-1"});
     post(&socket, "/Volume.Copy.Pull", pull).await;
-    until(|| test.0.join("props/receive-ready").exists()).await;
-    until(|| !receives.running(&name)).await;
+    eventually("the receive's dataset", || {
+        test.0.join("props/receive-ready").exists()
+    })
+    .await;
+    eventually("the receive's finish", || !receives.running(&name)).await;
     let before = inspect().await;
 
     let (held, token) = (
@@ -170,16 +174,21 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
             panic!("the receive task broke");
         }
     });
-    until(|| panicked.load(Ordering::SeqCst)).await;
+    while !panicked.load(Ordering::SeqCst) {
+        tokio::task::yield_now().await;
+    }
 
     fs::write(test.0.join("gate"), "").unwrap();
     let during = tokio::spawn({
         let socket = socket.clone();
         async move { post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await }
     });
-    until(|| during.is_finished() || test.0.join("gate-reached").exists()).await;
+    eventually("the Inspect at its gate", || {
+        during.is_finished() || test.0.join("gate-reached").exists()
+    })
+    .await;
     fs::remove_file(&held).unwrap();
-    until(|| !receives.running(&name)).await;
+    eventually("the receive's finish", || !receives.running(&name)).await;
     fs::remove_file(test.0.join("gate")).unwrap();
     let during = during.await.unwrap();
     let after = inspect().await;
@@ -218,8 +227,11 @@ async fn an_inspect_answers_a_failure_whose_dropped_child_never_exits_once_the_h
 
     let pull = json!({"name": "data", "from": "::1", "target": "w-1-1"});
     post(&socket, "/Volume.Copy.Pull", pull).await;
-    until(|| test.0.join("props/receive-ready").exists()).await;
-    until(|| !receives.running(&name)).await;
+    eventually("the receive's dataset", || {
+        test.0.join("props/receive-ready").exists()
+    })
+    .await;
+    eventually("the receive's finish", || !receives.running(&name)).await;
 
     let held = test.0.join("child-gate");
     fs::write(&held, "").unwrap();
@@ -240,14 +252,9 @@ async fn an_inspect_answers_a_failure_whose_dropped_child_never_exits_once_the_h
     });
 
     let panicked = json!("the receive task panicked");
-    let answered = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let copy = inspect().await;
-            if copy.pointer("/Ok/pull/failure") == Some(&panicked) {
-                return copy;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+    let answered = poll(async || {
+        let copy = inspect().await;
+        (copy.pointer("/Ok/pull/failure") == Some(&panicked)).then_some(copy)
     })
     .await;
     assert!(
@@ -255,12 +262,12 @@ async fn an_inspect_answers_a_failure_whose_dropped_child_never_exits_once_the_h
         "the child exited, so this proves nothing"
     );
     assert!(
-        answered.is_ok(),
+        answered.is_some(),
         "the failure stayed hidden behind a stuck child"
     );
     assert_eq!(receives.failure(&name).as_deref(), panicked.as_str());
 
     fs::remove_file(&held).unwrap();
-    until(|| !receives.running(&name)).await;
+    eventually("the receive's finish", || !receives.running(&name)).await;
     server.abort();
 }

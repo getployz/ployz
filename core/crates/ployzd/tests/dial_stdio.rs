@@ -65,6 +65,7 @@ fn dial_stdio_waits_for_a_late_socket_without_printing_errors() {
     fs::create_dir_all(&root).unwrap();
     let listener_socket = socket.clone();
     let server = thread::spawn(move || {
+        // real-wait: the socket must appear after the ployzd child first dials, and the child signals nothing before.
         thread::sleep(Duration::from_millis(80));
         let listener = UnixListener::bind(&listener_socket).unwrap();
         let (mut stream, _) = listener.accept().unwrap();

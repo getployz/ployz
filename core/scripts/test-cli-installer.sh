@@ -5,7 +5,23 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/bin" "$TMP/release" "$TMP/install"
+mkdir -p "$TMP/bin" "$TMP/release" "$TMP/install" "$TMP/keys"
+
+# install.sh pins the key in crates/ployz-core/release.pub.
+grep -Fqx "PLOYZ_RELEASE_PUBLIC_KEY=\${PLOYZ_RELEASE_PUBLIC_KEY:-$(sed -n 2p "$ROOT/crates/ployz-core/release.pub")}" "$ROOT/install.sh"
+
+# A throwaway key stands in for the release key.
+minisign -G -W -p "$TMP/keys/test.pub" -s "$TMP/keys/test.key" >/dev/null
+minisign -G -W -p "$TMP/keys/other.pub" -s "$TMP/keys/other.key" >/dev/null
+PLOYZ_RELEASE_PUBLIC_KEY=$(sed -n 2p "$TMP/keys/test.pub")
+export PLOYZ_RELEASE_PUBLIC_KEY
+
+sign_release() {
+    local version=$1 key=${2:-$TMP/keys/test.key}
+    rm -f "$TMP/release/checksums.txt.minisig"
+    minisign -S -l -s "$key" -m "$TMP/release/checksums.txt" -x "$TMP/release/checksums.txt.minisig" \
+        -t "ployz v$version" < /dev/null >/dev/null
+}
 
 pack_release() {
     local version=$1
@@ -16,6 +32,7 @@ pack_release() {
         tar -czf "$TMP/release/$archive" -C "$TMP" ployz
     done
     (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
+    sign_release "$version"
 }
 pack_release 1.2.3
 printf 'v1.2.3\n' > "$TMP/release/stable"
@@ -27,6 +44,8 @@ EOF
 cat > "$TMP/bin/curl" <<'EOF'
 #!/bin/sh
 echo "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
+# Like curl when nothing answers on any address it resolved: no HTTP status, exit 7.
+[ -z "${FAKE_UNREACHABLE:-}" ] || { printf 000; exit 7; }
 write_out=
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -122,7 +141,7 @@ mkdir -p "$TMP/real-curl-bin"
 cp "$TMP/bin/uname" "$TMP/real-curl-bin/uname"
 pack_release 1.2.3
 mkdir -p "$TMP/mirror/releases/download/v1.2.3" "$TMP/mirror-install"
-cp "$TMP/release/ployz_linux_amd64.tar.gz" "$TMP/release/checksums.txt" "$TMP/mirror/releases/download/v1.2.3/"
+cp "$TMP/release/ployz_linux_amd64.tar.gz" "$TMP/release/checksums.txt" "$TMP/release/checksums.txt.minisig" "$TMP/mirror/releases/download/v1.2.3/"
 PATH="$TMP/real-curl-bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 INSTALL_BIN_DIR="$TMP/mirror-install" \
     PLOYZ_GITHUB_URL="file://$TMP/mirror" sh "$ROOT/install.sh" 1.2.3 > /dev/null
 [ "$("$TMP/mirror-install/ployz" --version)" = 1.2.3 ]
@@ -138,6 +157,7 @@ for defect in missing wrong-version; do
         tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
     fi
     (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
+    sign_release 1.2.3
     if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
         INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
         sh "$ROOT/install.sh" 1.2.3 > "$TMP/error" 2>&1; then
@@ -155,6 +175,84 @@ if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/relea
     exit 1
 fi
 [ "$("$TMP/install/ployz")" = installed ]
+
+# A server that can't connect to the releases says why. An IPv6-only server can't reach
+# github.com, which has no IPv6 address; `ip` reports the routes the server has. Like busybox's
+# `ip`, the fake lists every route whatever selector it's given.
+cat > "$TMP/bin/ip" <<'EOF'
+#!/bin/sh
+case "$1" in
+    -4)
+        echo '172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1'
+        [ -z "${FAKE_IPV4_ROUTE:-}" ] || echo 'default via 192.0.2.1 dev eth0'
+        ;;
+    -6)
+        echo 'fe80::/64 dev eth0 proto kernel metric 256'
+        echo 'unreachable default dev lo table 8316 metric 4278198272'
+        echo 'default via fe80::1 dev eth0 proto ra'
+        ;;
+esac
+EOF
+chmod 0755 "$TMP/bin/ip"
+for routes in ipv6-only dual-stack; do
+    if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" FAKE_UNREACHABLE=1 \
+        FAKE_IPV4_ROUTE=$([ "$routes" = ipv6-only ] || echo 1) INSTALL_BIN_DIR="$TMP/install" \
+        PLOYZ_GITHUB_URL=https://github.com/getployz/ployz sh "$ROOT/install.sh" 1.2.3 > "$TMP/error" 2>&1; then
+        echo "installed with no route to the releases ($routes)" >&2
+        exit 1
+    fi
+    case $routes in
+        ipv6-only) expected="ERROR: Can't reach github.com, which serves Ployz releases: this server has no IPv4 route, and github.com has no IPv6 address. Give the server outbound IPv4, or NAT64 and DNS64: https://ployz.dev/docs/servers/add-a-server#ipv6-only-servers" ;;
+        dual-stack) expected="ERROR: Can't reach github.com, which serves Ployz releases. Check this server's outbound internet access." ;;
+    esac
+    grep -Fqx "$expected" "$TMP/error" || { cat "$TMP/error" >&2; exit 1; }
+done
+
+install_fails() {
+    local message=$1 path=${2:-$TMP/bin:$PATH}
+    if PATH="$path" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" INSTALL_BIN_DIR="$TMP/install" \
+        PLOYZ_GITHUB_URL=https://example.invalid /bin/sh "$ROOT/install.sh" 1.2.3 > "$TMP/error" 2>&1; then
+        echo "installed despite: $message" >&2
+        exit 1
+    fi
+    grep -Fq "$message" "$TMP/error" || { cat "$TMP/error" >&2; exit 1; }
+    [ "$("$TMP/install/ployz" --version)" = 8.8.8-beta.1 ]
+}
+
+# The signature over checksums.txt is checked before any archive is trusted.
+pack_release 1.2.3
+rm "$TMP/release/checksums.txt.minisig"
+install_fails 'Failed to download checksums.txt.minisig'
+sign_release 1.2.3 "$TMP/keys/other.key"
+install_fails 'Release signature verification failed'
+sign_release 9.9.9
+install_fails 'Release signature verification failed'
+sign_release 1.2.3
+# A rehashed archive: checksums.txt agrees with it, but the signature does not.
+printf '#!/bin/sh\necho 1.2.3\n' > "$TMP/ployz"
+tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
+(cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
+install_fails 'Release signature verification failed'
+pack_release 1.2.3
+printf 'X' | dd of="$TMP/release/checksums.txt" bs=1 seek=0 conv=notrunc 2>/dev/null
+install_fails 'Release signature verification failed'
+
+# Without OpenSSL 3, minisign checks the signature; with neither, install.sh refuses.
+mkdir -p "$TMP/no-openssl3" "$TMP/no-verifier"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/no-openssl3/openssl"
+chmod 0755 "$TMP/no-openssl3/openssl"
+pack_release 1.2.3
+printf 'X' | dd of="$TMP/release/checksums.txt" bs=1 seek=0 conv=notrunc 2>/dev/null
+install_fails 'Release signature verification failed' "$TMP/no-openssl3:$TMP/bin:$PATH"
+for tool in cat cmp cp dd grep gzip head install mktemp rm sed sha256sum tar tr wc; do
+    ln -s "$(command -v "$tool")" "$TMP/no-verifier/$tool"
+done
+install_fails 'Cannot verify the release signature: install OpenSSL 3 or minisign' "$TMP/bin:$TMP/no-verifier"
+pack_release 1.2.3
+PATH="$TMP/no-openssl3:$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
+    INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid sh "$ROOT/install.sh" 1.2.3
+[ "$("$TMP/install/ployz" --version)" = 1.2.3 ]
+
 
 # The checkin stub records what it was given, then answers as FAKE_ANSWER says Cloud did.
 # Like ployz, it writes the token file only once Cloud answers the token.
@@ -184,6 +282,7 @@ esac
 EOF
 tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
 (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
+sign_release 1.2.3
 cat > "$TMP/bin/id" <<'EOF'
 #!/bin/sh
 echo "${FAKE_UID:-0}"
@@ -312,4 +411,4 @@ done
 
 python3 "$ROOT/scripts/test-cli-installer-tty.py" "$ROOT/install.sh"
 
-echo "CLI installer verifies the checksum and binary before installing, and checks in with a Fleet Token"
+echo "CLI installer verifies the signature, checksum and binary before installing, and checks in with a Fleet Token"

@@ -54,8 +54,9 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
     let worker_finished = Arc::clone(&finished);
     let worker_store = Arc::clone(&local);
     let id = admitted.id.clone();
+    let (release, released) = std::sync::mpsc::channel::<()>();
     let handle = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
+        released.recv().unwrap();
         let summary = worker_store.record(
             &id,
             &runner,
@@ -76,17 +77,16 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
             ended: tokio_util::sync::CancellationToken::new(),
         };
         let signal = tokio_util::sync::CancellationToken::new();
-        assert!(
-            follow(
-                leaf_matches(&matches),
-                &store,
-                &admitted,
-                None,
-                Some(&owned),
-                &signal
-            )
-            .is_err()
+        let followed = follow(
+            leaf_matches(&matches),
+            &store,
+            &admitted,
+            None,
+            Some(&owned),
+            &signal,
         );
+        release.send(()).unwrap();
+        assert!(followed.is_err());
     }
     assert!(
         finished.load(Ordering::SeqCst),
@@ -151,7 +151,7 @@ fn following_returns_when_the_owned_runner_ends_not_at_the_next_poll() {
             &mut first_read,
         )
         .unwrap();
-        // Following writes its event just before it waits; give it time to get there.
+        // real-wait: following writes its event just before it blocks in its wait, which signals nothing.
         std::thread::sleep(Duration::from_millis(100));
         let summary = worker_store.record(
             &id,

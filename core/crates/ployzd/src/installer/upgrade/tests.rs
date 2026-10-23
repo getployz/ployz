@@ -162,6 +162,16 @@ fn upgrade_attempt_contract() {
     }
 }
 
+async fn until_launcher(mut done: impl FnMut() -> bool) -> Result<(), tokio::time::error::Elapsed> {
+    timeout(Duration::from_secs(5), async {
+        while !done() {
+            // real-wait: the launcher is a child script whose only signals are files and the lock it holds.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+}
+
 async fn run_contract_case(case: &str) {
     let root = PathBuf::from(env::var_os(CONTRACT_ROOT).unwrap());
     let data = root.join("data");
@@ -180,13 +190,9 @@ async fn run_contract_case(case: &str) {
             let request = request.clone();
             async move { super::request(request, super::Downgrade::Refused, data, run, guard).await }
         });
-        timeout(Duration::from_secs(5), async {
-            while !root.join("launch-started").exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("launch did not reach the cancellation window");
+        until_launcher(|| root.join("launch-started").exists())
+            .await
+            .expect("launch did not reach the cancellation window");
         launch.abort();
         assert!(launch.await.unwrap_err().is_cancelled());
         assert!(admission.active().unwrap());
@@ -195,13 +201,9 @@ async fn run_contract_case(case: &str) {
             Err(mutation::Error::Busy)
         ));
         fs::write(root.join("launch-release"), "continue").unwrap();
-        timeout(Duration::from_secs(5), async {
-            while admission.try_installation().is_err() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("detached launch did not finish");
+        until_launcher(|| admission.try_installation().is_ok())
+            .await
+            .expect("detached launch did not finish");
         let observed = replay(&request, &data, &run).await.unwrap().unwrap();
         if case == "cancelled-launch-failed" {
             assert!(matches!(

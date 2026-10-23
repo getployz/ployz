@@ -438,19 +438,37 @@ impl ContainerRuntime {
     ) -> Result<Option<ContainerObservation>, Error> {
         let key = slot.creation_key.as_str();
         let name = creation_name(machine_id, &slot.namespace, &slot.service, slot.kind, key);
-        let container_id = match self.keyed_container(machine_id, &name, key).await {
-            Err(Error::SpecNotFound(container_id)) => container_id,
-            found => return found,
-        };
-        // Under the lock no create is between Docker's create and its spec's write.
-        let mut operation = self.specs.config_operation().await;
-        if self.half_made(&mut operation, &container_id).await? {
-            // Removed, so a slot read as empty holds nothing that keeps its Volumes in use.
-            // The create that follows makes it again.
-            self.force_remove_container(&container_id).await?;
-            return Ok(None);
+        let found = self.keyed_container(machine_id, &name, key).await;
+        if !matches!(found, Err(Error::SpecNotFound(_))) {
+            return found;
         }
-        self.keyed_container(machine_id, &name, key).await
+        // Boxed, so the rare locked read doesn't grow every slot read's future.
+        Box::pin(self.reread_slot(machine_id, &name, key)).await
+    }
+
+    async fn reread_slot(
+        &self,
+        machine_id: &MachineId,
+        name: &str,
+        key: &str,
+    ) -> Result<Option<ContainerObservation>, Error> {
+        // Under the lock no create is between Docker's create and its spec's write. A
+        // create that ran while this waited may have replaced the Container, so the slot
+        // is read again.
+        let mut operation = self.specs.config_operation().await;
+        match self.keyed_container(machine_id, name, key).await {
+            Err(Error::SpecNotFound(container_id))
+                if self.half_made(&mut operation, &container_id).await? =>
+            {
+                // Removed, so a slot read as empty holds nothing that keeps its Volumes in
+                // use. The create that follows makes it again.
+                self.force_remove_container(&container_id).await?;
+                Ok(None)
+            }
+            // A restore's Container now holds the records it took over.
+            Err(Error::SpecNotFound(_)) => self.keyed_container(machine_id, name, key).await,
+            found => found,
+        }
     }
 
     async fn keyed_container(
@@ -1189,10 +1207,11 @@ mod tests {
         Machine,
         ResolvedServiceSpec,
         ContainerId,
+        FakeDocker,
     ) {
         let containers =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
-        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
             named_containers: Some(containers.clone()),
             list_named: true,
             ..Default::default()
@@ -1226,12 +1245,19 @@ mod tests {
         for container in containers.lock().unwrap().values_mut() {
             container["State"] = serde_json::json!({ "Status": status });
         }
-        (runtime, containers, machine, spec, created.container_id)
+        (
+            runtime,
+            containers,
+            machine,
+            spec,
+            created.container_id,
+            fake,
+        )
     }
 
     #[tokio::test]
     async fn reading_a_slot_a_crash_left_without_its_spec_empties_it() {
-        let (runtime, containers, machine, spec, _) = specless(Some("plan:0"), "created").await;
+        let (runtime, containers, machine, spec, _, _) = specless(Some("plan:0"), "created").await;
         let slot = SlotKey {
             namespace: Namespace::parse("app").unwrap(),
             service: spec.name.clone(),
@@ -1249,8 +1275,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_slot_read_waiting_out_a_create_that_replaced_its_container_reads_the_replacement() {
+        let (runtime, containers, machine, spec, lost, fake) =
+            specless(Some("plan:0"), "created").await;
+        let namespace = Namespace::parse("app").unwrap();
+        let slot = SlotKey {
+            namespace: namespace.clone(),
+            service: spec.name.clone(),
+            kind: ContainerKind::ServiceContainer,
+            creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
+        };
+        let answered = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        *fake.answered_hold.lock().unwrap() = Some(answered.clone());
+        let mut create = runtime.specs.config_operation().await;
+        let read = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.inspect_slot(&machine.id, &slot).await }
+        });
+        // The read finds the half-made Container by name, then inspects it by ID. Once that
+        // answer is read, the create the read then waits on removes the Container and
+        // makes another.
+        answered.wait().await;
+        let by_id = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        *fake.answered_hold.lock().unwrap() = Some(by_id.clone());
+        answered.wait().await;
+        by_id.wait().await;
+        let replacement = ContainerId::parse("e".repeat(64)).unwrap();
+        for container in containers.lock().unwrap().values_mut() {
+            container["Id"] = replacement.as_str().into();
+            container["State"] = serde_json::json!({ "Status": "running" });
+        }
+        by_id.wait().await;
+        let creation = super::super::spec_store::CreationSlot::new(
+            &namespace,
+            ContainerKind::ServiceContainer,
+            "plan:0",
+        );
+        create
+            .put(&replacement, Some(&creation), &spec)
+            .await
+            .unwrap();
+        drop(create);
+
+        let found = read.await.unwrap().unwrap();
+
+        assert_ne!(replacement, lost);
+        assert_eq!(found.map(|found| found.container_id), Some(replacement));
+    }
+
+    #[tokio::test]
     async fn a_slot_holding_a_started_container_without_its_spec_is_still_reported() {
-        let (runtime, containers, machine, spec, id) = specless(Some("plan:0"), "running").await;
+        let (runtime, containers, machine, spec, id, _) = specless(Some("plan:0"), "running").await;
         let slot = SlotKey {
             namespace: Namespace::parse("app").unwrap(),
             service: spec.name.clone(),
@@ -1276,7 +1351,7 @@ mod tests {
             (Some("plan:0"), "running", 1),
             (None, "created", 1),
         ] {
-            let (runtime, containers, machine, _, _) = specless(key, status).await;
+            let (runtime, containers, machine, _, _, _) = specless(key, status).await;
             assert!(runtime.list_managed(&machine.id).await.unwrap().is_empty());
             assert_eq!(
                 containers.lock().unwrap().len(),

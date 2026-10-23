@@ -6,7 +6,7 @@ use ployz_core::{
 };
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -65,6 +65,20 @@ fn enrollment_process_worker() {
     fs::write(result_path, serde_json::to_vec(&assignment).unwrap()).unwrap();
 }
 
+fn all_marked(outputs: &[PathBuf], marker: &str, deadline: Instant) -> bool {
+    while outputs
+        .iter()
+        .any(|output| !output.with_extension(marker).exists())
+    {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        // real-wait: child processes signal progress only by creating marker files
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
 fn concurrent(directory: &Path, seeds: &[u8]) -> Vec<EnrollmentAssignment> {
     fs::create_dir_all(directory).unwrap();
     let config_path = directory.join("config.yaml");
@@ -116,16 +130,11 @@ fn concurrent(directory: &Path, seeds: &[u8]) -> Vec<EnrollmentAssignment> {
         ));
     }
     let deadline = Instant::now() + Duration::from_secs(10);
-    while children
-        .iter()
-        .any(|(_, output)| !output.with_extension("ready").exists())
-    {
-        assert!(
-            Instant::now() < deadline,
-            "children did not reach the persistence boundary"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let outputs: Vec<PathBuf> = children.iter().map(|(_, output)| output.clone()).collect();
+    assert!(
+        all_marked(&outputs, "ready", deadline),
+        "children did not reach the persistence boundary"
+    );
     // Children cannot complete while a separate process owns the stable lock.
     assert!(
         children
@@ -133,16 +142,10 @@ fn concurrent(directory: &Path, seeds: &[u8]) -> Vec<EnrollmentAssignment> {
             .all(|(child, _)| child.try_wait().unwrap().is_none())
     );
     drop(lock);
-    while children
-        .iter()
-        .any(|(_, output)| !output.with_extension("committed").exists())
-    {
-        assert!(
-            Instant::now() < deadline,
-            "children did not commit assignments"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        all_marked(&outputs, "committed", deadline),
+        "children did not commit assignments"
+    );
     assert!(
         children
             .iter_mut()

@@ -13,7 +13,7 @@ use ployz_core::{
     FanoutSelector, LogBody, LogEntry, LogOrigin, LogsOptions, MachineLogService, Namespace,
     ResolvedServiceSpec, ServiceId, ServiceSelector, select_service,
 };
-use ployz_testkit::{Cluster, ClusterPlan};
+use ployz_testkit::{Cluster, ClusterPlan, poll_until};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -435,22 +435,19 @@ async fn wait_for_service(
     service_id: &ServiceId,
     containers: usize,
 ) -> ployz_core::ServiceObservation {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(live) = client
+    poll_until(
+        Duration::from_secs(30),
+        &format!("Service lists {containers} Containers"),
+        async || {
+            let live = client
                 .live_services(ployz_core::EnvironmentValues::Redacted)
                 .await
-            {
-                let services = live.services();
-                if let Ok(service) = select_service(&services, &ServiceSelector::from(service_id))
-                    && service.containers.len() == containers
-                {
-                    return service.clone();
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
+                .ok()?;
+            let services = live.services();
+            let service = select_service(&services, &ServiceSelector::from(service_id)).ok()?;
+            (service.containers.len() == containers).then(|| service.clone())
+        },
+    )
     .await
     .unwrap()
 }

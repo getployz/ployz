@@ -573,8 +573,30 @@ async fn answering_cloud(
     (url, server)
 }
 
-#[tokio::test]
+/// Paused tokio jumps to the next timer whenever it waits on real IO, even IO that has already
+/// landed, so a loopback HTTP exchange would skip past reqwest's timeouts. A timer every
+/// millisecond keeps each jump to a millisecond. Call it only from tests on paused time.
+pub(super) fn tick_through_io() -> Ticker {
+    Ticker(tokio::spawn(async {
+        loop {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }))
+}
+
+pub(super) struct Ticker(tokio::task::JoinHandle<()>);
+
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Cloud tries the ports at 1, 2.5, 4, 5.5, 7 and 8.5 seconds, so a reply 7.5 seconds after the
+/// request must not open listeners for its last attempt.
+#[tokio::test(start_paused = true)]
 async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempting() {
+    let ticker = tick_through_io();
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -588,17 +610,7 @@ async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempt
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut buf = vec![0; 16_384];
         assert!(stream.read(&mut buf).await.unwrap() > 0);
-        let observer = std::thread::spawn(move || {
-            let started = std::time::Instant::now();
-            for at in [1_000, 2_500, 4_000, 5_500, 7_000, 8_500] {
-                std::thread::sleep(
-                    (started + Duration::from_millis(at))
-                        .saturating_duration_since(std::time::Instant::now()),
-                );
-                assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
-            }
-        });
-        tokio::time::sleep(Duration::from_millis(7_500)).await;
+        tokio::time::advance(Duration::from_millis(7_500)).await;
         let body = format!(
             r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"delayed","windowMs":10000,"listen":["tcp:{port}","udp:{port}"],"send":[]}}}}"#
         );
@@ -607,8 +619,8 @@ async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempt
             body.len()
         );
         stream.write_all(response.as_bytes()).await.unwrap();
-        observer
     });
+    let requested = tokio::time::Instant::now();
     let mut probes = Probes::default();
     pass_from(
         &FakeHost::default(),
@@ -620,13 +632,11 @@ async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempt
         &mut probes,
     )
     .await;
+    cloud.await.unwrap();
+    drop(ticker);
+    assert!(requested.elapsed() < Duration::from_millis(8_500));
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
     probes.finish().await;
-    cloud.await.unwrap().join().unwrap();
-    assert!(
-        tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .is_err()
-    );
     let report = serde_json::to_value(probes.report().await.unwrap()).unwrap();
     assert_eq!(
         report.get("bindFailed"),
@@ -666,8 +676,9 @@ async fn a_stop_for_a_replaced_token_checks_in_with_the_new_one() {
     assert_eq!(host.disables.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_token_file_caught_mid_write_is_read_again_before_stopping() {
+    let _ticker = tick_through_io();
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     fs::write(&paths.token_file, "").unwrap();
@@ -684,8 +695,9 @@ async fn a_token_file_caught_mid_write_is_read_again_before_stopping() {
     old_then_new(server).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_token_file_holding_only_part_of_a_token_is_read_again_before_stopping() {
+    let _ticker = tick_through_io();
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let mut file = fs::File::create(&paths.token_file).unwrap();
@@ -900,8 +912,9 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_check_in_reports_a_window_only_once_it_has_ended() {
+    let _ticker = tick_through_io();
     probe::tests::LEAD.set(Some(Duration::from_millis(300)));
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
@@ -936,16 +949,9 @@ async fn a_check_in_reports_a_window_only_once_it_has_ended() {
                 after: Duration::from_secs(10)
             }
         );
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_err()
-            {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the window listens on the named port");
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("the window listens on the named port by the time the pass returns");
     }
 
     let requests = server.await.unwrap();
@@ -965,8 +971,9 @@ async fn a_check_in_reports_a_window_only_once_it_has_ended() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_reports_it() {
+    let _ticker = tick_through_io();
     probe::tests::LEAD.set(Some(Duration::from_millis(450)));
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
@@ -1076,8 +1083,9 @@ fn window_report(handout: &str, heard_from: &[&str]) -> probe::Report {
     .unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_next_check_in() {
+    let _ticker = tick_through_io();
     probe::tests::LEAD.set(Some(Duration::from_millis(90)));
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
@@ -1091,7 +1099,9 @@ async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_n
     });
     holding.recv().unwrap();
     handed(&paths, &mut probes, "old", udp_port(), 200).await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // The old window's stalled save holds a blocking task, which freezes paused time, so move the
+    // clock by hand.
+    tokio::time::advance(Duration::from_millis(400)).await;
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -1124,7 +1134,16 @@ async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_n
     tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .expect("the new window listens");
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::advance(Duration::from_millis(500)).await;
+    // Paused time stands still while this spins, so the bound is on the real clock.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while probes.report().await.is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ended window never reported"
+        );
+        tokio::task::yield_now().await;
+    }
     let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
     pass_from(
         &FakeHost::default(),
@@ -1279,8 +1298,9 @@ async fn a_429_cut_off_mid_body_still_waits_what_it_asked() {
     retries_after(&throttled, 120);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_rate_limited_report_keeps_its_retry_grace() {
+    let _ticker = tick_through_io();
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let mut probes = Probes::default();
@@ -1363,8 +1383,9 @@ async fn a_failed_pass_after_a_restart_still_retries_inside_cloud_s_settle() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn what_a_window_heard_outlives_a_restart() {
+    let _ticker = tick_through_io();
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = udp_port();
@@ -1380,8 +1401,9 @@ async fn what_a_window_heard_outlives_a_restart() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_restart_mid_window_resumes_no_report_rather_than_a_partial_or_older_one() {
+    let _ticker = tick_through_io();
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = udp_port();
@@ -2126,6 +2148,8 @@ async fn a_probe_cut_off_takes_the_processes_it_started_with_it() {
         if !alive {
             return;
         }
+        // real-wait: the kernel tears down the killed grandchild on its own schedule, and this
+        // process has no handle on it to await.
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("the probe's child {} outlived it", pid.trim());
@@ -2392,6 +2416,7 @@ async fn a_step_left_installing_after_the_last_retry_reads_as_failed() {
 
 #[tokio::test(start_paused = true)]
 async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
+    let _ticker = tick_through_io();
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
@@ -2594,4 +2619,38 @@ fn checkin_state_stays_out_of_the_daemon_data_dir() {
             path.display()
         );
     }
+}
+
+fn waiting_record() -> LocalCheckin {
+    serde_json::from_str(r#"{"answer": "wait", "at": "2026-10-22T01:21:48Z"}"#).unwrap()
+}
+
+#[test]
+fn status_tells_a_stopped_loop_only_from_a_record_its_locked_writer_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    // A loop older than the lock never made it, so nothing is claimed.
+    assert!(!loop_stopped(&paths.checkin_dir));
+    let running = hold_loop(&paths).unwrap().expect("no other loop holds it");
+    record(&waiting_record(), &paths);
+    assert!(!loop_stopped(&paths.checkin_dir));
+    // A second loop doesn't wait behind the first; it learns one already runs.
+    assert!(hold_loop(&paths).unwrap().is_none());
+    drop(running);
+    assert!(loop_stopped(&paths.checkin_dir));
+    // A record written without the lock, by an older loop or one that couldn't take it, claims nothing.
+    record(&waiting_record(), &paths);
+    assert!(!loop_stopped(&paths.checkin_dir));
+}
+
+#[test]
+fn only_root_can_take_the_check_in_loop_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    drop(hold_loop(&paths).unwrap());
+    let mode = fs::metadata(paths.checkin_dir.join("loop.lock"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
 }

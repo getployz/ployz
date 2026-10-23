@@ -81,7 +81,8 @@ another selected server. Put the glob before `--first`.
 Bare `--first` enrolls only the oldest match. `--all` selects every waiting server and prints
 how many came from each provider, including **Unknown**.
 
-`--name 'web-{n}'` numbers the planned names. Without it, each server keeps its hostname.
+`--name 'web-{n}'` numbers the planned names. Without it, each server is named after its
+hostname, lowercased with other characters turned into hyphens (`MY-SERVER` becomes `my-server`).
 Selection takes names or hostnames, never IDs. `--storage zfs` is the default. It uses a spare
 disk when available and falls back to Docker volumes where ZFS cannot run. Add
 `--no-spare-disk` to keep ZFS on the main disk, or `--no-fallback` to skip servers that cannot
@@ -544,6 +545,12 @@ servers, except for services whose volume was on it (see
 [When a server goes down](../services/scaling.md#when-a-server-goes-down)). Removing your last
 server stops everything; your projects and settings stay, and the bottom bar shows **Add servers**
 until you [add one](add-a-server.md).
+
+If a standalone context has no Servers left, runtime commands say which context is empty
+and print `ployz server add --standalone --context NAME` as the next step. This starts a
+new standalone Cluster in that empty context without signing in to Cloud. Run it on the
+Linux server, or append `root@HOST` to install over SSH from your computer. See
+[Add a standalone server](add-a-server.md#add-a-standalone-server).
 
 On a server that joined from a Fleet Token, `sudo ployz status` then says
 `this server = Not in a Cluster`.

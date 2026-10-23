@@ -184,8 +184,8 @@ it("says a Server removal leaves lost Volume data on the disk", () => {
   }));
   const card = within(screen.getByLabelText("Remove fra-1 needs approval"));
   expect(card.getByText("Removes server", { selector: '[data-slot="badge"]' })).toBeTruthy();
-  expect(card.getByRole("list", { name: "Destroys" }).textContent).toContain("Loses access to volume pgdata. Its data stays on the Server's disk until wiped.");
-  expect(card.getByRole("list", { name: "Destroys" }).textContent).toContain("Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.");
+  expect(card.getByRole("list", { name: "Effects" }).textContent).toContain("Loses access to volume pgdata. Its data stays on the Server's disk until wiped.");
+  expect(card.getByRole("list", { name: "Effects" }).textContent).toContain("Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.");
   expect(card.queryByText(/Not recoverable/)).toBeNull();
 });
 

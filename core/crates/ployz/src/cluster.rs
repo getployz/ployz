@@ -59,12 +59,16 @@ pub struct Client {
     /// Pull credentials by Service for the Deploy this client executes.
     pub(crate) registry_auth:
         std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
-    channel: Channel,
+    /// Shared by every clone, so a redial on any of them reaches the rest.
+    channel: Arc<std::sync::RwLock<Channel>>,
     connection: Connection,
     source: ConnectionSource,
     connector: Arc<dyn Connector>,
     /// The Machine the entry described itself as when it was last confirmed.
     entry: Option<MachineId>,
+    /// The Machine `channel` was last confirmed to reach. Unlike `entry`, a failed redial
+    /// keeps it, so a later one can tell the endpoint now reaches another Machine.
+    confirmed: Option<MachineId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -83,11 +87,12 @@ impl Client {
         Self {
             deployment_id: None,
             registry_auth: std::collections::BTreeMap::new(),
-            channel,
+            channel: Arc::new(std::sync::RwLock::new(channel)),
             connection,
             source,
             connector,
             entry: None,
+            confirmed: None,
         }
     }
 
@@ -115,11 +120,60 @@ impl Client {
             .or_else(|| self.entry.map(|machine| machine.to_string()))
     }
 
-    /// Replace the channel, and the entry it confirmed, with a freshly confirmed one.
+    /// Replace the channel, and the entry it confirmed, with a freshly confirmed one. An
+    /// entry that now describes itself as another Machine, as after a reset, moves only
+    /// this client: its clones, a Deploy's among them, keep the Machine they confirmed.
     async fn redial(&mut self) -> Result<(), ConnectError> {
         self.entry = None;
-        self.channel = self.connector.connect(&self.connection).await?;
-        self.confirm_entry().await
+        let (channel, entry) = self.dial_confirmed().await?;
+        match (self.confirmed, entry) {
+            (Some(confirmed), Some(entry)) if confirmed != entry => {
+                self.channel = Arc::new(std::sync::RwLock::new(channel));
+            }
+            _ => self.share(channel),
+        }
+        self.confirmed = entry.or(self.confirmed);
+        self.entry = entry;
+        Ok(())
+    }
+
+    /// [`Self::redial`] for a client shared by reference, as a Deploy's is. Its entry
+    /// stays the Machine it confirmed, so an endpoint that now reaches another is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`], when the
+    /// entry doesn't answer on the new channel.
+    pub(crate) async fn redial_shared(&self) -> Result<(), ConnectError> {
+        let (channel, entry) = self.dial_confirmed().await?;
+        if let (Some(expected), Some(actual)) = (self.entry, entry)
+            && expected != actual
+        {
+            return Err(ConnectError::IdentityMismatch { expected, actual });
+        }
+        self.share(channel);
+        Ok(())
+    }
+
+    /// Dial the connection again and confirm its entry on the new channel. Returns the
+    /// channel unshared, with the entry it confirmed.
+    async fn dial_confirmed(&self) -> Result<(Channel, Option<MachineId>), ConnectError> {
+        let candidate = Self {
+            channel: Arc::new(std::sync::RwLock::new(
+                self.connector.connect(&self.connection).await?,
+            )),
+            ..self.clone()
+        };
+        let entry = candidate.confirmed_entry().await?;
+        Ok((candidate.channel(), entry))
+    }
+
+    /// Replace the channel every clone shares.
+    fn share(&self, channel: Channel) {
+        *self
+            .channel
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = channel;
     }
 
     /// One-shot check that this channel reaches a daemon. No unary retry — a
@@ -130,6 +184,14 @@ impl Client {
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`]
     /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`].
     pub(crate) async fn confirm_entry(&mut self) -> Result<(), ConnectError> {
+        self.entry = self.confirmed_entry().await?;
+        self.confirmed = self.entry.or(self.confirmed);
+        Ok(())
+    }
+
+    /// The Machine this channel's daemon describes itself as, checked against the
+    /// connection. None when the connection names no Machine and the daemon doesn't say.
+    async fn confirmed_entry(&self) -> Result<Option<MachineId>, ConnectError> {
         let confirm = async {
             let payload =
                 op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
@@ -157,10 +219,9 @@ impl Client {
                 Err(error) => Err(error),
             }
         };
-        self.entry = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
+        tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
             .await
-            .map_err(|_| ConnectError::EntryNotReady)??;
-        Ok(())
+            .map_err(|_| ConnectError::EntryNotReady)?
     }
 
     /// The id of the Machine this client enters by.
@@ -300,7 +361,8 @@ impl Client {
         let payload = T::into_request(request)
             .encode()
             .map_err(ConnectError::Codec)?;
-        self.call_retried::<T>(payload, Some(target), Some(TARGET_RPC_TIMEOUT))
+        let timeout = crate::connect::target_read_timeout();
+        self.call_retried::<T>(payload, Some(target), Some(timeout))
             .await
     }
 
@@ -460,15 +522,23 @@ impl Client {
         .await
     }
 
+    /// The channel the latest dial opened.
+    fn channel(&self) -> Channel {
+        self.channel
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Specs carry Config bytes as JSON number arrays, so a 1 MB Config alone nears
     /// tonic's 4 MiB default, and stored log lines reach 8 MiB.
     fn grpc(&self) -> tonic::client::Grpc<Channel> {
-        tonic::client::Grpc::new(self.channel.clone())
+        tonic::client::Grpc::new(self.channel())
             .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
     }
 
     fn machine_rpc(&self) -> MachineRpcClient<Channel> {
-        MachineRpcClient::new(self.channel.clone())
+        MachineRpcClient::new(self.channel())
             .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
     }
 
