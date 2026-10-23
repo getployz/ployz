@@ -1242,7 +1242,6 @@ mod device_slot_tests {
         LocalMachineStore::open(dir.path().join("data")).unwrap()
     }
 
-    /// The record as a daemon from before Devices were Full-only left it.
     fn reopened_unvetted(dir: &tempfile::TempDir, store: LocalMachineStore) -> LocalMachineStore {
         drop(store);
         let path = dir.path().join("data").join(STATE_FILE_NAME);

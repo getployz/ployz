@@ -274,7 +274,6 @@ mod compat {
     }
 }
 
-/// The Machines a fan-out can ask, and the ones it can't.
 struct Reach {
     asked: Vec<MachineId>,
     silent: Vec<MachineId>,
@@ -299,7 +298,6 @@ impl Reach {
         })
     }
 
-    /// Each Machine's answer to `call`, in Machine order. `Ok(None)` is an omission.
     async fn fan_out<T, F, Fut>(&self, call: F) -> (Vec<(MachineId, T)>, Gaps)
     where
         T: Send + 'static,
@@ -343,7 +341,6 @@ impl Reach {
     }
 }
 
-/// What a SetDevice fan-out changed, Machine by Machine.
 struct Settled {
     answers: Vec<Answer>,
     gaps: Gaps,
@@ -375,7 +372,6 @@ impl Settled {
     }
 }
 
-/// Each Device on the Machines that answered, and the answering Machines without it.
 #[derive(Serialize)]
 struct Device {
     code: DeviceCode,
@@ -403,7 +399,6 @@ fn roster(answers: &[(MachineId, Vec<DeviceCode>)]) -> Vec<Device> {
         .collect()
 }
 
-/// The Device secret this laptop dials Machines with: `device.key` beside config.yaml.
 pub(crate) mod key {
     use std::{
         fs::{self, OpenOptions},
@@ -441,7 +436,6 @@ pub(crate) mod key {
         DeviceKey::from_bytes(*iroh::SecretKey::from_bytes(secret).public().as_bytes())
     }
 
-    /// The secret at `path`, or `None` when this laptop has none yet.
     pub(crate) fn load(path: &Path) -> Result<Option<[u8; 32]>, KeyError> {
         let read = |source| KeyError::Read {
             path: path.to_owned(),
@@ -463,7 +457,6 @@ pub(crate) mod key {
         })
     }
 
-    /// The secret at `path`, made the first time.
     pub(crate) fn load_or_create(path: &Path) -> Result<[u8; 32], KeyError> {
         if let Some(secret) = load(path)? {
             return Ok(secret);

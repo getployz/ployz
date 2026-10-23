@@ -587,8 +587,6 @@ impl Connection {
         self
     }
 
-    /// This connection dialing as the Device holding `secret`, where it reaches a Machine
-    /// by Management Capability.
     #[must_use]
     pub(crate) fn with_device(mut self, secret: [u8; 32]) -> Self {
         if let Transport::Management(capability) = &self.transport {
