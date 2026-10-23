@@ -1545,7 +1545,7 @@ mod tests {
     async fn every_planned_field_waits_until_the_entry_lists_it() {
         use std::sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicUsize, Ordering},
         };
 
         use ployz_core::{
@@ -1554,48 +1554,40 @@ mod tests {
         };
         use tonic::{Request, Response};
 
+        type Step = fn(&mut Machine);
         let zone = MachineLabelKey::parse("zone").unwrap();
         let east = MachineLabelValue::parse("east").unwrap();
-        type Case = (
-            &'static str,
-            fn(&mut Machine),
-            fn(&mut Machine),
-            MachineUpdate,
-        );
-        let zone_east = |machine: &mut Machine| {
+        let add_zone: Step = |machine| {
             machine.labels.insert(
                 MachineLabelKey::parse("zone").unwrap(),
                 MachineLabelValue::parse("east").unwrap(),
             );
         };
-        let cases: [Case; 4] = [
+        let builds_off: Step = |machine| machine.accepts_builds = false;
+        // Each case: what the Server held before, then the changes the Entry lists one at a time.
+        let cases: [(&str, Step, Vec<Step>, MachineUpdate); 5] = [
             (
                 "a new label",
                 |_| {},
-                |machine| {
-                    machine.labels.insert(
-                        MachineLabelKey::parse("zone").unwrap(),
-                        MachineLabelValue::parse("east").unwrap(),
-                    );
-                },
+                vec![add_zone],
                 MachineUpdate {
-                    label_changes: [(zone.clone(), Some(east))].into(),
+                    label_changes: [(zone.clone(), Some(east.clone()))].into(),
                     ..Default::default()
                 },
             ),
             (
                 "a removed label",
-                zone_east,
-                |machine| machine.labels.clear(),
+                add_zone,
+                vec![|machine| machine.labels.clear()],
                 MachineUpdate {
-                    label_changes: [(zone, None)].into(),
+                    label_changes: [(zone.clone(), None)].into(),
                     ..Default::default()
                 },
             ),
             (
                 "builds off",
                 |_| {},
-                |machine| machine.accepts_builds = false,
+                vec![builds_off],
                 MachineUpdate {
                     accepts_builds: Some(false),
                     ..Default::default()
@@ -1604,42 +1596,52 @@ mod tests {
             (
                 "ingress off",
                 |_| {},
-                |machine| machine.accepts_ingress = false,
+                vec![|machine| machine.accepts_ingress = false],
                 MachineUpdate {
                     accepts_ingress: Some(false),
                     ..Default::default()
                 },
             ),
+            (
+                "a label and builds off, listed one after the other",
+                |_| {},
+                vec![add_zone, builds_off],
+                MachineUpdate {
+                    label_changes: [(zone, Some(east))].into(),
+                    accepts_builds: Some(false),
+                    ..Default::default()
+                },
+            ),
         ];
-        for (change, before, apply, update) in cases {
-            let mut stale = web("machine-3", true, None, MembershipObservation::Up);
-            before(&mut stale.machine);
-            let mut updated = stale.clone();
-            apply(&mut updated.machine);
-            let id = updated.machine.id;
-            let visible = Arc::new(AtomicBool::new(false));
+        for (change, before, steps, update) in cases {
+            let mut listed = vec![web("machine-3", true, None, MembershipObservation::Up)];
+            before(&mut listed[0].machine);
+            for step in &steps {
+                let mut next = listed.last().unwrap().clone();
+                step(&mut next.machine);
+                listed.push(next);
+            }
+            let id = listed[0].machine.id;
+            let saved = listed.last().unwrap().machine.clone();
+            let stage = Arc::new(AtomicUsize::new(0));
             let (mut client, server) = crate::connect::test_support::rpc_client({
-                let visible = Arc::clone(&visible);
+                let stage = Arc::clone(&stage);
                 move |request: Request<OpaquePayload>| {
-                    let visible = Arc::clone(&visible);
-                    let stale = stale.clone();
-                    let updated = updated.clone();
+                    let stage = stage.load(Ordering::SeqCst);
+                    let listed = listed[stage].clone();
+                    let saved = saved.clone();
                     async move {
                         #[expect(
                             clippy::wildcard_enum_match_arm,
                             reason = "server set sends only the update and the list"
                         )]
                         let response = match request.into_inner().decode_request().unwrap().body {
-                            RpcRequestBody::UpdateMachine(_) => RpcResponse::from(MachineUpdated {
-                                machine: updated.machine,
-                            }),
+                            RpcRequestBody::UpdateMachine(_) => {
+                                RpcResponse::from(MachineUpdated { machine: saved })
+                            }
                             RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
                                 enrollment: None,
-                                machines: vec![if visible.load(Ordering::SeqCst) {
-                                    updated
-                                } else {
-                                    stale
-                                }],
+                                machines: vec![listed],
                             }),
                             other => panic!("unexpected RPC: {other:?}"),
                         };
@@ -1654,7 +1656,7 @@ mod tests {
                     "server",
                     "set",
                     id.as_str(),
-                    "--accepts-builds=true",
+                    "--accepts-builds=false",
                 ])
                 .unwrap()
                 .subcommand_matches("server")
@@ -1671,13 +1673,15 @@ mod tests {
                 recovery,
             );
             tokio::pin!(setting);
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_secs(5), &mut setting)
-                    .await
-                    .is_err(),
-                "server set returned before the Entry listed {change}"
-            );
-            visible.store(true, Ordering::SeqCst);
+            for listed in 0..steps.len() {
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_secs(5), &mut setting)
+                        .await
+                        .is_err(),
+                    "server set returned when the Entry listed {listed} of the changes in {change}"
+                );
+                stage.store(listed + 1, Ordering::SeqCst);
+            }
             tokio::time::timeout(std::time::Duration::from_secs(1), &mut setting)
                 .await
                 .unwrap()
