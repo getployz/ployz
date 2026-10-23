@@ -1234,7 +1234,7 @@ async fn server_rm_without_volumes_explains_unneeded_acceptance() {
         Some(&json!("invalid_argument"))
     );
     assert!(
-        message(&json).contains("Server machine-1 holds no Volumes"),
+        message(&json).contains("Server machine-1 has no Volumes requiring loss acceptance"),
         "{json}"
     );
     assert!(

@@ -545,9 +545,9 @@ server answered and none showed a replica of it. If a server didn't answer, the 
 only as `under_replicated`. `ployz status` keeps naming a service with no replicas until a deploy
 starts one; see
 [Status says a service runs no copies](../troubleshooting/deployments.md#status-says-a-service-runs-no-copies).
-Without a terminal, the first `ployz server rm` refusal names the Volumes the Server holds
-before it gives the command to confirm. If the Server holds no Volumes, drop
-`--accept-volume-loss`; supplying it still exits 2. An empty Server name also exits 2 and asks you
+Without a terminal, the first `ployz server rm` refusal names the Volumes requiring loss
+acceptance before it gives the command to confirm. If the Server has none (builder-cache Volumes
+don't count), drop `--accept-volume-loss`; supplying it still exits 2. An empty Server name also exits 2 and asks you
 to name a Server. On a Server Ployz Cloud does not manage, `--approval` has no effect and prints a
 warning, also included in JSON `warnings`. The warning does not change the exit code.
 

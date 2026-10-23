@@ -81,7 +81,7 @@ pub(super) fn confirm_removal(
         && !request.named.is_empty()
     {
         return Err(Error::usage(format!(
-            "Server {server} holds no Volumes; drop --accept-volume-loss. No changes made."
+            "Server {server} has no Volumes requiring loss acceptance; drop --accept-volume-loss. No changes made."
         )));
     }
     if !request.check()? {
