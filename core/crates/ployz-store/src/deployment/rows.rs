@@ -339,18 +339,35 @@ impl From<&RpcError> for Failure {
 /// "Server <name>" for the Machine `error` names, by its name in `operations` when known.
 fn server_named(error: &RpcError, operations: &[OperationRow]) -> Option<String> {
     let id = error.details.get("machine_id")?.as_str()?;
+    Some(server_of(id, operations))
+}
+
+/// "Server <name>" for Machine `id`, by its name in `operations`, else its id.
+fn server_of(id: &str, operations: &[OperationRow]) -> String {
     let name = operations
         .iter()
         .find(|row| row.machine_id.to_string() == id)
         .and_then(|row| row.machine_name.as_ref())
         .map_or_else(|| id.to_owned(), ToString::to_string);
-    Some(format!("Server {name}"))
+    format!("Server {name}")
 }
 
 impl Failure {
     /// `error` for users. A Server that refused for want of a capability is named
     /// from `operations`, and its sentence stands alone.
+    #[must_use]
     pub fn of(error: &ExecutionError, operations: &[OperationRow]) -> Self {
+        Self::on(error, operations, None)
+    }
+
+    /// [`Self::of`] for an operation that ran on `machine`. A full disk then names
+    /// its Server: on a multi-Server deploy only one of them filled.
+    #[must_use]
+    pub fn on(
+        error: &ExecutionError,
+        operations: &[OperationRow],
+        machine: Option<MachineId>,
+    ) -> Self {
         let (reason, cause) = match error {
             ExecutionError::Machine { error, .. } if let Some(refusal) = error.refusal() => {
                 let name = operations
@@ -383,9 +400,13 @@ impl Failure {
             ExecutionError::Machine {
                 action: MachineAction::PullImage,
                 error,
-            } if let Some(full) = error.disk_full() => {
-                (full.to_string(), ployz_core::error_chain::causes(error))
-            }
+            } if let Some(full) = error.disk_full() => (
+                match machine {
+                    Some(id) => full.on(&server_of(&id.to_string(), operations)),
+                    None => full.to_string(),
+                },
+                ployz_core::error_chain::causes(error),
+            ),
             ExecutionError::Machine {
                 action: MachineAction::UpdateContainerLimits,
                 error,

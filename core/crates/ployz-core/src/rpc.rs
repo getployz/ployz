@@ -1840,9 +1840,11 @@ pub struct MissingImage<'a> {
     pub policy: Option<PullPolicy>,
 }
 
-/// A pull failed while the Docker root had almost no free space.
+/// A pull failed while a disk it writes to had almost no free space.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiskFull {
+    /// The directory on the full disk: the Docker root, or containerd's image store
+    /// when that is the fuller. The wire keeps the name it shipped with.
     pub docker_root: String,
     pub free_bytes: u64,
 }
@@ -1855,14 +1857,21 @@ impl DiskFull {
     }
 }
 
-impl fmt::Display for DiskFull {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "The Server's disk is full: {} MB free under {}",
+impl DiskFull {
+    /// The sentence naming `server`, such as "Server machine-3", for the Server.
+    #[must_use]
+    pub fn on(&self, server: &str) -> String {
+        format!(
+            "{server}'s disk is full: {} MB free under {}",
             self.free_bytes / 1_000_000,
             self.docker_root
         )
+    }
+}
+
+impl fmt::Display for DiskFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.on("The Server"))
     }
 }
 
