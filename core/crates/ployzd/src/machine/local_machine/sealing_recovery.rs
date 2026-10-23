@@ -128,9 +128,11 @@ impl LocalMachine {
         let replicated = self.replicated()?;
         let expected = match replicated.sealing_public_key().await? {
             Some(published) => published,
+            // A founder's seed names the key before the publisher replicates its marker.
             None => replicated
                 .sealing_awaits_recovery()
                 .await?
+                .or_else(|| record.recovery_seed().map(|seed| seed.expected_public_key))
                 .ok_or(Error::NothingAwaited)?,
         };
         let backup = backup

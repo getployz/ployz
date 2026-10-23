@@ -24,6 +24,24 @@ async fn awaiting(
     std::path::PathBuf,
     tokio::task::JoinHandle<()>,
 ) {
+    let (local, replicated, data_dir, server) = seeded(expected, backup).await;
+    replicated
+        .publish_sealing_awaits_recovery(expected)
+        .await
+        .unwrap();
+    (local, replicated, data_dir, server)
+}
+
+/// A founder seeded for recovery whose publisher has not replicated the awaits marker.
+async fn seeded(
+    expected: SealingPublicKey,
+    backup: Option<SealingKeyBackup>,
+) -> (
+    LocalMachine,
+    ReplicatedStore,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
     let (replicated, server) = fake_cluster::store().await;
     let data_dir = std::env::temp_dir().join(format!(
         "ployzd-recover-{}",
@@ -53,10 +71,6 @@ async fn awaiting(
         .unwrap();
     replicated
         .publish_local_machine(store.record().machine().unwrap())
-        .await
-        .unwrap();
-    replicated
-        .publish_sealing_awaits_recovery(expected)
         .await
         .unwrap();
     let local = LocalMachine::new(RecordOwner::spawn(store).unwrap()).with_cluster(Some((
@@ -182,6 +196,27 @@ async fn a_founder_recovers_from_the_backup_it_was_founded_with() {
         key.public_key()
     );
     assert_eq!(held(&dir), Some(key.public_key()));
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_founder_recovers_before_its_awaits_marker_replicates() {
+    let key = SealingKey::generate();
+    let code = RecoveryCode::generate();
+    let (local, replicated, dir, server) =
+        seeded(key.public_key(), Some(back_up(&key, &code))).await;
+    assert_eq!(replicated.sealing_awaits_recovery().await.unwrap(), None);
+
+    assert_eq!(
+        recover(&local, &code, None).await.unwrap(),
+        key.public_key()
+    );
+    assert_eq!(held(&dir), Some(key.public_key()));
+    assert_eq!(
+        replicated.sealing_public_key().await.unwrap(),
+        Some(key.public_key())
+    );
     server.abort();
     let _ = std::fs::remove_dir_all(dir);
 }
