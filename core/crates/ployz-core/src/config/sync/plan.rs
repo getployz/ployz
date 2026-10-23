@@ -148,6 +148,8 @@ pub struct Plan {
     into: Intent,
     hostnames: Hostnames,
     live: BTreeSet<String>,
+    /// The Environment `into` is; see [`Self::receiving`].
+    receiver: Option<uuid::Uuid>,
 }
 
 /// `into` after a Plan's picks landed, and the base advanced by exactly them.
@@ -493,10 +495,20 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
         into: into.clone(),
         hostnames,
         live: policy.live.clone(),
+        receiver: None,
     }
 }
 
 impl Plan {
+    /// This Plan lands in Environment `environment`: a value the browser sealed for
+    /// another Environment arrives Not set, since only that one's Sealing Key opens
+    /// it. Without a receiver, every such value does.
+    #[must_use]
+    pub fn receiving(mut self, environment: uuid::Uuid) -> Self {
+        self.receiver = Some(environment);
+        self
+    }
+
     /// Every row that differs, in row order.
     #[must_use]
     pub fn rows(&self) -> &[PlannedRow] {
@@ -602,6 +614,15 @@ impl Plan {
         Ok(removal_dependents(&prepared.next, &prepared.removals))
     }
 
+    /// Whether `secret` is sealed in the browser for an Environment other than the
+    /// receiver.
+    fn opens_elsewhere(&self, secret: &SealedSecret) -> bool {
+        secret
+            .value
+            .client_sealed()
+            .is_some_and(|sealed| Some(sealed.sealed_for) != self.receiver)
+    }
+
     /// Land every pick but node removals, which it returns to land last.
     fn prepare<'plan>(
         &'plan self,
@@ -646,7 +667,7 @@ impl Plan {
         let mut landed = Vec::new();
         for (row, arrives) in landing {
             let id = &row.id;
-            let value = match (values.get(id), arrives) {
+            let mut value = match (values.get(id), arrives) {
                 (Some(value), _) => value.clone(),
                 (None, Arrives::AsIs) => sealed_cell(&self.from, &from_cells, id),
                 (None, Arrives::NeedsValue) => {
@@ -654,6 +675,12 @@ impl Plan {
                     SealedCell::Cell(Cell::SecretWithoutValue)
                 }
             };
+            if let SealedCell::Secret(secret) = &value
+                && self.opens_elsewhere(secret)
+            {
+                waiting.push(id.clone());
+                value = SealedCell::Cell(Cell::SecretWithoutValue);
+            }
             let mut was = sealed_cell(&self.into, &into_cells, id);
             // Undo puts the receiver's git branch back with its source; a Sync never moves one.
             if let (At::Setting(Setting::Source), SealedCell::Cell(Cell::Value(source))) =

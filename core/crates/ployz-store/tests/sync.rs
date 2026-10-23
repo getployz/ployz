@@ -1951,3 +1951,27 @@ fn a_value_sealed_in_the_browser_fills_a_secret_only_with_the_flag_on_and_sealed
     );
     assert_eq!(labels(&view(&store, &who)), ["api", "api.env.KEY"]);
 }
+
+#[test]
+fn a_value_sealed_for_the_parent_arrives_not_set_in_a_branch_created_from_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), false);
+    backend::sealed_variables_on(&url, "org");
+    let value = backend::client_sealed(&uuid(2), &uuid(3), "API_KEY", 1);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.API_KEY", json!({ "secret": value }))],
+    );
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["API_KEY"],
+        json!({ "secret": true })
+    );
+    branch(&store, &who, 10, "production", "fix-two");
+    assert_eq!(
+        values(&store, &who, "fix-two", "web")["env"]["API_KEY"],
+        json!({ "secret": false })
+    );
+}
