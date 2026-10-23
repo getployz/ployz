@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -59,7 +59,7 @@ function host() {
     if (checkout !== null) writeFileSync(join(dir, "checkout"), checkout);
     writeFileSync(join(dir, "created"), new Date(Date.now() - createdSecondsAgo * 1000).toISOString());
   };
-  /** A checkout whose verify run records `pids`, with an idle.sh that writes its port and timeout when run. */
+  /** A checkout whose verify run records `pids`, with an idle.sh that writes its port and any VERIFY_IDLE_TIMEOUT when run. */
   const checkout = (
     name: string,
     run: { readonly vite?: number; readonly live?: true; readonly idle?: number; readonly timeout?: string },
@@ -70,7 +70,7 @@ function host() {
     mkdirSync(join(wt, "dashboard", "scripts", "verify"), { recursive: true });
     writeFileSync(
       join(wt, "dashboard", "scripts", "verify", "idle.sh"),
-      `#!/usr/bin/env bash\necho "$1 $VERIFY_IDLE_TIMEOUT" > "${dir}/idle-started"\n`,
+      `#!/usr/bin/env bash\necho "$1 \${VERIFY_IDLE_TIMEOUT:-unset}" > "${dir}/idle-started"\n`,
     );
     chmodSync(join(wt, "dashboard", "scripts", "verify", "idle.sh"), 0o755);
     writeFileSync(join(dir, "env"), "PORT=4321\n");
@@ -169,7 +169,7 @@ describe("scripts/verify/reap.sh", () => {
     expect(docker.removed()).toEqual([]);
   });
 
-  it("starts a live instance's dead watchdog again with the timeout its up.sh chose", async () => {
+  it("starts a live instance's dead watchdog again, leaving it the timeout its up.sh recorded", async () => {
     const docker = host();
     const { wt, run } = docker.checkout("live", { live: true, idle: DEAD, timeout: "7200" });
     docker.container("dddddddddd", wt, 3600);
@@ -178,7 +178,7 @@ describe("scripts/verify/reap.sh", () => {
 
     expect(docker.removed()).toEqual([]);
     expect(output).toContain("started the idle watchdog");
-    await vi.waitFor(() => expect(readFileSync(join(run, "idle-started"), "utf8").trim()).toBe("4321 7200"));
+    await vi.waitFor(() => expect(readFileSync(join(run, "idle-started"), "utf8").trim()).toBe("4321 unset"));
   });
 
   it.each([
@@ -194,18 +194,6 @@ describe("scripts/verify/reap.sh", () => {
     expect(docker.removed()).toEqual([]);
     expect(output).not.toContain("watchdog");
     expect(existsSync(join(run, "idle-started"))).toBe(false);
-  });
-
-  it("starts no second watchdog while another reaper holds the checkout's lock", () => {
-    const docker = host();
-    const { wt, run } = docker.checkout("locked", { live: true, idle: DEAD, timeout: "900" });
-    mkdirSync(join(run, "idle.lock"));
-    docker.container("ddddddddde", wt, 3600);
-
-    const output = docker.run();
-
-    expect(output).not.toContain("watchdog");
-    expect(readFileSync(join(run, "idle.pid"), "utf8").trim()).toBe(`${DEAD}`);
   });
 
   it("only lists what it would remove when dry", () => {
@@ -227,66 +215,56 @@ describe("scripts/verify/reap.sh", () => {
     expect(docker.removed()).toEqual([]);
   });
 
-  describe("up.sh's watchdog lock", () => {
-    const up = readFileSync(resolve(import.meta.dirname, "../../scripts/verify/up.sh"), "utf8");
-    const start = up.indexOf("tries=0\n");
-    const end = up.indexOf('echo $$ > "$run/idle.lock/owner"\n');
-    /** up.sh's own lines that take the lock, run against `run`, with a `sleep` that counts each wait in `run/waits`. */
-    const acquire = (run: string) => {
-      const bin = join(run, "bin");
-      mkdirSync(bin);
-      writeFileSync(join(bin, "sleep"), `#!/usr/bin/env bash\necho >> "${run}/waits"\n/bin/sleep 0.01\n`);
-      chmodSync(join(bin, "sleep"), 0o755);
-      return spawn("bash", ["-c", `run=${JSON.stringify(run)}\n${up.slice(start, end)}echo $$ > "$run/idle.lock/owner"`], {
-        env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
-      });
-    };
-    const waits = (run: string) => existsSync(join(run, "waits")) ? readFileSync(join(run, "waits"), "utf8").length : 0;
-
-    function locked(owner: number) {
-      const run = mkdtempSync(join(tmpdir(), "verify-lock-"));
-      mkdirSync(join(run, "idle.lock"));
-      writeFileSync(join(run, "idle.lock", "owner"), `${owner}\n`);
-      return run;
-    }
-
-    it("waits while a live process holds the lock, and takes it once released", async () => {
-      expect(start).toBeGreaterThan(-1);
-      const run = locked(process.pid);
-      const taking = acquire(run);
-      children.push(taking);
-      let exited = false;
-      taking.on("exit", () => {
-        exited = true;
-      });
-
-      // Past the 50 waits after which an earlier up.sh took the lock regardless.
-      await vi.waitFor(() => expect(waits(run)).toBeGreaterThan(60), { timeout: 10_000 });
-      expect(exited).toBe(false);
-      expect(readFileSync(join(run, "idle.lock", "owner"), "utf8").trim()).toBe(`${process.pid}`);
-      rmSync(join(run, "idle.lock"), { recursive: true });
-
-      await vi.waitFor(() => expect(exited).toBe(true));
-      expect(readFileSync(join(run, "idle.lock", "owner"), "utf8").trim()).toBe(`${taking.pid}`);
-    });
-
-    it("takes a lock whose holder has exited", async () => {
-      const run = locked(DEAD);
-      const taking = acquire(run);
-      children.push(taking);
-
-      await vi.waitFor(() => expect(readFileSync(join(run, "idle.lock", "owner"), "utf8").trim()).toBe(`${taking.pid}`));
-    });
-  });
-
   it("runs before up.sh starts its own containers", () => {
     const up = readFileSync(resolve(import.meta.dirname, "../../scripts/verify/up.sh"), "utf8");
 
     expect(up.indexOf("scripts/verify/reap.sh")).toBeGreaterThan(-1);
     expect(up.indexOf("scripts/verify/reap.sh")).toBeLessThan(up.indexOf("docker run"));
-    // reap.sh restarts a watchdog under this lock, so up.sh replaces its own and records its timeout holding it.
-    expect(up.indexOf('mkdir "$run/idle.lock"')).toBeGreaterThan(-1);
-    expect(up.indexOf('mkdir "$run/idle.lock"')).toBeLessThan(up.indexOf('> "$run/idle-timeout"'));
-    expect(up.lastIndexOf('rm -rf "$run/idle.lock"')).toBeGreaterThan(up.indexOf("$run/idle.pid\"\nfi"));
+  });
+});
+
+describe("scripts/verify/idle.sh", () => {
+  /**
+   * The real idle.sh in a checkout whose down.sh writes `stopped`, run on a port nothing connects to, one second a
+   * step. `run` holds the recorded timeout, and idle.pid names the watchdog unless `other` names another.
+   */
+  function watchdog(recorded: string, other?: number) {
+    const wt = mkdtempSync(join(tmpdir(), "verify-idle-"));
+    const scripts = join(wt, "dashboard", "scripts", "verify");
+    const run = join(wt, "dashboard", ".verify", "run");
+    mkdirSync(scripts, { recursive: true });
+    mkdirSync(run, { recursive: true });
+    copyFileSync(resolve(import.meta.dirname, "../../scripts/verify/idle.sh"), join(scripts, "idle.sh"));
+    writeFileSync(join(scripts, "down.sh"), `#!/usr/bin/env bash\ntouch "${run}/stopped"\n`);
+    chmodSync(join(scripts, "down.sh"), 0o755);
+    writeFileSync(join(run, "idle-timeout"), `${recorded}\n`);
+    const child = spawn(join(scripts, "idle.sh"), ["1"], { env: { ...process.env, VERIFY_IDLE_STEP: "1", VERIFY_IDLE_TIMEOUT: "1" } });
+    children.push(child);
+    writeFileSync(join(run, "idle.pid"), `${other ?? child.pid}\n`);
+    let exited = false;
+    child.on("exit", () => {
+      exited = true;
+    });
+    return { stopped: () => existsSync(join(run, "stopped")), exited: () => exited };
+  }
+
+  it("stops the instance once idle for the timeout up.sh recorded", async () => {
+    const dog = watchdog("2");
+
+    await vi.waitFor(() => expect(dog.stopped()).toBe(true), { timeout: 10_000 });
+  });
+
+  it("exits without stopping the instance once idle.pid names another watchdog", async () => {
+    const dog = watchdog("1", DEAD);
+
+    await vi.waitFor(() => expect(dog.exited()).toBe(true), { timeout: 10_000 });
+    expect(dog.stopped()).toBe(false);
+  });
+
+  it("exits without stopping the instance once up.sh recorded 0", async () => {
+    const dog = watchdog("0");
+
+    await vi.waitFor(() => expect(dog.exited()).toBe(true), { timeout: 10_000 });
+    expect(dog.stopped()).toBe(false);
   });
 });
