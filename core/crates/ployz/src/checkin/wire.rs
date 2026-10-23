@@ -453,7 +453,7 @@ impl PrepState {
 }
 
 impl Probe {
-    /// `preparing` is whether `ployz-prepare` is running now.
+    /// `preparing` is whether `ployz-prepare` was seen running now, not merely assumed to be.
     pub(super) fn report(
         self,
         hostname: String,
@@ -467,7 +467,9 @@ impl Probe {
             zfs,
         } = assessment;
         // Part-way through Ployz's own install, dpkg has registered Docker before its unit starts.
-        if preparing && prep.is_none_or(|prep| matches!(prep.docker.step, DockerStep::Installing)) {
+        // Before ployzd records that step, a stopped Docker is the user's own.
+        if preparing && prep.is_some_and(|prep| matches!(prep.docker.step, DockerStep::Installing))
+        {
             blockers.retain(|issue| issue.code != "docker_stopped");
         }
         let compatible = !blockers
