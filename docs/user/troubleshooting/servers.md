@@ -392,7 +392,7 @@ answered but its cluster store wasn't running. If it was stopped, as by
 ## A server's cluster store was lost
 
 ```text
-error: this Server's Cluster store holds nothing from the other Servers: it was recreated or can't reach them
+error: this Server's Cluster store holds no other Server: it was recreated and can't reach them yet
 ```
 
 A server keeps the cluster's shared state in `/var/lib/ployz/corrosion/store.db`. If that file is

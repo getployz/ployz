@@ -1012,20 +1012,21 @@ impl ReplicatedStore {
         }
     }
 
-    /// Whether this store holds a change from any Machine but this one. A store created
-    /// afresh holds none until gossip reaches it.
-    pub(crate) async fn heard_from_peers(&self) -> Result<bool, Error> {
+    /// Whether this store has ever held a row for a Machine other than `own`. A removed
+    /// row keeps its cr-sqlite key, so only a store created afresh, before gossip
+    /// reaches it, reads `false` once another Machine exists.
+    pub(crate) async fn held_another_machine(&self, own: &MachineId) -> Result<bool, Error> {
         let query = self
             .api
             .query(Statement::new(
-                "SELECT EXISTS (SELECT 1 FROM crsql_db_versions WHERE site_id != crsql_site_id()) AS heard",
-                [],
+                "SELECT EXISTS (SELECT 1 FROM machines__crsql_pks WHERE id != ?) AS held",
+                [json!(own)],
             ))
             .await?;
-        match query.rows(["heard"])?.as_slice() {
-            [[heard]] if heard.as_i64() == Some(0) => Ok(false),
-            [[heard]] if heard.as_i64() == Some(1) => Ok(true),
-            _ => Err(Error::Protocol("invalid heard-from-peers row".into())),
+        match query.rows(["held"])?.as_slice() {
+            [[held]] if held.as_i64() == Some(0) => Ok(false),
+            [[held]] if held.as_i64() == Some(1) => Ok(true),
+            _ => Err(Error::Protocol("invalid held-another-Machine row".into())),
         }
     }
 

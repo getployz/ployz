@@ -115,7 +115,7 @@ pub enum Error {
     #[error("Cluster network is not published yet")]
     ClusterNetworkUnpublished,
     #[error(
-        "this Server's Cluster store holds nothing from the other Servers: it was recreated or can't reach them"
+        "this Server's Cluster store holds no other Server: it was recreated and can't reach them yet"
     )]
     ClusterStoreEmpty,
     #[error("Cluster is not available")]
@@ -682,7 +682,7 @@ impl LocalMachine {
     /// participating, [`Error::ClusterStoreUnavailable`] when the Cluster
     /// store is missing, [`Error::ClusterNetworkUnpublished`] before the
     /// founder publishes the Cluster network, [`Error::ClusterStoreEmpty`] when
-    /// this joined Machine's store holds nothing from its peers, and [`Error::Cluster`] when
+    /// this joined Machine's store never held another Machine, and [`Error::Cluster`] when
     /// replicated I/O fails.
     pub async fn list_machines(&self) -> Result<MachineList, Error> {
         let local = self.record();
@@ -968,7 +968,7 @@ impl StorageExit {
 
 /// The founder's publisher writes the Cluster network after it starts
 /// answering as Participating, so on the founder a missing row means not ready
-/// yet. A joined Machine whose store has nothing from its peers lost that store.
+/// yet. A joined Machine whose store never held another Machine lost that store.
 async fn published_network(
     record: &LocalMachineRecord,
     replicated: &ReplicatedStore,
@@ -977,7 +977,10 @@ async fn published_network(
         return Ok(network);
     }
     if record.cluster_network().is_none()
-        && matches!(replicated.heard_from_peers().await, Ok(false))
+        && matches!(
+            replicated.held_another_machine(&record.id()).await,
+            Ok(false)
+        )
     {
         return Err(Error::ClusterStoreEmpty);
     }

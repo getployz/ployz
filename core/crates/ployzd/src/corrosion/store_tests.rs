@@ -490,32 +490,31 @@ async fn catch_up_rejects_invalid_targets_without_retrying() {
     }
 }
 
-/// #2930: a recreated `store.db` holds only this Machine's actor until gossip reaches it.
+/// #2930: a recreated `store.db` holds only this Machine's row until gossip reaches it,
+/// while a removed Machine leaves its key behind.
 #[tokio::test]
-async fn a_store_hears_from_peers_once_another_actor_wrote_to_it() {
-    use rusqlite::functions::FunctionFlags;
-
+async fn a_store_has_held_another_machine_once_its_key_arrived() {
+    let own = MachineId::random();
+    let other = MachineId::random();
     let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.create_scalar_function("crsql_site_id", 0, FunctionFlags::SQLITE_UTF8, |_| {
-        Ok(vec![0xaa_u8; 16])
-    })
-    .unwrap();
-    db.execute_batch(
-        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
-         INSERT INTO crsql_db_versions VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 3);",
+    db.execute_batch("CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id);")
+        .unwrap();
+    db.execute(
+        "INSERT INTO machines__crsql_pks (id) VALUES (?)",
+        [own.to_string()],
     )
     .unwrap();
     let (store, server) = identity_store(db).await;
-    assert!(!store.heard_from_peers().await.unwrap());
+    assert!(!store.held_another_machine(&own).await.unwrap());
     store
         .api()
         .execute([Statement::new(
-            "INSERT INTO crsql_db_versions VALUES (?, 7)",
-            [json!(vec![0xbb; 16])],
+            "INSERT INTO machines__crsql_pks (id) VALUES (?)",
+            [json!(other)],
         )])
         .await
         .unwrap();
-    assert!(store.heard_from_peers().await.unwrap());
+    assert!(store.held_another_machine(&own).await.unwrap());
     server.abort();
 }
 
@@ -651,9 +650,8 @@ pub(crate) async fn identity_store(
                     rusqlite::types::ValueRef::Text(value) => {
                         json!(std::str::from_utf8(value).unwrap())
                     }
-                    // Corrosion sends a blob as its bytes.
-                    rusqlite::types::ValueRef::Blob(value) => json!(value),
-                    value @ rusqlite::types::ValueRef::Real(_) => {
+                    value @ (rusqlite::types::ValueRef::Real(_)
+                    | rusqlite::types::ValueRef::Blob(_)) => {
                         panic!("unsupported test row value: {value:?}")
                     }
                 })

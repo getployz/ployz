@@ -336,7 +336,7 @@ fn incomplete_snapshot_holds_peers_and_joining_keeps_bootstrap() {
 /// #2930: a Server whose `store.db` was recreated reads only its own row. Removing every
 /// peer that row doesn't name cut its gossip, so the store could never refill.
 #[test]
-fn a_store_that_heard_from_no_peer_keeps_the_installed_peers() {
+fn a_store_that_never_held_another_machine_keeps_the_installed_peers() {
     let remote = machine(1, WireGuardPublicKey([1; 32]));
     let observer = machine(2, WireGuardPublicKey([2; 32]));
     let bootstrap = peers_for(&observer.id, std::slice::from_ref(&remote));
@@ -361,7 +361,7 @@ fn a_store_that_heard_from_no_peer_keeps_the_installed_peers() {
         assert!(installed.contains_key(&live.public_key));
         assert!(installed.contains_key(&Key::new(remote.public_key.0)));
     }
-    // Once the store has heard from a peer, its snapshot is the whole Cluster again.
+    // Once the store has held another Machine, its snapshot is the whole Cluster again.
     let (planned, set) =
         snapshot_peers(&observer.id, &own_row_only, &bootstrap, false, true).unwrap();
     let mut installed = HashMap::from([(live.public_key.clone(), live.clone())]);
