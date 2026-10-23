@@ -10,6 +10,10 @@ pub const RELEASE_REPOSITORY_URL: &str = "https://github.com/getployz/ployz";
 /// such as an IPv6-only one, unless `PLOYZ_FALLBACK_URL` names another, as in install.sh.
 pub const RELEASE_FALLBACK_URL: &str = "https://ployz.sh";
 
+/// The variables that name the release download bases, primary first. A process that
+/// downloads on another's behalf, such as the upgrade worker, takes them from it.
+pub const RELEASE_MIRROR_VARIABLES: [&str; 2] = ["PLOYZ_GITHUB_URL", "PLOYZ_FALLBACK_URL"];
+
 /// Release download bases in the order a download tries them: `PLOYZ_GITHUB_URL`'s, then
 /// `PLOYZ_FALLBACK_URL`'s. An unset or empty variable is its default, as in install.sh, so
 /// a soak can point upgrades and bootstraps at a staged release.
@@ -24,9 +28,10 @@ fn release_mirrors_from(var: impl Fn(&str) -> Option<String>) -> [String; 2] {
         let url = url.as_deref().unwrap_or(default).trim_end_matches('/');
         format!("{url}/releases/download")
     };
+    let [primary, fallback] = RELEASE_MIRROR_VARIABLES;
     [
-        base("PLOYZ_GITHUB_URL", RELEASE_REPOSITORY_URL),
-        base("PLOYZ_FALLBACK_URL", RELEASE_FALLBACK_URL),
+        base(primary, RELEASE_REPOSITORY_URL),
+        base(fallback, RELEASE_FALLBACK_URL),
     ]
 }
 
