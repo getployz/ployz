@@ -43,6 +43,10 @@ fn matching_echo() -> CallbackReply {
     }))
 }
 
+fn plain_callback() -> serde_json::Value {
+    json!({ "machineId": founder_machine().id.as_str(), "pairingCredential": PAIRING })
+}
+
 fn callback_with_backup() -> serde_json::Value {
     let wrapped = fake_wrapped();
     json!({
@@ -89,17 +93,6 @@ fn code_lines(stdout: &str) -> Vec<&str> {
         .lines()
         .filter(|line| line.contains(CODE_FIELD))
         .collect()
-}
-
-fn code_after_field(line: &str) -> RecoveryCode {
-    let raw = line
-        .trim_start_matches(CODE_FIELD)
-        .trim_start_matches(|character: char| character == '=' || character.is_whitespace());
-    RecoveryCode::parse(raw).expect("the printed recovery code parses")
-}
-
-fn plain_callback() -> serde_json::Value {
-    json!({ "machineId": founder_machine().id.as_str(), "pairingCredential": PAIRING })
 }
 
 #[tokio::test]
@@ -163,26 +156,18 @@ async fn seed_enrolls_for_recovery_and_prints_no_code() {
     }
 }
 
-#[tokio::test]
-async fn back_up_prints_one_code_after_cloud_echoes_the_digest() {
-    let enroll = EnrollListen::script([initialize(Some(json!({ "kind": "back_up" })))]).await;
-    enroll.set_callback_reply(matching_echo());
-    let daemon = founder_daemon().with_recovery_rpcs();
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = found(&machine_addr, &enroll.url, false, false).await;
-
+fn refused_without_a_code(output: &std::process::Output) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stdout}\n{stderr}");
-    let [line] = code_lines(&stdout)[..] else {
-        panic!("one recovery code line: {stdout}");
-    };
-    let code = code_after_field(line);
-    assert!(!stderr.contains(code.reveal().as_str()), "{stderr}");
-    assert!(stderr.contains("ployz recover "), "{stderr}");
-    assert_eq!(daemon.wrap_calls(), 1);
-    assert_eq!(enroll.callbacks(), [callback_with_backup()]);
+    assert!(!output.status.success(), "{stdout}\n{stderr}");
+    let result: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(result.get("recoveryCode"), None, "{stdout}");
+    let error = result
+        .get("error")
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    assert!(error.contains("Recovery code not saved"), "{stdout}");
+    assert!(error.contains(ROTATE_HINT), "{stdout}");
 }
 
 #[tokio::test]
@@ -197,14 +182,9 @@ async fn back_up_without_a_matching_echo_exits_without_a_code() {
         let daemon = founder_daemon().with_recovery_rpcs();
         let machine_addr = serve_machine(daemon.clone()).await;
 
-        let output = found(&machine_addr, &enroll.url, false, false).await;
+        let output = found(&machine_addr, &enroll.url, true, true).await;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "{stdout}\n{stderr}");
-        assert!(code_lines(&stdout).is_empty(), "{stdout}");
-        assert!(stderr.contains("Recovery code not saved"), "{stderr}");
-        assert!(stderr.contains(ROTATE_HINT), "{stderr}");
+        refused_without_a_code(&output);
         assert_eq!(daemon.wrap_calls(), 1);
         assert_eq!(enroll.callbacks().len(), 1);
     }
@@ -226,14 +206,9 @@ async fn back_up_without_an_echo(reply: CallbackReply) {
     let daemon = founder_daemon().with_recovery_rpcs();
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = found(&machine_addr, &enroll.url, false, false).await;
+    let output = found(&machine_addr, &enroll.url, true, true).await;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "{stdout}\n{stderr}");
-    assert!(code_lines(&stdout).is_empty(), "{stdout}");
-    assert!(stderr.contains("Recovery code not saved"), "{stderr}");
-    assert!(stderr.contains(ROTATE_HINT), "{stderr}");
+    refused_without_a_code(&output);
     let callbacks = enroll.callbacks();
     assert!(callbacks.len() > 1, "the callback retries: {callbacks:?}");
     assert!(
@@ -245,21 +220,27 @@ async fn back_up_without_an_echo(reply: CallbackReply) {
 }
 
 #[tokio::test]
-async fn plain_json_founding_leaves_the_backup_for_rotate() {
-    let enroll = EnrollListen::script([initialize(Some(json!({ "kind": "back_up" })))]).await;
-    let daemon = founder_daemon().with_recovery_rpcs();
-    let machine_addr = serve_machine(daemon.clone()).await;
+async fn founding_without_a_terminal_or_the_opt_in_leaves_the_backup_for_rotate() {
+    for json in [false, true] {
+        let enroll = EnrollListen::script([initialize(Some(json!({ "kind": "back_up" })))]).await;
+        let daemon = founder_daemon().with_recovery_rpcs();
+        let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = found(&machine_addr, &enroll.url, true, false).await;
+        let output = found(&machine_addr, &enroll.url, json, false).await;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stdout}\n{stderr}");
-    let result: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(result.get("recoveryCode"), None, "{stdout}");
-    assert!(stderr.contains(ROTATE_HINT), "{stderr}");
-    assert_eq!(daemon.wrap_calls(), 0);
-    assert_eq!(enroll.callbacks(), [plain_callback()]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        if json {
+            let result: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+            assert_eq!(result.get("recoveryCode"), None, "{stdout}");
+        } else {
+            assert!(code_lines(&stdout).is_empty(), "{stdout}");
+        }
+        assert!(stderr.contains(ROTATE_HINT), "{stderr}");
+        assert_eq!(daemon.wrap_calls(), 0);
+        assert_eq!(enroll.callbacks(), [plain_callback()]);
+    }
 }
 
 #[tokio::test]
