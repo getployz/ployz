@@ -71,12 +71,10 @@ export function statusCell(server: Pick<WaitingServerView, "report" | "status" |
   const { report } = server;
   const seen = ago(server.lastCheckInAt, now);
   if (server.status === "offline") return { bold: "Offline", detail: seen };
-  if (report.prep?.docker === "failed") {
-    const failure = report.blockers.find((blocker) => blocker.code === "docker_install_failed");
-    return { bold: "Docker install failed", detail: failure?.message ?? "Run the install line again on the server" };
-  }
+  // A host's own blockers come before the failed Docker install they caused, such as a disk too small.
   const blocker = report.blockers[0];
   if (blocker !== undefined) return { bold: blockerLabel(blocker.code), detail: blocker.message };
+  if (report.prep?.docker === "failed") return { bold: "Docker install failed", detail: "Run the install line again on the server" };
   if (report.prep?.docker === "installing") return { bold: "Installing Docker", detail: seen };
   if (report.prep?.zfs === "installing") return { bold: "Ready", detail: `Building ZFS · ${seen}` };
   if (report.prep?.zfs === "failed") return { bold: "Ready", detail: `${ZFS_BUILD_FAILED} · ${seen}` };
