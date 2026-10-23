@@ -1532,6 +1532,124 @@ mod tests {
         }
     }
 
+    /// A deploy right after `server set` plans from the Entry's list, so every changed field
+    /// it reads must be listed there before the command returns.
+    #[tokio::test(start_paused = true)]
+    async fn every_planned_field_waits_until_the_entry_lists_it() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use ployz_core::{
+            MachineLabelKey, MachineLabelValue, MachineList, MachineUpdated, MembershipObservation,
+            OpaquePayload, RpcRequestBody, RpcResponse,
+        };
+        use tonic::{Request, Response};
+
+        let zone = MachineLabelKey::parse("zone").unwrap();
+        let east = MachineLabelValue::parse("east").unwrap();
+        let cases: [(&str, fn(&mut Machine), MachineUpdate); 3] = [
+            (
+                "a new label",
+                |machine| {
+                    machine.labels.insert(
+                        MachineLabelKey::parse("zone").unwrap(),
+                        MachineLabelValue::parse("east").unwrap(),
+                    );
+                },
+                MachineUpdate {
+                    label_changes: [(zone, Some(east))].into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "builds off",
+                |machine| machine.accepts_builds = false,
+                MachineUpdate {
+                    accepts_builds: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "ingress off",
+                |machine| machine.accepts_ingress = false,
+                MachineUpdate {
+                    accepts_ingress: Some(false),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (change, apply, update) in cases {
+            let stale = web("machine-3", true, None, MembershipObservation::Up);
+            let mut updated = stale.clone();
+            apply(&mut updated.machine);
+            let id = updated.machine.id;
+            let visible = Arc::new(AtomicBool::new(false));
+            let (mut client, server) = crate::connect::test_support::rpc_client({
+                let visible = Arc::clone(&visible);
+                move |request: Request<OpaquePayload>| {
+                    let visible = Arc::clone(&visible);
+                    let stale = stale.clone();
+                    let updated = updated.clone();
+                    async move {
+                        let response = match request.into_inner().decode_request().unwrap().body {
+                            RpcRequestBody::UpdateMachine(_) => RpcResponse::from(MachineUpdated {
+                                machine: updated.machine,
+                            }),
+                            RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                                enrollment: None,
+                                machines: vec![if visible.load(Ordering::SeqCst) {
+                                    updated
+                                } else {
+                                    stale
+                                }],
+                            }),
+                            other => panic!("unexpected RPC: {other:?}"),
+                        };
+                        Ok(Response::new(response.encode().unwrap()))
+                    }
+                }
+            })
+            .await;
+            let recovery = crate::cli::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "server",
+                    "set",
+                    id.as_str(),
+                    "--accepts-builds=true",
+                ])
+                .unwrap()
+                .subcommand_matches("server")
+                .and_then(|server| server.subcommand_matches("set"))
+                .unwrap()
+                .clone();
+            let setting = apply_update(
+                &mut client,
+                MachineTarget::from(&id),
+                update,
+                None,
+                IngressImage::Given("caddy:2".into()),
+                String::new(),
+                recovery,
+            );
+            tokio::pin!(setting);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(5), &mut setting)
+                    .await
+                    .is_err(),
+                "server set returned before the Entry listed {change}"
+            );
+            visible.store(true, Ordering::SeqCst);
+            tokio::time::timeout(std::time::Duration::from_secs(1), &mut setting)
+                .await
+                .unwrap()
+                .unwrap();
+            server.abort();
+        }
+    }
+
     #[test]
     fn setting_services_warns_when_the_entry_never_lists_the_new_role() {
         use ployz_core::{
