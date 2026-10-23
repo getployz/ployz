@@ -116,8 +116,8 @@ GitHub webhooks ───────► web       ├─► Postgres (ployz_clo
 
 The image is `linux/amd64`. Put a TLS proxy in front of web's `WEB_PORT`. Web is
 published on `WEB_BIND` (default `127.0.0.1`) because Docker-published ports skip UFW;
-a proxy on another host needs a private `WEB_BIND`, never `0.0.0.0`. Inngest's UI is
-bound to `127.0.0.1:8288` for operator use only.
+a proxy on another host needs a private `WEB_BIND`, never `0.0.0.0`. Inngest publishes
+no host port: web and worker reach it on the compose network.
 
 ### 1. Create the GitHub apps
 
