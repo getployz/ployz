@@ -609,7 +609,8 @@ When a deploy would delete a volume's data, `ployz deploy` and `ployz deploy --s
 and print the command to run instead. It names each volume that loses data, like
 `ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if
 you mean it. If the environment changed since, the command refuses and prints it again at the new
-version without the volumes. Run that to see what the new version deletes, and accept it from the
-command it prints then. If Ployz can't check your servers for that data and you passed `--connect`, the
+version. When the new version deletes only volumes you already accepted, that command names them
+and goes through in one step. Otherwise it leaves them out: run it to see what the new version
+deletes, and accept that from the command it prints then. If Ployz can't check your servers for that data and you passed `--connect`, the
 refusal names the address you gave when Ployz doesn't know which server that is. With `--json`,
 the error's `cause` lists it.

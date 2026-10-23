@@ -327,7 +327,24 @@ fn deploy(
         ));
     }
     let review = review::review(tx, &environment)?;
-    review::check(&review, admit.version.as_deref())?;
+    let shipping = review::Shipping::Deploy {
+        services: &admit.services,
+        upload: admit.upload.as_ref().map(|upload| &upload.digest),
+    };
+    if let Err(stale) = review::check(&review, admit.version.as_deref()) {
+        let target = canonicalize_environment_intent(environment.working.clone());
+        let probe =
+            deployment::namespace(tx, who, &environment.summary, false).and_then(|namespace| {
+                review::destructive(
+                    who,
+                    &review,
+                    (&target, &namespace, shipping),
+                    (None, &[], review::consent(review.saved.as_ref())),
+                    trusted.volumes.as_ref(),
+                )
+            });
+        return Err(review::with_loss(stale, probe));
+    }
     let id = &environment.summary.id;
     // A manual Deploy ends the draft's proposals: what they brought is its own now.
     crate::branch::end_included(tx, id, None)?;
@@ -340,10 +357,6 @@ fn deploy(
         (cluster_domain, &namespace),
         trusted,
     )?;
-    let shipping = review::Shipping::Deploy {
-        services: &admit.services,
-        upload: admit.upload.as_ref().map(|upload| &upload.digest),
-    };
     let losses = review::destructive(
         who,
         &review,

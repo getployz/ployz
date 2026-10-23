@@ -160,7 +160,20 @@ pub(crate) fn publish(
     trusted.writes(&environment.summary.name)?;
     crate::removal::marked(tx, &environment)?;
     let review = review::review(tx, &environment)?;
-    review::check(&review, publish.version.as_deref())?;
+    if let Err(stale) = review::check(&review, publish.version.as_deref()) {
+        let target = canonicalize_environment_intent(environment.working.clone());
+        let probe =
+            deployment::namespace(tx, who, &environment.summary, false).and_then(|namespace| {
+                review::destructive(
+                    who,
+                    &review,
+                    (&target, &namespace, review::Shipping::Publish),
+                    (None, &[], review::consent(review.saved.as_ref())),
+                    trusted.volumes.as_ref(),
+                )
+            });
+        return Err(review::with_loss(stale, probe));
+    }
     // A manual Save ends the draft's proposals: what they brought is its own now.
     let consumed = crate::branch::end_included(tx, &environment.summary.id, None)?;
     if review.saved.is_none()

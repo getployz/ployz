@@ -573,7 +573,10 @@ impl<'m> Store<'m> {
     /// A deploy's refusal about the review it named. A conflict handing back the
     /// fresh review (`details.diff`) names this command again at its version,
     /// without the Volume losses accepted at the stale one: what the fresh review
-    /// deletes is for its own refusal to name. Any other conflict names `read`, as
+    /// deletes is for its own refusal to name. When the fresh review's loss
+    /// (`details.volume_loss`) is only of Volumes this command already accepts, it
+    /// names them again at the version binding that loss, so the line goes
+    /// through in one step. Any other conflict names `read`, as
     /// [`with_refresh_hint`] does. A refusal to delete data that this command
     /// already accepts each Volume of is about its version, and says so; a deploy's
     /// loss refusal says nothing but what it deletes, which the retry line names.
@@ -600,25 +603,50 @@ impl<'m> Store<'m> {
                 );
             }
         }
-        let version = match &refusal.error {
-            StoreCallError::Refused(error) if error.code == RpcErrorCode::Conflict => error
-                .details
-                .pointer("/diff/version")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
+        let carried = self.carried();
+        let next = match &refusal.error {
+            StoreCallError::Refused(error) if error.code == RpcErrorCode::Conflict => {
+                let loss = error.details.get("volume_loss");
+                let accept = accepted_names(loss.and_then(|loss| loss.get("accept")));
+                let bound = loss
+                    .and_then(|loss| loss.get("version"))
+                    .and_then(serde_json::Value::as_str);
+                match bound {
+                    Some(bound)
+                        if !accept.is_empty()
+                            && accept.iter().all(|name| carried.accept.contains(name)) =>
+                    {
+                        Some((bound.to_owned(), accept))
+                    }
+                    Some(_) | None => error
+                        .details
+                        .pointer("/diff/version")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|version| (version.to_owned(), Vec::new())),
+                }
+            }
             StoreCallError::Refused(_) | StoreCallError::Cloud(_) | StoreCallError::Stopped(_) => {
                 None
             }
         };
-        match version {
-            Some(version) => with_next(
+        if let (Some((_, accept)), StoreCallError::Refused(error)) = (&next, &mut refusal.error)
+            && !accept.is_empty()
+        {
+            error.message = format!(
+                "{}. The command below still accepts deleting the data of {}.",
+                error.message.trim_end_matches('.'),
+                accept.join(", ")
+            );
+        }
+        match next {
+            Some((version, accept)) => with_next(
                 refusal,
                 |_| true,
                 || {
                     self.retry(Carried {
-                        accept: Vec::new(),
+                        accept,
                         version: Some(version),
-                        ..self.carried()
+                        ..carried
                     })
                 },
             ),
@@ -1803,6 +1831,78 @@ mod tests {
         assert_eq!(
             next_of(json!({})),
             [Hint::Next("ployz diff --env staging".into())]
+        );
+    }
+
+    /// A stale version's conflict that hands back the fresh review's loss names it at
+    /// the version binding it, when this command already accepts each of its
+    /// Volumes; one it doesn't accept leaves the losses behind, as before.
+    #[test]
+    fn a_stale_version_carries_a_fresh_loss_it_already_accepts() {
+        let typed = [
+            "ployz",
+            "deploy",
+            "--accept-volume-loss",
+            "big1",
+            "--accept-volume-loss",
+            "big2",
+            "--expect-version",
+            "1:1:0.1:deadbeef",
+            "--env",
+            "staging",
+        ];
+        let root = crate::cli::command().try_get_matches_from(typed).unwrap();
+        let key = SealingKey::new(&[7; 32]).unwrap();
+        let store = Store {
+            backend: Backend::Local(
+                std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+            ),
+            matches: leaf_matches(&root),
+            words: vec!["deploy".to_owned()],
+        };
+        let next = |accept: serde_json::Value| {
+            let refusal = store.at_review(
+                StoreCallError::Refused(ployz_core::RpcError {
+                    code: RpcErrorCode::Conflict,
+                    message: "The Environment changed after this review. Review the latest \
+                              changes and try again"
+                        .into(),
+                    details: json!({
+                        "diff": { "version": "33:4:0.4" },
+                        "volume_loss": { "version": "33:4:0.4:cafe", "accept": accept },
+                    }),
+                    cause: Vec::new(),
+                }),
+                "diff",
+            );
+            let message = match &refusal.error {
+                StoreCallError::Refused(error) => error.message.clone(),
+                StoreCallError::Cloud(_) | StoreCallError::Stopped(_) => String::new(),
+            };
+            (
+                message,
+                Error::from(refusal.error).hint(refusal.hint).hints(),
+            )
+        };
+        let (message, hints) = next(json!(["big1"]));
+        assert_eq!(
+            message,
+            "The Environment changed after this review. Review the latest changes and try \
+             again. The command below still accepts deleting the data of big1."
+        );
+        assert_eq!(
+            hints,
+            [Hint::Next(
+                "ployz deploy --accept-volume-loss big1 --expect-version 33:4:0.4:cafe --env staging"
+                    .into()
+            )]
+        );
+        assert_eq!(
+            next(json!(["big1", "big3"])).1,
+            [Hint::Next(
+                "ployz deploy --expect-version 33:4:0.4 --env staging".into()
+            )]
         );
     }
 
