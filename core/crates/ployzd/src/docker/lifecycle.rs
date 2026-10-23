@@ -438,11 +438,21 @@ impl ContainerRuntime {
         if !matches!(found, Err(Error::SpecNotFound(_))) {
             return found;
         }
+        // Boxed, so the rare locked read doesn't grow every slot read's future.
+        Box::pin(self.reread_slot(machine_id, &name, key)).await
+    }
+
+    async fn reread_slot(
+        &self,
+        machine_id: &MachineId,
+        name: &str,
+        key: &str,
+    ) -> Result<Option<ContainerObservation>, Error> {
         // Under the lock no create is between Docker's create and its spec's write. A
         // create that ran while this waited may have replaced the Container, so the slot
         // is read again.
         let mut operation = self.specs.config_operation().await;
-        match self.keyed_container(machine_id, &name, key).await {
+        match self.keyed_container(machine_id, name, key).await {
             Err(Error::SpecNotFound(container_id))
                 if self.half_made(&mut operation, &container_id).await? =>
             {
@@ -452,7 +462,7 @@ impl ContainerRuntime {
                 Ok(None)
             }
             // A restore's Container now holds the records it took over.
-            Err(Error::SpecNotFound(_)) => self.keyed_container(machine_id, &name, key).await,
+            Err(Error::SpecNotFound(_)) => self.keyed_container(machine_id, name, key).await,
             found => found,
         }
     }
