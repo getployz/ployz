@@ -1209,9 +1209,9 @@ fn copies_left_running_take_the_check_mark_off_the_switched_row_and_count_in_the
 #[test]
 fn an_interrupted_deploy_counts_its_cancelled_and_interrupted_rows() {
     let mut frame = frame(State::Cancelled);
-    let mut unchanged = frame.rows[0].clone();
+    let mut unchanged = frame.rows.first().unwrap().clone();
     unchanged.state = State::Unchanged;
-    let mut interrupted = frame.rows[0].clone();
+    let mut interrupted = frame.rows.first().unwrap().clone();
     interrupted.state = State::Interrupted;
     frame.rows.extend([unchanged, interrupted]);
     let mut written = Vec::new();
