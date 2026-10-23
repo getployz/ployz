@@ -2173,7 +2173,16 @@ fn sealing_targets_resolve_each_row_as_the_sync_does_to_the_receiver_s_own_servi
     let review = view(&store, &who);
     let error = sync_targets(&store, &who, &review.version, &["api.env.KEY"]).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
-    assert!(error.message.contains("isn't there yet"), "{error:?}");
+    assert_eq!(
+        error.message,
+        "api.env.KEY: its Service isn't there yet, so nothing can be sealed for it"
+    );
+    assert_eq!(
+        error.details["next"],
+        json!(
+            "sync without --value first, then ployz set api.env.KEY --secret --env production --project shop"
+        )
+    );
 }
 
 #[test]
