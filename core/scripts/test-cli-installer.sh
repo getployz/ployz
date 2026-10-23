@@ -44,8 +44,8 @@ EOF
 cat > "$TMP/bin/curl" <<'EOF'
 #!/bin/sh
 echo "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
-# Like curl when nothing answers on any address it resolved: exit 7, no HTTP status.
-[ -z "${FAKE_UNREACHABLE:-}" ] || exit 7
+# Like curl when nothing answers on any address it resolved: no HTTP status, exit 7.
+[ -z "${FAKE_UNREACHABLE:-}" ] || { printf 000; exit 7; }
 write_out=
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -177,12 +177,20 @@ fi
 [ "$("$TMP/install/ployz")" = installed ]
 
 # A server that can't connect to the releases says why. An IPv6-only server can't reach
-# github.com, which has no IPv6 address; `ip` reports the routes the server has.
+# github.com, which has no IPv6 address; `ip` reports the routes the server has. Like busybox's
+# `ip`, the fake lists every route whatever selector it's given.
 cat > "$TMP/bin/ip" <<'EOF'
 #!/bin/sh
-case "$*" in
-    '-4 route show default') [ -z "${FAKE_IPV4_ROUTE:-}" ] || echo 'default via 192.0.2.1 dev eth0' ;;
-    '-6 route show default') echo 'default via fe80::1 dev eth0 proto ra' ;;
+case "$1" in
+    -4)
+        echo '172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1'
+        [ -z "${FAKE_IPV4_ROUTE:-}" ] || echo 'default via 192.0.2.1 dev eth0'
+        ;;
+    -6)
+        echo 'fe80::/64 dev eth0 proto kernel metric 256'
+        echo 'unreachable default dev lo table 8316 metric 4278198272'
+        echo 'default via fe80::1 dev eth0 proto ra'
+        ;;
 esac
 EOF
 chmod 0755 "$TMP/bin/ip"

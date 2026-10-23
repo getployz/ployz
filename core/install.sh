@@ -140,14 +140,18 @@ resolve_install() {
     printf '%s\n' "${resolved#v}"
 }
 
+# busybox's `ip` ignores a `default` selector and lists every route, so match the line instead.
+has_default_route() {
+    ip "$1" route show 2>/dev/null | grep -q '^default'
+}
+
 # Why the release host didn't answer. github.com has no IPv6 address, so a server with only an
 # IPv6 route can never reach it.
 unreachable() {
     host=${PLOYZ_GITHUB_URL#*://}
     host=${host%%/*}
     if [ "$host" = github.com ] && command -v ip >/dev/null 2>&1 &&
-        [ -z "$(ip -4 route show default 2>/dev/null)" ] &&
-        [ -n "$(ip -6 route show default 2>/dev/null)" ]; then
+        ! has_default_route -4 && has_default_route -6; then
         error "Can't reach $host, which serves Ployz releases: this server has no IPv4 route, and github.com has no IPv6 address. Give the server outbound IPv4, or NAT64 and DNS64: https://ployz.dev/docs/servers/add-a-server#ipv6-only-servers"
     fi
     error "Can't reach $host, which serves Ployz releases. Check this server's outbound internet access."
