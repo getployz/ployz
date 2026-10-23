@@ -4,12 +4,14 @@ type DialTimingBase = {
   readonly totalMs: number;
   readonly outcome: "answered" | "cancelled" | "timed_out" | "refused" | "unanswered";
   readonly sampled: boolean;
+  readonly correlation: string;
 };
 
-export type DialTimingInput = DialTimingBase & (
-  | { readonly stage: "cloud_dial"; readonly dialMs: number }
-  | { readonly stage: "set_management_client"; readonly setMs: number }
-);
+export type DialTimingInput = DialTimingBase & { readonly stage: "cloud_dial" | "set_management_client" };
+
+export function dialCorrelation(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 export function shouldLogDialTiming(input: DialTimingInput): boolean {
   return input.sampled || input.totalMs >= 2_000 || input.outcome !== "answered";
@@ -20,16 +22,15 @@ export function dialTimingFields(input: DialTimingInput) {
     stage: input.stage,
     totalMs: Math.round(input.totalMs),
     outcome: input.outcome,
+    correlation: input.correlation,
   };
-  return input.stage === "cloud_dial"
-    ? { ...fields, dialMs: Math.round(input.dialMs) }
-    : { ...fields, setMs: Math.round(input.setMs) };
+  return fields;
 }
 
-/** Keep native diagnostics inside Cloud's known log schema. */
-export function nativeDialTimingFields(timing: DialTiming) {
+export function nativeDialTimingFields(timing: DialTiming, cloudOutcome?: DialTimingInput["outcome"]) {
   return {
     stage: "native_dial" as const,
+    correlation: timing.correlation,
     totalMs: timing.totalMs,
     endpointBindMs: timing.endpointBindMs ?? null,
     irohConnectMs: timing.irohConnectMs ?? null,
@@ -40,6 +41,7 @@ export function nativeDialTimingFields(timing: DialTiming) {
     unfinishedStage: timing.unfinishedStage ?? null,
     pathKind: timing.pathKind,
     outcome: timing.outcome,
+    stoppedBy: timing.outcome === "cancelled" && cloudOutcome === "timed_out" ? "cloud_deadline" : timing.stoppedBy ?? null,
   };
 }
 

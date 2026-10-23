@@ -7,7 +7,7 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
-import { dialTimingFields, nativeDialTimingFields, sampleDialTiming, shouldLogDialTiming, type DialTimingInput } from "#/modules/machines/server-access-diagnostics";
+import { dialCorrelation, dialTimingFields, nativeDialTimingFields, sampleDialTiming, shouldLogDialTiming, type DialTimingInput } from "#/modules/machines/server-access-diagnostics";
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
@@ -81,13 +81,16 @@ function dialOutcome(error: PloyzSdkError | Cause.TimeoutError): DialTimingInput
 const logDialTiming = (input: DialTimingInput) => {
   if (!shouldLogDialTiming(input)) return Effect.void;
   const fields = dialTimingFields(input);
-  const log = input.outcome !== "answered" ? Effect.logWarning : Effect.logInfo;
+  const log = input.outcome !== "answered" && input.stage === "cloud_dial"
+    ? Effect.logInfo : input.outcome !== "answered" ? Effect.logWarning
+      : input.totalMs >= 2_000 ? Effect.logInfo : Effect.logDebug;
   return log("Server Access dial timing").pipe(Effect.annotateLogs(fields));
 };
 
-const logNativeDialTiming = (timing: DialTiming) => {
-  const log = timing.outcome !== "answered" ? Effect.logWarning : Effect.logInfo;
-  return log("Server Access native dial timing").pipe(Effect.annotateLogs(nativeDialTimingFields(timing)));
+const logNativeDialTiming = (timing: DialTiming, cloudOutcome: DialTimingInput["outcome"]) => {
+  const log = timing.outcome !== "answered" ? Effect.logWarning
+    : timing.totalMs >= 2_000 ? Effect.logInfo : Effect.logDebug;
+  return log("Server Access native dial timing").pipe(Effect.annotateLogs(nativeDialTimingFields(timing, cloudOutcome)));
 };
 
 /**
@@ -155,14 +158,23 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       const runLog = Effect.runForkWith(yield* Effect.context());
       const deadline = (yield* Clock.currentTimeMillis) + SERVER_TIMEOUT_MS;
       const sampled = sampleDialTiming();
+      const correlation = dialCorrelation();
+      let cloudDialOutcome: DialTimingInput["outcome"] | undefined;
+      const pendingNativeTimings: DialTiming[] = [];
+      const onDialTiming = (timing: DialTiming) => {
+        if (cloudDialOutcome === undefined) pendingNativeTimings.push(timing);
+        else runLog(logNativeDialTiming(timing, cloudDialOutcome));
+      };
       const dialStarted = performance.now();
       const dialed = yield* answered(ployz.connect({
-        connections: [cloud], timeoutMs: SERVER_TIMEOUT_MS, sampleDialTiming: sampled,
-        onDialTiming: (timing) => { runLog(logNativeDialTiming(timing)); },
+        connections: [cloud], timeoutMs: SERVER_TIMEOUT_MS, sampleDialTiming: sampled, dialCorrelation: correlation,
+        onDialTiming,
       }, { closeWithin: clusterRead })
         .pipe(Effect.timeout(SERVER_TIMEOUT_MS)));
       const dialMs = performance.now() - dialStarted;
-      yield* logDialTiming({ stage: "cloud_dial", totalMs: dialMs, dialMs, outcome: dialed.outcome, sampled });
+      cloudDialOutcome = dialed.outcome;
+      for (const timing of pendingNativeTimings) runLog(logNativeDialTiming(timing, cloudDialOutcome));
+      yield* logDialTiming({ stage: "cloud_dial", totalMs: dialMs, outcome: dialed.outcome, sampled, correlation });
       if (dialed.value === null) return { capability: null, refused: dialed.refused, revoked: false };
       const client = dialed.value;
       const timeLeft = Clock.currentTimeMillis.pipe(Effect.map((now) => Math.max(1, deadline - now)));
@@ -214,7 +226,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
           const setStarted = performance.now();
           const management = yield* answered(client.setManagementClient(label).pipe(Effect.timeout(yield* timeLeft)));
           const setMs = performance.now() - setStarted;
-          yield* logDialTiming({ stage: "set_management_client", totalMs: setMs, setMs, outcome: management.outcome, sampled });
+          yield* logDialTiming({ stage: "set_management_client", totalMs: setMs, outcome: management.outcome, sampled, correlation });
           if (management.value === null) {
             // Only the claim itself: a key or a revocation written over it meanwhile is somebody else's.
             yield* drizzle.delete(serverAccess)

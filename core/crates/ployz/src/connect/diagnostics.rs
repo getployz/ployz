@@ -74,6 +74,8 @@ pub struct DialTimings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry_describe_contract_ms: Option<u64>,
     pub path_kind: PathKind,
+    #[serde(skip)]
+    pub(super) selected_connection: Option<iroh::endpoint::Connection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     unfinished_stage: Option<Stage>,
 }
@@ -106,8 +108,8 @@ impl StageGuard {
         }
     }
 
-    pub(super) fn finish(&mut self) {
-        self.record(false);
+    pub(super) fn finish<T, E>(&mut self, result: &Result<T, E>) {
+        self.record(result.is_err());
         self.finished = true;
     }
 
@@ -129,6 +131,21 @@ impl StageGuard {
                 timings.unfinished_stage = Some(self.stage);
             }
         }
+    }
+}
+
+impl DialTimings {
+    /// Read Iroh's path only for a record that will be emitted.
+    #[must_use]
+    pub fn selected_path(&self) -> PathKind {
+        self.selected_connection
+            .as_ref()
+            .map_or(PathKind::Unknown, |connection| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    PathKind::selected(connection)
+                }))
+                .unwrap_or(PathKind::Unknown)
+            })
     }
 }
 
@@ -188,8 +205,9 @@ mod tests {
         let timings = Arc::new(Mutex::new(DialTimings::default()));
         scope(Arc::clone(&timings), async {
             let mut stage = StageGuard::begin(Stage::Proof);
-            stage.finish_error();
-        }).await;
+            stage.finish(&Err::<(), ()>(()));
+        })
+        .await;
         let recorded = timings.lock().expect("timings lock");
         assert!(recorded.proof_ms.is_some());
         assert!(matches!(recorded.unfinished_stage, Some(Stage::Proof)));

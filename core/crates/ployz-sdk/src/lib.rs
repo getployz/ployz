@@ -24,6 +24,7 @@ pub struct PendingConnection {
     timings: std::sync::Mutex<Option<serde_json::Value>>,
     sampled: bool,
     diagnose: bool,
+    correlation: Option<String>,
 }
 
 static DIAL_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -47,6 +48,7 @@ fn dial_sample_rate() -> u64 {
 pub fn start_connections(
     #[napi(ts_arg_type = "readonly Connection[]")] connections: serde_json::Value,
     sample_dial_timing: Option<bool>,
+    dial_correlation: Option<String>,
 ) -> Result<PendingConnection> {
     let connections = parse_connections(connections)?;
     if connections.is_empty() {
@@ -67,7 +69,25 @@ pub fn start_connections(
                     .is_multiple_of(dial_sample_rate())
             }),
         diagnose,
+        correlation: dial_correlation.filter(|value| {
+            value.len() == 16
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        }),
     })
+}
+
+fn classify_failure(error: &sdk::CallError, timed_out: bool, cancelled: bool) -> DialOutcome {
+    if timed_out {
+        DialOutcome::TimedOut
+    } else if cancelled {
+        DialOutcome::Cancelled
+    } else if error.unanswered {
+        DialOutcome::Unanswered
+    } else {
+        DialOutcome::Refused
+    }
 }
 
 /// Connection descriptors from JavaScript. A unix socket is refused unless this addon
@@ -137,21 +157,33 @@ impl PendingConnection {
         let total_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let outcome = match &result {
             Ok(_) => DialOutcome::Answered,
-            Err(_) if self.timed_out.load(std::sync::atomic::Ordering::Relaxed) => {
-                DialOutcome::TimedOut
-            }
-            Err(_) if self.cancel.is_cancelled() => DialOutcome::Cancelled,
-            Err(error) if !error.unanswered => DialOutcome::Refused,
-            Err(_) if total_ms >= 10_000 => DialOutcome::TimedOut,
-            Err(_) => DialOutcome::Unanswered,
+            Err(error) => classify_failure(
+                error,
+                self.timed_out.load(std::sync::atomic::Ordering::Relaxed),
+                self.cancel.is_cancelled(),
+            ),
         };
         if self.diagnose
             && should_emit(self.sampled, total_ms, outcome)
             && let Ok(timings) = timings.lock()
-            && let Ok(serde_json::Value::Object(mut fields)) = serde_json::to_value(timings.clone())
         {
+            let mut recorded = timings.clone();
+            recorded.path_kind = recorded.selected_path();
+            let Ok(serde_json::Value::Object(mut fields)) = serde_json::to_value(recorded) else {
+                return Ok(Client {
+                    inner: result.map_err(call_to_napi)?,
+                });
+            };
             fields.insert("totalMs".into(), serde_json::json!(total_ms));
             fields.insert("outcome".into(), serde_json::json!(outcome));
+            if let Some(correlation) = &self.correlation {
+                fields.insert("correlation".into(), serde_json::json!(correlation));
+            }
+            if outcome == DialOutcome::TimedOut {
+                fields.insert("stoppedBy".into(), serde_json::json!("sdk_deadline"));
+            } else if outcome == DialOutcome::Cancelled {
+                fields.insert("stoppedBy".into(), serde_json::json!("caller"));
+            }
             if let Ok(mut slot) = self.timings.lock() {
                 *slot = Some(serde_json::Value::Object(fields));
             }
@@ -251,15 +283,35 @@ mod dial_diagnostic_tests {
     #[test]
     fn only_a_fired_deadline_is_timed_out() {
         let failure = sdk::CallError {
-            error: RpcError { code: RpcErrorCode::Unavailable, message: "no answer".into(), details: serde_json::Value::Null, cause: Vec::new() },
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "no answer".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
             unanswered: true,
             target_unreached: false,
         };
-        assert_eq!(classify_failure(&failure, false, false), DialOutcome::Unanswered);
-        assert_eq!(classify_failure(&failure, false, true), DialOutcome::Cancelled);
-        assert_eq!(classify_failure(&failure, true, true), DialOutcome::TimedOut);
-        let refused = sdk::CallError { unanswered: false, ..failure };
-        assert_eq!(classify_failure(&refused, false, false), DialOutcome::Refused);
+        assert_eq!(
+            classify_failure(&failure, false, false),
+            DialOutcome::Unanswered
+        );
+        assert_eq!(
+            classify_failure(&failure, false, true),
+            DialOutcome::Cancelled
+        );
+        assert_eq!(
+            classify_failure(&failure, true, true),
+            DialOutcome::TimedOut
+        );
+        let refused = sdk::CallError {
+            unanswered: false,
+            ..failure
+        };
+        assert_eq!(
+            classify_failure(&refused, false, false),
+            DialOutcome::Refused
+        );
     }
 }
 

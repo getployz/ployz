@@ -752,7 +752,7 @@ pub(crate) async fn connect_one(
     );
     let mut stage = diagnostics::StageGuard::begin(diagnostics::Stage::EntryDescribeContract);
     let confirmed = client.confirm_entry().await;
-    stage.finish();
+    stage.finish(&confirmed);
     confirmed?;
     Ok(client)
 }

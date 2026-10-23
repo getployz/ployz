@@ -215,6 +215,8 @@ function safeDialTiming(timing) {
     ? timing.outcome : "unanswered";
   const pathKind = ["direct", "relayed", "unknown"].includes(timing.pathKind) ? timing.pathKind : "unknown";
   const safe = { outcome, pathKind };
+  if (typeof timing.correlation === "string" && /^[0-9a-f]{16}$/.test(timing.correlation)) safe.correlation = timing.correlation;
+  if (["sdk_deadline", "caller"].includes(timing.stoppedBy)) safe.stoppedBy = timing.stoppedBy;
   for (const field of ["totalMs", "endpointBindMs", "irohConnectMs", "proofMs", "http2ChannelMs", "probeDescribeContractMs", "entryDescribeContractMs"]) {
     if (Number.isSafeInteger(timing[field]) && timing[field] >= 0) safe[field] = timing[field];
   }
@@ -229,8 +231,10 @@ function readDialTiming(attempt) {
 
 function reportDialTiming(callback, timing) {
   if (timing == null) return;
-  // A diagnostic callback cannot change the connection's result.
-  try { callback?.(timing); } catch {}
+  try {
+    const returned = callback?.(timing);
+    if (returned != null && typeof returned.then === "function") void Promise.resolve(returned).catch(() => {});
+  } catch {}
 }
 
 async function connect(options) {
@@ -240,10 +244,11 @@ async function connect(options) {
   }
   signal?.throwIfAborted();
   let attempt;
-  try { attempt = native.startConnections(options.connections, options.sampleDialTiming); } catch (error) { throwRpcError(error); }
+  try { attempt = native.startConnections(options.connections, options.sampleDialTiming, options.dialCorrelation); } catch (error) { throwRpcError(error); }
   let client;
   let timer;
   let stopped = false;
+  let deadlineError;
   // The caller's own close reports a failed close; this one has nobody awaiting it.
   const stop = (timedOut) => { stopped = true; attempt.cancel(timedOut); void client?.close().catch(() => {}); };
   const abort = () => stop(false);
@@ -252,7 +257,8 @@ async function connect(options) {
   if (timeoutMs !== undefined) timer = setTimeout(() => stop(true), timeoutMs);
   try {
     client = new Client(await withRpcError(attempt.wait()));
-    client.dialTiming = readDialTiming(attempt);
+    const timing = readDialTiming(attempt);
+    if (timing != null) client.dialTiming = timing;
     const close = client.close.bind(client);
     // Keep listening until the close finishes, so an abort during it still reaches the session.
     client.close = async () => { try { return await close(); } finally { cleanup(); } };
@@ -260,14 +266,15 @@ async function connect(options) {
     if (stopped) {
       await settledWithin(client.close().catch(() => {}), STOPPED_CLOSE_MS);
       signal?.throwIfAborted();
-      throw new Error("session deadline exceeded");
+      deadlineError = new Error("session deadline exceeded");
+      throw deadlineError;
     }
     reportDialTiming(onDialTiming, client.dialTiming);
     return client;
   } catch (error) {
     const timing = readDialTiming(attempt);
     reportDialTiming(onDialTiming, timing);
-    if (timing != null && error != null && typeof error === "object") {
+    if (timing != null && error != null && error !== signal?.reason && (error instanceof RpcError || error === deadlineError)) {
       try { error.dialTiming = timing; } catch {}
     }
     cleanup();

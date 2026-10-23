@@ -2,7 +2,7 @@
 
 use super::{
     BoxProxyStream, ConnectError, connect_stream,
-    diagnostics::{self, PathKind, Stage, StageGuard},
+    diagnostics::{self, Stage, StageGuard},
 };
 use crate::context::ConnectionError;
 use iroh::{
@@ -193,7 +193,7 @@ pub(super) async fn connect_management(
         .map_err(|_| ConnectionError::ManagementCapability)?;
     let mut stage = StageGuard::begin(Stage::EndpointBind);
     let endpoint = management_endpoint(relay).await;
-    stage.finish();
+    stage.finish(&endpoint);
     let endpoint = endpoint?;
     let address = EndpointAddr::new(machine).with_relay_url(relay.url.clone());
     let mut stage = StageGuard::begin(Stage::IrohConnect);
@@ -202,9 +202,9 @@ pub(super) async fn connect_management(
         .connect(address, MANAGEMENT_ALPN)
         .await
         .map_err(|error| dial_error("management dial", &error));
-    stage.finish();
+    stage.finish(&connection);
     let connection = connection?;
-    diagnostics::record(|timings| timings.path_kind = PathKind::selected(&connection));
+    diagnostics::record(|timings| timings.selected_connection = Some(connection.clone()));
     let session = Arc::new(ManagementConnection {
         connection,
         _endpoint: endpoint,
@@ -215,11 +215,14 @@ pub(super) async fn connect_management(
             session.connection.open_bi().await.map_err(|error| {
                 ConnectError::Attempt(format!("management stream: {error}").into())
             });
+        if opened.is_err() {
+            stage.finish(&opened);
+        }
         let (mut send, receive) = opened?;
         let proof = prove(&session.connection, &mut send, capability)
             .await
             .map_err(|error| ConnectError::Attempt(format!("management stream: {error}").into()));
-        stage.finish();
+        stage.finish(&proof);
         proof?;
         let stream = ManagementIo {
             io: tokio::io::join(receive, send),
@@ -227,7 +230,7 @@ pub(super) async fn connect_management(
         };
         let mut stage = StageGuard::begin(Stage::Http2Channel);
         let channel = connect_stream(stream, Duration::from_secs(15)).await;
-        stage.finish();
+        stage.finish(&channel);
         let channel = channel?;
         // The daemon refuses by identity right after the handshake, which the client only
         // observes once it reads. Probe before the channel is trusted so refusal is
@@ -238,7 +241,7 @@ pub(super) async fn connect_management(
                 op::DescribeContract::into_request(DescribeContractRequest {}).encode()?,
             )
             .await;
-        stage.finish();
+        stage.finish(&described);
         described?;
         Ok::<_, ConnectError>(channel)
     };

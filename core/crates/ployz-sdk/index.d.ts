@@ -82,10 +82,13 @@ export type ConnectOptions = {
   readonly onDialTiming?: (timing: DialTiming) => void;
   /** Match the caller's sample decision; slow and failed dials still emit. */
   readonly sampleDialTiming?: boolean;
+  /** Opaque random value shared by one Cloud dial's timing records. */
+  readonly dialCorrelation?: string;
 };
 
 /** Native stages observed before a pending management dial settled. No identity or address is retained. */
 export type DialTiming = {
+  readonly correlation?: string;
   readonly totalMs: number;
   readonly endpointBindMs?: number;
   readonly irohConnectMs?: number;
@@ -96,6 +99,7 @@ export type DialTiming = {
   readonly pathKind: "direct" | "relayed" | "unknown";
   readonly unfinishedStage?: "endpoint_bind" | "iroh_connect" | "proof" | "http2_channel" | "probe_describe_contract" | "entry_describe_contract";
   readonly outcome: "answered" | "cancelled" | "timed_out" | "refused" | "unanswered";
+  readonly stoppedBy?: "sdk_deadline" | "caller";
 };
 
 export type WatchOptions = {
