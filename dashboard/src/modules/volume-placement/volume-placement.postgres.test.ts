@@ -3,7 +3,7 @@ import { ConfigProvider, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { refusedPublicly } from "#/modules/config-store/config-store.server";
+import { refusedPublicly, statusFor } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
@@ -11,14 +11,14 @@ import { InngestClient } from "#/modules/inngest/client";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import {
-  deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stagePlacement, stampPlacements, writeAdmitted,
+  deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stagePlacement, stageRestore, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { encodePublicError } from "#/server/public-error";
+import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
@@ -160,16 +160,22 @@ describe("volume placement", () => {
     expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { primary: web("web-2") }, deploymentId: "dep-1" }]);
   });
 
-  it("answers a Store refusal of staging with its own status, not a 500", async () => {
-    const answered = (code: string) => {
+  it("answers a Store refusal of staging with the CLI's status, not a 500, and never its message", async () => {
+    const answered = async (code: string, staging: () => Effect.Effect<unknown, unknown, Database | CloudStore | StoreWrites>) => {
       refusing = code;
-      return run(stagePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] }).pipe(refusedPublicly, Effect.flip))
-        .then(encodePublicError);
+      return encodePublicError(await run(staging().pipe(refusedPublicly, Effect.flip)));
     };
-    expect(await answered("not_found")).toMatchObject({ code: "NOT_FOUND" });
-    expect(await answered("conflict")).toMatchObject({ code: "CONFLICT", message: "Environment shop/production is gone" });
-    expect(await answered("invalid_argument")).toMatchObject({ code: "VALIDATION_FAILED" });
-    expect(await answered("internal")).toMatchObject({ code: "INTERNAL" });
+    const placement = () => stagePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] });
+    const restore = () => stageRestore(organizationId, null, { volumeId, environment, guid: "point", name: "point", at: 0 });
+    // Cloud's own credential failing isn't the user's session, and a 501 has no public error.
+    const internal = new Set(["unauthenticated", "unsupported", "internal"]);
+    for (const code of ["invalid_argument", "not_found", "conflict", "forbidden", "unavailable", ...internal]) {
+      for (const staging of [placement, restore]) {
+        const error = await answered(code, staging);
+        expect(statusForPublicError(error), code).toBe(internal.has(code) ? 500 : statusFor(code));
+        expect(error.message).not.toContain("shop/production");
+      }
+    }
   });
 
   it("refuses edits and Discard when the Store can't say whether the Deploy still runs", async () => {

@@ -26,7 +26,7 @@ import {
   type DeploymentTrigger,
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
-import { Conflict, Forbidden, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
+import { Conflict, Forbidden, NotFound, Unavailable, Validation } from "#/server/public-error";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
@@ -142,61 +142,47 @@ export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (o
   );
 });
 
+/** Each Store refusal code's HTTP status. Any other code is a 500. */
+const REFUSAL_STATUS: Readonly<Record<string, number>> = {
+  invalid_argument: 422,
+  not_found: 404,
+  unknown_command: 404,
+  conflict: 409,
+  ambiguous: 409,
+  confirmation_required: 409,
+  approval_required: 409,
+  channel_mismatch: 409,
+  unauthenticated: 401,
+  forbidden: 403,
+  approval_denied: 403,
+  claim_required: 403,
+  unsupported: 501,
+  unavailable: 503,
+};
+
 /** A Store refusal travels to the CLI verbatim: the RPC error vocabulary, never the rejected value. */
-function statusFor(code: string) {
-  switch (code) {
-    case "invalid_argument":
-      return 422;
-    case "not_found":
-    case "unknown_command":
-      return 404;
-    case "conflict":
-    case "ambiguous":
-    case "confirmation_required":
-    case "approval_required":
-    case "channel_mismatch":
-      return 409;
-    case "unauthenticated":
-      return 401;
-    case "forbidden":
-    case "approval_denied":
-    case "claim_required":
-      return 403;
-    case "unsupported":
-      return 501;
-    case "unavailable":
-      return 503;
-    default:
-      return 500;
-  }
+export function statusFor(code: string) {
+  return REFUSAL_STATUS[code] ?? 500;
 }
 
 /**
- * A Store refusal as a user's request answers it, in the categories `statusFor` gives the CLI. A refusal outside them,
- * such as `internal`, stays a 500.
+ * A Store refusal as a user's request answers it: the public error of the status `statusFor` gives the CLI, in its fixed
+ * copy, since a Store message can name an ID. A 401 stays a 500, since the user's session already passed and the Store
+ * means Cloud's own credential, and so does a 501, which has no public error.
  */
 export function publicRefusal(error: StoreRefused) {
   const { message } = error;
-  switch (error.code) {
-    case "invalid_argument":
-      return new Validation({ userFacing: true, message });
-    case "not_found":
-    case "unknown_command":
+  switch (statusFor(error.code)) {
+    case 422:
+      return new Validation({ message });
+    case 404:
       return new NotFound({ message });
-    case "conflict":
-    case "ambiguous":
-    case "confirmation_required":
-    case "approval_required":
-    case "channel_mismatch":
-      return new Conflict({ userFacing: true, message });
-    case "unauthenticated":
-      return new Unauthorized();
-    case "forbidden":
-    case "approval_denied":
-    case "claim_required":
-      return new Forbidden({ userFacing: true, message });
-    case "unavailable":
-      return new Unavailable({ userFacing: true, message });
+    case 409:
+      return new Conflict({ message });
+    case 403:
+      return new Forbidden({ message });
+    case 503:
+      return new Unavailable({ message });
     default:
       return error;
   }

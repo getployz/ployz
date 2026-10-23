@@ -41,6 +41,7 @@ export const discardPlacementServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(VolumeInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap((access) => discardPlacement(access.organization.id, access, data.volumeId, data.environment)),
+    refusedPublicly,
   )));
 
 export const stageRestoreServerFn = createServerFn({ method: "POST" })
@@ -58,9 +59,10 @@ export const stageOffServerServerFn = createServerFn({ method: "POST" })
     Effect.flatMap(({ organization }) => placementRefusal(organization.id).pipe(Effect.flatMap((refusal) => refusal === null
       ? stageOffServer(organization.id, data.server, data.accepting, data.unrouted)
       : Effect.fail(new Conflict({ userFacing: true, message: refusal.message }))))),
+    refusedPublicly,
   )));
 
 export const deleteCopyServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(DeleteCopyInput))
-  .handler(({ context, data }) => runActor(context, deleteCopy(context.actor, data)));
+  .handler(({ context, data }) => runActor(context, refusedPublicly(deleteCopy(context.actor, data))));
