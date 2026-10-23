@@ -1230,6 +1230,61 @@ fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
     );
 }
 
+/// A plan can read membership just before a Leave marks the Server, then time out
+/// on it as it goes. Read again, a Server now marked leaving or no longer listed
+/// left with its ingress role, so it owes no check; one still listed and not
+/// leaving stays unchecked, and a re-read that failed changes nothing (#3288).
+#[test]
+fn an_unchecked_server_that_left_since_the_plan_read_is_dropped() {
+    use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
+    use crate::deploy::{SlotAction, plan_ingress_repairs, without_departed};
+
+    let serving = crate::global_fixtures::machine('1', "edge-1");
+    let marked = crate::global_fixtures::machine('2', "edge-2");
+    let gone = crate::global_fixtures::machine('3', "edge-3");
+    let silent = crate::global_fixtures::machine('4', "edge-4");
+    let mut snapshot = servers(
+        &[
+            serving.clone(),
+            marked.clone(),
+            gone.clone(),
+            silent.clone(),
+        ],
+        vec![ingress_on('a', &serving)],
+    );
+    let timed_out = |machine: &ployz_core::Machine| ployz_core::MachineFailure {
+        machine_id: machine.id,
+        error: error("target Machine RPC timed out"),
+    };
+    snapshot.container_failures = vec![timed_out(&marked), timed_out(&gone), timed_out(&silent)];
+    let planned = plan_ingress_repairs(&ingress_intent(), &snapshot);
+    let unchecked = |repairs: &[crate::deploy::SlotRepair]| {
+        repairs
+            .iter()
+            .filter(|repair| matches!(repair.action, SlotAction::Unchecked(_)))
+            .map(|repair| repair.machine_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unchecked(&planned), [marked.id, gone.id, silent.id]);
+
+    let mut now_leaving = marked.clone();
+    now_leaving.runtime.leaving = true;
+    let reread: Vec<_> = [serving.clone(), now_leaving, silent.clone()]
+        .into_iter()
+        .map(|machine| {
+            ployz_core::MachineObservation::new(machine, ployz_core::MembershipObservation::Up)
+        })
+        .collect();
+    assert_eq!(
+        unchecked(&without_departed(planned.clone(), Some(&reread))),
+        [silent.id]
+    );
+    assert_eq!(
+        unchecked(&without_departed(planned, None)),
+        [marked.id, gone.id, silent.id]
+    );
+}
+
 #[tokio::test]
 async fn ingress_create_cleanup_never_names_a_sibling() {
     use crate::deploy::{

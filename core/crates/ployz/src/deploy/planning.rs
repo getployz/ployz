@@ -535,6 +535,30 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
     all
 }
 
+/// `repairs` without the unchecked Servers that left since the plan read membership,
+/// by `reread`, a later read of it: one now marked leaving, or no longer listed,
+/// went with its ingress role. A plan can read membership just before a Leave marks
+/// the Server and then time out on it as it goes (#3288). Without a re-read, the
+/// repairs stand.
+#[must_use]
+pub fn without_departed(
+    repairs: Vec<SlotRepair>,
+    reread: Option<&[MachineObservation]>,
+) -> Vec<SlotRepair> {
+    let Some(reread) = reread else {
+        return repairs;
+    };
+    repairs
+        .into_iter()
+        .filter(|repair| {
+            !matches!(repair.action, SlotAction::Unchecked(_))
+                || reread.iter().any(|machine| {
+                    machine.machine.id == repair.machine_id && !machine.machine.runtime.leaving
+                })
+        })
+        .collect()
+}
+
 /// Plan the Ingress Proxy on the one Machine of `only` as the Service `service_id`, which
 /// its siblings run or are created as in the same check and `only` cannot see: they share
 /// its creation key.
