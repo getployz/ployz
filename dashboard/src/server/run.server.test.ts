@@ -137,7 +137,8 @@ describe("Effect execution boundary", () => {
     await expect(runInngest(Effect.die(failedQuery()))).rejects.toSatisfy(
       (cause: unknown) =>
         cause instanceof Error &&
-        cause.message === "EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token",
+        cause.message === "EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token" &&
+        cause.cause === undefined,
     );
     await runtime.dispose();
   });

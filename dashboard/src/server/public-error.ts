@@ -155,46 +155,90 @@ const QUERY_FAILURES = new Set(["EffectDrizzleQueryError", "SqlError"]);
 const decodeFailedQuery = Schema.decodeUnknownOption(
   Schema.Struct({ _tag: Schema.Literal("EffectDrizzleQueryError"), query: Schema.String }),
 );
-const STATEMENT = /\b(insert\s+into|delete\s+from|update|from)\s+((?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*)(?:\.(?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*))?)/iu;
+const decodeErrorName = Schema.decodeUnknownOption(Schema.Struct({ name: Schema.String }));
+/** String literals, dollar quotes and comments: words in them are values, not the statement. */
+const QUOTED = /'(?:[^']|'')*'|\$([A-Za-z_]\w*)?\$[\s\S]*?\$\1\$|\/\*[\s\S]*?\*\/|--[^\n]*/gu;
+const LEFT_OPEN = /'|\$[A-Za-z_]?\w*\$|\/\*|--/u;
+const NAME = String.raw`(?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*)`;
+const STATEMENT = new RegExp(String.raw`\b(?:insert\s+into|delete\s+from|update|from)\s+(${NAME}(?:\.${NAME})?)`, "iu");
 const VERB = /^\s*(?:with\b[\s\S]*?\)\s*)?(select|insert|update|delete)\b/iu;
+/** How many values [`causeValues`] reads before it treats a cause as unreadable. */
+const READABLE_VALUES = 64;
 
-/** A failed query's statement as its verb and first table, such as `insert machine_enrollment_token`. */
+/**
+ * A failed query's statement as its verb and first table, such as `insert machine_enrollment_token`. None when a
+ * literal or comment is left open, since a value could then pass for a table.
+ */
 function statementName(query: string): string | undefined {
-  const verb = VERB.exec(query)?.[1] ?? STATEMENT.exec(query)?.[1]?.split(/\s/u)[0];
-  const table = STATEMENT.exec(query)?.[2]?.replaceAll('"', "");
+  const bare = query.replaceAll(QUOTED, " ");
+  if (LEFT_OPEN.test(bare)) return undefined;
+  const verb = VERB.exec(bare)?.[1];
+  const table = STATEMENT.exec(bare)?.[1]?.replaceAll('"', "");
   if (verb === undefined || table === undefined) return undefined;
   return `${verb.toLowerCase()} ${table}`;
 }
 
 /**
- * A value that carries a failed query, named by its tags, SQLSTATE and statement: the query's message holds its
- * params, and the database's message can quote the values it refused.
+ * Every value in `cause`: each reason of a Cause, and each `cause` a value wraps, all branches. None when there are
+ * more than [`READABLE_VALUES`], so a cause too deep or cyclic to read is never taken as safe.
  */
-function failedQuerySummary(cause: unknown): string | undefined {
-  const chain = [...causeChain(cause)];
-  const carriesQuery = chain.some((at) => {
+function causeValues(cause: unknown): unknown[] | undefined {
+  const values: unknown[] = [];
+  const pending: unknown[] = [cause];
+  for (let at = pending.shift(); at !== undefined || pending.length > 0; at = pending.shift()) {
+    if (values.length >= READABLE_VALUES) return undefined;
+    if (at === undefined) continue;
+    if (Cause.isCause(at)) {
+      for (const reason of at.reasons) {
+        if (Cause.isDieReason(reason)) pending.push(reason.defect);
+        else if (Cause.isFailReason(reason)) pending.push(reason.error);
+      }
+      continue;
+    }
+    values.push(at);
+    pending.push(Option.getOrUndefined(decodeNestedCause(at))?.cause);
+  }
+  return values;
+}
+
+/** Whether `cause` may hold a failed query: one is in it, or it is too deep to tell. */
+function mayCarryQuery(cause: unknown): boolean {
+  const values = causeValues(cause);
+  return values === undefined || values.some((at) => {
     const tagged = decodeTaggedFailure(at);
     return Option.isSome(tagged) && QUERY_FAILURES.has(tagged.value._tag);
   });
-  if (!carriesQuery) return undefined;
-  const query = chain.map((at) => Option.getOrUndefined(decodeFailedQuery(at))?.query).find((at) => at !== undefined);
-  const statement = query === undefined ? undefined : statementName(query);
-  const summary = typedFailureSummary(cause);
-  return statement === undefined ? summary : `${summary} in ${statement}`;
 }
 
 /**
- * What a log may hold of `cause`: all of it, unless a failure or defect in it carries a failed query. Then each
- * reason is named by [`failedQuerySummary`] or, when it carries none, by its pretty form.
+ * `value` by its tags, SQLSTATE and any failed query's statement, or else its error class: never a message or field,
+ * since a query's message holds its params and the database's can quote the values it refused.
+ */
+function safeSummary(cause: unknown): string {
+  const tags = typedFailureSummary(cause);
+  const name = Option.getOrUndefined(decodeErrorName(cause))?.name;
+  const kind = tags.length > 0 ? tags : name !== undefined && IDENTIFIER.test(name) ? name : "defect";
+  const query = causeValues(cause)
+    ?.map((at) => Option.getOrUndefined(decodeFailedQuery(at))?.query)
+    .find((at) => at !== undefined);
+  const statement = query === undefined ? undefined : statementName(query);
+  return statement === undefined ? kind : `${kind} in ${statement}`;
+}
+
+/**
+ * What a log may hold of `cause`: all of it, unless it may hold a failed query. Then every reason is named by
+ * [`safeSummary`], and an interruption as such.
  */
 export function loggableCause(cause: Cause.Cause<unknown>): Cause.Cause<unknown> | string {
-  const reasons = cause.reasons.map((reason) => {
-    const value = Cause.isDieReason(reason) ? reason.defect : Cause.isFailReason(reason) ? reason.error : undefined;
-    return { reason, summary: value === undefined ? undefined : failedQuerySummary(value) };
-  });
-  if (reasons.every(({ summary }) => summary === undefined)) return cause;
-  return reasons
-    .map(({ reason, summary }) => summary ?? Cause.pretty(Cause.fromReasons([reason])))
+  if (!mayCarryQuery(cause)) return cause;
+  return cause.reasons
+    .map((reason) =>
+      Cause.isDieReason(reason)
+        ? safeSummary(reason.defect)
+        : Cause.isFailReason(reason)
+          ? safeSummary(reason.error)
+          : "interrupted"
+    )
     .join("\n");
 }
 
@@ -226,13 +270,16 @@ function reportUnexpectedCause(
       reported = true;
     }
     if (Cause.hasInterrupts(cause)) {
-      report("interruption", cause);
+      report("interruption", loggableCause(cause));
       reported = true;
     }
     if (reported) return;
   }
   if (isExpectedFailure(cause)) return;
-  report("defect", Option.isSome(decodeTaggedFailure(cause)) ? typedFailureSummary(cause) : cause);
+  report(
+    "defect",
+    Option.isSome(decodeTaggedFailure(cause)) ? typedFailureSummary(cause) : mayCarryQuery(cause) ? safeSummary(cause) : cause,
+  );
 }
 
 function userFacingMessage(cause: unknown, fallback: string): string {

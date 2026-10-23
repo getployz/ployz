@@ -207,6 +207,65 @@ describe("encodePublicError", () => {
     );
   });
 
+  it("names no statement whose words sit in a literal or comment, and none when one is left open", () => {
+    const named = (query: string) => {
+      const report = vi.fn();
+      encodePublicBoundaryError(
+        Cause.die(new EffectDrizzleQueryError({ query, params: [], cause: Cause.fail(new SqlError({ reason: new UnknownError({ cause: {} }) })) })),
+        { report },
+      );
+      return String(report.mock.calls[0]?.[1]);
+    };
+
+    expect(named("select 'from secret_literal' from t")).toMatch(/ in select t$/u);
+    expect(named("select $tag$update secret_dollar$tag$ from t")).toMatch(/ in select t$/u);
+    expect(named("select 1 /* from secret_comment */ from t")).toMatch(/ in select t$/u);
+    expect(named("select 1 -- from secret_line\nfrom t")).toMatch(/ in select t$/u);
+    expect(named("select E'it\\'s from secret_open' from t")).not.toMatch(/secret_open| in /u);
+  });
+
+  it("names every reason beside a died query safely, and the interruption too", () => {
+    const report = vi.fn();
+    const query = failedQuery();
+    const cause = Cause.combine(
+      Cause.combine(Cause.fail(new Error("safe-first secret-a")), Cause.die(query)),
+      Cause.combine(Cause.die(new Error(query.message)), Cause.combine(Cause.fail(new DatabaseFailure({ cause: new Error("secret-d"), providerBody: "secret-b", secret: "secret-c" })), Cause.interrupt(3))),
+    );
+
+    encodePublicBoundaryError(cause, { report });
+
+    const logged = report.mock.calls.map((call) => String(call[1])).join("\n");
+    expect(report).toHaveBeenCalledTimes(2);
+    expect(logged).toContain("EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token");
+    expect(logged).toContain("DatabaseFailure");
+    expect(logged).not.toMatch(/secret-|safe-first/u);
+  });
+
+  it("finds a died query in any branch of a Cause a failure wraps, and fails closed past what it reads", () => {
+    const report = vi.fn();
+    const nested = new CollectionReadFailure({ cause: Cause.combine(Cause.die(new Error("ordinary")), Cause.die(failedQuery())) });
+    let deep = new Error("wrapper", { cause: failedQuery() });
+    for (let depth = 0; depth < 100; depth += 1) deep = new Error(`wrapper ${depth}`, { cause: deep });
+
+    encodePublicBoundaryError(Cause.die(nested), { report });
+    encodePublicBoundaryError(Cause.die(deep), { report });
+
+    const logged = report.mock.calls.map((call) => String(call[1])).join("\n");
+    expect(logged).toContain("CollectionReadFailure");
+    expect(logged).not.toMatch(/secret-|wrapper/u);
+  });
+
+  it("names a thrown Error that wraps a failed query by its class and the query", () => {
+    const report = vi.fn();
+
+    encodePublicBoundaryError(new Error("outer secret-outer", { cause: failedQuery() }), { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      "defect",
+      "EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token",
+    );
+  });
+
   it("reports full defect and interruption causes separately while redacting transport", async () => {
     const report = vi.fn();
     const defect = Cause.die(new Error("provider-token"));
