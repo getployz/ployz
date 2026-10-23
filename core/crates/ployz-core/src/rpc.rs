@@ -1824,9 +1824,13 @@ impl RpcError {
         })
     }
 
-    /// The registry host a failed pull could not look up, from Docker's error.
+    /// The host a failed pull could not look up, from Docker's error: the registry,
+    /// its token service or a proxy. None when Ployz lost the Machine itself.
     #[must_use]
-    pub fn unresolved_registry(&self) -> Option<&str> {
+    pub fn unresolved_host(&self) -> Option<&str> {
+        if self.reply_lost() || self.never_reached() || self.target_unanswered() {
+            return None;
+        }
         self.lines().find_map(|line| {
             let (lookup, _) = line.split_once(": no such host")?;
             let (_, host) = lookup.rsplit_once("lookup ")?;

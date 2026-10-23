@@ -400,20 +400,20 @@ impl Failure {
             ExecutionError::Machine {
                 action: MachineAction::PullImage,
                 error,
-            } if let Some(host) = error.unresolved_registry() => (
-                format!(
-                    "Registry host {host} does not resolve. Check the image name, or this Server's DNS"
-                ),
-                ployz_core::error_chain::causes(error),
-            ),
-            ExecutionError::Machine {
-                action: MachineAction::PullImage,
-                error,
             } if let Some(full) = error.disk_full() => (
                 match machine {
                     Some(id) => full.on(&server_of(&id.to_string(), operations)),
                     None => full.to_string(),
                 },
+                ployz_core::error_chain::causes(error),
+            ),
+            ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error,
+            } if let Some(host) = error.unresolved_host() => (
+                format!(
+                    "Host {host} does not resolve, so the image could not be pulled. Check the image's registry, or this Server's DNS"
+                ),
                 ployz_core::error_chain::causes(error),
             ),
             ExecutionError::Machine {
@@ -1636,9 +1636,33 @@ mod tests {
         let failure = pull_failed(cause);
         assert_eq!(
             failure.reason,
-            "Registry host registry.example.invalid does not resolve. Check the image name, or this Server's DNS"
+            "Host registry.example.invalid does not resolve, so the image could not be pulled. Check the image's registry, or this Server's DNS"
         );
         assert_eq!(failure.cause, [cause]);
+    }
+
+    #[test]
+    fn a_lost_reply_that_names_an_unresolved_host_still_says_it_may_have_happened() {
+        let error = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "transport error".into(),
+            details: serde_json::json!({"reply_lost": true}),
+            cause: vec![
+                "dial tcp: lookup peer.example.invalid on 127.0.0.53:53: no such host".into(),
+            ],
+        };
+        let failure = Failure::of(
+            &ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error,
+            },
+            &[],
+        );
+        assert!(
+            failure.reason.starts_with("The connection to"),
+            "{}",
+            failure.reason
+        );
     }
 
     #[test]
