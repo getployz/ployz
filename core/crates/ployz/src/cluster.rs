@@ -251,8 +251,9 @@ impl Client {
     /// cannot be paired with the wrong response.
     ///
     /// Transient transport drops (`Attempt`, tonic `Unavailable` / `DeadlineExceeded`)
-    /// redial the same connection and retry up to four times. Domain `Remote` errors
-    /// and other gRPC status codes are not retried.
+    /// redial the same connection and retry up to four times; a failure the entry's router
+    /// reported retries on the channel it came back on. Domain `Remote` errors and other gRPC
+    /// status codes are not retried.
     ///
     /// # Errors
     ///
@@ -429,7 +430,8 @@ impl Client {
     }
 
     /// Only a deadline spent waiting on a confirmed entry is evidence the target is silent;
-    /// one spent reconnecting to the entry says nothing about it.
+    /// one spent reconnecting to the entry says nothing about it. An entry that just reported
+    /// the target silent on this channel counts as confirmed, as one a redial checked does.
     async fn bounded_attempt<T: Rpc>(
         &mut self,
         payload: &OpaquePayload,

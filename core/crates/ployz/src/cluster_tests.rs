@@ -698,16 +698,22 @@ async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
 /// answer, so the entry itself answered, and reconnecting to it would outlast the read.
 #[tokio::test(start_paused = true)]
 async fn a_server_the_entry_reports_silent_reads_dead_without_reconnecting_to_the_entry() {
+    let reconnects = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counted = std::sync::Arc::clone(&reconnects);
     let (mut client, server) =
-        crate::connect::test_support::rpc_client(|rpc: tonic::Request<OpaquePayload>| async move {
-            let body = rpc.into_inner().decode_request().unwrap().body;
-            if matches!(body, ployz_core::RpcRequestBody::DescribeContract(_)) {
-                tokio::time::sleep(std::time::Duration::from_millis(4900)).await;
-                return Err(tonic::Status::unavailable("busy"));
+        crate::connect::test_support::rpc_client(move |rpc: tonic::Request<OpaquePayload>| {
+            let counted = std::sync::Arc::clone(&counted);
+            async move {
+                let body = rpc.into_inner().decode_request().unwrap().body;
+                if matches!(body, ployz_core::RpcRequestBody::DescribeContract(_)) {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(4900)).await;
+                    return Err(tonic::Status::unavailable("busy"));
+                }
+                Err(ployz_core::rpc::target_unanswered_status(
+                    &std::io::Error::new(std::io::ErrorKind::TimedOut, "deadline has elapsed"),
+                ))
             }
-            Err(ployz_core::rpc::target_unanswered_status(
-                &std::io::Error::new(std::io::ErrorKind::TimedOut, "deadline has elapsed"),
-            ))
         })
         .await;
     client.entry = Some(machine_id('a'));
@@ -715,5 +721,6 @@ async fn a_server_the_entry_reports_silent_reads_dead_without_reconnecting_to_th
     let held = client.held_copies(&machine('b')).await;
 
     assert!(matches!(held, Ok(HeldCopies::Dead)), "{held:?}");
+    assert_eq!(reconnects.load(std::sync::atomic::Ordering::SeqCst), 0);
     server.abort();
 }

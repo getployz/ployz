@@ -329,6 +329,23 @@ fn only_a_status_the_router_sent_says_the_target_was_never_reached() {
 }
 
 #[test]
+fn only_a_router_status_on_a_working_channel_says_the_entry_answered() {
+    let silent = || io::Error::new(io::ErrorKind::TimedOut, "deadline has elapsed");
+    let routed = ConnectError::from(ployz_core::rpc::target_unanswered_status(&silent()));
+    assert!(routed.routed_by_entry());
+    let undialed = ConnectError::from(ployz_core::rpc::target_unreached_status(&silent()));
+    assert!(undialed.routed_by_entry());
+
+    let mut marked_then_reset = ployz_core::rpc::target_unanswered_status(&silent());
+    marked_then_reset.set_source(std::sync::Arc::new(io::Error::new(
+        io::ErrorKind::ConnectionReset,
+        "stream reset",
+    )));
+    assert!(!ConnectError::from(marked_then_reset).routed_by_entry());
+    assert!(!ConnectError::from(tonic::Status::unavailable("restarting")).routed_by_entry());
+}
+
+#[test]
 fn only_a_spent_budget_or_the_router_reports_the_target_unanswered() {
     let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
     for (error, unanswered) in [
