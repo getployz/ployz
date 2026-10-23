@@ -278,13 +278,7 @@ impl Host for System {
     }
 
     fn wireguard_port_holder(&self) -> Option<String> {
-        // ployzd's WIREGUARD_INTERFACE_NAME.
-        let own_interface = Path::new("/sys/class/net/ployz-wg").exists();
-        port_holder::udp_holder(
-            Path::new("/proc"),
-            ployz_core::WIREGUARD_PORT,
-            own_interface,
-        )
+        port_holder::udp_holder(Path::new("/proc"), ployz_core::WIREGUARD_PORT)
     }
 
     async fn participating(&self) -> Option<String> {

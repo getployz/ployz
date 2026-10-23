@@ -2,11 +2,11 @@
 
 use std::{fs, path::Path};
 
-/// The program bound to UDP `port`, as `name (pid N)`. A socket no process holds is the kernel's,
-/// as a WireGuard interface's is: None when `own_interface`, Ployz's, is up, else another
-/// interface's. None too when the port is free, or Ployz holds it: ployzd running WireGuard in
-/// userspace, or this CLI listening for Cloud's port check.
-pub(crate) fn udp_holder(proc: &Path, port: u16, own_interface: bool) -> Option<String> {
+/// The program bound to UDP `port`, as `name (pid N)`. None when the port is free, or Ployz holds
+/// it: ployzd running WireGuard in userspace, or this CLI listening for Cloud's port check. A socket
+/// no process holds is the kernel's, as WireGuard's is; whether it is Ployz's interface or another
+/// can't be read here, and a program that just let go leaves one too, so it names no one.
+pub(crate) fn udp_holder(proc: &Path, port: u16) -> Option<String> {
     let sockets: Vec<String> = ["net/udp", "net/udp6"]
         .iter()
         .filter_map(|table| fs::read_to_string(proc.join(table)).ok())
@@ -16,12 +16,8 @@ pub(crate) fn udp_holder(proc: &Path, port: u16, own_interface: bool) -> Option<
     if sockets.is_empty() {
         return None;
     }
-    match owner(proc, &sockets) {
-        Some((_, name)) if name == "ployzd" || name == "ployz" => None,
-        Some((pid, name)) => Some(format!("{name} (pid {pid})")),
-        None if own_interface => None,
-        None => Some("another WireGuard interface".to_owned()),
-    }
+    let (pid, name) = owner(proc, &sockets)?;
+    (name != "ployzd" && name != "ployz").then(|| format!("{name} (pid {pid})"))
 }
 
 /// Inodes of the sockets a `/proc/net/udp` table lists on local `port`.

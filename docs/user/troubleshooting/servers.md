@@ -301,8 +301,7 @@ A waiting server reads **Blocked** with `UDP port 51820 is in use by avahi-daemo
 while another program holds it, Ployz can't start on the server: an enroll would fail waiting for
 it. See what holds it with `sudo ss -ulpn 'sport = :51820'`, then stop or restart that program.
 avahi-daemon, for one, can take the port at random and lets it go when restarted. The block
-clears on the server's next check-in. `another WireGuard interface` means a WireGuard interface
-that isn't Ployz's listens on the port: list them with `sudo wg show interfaces`.
+clears on the server's next check-in.
 
 ## Ployz stops over a leftover network
 

@@ -39,7 +39,7 @@ fn a_program_on_the_port_is_named_with_its_pid() {
     process(proc.path(), 900, "sshd", &[7]);
 
     assert_eq!(
-        udp_holder(proc.path(), 51820, false).as_deref(),
+        udp_holder(proc.path(), 51820).as_deref(),
         Some("avahi-daemon (pid 812)")
     );
 }
@@ -50,7 +50,7 @@ fn an_ipv6_socket_counts_too() {
     process(proc.path(), 77, "dnsmasq", &[43]);
 
     assert_eq!(
-        udp_holder(proc.path(), 51820, false).as_deref(),
+        udp_holder(proc.path(), 51820).as_deref(),
         Some("dnsmasq (pid 77)")
     );
 }
@@ -58,7 +58,7 @@ fn an_ipv6_socket_counts_too() {
 #[test]
 fn a_free_port_holds_nothing() {
     let free = proc_with(&[("00000000:14E9", 41)], &[]);
-    assert_eq!(udp_holder(free.path(), 51820, false), None);
+    assert_eq!(udp_holder(free.path(), 51820), None);
 }
 
 #[test]
@@ -68,12 +68,12 @@ fn ployz_itself_is_not_another_holder() {
         let proc = proc_with(&[("00000000:CA6C", 44)], &[]);
         process(proc.path(), 55, name, &[44]);
 
-        assert_eq!(udp_holder(proc.path(), 51820, false), None, "{name}");
+        assert_eq!(udp_holder(proc.path(), 51820), None, "{name}");
     }
 }
 
 #[test]
-fn a_socket_no_process_holds_is_ployzs_wireguard_only_while_its_interface_is_up() {
+fn a_socket_no_process_holds_names_no_one() {
     // Kernel WireGuard's sockets have inodes but no process holding them, as on a real Server.
     let proc = proc_with(
         &[("00000000:CA6C", 18205)],
@@ -81,9 +81,5 @@ fn a_socket_no_process_holds_is_ployzs_wireguard_only_while_its_interface_is_up(
     );
     process(proc.path(), 900, "sshd", &[7]);
 
-    assert_eq!(udp_holder(proc.path(), 51820, true), None);
-    assert_eq!(
-        udp_holder(proc.path(), 51820, false).as_deref(),
-        Some("another WireGuard interface")
-    );
+    assert_eq!(udp_holder(proc.path(), 51820), None);
 }
