@@ -241,7 +241,7 @@ impl Storage {
 /// forward, and a stable Publish moves `beta` too (`core/scripts/promote-release.sh`).
 /// So it reaches whichever published Ployz upgraded the Store. The stable line
 /// reinstalls this same release when a beta did.
-const INSTALL_NEWEST: &str = "curl -fsSL https://ployz.sh | sh -s beta";
+const INSTALL_NEWEST: &str = "curl -fsSL https://ployz.sh | sh -s -- beta";
 
 /// A SQLite schema failure as `unsupported` when `config_migration` names a
 /// migration this binary doesn't know: a newer Ployz changed the schema its SQL
@@ -582,7 +582,7 @@ mod mixed_version_tests {
         })
     }
 
-    const NEXT: &str = "curl -fsSL https://ployz.sh | sh -s beta";
+    const NEXT: &str = "curl -fsSL https://ployz.sh | sh -s -- beta";
 
     #[test]
     fn a_write_a_newer_migration_broke_says_a_newer_ployz_upgraded_the_store() {
