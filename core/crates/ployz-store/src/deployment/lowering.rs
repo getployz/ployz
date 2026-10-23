@@ -610,7 +610,9 @@ pub(super) struct Lowered {
 /// Cluster Domain. Variables and Config files resolve here, a Branch's Live Node
 /// references against `branch.live`; secrets, and values that reference one, only
 /// with `unseal`. Without it such a variable is left out and such a file is empty.
-/// `deployed` names the Volumes Applied State holds.
+/// `deployed` names the Volumes Applied State holds. With `unseal`, a value sealed
+/// in the browser for `environment` reaches its Service unopened, with the identity
+/// the Machine opens it under, from the Organization given with the key.
 pub(super) fn lower(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
@@ -618,8 +620,9 @@ pub(super) fn lower(
     ships: &Ships,
     (namespace, cluster_domain): (Namespace, Option<&Hostname>),
     branch: &crate::branch::Lowering,
-    unseal: Option<&SealingKey>,
+    unseal: Option<(&SealingKey, &OrganizationId)>,
 ) -> Result<Lowered, RpcError> {
+    let (unseal, organization) = unseal.unzip();
     let (narrowed, services, removals, prune): (bool, &[ServiceName], _, _) = match ships {
         Ships::All { removals, prune } => (
             false,
@@ -648,7 +651,7 @@ pub(super) fn lower(
     compiled
         .variable_producers
         .extend(branch.live.iter().cloned());
-    let mut resolved = variables::resolve(&compiled, unseal)?;
+    let mut resolved = variables::resolve(&compiled, environment.as_str(), unseal)?;
     let targeted: Vec<&str> = saved
         .services
         .iter()
@@ -871,6 +874,12 @@ pub(super) fn lower(
         prune,
         cluster_domain: cluster_domain
             .and_then(|cluster| ployz_core::IngressHost::parse(cluster.as_str()).ok()),
+        sealed_for: organization
+            .zip(uuid::Uuid::parse_str(environment.as_str()).ok())
+            .map(|(organization, environment)| SealedFor {
+                organization: organization.as_str().to_owned(),
+                environment,
+            }),
     };
     // `uploaded` also gives each named source-less Service the image its upload
     // builds, as the SDK's preparation does.

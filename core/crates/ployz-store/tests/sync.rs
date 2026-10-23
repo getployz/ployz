@@ -1974,4 +1974,37 @@ fn a_value_sealed_for_the_parent_arrives_not_set_in_a_branch_created_from_it() {
         values(&store, &who, "fix-two", "web")["env"]["API_KEY"],
         json!({ "secret": false })
     );
+    // Follow carries it to fix-web the same way once production deploys it.
+    deploy(&store, &who, "production", 2);
+    assert_eq!(
+        values(&store, &who, "fix-web", "web")["env"]["API_KEY"],
+        json!({ "secret": false })
+    );
+    // A value the Branch sealed for its own copy of web stays through its
+    // Parent's next Deploy.
+    let copy = store
+        .read(
+            &who,
+            &ServiceQuery {
+                environment: at("fix-two"),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap()
+        .service
+        .service
+        .id;
+    let own = backend::client_sealed(&uuid(10), copy.as_str(), "API_KEY", 2);
+    set(
+        &store,
+        &who,
+        "fix-two",
+        &[("web.env.API_KEY", json!({ "secret": own }))],
+    );
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    deploy(&store, &who, "production", 3);
+    assert_eq!(
+        values(&store, &who, "fix-two", "web")["env"]["API_KEY"],
+        json!({ "secret": true })
+    );
 }

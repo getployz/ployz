@@ -1215,6 +1215,7 @@ pub(crate) fn claim(
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let ships = stored.lowering(&saved);
     let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
+    let organization = crate::build::organization(tx, &stored.summary.id)?;
     let lowered = lower(
         &stored.summary.environment_id,
         &saved,
@@ -1222,7 +1223,7 @@ pub(crate) fn claim(
         &ships,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
-        Some(sealing),
+        Some((sealing, &organization)),
     );
     let Lowered {
         input,
@@ -1373,6 +1374,7 @@ pub(crate) fn input(
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let ships = stored.lowering(&saved);
     let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
+    let organization = crate::build::organization(tx, &stored.summary.id)?;
     lower(
         &stored.summary.environment_id,
         &saved,
@@ -1380,7 +1382,7 @@ pub(crate) fn input(
         &ships,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
-        Some(sealing),
+        Some((sealing, &organization)),
     )
     .map(|lowered| lowered.input)
 }

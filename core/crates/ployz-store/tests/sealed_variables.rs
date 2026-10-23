@@ -8,7 +8,7 @@
     reason = "Fixed JSON results use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{EnvValue, RpcError, RpcErrorCode, SealedIdentity, ServiceName};
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
     DiffQuery, Edit, Edited, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId,
@@ -96,6 +96,30 @@ fn refused(store: &ConfigStore, path: &str, value: Value, why: &str) {
     assert!(!format!("{error:?}").contains("AAAA"), "{error:?}");
 }
 
+/// Admit Deployment 101 of the default Environment and claim it, as a runner does.
+fn claim(store: &ConfigStore) -> ployz_store::Claimed {
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write_trusted(
+            &who(),
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap()
+}
+
 fn value(store: &ConfigStore, path: &str) -> Value {
     store
         .read(
@@ -127,26 +151,7 @@ fn a_fresh_store_has_no_flag_row_and_the_legacy_path_runs_unchanged_with_none() 
         .find(|row| row.path.as_str() == "web.env.PASSWORD")
         .unwrap();
     assert_eq!(password.after, json!({ "secret": true }));
-    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
-    store
-        .write_trusted(
-            &who(),
-            &Admit::Deploy(Deploy {
-                id: id.clone(),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                accept_volume_loss: Vec::new(),
-                message: None,
-                prune: false,
-            }),
-            &ployz_store::Trusted::default(),
-        )
-        .unwrap();
-    let claimed = store
-        .claim(&id, &RunnerId::parse("runner").unwrap())
-        .unwrap();
+    let claimed = claim(&store);
     let web = claimed
         .intent
         .target
@@ -274,4 +279,55 @@ fn a_sealed_value_skips_the_text_and_typed_address_checks_that_need_its_plaintex
         "value": { "sealed": long, "scope": { "service": uuid(3) }, "key": "PASSWORD" },
     } });
     refused(&store, "web.env.PASSWORD", too_long, "too long");
+}
+
+#[test]
+fn lowering_carries_a_sealed_value_and_a_template_around_it_to_the_deploy_unopened() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+    set(&store, "web.env.PASSWORD", password(1));
+    set(&store, "web.env.URL", json!("pg://${{ PASSWORD }}@db"));
+    set(&store, "web.env.TOKEN", json!({ "secret": SECRET }));
+    // The Store's key can't open the browser's ciphertext: a claim that opened it
+    // would fail here, so a claim that succeeds never consulted it.
+    let claimed = claim(&store);
+    let web = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    let sealed = backend::client_sealed(&uuid(2), &uuid(3), "PASSWORD", 1)["value"].clone();
+    let environment = &web.container.environment;
+    assert!(matches!(environment["PASSWORD"], EnvValue::Sealed(_)));
+    assert_eq!(json!(environment["PASSWORD"]), sealed);
+    assert!(matches!(environment["URL"], EnvValue::Template(_)));
+    assert_eq!(
+        json!(environment["URL"]),
+        json!({ "template": ["pg://", sealed, "@db"] })
+    );
+    assert_eq!(environment["TOKEN"], EnvValue::Text(SECRET.into()));
+    assert_eq!(
+        web.container.sealed_identity,
+        Some(SealedIdentity {
+            organization: "org".into(),
+            environment: uuid(2).parse().unwrap(),
+            service: uuid(3).parse().unwrap(),
+        })
+    );
+    let snapshot = claimed.input["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|snapshot| snapshot["serviceId"] == uuid(3))
+        .unwrap();
+    assert_eq!(snapshot["resolvedEnv"]["PASSWORD"], sealed);
+    assert_eq!(
+        snapshot["resolvedEnv"]["URL"],
+        json!({ "template": ["pg://", sealed, "@db"] })
+    );
+    assert_eq!(snapshot["resolvedEnv"]["TOKEN"], SECRET);
 }
