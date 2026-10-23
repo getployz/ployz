@@ -404,8 +404,10 @@ pub(super) async fn build_images(
     if targets.is_empty() {
         return Ok(builds);
     }
+    let builders = crate::sealed_compat::builders(&machines, build.reads_sealed())
+        .map_err(PreparationError::Selection)?;
     let selected = read(cancellation, async {
-        select_build_machine(client, &targets, &machines, preference, cancellation)
+        select_build_machine(client, &targets, &builders, preference, cancellation)
             .await
             .map_err(PreparationError::Selection)
     })
