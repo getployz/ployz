@@ -918,9 +918,9 @@ pub(crate) async fn apply_update(
     } else {
         crate::cluster::wait_for_change(client, &machine, &planned, &CancellationToken::new()).await
     };
-    // Turning ingress on reports a change the Entry missed as an unfinished follow-up instead.
-    if accepts_ingress != Some(true)
-        && let Err(error) = &listed
+    // Turning ingress on reports a missed connection as an unfinished follow-up instead.
+    if let Err(error) = &listed
+        && (accepts_ingress != Some(true) || matches!(error, RoleWaitError::ChangeNotObserved))
     {
         let reason = match error {
             RoleWaitError::NotObserved(_) | RoleWaitError::ChangeNotObserved => {
@@ -956,13 +956,26 @@ pub(crate) async fn apply_update(
             "next": next,
         }));
     }
+    let unobserved = |error| match error {
+        RoleWaitError::Connect(error) => Error::from(error),
+        error @ (RoleWaitError::NotObserved(_)
+        | RoleWaitError::ChangeNotObserved
+        | RoleWaitError::Cancelled) => Error::from(error),
+    };
     let followed = async {
-        listed.map_err(|error| match error {
-            RoleWaitError::Connect(error) => Error::from(error),
-            error @ (RoleWaitError::NotObserved(_)
-            | RoleWaitError::ChangeNotObserved
-            | RoleWaitError::Cancelled) => Error::from(error),
-        })?;
+        match listed {
+            Ok(()) => {}
+            // Only the ingress role gates the proxy start; another unlisted field only warned.
+            Err(RoleWaitError::ChangeNotObserved) => crate::cluster::wait_for_role(
+                client,
+                &machine.id,
+                crate::cluster::RoleSetting::IngressOn,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(unobserved)?,
+            Err(error) => return Err(unobserved(error)),
+        }
         crate::ingress::follow_roles(client, ingress).await
     }
     .await;
@@ -1543,10 +1556,22 @@ mod tests {
 
         let zone = MachineLabelKey::parse("zone").unwrap();
         let east = MachineLabelValue::parse("east").unwrap();
-        type Case = (&'static str, fn(&mut Machine), MachineUpdate);
-        let cases: [Case; 3] = [
+        type Case = (
+            &'static str,
+            fn(&mut Machine),
+            fn(&mut Machine),
+            MachineUpdate,
+        );
+        let zone_east = |machine: &mut Machine| {
+            machine.labels.insert(
+                MachineLabelKey::parse("zone").unwrap(),
+                MachineLabelValue::parse("east").unwrap(),
+            );
+        };
+        let cases: [Case; 4] = [
             (
                 "a new label",
+                |_| {},
                 |machine| {
                     machine.labels.insert(
                         MachineLabelKey::parse("zone").unwrap(),
@@ -1554,12 +1579,22 @@ mod tests {
                     );
                 },
                 MachineUpdate {
-                    label_changes: [(zone, Some(east))].into(),
+                    label_changes: [(zone.clone(), Some(east))].into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "a removed label",
+                zone_east,
+                |machine| machine.labels.clear(),
+                MachineUpdate {
+                    label_changes: [(zone, None)].into(),
                     ..Default::default()
                 },
             ),
             (
                 "builds off",
+                |_| {},
                 |machine| machine.accepts_builds = false,
                 MachineUpdate {
                     accepts_builds: Some(false),
@@ -1568,6 +1603,7 @@ mod tests {
             ),
             (
                 "ingress off",
+                |_| {},
                 |machine| machine.accepts_ingress = false,
                 MachineUpdate {
                     accepts_ingress: Some(false),
@@ -1575,8 +1611,9 @@ mod tests {
                 },
             ),
         ];
-        for (change, apply, update) in cases {
-            let stale = web("machine-3", true, None, MembershipObservation::Up);
+        for (change, before, apply, update) in cases {
+            let mut stale = web("machine-3", true, None, MembershipObservation::Up);
+            before(&mut stale.machine);
             let mut updated = stale.clone();
             apply(&mut updated.machine);
             let id = updated.machine.id;
