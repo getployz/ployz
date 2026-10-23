@@ -81,8 +81,8 @@ cancel one. The list updates as soon as someone joins.
 Owners and admins change a role with the select beside each person, and click **Remove** to take
 someone out. To leave an organization yourself, click **Leave** on your own row. An organization
 always keeps an owner, so its last owner can't leave or step down until they make someone else
-an owner. `ployz org member rm` refuses to remove the last owner at once, before it asks for any
-approval.
+an owner. `ployz org member rm` refuses to remove the last owner, and `ployz org member role`
+refuses to give them another role. Each refuses at once, before it asks for any approval.
 
 When someone leaves or is removed, they lose the organization at once: its dashboard, their
 organization tokens, and their signed-in CLIs' access to its servers. If they joined by invite and

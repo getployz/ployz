@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { it } from "@effect/vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { eq, sql, type Table } from "drizzle-orm";
+import { and, asc, eq, sql, type Table } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
 import { Effect, Fiber, Layer, Option, Schema } from "effect";
@@ -9,6 +9,7 @@ import { afterEach, expect, vi } from "vitest";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
+import { operationApprovals } from "#/modules/approvals/tables";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
@@ -438,24 +439,45 @@ it.live("a destroying Deploy waits on a person; an early retry only asks again, 
     expect(admitted(writes)).toEqual([{ approved: approval?.digest }]);
   }).pipe(Effect.scoped), 30_000);
 
+// Bo asks to make Ada an admin. Once it's approved, another owner makes Bo a member while his call waits on the member
+// rows, so the run's locked recheck refuses what the unlocked check let in.
 it.live("an approved Cloud command that refused once it ran hands back a retry naming its approval, which repeats without asking again", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
     const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
-    yield* shop.provided(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      yield* drizzle.execute(sql`update member set role = 'member' where user_id = ${shop.ada.userId}`);
-    }));
-    const demote = { member: "bo@example.test", role: "member" };
-    const asked = yield* agent.call("org_member_role", demote);
+    const promote = { member: "ada@example.test", role: "admin" };
+    const asked = yield* agent.call("org_member_role", promote);
     const approvalId = asked.body.approval_required?.approval_id ?? expect.fail("the role change did not ask for approval");
     const [approval] = yield* shop.provided(pendingApprovals(ORGANIZATION));
     const bo: Caller = { ...shop.ada, userId: shop.boId, credential: { kind: "session", id: "session-bo" } };
     yield* shop.provided(decideApproval(bo, approvalId, { approve: { digest: approval?.digest ?? "" } }));
 
-    const refused = yield* agent.call("org_member_role", { ...demote, approval: approvalId });
-    const retry = { tool: "org_member_role", input: { ...demote, approval: approvalId } };
-    expect(refused).toMatchObject({ isError: true, body: { ok: false, refusal: { writes: "unknown", retry } } });
+    const lockWaiter = Effect.promise(() => vi.waitFor(async () => {
+      const waiting = await Effect.runPromise(shop.provided(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        return yield* drizzle.execute(sql`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`, "objects");
+      }).pipe(Effect.orDie)));
+      expect(waiting.length).toBeGreaterThan(0);
+    }, { timeout: 10_000 }));
+    const running = yield* shop.provided(Effect.gen(function* () {
+      const database = yield* Database;
+      return yield* database.transaction(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, ORGANIZATION)).orderBy(asc(member.userId)).for("update");
+        yield* drizzle.update(member).set({ role: "member" }).where(and(eq(member.userId, shop.boId), eq(member.organizationId, ORGANIZATION)));
+        const running = yield* Effect.forkDetach(agent.call("org_member_role", { ...promote, approval: approvalId }));
+        yield* lockWaiter;
+        return running;
+      }));
+    }));
+    const refused = yield* Fiber.join(running);
+    const retry = { tool: "org_member_role", input: { ...promote, approval: approvalId } };
+    expect(refused).toMatchObject({ isError: true, body: { ok: false, refusal: { message: "Only an owner or admin of this Organization can do this.", writes: "unknown", retry } } });
+    const [handedBack] = yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.select({ usedAt: operationApprovals.usedAt }).from(operationApprovals).where(eq(operationApprovals.id, approvalId));
+    }));
+    expect(handedBack).toEqual({ usedAt: null });
     expect(yield* agent.call("org_member_role", retry.input)).toMatchObject({ isError: true, body: { ok: false, refusal: { retry } } });
     expect(yield* shop.provided(pendingApprovals(ORGANIZATION))).toEqual([]);
   }).pipe(Effect.scoped), 30_000);
