@@ -1097,6 +1097,9 @@ fn a_bidi_override_in_a_message_or_config_file_name_prints_escaped() {
             assert!(!shown.contains('\u{202E}'), "{shown}");
         }
         assert!(human(&["config", "ls"]).contains(r"a\u{202e}b.txt"));
+        let preview = human(&["history", "restore", "1", "--preview"]);
+        assert!(!preview.contains('\u{202E}'), "{preview}");
+        assert!(preview.contains(r"a\u{202e}b.txt"), "{preview}");
         let history = human(&["history"]);
         assert!(history.contains(r"fix \u{202e}evil"), "{history}");
         assert!(history.contains(r"a\u{202e}b.txt"), "{history}");
