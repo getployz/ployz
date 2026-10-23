@@ -67,6 +67,8 @@ struct FakeHost {
     probe_hangs: bool,
     probe_fails: bool,
     docker_stopped: bool,
+    /// `systemctl` cannot say whether `ployz-prepare` runs.
+    unit_unreadable: bool,
     /// A preparation that finishes, writing this state, while its unit is being checked.
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
@@ -96,6 +98,9 @@ impl Host for FakeHost {
     async fn prepare_running(&self) -> Result<bool, String> {
         if let Some((path, state)) = &self.finishes {
             fs::write(path, state).unwrap();
+        }
+        if self.unit_unreadable {
+            return Err("systemctl timed out".to_owned());
         }
         Ok(self.preparing.load(Ordering::SeqCst))
     }
@@ -2542,49 +2547,71 @@ async fn an_older_ployzd_blocks_the_server_in_cloud_and_in_status() {
     );
 }
 
-#[tokio::test]
-async fn docker_stopped_mid_install_reads_as_installing_docker() {
+/// One pass on a host whose probe sees Docker stopped, with `ployz-prepare` read as `unit` and
+/// `state` as its state file. Returns the check-in Cloud received and the local headline.
+async fn docker_stopped_pass(unit: Result<bool, ()>, state: Option<&str>) -> (String, String) {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
-    fs::write(
-        &paths.prepare_state,
-        r#"{"docker":{"state":"installing"},"zfs":{"state":"installing"}}"#,
-    )
-    .unwrap();
+    if let Some(state) = state {
+        fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+        fs::write(&paths.prepare_state, state).unwrap();
+    }
     let (url, server) = cloud("200 OK", WAIT).await;
     let host = FakeHost {
         docker_stopped: true,
-        preparing: AtomicBool::new(true),
+        preparing: AtomicBool::new(unit == Ok(true)),
+        unit_unreadable: unit.is_err(),
         ..FakeHost::default()
     };
     pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
     let request = server.await.unwrap();
-    assert!(!request.contains("docker_stopped"), "{request}");
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.headline().title, "Installing Docker");
+    (request, status.headline().title.to_owned())
+}
+
+const DOCKER_INSTALLING: &str = r#"{"docker":{"state":"installing"},"zfs":{"state":"installing"}}"#;
+const DOCKER_READY: &str = r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#;
+
+#[tokio::test]
+async fn docker_stopped_mid_install_reads_as_installing_docker() {
+    let (request, headline) = docker_stopped_pass(Ok(true), Some(DOCKER_INSTALLING)).await;
+    assert!(!request.contains("docker_stopped"), "{request}");
+    assert_eq!(headline, "Installing Docker");
+}
+
+#[tokio::test]
+async fn docker_stopped_blocks_when_the_preparation_unit_cannot_be_read() {
+    let (request, headline) = docker_stopped_pass(Err(()), Some(DOCKER_INSTALLING)).await;
+    assert!(request.contains(r#""code":"docker_stopped""#), "{request}");
+    assert_eq!(headline, "Blocked");
+}
+
+#[tokio::test]
+async fn docker_stopped_blocks_while_preparing_before_docker_has_begun() {
+    let (request, headline) = docker_stopped_pass(Ok(true), None).await;
+    assert!(request.contains(r#""code":"docker_stopped""#), "{request}");
+    assert_eq!(headline, "Blocked");
+}
+
+#[tokio::test]
+async fn docker_stopped_blocks_when_a_stale_install_is_not_running() {
+    let (request, headline) = docker_stopped_pass(Ok(false), Some(DOCKER_INSTALLING)).await;
+    assert!(request.contains(r#""code":"docker_stopped""#), "{request}");
+    assert_eq!(headline, "Blocked");
+}
+
+#[tokio::test]
+async fn docker_stopped_after_its_install_blocks_while_preparing() {
+    let (request, headline) = docker_stopped_pass(Ok(true), Some(DOCKER_READY)).await;
+    assert!(request.contains(r#""code":"docker_stopped""#), "{request}");
+    assert_eq!(headline, "Blocked");
 }
 
 #[tokio::test]
 async fn docker_stopped_with_no_preparation_running_blocks() {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = paths(&dir);
-    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
-    fs::write(
-        &paths.prepare_state,
-        r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#,
-    )
-    .unwrap();
-    let (url, server) = cloud("200 OK", WAIT).await;
-    let host = FakeHost {
-        docker_stopped: true,
-        ..FakeHost::default()
-    };
-    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
-    let request = server.await.unwrap();
+    let (request, headline) = docker_stopped_pass(Ok(false), Some(DOCKER_READY)).await;
     assert!(request.contains(r#""code":"docker_stopped""#), "{request}");
-    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.headline().title, "Blocked");
+    assert_eq!(headline, "Blocked");
 }
 
 #[tokio::test(start_paused = true)]
