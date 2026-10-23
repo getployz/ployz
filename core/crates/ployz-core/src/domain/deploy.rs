@@ -967,7 +967,7 @@ impl Display for DeployWarning {
             ),
             Self::IngressHostname { message } => f.write_str(message),
             Self::ObserverRelativeHostnameConflict => f.write_str(
-                "Ployz couldn't fully observe every Server, so it couldn't fully check for hostname conflicts. Deploy again once all Servers answer.",
+                "Some Server observations are incomplete, so hostname conflicts weren't fully checked. Resolve the observation warnings, then deploy again.",
             ),
             Self::SkippedDependencyHealth {
                 dependent,
