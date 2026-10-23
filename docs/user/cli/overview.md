@@ -60,7 +60,8 @@ With no context, `--connect`, sign-in or token, it reports no local daemon socke
 is absent. If it cannot inspect the socket because of permissions, it says to use `sudo` or join
 the `ployz` group. Socket presence alone does not confirm that the daemon answers. In JSON,
 `credential` names `device`, `token` or `local`, or is null when signed out.
-`servers.local_socket_exists` is true only when the local socket is visible. The added
+`servers.local_socket_exists` is true when the local socket is visible, false when it is
+absent, and omitted when the check failed. The added
 `servers.local_socket_status` distinguishes `visible`, `missing`, `permission_denied` and
 `unknown`; `servers.via` still names the selected route.
 
