@@ -906,11 +906,8 @@ impl Run {
         match needs_upload(&unprepared.error) {
             Some(services) => self.unbuilt(upload_needed(earlier, services)).await,
             None => {
-                self.not_executed(Failure {
-                    same_again: unprepared.same_again,
-                    ..refused_before_deletes(&unprepared, deletes)
-                })
-                .await
+                self.not_executed(refused_before_deletes(&unprepared, deletes))
+                    .await
             }
         }
     }
@@ -1488,17 +1485,22 @@ pub(super) fn log_line(event: &Value) -> String {
 
 /// `unprepared` as a Failure. A Server short of storage whose Volumes this Deploy also
 /// deletes is told why they don't help: they are deleted only once the Deploy succeeds.
+/// Deploying the same again deletes nothing first either, so it gets no retry.
 fn refused_before_deletes(
     unprepared: &Unprepared,
     deletes: &[ployz_core::DockerVolumeId],
 ) -> Failure {
-    let mut failure = Failure::from(&unprepared.error);
+    let mut failure = Failure {
+        same_again: unprepared.same_again,
+        ..Failure::from(&unprepared.error)
+    };
     if let Some(short) = unprepared.short_of_storage
         && deletes.iter().any(|volume| volume.machine_id == short)
     {
         failure.reason.push_str(
             " Volumes this deploy deletes free their space only after it succeeds, so they don't make room for its new volumes.",
         );
+        failure.same_again = true;
     }
     failure
 }
