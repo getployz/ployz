@@ -668,14 +668,15 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
 }
 
 /// Parallel forgets through one entry: the Server's first answer is a retryable failure,
-/// and reconnecting to the busy entry fails, so whether it holds copies stays unknown.
+/// and reconnecting to the busy entry outlasts the read, so whether it holds copies stays
+/// unknown.
 #[tokio::test(start_paused = true)]
 async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
     let (mut client, server) =
         crate::connect::test_support::rpc_client(|rpc: tonic::Request<OpaquePayload>| async move {
             let body = rpc.into_inner().decode_request().unwrap().body;
             if matches!(body, ployz_core::RpcRequestBody::DescribeContract(_)) {
-                std::future::pending::<()>().await;
+                tokio::time::sleep(std::time::Duration::from_millis(4900)).await;
             }
             Err(tonic::Status::unavailable("restarting"))
         })
@@ -689,5 +690,6 @@ async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
         "Couldn't check whether Server machine-b holds Volume copies. No changes made. Run the \
          command again, one Server at a time if you're forgetting several."
     );
+    assert_eq!(error.cause, ["entry Machine reconnect timed out"]);
     server.abort();
 }
