@@ -230,6 +230,14 @@ describe("member commands", () => {
     expect(await as("ada", "org_member_rm", { member: "eve@example.test" })).toMatchObject({ ok: true });
     expect(await as("ada", "org_leave", { organization: ACME })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await as("ada", "org_member_role", { member: "ada@example.test", role: "admin" })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+    const approvals = async () => (await harness.db.select({ id: operationApprovals.id }).from(operationApprovals)
+      .where(eq(operationApprovals.organizationId, ACME))).length;
+    const asked = await approvals();
+    expect(await as("ada", "org_member_rm", { member: "ada@example.test" }, "cli")).toMatchObject({
+      ok: false,
+      refusal: { code: "conflict", message: "An Organization needs an owner. Make someone else an owner first.", writes: "none" },
+    });
+    expect(await approvals()).toBe(asked);
     expect(await roleOf(ids.ada)).toBe("owner");
 
     expect(await as("ada", "org_member_role", { member: "Carol", role: "owner" })).toMatchObject({ ok: true });

@@ -210,10 +210,15 @@ it.live("asks before changing a role, removing a member or revoking an invite th
   Effect.gen(function* () {
     const { route, converse, team, provided, userId } = yield* parity();
     yield* provided(createInvite(ORGANIZATION, userId, { email: "cy@example.test", role: "member" }));
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [person] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
+      yield* drizzle.insert(member).values({ userId: person?.id ?? expect.fail("no person"), organizationId: ORGANIZATION, role: "member" });
+    }));
     const before = yield* team;
     const writes: ReadonlyArray<readonly [string, JsonValue]> = [
       ["org_member_role", { member: "ada@example.test", role: "member" }],
-      ["org_member_rm", { member: "Ada" }],
+      ["org_member_rm", { member: "Bob" }],
       ["org_invite_revoke", { invite: "cy@example.test" }],
     ];
     for (const [name, input] of writes) {
