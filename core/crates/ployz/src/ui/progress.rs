@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ployz_core::{ContainerId, DeployWarning, MachineId, Namespace, QualifiedService, ServiceName};
+use ployz_core::{DeployWarning, MachineId, Namespace, QualifiedService, ServiceName};
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
@@ -1377,7 +1377,7 @@ pub(crate) enum StartFailure {
     PortTaken,
     /// Its health check saw it stop, or never turn healthy. It may still run, or run again
     /// under Docker's restart policy, until it's gone from its Server.
-    Unhealthy(ContainerId),
+    Unhealthy,
 }
 
 /// One distinct failed task or observed compensation action.

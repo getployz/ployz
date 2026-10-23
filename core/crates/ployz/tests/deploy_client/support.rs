@@ -120,15 +120,19 @@ pub(super) struct DeployService {
     ingress_roles: Arc<Mutex<BTreeMap<MachineId, bool>>>,
     /// What an `UpdateMachine` turning the ingress role off answers instead.
     role_off_refusal: Option<RpcError>,
-    /// The Entry Machine's own `ListMachines` answers this many more times without any
-    /// ingress role, as before a role turned on elsewhere reached it.
-    entry_lag: Arc<AtomicUsize>,
+    /// `ListMachines` answers this many more times, on any route, with every replicated
+    /// row lacking the ingress role, as before a role just set on a Server's own record
+    /// reached the rows. `Inspect` answers the record.
+    row_lag: Arc<AtomicUsize>,
     /// The only Machine `start_error` fails on; every Machine when `None`.
     start_error_on: Option<MachineId>,
     /// What removing a Container answers instead, so it stays where it was.
     removal_refusal: Option<RpcError>,
-    /// An inspect of a removed Container answers not found, as the daemon does.
-    removed_unfound: bool,
+    /// Each Machine's listing also shows the Containers created there and not yet removed.
+    lists_created: bool,
+    /// Another operator's Ingress Proxy starts on the Server once a start there fails or a
+    /// Container there is removed.
+    rival_proxy: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -209,10 +213,11 @@ impl DeployService {
             },
             ingress_roles: Arc::default(),
             role_off_refusal: None,
-            entry_lag: Arc::default(),
+            row_lag: Arc::default(),
             start_error_on: None,
             removal_refusal: None,
-            removed_unfound: false,
+            lists_created: false,
+            rival_proxy: false,
         }
     }
 
@@ -270,15 +275,24 @@ impl DeployService {
         self
     }
 
-    /// An inspect of a removed Container answers not found.
-    pub(super) fn unfound_once_removed(mut self) -> Self {
-        self.removed_unfound = true;
+    /// The next `reads` `ListMachines` answers show no Server with the ingress role, while
+    /// each Server's own record, which `Inspect` answers, holds the role it was given.
+    pub(super) fn rows_lag_ingress(self, reads: usize) -> Self {
+        self.row_lag.store(reads, Ordering::SeqCst);
         self
     }
 
-    /// The Entry Machine's next `reads` listings show no Server with the ingress role.
-    pub(super) fn entry_lags_ingress(self, reads: usize) -> Self {
-        self.entry_lag.store(reads, Ordering::SeqCst);
+    /// Each Machine lists the Containers created on it that weren't removed, as Docker
+    /// keeps them.
+    pub(super) fn lists_created(mut self) -> Self {
+        self.lists_created = true;
+        self
+    }
+
+    /// Another operator's Ingress Proxy starts on a Server right after a start fails or a
+    /// Container is removed there.
+    pub(super) fn rival_proxy(mut self) -> Self {
+        self.rival_proxy = true;
         self
     }
 
@@ -459,6 +473,31 @@ impl DeployService {
             cause: Vec::new(),
         });
         self
+    }
+
+    /// With [`Self::rival_proxy`], another operator's Ingress Proxy now runs on `machine_id`.
+    fn rival_starts(&self, machine_id: MachineId) {
+        if !self.rival_proxy {
+            return;
+        }
+        let rival = ContainerId::parse("f".repeat(64)).unwrap();
+        let ingress = QualifiedService::system_ingress();
+        let mut proxy = self.observed(machine_id, rival, resolved(spec(ingress.name.as_str())));
+        proxy
+            .try_update(|parts| {
+                parts.namespace = ingress.namespace;
+                parts.runtime = ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                };
+            })
+            .unwrap();
+        let mut listed = self.listed_containers.lock().unwrap();
+        if !listed
+            .iter()
+            .any(|container| container.container_id == rival)
+        {
+            listed.push(proxy);
+        }
     }
 
     fn start_error(&self, machine_id: MachineId) -> Option<&RpcError> {
@@ -848,19 +887,18 @@ impl FakeMachine for DeployService {
 
     async fn list_machines(
         &self,
-        request: Request<OpaquePayload>,
+        _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         if let Some(error) = self.machines_error.lock().unwrap().clone() {
             return encoded(RpcResponse::from(error));
         }
         let mut machines = self.listed_machines();
-        let lags = machine_from_metadata(&request).is_err()
-            && self
-                .entry_lag
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reads| {
-                    reads.checked_sub(1)
-                })
-                .is_ok();
+        let lags = self
+            .row_lag
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reads| {
+                reads.checked_sub(1)
+            })
+            .is_ok();
         if lags {
             for observed in &mut machines {
                 observed.machine.accepts_ingress = false;
@@ -941,10 +979,16 @@ impl FakeMachine for DeployService {
             return Err(Status::invalid_argument("expected Inspect"));
         };
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
+        // The Machine's own record, which a role change reaches before its replicated row.
+        let record = self
+            .listed_machines()
+            .into_iter()
+            .find(|observed| observed.machine.id == machine_id)
+            .map(|observed| observed.machine);
         encoded(RpcResponse::from(MachineDetails {
             id: machine_id,
             phase: LocalMachinePhase::Participating,
-            machine: None,
+            machine: record,
             public_key: WireGuardPublicKey([0; 32]),
             advertised_endpoints: Vec::new(),
             store_version: BTreeMap::new(),
@@ -1008,14 +1052,6 @@ impl FakeMachine for DeployService {
         }
         if self.uninspectable.contains(&inspect.container_id) {
             return Err(Status::not_found("no such container"));
-        }
-        if self.removed_unfound && self.removed.lock().unwrap().contains(&inspect.container_id) {
-            return encoded(RpcResponse::from(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: format!("No such container: {}", inspect.container_id),
-                details: Value::Null,
-                cause: Vec::new(),
-            }));
         }
         if self.stalled_inspects.contains(&inspect.container_id) {
             return Err(Status::deadline_exceeded("docker did not answer"));
@@ -1152,16 +1188,20 @@ impl FakeMachine for DeployService {
                     }
                 };
                 if let Some(error) = self.start_error(machine_id) {
+                    self.rival_starts(machine_id);
                     return encoded(RpcResponse::from(error.clone()));
                 }
-                (
-                    ContainerNow::Present(self.observed(
-                        machine_id,
-                        container_id,
-                        new.resolved_spec,
-                    )),
-                    None,
-                )
+                let mut observed = self.observed(machine_id, container_id, new.resolved_spec);
+                observed
+                    .try_update(|parts| parts.namespace = new.slot.namespace.clone())
+                    .unwrap();
+                if self.lists_created && existing.is_none() {
+                    self.listed_containers
+                        .lock()
+                        .unwrap()
+                        .push(observed.clone());
+                }
+                (ContainerNow::Present(observed), None)
             }
             ployz_core::ContainerWant::Running {
                 container: RunTarget::Existing(locator),
@@ -1208,6 +1248,13 @@ impl FakeMachine for DeployService {
                         return encoded(RpcResponse::from(answer));
                     }
                     self.removed.lock().unwrap().insert(container_id);
+                    if self.lists_created {
+                        self.listed_containers
+                            .lock()
+                            .unwrap()
+                            .retain(|listed| listed.container_id != container_id);
+                    }
+                    self.rival_starts(machine_id);
                 }
                 (ContainerNow::Absent { of: container }, None)
             }

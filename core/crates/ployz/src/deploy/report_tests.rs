@@ -1338,15 +1338,15 @@ fn a_failed_replacement_reads_as_no_start_failure() {
     );
 }
 
-/// A fresh start that failed its health check names its Container, which may still run.
+/// A fresh start that failed its health check counts as a start failure.
 #[test]
-fn a_fresh_start_that_failed_its_health_check_names_its_container() {
+fn a_fresh_start_that_failed_its_health_check_is_unhealthy() {
     let machine = MachineId::random();
     assert_eq!(
         failed_at(FailedOperation::Operation {
             operation: operation(0, machine, OperationStatus::Pending).operation,
             error: exited(),
         }),
-        Some(crate::ui::progress::StartFailure::Unhealthy(old('c')))
+        Some(crate::ui::progress::StartFailure::Unhealthy)
     );
 }

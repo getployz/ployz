@@ -522,12 +522,10 @@ pub(super) fn failure(
             .chain(&error.cause)
             .any(|cause| crate::ingress::port_taken(cause))
             .then_some(StartFailure::PortTaken),
-        ExecutionError::Health {
-            container_id,
-            failure,
-            ..
-        } if fresh && !matches!(failure, HealthFailure::Cancelled) => {
-            Some(StartFailure::Unhealthy(*container_id))
+        ExecutionError::Health { failure, .. }
+            if fresh && !matches!(failure, HealthFailure::Cancelled) =>
+        {
+            Some(StartFailure::Unhealthy)
         }
         ExecutionError::Machine { .. }
         | ExecutionError::Health { .. }
