@@ -65,8 +65,10 @@ impl LocalMachine {
 
     /// Approve or remove one Device on this Machine under mutation admission.
     ///
-    /// The caller must still be Full when the change commits, so a Device removed while
-    /// its own request waited for admission changes nothing.
+    /// The scope recheck runs on the Machine the caller dialed: a Device removed there
+    /// while its own request waited for admission changes nothing. A routed call reaches
+    /// its target with no management client, since forwarding carries scope rather than
+    /// identity, so the target trusts the entry Machine's check.
     ///
     /// # Errors
     /// Returns [`Error::NeedsFullScope`] when the caller holds no Device slot,
