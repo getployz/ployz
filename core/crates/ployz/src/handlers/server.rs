@@ -1401,6 +1401,110 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
 mod tests {
     use super::*;
 
+    #[tokio::test(start_paused = true)]
+    async fn setting_services_waits_until_the_entry_lists_the_new_role() {
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use ployz_core::{
+            MachineList, MachineUpdated, MembershipObservation, OpaquePayload, RpcRequestBody,
+            RpcResponse,
+        };
+        use tonic::{Request, Response};
+
+        for accepts_services in [true, false] {
+            let mut stale = web("machine-3", false, None, MembershipObservation::Up);
+            stale.machine.accepts_services = !accepts_services;
+            let mut updated = stale.clone();
+            updated.machine.accepts_services = accepts_services;
+            let id = updated.machine.id;
+            let visible = Arc::new(AtomicBool::new(false));
+            let (answered, mut changed) = tokio::sync::oneshot::channel();
+            let answered = Arc::new(Mutex::new(Some(answered)));
+            let (mut client, server) = crate::connect::test_support::rpc_client({
+                let visible = Arc::clone(&visible);
+                move |request: Request<OpaquePayload>| {
+                    let visible = Arc::clone(&visible);
+                    let answered = Arc::clone(&answered);
+                    let stale = stale.clone();
+                    let updated = updated.clone();
+                    async move {
+                        let response = match request.into_inner().decode_request().unwrap().body {
+                            RpcRequestBody::UpdateMachine(_) => {
+                                if let Some(answered) = answered.lock().unwrap().take() {
+                                    answered.send(()).unwrap();
+                                }
+                                RpcResponse::from(MachineUpdated {
+                                    machine: updated.machine,
+                                })
+                            }
+                            RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                                enrollment: None,
+                                machines: vec![if visible.load(Ordering::SeqCst) {
+                                    updated
+                                } else {
+                                    stale
+                                }],
+                            }),
+                            other => panic!("unexpected RPC: {other:?}"),
+                        };
+                        Ok(Response::new(response.encode().unwrap()))
+                    }
+                }
+            })
+            .await;
+            let root = crate::cli::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "server",
+                    "set",
+                    id.as_str(),
+                    if accepts_services {
+                        "--accepts-services=true"
+                    } else {
+                        "--accepts-services=false"
+                    },
+                ])
+                .unwrap();
+            let recovery = root
+                .subcommand_matches("server")
+                .and_then(|server| server.subcommand_matches("set"))
+                .unwrap()
+                .clone();
+            let setting = apply_update(
+                &mut client,
+                MachineTarget::from(&id),
+                MachineUpdate {
+                    accepts_services: Some(accepts_services),
+                    ..Default::default()
+                },
+                None,
+                IngressImage::Given("caddy:2".into()),
+                String::new(),
+                recovery,
+            );
+            tokio::pin!(setting);
+            tokio::select! {
+                _ = &mut changed => {}
+                result = &mut setting => panic!("server set finished before the Entry observed the new services role: {result:?}"),
+            }
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), &mut setting)
+                    .await
+                    .is_err(),
+                "server set acknowledged before the Entry listed accepts_services={accepts_services}"
+            );
+            visible.store(true, Ordering::SeqCst);
+            tokio::time::timeout(std::time::Duration::from_secs(1), &mut setting)
+                .await
+                .unwrap()
+                .unwrap();
+            server.abort();
+        }
+    }
+
     /// Only a start that failed on its own, on the Server whose role this command turned on,
     /// can turn the role back off.
     #[test]
