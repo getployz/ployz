@@ -118,6 +118,28 @@ class CiTest(unittest.TestCase):
             failed = subprocess.run([sys.executable, str(SCRIPT), "select", "missing-base"], cwd=root, env=env, capture_output=True)
             self.assertNotEqual(failed.returncode, 0)
 
+    def test_a_merge_queue_run_selects_mains_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", "-c", "user.name=CI test", "-c", "user.email=ci@example.invalid", *args], cwd=root, stderr=subprocess.DEVNULL, text=True).strip()
+            git("init", "--quiet")
+            manifest = root / "core/Cargo.toml"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("[workspace]\n")
+            git("add", ".")
+            git("commit", "--quiet", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            manifest.write_text("[workspace]\nresolver = \"3\"\n")
+            git("commit", "--quiet", "-am", "bump")
+            env = {key: value for key, value in os.environ.items() if key not in {"GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"}}
+            # The queue run is main's only run, so it also runs what a PR leaves to main.
+            for event, runs in [("pull_request", False), ("merge_group", True)]:
+                output = subprocess.check_output([sys.executable, str(SCRIPT), "select", base], cwd=root, env={**env, "GITHUB_EVENT_NAME": event}, text=True)
+                for job in ["macos-cli", "release-contracts"]:
+                    with self.subTest(event=event, job=job):
+                        self.assertEqual(job in json.loads(output), runs)
+
     def test_required_missing_failed_or_cancelled_checks_do_not_pass(self):
         selected = ["contracts", "rust-lint", "rust-tests"]
         needs = {job: {"result": "success" if job in selected else "skipped"} for job in ci["JOBS"]}
