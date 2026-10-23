@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ingressProxyOn, webTrafficChecked, webTrafficReach, webTrafficView, type IngressProxy } from "./server-web-traffic-view";
 import { type LatestWebTraffic, startFailure } from "./server-web-traffic";
 
-const server = { id: "m1", name: "web-1", acceptsIngress: false, publicIp: "203.0.113.10" };
+const server = { id: "m1", acceptsIngress: false, publicIp: "203.0.113.10" };
 const change = (
   state: LatestWebTraffic["state"],
   want: LatestWebTraffic["want"],
@@ -51,23 +51,38 @@ describe("webTrafficView", () => {
   it("shows a failed start whichever way the Server ended up, so a role left on never reads as healthy", () => {
     const reason = "Port 80 is in use on web-1. Free it, then try again.";
     const failed = change("failed", "on", { failure: reason });
-    expect(view(failed)).toEqual({ kind: "failed", want: "on", on: false, reason, address: "203.0.113.10" });
+    expect(view(failed)).toEqual({ kind: "failed", want: "on", on: false, reason, address: null });
     expect(view(failed, { acceptsIngress: true })).toEqual({ kind: "failed", want: "on", on: true, reason, address: "203.0.113.10" });
   });
 
   it("shows a failed stop even once the role is off, since the web server may still run", () => {
     const failed = change("failed", "off");
     expect(view(failed, { acceptsIngress: true })).toEqual({ kind: "failed", want: "off", on: true, reason: "why", address: "203.0.113.10" });
-    expect(view(failed)).toEqual({ kind: "failed", want: "off", on: false, reason: "why", address: "203.0.113.10" });
+    expect(view(failed)).toEqual({ kind: "failed", want: "off", on: false, reason: "why", address: null });
   });
 
-  it("shows a role left on without a running web server as a failed start, whoever turned it on", () => {
-    const down = { kind: "failed", want: "on", on: true, reason: "The web server isn’t running on web-1.", address: "203.0.113.10" };
+  it("never claims a start failed from the runtime alone, since a start under way shows no web server either", () => {
+    const down = { kind: "down" };
     expect(view(null, { acceptsIngress: true }, null, false, "down")).toEqual(down);
     expect(view(change("finished", "off"), { acceptsIngress: true }, null, true, "down")).toEqual(down);
+    expect(view(change("failed", "off"), {}, null, true, "down")).toEqual({ kind: "failed", want: "off", on: false, reason: "why", address: null });
     expect(view(null, { acceptsIngress: true }, null, false, "unknown")).toEqual({ kind: "on", address: "203.0.113.10" });
     expect(view(null, {}, null, false, "down")).toEqual({ kind: "off" });
     expect(view(change("running", "on"), { acceptsIngress: true }, null, false, "down")).toEqual({ kind: "starting" });
+  });
+
+  it("keeps a finished start starting until its web server shows running, so it never flashes as down", () => {
+    const done = change("finished", "on");
+    expect(view(done, { acceptsIngress: true }, null, false, "down")).toEqual({ kind: "starting" });
+    expect(view(done, { acceptsIngress: true }, null, false, "running")).toEqual({ kind: "on", address: "203.0.113.10" });
+    expect(view(done, { acceptsIngress: true }, null, true, "down")).toEqual({ kind: "down" });
+  });
+
+  it("says your domains point here after a failed change only while the web server may serve them", () => {
+    const failed = change("failed", "on", { failure: "Port 80 is in use on web-1. Free it, then try again." });
+    expect(view(failed, { acceptsIngress: true }, null, false, "down")).toMatchObject({ kind: "failed", on: true, address: null });
+    expect(view(failed, { acceptsIngress: true }, null, false, "running")).toMatchObject({ kind: "failed", on: true, address: "203.0.113.10" });
+    expect(view(change("failed", "off"), { acceptsIngress: true }, null, false, "running")).toMatchObject({ on: true, address: "203.0.113.10" });
   });
 
   it("moves the switch only when the Server does", () => {
@@ -75,26 +90,28 @@ describe("webTrafficView", () => {
     expect(webTrafficChecked({ kind: "starting" })).toBe(false);
     expect(webTrafficChecked({ kind: "failed", want: "on", on: false, reason: "x", address: null })).toBe(false);
     expect(webTrafficChecked({ kind: "failed", want: "on", on: true, reason: "x", address: null })).toBe(true);
+    expect(webTrafficChecked({ kind: "down" })).toBe(true);
   });
 });
 
 describe("ingressProxyOn", () => {
-  const ingress = (machineId: string, state: string) => ({
-    identity: "ployz-system/ingress",
-    containers: [{ id: `c-${machineId}`, displayName: "ingress", machineId, namespace: "ployz-system", kind: "service_container", runtime: { state } }],
+  const ingress = (...copies: (readonly [machineId: string, state: string])[]) => ({
+    containers: copies.map(([machineId, state]) =>
+      ({ id: `c-${machineId}`, displayName: "ingress", machineId, namespace: "ployz-system", kind: "service_container", runtime: { state } })),
   });
   const complete = { machines: [], containers: [] };
 
   it("is running only while this Server's Ingress Proxy container runs", () => {
-    expect(ingressProxyOn("m1", [ingress("m1", "running")], complete)).toBe("running");
-    expect(ingressProxyOn("m1", [ingress("m1", "restarting")], complete)).toBe("down");
-    expect(ingressProxyOn("m1", [ingress("m2", "running")], complete)).toBe("down");
-    expect(ingressProxyOn("m1", [], complete)).toBe("down");
+    expect(ingressProxyOn("m1", ingress(["m1", "running"]), complete)).toBe("running");
+    expect(ingressProxyOn("m1", ingress(["m1", "restarting"]), complete)).toBe("down");
+    expect(ingressProxyOn("m1", ingress(["m2", "running"]), complete)).toBe("down");
+    expect(ingressProxyOn("m1", null, complete)).toBe("down");
   });
 
-  it("is unknown while this Server or any container went unobserved", () => {
-    expect(ingressProxyOn("m1", [], { machines: ["m1"], containers: [] })).toBe("unknown");
-    expect(ingressProxyOn("m1", [], { machines: [], containers: ["c9"] })).toBe("unknown");
+  it("is unknown while this Server or any container went unobserved, unless it saw this one running", () => {
+    expect(ingressProxyOn("m1", null, { machines: ["m1"], containers: [] })).toBe("unknown");
+    expect(ingressProxyOn("m1", null, { machines: [], containers: ["c9"] })).toBe("unknown");
+    expect(ingressProxyOn("m1", ingress(["m1", "running"]), { machines: [], containers: ["c9"] })).toBe("running");
   });
 });
 

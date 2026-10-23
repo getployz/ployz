@@ -1,6 +1,5 @@
 import type { LatestWebTrafficChanges, WebTrafficWant } from "#/modules/machines/server-web-traffic";
 import { needsAttention, type ServerStatus } from "#/modules/machines/server-status";
-import { SYSTEM_NAMESPACE } from "#/modules/machines/server-services";
 import type { RuntimeIncompleteIds, RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 
 /** What the Web traffic row shows: the switch's position, and the line under it. */
@@ -12,7 +11,15 @@ export type WebTrafficView =
   /** Turning off: the switch sits on, dimmed, while the web server stops. */
   | { readonly kind: "stopping" }
   | { readonly kind: "off" }
-  /** The latest change didn't take: the switch sits where the Server is (`on`), with why above it and Retry. */
+  /**
+   * The role is on and its web server isn't running. A start under way, such as an image pull, looks the same as one the CLI
+   * failed, so this claims no failure and offers no Retry.
+   */
+  | { readonly kind: "down" }
+  /**
+   * The latest change didn't take: the switch sits where the Server is (`on`), with why above it and Retry. `address`
+   * is null unless your domains may point here: the role is on and its web server may run.
+   */
   | { readonly kind: "failed"; readonly want: WebTrafficWant; readonly on: boolean; readonly reason: string; readonly address: string | null };
 
 /** Whether a change is under way: the switch waits. */
@@ -20,7 +27,7 @@ export const webTrafficBusy = (view: WebTrafficView) => view.kind === "starting"
 
 /** Where the switch sits: on while it's on or on its way off, so it only moves when the Server does. */
 export const webTrafficChecked = (view: WebTrafficView) =>
-  view.kind === "on" || view.kind === "stopping" || (view.kind === "failed" && view.on);
+  view.kind === "on" || view.kind === "down" || view.kind === "stopping" || (view.kind === "failed" && view.on);
 
 type IngressServer = { readonly id: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
 
@@ -41,18 +48,14 @@ export const webTrafficReach = (
 /** Whether the Server's Ingress Proxy is running, as the Runtime Watch saw it; `unknown` while it couldn't see it all. */
 export type IngressProxy = "running" | "down" | "unknown";
 
-const INGRESS = `${SYSTEM_NAMESPACE}/ingress`;
-
 export function ingressProxyOn(
   machineId: string,
-  services: readonly Pick<RuntimeServiceRecord, "identity" | "containers">[],
+  ingress: Pick<RuntimeServiceRecord, "containers"> | null,
   incomplete: Pick<RuntimeIncompleteIds, "machines" | "containers">,
 ): IngressProxy {
+  if (ingress?.containers.some((container) => container.machineId === machineId && container.runtime?.state === "running")) return "running";
   // An unread container carries no Machine id, so it could be this Server's Ingress Proxy.
-  if (incomplete.machines.includes(machineId) || incomplete.containers.length > 0) return "unknown";
-  const running = services.some((service) => service.identity === INGRESS && service.containers.some((container) =>
-    container.machineId === machineId && container.runtime?.state === "running"));
-  return running ? "running" : "down";
+  return incomplete.machines.includes(machineId) || incomplete.containers.length > 0 ? "unknown" : "down";
 }
 
 /** How long a finished change may take to show on the Server before the row trusts what the Server says instead. */
@@ -63,11 +66,11 @@ export const WEB_TRAFFIC_SETTLE_MS = 30_000;
  * asked for (`requested`, until its row arrives). A change under way shows as such; a finished one whose outcome the
  * Server hasn't shown yet keeps showing until `settled`. A failed change always shows its reason. After a failed stop
  * the role may be off while the web server still runs. After a failed start the role is on only when putting it back
- * failed too, and then your domains point at a Server whose web server may not run. A role on with no Ingress Proxy
- * running reads as a failed start too, since the CLI's `server set` leaves the role on when the start fails.
+ * failed too. A role on with no Ingress Proxy running reads as `down`, whoever set it, and a finished start keeps
+ * starting until the proxy shows running.
  */
 export function webTrafficView(input: {
-  readonly server: { readonly id: string; readonly name: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
+  readonly server: { readonly id: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
   readonly latest: LatestWebTrafficChanges;
   readonly requested: { readonly id: string; readonly want: WebTrafficWant } | null;
   /** Whether the latest finished change has had its settle time. */
@@ -76,11 +79,7 @@ export function webTrafficView(input: {
 }): WebTrafficView {
   const { server, latest, requested, settled, proxy } = input;
   const observed: WebTrafficWant = server.acceptsIngress ? "on" : "off";
-  const steady: WebTrafficView = observed === "off"
-    ? { kind: "off" }
-    : proxy === "down"
-      ? { kind: "failed", want: "on", on: true, reason: `The web server isn’t running on ${server.name}.`, address: server.publicIp }
-      : { kind: "on", address: server.publicIp };
+  const steady: WebTrafficView = observed === "off" ? { kind: "off" } : proxy === "down" ? { kind: "down" } : { kind: "on", address: server.publicIp };
   const own = latest[server.id] ?? null;
   if (requested !== null && own?.attemptId !== requested.id) return requested.want === "on" ? { kind: "starting" } : { kind: "stopping" };
   if (own === null) return steady;
@@ -89,9 +88,15 @@ export function webTrafficView(input: {
     case "running":
       return own.want === "on" ? { kind: "starting" } : { kind: "stopping" };
     case "finished":
-      if (own.want === observed || settled) return steady;
+      if ((own.want === observed && steady.kind !== "down") || settled) return steady;
       return own.want === "on" ? { kind: "starting" } : { kind: "stopping" };
     case "failed":
-      return { kind: "failed", want: own.want, on: observed === "on", reason: own.failure, address: server.publicIp };
+      return {
+        kind: "failed",
+        want: own.want,
+        on: observed === "on",
+        reason: own.failure,
+        address: observed === "on" && proxy !== "down" ? server.publicIp : null,
+      };
   }
 }
