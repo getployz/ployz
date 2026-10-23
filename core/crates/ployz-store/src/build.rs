@@ -18,8 +18,8 @@ use crate::error;
 use crate::id::DeploymentId;
 use crate::storage::{Param, Tx, name_of};
 
-/// Why a build that reads a sealed value never runs on GitHub.
-const SEALED_BUILDS: &str = "Builds that read a sealed value run on your server.";
+/// Why a Build that reads a Sealed value runs only on a Server Builder.
+pub const SEALED_BUILDS_RUN_ON_SERVER: &str = "Builds that read a sealed value run on your server.";
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -820,7 +820,7 @@ pub(crate) fn github_input(
         .and_then(|source| source.sealed)
     {
         return Err(error::conflict(
-            format!("{sealed} is sealed. {SEALED_BUILDS}"),
+            format!("{sealed} is sealed. {SEALED_BUILDS_RUN_ON_SERVER}"),
             json!({ "service": id.service, "variable": sealed }),
         ));
     }

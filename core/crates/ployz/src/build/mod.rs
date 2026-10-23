@@ -31,9 +31,7 @@ pub use local::LocalImage;
 mod reuse;
 pub(crate) use reuse::{holder, image_stores, runs_everywhere};
 
-/// Why a Build that reads a Sealed value cannot run anywhere but a Server Builder.
-pub(crate) const SEALED_BUILDS_RUN_ON_SERVER: &str =
-    "Builds that read a sealed value run on your server.";
+pub(crate) use ployz_store::SEALED_BUILDS_RUN_ON_SERVER;
 
 /// How one Service's checked-out source becomes an image.
 #[derive(Clone, Debug, Eq, PartialEq)]

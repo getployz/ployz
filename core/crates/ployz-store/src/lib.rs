@@ -64,6 +64,7 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubReport, GithubRun, RunEnd,
+    SEALED_BUILDS_RUN_ON_SERVER,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
