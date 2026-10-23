@@ -694,14 +694,17 @@ async fn run_one(
         if waited.is_err() {
             return Err(uncertain_timeout(machine, attempt_id));
         }
-        // A restart answers again within a minute; a Server silent longer has gone away.
-        let wait = crate::setup_retry::WAIT.min(deadline.saturating_duration_since(Instant::now()));
+        // A restarting daemon answers within its start window; a Server silent longer has gone away.
+        let left = deadline.saturating_duration_since(Instant::now());
+        let wait = ployz_core::MACHINE_START_WAIT.min(left);
         let polled = tokio::select! {
             polled = client.poll_upgrade(request.clone(), machine, wait) => polled,
             () = cancellation.cancelled() => return Err(stopped_following(machine, attempt_id, true)),
         };
         let observed = polled.map_err(|error| match error {
             crate::setup_retry::Error::Permanent(error) => error.into(),
+            // The observation deadline cut this poll short, not the Server's silence.
+            _ if wait < ployz_core::MACHINE_START_WAIT => uncertain_timeout(machine, attempt_id),
             exhausted => went_away(machine, attempt_id, exhausted),
         })?;
         if observed.is_terminal() {
@@ -816,7 +819,8 @@ fn went_away(
     Error::caused(
         ployz_core::RpcErrorCode::Unavailable,
         format!(
-            "Server {name} stopped answering during upgrade {attempt_id} and didn't answer again within a minute. It may have powered off or lost its network. Once it's back, `ployz server show {name}` shows how the upgrade ended."
+            "Server {name} stopped answering during upgrade {attempt_id} and didn't answer again within {} minutes. It may have powered off or lost its network. Once it's back, `ployz server show {name}` shows how the upgrade ended.",
+            ployz_core::MACHINE_START_WAIT.as_secs() / 60,
         ),
         error,
     )
@@ -1103,7 +1107,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_server_gone_mid_upgrade_is_given_up_on_within_a_minute() {
+    async fn a_server_gone_mid_upgrade_is_given_up_on_after_its_start_window() {
         let mut client = GoneAfterAccepting { waits: Vec::new() };
         let (result, outcome) = run_all(
             &mut client,
@@ -1114,12 +1118,13 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert_eq!(client.waits, [crate::setup_retry::WAIT]);
+        assert_eq!(client.waits, [ployz_core::MACHINE_START_WAIT]);
         let error = outcome.unwrap_err();
         assert!(!error.is_outcome());
         let text = crate::ui::plain(&error);
         assert!(
             text.contains("Server a stopped answering during upgrade")
+                && text.contains("didn't answer again within 5 minutes.")
                 && text.contains("It may have powered off or lost its network.")
                 && text.contains("`ployz server show a`"),
             "{text}"
