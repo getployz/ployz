@@ -371,6 +371,8 @@ fn bind(port: Port) -> Option<Socket> {
         .get()
         .is_none_or(|stalled| stalled == port)
     {
+        // real-wait: simulates a blocking OS bind while real sockets serve greetings and the
+        // runtime enforces the bind deadline on its spawn_blocking worker.
         std::thread::sleep(tests::BIND_STALL.get());
     }
     match port {
