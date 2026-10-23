@@ -46,6 +46,7 @@ cat > "$TMP/bin/curl" <<'EOF'
 echo "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
 # Like curl when nothing answers on any address it resolved: no HTTP status, exit 7.
 [ -z "${FAKE_UNREACHABLE:-}" ] || { printf 000; exit 7; }
+case "$*" in *"${FAKE_UNREACHABLE_HOST:-unset.invalid}"/*) printf 000; exit 7 ;; esac
 write_out=
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -74,6 +75,28 @@ for platform in Linux:x86_64 Linux:aarch64 Darwin:x86_64 Darwin:arm64; do
         sh "$ROOT/install.sh"
     [ "$("$TMP/install/ployz")" = installed ]
     [ "$("$TMP/install/ployz" --version)" = 1.2.3 ]
+done
+
+# The release comes from github.com, and through ployz.sh only when github.com can't be reached, as
+# on a server with only IPv6.
+for reach in github fallback; do
+    rm -f "$TMP/urls"
+    env -u PLOYZ_GITHUB_URL -u PLOYZ_FALLBACK_URL PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 \
+        FAKE_RELEASE="$TMP/release" FAKE_CURL_LOG="$TMP/urls" INSTALL_BIN_DIR="$TMP/install" \
+        FAKE_UNREACHABLE_HOST=$([ "$reach" = github ] || echo github.com) sh "$ROOT/install.sh" 1.2.3 \
+        > /dev/null 2>&1
+    [ "$("$TMP/install/ployz" --version)" = 1.2.3 ]
+    case $reach in
+        github) from=https://github.com/getployz/ployz/releases/download/v1.2.3 ;;
+        fallback) from=https://ployz.sh/releases/download/v1.2.3 ;;
+    esac
+    for asset in checksums.txt checksums.txt.minisig ployz_linux_amd64.tar.gz; do
+        grep -Fq "$from/$asset" "$TMP/urls" || { cat "$TMP/urls" >&2; exit 1; }
+    done
+    if [ "$reach" = github ] && grep -Fq https://ployz.sh/releases "$TMP/urls"; then
+        cat "$TMP/urls" >&2
+        exit 1
+    fi
 done
 
 pack_release 9.9.9

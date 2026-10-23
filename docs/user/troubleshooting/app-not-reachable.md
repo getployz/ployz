@@ -173,7 +173,7 @@ web server on its own within a minute. You don't need to remove and re-add the s
 
 ## My servers only have IPv6 addresses
 
-A server with no IPv4 route needs NAT64 and DNS64 to install Ployz; see
+A server with no IPv4 route needs NAT64 and DNS64 to set Ployz up; see
 [IPv6-only servers](../servers/add-a-server.md#ipv6-only-servers).
 
 Ployz Cloud checks port 80 from its own network, which may have no IPv6 route. When a server with
