@@ -167,6 +167,13 @@ pub(crate) fn edit(
             ));
         }
     }
+    // Each Volume mount set, judged against the mounts the whole edit leaves.
+    let mut mounted = Vec::new();
+    for (path, step) in &steps {
+        if let (Step::Set(_), Some(Target::Mount(volume))) = (step, path.target()) {
+            mounted.push((path.settings_of()?.clone(), volume.clone()));
+        }
+    }
     // The source changes go first, unsets before sets, so the order of keys never matters.
     steps.sort_by_key(|(path, step)| match (path.target(), step) {
         (Some(Target::Setting(setting)), step) if is_source(*setting) => {
@@ -197,6 +204,9 @@ pub(crate) fn edit(
     // Every Setting set must mean something to the source the edit leaves; unsetting never
     // has to, and an empty Service takes build settings for the uploads it builds. Checked
     // last, so a value of the wrong shape is named for its shape first.
+    for (service, volume) in &mounted {
+        crate::volume::refuse_shared_path(&editing.environment, service, volume)?;
+    }
     let mut notes = Vec::<SettingNote>::new();
     for (service, setting) in set {
         let config = &editing.environment.service(&service)?.config;

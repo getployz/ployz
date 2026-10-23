@@ -449,7 +449,7 @@ pub(crate) fn attach(
     let same_volume = node
         .volume_attachments
         .iter()
-        .filter(|held| held.mount_path.as_str().trim_end_matches('/') == dir.as_str())
+        .filter(|held| held.container_path() == dir.as_str())
         .find_map(|held| {
             volumes
                 .iter()

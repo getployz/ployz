@@ -643,6 +643,22 @@ fn a_volume_never_mounts_over_the_kernel_filesystems_or_another_mount() {
 
     // A Volume moving to another spelling of its own path is not a clash.
     set("web.mounts.data", "/data/").unwrap();
+
+    // Mounts are judged where the whole edit leaves them, whatever order it applies them.
+    let patch = |mounts: Value| {
+        edit(
+            &store,
+            &who,
+            Change::Patch {
+                path: path("web"),
+                value: json!({ "mounts": mounts }),
+            },
+        )
+    };
+    patch(json!({ "data": "/devices", "logs": "/data" })).unwrap();
+    patch(json!({ "data": "/archive", "logs": "/devices" })).unwrap();
+    let both = patch(json!({ "data": "/same", "logs": "/same/" })).unwrap_err();
+    assert_eq!(both.code, RpcErrorCode::Conflict);
 }
 
 #[test]
