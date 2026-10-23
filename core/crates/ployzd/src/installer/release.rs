@@ -22,7 +22,8 @@ use ployz_core::{
     verify_release_checksums,
 };
 
-const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz";
+/// ployz.sh serves GitHub's release assets over IPv6 as well, which github.com doesn't.
+const RELEASE_DOWNLOADS: &str = "https://ployz.sh/releases/download";
 const CHANNEL_URL: &str = "https://ployz.sh";
 /// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
 const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
@@ -210,7 +211,7 @@ async fn fetch_if_present(url: &str, stage: &str) -> Result<Option<Vec<u8>>, Err
 }
 
 fn release_url(target: &MachineVersion, file: &str) -> String {
-    format!("{RELEASE_REPOSITORY}/releases/download/v{target}/{file}")
+    format!("{RELEASE_DOWNLOADS}/v{target}/{file}")
 }
 
 pub(super) async fn install_binaries(

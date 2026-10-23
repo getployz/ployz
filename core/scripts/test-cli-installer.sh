@@ -76,6 +76,14 @@ for platform in Linux:x86_64 Linux:aarch64 Darwin:x86_64 Darwin:arm64; do
     [ "$("$TMP/install/ployz" --version)" = 1.2.3 ]
 done
 
+# By default the release comes from ployz.sh, which serves GitHub's assets over IPv6 too.
+env -u PLOYZ_GITHUB_URL PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
+    FAKE_CURL_LOG="$TMP/default-urls" INSTALL_BIN_DIR="$TMP/install" sh "$ROOT/install.sh" 1.2.3 > /dev/null
+for asset in checksums.txt checksums.txt.minisig ployz_linux_amd64.tar.gz; do
+    grep -Fq "https://ployz.sh/releases/download/v1.2.3/$asset" "$TMP/default-urls" ||
+        { cat "$TMP/default-urls" >&2; exit 1; }
+done
+
 pack_release 9.9.9
 printf 'v9.9.9\n' > "$TMP/release/stable"
 FAKE_CURL_LOG=$TMP/curl.log
@@ -126,7 +134,7 @@ if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/nonex
     echo "installed a release that doesn't exist" >&2
     exit 1
 fi
-grep -Fqx "ERROR: There's no Ployz release 0.3.0-beta.99. Releases: https://example.invalid/releases" "$TMP/error"
+grep -Fqx "ERROR: There's no Ployz release 0.3.0-beta.99. Releases: https://github.com/getployz/ployz/releases" "$TMP/error"
 : > "$FAKE_CURL_LOG"
 if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" FAKE_CURL_LOG="$FAKE_CURL_LOG" \
     INSTALL_BIN_DIR="$TMP/nonexistent" PLOYZ_GITHUB_URL=https://example.invalid \

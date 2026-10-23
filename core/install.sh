@@ -2,7 +2,8 @@
 
 set -eu
 
-PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz}
+# ployz.sh serves GitHub's release assets over IPv6 as well, which github.com doesn't.
+PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://ployz.sh}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 ENROLL=
 VERSION_ARG=
@@ -179,7 +180,7 @@ install_cli() {
     }
     case "$status" in
         2??|000) ;;
-        404) error "There's no Ployz release $version. Releases: $PLOYZ_GITHUB_URL/releases" ;;
+        404) error "There's no Ployz release $version. Releases: https://github.com/getployz/ployz/releases" ;;
         *) error "Failed to download checksums.txt${status:+ (HTTP $status)}" ;;
     esac
     curl -fsSL -o "$tmp_dir/$archive" "$base_url/$archive" || error "Failed to download $archive"
