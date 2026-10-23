@@ -77,7 +77,7 @@ pub fn run() -> Result<(), Error> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let before_parse = crate::ui::Mode::resolve(crate::ui::Surroundings::of_process(false));
     crate::ui::Color::requested(&command, &args).apply(before_parse);
-    let matches = match command.clone().try_get_matches() {
+    let matches = match parse(&command, &args) {
         Ok(matches) => matches,
         Err(error) => {
             // A word the tree lacks may be a command Cloud published since the
@@ -86,10 +86,7 @@ pub fn run() -> Result<(), Error> {
                 return Err(usage_failure(error, &command));
             };
             command = crate::published::attach(crate::cli::compiled(), &published);
-            command
-                .clone()
-                .try_get_matches()
-                .map_err(|error| usage_failure(error, &command))?
+            parse(&command, &args).map_err(|error| usage_failure(error, &command))?
         }
     };
     let color = matches
@@ -99,6 +96,31 @@ pub fn run() -> Result<(), Error> {
     let result = dispatch(&matches, &mut command);
     follow_cloud_revision();
     result
+}
+
+fn parse(command: &Command, args: &[std::ffi::OsString]) -> Result<ArgMatches, clap::Error> {
+    fn without_context_env(command: Command) -> Command {
+        command
+            .mut_args(|arg| {
+                if arg.get_id() == "context" {
+                    arg.env(None::<&str>)
+                } else {
+                    arg
+                }
+            })
+            .mut_subcommands(without_context_env)
+    }
+
+    let argv = || std::iter::once(std::ffi::OsString::from("ployz")).chain(args.iter().cloned());
+    let matches = command.clone().try_get_matches_from(argv())?;
+    if matches.value_source("context") != Some(clap::parser::ValueSource::EnvVariable)
+        || verbs::find(&command_path(&matches))
+            .is_some_and(|verb| takes_value(verb.path.split(' '), "context"))
+    {
+        return Ok(matches);
+    }
+    // Clap propagates group environment values through the root's global argument.
+    without_context_env(command.clone()).try_get_matches_from(argv())
 }
 
 /// Every `/api/cli` reply names Cloud's manifest revision. One the cache lacks means
@@ -540,11 +562,7 @@ fn shell_word(arg: &str) -> std::borrow::Cow<'_, str> {
 
 fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
     let connect = matches.get_one::<String>("connect");
-    let context = matches
-        .try_get_one::<String>("context")
-        .ok()
-        .flatten()
-        .filter(|_| takes_value(args.iter().copied(), "context"));
+    let context = matches.try_get_one::<String>("context").ok().flatten();
     let args = ["ployz"]
         .into_iter()
         .chain(config_flag(matches).into_iter().flatten())
@@ -574,12 +592,7 @@ fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> St
         .chain(config_flag(matches).into_iter().flatten())
         .chain(connect)
         .chain(command.iter().copied())
-        .chain(
-            takes_value(command.iter().copied(), "context")
-                .then_some(["--context", context])
-                .into_iter()
-                .flatten(),
-        );
+        .chain(["--context", context]);
     debug_assert!(
         crate::cli::command()
             .try_get_matches_from(args.clone())
@@ -916,18 +929,61 @@ mod tests {
     }
 
     #[test]
-    fn context_config_recovery_omits_context_for_a_contextless_destination() {
-        let matches = command()
-            .try_get_matches_from(["ployz", "server", "ls", "--context", "b"])
-            .unwrap();
-        for hint in [
-            recovery_command(leaf_matches(&matches), "b", &["org", "ls"]),
-            rerun(leaf_matches(&matches), &["org", "ls"]),
-        ] {
-            assert!(!hint.contains("--context"), "{hint}");
-            command()
-                .try_get_matches_from(shell_words::split(&hint).unwrap())
+    fn context_config_environment_reaches_only_context_aware_leaves() {
+        if std::env::var_os("PLOYZ_CONTEXT").as_deref() != Some(std::ffi::OsStr::new("b")) {
+            let home = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "handlers::tests::context_config_environment_reaches_only_context_aware_leaves",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("HOME", home.path())
+                .env("PLOYZ_CONTEXT", "b")
+                .output()
                 .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        for (args, context) in [
+            (&["volume", "add", "data"][..], None),
+            (&["volume", "rm", "data"], None),
+            (&["service", "rm", "web"], None),
+            (&["set", "web.image=web:2"], None),
+            (&["org", "ls"], None),
+            (&["ctx", "use", "other"], None),
+            (&["ctx"], Some("b")),
+            (&["server", "ls"], Some("b")),
+            (&["ps"], Some("b")),
+            (&["deploy"], Some("b")),
+        ] {
+            let argv = args
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            let root = parse(&crate::cli::command(), &argv).unwrap();
+            let mut leaf = &root;
+            while let Some((_, child)) = leaf.subcommand() {
+                leaf = child;
+            }
+            assert_eq!(
+                leaf.ids().any(|id| id == "context"),
+                context.is_some(),
+                "{args:?}"
+            );
+            assert_eq!(rerun(leaf, args).contains("--context"), context.is_some());
+            if context.is_some() {
+                assert_eq!(
+                    leaf.get_one::<String>("context").map(String::as_str),
+                    context
+                );
+            }
         }
     }
 
@@ -938,11 +994,7 @@ mod tests {
         let matches = command()
             .try_get_matches_from(["ployz", "server", "ls"])
             .unwrap();
-        recovery_command(
-            leaf_matches(&matches),
-            "b",
-            &["org", "ls", "--context", "b"],
-        );
+        recovery_command(leaf_matches(&matches), "b", &["org", "ls"]);
     }
 
     #[test]

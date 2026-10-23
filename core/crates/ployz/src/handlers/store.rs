@@ -358,14 +358,13 @@ impl<'m> Store<'m> {
         }
     }
 
-    /// A context override only for commands that take it; other commands observe
-    /// through `--connect` or the current context.
+    /// `--context`; without it, this reaches the Cluster `--connect` or the current
+    /// context names.
     fn context(&self) -> Option<&str> {
         self.matches
             .try_get_one::<String>("context")
             .ok()
             .flatten()
-            .filter(|_| super::takes_value(self.words.iter().map(String::as_str), "context"))
             .map(String::as_str)
     }
 
@@ -1199,32 +1198,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn context_config_store_only_uses_contexts_declared_by_its_command() {
-        for (words, context) in [
-            (&["service", "rm", "web"][..], None),
-            (&["volume", "rm", "data"], None),
-            (&["set", "web.image=web:2"], None),
-            (&["deploy"], Some("b")),
-        ] {
-            let root = crate::cli::compiled()
-                .mut_arg("context", |arg| arg.default_value("b"))
-                .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
-                .unwrap();
-            let local =
-                ConfigStore::open("sqlite::memory:", SealingKey::new(&[7; 32]).unwrap()).unwrap();
-            let store = Store {
-                backend: Backend::Local(
-                    std::sync::Arc::new(local),
-                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-                ),
-                matches: leaf_matches(&root),
-                words: words.iter().map(|word| (*word).to_owned()).collect(),
-            };
-            assert_eq!(store.context(), context, "{words:?}");
-        }
-    }
 
     #[test]
     fn a_staged_domain_change_reads_as_a_domain() {

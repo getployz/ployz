@@ -1297,61 +1297,6 @@ fn context_config_management_refuses_explicit_context_before_mutation() {
 }
 
 #[test]
-fn context_config_environment_reaches_only_context_aware_leaves() {
-    if std::env::var_os("PLOYZ_CONTEXT").as_deref() != Some(std::ffi::OsStr::new("b")) {
-        let home = tempfile::tempdir().unwrap();
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "context_config_environment_reaches_only_context_aware_leaves",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env("HOME", home.path())
-            .env("PLOYZ_CONTEXT", "b")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
-    }
-    for (args, context) in [
-        (&["volume", "add", "data"][..], None),
-        (&["volume", "rm", "data"], None),
-        (&["service", "rm", "web"], None),
-        (&["set", "web.image=web:2"], None),
-        (&["org", "ls"], None),
-        (&["ctx", "use", "other"], None),
-        (&["server", "ls"], Some("b")),
-        (&["ps"], Some("b")),
-        (&["deploy"], Some("b")),
-    ] {
-        let root = ployz::cli::command()
-            .try_get_matches_from(std::iter::once("ployz").chain(args.iter().copied()))
-            .unwrap();
-        let mut leaf = &root;
-        while let Some((_, child)) = leaf.subcommand() {
-            leaf = child;
-        }
-        assert_eq!(
-            leaf.ids().any(|id| id == "context"),
-            context.is_some(),
-            "{args:?}"
-        );
-        if context.is_some() {
-            assert_eq!(
-                leaf.get_one::<String>("context").map(String::as_str),
-                context
-            );
-        }
-    }
-}
-
-#[test]
 fn context_config_cloud_commands_refuse_root_context_in_the_process() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("config.yaml");
