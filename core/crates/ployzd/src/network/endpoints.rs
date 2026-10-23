@@ -14,14 +14,17 @@ use super::{
 pub struct DiscoveredNetwork {
     pub public_ip: Option<IpAddr>,
     pub endpoints: Vec<AdvertisedEndpoint>,
+    /// Whether this server reaches IPv4 itself; see [`has_ipv4_route`].
+    pub ipv4_route: bool,
 }
 
 pub async fn discover_network(
     public_ip: PublicIpDiscovery,
 ) -> Result<DiscoveredNetwork, NetworkError> {
     let mut addresses = routable_interface_addresses()?;
+    let ipv4_route = has_ipv4_route();
     let public_ip = match public_ip {
-        PublicIpDiscovery::Auto => discover_public_ip(has_ipv4_route()).await,
+        PublicIpDiscovery::Auto => discover_public_ip(ipv4_route).await,
         PublicIpDiscovery::Disabled => None,
         PublicIpDiscovery::Override(address) => Some(address),
     };
@@ -32,6 +35,7 @@ pub async fn discover_network(
     }
     Ok(DiscoveredNetwork {
         public_ip,
+        ipv4_route,
         endpoints: addresses
             .into_iter()
             .map(|address| AdvertisedEndpoint(SocketAddr::new(address, WIREGUARD_PORT)))
