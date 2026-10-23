@@ -25,7 +25,6 @@ use crate::{
     sealing_key::SealingKey,
 };
 
-/// Docker label holding a Container's [`SealedRecord`].
 pub(crate) const LABEL_SEALED: &str = "ployz.env.sealed";
 
 /// The Sealed values a Container was given, still sealed, keyed by the env
@@ -52,14 +51,11 @@ pub enum OpenError {
     Unopenable(String),
 }
 
-/// A Container's env with every Sealed value opened, and the record of them.
 pub(crate) struct OpenedEnv {
     pub(crate) values: BTreeMap<String, String>,
     pub(crate) record: Option<SealedRecord>,
 }
 
-/// Opens `environment` with the Sealing Key kept in `key_dir`, read only when
-/// a value is Sealed.
 pub(crate) fn open(
     environment: BTreeMap<String, EnvValue>,
     identity: Option<&SealedIdentity>,
@@ -95,18 +91,14 @@ pub(crate) fn open(
 }
 
 impl SealedRecord {
-    /// The env keys whose values this Machine opened.
     pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
         self.values.keys().map(String::as_str)
     }
 
-    /// The record a Container's [`LABEL_SEALED`] label holds, if it has one.
     pub(crate) fn from_label(label: Option<&str>) -> Result<Option<Self>, serde_json::Error> {
         label.map(serde_json::from_str).transpose()
     }
 
-    /// Every opened value, and each Sealed part of a Template under its own key, to
-    /// hide wherever it shows.
     pub(crate) fn secrets(&self, key_dir: Option<&Path>) -> Result<SealedValues, OpenError> {
         let key = load(key_dir)?;
         Ok(self
@@ -172,16 +164,13 @@ impl SealedRecord {
     }
 }
 
-/// How text one Container printed may leave this Machine.
 pub(crate) enum Lines {
     Shown,
     Scrubbed(SealedForms),
-    /// The values to hide could not be learned, so no text is shown.
     Withheld,
 }
 
 impl Lines {
-    /// From the Container's record, opened with the Sealing Key in `key_dir`.
     pub(crate) fn new(
         container: ContainerId,
         record: Result<Option<SealedRecord>, impl std::fmt::Display>,
@@ -241,8 +230,6 @@ impl Lines {
     }
 }
 
-/// Hide each Container's opened values in a history page, learning a Container's
-/// [`Lines`] from `lines_of` at its first line.
 pub(crate) fn scrub_history<F, Fut>(mut rows: RpcStream, lines_of: F) -> RpcStream
 where
     F: Fn(ContainerId) -> Fut + Send + 'static,
@@ -283,8 +270,6 @@ where
     ReceiverStream::new(receiver)
 }
 
-/// Hide opened values in a live log, holding back a line's tail until the next
-/// frame shows whether it begins a value.
 pub(crate) fn scrub_source(source: LogSource, forms: SealedForms) -> LogSource {
     struct Scrubbing {
         source: LogSource,

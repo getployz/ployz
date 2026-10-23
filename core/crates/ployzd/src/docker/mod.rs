@@ -331,7 +331,6 @@ impl ContainerRuntime {
         self
     }
 
-    /// Opens no Sealed value while `log_store` runs software from before an upgrade.
     #[must_use]
     pub(crate) fn with_log_store(mut self, log_store: LogStore) -> Self {
         self.log_store = log_store;
@@ -1318,7 +1317,6 @@ struct InspectHealthLog {
     output: String,
 }
 
-/// The newest check Docker ran since this start, its output shown as `lines` allows.
 fn last_docker_check(
     state: Option<&serde_json::Value>,
     lines: impl FnOnce() -> crate::sealed_env::Lines,
@@ -1349,13 +1347,11 @@ fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObs
             .health
             .as_ref()
             .and_then(|health| health.status.as_deref()),
-        &decoded_state(state),
+        &state_without_app_output(state),
     )
 }
 
-/// The part of Docker's State a runtime is decoded from. `Health.Log` and `Error` hold
-/// what the app printed, which may carry opened Sealed values, so they are left out.
-fn decoded_state(state: &serde_json::Value) -> serde_json::Value {
+fn state_without_app_output(state: &serde_json::Value) -> serde_json::Value {
     let mut decoded = serde_json::Map::new();
     for field in ["Status", "ExitCode"] {
         if let Some(value) = state.get(field) {
@@ -2964,23 +2960,33 @@ mod sealed_output_tests {
 
     type Containers = Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>;
 
-    /// A Service Container created holding Sealed `TOKEN`, and Docker's copy of it.
     async fn created_with_token(
         cluster: &Cluster,
     ) -> (ContainerRuntime, Machine, ContainerId, Containers) {
         let containers = Containers::default();
-        let (runtime, machine, created) =
-            create_with_env(cluster, LogStore::Unsupervised, &containers, true).await;
+        let (runtime, machine, created) = create_with_env(
+            cluster,
+            LogStore::Unsupervised,
+            &containers,
+            sealed_token(cluster),
+        )
+        .await;
         (runtime, machine, created.unwrap().container_id, containers)
     }
 
-    /// Create a Service Container beside `log_store`, holding Sealed `TOKEN` when
-    /// `sealed` and only Text values otherwise.
+    fn sealed_token(cluster: &Cluster) -> EnvValue {
+        EnvValue::Sealed(cluster.seal(
+            "TOKEN",
+            SealedScope::Service(cluster.identity.service),
+            OPENED,
+        ))
+    }
+
     async fn create_with_env(
         cluster: &Cluster,
         log_store: LogStore,
         containers: &Containers,
-        sealed: bool,
+        token: EnvValue,
     ) -> (ContainerRuntime, Machine, Result<ContainerCreated, Error>) {
         let (runtime, _fake) = fake_runtime_with(FakeDocker {
             named_containers: Some(containers.clone()),
@@ -2994,15 +3000,6 @@ mod sealed_output_tests {
         let namespace = Namespace::parse("app").unwrap();
         let mut spec = test_support::spec_with_sources(Vec::new());
         spec.container.sealed_identity = Some(cluster.identity.clone());
-        let token = if sealed {
-            EnvValue::Sealed(cluster.seal(
-                "TOKEN",
-                SealedScope::Service(cluster.identity.service),
-                OPENED,
-            ))
-        } else {
-            EnvValue::Text(OPENED.into())
-        };
         spec.container.environment.insert("TOKEN".into(), token);
         let created = runtime
             .create_with_admission::<_, _, Error>(
@@ -3023,8 +3020,13 @@ mod sealed_output_tests {
         let cluster = Cluster::new();
         let containers = Containers::default();
 
-        let (_runtime, _machine, created) =
-            create_with_env(&cluster, LogStore::Upgrading, &containers, true).await;
+        let (_runtime, _machine, created) = create_with_env(
+            &cluster,
+            LogStore::Upgrading,
+            &containers,
+            sealed_token(&cluster),
+        )
+        .await;
 
         assert!(
             matches!(created, Err(Error::LogStoreUpgrading(_))),
@@ -3040,15 +3042,18 @@ mod sealed_output_tests {
         let cluster = Cluster::new();
         let containers = Containers::default();
 
-        let (_runtime, _machine, created) =
-            create_with_env(&cluster, LogStore::Upgrading, &containers, false).await;
+        let (_runtime, _machine, created) = create_with_env(
+            &cluster,
+            LogStore::Upgrading,
+            &containers,
+            EnvValue::Text(OPENED.into()),
+        )
+        .await;
 
         assert!(created.is_ok(), "{created:?}");
         assert_eq!(containers.lock().unwrap().len(), 1);
     }
 
-    /// A Service Container holding Sealed `TOKEN`, whose checks print it. Docker's
-    /// State becomes `state` with the newest check's output in `Health.Log`.
     async fn printed_by_check(
         cluster: &Cluster,
         key_dir: PathBuf,

@@ -11,7 +11,7 @@ use crate::cluster::Client;
 const SEALED_READY: [&str; 2] = [MANAGEMENT_SCOPE_CAPABILITY, ENV_SEALED_CAPABILITY];
 
 /// Refuses a want that carries a Sealed value while any Machine lacks the
-/// capabilities that keep it sealed. Never retried, so a Deploy fails closed.
+/// capabilities that keep it sealed.
 pub(crate) async fn admit(client: &Client, want: &ContainerWant) -> Result<(), RpcError> {
     let ContainerWant::Running {
         container: RunTarget::New(new),

@@ -15,15 +15,13 @@ use tonic::{Request, Response};
 use crate::cluster::Client;
 use crate::global_fixtures::{machine, requested, service_id};
 
-/// A Cluster of Machine `a`, which can open Sealed values, and Machine `b` with
-/// `b_claims`. Counts the `EnsureContainer` calls that reach it.
-pub(crate) async fn fleet(
-    b_claims: &[&str],
-) -> (
-    Client,
-    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-    Arc<AtomicUsize>,
-) {
+pub(crate) struct Fleet {
+    pub(crate) client: Client,
+    pub(crate) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    pub(crate) ensure_calls: Arc<AtomicUsize>,
+}
+
+pub(crate) async fn fleet(b_claims: &[&str]) -> Fleet {
     let mut ready = machine('a', "machine-a");
     ready.runtime.capabilities = [MANAGEMENT_SCOPE_CAPABILITY, ENV_SEALED_CAPABILITY]
         .map(String::from)
@@ -34,8 +32,8 @@ pub(crate) async fn fleet(
         MachineObservation::new(ready.clone(), MembershipObservation::Up),
         MachineObservation::new(other, MembershipObservation::Up),
     ];
-    let ensured = Arc::new(AtomicUsize::new(0));
-    let sent = ensured.clone();
+    let ensure_calls = Arc::new(AtomicUsize::new(0));
+    let sent = ensure_calls.clone();
     let (client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let machines = machines.clone();
@@ -74,7 +72,11 @@ pub(crate) async fn fleet(
             }
         })
         .await;
-    (client, server, ensured)
+    Fleet {
+        client,
+        server,
+        ensure_calls,
+    }
 }
 
 pub(crate) fn spec(sealed: bool) -> ResolvedServiceSpec {
@@ -124,14 +126,18 @@ async fn a_sealed_value_reaches_a_cluster_only_when_every_machine_can_keep_it_se
         (&[][..], true, false),
         (&[][..], false, true),
     ] {
-        let (client, server, ensured) = fleet(b_claims).await;
+        let Fleet {
+            client,
+            server,
+            ensure_calls,
+        } = fleet(b_claims).await;
 
         let result = client
             .ensure_unsettled(&target, want(spec(sealed)), None)
             .await;
 
         assert_eq!(
-            ensured.load(Ordering::SeqCst),
+            ensure_calls.load(Ordering::SeqCst),
             usize::from(sent),
             "{b_claims:?}"
         );

@@ -67,7 +67,6 @@ pub(super) fn ingress_sysctls(
     }
 }
 
-/// Whether a `kind` Container of `spec` takes a Sealed env value.
 pub(super) fn holds_sealed(kind: ContainerKind, spec: &ResolvedServiceSpec) -> bool {
     let hook = spec
         .pre_deploy

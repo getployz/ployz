@@ -6,11 +6,8 @@ use std::sync::Arc;
 
 use crate::{dns::InstalledExe, observe, runtime_unit, runtime_unit::UnitSupervision};
 
-/// How ployzd learns whether the Log Store runs software from before an upgrade,
-/// which would write opened values to disk.
 #[derive(Clone, Default)]
 pub(crate) enum LogStore {
-    /// No unit runs the Log Store beside this daemon.
     #[default]
     Unsupervised,
     /// `ployz-observe.service` runs it, and should run this daemon's binary. `None`
@@ -28,7 +25,6 @@ impl LogStore {
         }
     }
 
-    /// Refuses to open a Sealed value while the Log Store runs other software.
     pub(crate) async fn admit_sealed(&self) -> Result<(), LogStoreUpgrading> {
         let upgrading = match self {
             Self::Unsupervised => false,
@@ -47,7 +43,6 @@ impl LogStore {
     }
 }
 
-/// Answered as retryable, so a Deploy waits it out like a daemon restart.
 #[derive(Debug, thiserror::Error)]
 #[error("the Log Store still runs the software from before an upgrade")]
 pub struct LogStoreUpgrading;

@@ -179,8 +179,6 @@ impl MachineService {
         }
     }
 
-    /// The record of the Sealed values `id` was given: from the env ployz-observe
-    /// retained for it, else from the Container's label.
     async fn sealed_record(&self, id: ContainerId) -> Result<Option<SealedRecord>, Status> {
         if let Some(env) = self.observe.retained_env(id).await? {
             return Ok(env.sealed().cloned());
@@ -192,12 +190,6 @@ impl MachineService {
             .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))
     }
 
-    /// The env keys whose values this Machine opened for `id`, removed or not.
-    ///
-    /// # Errors
-    ///
-    /// Returns when neither the retained env nor the Container says, so a caller
-    /// must treat every key as opened.
     async fn opened_keys(&self, id: ContainerId) -> Result<BTreeSet<String>, Status> {
         Ok(self
             .sealed_record(id)

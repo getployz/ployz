@@ -170,7 +170,6 @@ fn capture_target(
         reference.repository(),
         uuid::Uuid::new_v4()
     );
-    // A Sealed value opens only on its Machine, so a build sees Text values alone.
     let mut args: BTreeMap<String, String> = service
         .container
         .environment
