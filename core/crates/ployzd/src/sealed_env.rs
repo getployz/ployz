@@ -45,6 +45,8 @@ pub enum OpenError {
     MissingIdentity(String),
     #[error("env PORT cannot hold a Sealed value")]
     SealedPort,
+    #[error("env name {0:?} cannot hold a Sealed value")]
+    BadName(String),
     #[error("env {0} holds a Sealed value bound to another variable")]
     Unbound(String),
     #[error("env {0} does not open with this Cluster's Sealing Key")]
@@ -139,6 +141,9 @@ impl SealedRecord {
             return Err(OpenError::SealedPort);
         }
         for (name, value) in &self.values {
+            if name.is_empty() || name.contains(['=', '\0']) {
+                return Err(OpenError::BadName(name.clone()));
+            }
             if let EnvValue::Sealed(sealed) = value {
                 let scope_matches = match sealed.scope {
                     SealedScope::Shared => true,
@@ -492,6 +497,23 @@ mod tests {
             EnvValue::Sealed(cluster.seal("TOKEN", SealedScope::Service(Uuid::from_u128(9)), "x")),
         )]);
         assert!(matches!(cluster.open(foreign), Err(OpenError::Unbound(_))));
+    }
+
+    #[test]
+    fn a_name_docker_would_split_or_drop_holds_no_sealed_value() {
+        let cluster = Cluster::new();
+        for name in ["TOKEN=alias", "", "TO\0KEN"] {
+            let env = BTreeMap::from([(
+                name.to_owned(),
+                EnvValue::Template(Template {
+                    template: vec![EnvPart::Sealed(cluster.seal("TOKEN", own(), "x"))],
+                }),
+            )]);
+            assert!(
+                matches!(cluster.open(env), Err(OpenError::BadName(bad)) if bad == name),
+                "{name:?}"
+            );
+        }
     }
 
     #[test]
