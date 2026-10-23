@@ -639,6 +639,90 @@ fn queued_terminal_evidence_after_a_duplicate_wins_over_heartbeat() {
 }
 
 #[test]
+fn unqualified_observation_notice_does_not_repeat_a_named_server_gap() {
+    use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
+    for qualified in [ObservationKind::Container, ObservationKind::Volume] {
+        let machine_id = MachineId::random();
+        let mut initial = frame(State::Completed);
+        initial.notices = vec![
+            DeployWarning::ObservationOmitted {
+                kind: ObservationKind::Volume,
+                machine_id,
+                gap: None,
+            },
+            DeployWarning::ObservationOmitted {
+                kind: qualified,
+                machine_id,
+                gap: Some(ObservationGap {
+                    machine_name: MachineName::parse("machine-2").unwrap(),
+                    reason: ObservationGapReason::Down,
+                }),
+            },
+            DeployWarning::ObservationOmitted {
+                kind: ObservationKind::Container,
+                machine_id,
+                gap: None,
+            },
+        ];
+        let text = plain(
+            initial.clone(),
+            vec![(1, Message::Finish(initial, Disposition::Settled))],
+        );
+        eprintln!("{text}");
+        assert_eq!(
+            text.matches("deployment observations are incomplete")
+                .count(),
+            1,
+            "{text}"
+        );
+        assert!(text.contains("Server machine-2"), "{text}");
+        assert!(!text.contains(machine_id.as_str()), "{text}");
+        assert!(!text.contains("observation omitted"), "{text}");
+    }
+}
+
+#[test]
+fn unqualified_observation_failures_keep_their_causes_in_the_named_server_gap() {
+    use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
+    let machine_id = MachineId::random();
+    let mut initial = frame(State::Completed);
+    initial.notices = vec![
+        DeployWarning::ObservationFailed {
+            kind: ObservationKind::Volume,
+            machine_id,
+            message: "volume query timed out".into(),
+            gap: None,
+        },
+        DeployWarning::ObservationFailed {
+            kind: ObservationKind::Container,
+            machine_id,
+            message: "container query timed out".into(),
+            gap: Some(ObservationGap {
+                machine_name: MachineName::parse("machine-2").unwrap(),
+                reason: ObservationGapReason::Failed,
+            }),
+        },
+        DeployWarning::ObservationOmitted {
+            kind: ObservationKind::Volume,
+            machine_id,
+            gap: None,
+        },
+    ];
+    let text = plain(
+        initial.clone(),
+        vec![(1, Message::Finish(initial, Disposition::Settled))],
+    );
+    assert_eq!(text.matches("! Server machine-2").count(), 1, "{text}");
+    assert!(
+        text.contains("containers: container query timed out"),
+        "{text}"
+    );
+    assert!(text.contains("volumes: volume query timed out"), "{text}");
+    assert!(!text.contains(machine_id.as_str()), "{text}");
+    assert!(!text.contains("observed Down"), "{text}");
+}
+
+#[test]
 fn qualified_notices_group_by_machine_identity_and_count_each_gap_once() {
     use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
     let mut initial = frame(State::Completed);
