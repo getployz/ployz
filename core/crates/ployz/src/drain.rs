@@ -113,12 +113,13 @@ impl DrainReport {
         let Remaining::Observed { services, .. } = &self.remaining else {
             return false;
         };
-        let done = |outcome: &DrainOutcome| match outcome {
-            DrainOutcome::Failed { moves, failure } => {
-                failure.clean_elsewhere(&self.server.id)
-                    && moves.iter().all(|step| step.old == OldCopyEnd::Stopped)
+        let done = |outcome: &DrainOutcome| {
+            if let DrainOutcome::Failed { moves, failure } = outcome
+                && failure.clean_elsewhere(&self.server.id)
+            {
+                return moves.iter().all(|step| step.old == OldCopyEnd::Stopped);
             }
-            outcome => outcome.complete(),
+            outcome.complete()
         };
         self.stopped.is_none()
             && self
