@@ -5,6 +5,7 @@ mod api;
 mod certificate;
 mod machine_view;
 mod publisher;
+mod rotation;
 mod service;
 mod store;
 

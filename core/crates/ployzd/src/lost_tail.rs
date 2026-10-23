@@ -13,7 +13,7 @@
 //! or after the daemon alone crashed, checks nothing.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     net::{IpAddr, SocketAddr},
     path::Path,
@@ -160,29 +160,41 @@ pub(crate) async fn recover(
     local: &RecordOwner,
     data_dir: &Path,
 ) {
-    let record = local.record();
-    if record.phase() != LocalMachinePhase::Participating {
-        return;
-    }
     let last = last_stop(data_dir);
-    if let Err(error) = record_start(data_dir) {
+    let settled = if local.record().phase() != LocalMachinePhase::Participating {
+        true
+    } else if matches!(last, LastStop::Clean | LastStop::SameBoot) {
+        tracing::info!("lost-tail check skipped, the last stop lost no commit ({last:?})");
+        true
+    } else {
+        check(corrosion, network, local, last).await
+    };
+    // Recorded only once settled, so a start that dies mid-check checks again.
+    if settled && let Err(error) = record_start(data_dir) {
         tracing::warn!(error = %ployz_core::error_chain::inline(&error), "could not record this start, so the next one checks the store after any reboot");
     }
-    if matches!(last, LastStop::Clean | LastStop::SameBoot) {
-        tracing::info!("lost-tail check skipped, the last stop lost no commit ({last:?})");
-        return;
-    }
+}
+
+/// Whether the store's actor is settled: kept with every reachable peer behind it, or
+/// rotated. A failure leaves it unsettled.
+async fn check(
+    corrosion: &mut RunningCorrosion,
+    network: Option<&mut NetworkPlane>,
+    local: &RecordOwner,
+    last: LastStop,
+) -> bool {
+    let record = local.record();
     let store = corrosion.store().clone();
     let machines = match store.machines().await {
         Ok(machines) => machines,
         Err(error) => {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "lost-tail check skipped, could not read the Machine list");
-            return;
+            return false;
         }
     };
     if alone(&machines, &record.id(), record.bootstrap()) {
         tracing::info!("lost-tail check skipped, no peer to compare the store with");
-        return;
+        return true;
     }
     // At boot WireGuard knows only the bootstrap peers; the rest come from the store.
     if let Some(network) = network
@@ -200,7 +212,7 @@ pub(crate) async fn recover(
         }
         Err(error) => {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "lost-tail check skipped, could not read the store's versions");
-            return;
+            return false;
         }
     };
     let peers = machines
@@ -208,6 +220,8 @@ pub(crate) async fn recover(
         .iter()
         .filter(|peer| peer.id != record.id())
         .map(|peer| SocketAddr::new(IpAddr::V6(peer.management_address().0), MACHINE_API_PORT))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>();
     let answers = ask(&peers, &actor, head).await;
     let every_peer_answered = answers.len() == peers.len();
@@ -218,7 +232,7 @@ pub(crate) async fn recover(
         peers.len()
     );
     let Action::Rotate { pull } = decide(last, tail, every_peer_answered) else {
-        return;
+        return true;
     };
     match &pull {
         Some((lost, peer_head)) => tracing::warn!(
@@ -231,12 +245,12 @@ pub(crate) async fn recover(
     }
     if let Err(error) = corrosion.rotate_actor().await {
         tracing::warn!(error = %ployz_core::error_chain::inline(&error), "could not rotate the Corrosion actor");
-        return;
+        return false;
     }
     let rotated = store.local_actor().await.unwrap_or_default();
     let Some((lost, peer_head)) = pull else {
         tracing::info!("rotated Corrosion actor {actor} to {rotated}");
-        return;
+        return true;
     };
     let target = BTreeMap::from([(lost.clone(), peer_head)]);
     match tokio::time::timeout(CATCH_UP_FOR, wait_for_catch_up(&store, &target)).await {
@@ -253,6 +267,7 @@ pub(crate) async fn recover(
             CATCH_UP_FOR.as_secs()
         ),
     }
+    true
 }
 
 /// Each peer's answer, asking again those that have not answered until all have, one
