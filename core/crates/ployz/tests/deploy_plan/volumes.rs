@@ -6,7 +6,7 @@ use ployz_core::{
     RpcErrorCode, ServiceAttempt, ServiceDependency, ServiceName, VolumeObservationFailure,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     num::{NonZeroU32, NonZeroU64},
 };
 
@@ -2209,6 +2209,53 @@ fn a_service_blocked_on_a_silent_volume_server_gives_back_its_host_port() {
             .iter()
             .any(|operation| operation.service_name() == Some(&web.name)
                 && operation.machine_id() == machine_id('2')),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+/// Services sharing a Volume on a down Server wait together, and the rest of the
+/// Deploy goes ahead.
+#[test]
+fn services_sharing_a_volume_on_a_down_server_block_only_themselves() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    let mut worker = db.clone();
+    worker.name = ServiceName::parse("worker").unwrap();
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &worker, &web],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    for machine in &mut snapshot.machines {
+        if machine.machine.id == machine_id('2') {
+            machine.membership = MembershipObservation::Down;
+        }
+    }
+
+    let preview = runner_preview(&intent, &snapshot).unwrap_or_else(|error| panic!("{error:?}"));
+    let blocked = preview
+        .blocked
+        .iter()
+        .map(|blocked| blocked.service.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        blocked,
+        BTreeSet::from([db.name.clone(), worker.name.clone()])
+    );
+    assert!(
+        operations(&preview)
+            .iter()
+            .any(|operation| operation.service_name() == Some(&web.name)),
         "{:?}",
         operations(&preview)
     );

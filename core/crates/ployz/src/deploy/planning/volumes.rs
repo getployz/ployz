@@ -769,7 +769,7 @@ impl VolumePlan<'_> {
             ) {
                 Ok(anchor) => anchor,
                 Err(error) if options.block_unmountable => {
-                    let error = unmountable(error)?.into_rpc_error();
+                    let error = unmountable(error, snapshot)?.into_rpc_error();
                     blocked.extend(component.service_names().map(|service| BlockedService {
                         service: service.clone(),
                         error: error.clone(),
@@ -789,7 +789,7 @@ impl VolumePlan<'_> {
 ///
 /// # Errors
 /// Hands back any other error, which still fails the Deploy.
-fn unmountable(error: PlanError) -> Result<PlanError, PlanError> {
+fn unmountable(error: PlanError, snapshot: &DeploySnapshot) -> Result<PlanError, PlanError> {
     let PlanError::Service { service, source } = error else {
         return Err(error);
     };
@@ -798,7 +798,8 @@ fn unmountable(error: PlanError) -> Result<PlanError, PlanError> {
         PlanError::NoWriter { .. }
             | PlanError::CopiesUnknown { .. }
             | PlanError::VolumeHolderUnknown { .. }
-    ) {
+    ) || super::volume_server_away(&source, snapshot)
+    {
         Ok(*source)
     } else {
         Err(PlanError::Service { service, source })
