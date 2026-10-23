@@ -212,6 +212,7 @@ struct Sleep {
 
 struct Call {
     path: Vec<String>,
+    method: bool,
     paused: bool,
 }
 
@@ -226,9 +227,11 @@ struct TestFn {
 fn analyze(source: &str, file: &syn::File, in_test: bool) -> Analysis {
     let mut items = Items {
         imported_sleeps: imported_sleeps(&file.items),
+        imported_paths: imported_paths(&file.items, &[]),
         fns: Vec::new(),
         mods: Vec::new(),
         inline_path: Vec::new(),
+        module_path: Vec::new(),
     };
     items.walk(&file.items, in_test);
     let fns = items.fns;
@@ -237,10 +240,23 @@ fn analyze(source: &str, file: &syn::File, in_test: bool) -> Analysis {
     let mut callers: HashMap<_, Vec<_>> = HashMap::new();
     for f in &fns {
         for call in &f.callees {
-            if let Some(name) = resolve_call(&f.name, &call.path, &names)
-                && name != f.name
-            {
-                callers.entry(name).or_default().push((f, call.paused));
+            let resolved = if call.method {
+                None
+            } else {
+                resolve_call(&f.name, &call.path, &names)
+            };
+            let targets: Vec<_> = match resolved {
+                Some(name) => vec![name],
+                None => names
+                    .iter()
+                    .filter(|name| name.last() == call.path.last())
+                    .cloned()
+                    .collect(),
+            };
+            for name in targets {
+                if name != f.name {
+                    callers.entry(name).or_default().push((f, call.paused));
+                }
             }
         }
     }
@@ -310,7 +326,7 @@ fn resolve_call(
                 path = &path[1..];
             }
         }
-        _ => {}
+        _ => scope = caller.to_vec(),
     }
     loop {
         let name = scope.iter().chain(path).cloned().collect::<Vec<_>>();
@@ -343,9 +359,11 @@ fn marked(lines: &[&str], line: usize) -> Option<bool> {
 struct Items {
     /// The clock of each sleep a `use` brings in, by the name it is called under.
     imported_sleeps: HashMap<String, Clock>,
+    imported_paths: HashMap<String, Vec<String>>,
     fns: Vec<TestFn>,
     mods: Vec<ModDecl>,
     inline_path: Vec<String>,
+    module_path: Vec<String>,
 }
 
 impl Items {
@@ -358,10 +376,16 @@ impl Items {
                     if let Some((_, content)) = &module.content {
                         let outer = self.imported_sleeps.clone();
                         self.imported_sleeps.extend(imported_sleeps(content));
+                        let outer_paths = self.imported_paths.clone();
+                        self.module_path.push(name.clone());
                         self.inline_path.push(name);
+                        self.imported_paths
+                            .extend(imported_paths(content, &self.inline_path));
                         self.walk(content, in_test);
                         self.inline_path.pop();
+                        self.module_path.pop();
                         self.imported_sleeps = outer;
+                        self.imported_paths = outer_paths;
                     } else {
                         self.mods.push(ModDecl {
                             name,
@@ -435,22 +459,29 @@ impl Items {
             syn::Meta::List(list) => compact(list.tokens.clone()).contains("start_paused=true"),
             syn::Meta::Path(_) | syn::Meta::NameValue(_) => false,
         });
+        let name: Vec<_> = self
+            .inline_path
+            .iter()
+            .cloned()
+            .chain([sig.ident.to_string()])
+            .collect();
         let mut body = Body {
+            name: name.clone(),
+            nested_fns: Vec::new(),
             imported_sleeps: self.imported_sleeps.clone(),
+            imported_paths: self.imported_paths.clone(),
+            scope: self.module_path.clone(),
             in_test: in_test || test_attr.is_some() || is_cfg_test(attrs),
             paused: start_paused,
             resumes: false,
+            loops: Vec::new(),
             callees: Vec::new(),
             sleeps: Vec::new(),
         };
         body.visit_block(block);
+        self.fns.extend(body.nested_fns);
         self.fns.push(TestFn {
-            name: self
-                .inline_path
-                .iter()
-                .cloned()
-                .chain([sig.ident.to_string()])
-                .collect(),
+            name,
             is_test: test_attr.is_some(),
             resumes: body.resumes,
             callees: body.callees,
@@ -459,12 +490,24 @@ impl Items {
     }
 }
 
+#[derive(Clone)]
+struct LoopExit {
+    label: Option<String>,
+    paused: Option<bool>,
+    backedge_paused: bool,
+}
+
 struct Body {
+    name: Vec<String>,
+    nested_fns: Vec<TestFn>,
+    scope: Vec<String>,
     imported_sleeps: HashMap<String, Clock>,
+    imported_paths: HashMap<String, Vec<String>>,
     in_test: bool,
     /// Whether the clock is paused at the point the visit has reached.
     paused: bool,
     resumes: bool,
+    loops: Vec<LoopExit>,
     callees: Vec<Call>,
     sleeps: Vec<Sleep>,
 }
@@ -472,13 +515,15 @@ struct Body {
 impl Body {
     /// `no_args` tells `tokio::time::pause()` from a test's own `pause(duration)`.
     fn call(&mut self, segments: &[String], span: Span, no_args: bool) {
+        let imported_clock = match segments {
+            [name] => self.imported_sleeps.get(name).copied(),
+            _ => None,
+        };
+        let expanded = self.expand_path(segments);
+        let segments = expanded.as_slice();
         let Some(last) = segments.last() else { return };
-        let clock = match segments {
-            [name] => self.imported_sleeps.get(name).copied().or(matches!(
-                name.as_str(),
-                "sleep" | "sleep_until"
-            )
-            .then_some(Clock::Tokio)),
+        let clock = imported_clock.or_else(|| match segments {
+            [name] => matches!(name.as_str(), "sleep" | "sleep_until").then_some(Clock::Tokio),
             _ if matches!(last.as_str(), "sleep" | "sleep_until") => {
                 Some(if segments.iter().any(|seg| seg == "thread") {
                     Clock::Thread
@@ -487,7 +532,7 @@ impl Body {
                 })
             }
             _ => None,
-        };
+        });
         if let Some(clock) = clock.filter(|_| self.in_test) {
             self.sleeps.push(Sleep {
                 line: span.start().line,
@@ -505,9 +550,59 @@ impl Body {
             _ => {}
         }
         self.callees.push(Call {
-            path: segments.to_vec(),
+            path: expanded,
+            method: false,
             paused: self.paused,
         });
+    }
+
+    /// Every break must be paused. A condition exit also includes the next iteration,
+    /// so revisit with real time if the body or a continue can resume the clock.
+    fn loop_body(
+        &mut self,
+        label: Option<&syn::Label>,
+        block: &syn::Block,
+        condition_exit: Option<bool>,
+    ) {
+        let outer_loops = self.loops.clone();
+        let (calls, sleeps, nested) =
+            (self.callees.len(), self.sleeps.len(), self.nested_fns.len());
+        let mut entry_paused = self.paused;
+        loop {
+            self.paused = entry_paused;
+            self.loops.push(LoopExit {
+                label: label.map(|label| label.name.ident.to_string()),
+                paused: condition_exit,
+                backedge_paused: true,
+            });
+            self.visit_block(block);
+            let exits = self
+                .loops
+                .pop()
+                .expect("the loop being visited has an exit record");
+            let backedge_paused = self.paused && exits.backedge_paused;
+            if entry_paused && !backedge_paused {
+                entry_paused = false;
+                self.loops.clone_from(&outer_loops);
+                self.callees.truncate(calls);
+                self.sleeps.truncate(sleeps);
+                self.nested_fns.truncate(nested);
+                continue;
+            }
+            self.paused =
+                exits.paused.unwrap_or(false) && (condition_exit.is_none() || backedge_paused);
+            break;
+        }
+    }
+
+    fn expand_path(&self, path: &[String]) -> Vec<String> {
+        match path
+            .first()
+            .and_then(|first| self.imported_paths.get(first))
+        {
+            Some(imported) => imported.iter().chain(&path[1..]).cloned().collect(),
+            None => path.to_vec(),
+        }
     }
 
     /// Macro bodies are tokens to syn, so `select!` and `join!` arms are found by shape:
@@ -563,21 +658,111 @@ impl<'ast> Visit<'ast> for Body {
         self.in_test = in_test;
     }
 
+    fn visit_local_init(&mut self, init: &'ast syn::LocalInit) {
+        self.visit_expr(&init.expr);
+        let paused = self.paused;
+        if let Some((_, diverge)) = &init.diverge {
+            self.visit_expr(diverge);
+        }
+        self.paused = paused;
+    }
+
+    fn visit_arm(&mut self, arm: &'ast syn::Arm) {
+        let in_test = self.in_test;
+        syn::visit::visit_arm(self, arm);
+        self.in_test = in_test;
+    }
+
+    fn visit_field_value(&mut self, field: &'ast syn::FieldValue) {
+        let in_test = self.in_test;
+        syn::visit::visit_field_value(self, field);
+        self.in_test = in_test;
+    }
+
     fn visit_expr(&mut self, expr: &'ast syn::Expr) {
         let in_test = self.in_test;
         let paused = self.paused;
         syn::visit::visit_expr(self, expr);
-        if matches!(
-            expr,
-            syn::Expr::While(_)
-                | syn::Expr::ForLoop(_)
-                | syn::Expr::Loop(_)
-                | syn::Expr::Closure(_)
-                | syn::Expr::Async(_)
-        ) {
+        if matches!(expr, syn::Expr::Closure(_) | syn::Expr::Async(_)) {
             self.paused &= paused;
         }
         self.in_test = in_test;
+    }
+
+    fn visit_expr_await(&mut self, expr: &'ast syn::ExprAwait) {
+        let mut base = &*expr.base;
+        loop {
+            let (attrs, inner) = match base {
+                syn::Expr::Paren(paren) => (&paren.attrs, &*paren.expr),
+                syn::Expr::Group(group) => (&group.attrs, &*group.expr),
+                _ => break,
+            };
+            for attr in attrs {
+                self.visit_attribute(attr);
+            }
+            base = inner;
+        }
+        if let syn::Expr::Async(inline) = base {
+            for attr in expr.attrs.iter().chain(&inline.attrs) {
+                self.visit_attribute(attr);
+            }
+            self.visit_block(&inline.block);
+        } else {
+            syn::visit::visit_expr_await(self, expr);
+        }
+    }
+
+    fn visit_expr_loop(&mut self, expr: &'ast syn::ExprLoop) {
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        self.loop_body(expr.label.as_ref(), &expr.body, None);
+    }
+
+    fn visit_expr_while(&mut self, expr: &'ast syn::ExprWhile) {
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        self.visit_expr(&expr.cond);
+        let paused = self.paused;
+        self.loop_body(expr.label.as_ref(), &expr.body, Some(paused));
+        self.paused &= paused;
+    }
+
+    fn visit_expr_for_loop(&mut self, expr: &'ast syn::ExprForLoop) {
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        self.visit_expr(&expr.expr);
+        let paused = self.paused;
+        self.loop_body(expr.label.as_ref(), &expr.body, Some(paused));
+        self.paused &= paused;
+    }
+
+    fn visit_expr_break(&mut self, expr: &'ast syn::ExprBreak) {
+        syn::visit::visit_expr_break(self, expr);
+        let label = expr.label.as_ref().map(|label| label.ident.to_string());
+        if let Some(exit) = self
+            .loops
+            .iter_mut()
+            .rev()
+            .find(|exit| label.is_none() || exit.label == label)
+        {
+            exit.paused = Some(exit.paused.unwrap_or(true) && self.paused);
+        }
+    }
+
+    fn visit_expr_continue(&mut self, expr: &'ast syn::ExprContinue) {
+        syn::visit::visit_expr_continue(self, expr);
+        let label = expr.label.as_ref().map(|label| label.ident.to_string());
+        if let Some(exit) = self
+            .loops
+            .iter_mut()
+            .rev()
+            .find(|exit| label.is_none() || exit.label == label)
+        {
+            exit.backedge_paused &= self.paused;
+        }
     }
 
     fn visit_expr_if(&mut self, expr: &'ast syn::ExprIf) {
@@ -622,6 +807,19 @@ impl<'ast> Visit<'ast> for Body {
         }
     }
 
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        let mut items = Items {
+            imported_sleeps: self.imported_sleeps.clone(),
+            imported_paths: self.imported_paths.clone(),
+            fns: Vec::new(),
+            mods: Vec::new(),
+            inline_path: self.name.clone(),
+            module_path: self.scope.clone(),
+        };
+        items.function(&item.sig, &item.attrs, &item.block, self.in_test);
+        self.nested_fns.extend(items.fns);
+    }
+
     fn visit_item(&mut self, item: &'ast syn::Item) {
         let paused = self.paused;
         syn::visit::visit_item(self, item);
@@ -630,16 +828,35 @@ impl<'ast> Visit<'ast> for Body {
 
     fn visit_block(&mut self, block: &'ast syn::Block) {
         let outer = self.imported_sleeps.clone();
-        self.imported_sleeps
-            .extend(imported_sleeps(block.stmts.iter().filter_map(|stmt| {
-                if let syn::Stmt::Item(item) = stmt {
-                    Some(item)
-                } else {
-                    None
-                }
-            })));
+        let outer_paths = self.imported_paths.clone();
+        self.name.push(format!(
+            "block@{}:{}",
+            block.span().start().line,
+            block.span().start().column
+        ));
+        let items = block.stmts.iter().filter_map(|stmt| match stmt {
+            syn::Stmt::Item(item) => Some(item),
+            _ => None,
+        });
+        self.imported_paths
+            .extend(imported_paths(items.clone(), &self.scope));
+        self.imported_sleeps.extend(imported_sleeps(items.clone()));
+        for item in items {
+            if let syn::Item::Fn(function) = item {
+                let name = function.sig.ident.to_string();
+                self.imported_paths.insert(
+                    name.clone(),
+                    std::iter::once("crate".to_owned())
+                        .chain(self.name.iter().cloned())
+                        .chain([name])
+                        .collect(),
+                );
+            }
+        }
         syn::visit::visit_block(self, block);
+        self.name.pop();
         self.imported_sleeps = outer;
+        self.imported_paths = outer_paths;
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
@@ -666,6 +883,7 @@ impl<'ast> Visit<'ast> for Body {
         syn::visit::visit_expr_method_call(self, call);
         self.callees.push(Call {
             path: vec![call.method.to_string()],
+            method: true,
             paused: self.paused,
         });
     }
@@ -673,6 +891,74 @@ impl<'ast> Visit<'ast> for Body {
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         self.tokens(mac.tokens.clone());
     }
+}
+
+fn imported_paths<'a>(
+    items: impl IntoIterator<Item = &'a syn::Item>,
+    scope: &[String],
+) -> HashMap<String, Vec<String>> {
+    fn tree(
+        use_tree: &syn::UseTree,
+        prefix: &mut Vec<String>,
+        out: &mut HashMap<String, Vec<String>>,
+    ) {
+        match use_tree {
+            syn::UseTree::Path(path) => {
+                prefix.push(path.ident.to_string());
+                tree(&path.tree, prefix, out);
+                prefix.pop();
+            }
+            syn::UseTree::Name(name) => {
+                let mut path = prefix.clone();
+                if name.ident != "self" {
+                    path.push(name.ident.to_string());
+                }
+                if let Some(last) = path.last() {
+                    out.insert(last.clone(), path);
+                }
+            }
+            syn::UseTree::Rename(rename) => {
+                let mut path = prefix.clone();
+                if rename.ident != "self" {
+                    path.push(rename.ident.to_string());
+                }
+                out.insert(rename.rename.to_string(), path);
+            }
+            syn::UseTree::Group(group) => {
+                for item in &group.items {
+                    tree(item, prefix, out);
+                }
+            }
+            syn::UseTree::Glob(_) => {}
+        }
+    }
+    let mut out = HashMap::new();
+    for item in items {
+        if let syn::Item::Use(item_use) = item {
+            tree(&item_use.tree, &mut Vec::new(), &mut out);
+        }
+    }
+    for path in out.values_mut() {
+        let mut base = scope.to_vec();
+        match path.first().map(String::as_str) {
+            Some("crate" | "std" | "tokio") => continue,
+            Some("self") => {
+                path.remove(0);
+            }
+            Some("super") => {
+                while path.first().is_some_and(|part| part == "super") {
+                    base.pop();
+                    path.remove(0);
+                }
+            }
+            _ => {}
+        }
+        *path = std::iter::once("crate".to_owned())
+            .chain(base)
+            .chain(path.drain(..))
+            .collect();
+    }
+    out
 }
 
 fn imported_sleeps<'a>(items: impl IntoIterator<Item = &'a syn::Item>) -> HashMap<String, Clock> {
@@ -1232,6 +1518,222 @@ async fn waits() {
 }
 "#;
         assert_eq!(lint(source), ["6: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn resolves_methods_and_imported_helpers() {
+        let source = r#"
+#[cfg(test)]
+mod tests {
+    struct Worker;
+    impl Worker { async fn wait(&self) { tokio::time::sleep(d).await; } }
+    mod support { pub async fn helper() { tokio::time::sleep(d).await; } }
+    use support::helper;
+    #[tokio::test(start_paused = true)]
+    async fn waits() {
+        use support::helper as local;
+        Worker.wait().await;
+        helper().await;
+        local().await;
+    }
+}
+"#;
+        assert!(lint(source).is_empty(), "{:?}", lint(source));
+    }
+
+    #[test]
+    fn imported_and_unresolved_real_callers_keep_helpers_real() {
+        for real_call in [
+            "settle().await",
+            "unknown::settle().await",
+            "worker.settle().await",
+        ] {
+            let source = format!(
+                r#"
+#[cfg(test)]
+mod common {{ pub async fn settle() {{ tokio::time::sleep(d).await; }} }}
+#[tokio::test(start_paused = true)]
+async fn paused() {{ crate::common::settle().await; }}
+#[tokio::test]
+async fn real() {{ use crate::common::settle; {real_call}; }}
+"#
+            );
+            assert_eq!(
+                lint(&source),
+                ["3: real-clock sleep in test code"],
+                "{real_call}"
+            );
+        }
+    }
+
+    #[test]
+    fn method_callers_are_not_hidden_by_same_named_free_functions() {
+        let source = r#"
+#[cfg(test)]
+mod tests {
+    struct Worker;
+    impl Worker { async fn wait(&self) { tokio::time::sleep(d).await; } }
+    async fn wait() {}
+    #[tokio::test(start_paused = true)]
+    async fn paused() { Worker::wait(&Worker).await; }
+    #[tokio::test]
+    async fn real() { Worker.wait().await; }
+}
+"#;
+        assert_eq!(lint(source), ["5: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn cfg_test_context_stays_in_its_arm_or_field() {
+        let source = r#"
+fn production() {
+    match x {
+        #[cfg(test)] 0 => std::thread::sleep(d),
+        _ => std::thread::sleep(d),
+    }
+    S {
+        #[cfg(test)] a: std::thread::sleep(d),
+        b: std::thread::sleep(d),
+    };
+}
+"#;
+        assert_eq!(
+            lint(source),
+            [
+                "4: real-clock sleep in test code",
+                "8: real-clock sleep in test code"
+            ]
+        );
+    }
+
+    #[test]
+    fn definite_loop_and_awaited_async_pauses_escape() {
+        for setup in [
+            "loop { if ready() { tokio::time::pause(); break; } yield_now().await; }",
+            "loop { tokio::time::pause(); if ready() { break; } else { break; } }",
+            "async { tokio::time::pause(); }.await;",
+            "(async { tokio::time::pause(); }).await;",
+            "'outer: loop { loop { tokio::time::pause(); break 'outer; } }",
+        ] {
+            let source = format!(
+                "#[tokio::test]\nasync fn waits() {{ {setup}\ntokio::time::sleep(d).await; }}"
+            );
+            assert!(lint(&source).is_empty(), "{setup}: {:?}", lint(&source));
+        }
+    }
+
+    #[test]
+    fn loop_back_edges_can_resume_before_a_later_break() {
+        for body in [
+            "if ready() { break; } tokio::time::resume();",
+            "if ready() { tokio::time::resume(); continue; } break;",
+        ] {
+            let source = format!(
+                "#[tokio::test(start_paused = true)]\nasync fn waits() {{ loop {{ {body} }}\ntokio::time::sleep(d).await; }}"
+            );
+            assert_eq!(
+                lint(&source),
+                ["3: real-clock sleep in test code"],
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_loop_exit_must_pause() {
+        for setup in [
+            "loop { if ready() { break; } tokio::time::pause(); break; }",
+            "while ready() { tokio::time::pause(); break; }",
+            "for _ in values { tokio::time::pause(); break; }",
+        ] {
+            let source = format!(
+                "#[tokio::test]\nasync fn waits() {{ {setup}\ntokio::time::sleep(d).await; }}"
+            );
+            assert_eq!(
+                lint(&source),
+                ["3: real-clock sleep in test code"],
+                "{setup}"
+            );
+        }
+    }
+
+    #[test]
+    fn let_else_pause_does_not_reach_following_code() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    let Some(value) = value else { tokio::time::pause(); return; };
+    tokio::time::sleep(d).await;
+}
+"#;
+        assert_eq!(lint(source), ["5: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn nested_helpers_use_call_site_clocks() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    helper().await;
+    tokio::time::pause();
+    async fn helper() { tokio::time::sleep(d).await; }
+}
+#[tokio::test(start_paused = true)]
+async fn paused() {
+    helper().await;
+    async fn helper() { tokio::time::sleep(d).await; }
+}
+"#;
+        assert_eq!(lint(source), ["6: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn nested_helpers_keep_block_imports_and_clocks() {
+        let source = r#"
+#[cfg(test)]
+mod tests {
+    mod real { pub async fn helper() { tokio::time::sleep(d).await; } }
+    mod virtual_time { pub async fn helper() { tokio::time::sleep(d).await; } }
+    #[tokio::test]
+    async fn waits() {
+        {
+            use real::helper;
+            nested().await;
+            async fn nested() { helper().await; }
+        }
+        tokio::time::pause();
+        {
+            use virtual_time::helper;
+            nested().await;
+            async fn nested() { helper().await; }
+        }
+    }
+}
+"#;
+        assert_eq!(lint(source), ["4: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn inner_globs_override_outer_sleep_imports() {
+        let source = r#"
+use std::thread::sleep;
+#[tokio::test(start_paused = true)]
+async fn waits() {
+    { use tokio::time::*; sleep(d).await; }
+    { use tokio::time::sleep; { use std::thread::*; sleep(d); } }
+}
+"#;
+        assert_eq!(lint(source), ["6: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn renamed_thread_module_sleep_stays_real() {
+        let source = r#"
+use std::thread as th;
+#[tokio::test(start_paused = true)]
+async fn waits() { th::sleep(d); }
+"#;
+        assert_eq!(lint(source), ["4: real-clock sleep in test code"]);
     }
 
     #[test]
