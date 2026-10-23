@@ -340,7 +340,11 @@ impl Gaps {
         }
         // It answered, refusing the caller's access: its reason, never "did not answer".
         if failure.error.code.as_str() == crate::connect::FORBIDDEN {
-            let next = failure.error.details.get("next").and_then(serde_json::Value::as_str);
+            let next = failure
+                .error
+                .details
+                .get("next")
+                .and_then(serde_json::Value::as_str);
             return (
                 format!(
                     "{name} refused: {}.",
@@ -359,7 +363,10 @@ impl Gaps {
         }
         (
             missing_rows(&name),
-            super::causes(&failure.error).last().cloned().map(Under::Cause),
+            super::causes(&failure.error)
+                .last()
+                .cloned()
+                .map(Under::Cause),
         )
     }
 
@@ -518,6 +525,20 @@ mod tests {
             (
                 "machine-4 refused: set_device needs Full access.".to_owned(),
                 Some(Under::Next("ployz device request".to_owned()))
+            )
+        );
+
+        // As a daemon refuses today: no next step, and a message that ends its own sentence.
+        let status = ployz_core::rpc::caused_status(
+            tonic::Code::PermissionDenied,
+            &std::io::Error::other("Only Cloud manages management slots."),
+        );
+        let error = crate::connect::TransportError::from(status).to_rpc_error();
+        assert_eq!(
+            gaps.warning(&MachineFailure { machine_id, error }),
+            (
+                "machine-4 refused: Only Cloud manages management slots.".to_owned(),
+                None
             )
         );
     }
