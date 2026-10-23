@@ -3,7 +3,7 @@
 //! `config_sealed_variables` row exists, and nothing here inserts one.
 
 use ployz_core::config::{ClientSealedValue, SavedServiceIntent, SealedSecret, SecretCiphertext};
-use ployz_core::{RpcError, SealedScope};
+use ployz_core::{RpcError, SealedScope, SealedValue};
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -73,6 +73,11 @@ pub(crate) fn fingerprint(value: &ClientSealedValue) -> String {
 /// What HPKE adds to a plaintext: the encapsulated key and the tag.
 const HPKE_OVERHEAD: usize = 48;
 
+/// The length of the plaintext `value` opens to.
+pub(crate) fn plaintext_len(value: &SealedValue) -> usize {
+    value.sealed.as_bytes().len().saturating_sub(HPKE_OVERHEAD)
+}
+
 /// Where a client-sealed value lands, and whether its Organization takes one.
 pub(crate) struct Receiver<'a> {
     pub(crate) environment: &'a EnvironmentId,
@@ -118,13 +123,7 @@ pub(crate) fn accept(
             return Err(refuse("sealed for every Service; seal it for this one"));
         }
     }
-    let plaintext = value
-        .value
-        .sealed
-        .as_bytes()
-        .len()
-        .saturating_sub(HPKE_OVERHEAD);
-    if key.as_str().len() + plaintext + 2 > MAX_ENV_STRING {
+    if key.as_str().len() + plaintext_len(&value.value) + 2 > MAX_ENV_STRING {
         return Err(refuse(TOO_LONG));
     }
     Ok(SealedSecret {
@@ -135,7 +134,7 @@ pub(crate) fn accept(
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{Ciphertext, SealedValue};
+    use ployz_core::Ciphertext;
 
     use super::*;
 

@@ -628,14 +628,27 @@ pub(crate) fn environment_note(
 /// Refuse resolved environment `env` of `service` when no Container could take it.
 pub(crate) fn refuse_too_big(
     service: &str,
-    env: &BTreeMap<String, String>,
+    env: &BTreeMap<String, EnvValue>,
 ) -> Result<(), RpcError> {
     too_big(
         service,
         env.iter()
-            .map(|(key, value)| env_bytes(key.len(), value.len()))
+            .map(|(key, value)| env_bytes(key.len(), opened_len(value)))
             .sum(),
     )
+}
+
+/// The bytes `value` takes in the Container once its Sealed parts are opened.
+fn opened_len(value: &EnvValue) -> usize {
+    let part = |part: &EnvPart| match part {
+        EnvPart::Text(text) => text.len(),
+        EnvPart::Sealed(sealed) => client_sealed::plaintext_len(sealed),
+    };
+    match value {
+        EnvValue::Text(text) => text.len(),
+        EnvValue::Sealed(sealed) => client_sealed::plaintext_len(sealed),
+        EnvValue::Template(template) => template.template.iter().map(part).sum(),
+    }
 }
 
 /// Plain and secret values must survive the container's environment unchanged.
@@ -1060,6 +1073,26 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn a_sealed_value_counts_toward_a_containers_environment_at_its_opened_length() {
+        let sealed = |opened: usize| ployz_core::SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![0; opened + 48]),
+            scope: SealedScope::Service(uuid::Uuid::from_u128(3)),
+            key: "K".into(),
+        };
+        let fits = MAX_ENV_TOTAL - env_bytes(1, 0);
+        let env = |value: EnvValue| BTreeMap::from([("K".to_owned(), value)]);
+        let template = |opened: usize| {
+            EnvValue::Template(Template {
+                template: vec![EnvPart::Text("ab".into()), EnvPart::Sealed(sealed(opened))],
+            })
+        };
+        refuse_too_big("web", &env(EnvValue::Sealed(sealed(fits)))).unwrap();
+        refuse_too_big("web", &env(EnvValue::Sealed(sealed(fits + 1)))).unwrap_err();
+        refuse_too_big("web", &env(template(fits - 2))).unwrap();
+        refuse_too_big("web", &env(template(fits - 1))).unwrap_err();
+    }
 
     #[test]
     fn a_config_file_that_reads_a_value_sealed_in_the_browser_is_refused_by_name() {
