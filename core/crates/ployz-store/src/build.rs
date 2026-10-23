@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use ts_rs::TS;
 
 use crate::builders::{self, Builder};
@@ -404,10 +404,39 @@ pub(crate) fn sources_of(
     sealing: &crate::SealingKey,
 ) -> Result<Vec<GitSource>, RpcError> {
     let saved = deployment::saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
-    let mut sealed = deployment::sealed_reads(tx, stored, &saved, sealing)?;
+    // A value reaches a Service Sealed only when its ciphertext is for this
+    // Environment, and such a value is one of its own variables: a Branch reads a
+    // parent's as Not set. So an Environment without one resolves nothing here.
+    let sealed = if reads_sealed(&saved) {
+        deployment::sealed_reads(tx, stored, &saved, sealing)?
+    } else {
+        BTreeMap::new()
+    };
+    routed(tx, stored, &saved, sealed)
+}
+
+/// Whether any variable of `saved` holds a value the browser sealed: the fact the
+/// dashboard's Preferred Builder line reads.
+fn reads_sealed(saved: &ployz_core::config::SavedEnvironmentIntent) -> bool {
+    saved
+        .services
+        .iter()
+        .flat_map(|service| &service.variables)
+        .any(crate::client_sealed::browser_sealed)
+}
+
+/// The Git Services `stored` builds from `saved`, each with the Builders it tries,
+/// given `sealed`: the first variable of each Service, by Service ID, that reads a
+/// sealed value.
+pub(crate) fn routed(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    saved: &ployz_core::config::SavedEnvironmentIntent,
+    mut sealed: BTreeMap<String, String>,
+) -> Result<Vec<GitSource>, RpcError> {
     let organization = organization(tx, &stored.summary.id)?;
     let mut sources = Vec::new();
-    for (id, mut source) in git_sources(tx, stored, &saved)? {
+    for (id, mut source) in git_sources(tx, stored, saved)? {
         source.sealed = sealed.remove(&id);
         (source.builders, source.preferred_machine) = builders::walk(
             tx,
@@ -814,27 +843,25 @@ pub(crate) fn github_input(
     let commit = row
         .commit
         .ok_or_else(|| error::corrupt("GitHub build commit"))?;
-    if let Some(sealed) = sources_of(tx, &stored, sealing)?
-        .into_iter()
-        .find(|source| source.service == id.service)
-        .and_then(|source| source.sealed)
-    {
+    let saved = deployment::held_revision(tx, &stored)?;
+    let deployment::Lowered {
+        mut input, sealed, ..
+    } = deployment::lowered(tx, &stored, &saved, sealing)?;
+    let built = saved
+        .services
+        .iter()
+        .find(|service| service.config.private_dns == id.service)
+        .ok_or_else(|| error::corrupt("GitHub build Service"))?;
+    if let Some(sealed) = sealed.get(&built.id) {
         return Err(error::conflict(
             format!("{sealed} is sealed. {SEALED_BUILDS_RUN_ON_SERVER}"),
             json!({ "service": id.service, "variable": sealed }),
         ));
     }
-    let mut input = deployment::input(tx, &stored, sealing)?;
-    // Text is a bare string; anything else carries a sealed part.
-    let snapshots = input.get_mut("snapshots").and_then(Value::as_array_mut);
-    for snapshot in snapshots.into_iter().flatten() {
-        if let Some(env) = snapshot
-            .get_mut("resolvedEnv")
-            .and_then(Value::as_object_mut)
-        {
-            env.retain(|_, value| value.is_string());
-        }
+    for snapshot in &mut input.snapshots {
+        snapshot.resolved_env.retain(|_, value| !value.is_sealed());
     }
+    let input = deployment::json_value(&input);
     // The latest receipt of the Service, a cache hint; its own when it has one.
     let receipt = deployment::receipts(tx, &stored.summary.environment_id)?
         .remove(&id.service)
