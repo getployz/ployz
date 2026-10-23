@@ -16,13 +16,14 @@ use ployz_core::{ManagementAddress, MembershipEvidence, RttObservation, rtt_stat
 pub struct MembershipState {
     pub address: SocketAddr,
     pub evidence: MembershipEvidence,
-    /// When the gossip identity was made; a Machine's newest identity speaks for it.
+    /// When the gossip identity was made, by the clock of the Machine that made it.
     pub identity_ts: u64,
 }
 
 /// One state per Machine address. A Machine that comes back under a new Corrosion actor
-/// leaves its old actors in gossip, Down, beside the new one at the same address, so the
-/// newest identity speaks for the Machine.
+/// leaves its old actors in gossip, Down, beside the new one at the same address. The
+/// liveliest identity speaks for the Machine, and the newest among equally live ones:
+/// a clock set back across the change must not let an old actor outrank a live one.
 pub(crate) fn membership_states_by_address(
     states: impl IntoIterator<Item = MembershipState>,
 ) -> BTreeMap<ManagementAddress, MembershipEvidence> {
@@ -32,9 +33,10 @@ pub(crate) fn membership_states_by_address(
             continue;
         };
         let address = ManagementAddress(address);
+        let rank = |state: &MembershipState| (liveness(&state.evidence), state.identity_ts);
         if newest
             .get(&address)
-            .is_none_or(|kept| state.identity_ts > kept.identity_ts)
+            .is_none_or(|kept| rank(&state) > rank(kept))
         {
             newest.insert(address, state);
         }
@@ -43,6 +45,16 @@ pub(crate) fn membership_states_by_address(
         .into_iter()
         .map(|(address, state)| (address, state.evidence))
         .collect()
+}
+
+/// An unrecognized state claims nothing, so any recognized one outranks it.
+fn liveness(evidence: &MembershipEvidence) -> u8 {
+    match evidence {
+        MembershipEvidence::Up => 3,
+        MembershipEvidence::Suspect => 2,
+        MembershipEvidence::Down => 1,
+        MembershipEvidence::Unrecognized { .. } => 0,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -238,11 +250,52 @@ mod tests {
         }
         assert_eq!(
             merged([
-                state(MembershipEvidence::Suspect, 1),
+                state(MembershipEvidence::Down, 1),
                 state(MembershipEvidence::Down, 2)
             ]),
             Some(MembershipEvidence::Down)
         );
+    }
+
+    #[test]
+    fn a_live_identity_speaks_for_its_machine_even_when_a_clock_went_back() {
+        use ployz_core::{ManagementAddress, MembershipEvidence};
+        let address = format!("[fdcc::1]:{CORROSION_GOSSIP_PORT}")
+            .parse()
+            .unwrap();
+        let merged = membership_states_by_address([
+            MembershipState {
+                address,
+                evidence: MembershipEvidence::Down,
+                identity_ts: 9,
+            },
+            MembershipState {
+                address,
+                evidence: MembershipEvidence::Up,
+                identity_ts: 1,
+            },
+        ]);
+        assert_eq!(
+            merged.get(&ManagementAddress("fdcc::1".parse().unwrap())),
+            Some(&MembershipEvidence::Up)
+        );
+    }
+
+    #[test]
+    fn the_gossip_identity_timestamp_is_read_from_corrosion_admin_output() {
+        let state = decode_membership_state(json!({
+            "id": {
+                "addr": "[fdcc::1]:7570",
+                "cluster_id": 0,
+                "id": "35f4a60c-4393-4865-bb4e-7322a69f3bfb",
+                "member_id": null,
+                "ts": 7_699_721_275_324_093_866_u64
+            },
+            "incarnation": 0,
+            "state": "Down"
+        }))
+        .unwrap();
+        assert_eq!(state.identity_ts, 7_699_721_275_324_093_866);
     }
 
     #[test]
