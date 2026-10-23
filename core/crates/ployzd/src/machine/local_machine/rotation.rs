@@ -7,7 +7,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use futures_util::{TryFutureExt, future::try_join_all};
+use futures_util::{
+    TryFutureExt,
+    future::{join_all, try_join_all},
+};
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerObservation,
@@ -79,8 +82,12 @@ struct Routed {
 /// read again under it.
 enum GuardReads {
     None,
-    /// Every copy's row, for the OlderThanIn guard.
-    NewerIn(Vec<ContainerObservation>),
+    /// Every copy's row, for the OlderThanIn guard, and the full spec each remote newer
+    /// sibling's owner answered with.
+    NewerIn(
+        Vec<ContainerObservation>,
+        BTreeMap<ContainerId, ResolvedServiceSpec>,
+    ),
     LastIn(Routed),
 }
 
@@ -314,8 +321,10 @@ impl LocalMachine {
         want: &RotationWant,
     ) -> Result<GuardReads, Error> {
         Ok(match want {
-            RotationWant::In { .. } => {
-                GuardReads::NewerIn(self.replicated()?.containers().await?.observations)
+            RotationWant::In { run } => {
+                let observed = self.replicated()?.containers().await?.observations;
+                let confirmed = self.confirm_newer(copy, run.as_ref(), &observed).await;
+                GuardReads::NewerIn(observed, confirmed)
             }
             RotationWant::Out { allow_empty: false } => {
                 GuardReads::LastIn(self.routed(copy).await?)
@@ -336,12 +345,12 @@ impl LocalMachine {
             decided @ (Checked::Met | Checked::Refused(_)) => return Ok(decided),
         };
         let guard = match (reads, &copy.rotation) {
-            (GuardReads::NewerIn(observed), _) => {
+            (GuardReads::NewerIn(observed, confirmed), _) => {
                 let run = match want {
                     RotationWant::In { run } => run.as_ref(),
                     RotationWant::Held(_) | RotationWant::Out { .. } => None,
                 };
-                self.newer_in(copy, run, observed).await?
+                self.newer_in(copy, run, observed, &confirmed).await?
             }
             (GuardReads::LastIn(routed), CopyRotation::In) => self.last_in(copy, routed).await?,
             (GuardReads::LastIn(_), _) | (GuardReads::None, _) => None,
@@ -357,12 +366,15 @@ impl LocalMachine {
     /// A copy that `run` created replaced this one whatever the specs show, as when a
     /// Deploy restores the copy it held after starting a replacement it forced or that
     /// a limits change needed. A replicated row carries no environment or Config
-    /// content, so on another Machine a change to those alone is seen only this way.
+    /// content, so for a newer copy on another Machine the full spec its owner
+    /// `confirmed` decides. An owner that didn't answer shows nothing, so its copy
+    /// counts only by its row, as before.
     async fn newer_in(
         &self,
         copy: &CopyState,
         run: Option<&DeploymentLogId>,
         observed: Vec<ContainerObservation>,
+        confirmed: &BTreeMap<ContainerId, ResolvedServiceSpec>,
     ) -> Result<Option<ContainerRefusal>, Error> {
         let machine_id = self.record().id();
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
@@ -375,7 +387,10 @@ impl LocalMachine {
                     && *observed.rotation() == CopyRotation::In
                     && observed.copy_gen() > copy.r#gen
                     && (created_by(observed.deploy_label().as_ref(), run)
-                        || supersedes(&observed.resolved_spec, &published))
+                        || supersedes(&observed.resolved_spec, &published)
+                        || confirmed
+                            .get(&observed.container_id)
+                            .is_some_and(|spec| supersedes(spec, &copy.spec)))
             })
             .map(|observed| (observed.container_id, observed.copy_gen()))
             .collect::<Vec<_>>();
@@ -405,6 +420,40 @@ impl LocalMachine {
                 ),
             )
         }))
+    }
+
+    /// Asks the owner of each remote newer In sibling that neither `run` nor its row
+    /// shows replaced `copy` for its full spec. A row carries no environment or Config
+    /// content, so only the owner's answer shows a change to those alone. An owner that
+    /// doesn't answer, or no longer reports the copy In at the row's gen, shows nothing,
+    /// so it leaves the copy to the rest of the guard, as before.
+    async fn confirm_newer(
+        &self,
+        copy: &CopyState,
+        run: Option<&DeploymentLogId>,
+        observed: &[ContainerObservation],
+    ) -> BTreeMap<ContainerId, ResolvedServiceSpec> {
+        let machine_id = self.record().id();
+        let published = published_spec(copy.spec.clone());
+        let unseen = observed.iter().filter(|observed| {
+            observed.machine_id != machine_id
+                && is_sibling(copy, observed)
+                && *observed.rotation() == CopyRotation::In
+                && observed.copy_gen() > copy.r#gen
+                && !created_by(observed.deploy_label().as_ref(), run)
+                && !supersedes(&observed.resolved_spec, &published)
+        });
+        join_all(unseen.map(|row| async {
+            let answer = self.inspect_peer(row.machine_id, row.container_id).await?;
+            (answer.machine_id == row.machine_id
+                && *answer.rotation() == CopyRotation::In
+                && answer.copy_gen() == row.copy_gen())
+            .then(|| (row.container_id, answer.into_parts().resolved_spec))
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     /// Only copies some ack row names can pass, so only those rows are read.

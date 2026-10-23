@@ -67,6 +67,8 @@ struct Fleet {
     shutdown: CancellationToken,
     dir: PathBuf,
     cluster: FakeCluster,
+    /// Machines whose daemons don't answer a peer's inspect, though their membership is Up.
+    silent: Arc<Mutex<BTreeSet<MachineId>>>,
 }
 
 impl Fleet {
@@ -84,6 +86,17 @@ impl Fleet {
         let states = Arc::new(Mutex::new(Vec::new()));
         let admin = admin_socket(&dir, Arc::clone(&states));
         let shutdown = CancellationToken::new();
+        let runtimes = Arc::new(Mutex::new(BTreeMap::<MachineId, ContainerRuntime>::new()));
+        let silent = Arc::new(Mutex::new(BTreeSet::new()));
+        let peers: crate::machine::PeerInspect = {
+            let (runtimes, silent) = (Arc::clone(&runtimes), Arc::clone(&silent));
+            Arc::new(move |machine, container| {
+                let runtime = (!silent.lock().unwrap().contains(&machine))
+                    .then(|| runtimes.lock().unwrap().get(&machine).cloned())
+                    .flatten();
+                Box::pin(async move { runtime?.inspect_managed(&container, &machine).await.ok() })
+            })
+        };
         let mut nodes = Vec::new();
         for octet in 1..=3_u8 {
             let data_dir = dir.join(format!("machine-{octet}"));
@@ -121,7 +134,11 @@ impl Fleet {
                 Some((cluster.store(), AdminClient::new(admin.clone()))),
             )
             .with_optional_containers(Some(runtime.clone()));
-            service.local = service.local.with_zpool("true");
+            service.local = service
+                .local
+                .with_zpool("true")
+                .with_peers(Arc::clone(&peers));
+            runtimes.lock().unwrap().insert(row.id, runtime.clone());
             nodes.push(Node {
                 service,
                 runtime,
@@ -136,7 +153,13 @@ impl Fleet {
             shutdown,
             dir,
             cluster,
+            silent,
         }
+    }
+
+    /// `index`'s daemon stops answering its peers' inspects.
+    fn silence(&self, index: usize) {
+        self.silent.lock().unwrap().insert(self.id(index));
     }
 
     fn node(&self, index: usize) -> &Node {
@@ -1905,6 +1928,41 @@ mod rotation_commands {
                 "newer on {newer_on}: {reply:?}"
             );
         }
+    }
+
+    /// A Deploy changed only the environment and replaced the copy on another Machine,
+    /// but couldn't reach this one. The rows match as published, so only the newer
+    /// copy's owner shows it replaced this one, and a restart keeps it out.
+    #[tokio::test]
+    async fn a_copy_an_environment_only_deploy_replaced_elsewhere_stays_out() {
+        let with = |level: &str| {
+            let mut spec = spec("api");
+            spec.container
+                .environment
+                .insert("LOG_LEVEL".to_owned(), level.into());
+            spec
+        };
+        let fleet = Fleet::start().await;
+        let older = fleet.routed_as(0, "old", with("info"), 1).await;
+        let newer = fleet.routed_as(1, "new", with("debug"), 2).await;
+        let restart = || Some(CopyRotation::Held(run("restart")));
+        ensured(
+            &ensure(
+                fleet.node(0),
+                held(older, "restart", Some(CopyRotation::In)),
+            )
+            .await,
+        );
+
+        let reply = ensure(fleet.node(0), into(older, Some(run("restart")), restart())).await;
+        let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
+        assert!(message.contains(&newer.to_string()), "{message}");
+
+        // An owner that doesn't answer shows nothing, so the copy comes back In as before
+        // rather than be taken for replaced.
+        fleet.silence(1);
+        let reply = ensure(fleet.node(0), into(older, Some(run("restart")), restart())).await;
+        assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
     }
 
     /// A Deploy held the old copy and brought its replacement In: forced, after a limits

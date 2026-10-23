@@ -10,12 +10,12 @@ use std::{
 };
 
 use ployz_core::{
-    EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest, LeaveRequest, Left,
-    LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
-    MachineObservation, MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel,
-    MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode,
-    RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
-    synthesize_membership,
+    ContainerId, ContainerObservation, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
+    InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
+    MachineId, MachineIdentity, MachineList, MachineObservation, MachineToken, MachineUpdated,
+    ManagementAddress, ManagementClientLabel, MembershipEvidence, PublicIpDiscovery,
+    RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation, RttStatistics,
+    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -47,7 +47,22 @@ pub struct LocalMachine {
     zpool: PathBuf,
     proc_root: PathBuf,
     settled: container::SettledCreations,
+    #[cfg(test)]
+    peers: Option<PeerInspect>,
 }
+
+const PEER_INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How a test answers another Machine's copy in place of the mesh.
+#[cfg(test)]
+pub(crate) type PeerInspect = std::sync::Arc<
+    dyn Fn(
+            MachineId,
+            ContainerId,
+        ) -> futures_util::future::BoxFuture<'static, Option<ContainerObservation>>
+        + Send
+        + Sync,
+>;
 
 mod container;
 pub(crate) use container::CutRefusal;
@@ -164,6 +179,8 @@ impl LocalMachine {
             zpool: PathBuf::from("zpool"),
             proc_root: PathBuf::from("/proc"),
             settled: container::SettledCreations::default(),
+            #[cfg(test)]
+            peers: None,
         }
     }
 
@@ -171,6 +188,13 @@ impl LocalMachine {
     #[must_use]
     pub(crate) fn with_zpool(mut self, program: impl Into<PathBuf>) -> Self {
         self.zpool = program.into();
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_peers(mut self, peers: PeerInspect) -> Self {
+        self.peers = Some(peers);
         self
     }
 
@@ -332,6 +356,26 @@ impl LocalMachine {
             .ok_or(Error::ClusterStoreUnavailable)?;
         let machines = cluster.replicated.machines().await?;
         Ok(crate::route_acks::sample_ackers(machines, &self.record().id(), &cluster.admin).await)
+    }
+
+    /// `container` as `machine` observes it now, with the environment and Config content
+    /// a store row drops. `None` when it didn't answer within [`PEER_INSPECT_TIMEOUT`], so
+    /// the two guard reads of one In fit the caller's wait.
+    pub(crate) async fn inspect_peer(
+        &self,
+        machine: MachineId,
+        container: ContainerId,
+    ) -> Option<ContainerObservation> {
+        #[cfg(test)]
+        if let Some(peers) = &self.peers {
+            return peers(machine, container).await;
+        }
+        let machines = self.replicated().ok()?.machines().await.ok()?;
+        let peer = machines
+            .observations
+            .iter()
+            .find(|peer| peer.id == machine)?;
+        crate::boot_pass::inspect_peer(peer, container, PEER_INSPECT_TIMEOUT).await
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {
