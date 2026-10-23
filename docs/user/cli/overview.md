@@ -51,7 +51,11 @@ your app's directory.
 `ployz ctx` shows where commands act from here. In a directory with no project linked, it asks Cloud
 which projects there are: it names your only project, says the organization has none yet, or says
 it has several and how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
-`ployz link` step.
+`ployz link` step. When signed out, it says `organization = no one` and suggests `ployz login`.
+With no context, sign-in or token, it reports no local daemon socket when that socket is absent.
+Socket presence alone does not confirm that the daemon answers. In JSON, `credential` names
+`device`, `token` or `local`, or is null when signed out. `servers.local_socket_exists` records
+the socket check for the local fallback; `servers.via` still names the selected route.
 
 A link belongs to the organization it was made in. Acting in another one, a command that uses the
 link, such as `ployz status`, refuses. When both are Ployz Cloud organizations, it names

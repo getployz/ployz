@@ -957,6 +957,7 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     #[derive(Serialize)]
     struct Context<'a> {
         organization: Option<Organization>,
+        credential: Option<&'static str>,
         #[serde(flatten)]
         scope: &'a Scope,
         /// What an unnamed Project falls back to, when the Store said.
@@ -968,8 +969,17 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let config = config_path(matches)?;
     let scope = scope(matches)?;
     let default = scope.project.is_none().then(|| fallback(&config)).flatten();
+    let organization = acting_organization(&config)?;
+    let credential = if super::store::local_mode() {
+        Some("local")
+    } else if crate::cloud_account::env_token().is_some() {
+        Some("token")
+    } else {
+        organization.as_ref().map(|_| "device")
+    };
     let context = Context {
-        organization: acting_organization(&config)?,
+        organization,
+        credential,
         scope: &scope,
         default,
         servers: servers(matches, &config)?,
@@ -978,10 +988,14 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
         .default
         .as_ref()
         .and_then(|default| default.project.as_ref().zip(default.environment.as_ref()));
-    let hint = match (&scope.project, &context.default, only) {
-        (Some(_), ..) | (None, _, Some(_)) => None,
-        (None, Some(Fallback { projects: 0, .. }), None) => Some("ployz project new NAME"),
-        (None, _, None) => Some("ployz link --project PROJECT"),
+    let hint = if context.credential.is_none() {
+        Some("ployz login")
+    } else {
+        match (&scope.project, &context.default, only) {
+            (Some(_), ..) | (None, _, Some(_)) => None,
+            (None, Some(Fallback { projects: 0, .. }), None) => Some("ployz project new NAME"),
+            (None, _, None) => Some("ployz link --project PROJECT"),
+        }
     }
     .map(str::to_owned);
     let project = match (&scope.project, &context.default) {
@@ -1014,17 +1028,24 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let record = Fields::new()
         .field(
             "organization",
-            context
-                .organization
-                .as_ref()
-                .map_or("(the token's)", |organization| organization.slug.as_str()),
+            context.organization.as_ref().map_or(
+                if context.credential.is_none() {
+                    "no one"
+                } else {
+                    "(the token's)"
+                },
+                |organization| organization.slug.as_str(),
+            ),
         )
         .field("project", project)
         .field("environment", environment)
         .field(
             "servers",
             context.servers.context.as_ref().map_or_else(
-                || format!("via {}", context.servers.via),
+                || match context.servers.local_socket_exists {
+                    Some(false) => "(none: no local daemon socket)".to_owned(),
+                    Some(true) | None => format!("via {}", context.servers.via),
+                },
                 |name| format!("via context {name}"),
             ),
         );
@@ -1069,11 +1090,18 @@ struct Servers {
     via: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_socket_exists: Option<bool>,
 }
 
 /// In `server::connect`'s order. A `--connect` target isn't echoed: it can carry a capability.
 fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
-    let via = |via, context| Servers { via, context };
+    let via = |via, context| Servers {
+        via,
+        context,
+        local_socket_exists: (via == "local")
+            .then(|| Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists()),
+    };
     if matches.get_one::<String>("connect").is_some() {
         return Ok(via("connect", None));
     }
