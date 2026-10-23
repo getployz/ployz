@@ -508,6 +508,7 @@ pub(crate) fn sealing_targets(
                 row,
                 service,
                 key,
+                label,
             })
         })
         .collect::<Result<_, RpcError>>()?;
@@ -593,14 +594,8 @@ pub(crate) fn seal_secret(
     let key = VariableKey::parse(key)?;
     match value {
         SecretValue::Text(value) => {
-            if value.is_empty() {
-                return Err(error::invalid(
-                    format!("{label}: a secret needs a value"),
-                    json!({ "row": row }),
-                ));
-            }
+            admit_secret_text(row, label, &key, value)?;
             guard.admit(key.as_str(), || Ok(client_sealed))?;
-            validate_text(&key, value)?;
             Ok(SealedSecret {
                 fingerprint: sealing.fingerprint(value),
                 value: SecretCiphertext::Store(sealing.seal(value)),
@@ -619,6 +614,23 @@ pub(crate) fn seal_secret(
             client_sealed::accept(value.clone(), &key, &receiver, refuse)
         }
     }
+}
+
+/// Refuse plain text `value` for secret `key` at `row` (labelled `label`), as a
+/// Sync refuses it before sealing. A CLI that seals the text itself runs this first.
+pub(crate) fn admit_secret_text(
+    row: &RowId,
+    label: &str,
+    key: &VariableKey,
+    value: &str,
+) -> Result<(), RpcError> {
+    if value.is_empty() {
+        return Err(error::invalid(
+            format!("{label}: a secret needs a value"),
+            json!({ "row": row }),
+        ));
+    }
+    validate_text(key, value)
 }
 
 /// Refuse to close a kept Branch, or one the Store can't remove.

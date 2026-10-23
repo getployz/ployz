@@ -8442,3 +8442,90 @@ fn env_sync_sealed_values_go_as_plain_text_for_the_store_when_it_seals() {
     );
     assert!(sealed_in_writes().is_empty());
 }
+
+/// What `args` with `stdin` printed and exited with against a fresh Cloud answering
+/// sealing `state`, its Store's flag on when `flag_on`, after `setup`; and how many
+/// writes Cloud took for it.
+fn refused_by(
+    (state, flag_on): (SealingState, bool),
+    setup: fn(&Target),
+    args: &[&str],
+    stdin: &str,
+) -> (Option<i32>, Value, usize) {
+    let (cloud, _dir) = sealing_cloud(Some(state), flag_on);
+    setup(&cloud);
+    let writes = requests_to("/api/config/write").len();
+    let (code, refused) = ployz_with_stdin(&cloud, args, stdin);
+    let refused = serde_json::from_str(&refused).unwrap();
+    (
+        code,
+        refused,
+        requests_to("/api/config/write").len() - writes,
+    )
+}
+
+fn sealing_ready() -> (SealingState, bool) {
+    (
+        SealingState::Ready(Keypair::generate().public().to_string()),
+        true,
+    )
+}
+
+fn one_service(cloud: &Target) {
+    ok(cloud, &["project", "new", "shop"]);
+    ok(cloud, &["service", "add", "web", "--image", "nginx:1"]);
+}
+
+/// A Branch `fix-key` holding a secret production lacks.
+fn branch_with_a_new_secret(cloud: &Target) {
+    one_service(cloud);
+    ok(cloud, &["env", "branch", "fix-key", "--copy", "web"]);
+    let other = ["set", "web.env.OTHER_KEY", "--secret", "--env", "fix-key"];
+    let (code, set) = ployz_with_stdin(cloud, &other, "branch-key\n");
+    assert_eq!(code, Some(0), "{set}");
+}
+
+#[test]
+fn set_refuses_a_secret_holding_a_nul_as_the_store_does_before_sealing_it() {
+    let args = ["set", "web.env.TOKEN", "--secret"];
+    let stdin = "nul\0s3cr3t\n";
+    let (code, legacy, _) = refused_by((SealingState::Off, false), one_service, &args, stdin);
+    assert_eq!(code, Some(2), "{legacy}");
+    assert_eq!(
+        legacy["error"]["message"],
+        json!("TOKEN: null characters are not allowed")
+    );
+    let (code, sealed, written) = refused_by(sealing_ready(), one_service, &args, stdin);
+    assert_eq!((code, &sealed), (Some(2), &legacy));
+    assert_eq!(written, 0);
+}
+
+#[test]
+fn env_sync_refuses_an_empty_value_as_the_store_does_before_sealing_it() {
+    let args = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--value",
+        "web.env.OTHER_KEY",
+    ];
+    let legacy_flag = (SealingState::Off, false);
+    let (code, mut legacy, _) = refused_by(legacy_flag, branch_with_a_new_secret, &args, "\n");
+    assert_eq!(code, Some(2), "{legacy}");
+    assert_eq!(
+        legacy["error"]["message"],
+        json!("web.env.OTHER_KEY: a secret needs a value")
+    );
+    let (code, mut sealed, written) =
+        refused_by(sealing_ready(), branch_with_a_new_secret, &args, "\n");
+    // Each Store gives its Services their own IDs, so the rows differ only there.
+    let row = |refused: &mut Value| {
+        let row = refused["error"]["details"]["row"].take();
+        row.as_str().unwrap().split_once(':').unwrap().1.to_owned()
+    };
+    assert_eq!(row(&mut sealed), row(&mut legacy));
+    assert_eq!((code, &sealed), (Some(2), &legacy));
+    assert_eq!(written, 0);
+}

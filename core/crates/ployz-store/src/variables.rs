@@ -655,6 +655,17 @@ fn opened_len(value: &EnvValue) -> usize {
     }
 }
 
+/// Refuse plain text that [`set`] wouldn't seal as a new secret of `key`, as it
+/// refuses it. A CLI that seals the text itself runs this first, since the Store
+/// can't read what it seals.
+///
+/// # Errors
+/// A name Ployz sets, or text [`validate_text`] refuses.
+pub(crate) fn admit_secret(key: &VariableKey, plaintext: &str) -> Result<(), RpcError> {
+    refuse_reserved(key)?;
+    validate_text(key, plaintext)
+}
+
 /// Plain and secret values must survive the container's environment unchanged.
 ///
 /// # Errors
