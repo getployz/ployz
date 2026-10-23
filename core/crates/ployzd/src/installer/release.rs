@@ -18,8 +18,8 @@ use tokio::{process::Command, time::timeout};
 
 use super::{Error, InstallPaths, daemon_archive, run_command};
 use ployz_core::{
-    MachineRelease, MachineUpgradeStage, MachineVersion, RELEASE_MIRRORS, RELEASE_SIGNATURE_ASSET,
-    from_release_mirrors, verify_release_checksums,
+    MachineRelease, MachineUpgradeStage, MachineVersion, RELEASE_SIGNATURE_ASSET,
+    from_release_mirrors, release_mirrors, verify_release_checksums,
 };
 
 const CHANNEL_URL: &str = "https://ployz.sh";
@@ -90,7 +90,9 @@ impl ReleaseSource {
         match self {
             Self::Published => {
                 let client = download_client()?;
-                from_release_mirrors(RELEASE_MIRRORS, &format!("v{target}/{file}"), |url| {
+                let mirrors = release_mirrors();
+                let mirrors = mirrors.each_ref().map(String::as_str);
+                from_release_mirrors(mirrors, &format!("v{target}/{file}"), |url| {
                     get_if_present(&client, url)
                 })
                 .await

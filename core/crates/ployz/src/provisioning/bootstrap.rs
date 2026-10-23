@@ -8,8 +8,8 @@ use std::{
 };
 
 use ployz_core::{
-    MachineVersion, RELEASE_MIRRORS, RELEASE_PUBLIC_KEY, RELEASE_SIGNATURE_ASSET,
-    from_release_mirrors, verify_release_checksums,
+    MachineVersion, RELEASE_PUBLIC_KEY, RELEASE_SIGNATURE_ASSET, from_release_mirrors,
+    release_mirrors, verify_release_checksums,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -28,7 +28,7 @@ pub(super) struct Bootstrap {
 
 impl Bootstrap {
     /// Download, checksum, and extract this release's bootstrap for a Linux architecture, from
-    /// GitHub or, when GitHub can't be reached, ployz.sh.
+    /// the [`release_mirrors`]: GitHub or, when GitHub can't be reached, ployz.sh.
     pub(super) async fn acquire(architecture: &str) -> Result<Self, ProvisionError> {
         let archive_name = daemon_archive(architecture)?;
         let release = concat!("v", env!("CARGO_PKG_VERSION"));
@@ -43,22 +43,20 @@ impl Bootstrap {
                 source,
             })?;
         let failed = |stage| move |source| ProvisionError::BootstrapDownload { stage, source };
-        let archive = from_release_mirrors(
-            RELEASE_MIRRORS,
-            &format!("{release}/{archive_name}"),
-            |url| download(&client, url),
-        )
+        let mirrors = release_mirrors();
+        let mirrors = mirrors.each_ref().map(String::as_str);
+        let archive = from_release_mirrors(mirrors, &format!("{release}/{archive_name}"), |url| {
+            download(&client, url)
+        })
         .await
         .map_err(failed("download bootstrap daemon archive"))?;
-        let checksums = from_release_mirrors(
-            RELEASE_MIRRORS,
-            &format!("{release}/checksums.txt"),
-            |url| download(&client, url),
-        )
+        let checksums = from_release_mirrors(mirrors, &format!("{release}/checksums.txt"), |url| {
+            download(&client, url)
+        })
         .await
         .map_err(failed("download bootstrap release checksums"))?;
         let signature = from_release_mirrors(
-            RELEASE_MIRRORS,
+            mirrors,
             &format!("{release}/{RELEASE_SIGNATURE_ASSET}"),
             |url| download_if_present(&client, url),
         )
