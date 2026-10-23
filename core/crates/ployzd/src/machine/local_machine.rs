@@ -15,8 +15,7 @@ use ployz_core::{
     MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
     MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
     PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation,
-    RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
-    synthesize_membership,
+    RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -50,6 +49,7 @@ pub struct LocalMachine {
     settled: container::SettledCreations,
     #[cfg(test)]
     peers: Option<PeerInspect>,
+    #[cfg(test)]
     ensure_pause: Option<container::EnsurePause>,
 }
 
@@ -197,6 +197,7 @@ impl LocalMachine {
             settled: container::SettledCreations::default(),
             #[cfg(test)]
             peers: None,
+            #[cfg(test)]
             ensure_pause: None,
         }
     }
