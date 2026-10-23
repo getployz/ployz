@@ -423,6 +423,11 @@ async fn launch_worker(
         .arg("--property=RestrictNamespaces=yes")
         .arg("--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX")
         .arg(format!("--property={writable}"))
+        .args(
+            ployz_core::release_mirror_overrides()
+                .into_iter()
+                .map(|(name, url)| format!("--setenv={name}={url}")),
+        )
         .arg(executable)
         .arg("--data-dir")
         .arg(data_dir)

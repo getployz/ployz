@@ -258,8 +258,14 @@ async fn install(
         )
     })?;
     let skip_zfs = process_env::var_os(SKIP_ZFS).is_some_and(|value| value == "1");
-    let checkin_unit = unit::checkin(&ployz, &host.ployzd, &paths.token_file, cloud_url)
-        .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
+    let checkin_unit = unit::checkin(
+        &ployz,
+        &host.ployzd,
+        &paths.token_file,
+        cloud_url,
+        &ployz_core::release_mirror_overrides(),
+    )
+    .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     let prepare_unit = unit::prepare(&host.ployzd, skip_zfs)
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     crate::ui::stream("Checking in");

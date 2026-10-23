@@ -1,13 +1,54 @@
-//! Where release assets download from: GitHub, else ployz.sh when GitHub can't be reached.
+//! Where release assets download from: GitHub, else ployz.sh when GitHub can't be reached,
+//! or the bases `PLOYZ_GITHUB_URL` and `PLOYZ_FALLBACK_URL` name.
 
 use std::{error::Error, future::Future, io};
 
-/// Release download bases in the order a download tries them. ployz.sh passes GitHub's
-/// release assets through, for a Server with no route to GitHub such as an IPv6-only one.
-pub const RELEASE_MIRRORS: [&str; 2] = [
-    "https://github.com/getployz/ployz/releases/download",
-    "https://ployz.sh/releases/download",
-];
+/// The repository releases come from, unless `PLOYZ_GITHUB_URL` names another, as in
+/// install.sh.
+pub const RELEASE_REPOSITORY_URL: &str = "https://github.com/getployz/ployz";
+/// Passes the repository's release assets through, for a Server with no route to GitHub
+/// such as an IPv6-only one, unless `PLOYZ_FALLBACK_URL` names another, as in install.sh.
+pub const RELEASE_FALLBACK_URL: &str = "https://ployz.sh";
+
+/// The variables that name the release download bases, primary first. A process that
+/// downloads on another's behalf, such as the upgrade worker, takes them from it.
+pub const RELEASE_MIRROR_VARIABLES: [&str; 2] = ["PLOYZ_GITHUB_URL", "PLOYZ_FALLBACK_URL"];
+
+/// Release download bases in the order a download tries them: `PLOYZ_GITHUB_URL`'s, then
+/// `PLOYZ_FALLBACK_URL`'s. An unset or empty variable is its default, as in install.sh, so
+/// a soak can point upgrades and bootstraps at a staged release.
+#[must_use]
+pub fn release_mirrors() -> [String; 2] {
+    release_mirrors_from(|name| std::env::var(name).ok())
+}
+
+/// The [`RELEASE_MIRROR_VARIABLES`] this process has set, for a process that downloads on
+/// its behalf: the upgrade worker, or the installer a remote `server add` runs.
+#[must_use]
+pub fn release_mirror_overrides() -> Vec<(&'static str, String)> {
+    RELEASE_MIRROR_VARIABLES
+        .into_iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|url| !url.is_empty())
+                .map(|url| (name, url))
+        })
+        .collect()
+}
+
+fn release_mirrors_from(var: impl Fn(&str) -> Option<String>) -> [String; 2] {
+    let base = |name, default| {
+        let url = var(name).filter(|url| !url.is_empty());
+        let url = url.as_deref().unwrap_or(default).trim_end_matches('/');
+        format!("{url}/releases/download")
+    };
+    let [primary, fallback] = RELEASE_MIRROR_VARIABLES;
+    [
+        base(primary, RELEASE_REPOSITORY_URL),
+        base(fallback, RELEASE_FALLBACK_URL),
+    ]
+}
 
 /// Fetch `asset`, a path under a release download base such as `v0.3.4/checksums.txt`, from
 /// the primary mirror, or from the fallback when [`release_mirror_unreachable`] says the
@@ -101,6 +142,39 @@ mod tests {
             "tcp connect error",
             Some(io::Error::from_raw_os_error(code)),
         )
+    }
+
+    #[test]
+    fn release_mirrors_follow_install_sh_overrides() {
+        let mirrors = |vars: &[(&str, &str)]| {
+            release_mirrors_from(|name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            })
+        };
+        assert_eq!(
+            mirrors(&[]),
+            [
+                "https://github.com/getployz/ployz/releases/download",
+                "https://ployz.sh/releases/download",
+            ]
+        );
+        assert_eq!(
+            mirrors(&[
+                ("PLOYZ_GITHUB_URL", "https://example.test/staging/ployz/"),
+                ("PLOYZ_FALLBACK_URL", "https://fallback.example.test"),
+            ]),
+            [
+                "https://example.test/staging/ployz/releases/download",
+                "https://fallback.example.test/releases/download",
+            ]
+        );
+        // As in install.sh's `${PLOYZ_GITHUB_URL:-…}`, an empty value is the default.
+        assert_eq!(
+            mirrors(&[("PLOYZ_GITHUB_URL", ""), ("PLOYZ_FALLBACK_URL", "")]),
+            mirrors(&[])
+        );
     }
 
     #[cfg(target_os = "linux")]

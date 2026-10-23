@@ -394,6 +394,16 @@ the signature before it installs a release, and refuses one that isn't signed by
 claims a different version. Releases up to 0.3.0-beta.2 are unsigned, so a server can't install
 them, even by exact version.
 
+To test a release before it's published, point the downloads at another copy of its assets, as
+`install.sh` does. Set `PLOYZ_GITHUB_URL` to a repository's base URL, such as
+`https://github.com/<owner>/<repo>`; Ployz downloads `<base>/releases/download/v<version>/...`.
+`PLOYZ_FALLBACK_URL` replaces `https://ployz.sh`, which Ployz uses only when the first can't be
+reached. Both must be `https://` URLs, and must hold no credentials: the server passes them to
+its upgrade process on the command line. Set them in `/etc/default/ployz` on the server and run
+`sudo systemctl restart ployz` for `ployz server upgrade`, and in your shell for
+`ployz server add --ssh` or `ployz server checkin --install`. Upgrade to an exact version: `stable` and `beta` still resolve on
+ployz.sh. The server still checks the release's signature.
+
 `ployz server upgrade` works the same way whether automatic upgrades are on or off: your apps keep
 running and private DNS keeps answering (with the exceptions in
 [Private networking](../services/private-networking.md)), Ployz stops at the first server that fails, and a server whose upgrade fails goes back to

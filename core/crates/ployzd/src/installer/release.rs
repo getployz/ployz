@@ -18,8 +18,8 @@ use tokio::{process::Command, time::timeout};
 
 use super::{Error, InstallPaths, daemon_archive, run_command};
 use ployz_core::{
-    MachineRelease, MachineUpgradeStage, MachineVersion, RELEASE_MIRRORS, RELEASE_SIGNATURE_ASSET,
-    from_release_mirrors, verify_release_checksums,
+    MachineRelease, MachineUpgradeStage, MachineVersion, RELEASE_SIGNATURE_ASSET,
+    from_release_mirrors, release_mirrors, verify_release_checksums,
 };
 
 const CHANNEL_URL: &str = "https://ployz.sh";
@@ -34,7 +34,8 @@ const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
 /// Where releases come from. Production always uses [`ReleaseSource::Published`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ReleaseSource {
-    /// Ployz's fixed, trusted published release and channel endpoints.
+    /// Ployz's published releases, from the [`ployz_core::release_mirrors`], and its
+    /// channel endpoint. The signed checksums decide what installs.
     Published,
     /// A local release directory for in-process installer tests.
     #[cfg(test)]
@@ -90,7 +91,9 @@ impl ReleaseSource {
         match self {
             Self::Published => {
                 let client = download_client()?;
-                from_release_mirrors(RELEASE_MIRRORS, &format!("v{target}/{file}"), |url| {
+                let mirrors = release_mirrors();
+                let mirrors = mirrors.each_ref().map(String::as_str);
+                from_release_mirrors(mirrors, &format!("v{target}/{file}"), |url| {
                     get_if_present(&client, url)
                 })
                 .await

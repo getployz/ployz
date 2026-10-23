@@ -355,7 +355,12 @@ impl Remote {
         via_sudo: bool,
     ) -> Result<(), ProvisionError> {
         let mut command = self.ssh();
-        command.arg(remote_command(daemon, arguments, via_sudo));
+        command.arg(remote_command(
+            daemon,
+            arguments,
+            via_sudo,
+            &ployz_core::release_mirror_overrides(),
+        ));
         installer_status(tokio::process::Command::from(command).status().await)
     }
 
@@ -499,10 +504,24 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn remote_command(program: &str, arguments: &[OsString], via_sudo: bool) -> String {
+/// The remote installer downloads the release again, so it gets this CLI's mirror
+/// overrides: neither ssh nor sudo carries them.
+fn remote_command(
+    program: &str,
+    arguments: &[OsString],
+    via_sudo: bool,
+    environment: &[(&str, String)],
+) -> String {
     let mut command = String::new();
     if via_sudo {
         command.push_str("sudo ");
+    }
+    if !environment.is_empty() {
+        command.push_str("env ");
+        for (name, value) in environment {
+            command.push_str(&shell_quote(&format!("{name}={value}")));
+            command.push(' ');
+        }
     }
     command.push_str(&shell_quote(program));
     for argument in arguments {
@@ -733,6 +752,37 @@ pub(crate) fn process_is_root() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_install_carries_the_release_mirror_overrides() {
+        let arguments = [
+            OsString::from("install"),
+            OsString::from("--version"),
+            OsString::from("0.3.4"),
+        ];
+        assert_eq!(
+            remote_command("/tmp/b/ployzd", &arguments, true, &[]),
+            "sudo '/tmp/b/ployzd' 'install' '--version' '0.3.4'"
+        );
+        assert_eq!(
+            remote_command(
+                "/tmp/b/ployzd",
+                &arguments,
+                true,
+                &[("PLOYZ_GITHUB_URL", "https://staging.test/it's".to_owned())]
+            ),
+            "sudo env 'PLOYZ_GITHUB_URL=https://staging.test/it'\"'\"'s' '/tmp/b/ployzd' 'install' '--version' '0.3.4'"
+        );
+        assert_eq!(
+            remote_command(
+                "/tmp/b/ployzd",
+                &arguments,
+                false,
+                &[("PLOYZ_FALLBACK_URL", "https://fallback.test".to_owned())]
+            ),
+            "env 'PLOYZ_FALLBACK_URL=https://fallback.test' '/tmp/b/ployzd' 'install' '--version' '0.3.4'"
+        );
+    }
 
     #[tokio::test]
     async fn only_a_daemon_reporting_this_version_is_current() {

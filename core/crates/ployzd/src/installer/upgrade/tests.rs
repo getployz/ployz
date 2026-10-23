@@ -147,6 +147,8 @@ fn upgrade_attempt_contract() {
                 root.path().join("commands.log"),
             )
             .env("PATH", &commands)
+            .env("PLOYZ_GITHUB_URL", "https://example.test/staging")
+            .env_remove("PLOYZ_FALLBACK_URL")
             .output()
             .unwrap();
         assert!(
@@ -297,9 +299,12 @@ async fn run_contract_case(case: &str) {
                 "upgrade-worker",
                 "--attempt",
                 attempt_id.as_str(),
+                // The worker downloads the release, so it reads the daemon's mirror overrides.
+                "--setenv=PLOYZ_GITHUB_URL=https://example.test/staging",
             ] {
                 assert!(log.contains(required), "missing {required}: {log}");
             }
+            assert!(!log.contains("PLOYZ_FALLBACK_URL"), "{log}");
         }
         "interrupted" => {
             assert!(matches!(
