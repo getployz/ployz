@@ -1021,8 +1021,10 @@ impl Client {
                 let error = rpc_error(error);
                 Err(RpcError {
                     code: RpcErrorCode::Unavailable,
+                    // Often only the entry was busy, as when several forgets share it.
                     message: format!(
-                        "Cannot read the Volume copies Server {} holds. No changes made.",
+                        "Couldn't check whether Server {} holds Volume copies. No changes made. \
+                         Run the command again, one Server at a time if you're forgetting several.",
                         machine.machine.name
                     ),
                     details: Value::Null,

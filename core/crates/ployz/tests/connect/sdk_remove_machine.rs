@@ -629,7 +629,8 @@ async fn remove_machine_membership_refuses_a_server_whose_storage_cannot_be_read
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(
         error.message,
-        "Cannot read the Volume copies Server peer holds. No changes made."
+        "Couldn't check whether Server peer holds Volume copies. No changes made. Run the \
+         command again, one Server at a time if you're forgetting several."
     );
     assert!(service.removed_machines.lock().unwrap().is_empty());
     server.abort();
