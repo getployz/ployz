@@ -248,7 +248,10 @@ it and still exit cleanly, with the service set up and checking in:
   **Servers** page yet. It asks again when Cloud says to.
 
 When Cloud already has an enrollment ready for the server, as Enroll on arrival can on a rerun, the
-install ends with `Cloud is ready to enroll this server. The check-in loop runs it.` instead.
+install ends with `Cloud is ready to enroll this server. The check-in loop runs it.` instead. On a
+server that already joined with that token, it ends `Already joined`. On a server that can't join
+yet, it ends with a `Blocked.` line for each reason `ployz status` lists, such as `Blocked. Already
+in another cluster. Remove it there first: ployz server rm web-1`.
 
 - **Without ZFS.** Put `PLOYZ_SKIP_ZFS=1` after `sudo`, as
   `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- VERSION --enroll`. It does what

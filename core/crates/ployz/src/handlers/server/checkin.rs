@@ -4,6 +4,7 @@
 //! running under systemd. Without it, this is the loop the unit runs.
 
 use std::{
+    collections::HashSet,
     env as process_env,
     ffi::OsStr,
     fs,
@@ -263,7 +264,15 @@ async fn install(
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     crate::ui::stream("Checking in");
     let pass = checkin::install_pass(&host, client, key, paths, Utc::now()).await;
-    let no_cluster = pass.seen.as_ref().is_some_and(|seen| seen.no_cluster);
+    let seen = pass.seen.as_ref();
+    let joined = checkin::joined(&host, seen.and_then(|seen| seen.attempt.as_ref())).await;
+    let blockers: Vec<String> = seen.map_or_else(Vec::new, |seen| {
+        seen.blockers
+            .iter()
+            .map(|blocker| blocker.message.clone())
+            .collect()
+    });
+    let no_cluster = seen.is_some_and(|seen| seen.no_cluster);
     let answered = answer_install(pass, client, paths, install_with)?;
     write_unit(unit::CHECKIN, &checkin_unit)?;
     write_unit(unit::PREPARE, &prepare_unit)?;
@@ -272,16 +281,35 @@ async fn install(
     systemd(&["enable", unit::CHECKIN]).await?;
     // A loop already running checks in with the old token until it starts over.
     systemd(&["restart", unit::CHECKIN]).await?;
-    if answered == Answered::Waiting && no_cluster {
-        crate::ui::stream(format!(
+    if answered == Answered::Waiting {
+        for line in waiting_lines(joined, &blockers, no_cluster) {
+            crate::ui::stream(line);
+        }
+    }
+    Ok(())
+}
+
+/// How an install Cloud answered with a wait ends: what `ployz status` says of this host.
+fn waiting_lines(joined: bool, blockers: &[String], no_cluster: bool) -> Vec<String> {
+    if joined {
+        vec!["Already joined".to_owned()]
+    } else if !blockers.is_empty() {
+        // Two checks can give one reason, as a Docker install that failed on a small disk does.
+        let mut said = HashSet::new();
+        blockers
+            .iter()
+            .filter(|blocker| said.insert(blocker.as_str()))
+            .map(|blocker| format!("Blocked. {blocker}"))
+            .collect()
+    } else if no_cluster {
+        vec![format!(
             "{}. {}",
             checkin::NO_CLUSTER,
             checkin::NO_CLUSTER_WHY
-        ));
-    } else if answered == Answered::Waiting {
-        crate::ui::stream("Waiting for approval");
+        )]
+    } else {
+        vec!["Waiting for approval".to_owned()]
     }
-    Ok(())
 }
 
 /// Keeps the token Cloud answered, and records the answer only for the token the install keeps. A

@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{
     Answered, Install, LoopPloyzd, Token, answer_install, command, install_outcome, install_start,
-    keep_answered_token, loop_ployzd, loop_start, replaces_token, stdin_token,
+    keep_answered_token, loop_ployzd, loop_start, replaces_token, stdin_token, waiting_lines,
 };
 use crate::checkin::{
     self, CheckinClient, CheckinKey, FleetToken, Hold, Host, LocalCheckin, Next, Paths, Probe,
@@ -980,4 +980,21 @@ fn a_token_on_stdin_belongs_to_an_install() {
         .try_get_matches_from(["--install", "--token-stdin"])
         .unwrap();
     assert!(parsed.get_flag("token-stdin"));
+}
+
+#[test]
+fn an_install_cloud_has_waiting_ends_with_what_status_will_say() {
+    let disk = "Disk is 24 GiB. Ployz needs 30 GiB.".to_owned();
+    let other =
+        "Already in another cluster. Remove it there first: ployz server rm MY-SERVER".to_owned();
+    assert_eq!(waiting_lines(false, &[], false), ["Waiting for approval"]);
+    assert_eq!(
+        waiting_lines(false, &[], true),
+        ["No cluster yet. Enroll one server in Ployz Cloud to start it."]
+    );
+    assert_eq!(
+        waiting_lines(false, &[disk.clone(), disk.clone(), other.clone()], false),
+        [format!("Blocked. {disk}"), format!("Blocked. {other}")]
+    );
+    assert_eq!(waiting_lines(true, &[], false), ["Already joined"]);
 }

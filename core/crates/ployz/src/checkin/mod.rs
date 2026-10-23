@@ -741,6 +741,11 @@ impl InstallPass {
     }
 }
 
+/// Whether this host joined through `attempt`: it didn't fail, and the daemon now participates.
+pub(crate) async fn joined<H: Host>(host: &H, attempt: Option<&Attempt>) -> bool {
+    attempt.is_some_and(|attempt| attempt.failure.is_none()) && host.participating().await.is_some()
+}
+
 /// The pass an explicit `--install` makes. It leaves preparation alone, since the token may yet be
 /// refused; `restart_preparation` runs once Cloud has answered.
 pub(crate) async fn install_pass<H: Host>(
@@ -918,12 +923,7 @@ async fn check_in<H: Host>(
     let throttled = matches!(reply, client::Reply::Throttled(..));
     let next = match reply {
         client::Reply::Answer(Answer::Wait(_))
-            if !installing
-                && status
-                    .attempt
-                    .as_ref()
-                    .is_some_and(|attempt| attempt.failure.is_none())
-                && host.participating().await.is_some() =>
+            if !installing && joined(host, status.attempt.as_ref()).await =>
         {
             status.answer = Seen::Joined;
             Next::Enrolled
