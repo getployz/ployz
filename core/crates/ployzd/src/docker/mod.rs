@@ -3064,6 +3064,34 @@ mod sealed_output_tests {
     }
 
     #[tokio::test]
+    async fn a_multiline_value_with_a_short_line_creates_no_container() {
+        let cluster = Cluster::new();
+        let containers = Containers::default();
+        let token = EnvValue::Sealed(cluster.seal(
+            "TOKEN",
+            SealedScope::Service(cluster.identity.service),
+            "line-one-QX7MARKER\nZq9",
+        ));
+
+        let (_runtime, _machine, created) = create_with_env(
+            &cluster,
+            LogStore::Unsupervised,
+            fake_docker(&containers),
+            token,
+        )
+        .await;
+
+        assert!(
+            matches!(&created, Err(Error::Sealed(OpenError::ShortLine(key))) if key == "TOKEN"),
+            "{created:?}"
+        );
+        let refused = ployz_core::RpcError::from(&created.unwrap_err());
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+        assert!(!format!("{refused:?}").contains("QX7MARKER"), "{refused:?}");
+        assert!(containers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_value_sealed_for_another_cluster_creates_no_container() {
         let cluster = Cluster::new();
         let containers = Containers::default();

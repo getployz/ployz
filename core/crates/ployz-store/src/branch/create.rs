@@ -150,7 +150,7 @@ pub(crate) fn create_branch(
         ..Rules::new(Way::Copy)
     };
     let creating = |from: &SavedEnvironmentIntent| {
-        plan(
+        let plan = plan(
             Sides {
                 base: None,
                 from,
@@ -158,7 +158,8 @@ pub(crate) fn create_branch(
                 hostnames: hostnames.clone(),
             },
             &rules,
-        )
+        );
+        super::pair::landing_in(plan, &create.id)
     };
     let picks: BTreeSet<RowId> = creating(&from)
         .rows()

@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
-    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, Sides, Verdict,
-    Way, Why, dependents, name_of, parse_environment_intent, plan, put, put_back,
+    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, SecretCiphertext,
+    Sides, Verdict, Way, Why, dependents, name_of, parse_environment_intent, plan, put, put_back,
     redact_environment_intent, unapply,
 };
 use serde_json::{Value, json};
@@ -285,12 +285,12 @@ fn val(value: Value) -> Cell {
 fn sealed(ciphertext: &str, fingerprint: &str) -> SealedSecret {
     SealedSecret {
         fingerprint: fingerprint.to_owned(),
-        value: EncryptedSecretValue {
+        value: SecretCiphertext::Store(EncryptedSecretValue {
             version: 1,
             iv: "iv".to_owned(),
             tag: "tag".to_owned(),
             ciphertext: ciphertext.to_owned(),
-        },
+        }),
     }
 }
 

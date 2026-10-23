@@ -1,5 +1,6 @@
 //! Template resolution over supplied producer facts. No storage or provider execution.
 use super::{ValuePart, ValuePartOwner};
+use crate::{EnvPart, EnvValue, SealedValue, Template};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use ts_rs::TS;
@@ -16,6 +17,11 @@ pub enum ResolverValue {
     },
     Template {
         parts: Vec<ValuePart>,
+    },
+    /// A value the browser sealed for the Environment resolving: it reaches what
+    /// references it as a Sealed part, opened only on the Machine.
+    Sealed {
+        value: SealedValue,
     },
     /// A secret without a value: what references it is skipped.
     NotSet,
@@ -52,12 +58,13 @@ pub struct TemplateWarning {
 
 /// Resolved text with secret provenance, a reference to a secret without a value,
 /// or the cycle that prevents resolution. Text that reads a missing producer
-/// anywhere resolves empty, with a warning for each one.
+/// anywhere resolves empty, with a warning for each one. A value that reads a
+/// Sealed part is a Template holding it.
 #[derive(Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ResolveVariablesResult {
     Resolved {
-        value: String,
+        value: EnvValue,
         secret: bool,
         warnings: Vec<TemplateWarning>,
     },
@@ -99,7 +106,7 @@ pub fn resolve_variables(input: &ResolveVariablesInput) -> ResolveVariablesResul
     ) {
         Ok((_, Taint::NotSet)) => ResolveVariablesResult::NotSet { warnings },
         Ok((value, taint)) => ResolveVariablesResult::Resolved {
-            value,
+            value: value.into_value(),
             secret: taint == Taint::Secret,
             warnings,
         },
@@ -120,6 +127,9 @@ pub struct ResolvedConfigFile {
     /// References that are, or read, a variable no producer has, each once. Each
     /// reaches `content` empty.
     pub broken: Vec<FragileReference>,
+    /// References that are, or read, a value sealed in the browser, each once. A
+    /// file can't hold one: nothing of it reaches `content`.
+    pub sealed: Vec<FragileReference>,
 }
 
 impl std::fmt::Debug for ResolvedConfigFile {
@@ -130,6 +140,7 @@ impl std::fmt::Debug for ResolvedConfigFile {
             .field("fragile", &self.fragile)
             .field("not_set", &self.not_set)
             .field("broken", &self.broken)
+            .field("sealed", &self.sealed)
             .finish()
     }
 }
@@ -161,6 +172,7 @@ pub fn resolve_config_file(
         fragile: Vec::new(),
         not_set: Vec::new(),
         broken: Vec::new(),
+        sealed: Vec::new(),
     };
     let mut quote = None;
     for part in parts {
@@ -183,7 +195,7 @@ pub fn resolve_config_file(
         // variable reports it, not only the first.
         let mut warnings = Vec::new();
         let mut memo = BTreeMap::new();
-        let (value, taint) = resolve_parts(
+        let (assembled, taint) = resolve_parts(
             std::slice::from_ref(part),
             "",
             producers,
@@ -191,12 +203,19 @@ pub fn resolve_config_file(
             &mut memo,
             &mut stack,
         )?;
-        let newline = value.contains('\n');
-        let breaks = quote.is_some_and(|open| newline || value.contains(open)) || (yaml && newline);
         let reference = FragileReference {
             owner: owner.clone(),
             key: key.clone(),
         };
+        let Some(value) = assembled.text() else {
+            if !file.sealed.contains(&reference) {
+                file.sealed.push(reference);
+            }
+            file.secret = true;
+            continue;
+        };
+        let newline = value.contains('\n');
+        let breaks = quote.is_some_and(|open| newline || value.contains(open)) || (yaml && newline);
         if taint == Taint::NotSet && !file.not_set.contains(&reference) {
             file.not_set.push(reference.clone());
         }
@@ -206,7 +225,7 @@ pub fn resolve_config_file(
         if breaks && !file.fragile.contains(&reference) {
             file.fragile.push(reference);
         }
-        file.content.push_str(&value);
+        file.content.push_str(value);
         file.secret |= matches!(taint, Taint::Secret | Taint::NotSet);
     }
     Ok(file)
@@ -406,20 +425,64 @@ fn identifier(text: &str, extra: char) -> (&str, &str) {
     text.split_at(end)
 }
 
+/// A value as its parts resolve: text, with each Sealed part where it falls.
+#[derive(Clone, Default)]
+struct Assembled(Vec<EnvPart>);
+
+impl Assembled {
+    fn push_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        match self.0.last_mut() {
+            Some(EnvPart::Text(last)) => last.push_str(text),
+            _ => self.0.push(EnvPart::Text(text.to_owned())),
+        }
+    }
+
+    fn push(&mut self, other: &Self) {
+        for part in &other.0 {
+            match part {
+                EnvPart::Text(text) => self.push_text(text),
+                EnvPart::Sealed(value) => self.0.push(EnvPart::Sealed(value.clone())),
+            }
+        }
+    }
+
+    /// The text, when no Sealed part reached it.
+    fn text(&self) -> Option<&str> {
+        match self.0.as_slice() {
+            [] => Some(""),
+            [EnvPart::Text(text)] => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Text, or a Template once a Sealed part reached it: only a variable's own
+    /// Sealed value is bound to its name, so a part read through a reference
+    /// opens as a Template part.
+    fn into_value(self) -> EnvValue {
+        match self.text() {
+            Some(text) => EnvValue::Text(text.to_owned()),
+            None => EnvValue::Template(Template { template: self.0 }),
+        }
+    }
+}
+
 fn resolve_parts(
     parts: &[ValuePart],
     self_owner_id: &str,
     producers: &[VariableProducer],
     warnings: &mut Vec<TemplateWarning>,
-    memo: &mut BTreeMap<(String, String), (String, Taint)>,
+    memo: &mut BTreeMap<(String, String), (Assembled, Taint)>,
     stack: &mut Vec<(String, String)>,
-) -> Result<(String, Taint), Vec<String>> {
-    let mut value = String::new();
+) -> Result<(Assembled, Taint), Vec<String>> {
+    let mut value = Assembled::default();
     let mut taint = Taint::Plain;
     for part in parts {
         let ValuePart::Ref { owner, key } = part else {
             if let ValuePart::Text { value: text } = part {
-                value.push_str(text);
+                value.push_text(text);
             }
             continue;
         };
@@ -451,10 +514,15 @@ fn resolve_parts(
         let resolved = if let Some(cached) = memo.get(&id) {
             cached.clone()
         } else {
+            let text = |text: &str| Assembled(vec![EnvPart::Text(text.to_owned())]);
             let resolved = match &found.value {
-                ResolverValue::Literal { value } => (value.clone(), Taint::Plain),
-                ResolverValue::Secret { value } => (value.clone(), Taint::Secret),
-                ResolverValue::NotSet => (String::new(), Taint::NotSet),
+                ResolverValue::Literal { value } => (text(value), Taint::Plain),
+                ResolverValue::Secret { value } => (text(value), Taint::Secret),
+                ResolverValue::Sealed { value } => (
+                    Assembled(vec![EnvPart::Sealed(value.clone())]),
+                    Taint::Secret,
+                ),
+                ResolverValue::NotSet => (Assembled::default(), Taint::NotSet),
                 ResolverValue::Template { parts } => {
                     stack.push(id.clone());
                     let result =
@@ -466,11 +534,11 @@ fn resolve_parts(
             memo.insert(id, resolved.clone());
             resolved
         };
-        value.push_str(&resolved.0);
+        value.push(&resolved.0);
         taint = taint.max(resolved.1);
     }
     if taint >= Taint::Broken {
-        value.clear();
+        value = Assembled::default();
     }
     Ok((value, taint))
 }

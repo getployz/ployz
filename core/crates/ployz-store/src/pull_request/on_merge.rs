@@ -14,7 +14,6 @@ use ployz_core::config::{
 use serde_json::Value;
 
 use super::*;
-use crate::SealingKey;
 use crate::automation;
 use crate::branch::{
     Carried, Move, NamedRow, RowRef, config, end_included, json_of, named, resolve_one, row_id,
@@ -24,6 +23,7 @@ use crate::id::ServiceLineageId;
 use crate::scope::RemovedServices;
 use crate::storage;
 use crate::variables::{self, VariableKey};
+use crate::{SealingKey, SecretValue};
 
 /// Read a PR Environment's On merge list.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -116,10 +116,11 @@ pub struct SetMergeValue {
     pub into: Option<EnvironmentRef>,
     /// The row, by RowId or by name in either side.
     pub row: RowRef,
-    /// The value it lands with; omitted, the Edit is taken back.
+    /// The value it lands with: plain text, or a value the browser sealed for the
+    /// Destination; omitted, the Edit is taken back.
     #[serde(default)]
     #[ts(optional = nullable)]
-    pub value: Option<String>,
+    pub value: Option<SecretValue>,
 }
 
 /// What a merge lands in one Destination, planned.
@@ -490,39 +491,58 @@ pub(crate) fn set_merge_value(
                 json!({ "row": row }),
             ));
         }
-        let cell = if planned.from.is_secret() || planned.into.is_secret() {
-            SealedCell::Secret(crate::branch::seal_secret(sealing, &row, &label, value)?)
-        } else {
-            let old: Vec<ValuePart> = [&planned.from, &planned.into]
-                .into_iter()
-                .filter_map(|cell| match cell {
-                    Cell::Value(value) => value.get("parts").cloned(),
-                    Cell::Absent | Cell::Secret { .. } | Cell::SecretWithoutValue => None,
-                })
-                .filter_map(|parts| serde_json::from_value::<Vec<ValuePart>>(parts).ok())
-                .flatten()
-                .collect();
-            let labels = merge_names(&from, &landing.into);
-            let mut removed = landing.into.removed_names();
-            for (lineage, name) in merge_removals(&from, &landing.into).names() {
-                removed.insert(lineage.clone(), name.clone());
+        let secret = planned.from.is_secret() || planned.into.is_secret();
+        let cell = match (value, secret) {
+            (value, true) => {
+                let enabled = value.is_client_sealed()
+                    && crate::client_sealed::enabled(tx, &who.organization)?;
+                SealedCell::Secret(crate::branch::seal_secret(
+                    sealing,
+                    &row,
+                    &label,
+                    value,
+                    &landing.into,
+                    enabled,
+                )?)
             }
-            let shown = variables::Shown {
-                labels: &labels,
-                removed: &removed,
-            };
-            let (parts, fingerprint) = variables::text_parts(
-                &VariableKey::parse(key)?,
-                value,
-                &landing.into.names(),
-                shown,
-                &old,
-            )?;
-            let mut value = json!(variables::stored(parts));
-            if let Some(object) = value.as_object_mut() {
-                object.insert("fingerprint".into(), json!(fingerprint));
+            (SecretValue::ClientSealed(_), false) => {
+                return Err(error::invalid(
+                    format!("{label}: only a secret takes a value sealed in the browser"),
+                    json!({ "row": row }),
+                ));
             }
-            SealedCell::Cell(Cell::Value(value))
+            (SecretValue::Text(value), false) => {
+                let old: Vec<ValuePart> = [&planned.from, &planned.into]
+                    .into_iter()
+                    .filter_map(|cell| match cell {
+                        Cell::Value(value) => value.get("parts").cloned(),
+                        Cell::Absent | Cell::Secret { .. } | Cell::SecretWithoutValue => None,
+                    })
+                    .filter_map(|parts| serde_json::from_value::<Vec<ValuePart>>(parts).ok())
+                    .flatten()
+                    .collect();
+                let labels = merge_names(&from, &landing.into);
+                let mut removed = landing.into.removed_names();
+                for (lineage, name) in merge_removals(&from, &landing.into).names() {
+                    removed.insert(lineage.clone(), name.clone());
+                }
+                let shown = variables::Shown {
+                    labels: &labels,
+                    removed: &removed,
+                };
+                let (parts, fingerprint) = variables::text_parts(
+                    &VariableKey::parse(key)?,
+                    value,
+                    &landing.into.names(),
+                    shown,
+                    &old,
+                )?;
+                let mut value = json!(variables::stored(parts));
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("fingerprint".into(), json!(fingerprint));
+                }
+                SealedCell::Cell(Cell::Value(value))
+            }
         };
         let [environment, destination, lineage, at] = key_values;
         tx.execute(

@@ -30,6 +30,8 @@ pub(crate) struct Move {
     source: EnvironmentId,
     /// The receiver's side of the pair whose base this plans over.
     other: EnvironmentId,
+    /// The receiver: where the rows land.
+    receiver: EnvironmentId,
     /// Why nothing moves.
     nothing: String,
     pub(crate) from: SavedEnvironmentIntent,
@@ -92,6 +94,7 @@ impl Move {
         let (from_marks, into_marks) = marks(tx, &owner.summary.id, &branch.summary.id)?;
         Ok(Self {
             source: owner.summary.id.clone(),
+            receiver: branch.summary.id.clone(),
             nothing,
             from: deployment::head(tx, owner)?.applied,
             base,
@@ -160,6 +163,7 @@ impl Move {
         Ok(Self {
             source: from.summary.id.clone(),
             other: from.summary.id.clone(),
+            receiver: into.summary.id.clone(),
             nothing: format!("Nothing to sync into {}", into.summary.name),
             from: from.working.clone(),
             base,
@@ -249,7 +253,7 @@ impl Move {
 
     /// The rows from `from` into `into`.
     pub(crate) fn plan(&self, into: &SavedEnvironmentIntent) -> Plan {
-        plan(
+        let plan = plan(
             Sides {
                 base: Some(&self.base),
                 from: &self.from,
@@ -257,7 +261,8 @@ impl Move {
                 hostnames: self.hostnames.clone(),
             },
             &self.rules,
-        )
+        );
+        landing_in(plan, &self.receiver)
     }
 
     /// Plan into `into` and refuse unless `guard` holds.
@@ -359,6 +364,15 @@ impl Checked<'_> {
         let staged = land(tx, who, into, (&of.from, &carried), applied.next, picks)?;
         share(tx, (&into.summary.id, &of.other), &applied.base)?;
         Ok(staged)
+    }
+}
+
+/// `plan` landing in Environment `environment`, so a value the browser sealed for
+/// another Environment arrives Not set.
+pub(crate) fn landing_in(plan: Plan, environment: &EnvironmentId) -> Plan {
+    match uuid::Uuid::parse_str(environment.as_str()) {
+        Ok(id) => plan.receiving(id),
+        Err(_) => plan,
     }
 }
 

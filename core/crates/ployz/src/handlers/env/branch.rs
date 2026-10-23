@@ -120,7 +120,7 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
     };
     let values = secret_values(matches)?
         .into_iter()
-        .map(|(asked, value)| (asked.as_str().into(), value))
+        .map(|(asked, value)| (asked.as_str().into(), value.into()))
         .collect();
     let request = SyncChanges {
         from: query.from,

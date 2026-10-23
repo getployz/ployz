@@ -891,6 +891,7 @@ pub(crate) fn validate_and_refresh_working_from(
         .intent(0, "Working State")?;
     // Every write of Working State, whole or not, comes through here.
     crate::names::refuse_new_reserved(&before, &environment.working)?;
+    crate::client_sealed::refuse_port(&environment.working)?;
     let (working, live) = checked(
         tx,
         &environment.summary,

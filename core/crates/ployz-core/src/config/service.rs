@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use uuid::Uuid;
 
-use crate::{RestartPolicy, ServiceName, UpdateOrder};
+use crate::{RestartPolicy, SealedValue, ServiceName, UpdateOrder};
 
 /// Authored Cloud settings. Runtime specs are compiled from this configuration;
 /// they cannot reconstruct repository authority, build policy, or credentials.
@@ -324,6 +325,38 @@ pub struct EncryptedSecretValue {
     pub ciphertext: String,
 }
 
+/// A Sealed value the browser sealed to one Environment's Sealing Key, bound to
+/// the variable it was authored as. Cloud carries it and never opens it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClientSealedValue {
+    /// The Environment whose Sealing Key opens it: in any other it is Not set.
+    #[ts(type = "string")]
+    pub sealed_for: Uuid,
+    pub value: SealedValue,
+}
+
+/// A secret's ciphertext: sealed by the Store with its own key, or in the
+/// browser for one Environment. Untagged, so every stored Store-sealed value
+/// reads as it always did.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum SecretCiphertext {
+    Store(EncryptedSecretValue),
+    ClientSealed(ClientSealedValue),
+}
+
+impl SecretCiphertext {
+    /// The client-sealed value, when it is one.
+    #[must_use]
+    pub const fn client_sealed(&self) -> Option<&ClientSealedValue> {
+        match self {
+            Self::ClientSealed(value) => Some(value),
+            Self::Store(_) => None,
+        }
+    }
+}
+
 /// A compiled literal or sealed environment value with optional producer evidence.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
@@ -345,10 +378,74 @@ pub enum ServiceEnvValue {
         variable_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        encrypted_value: Option<EncryptedSecretValue>,
+        encrypted_value: Option<SecretCiphertext>,
         fingerprint: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         interpolated: Option<bool>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::config::{SavedVariableIntent, SavedVariableValue};
+
+    /// Base64 of 48 bytes: the shortest ciphertext a Sealed value takes.
+    const SEALED: &str =
+        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==";
+
+    fn client_sealed() -> Value {
+        json!({
+            "sealedFor": "00000000-0000-4000-8000-000000000002",
+            "value": { "sealed": SEALED, "scope": { "service": "00000000-0000-4000-8000-000000000003" }, "key": "K" }
+        })
+    }
+
+    #[test]
+    fn a_legacy_row_round_trips_byte_identical() {
+        let row = r#"{"id":"v1","key":"K","description":null,"exported":false,"valueFingerprint":"v1:ab","value":{"kind":"secret","encryptedValue":{"version":1,"iv":"aXY=","tag":"dGFn","ciphertext":"Y3Q="}}}"#;
+        let parsed: SavedVariableIntent = serde_json::from_str(row).unwrap();
+        assert!(matches!(
+            parsed.value,
+            SavedVariableValue::Secret {
+                encrypted_value: Some(SecretCiphertext::Store(_))
+            }
+        ));
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), row);
+        let compiled = r#"{"kind":"secret","variableId":"v1","encryptedValue":{"version":1,"iv":"aXY=","tag":"dGFn","ciphertext":"Y3Q="},"fingerprint":"v1:ab"}"#;
+        let parsed: ServiceEnvValue = serde_json::from_str(compiled).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), compiled);
+    }
+
+    #[test]
+    fn a_client_sealed_value_reads_as_its_own_kind_and_round_trips() {
+        let value: SecretCiphertext = serde_json::from_value(client_sealed()).unwrap();
+        let sealed = value.client_sealed().unwrap();
+        assert_eq!(
+            sealed.sealed_for,
+            Uuid::parse_str("00000000-0000-4000-8000-000000000002").unwrap()
+        );
+        assert_eq!(sealed.value.key, "K");
+        assert_eq!(serde_json::to_value(&value).unwrap(), client_sealed());
+    }
+
+    #[test]
+    fn a_client_sealed_value_with_an_unknown_field_is_refused() {
+        let mut outer = client_sealed();
+        outer
+            .as_object_mut()
+            .unwrap()
+            .insert("version".into(), json!(1));
+        assert!(serde_json::from_value::<SecretCiphertext>(outer).is_err());
+        let mut inner = client_sealed();
+        inner
+            .get_mut("value")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .insert("extra".into(), json!(1));
+        assert!(serde_json::from_value::<SecretCiphertext>(inner).is_err());
+    }
 }

@@ -1491,7 +1491,8 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | OpenError::SealedPort
             | OpenError::BadName(_)
             | OpenError::Unbound(_)
-            | OpenError::Unopenable(_) => ContainerRefusalReason::SealedValueUnopenable,
+            | OpenError::Unopenable(_)
+            | OpenError::ShortLine(_) => ContainerRefusalReason::SealedValueUnopenable,
         },
         _ => return Err(error),
     };
