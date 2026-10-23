@@ -37,7 +37,7 @@ export function useSealing(organizationSlug: string) {
 export type Sealing = ReturnType<typeof useSealing>;
 
 /** Seals one item to the key a fresh read returned. */
-export type Sealer = (item: SealItem) => Promise<ClientSealedValue>;
+type Sealer = (item: SealItem) => Promise<ClientSealedValue>;
 
 /** One fresh read: null while sealing is off, else a `Sealer` bound to the key it returned. */
 async function sealer(queryClient: QueryClient, organizationSlug: string): Promise<Sealer | null> {
