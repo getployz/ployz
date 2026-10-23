@@ -85,49 +85,32 @@ pub(crate) fn plaintext_len(value: &SealedValue) -> usize {
 /// Why PORT never holds a client-sealed value: Ployz reads it to route traffic.
 pub(crate) const PORT_REFUSED: &str = "can't be sealed: Ployz reads it to route traffic";
 
-/// Refuse a PORT holding a value the browser sealed that `target` gives a Service
-/// and `now` doesn't. Every write of Working State comes through here, so neither a
-/// rename nor History brings one in.
+/// Refuse a PORT holding a value the browser sealed. Every write of Working State
+/// comes through here, so neither a rename nor History brings one in.
 ///
 /// # Errors
 /// Returns `invalid_argument` naming the Service's PORT.
-pub(crate) fn refuse_new_port(
-    now: &SavedEnvironmentIntent,
-    target: &SavedEnvironmentIntent,
-) -> Result<(), RpcError> {
-    for service in &target.services {
-        let Some(value) = sealed_port(service) else {
-            continue;
-        };
-        let held = now
-            .services
-            .iter()
-            .any(|held| held.id == service.id && sealed_port(held) == Some(value));
-        if !held {
-            return Err(crate::error::invalid(
-                format!("PORT: {PORT_REFUSED}"),
-                json!({ "service": service.slug, "variable": "PORT" }),
-            ));
-        }
+pub(crate) fn refuse_port(working: &SavedEnvironmentIntent) -> Result<(), RpcError> {
+    match working.services.iter().find(|service| sealed_port(service)) {
+        Some(service) => Err(crate::error::invalid(
+            format!("PORT: {PORT_REFUSED}"),
+            json!({ "service": service.slug, "variable": "PORT" }),
+        )),
+        None => Ok(()),
     }
-    Ok(())
 }
 
-/// The value the browser sealed that `service`'s PORT holds, if it holds one.
-fn sealed_port(service: &SavedServiceIntent) -> Option<&SavedVariableValue> {
-    service
-        .variables
-        .iter()
-        .find(|variable| variable.key == "PORT")
-        .map(|variable| &variable.value)
-        .filter(|value| {
-            matches!(
-                value,
+/// Whether `service`'s PORT holds a value the browser sealed.
+fn sealed_port(service: &SavedServiceIntent) -> bool {
+    service.variables.iter().any(|variable| {
+        variable.key == "PORT"
+            && matches!(
+                variable.value,
                 SavedVariableValue::Secret {
                     encrypted_value: Some(SecretCiphertext::ClientSealed(_))
                 }
             )
-        })
+    })
 }
 
 /// Where a client-sealed value lands, and whether its Organization takes one.

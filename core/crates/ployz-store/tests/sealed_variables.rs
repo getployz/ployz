@@ -475,6 +475,19 @@ fn a_sealed_port_is_refused() {
         json!({ "secret": backend::client_sealed(&uuid(2), &uuid(3), "PORT", 1) }),
         "route traffic",
     );
+    // A PORT the Store sealed is opened at lowering, so it still routes.
+    set(&store, "web.env.PORT", json!({ "secret": "8080" }));
+    let claimed = claim(&store);
+    let web = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(
+        web.container.environment["PORT"],
+        EnvValue::Text("8080".into())
+    );
 }
 
 #[test]
