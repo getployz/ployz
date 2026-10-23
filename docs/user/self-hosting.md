@@ -256,6 +256,9 @@ before it stops.
 
 ## Good to know
 
+- **No root, no cloud lookups.** `web` and `worker` run as the unprivileged `node` user, and by
+  default don't contact a cloud provider's metadata address such as `169.254.169.254` at startup.
+  Setting `OTEL_NODE_RESOURCE_DETECTORS=all` turns those lookups back on.
 - **Back up one volume.** Everything Ployz Cloud stores, your organizations, projects and
   settings included, is in `ployz-cloud-self-host_postgres-data`.
 - **Restarting Postgres.** While it's down, pages say **This page couldn't load** and try again
