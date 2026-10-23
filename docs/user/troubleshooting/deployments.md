@@ -19,8 +19,8 @@ whose pull policy is Never has nothing to pull and reads plain `waiting`. A boot
 Containers are ready, so it can read `booting 1/3` while the others boot. Once every
 Server is ready it reads `switching N/N` until they switch together, then
 `switched N/N`. Under Stop first or Rolling, a new Container that can't start or fails its
-health check makes the row read `rolling back` while Ployz starts the old Container on that Server
-again, such as `rolling back (1 failed)`. It counts the Servers whose new Container already serves,
+health check makes the row read `rolling back` while Ployz removes it and puts back the old
+Container on that Server, if it stopped one, such as `rolling back (1 failed)`. It counts the Servers whose new Container already serves,
 as in `rolling back 1/2`, and shows no count when none does. A row whose new Containers already serve shows a `draining old` line
 while the deploy removes Containers it no longer needs, which waits until every Server routes to the new ones. Old copies that a
 replacement leaves behind drain on each Server after the switch, so they show in
