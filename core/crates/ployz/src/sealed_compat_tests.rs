@@ -28,16 +28,20 @@ pub(crate) async fn fleet(b_claims: &[&str]) -> Fleet {
         .into();
     let mut other = machine('b', "machine-b");
     other.runtime.capabilities = b_claims.iter().copied().map(String::from).collect();
-    let machines = vec![
-        MachineObservation::new(ready.clone(), MembershipObservation::Up),
+    listing(vec![
+        MachineObservation::new(ready, MembershipObservation::Up),
         MachineObservation::new(other, MembershipObservation::Up),
-    ];
+    ])
+    .await
+}
+
+async fn listing(machines: Vec<MachineObservation>) -> Fleet {
+    let id = machine('a', "machine-a").id;
     let ensure_calls = Arc::new(AtomicUsize::new(0));
     let sent = ensure_calls.clone();
     let (client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let machines = machines.clone();
-            let id = ready.id;
             let sent = sent.clone();
             async move {
                 #[expect(
@@ -154,6 +158,47 @@ async fn a_sealed_value_reaches_a_cluster_only_when_every_machine_can_keep_it_se
                 error.message
             );
         }
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_sealed_value_is_refused_when_the_target_shows_no_capability_evidence() {
+    let mut ready = machine('a', "machine-a");
+    ready.runtime.capabilities = [MANAGEMENT_SCOPE_CAPABILITY, ENV_SEALED_CAPABILITY]
+        .map(String::from)
+        .into();
+    let unlisted = MachineId::parse("c".repeat(32)).unwrap();
+    for (machines, target) in [
+        (Vec::new(), ready.id),
+        (
+            vec![MachineObservation::new(
+                ready.clone(),
+                MembershipObservation::Up,
+            )],
+            unlisted,
+        ),
+    ] {
+        let Fleet {
+            client,
+            server,
+            ensure_calls,
+        } = listing(machines).await;
+
+        let error = client
+            .ensure_unsettled(&target, want(spec(true)), None)
+            .await
+            .unwrap_err();
+
+        assert_eq!(ensure_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(error.code, RpcErrorCode::Unsupported);
+        assert!(
+            error
+                .message
+                .starts_with(&format!("{target} shows no evidence")),
+            "{}",
+            error.message
+        );
         server.abort();
     }
 }

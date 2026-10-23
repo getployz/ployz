@@ -313,7 +313,7 @@ async fn ensure_retried(
         container,
         rotation: RunRotation::Pending,
     };
-    crate::sealed_compat::admit(client, &want).await?;
+    crate::sealed_compat::admit(client, target, &want).await?;
     client
         .call::<op::EnsureContainer>(ployz_core::EnsureContainerRequest { want }, Some(target))
         .await

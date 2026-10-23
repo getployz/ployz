@@ -2948,13 +2948,14 @@ async fn inspection_reports_failing_once_the_check_passed_since_this_start() {
 #[cfg(test)]
 mod sealed_output_tests {
     use ployz_core::{
-        ContainerDetails, EnvValue, LastHealthCheck, Machine, RuntimeWatchFrame, SealedScope,
-        encode_runtime_watch_frame,
+        ContainerDetails, EnvValue, LastHealthCheck, LogBody, LogEntry, LogsOptions, Machine,
+        RuntimeWatchFrame, SealedScope, encode_runtime_watch_frame,
     };
 
     use super::test_support::{FakeDocker, container_request, fake_runtime_with, machine};
     use super::*;
-    use crate::sealed_env::test_support::Cluster;
+    use crate::sealed_env::{OpenError, test_support::Cluster};
+    use crate::sealing_key::SealingKey;
 
     const OPENED: &str = "opened-t0ken";
 
@@ -2967,11 +2968,18 @@ mod sealed_output_tests {
         let (runtime, machine, created) = create_with_env(
             cluster,
             LogStore::Unsupervised,
-            &containers,
+            fake_docker(&containers),
             sealed_token(cluster),
         )
         .await;
         (runtime, machine, created.unwrap().container_id, containers)
+    }
+
+    fn fake_docker(containers: &Containers) -> FakeDocker {
+        FakeDocker {
+            named_containers: Some(containers.clone()),
+            ..Default::default()
+        }
     }
 
     fn sealed_token(cluster: &Cluster) -> EnvValue {
@@ -2985,14 +2993,10 @@ mod sealed_output_tests {
     async fn create_with_env(
         cluster: &Cluster,
         log_store: LogStore,
-        containers: &Containers,
+        docker: FakeDocker,
         token: EnvValue,
     ) -> (ContainerRuntime, Machine, Result<ContainerCreated, Error>) {
-        let (runtime, _fake) = fake_runtime_with(FakeDocker {
-            named_containers: Some(containers.clone()),
-            ..Default::default()
-        })
-        .await;
+        let (runtime, _fake) = fake_runtime_with(docker).await;
         let runtime = runtime
             .with_sealing_key(cluster.dir.0.clone())
             .with_log_store(log_store);
@@ -3023,7 +3027,7 @@ mod sealed_output_tests {
         let (_runtime, _machine, created) = create_with_env(
             &cluster,
             LogStore::Upgrading,
-            &containers,
+            fake_docker(&containers),
             sealed_token(&cluster),
         )
         .await;
@@ -3038,6 +3042,100 @@ mod sealed_output_tests {
     }
 
     #[tokio::test]
+    async fn a_sealed_value_creates_no_container_without_a_sealing_key() {
+        let cluster = Cluster::new();
+        let token = sealed_token(&cluster);
+        SealingKey::set(&cluster.dir.0, None).unwrap();
+        let containers = Containers::default();
+
+        let (_runtime, _machine, created) = create_with_env(
+            &cluster,
+            LogStore::Unsupervised,
+            fake_docker(&containers),
+            token,
+        )
+        .await;
+
+        assert!(
+            matches!(created, Err(Error::Sealed(OpenError::KeyMissing))),
+            "{created:?}"
+        );
+        assert!(containers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_value_sealed_for_another_cluster_creates_no_container() {
+        let cluster = Cluster::new();
+        let containers = Containers::default();
+
+        let (_runtime, _machine, created) = create_with_env(
+            &cluster,
+            LogStore::Unsupervised,
+            fake_docker(&containers),
+            sealed_token(&Cluster::new()),
+        )
+        .await;
+
+        assert!(
+            matches!(&created, Err(Error::Sealed(OpenError::Unopenable(key))) if key == "TOKEN"),
+            "{created:?}"
+        );
+        assert!(containers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tailed_logs_never_show_an_opened_value() {
+        let cluster = Cluster::new();
+        let docker = fake_docker(&Containers::default());
+        let logs = docker.logs.clone();
+        let (runtime, machine, created) = create_with_env(
+            &cluster,
+            LogStore::Unsupervised,
+            docker,
+            sealed_token(&cluster),
+        )
+        .await;
+        let frame = |stream: u8, line: &str| {
+            let line = format!("2026-10-23T00:00:00.000000000Z {line}\n");
+            let mut frame = vec![stream, 0, 0, 0];
+            frame.extend(u32::try_from(line.len()).unwrap().to_be_bytes());
+            frame.extend(line.into_bytes());
+            frame
+        };
+        *logs.lock().unwrap() = [
+            frame(1, &format!("token={OPENED}")),
+            frame(2, &format!("rejected {OPENED} twice: {OPENED}")),
+        ]
+        .concat();
+
+        let lines: Vec<_> = runtime
+            .container_logs(
+                &machine.id,
+                &machine.name,
+                created.unwrap().container_id,
+                &LogsOptions {
+                    follow: false,
+                    tail: -1,
+                    since_nanos: None,
+                    until_unix_seconds: None,
+                },
+            )
+            .await
+            .unwrap()
+            .map(|entry| LogEntry::decode(&entry.unwrap()).unwrap().body)
+            .collect()
+            .await;
+
+        assert_eq!(
+            lines,
+            [
+                LogBody::Stdout(b"token=[secret TOKEN]\n".to_vec()),
+                LogBody::Stderr(b"rejected [secret TOKEN] twice: [secret TOKEN]\n".to_vec()),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn text_values_create_while_the_log_store_runs_older_software() {
         let cluster = Cluster::new();
         let containers = Containers::default();
@@ -3045,7 +3143,7 @@ mod sealed_output_tests {
         let (_runtime, _machine, created) = create_with_env(
             &cluster,
             LogStore::Upgrading,
-            &containers,
+            fake_docker(&containers),
             EnvValue::Text(OPENED.into()),
         )
         .await;

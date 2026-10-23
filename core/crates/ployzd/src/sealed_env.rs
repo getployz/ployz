@@ -517,6 +517,78 @@ mod tests {
     }
 
     #[test]
+    fn a_template_part_opens_for_any_service_in_its_environment_and_no_other() {
+        let cluster = Cluster::new();
+        let url = || {
+            BTreeMap::from([(
+                "URL".to_owned(),
+                EnvValue::Template(Template {
+                    template: vec![
+                        EnvPart::Text("postgres://app:".into()),
+                        EnvPart::Sealed(cluster.seal(
+                            "DB_PASSWORD",
+                            SealedScope::Service(Uuid::from_u128(9)),
+                            "pa55",
+                        )),
+                        EnvPart::Text("@db".into()),
+                    ],
+                }),
+            )])
+        };
+        let elsewhere = SealedIdentity {
+            environment: Uuid::from_u128(5),
+            ..cluster.identity.clone()
+        };
+
+        assert_eq!(
+            cluster
+                .open(url())
+                .unwrap()
+                .values
+                .get("URL")
+                .map(String::as_str),
+            Some("postgres://app:pa55@db")
+        );
+        assert!(matches!(
+            open(url(), Some(&elsewhere), Some(&cluster.dir.0)),
+            Err(OpenError::Unopenable(key)) if key == "URL"
+        ));
+    }
+
+    #[test]
+    fn a_template_opens_every_sealed_part_in_place() {
+        let cluster = Cluster::new();
+        let env = BTreeMap::from([(
+            "URL".to_owned(),
+            EnvValue::Template(Template {
+                template: vec![
+                    EnvPart::Text("postgres://".into()),
+                    EnvPart::Sealed(cluster.seal("DB_USER", own(), "app")),
+                    EnvPart::Text(":".into()),
+                    EnvPart::Sealed(cluster.seal("DB_PASSWORD", SealedScope::Shared, "pa55")),
+                    EnvPart::Text("@db".into()),
+                ],
+            }),
+        )]);
+
+        let opened = cluster.open(env).unwrap();
+
+        assert_eq!(
+            opened.values.get("URL").map(String::as_str),
+            Some("postgres://app:pa55@db")
+        );
+        let secrets = opened
+            .record
+            .unwrap()
+            .secrets(Some(&cluster.dir.0))
+            .unwrap();
+        assert_eq!(
+            format!("{secrets:?}"),
+            r#"["DB_PASSWORD", "DB_USER", "URL"]"#
+        );
+    }
+
+    #[test]
     fn a_value_sealed_for_another_environment_does_not_open() {
         let cluster = Cluster::new();
         let value = cluster.seal("TOKEN", SealedScope::Shared, "x");

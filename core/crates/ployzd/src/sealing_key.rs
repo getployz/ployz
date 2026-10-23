@@ -260,6 +260,28 @@ mod tests {
     }
 
     #[test]
+    fn a_sealed_value_with_any_byte_flipped_does_not_open() {
+        let key = SealingKey::generate();
+        let sealed = key.seal_value(b"aad", b"hunter2");
+        assert!(sealed.as_bytes().len() > ENCAPPED_KEY_LEN);
+
+        for index in 0..sealed.as_bytes().len() {
+            let mut tampered = sealed.as_bytes().to_vec();
+            *tampered.get_mut(index).unwrap() ^= 0x01;
+            let part = if index < ENCAPPED_KEY_LEN {
+                "encapsulated key"
+            } else {
+                "ciphertext"
+            };
+            assert!(
+                key.open_value(b"aad", &Ciphertext::from_bytes(tampered))
+                    .is_none(),
+                "{part} byte {index}"
+            );
+        }
+    }
+
+    #[test]
     fn sealing_key_uses_the_wireguard_public_key_as_the_hpke_recipient() {
         let wireguard = WireGuardPrivateKey::generate();
         let hpke = <Kem as hpke::Kem>::PrivateKey::from_bytes(wireguard.as_bytes()).unwrap();

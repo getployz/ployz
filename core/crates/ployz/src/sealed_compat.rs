@@ -2,8 +2,8 @@
 //! Delete once no supported release lacks these capabilities.
 
 use ployz_core::{
-    ContainerWant, ENV_SEALED_CAPABILITY, EnvValue, MANAGEMENT_SCOPE_CAPABILITY, RpcError,
-    RpcErrorCode, RunTarget,
+    ContainerWant, ENV_SEALED_CAPABILITY, EnvValue, MANAGEMENT_SCOPE_CAPABILITY, MachineTarget,
+    RpcError, RpcErrorCode, RunTarget, machine_matches_target,
 };
 
 use crate::cluster::Client;
@@ -11,8 +11,12 @@ use crate::cluster::Client;
 const SEALED_READY: [&str; 2] = [MANAGEMENT_SCOPE_CAPABILITY, ENV_SEALED_CAPABILITY];
 
 /// Refuses a want that carries a Sealed value while any Machine lacks the
-/// capabilities that keep it sealed.
-pub(crate) async fn admit(client: &Client, want: &ContainerWant) -> Result<(), RpcError> {
+/// capabilities that keep it sealed, or the target shows none at all.
+pub(crate) async fn admit(
+    client: &Client,
+    target: &MachineTarget,
+    want: &ContainerWant,
+) -> Result<(), RpcError> {
     let ContainerWant::Running {
         container: RunTarget::New(new),
         ..
@@ -35,6 +39,14 @@ pub(crate) async fn admit(client: &Client, want: &ContainerWant) -> Result<(), R
         return Ok(());
     }
     let machines = client.clone().machines().await.map_err(RpcError::from)?;
+    if !machines
+        .iter()
+        .any(|observation| machine_matches_target(&observation.machine, target))
+    {
+        return Err(unsupported(format!(
+            "{target} shows no evidence it can open Sealed values; refusing to send them"
+        )));
+    }
     let behind: Vec<_> = machines
         .iter()
         .filter(|observation| {
@@ -46,15 +58,19 @@ pub(crate) async fn admit(client: &Client, want: &ContainerWant) -> Result<(), R
     if behind.is_empty() {
         return Ok(());
     }
-    Err(RpcError {
+    Err(unsupported(format!(
+        "{} cannot open Sealed values; upgrade every Machine before deploying them",
+        behind.join(", ")
+    )))
+}
+
+fn unsupported(message: String) -> RpcError {
+    RpcError {
         code: RpcErrorCode::Unsupported,
-        message: format!(
-            "{} cannot open Sealed values; upgrade every Machine before deploying them",
-            behind.join(", ")
-        ),
+        message,
         details: serde_json::Value::Null,
         cause: Vec::new(),
-    })
+    }
 }
 
 #[cfg(test)]
