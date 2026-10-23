@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
-import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
@@ -219,12 +219,14 @@ export function VariableAddForm({
                     });
                   }}
                 />
-                <FieldLabel htmlFor="new-variable-sealed">
-                  Sealed
-                </FieldLabel>
-                {sealing.state === "no_server" ? (
-                  <span className="text-sm text-muted-foreground">· Needs a server. {sealing.addServer}</span>
-                ) : null}
+                <FieldContent>
+                  <FieldLabel htmlFor="new-variable-sealed">
+                    Sealed
+                  </FieldLabel>
+                  {sealing.state === "no_server" ? (
+                    <FieldDescription>Needs a server. {sealing.addServer}</FieldDescription>
+                  ) : null}
+                </FieldContent>
               </Field>
             ) : null}
             {supportsExport ? (
