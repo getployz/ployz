@@ -97,8 +97,9 @@ To bring services back:
    the same way: it names the server, starts nothing there, and exits 3. The new replicas start
    serving on your other servers, but the deploy finishes only once they mark that server
    offline. If that takes more than 5 minutes, the service fails and the deploy names the server.
-   A service with a Docker volume fails before it changes anything, because the volume may be on
-   that server. So does any service when the deploy can't read which replicas that server runs.
+   A service with a Docker volume fails before it changes anything when no answering server holds
+   the volume, because it may be on that server. So does any service when the deploy can't read
+   which replicas that server runs.
    A server the others still count as online but that doesn't answer fails the deploy.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your

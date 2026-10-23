@@ -268,7 +268,10 @@ impl MachineOperations for Client {
     ) -> Result<Vec<ContainerObservation>, RpcError> {
         let listed = self.listed_copies(service).await?;
         match listed.unanswered.into_iter().next() {
-            Some(silent) => Err(silent.failure.error),
+            Some(silent) => Err(naming_machine(
+                crate::cluster::unanswered_by(&silent.name, silent.failure.error),
+                &silent.failure.machine_id,
+            )),
             None => Ok(listed.copies),
         }
     }
