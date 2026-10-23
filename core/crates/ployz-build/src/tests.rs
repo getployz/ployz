@@ -21,6 +21,7 @@ fn later_uncertain_termination_preserves_the_first_failure_stage() {
 }
 
 use super::*;
+use sha2::{Digest as _, Sha256};
 
 fn wait_on_another_process(duration: Duration) {
     // real-wait: another process's exec, output burst, or signal delivery has no event this test can await
@@ -367,7 +368,7 @@ fn an_observed_platform_covers_a_request_without_its_variant() {
 fn requested_output_selects_exclusive_bake_behavior() {
     let environment = BTreeMap::new();
     let targets = [target("api", Some("linux/arm64"))];
-    let planned = plan(&targets).unwrap();
+    let planned = super::plan(&targets).unwrap();
     let planned = planned.first().unwrap();
     let metadata = Path::new("/private/build-metadata.json");
     let build_args = ["MODE=release".to_owned()];
@@ -848,6 +849,191 @@ fn railpack_prepares_a_python_requirements_app() {
     )
     .unwrap();
     assert!(plan.contains("pip install -r requirements.txt"), "{plan}");
+    drop(preparation);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// The whole Railpack path for one Sealed value: the name rides through the
+/// opened file and a secret mount, a build step reads the value, and nothing
+/// BuildKit keeps shows it.
+#[test]
+#[ignore = "requires Docker and network access to pull the pinned Railpack images"]
+fn railpack_delivers_a_sealed_value_to_a_build_step_and_keeps_it_out_of_the_image() {
+    let value = "opened-token-0123456789";
+    let digest: String = Sha256::digest(value.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let directory = std::env::temp_dir().join(format!("ployz-railpack-{}", uuid::Uuid::new_v4()));
+    let app = directory.join("source/app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir(directory.join("private")).unwrap();
+    std::fs::write(app.join("requirements.txt"), "").unwrap();
+    std::fs::write(app.join("Procfile"), "web: cat /app/token.sha\n").unwrap();
+    let image = format!("ployz-test-sealed:{}", uuid::Uuid::new_v4().simple());
+    std::fs::write(
+        directory.join("compose.yaml"),
+        format!("services:\n  web:\n    image: {image}\n    build:\n      context: source/app\n"),
+    )
+    .unwrap();
+    let opened = BTreeMap::from([("NPM_TOKEN".to_owned(), value.to_owned())]);
+    let _files = crate::sealed::OpenedFiles::write(&directory, &opened).unwrap();
+    let targets = [target("web", None)];
+    let railpack = [Railpack {
+        name: "web".into(),
+        context: "source/app".into(),
+        variables: BTreeMap::from([(
+            "RAILPACK_BUILD_CMD".to_owned(),
+            "printf %s \"$NPM_TOKEN\" | sha256sum | cut -d\" \" -f1 | tee /app/token.sha"
+                .to_owned(),
+        )]),
+        sealed: BTreeMap::from([("NPM_TOKEN".to_owned(), "f".repeat(64))]),
+        refresh_cache: false,
+    }];
+    // The environment a received Build gives Docker, so the CLI finds its program and config.
+    let environment = crate::upload::environment(&directory);
+    let compose_file = directory.join("compose.yaml");
+    let request = Request {
+        image_contexts: &BTreeMap::new(),
+        railpack: &railpack,
+        compose_file: &compose_file,
+        working_dir: &directory,
+        environment: &environment,
+        docker: None,
+        targets: &targets,
+        build_args: &[],
+        output: Output::Load,
+        no_cache: false,
+        pull: false,
+    };
+    let reported = std::sync::Mutex::new(String::new());
+    let progress = |progress: Progress| {
+        use std::fmt::Write as _;
+        let mut reported = reported.lock().unwrap();
+        match progress {
+            Progress::Output(bytes) => reported.push_str(&String::from_utf8_lossy(&bytes)),
+            Progress::StepOutput { text, .. } => reported.push_str(&text),
+            other => {
+                let _ = writeln!(reported, "{other:?}");
+            }
+        }
+    };
+    let docker = Docker {
+        program: Path::new("docker"),
+        environment: &environment,
+        working_dir: &directory,
+        deadline: Deadline::starting_now(Duration::from_secs(900)),
+        cancellation: None,
+        progress: Some(&progress),
+    };
+    let native = if cfg!(target_arch = "aarch64") {
+        "linux/arm64"
+    } else {
+        "linux/amd64"
+    };
+    let builder = format!("ployz-test-{}", uuid::Uuid::new_v4().simple());
+    let preparation = railpack::prepare(
+        &docker,
+        &request,
+        native,
+        &builder,
+        &policy::Resources::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let plan = std::fs::read_to_string(
+        preparation
+            .override_file()
+            .with_file_name("0")
+            .join("plan.json"),
+    )
+    .unwrap();
+    assert!(plan.contains("NPM_TOKEN"), "{plan}");
+    assert!(!plan.contains(value), "{plan}");
+    // The same Bake run the Build makes, on a BuildKit worker like the one it acquires.
+    docker
+        .run(
+            "create the test builder",
+            &[
+                "buildx",
+                "create",
+                "--name",
+                &builder,
+                "--driver",
+                "docker-container",
+            ],
+            Streams::Captured,
+        )
+        .unwrap();
+    let planned = super::plan(&targets).unwrap();
+    let metadata = directory.join("build-metadata-web.json");
+    let mut arguments = bake_arguments(
+        &request,
+        Produce::Output(Output::Load),
+        &builder,
+        planned.first().unwrap(),
+        &metadata,
+        Some(&preparation.override_file()),
+    );
+    arguments.insert(arguments.len() - 1, "--set".into());
+    arguments.insert(arguments.len() - 1, format!("web.platform={native}"));
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    if let Err(error) = docker.run(
+        "bake the sealed Railpack target",
+        &arguments,
+        Streams::Inherited,
+    ) {
+        panic!("{error}\n{}", reported.lock().unwrap());
+    }
+    let built = docker
+        .run(
+            "read what the build step wrote",
+            &[
+                "run",
+                "--rm",
+                "--entrypoint",
+                "cat",
+                &image,
+                "/app/token.sha",
+            ],
+            Streams::Captured,
+        )
+        .unwrap();
+    assert_eq!(built.trim(), digest);
+    let kept = docker
+        .run(
+            "read what the image keeps",
+            &["image", "inspect", &image],
+            Streams::Captured,
+        )
+        .unwrap()
+        + &docker
+            .run(
+                "read the image history",
+                &[
+                    "history",
+                    "--no-trunc",
+                    "--format",
+                    "{{.CreatedBy}}",
+                    &image,
+                ],
+                Streams::Captured,
+            )
+            .unwrap();
+    assert!(!kept.contains(value), "{kept}");
+    let reported = reported.lock().unwrap();
+    assert!(reported.contains(&digest), "{reported}");
+    assert!(!reported.contains(value), "{reported}");
+    docker
+        .run("remove the test image", &["rmi", &image], Streams::Captured)
+        .unwrap();
+    docker
+        .run(
+            "remove the test builder",
+            &["buildx", "rm", "--force", &builder],
+            Streams::Captured,
+        )
+        .unwrap();
     drop(preparation);
     std::fs::remove_dir_all(directory).unwrap();
 }
