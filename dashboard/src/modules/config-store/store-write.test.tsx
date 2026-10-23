@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import type { ConfigCommand, ConfigWritten, DiffView, EnvironmentView } from "@ployz/sdk";
+import type { Change, ConfigCommand, ConfigWritten, DiffView, EnvironmentView } from "@ployz/sdk";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
+import { SealError } from "#/modules/variables/seal.client";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
 import { diffQuery, environmentSettingsQuery, environmentsQuery, refetchStoreViews, storeViewOptions, useStoreView } from "./store-view.queries";
@@ -32,8 +33,9 @@ function view(revision: number, replicas: number, values?: EnvironmentView["valu
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((yes) => { resolve = yes; });
-  return { promise, resolve };
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
 }
 
 /** A Store holding `web` in shop/production, and a tab showing its Settings. */
@@ -180,6 +182,68 @@ it("drops an echoed value the Store refuses, back to the value it holds", async 
   refused.resolve({ ok: false, refusal: { code: "invalid_argument", message: "replicas must be at most 8", details: null } });
   await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "invalid_argument" });
   await waitFor(() => expect(test.replicas()).toBe(1));
+});
+
+const shownSeal = [{ op: "set" as const, path: "web.env.TOKEN", value: { secret: { sealing: true } } }];
+const sealedSeal = [{ op: "set" as const, path: "web.env.TOKEN", value: { secret: { sealedFor: "env", value: { sealed: "c2VhbGVk", scope: { service: "web-id" }, key: "TOKEN" } } } }];
+
+it("shows a prepared edit at once, prepares it in its turn and sends only what it prepared", async () => {
+  const test = setup(view(2, 1));
+  const first = deferred<StoreResult<ConfigWritten>>();
+  const sealed = deferred<typeof sealedSeal>();
+  const prepare = vi.fn(() => sealed.promise);
+  test.write.mockImplementationOnce(() => first.promise).mockResolvedValueOnce(edited(4))
+    .mockResolvedValueOnce({ ok: true, value: { written: "service", environment: view(5, 1).environment } as never });
+
+  let one!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  let seal!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  act(() => {
+    one = test.edit({ environment: ref, changes: replicas(3) });
+    seal = test.edit({ environment: ref, changes: shownSeal, prepare });
+  });
+  const copied = test.writer.commit({ command: "copy_node", environment: ref, node: "web", expect: null });
+  await waitFor(() => expect(test.value("web.env.TOKEN")).toEqual({ secret: true }));
+  // It prepares after the edit before it lands, and the command behind it waits for it.
+  expect(prepare).not.toHaveBeenCalled();
+  first.resolve(edited(3));
+  await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+  expect(test.write).toHaveBeenCalledTimes(1);
+  sealed.resolve(sealedSeal);
+  await Promise.all([one.isPersisted.promise, seal.isPersisted.promise, copied.isPersisted.promise]);
+
+  expect(test.write.mock.calls.map((call) => call[0]?.data.command)).toMatchObject([
+    { command: "edit", expect: 2 }, { command: "edit", expect: 3, changes: sealedSeal }, { command: "copy_node", expect: 4 },
+  ]);
+  expect(JSON.stringify(test.write.mock.calls)).not.toContain("sealing");
+});
+
+it("sends nothing when a prepared edit fails, undoes it and says why", async () => {
+  const plain = view(2, 1);
+  plain.settings.push({ path: "web.env.TOKEN", value: "abc", default: null, apply: "staged" });
+  const test = setup(plain);
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const refused = deferred<Change[]>();
+
+  let seal!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  act(() => { seal = test.edit({ environment: ref, changes: shownSeal, prepare: () => refused.promise }); });
+  await waitFor(() => expect(test.value("web.env.TOKEN")).toEqual({ secret: true }));
+  refused.reject(new SealError("Add a server to set sealed values."));
+
+  await expect(seal.isPersisted.promise).rejects.toBeInstanceOf(SealError);
+  await waitFor(() => expect(test.value("web.env.TOKEN")).toBe("abc"));
+  expect(test.write).not.toHaveBeenCalled();
+  expect(error).toHaveBeenCalledWith("Add a server to set sealed values.");
+});
+
+it("keeps only the shown command in the mutation, and sends the prepared one", async () => {
+  const test = setup(view(2, 1));
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "synced" } as never });
+  const shown: ConfigCommand = { command: "sync", from: ref, into: null, version: "1", picks: null };
+  const committed = test.writer.commit(shown, [], async () => ({ ...shown, values: { "row:at": "tok_live_123456" } }));
+
+  await committed.isPersisted.promise;
+  expect(test.write.mock.calls[0]?.[0]).toMatchObject({ data: { command: { command: "sync", values: { "row:at": "tok_live_123456" } } } });
+  expect(JSON.stringify(test.scope.queryClient.getMutationCache().getAll().map((mutation) => mutation.state.variables))).not.toContain("tok_live");
 });
 
 it("shows pending sets as their values and unsets as the row's default, in order", () => {

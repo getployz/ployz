@@ -4,6 +4,7 @@ import type { Change, ConfigCommand, ConfigWritten, EnvironmentRef } from "@ploy
 import { toast } from "sonner";
 import { isUnauthorized } from "#/lib/error-message";
 import { observeFailure, type Persistable } from "#/collections/query-collection";
+import { SealError } from "#/modules/variables/seal.client";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
@@ -14,7 +15,10 @@ import { pendingMarks, renameBlocks, storeWriteKey } from "./store-pending";
 /** Edits to one Environment's Settings, applied at once and saved in the background. */
 export type StoreEdit = {
   environment: EnvironmentRef;
+  /** What the edit shows while it saves: with `prepare`, the redacted changes. */
   changes: Change[];
+  /** The changes to send, made in the queue after the edits before it: a Sealed value, sealed afresh. */
+  prepare?: () => Promise<Change[]>;
 };
 
 /**
@@ -122,7 +126,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         } else if (isUnauthorized(error)) {
           toast.error("You're signed out. Nothing was saved.", { action: { label: "Sign in", onClick: () => window.location.assign(signInHere()) } });
         } else if (!(promise && shownInline.has(promise)) && !(error instanceof StoreRefused && handled.includes(error.code))) {
-          toast.error(expects && isStale(error) ? CONFLICT : error instanceof TypeError ? UNREACHABLE : error instanceof StoreRefused && error.message ? error.message : FAILED);
+          toast.error(expects && isStale(error) ? CONFLICT : error instanceof SealError ? error.message : error instanceof TypeError ? UNREACHABLE : error instanceof StoreRefused && error.message ? error.message : FAILED);
         }
         // What the write was refused against shows: the rollback, or a Sync's fresh review.
         await invalidateViews(queryClient, organizationSlug, keysOf(command));
@@ -133,11 +137,12 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   }
 
   return {
-    edit({ environment, changes }: StoreEdit): Persistable {
+    edit({ environment, changes, prepare }: StoreEdit): Persistable {
       const key = environmentKey(environment);
       const command: ConfigCommand = { command: "edit", environment, expect: null, changes };
       const promise = queued(key, command, async () => {
-        const written = await send({ command: "edit", environment, expect: expected(key), changes });
+        const sent = prepare ? await prepare() : changes;
+        const written = await send({ command: "edit", environment, expect: expected(key), changes: sent });
         if (written.written === "edited") committed.set(key, written.environment.revision);
         return written;
       }, true);
@@ -149,17 +154,18 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
      * background. One naming an Environment runs after that Environment's pending edits; one that reads or writes
      * another Environment too (a Sync, a new Branch, a copied node: often the implied Parent) runs after every pending
      * edit. It persists once the write's answers replace its views. A refusal toasts here, unless its code is one the
-     * caller `handles`, rereads the views, and rejects with `StoreRefused`.
+     * caller `handles`, rereads the views, and rejects with `StoreRefused`. With `prepare`, `command` is what shows and
+     * `prepare`'s, made in its turn in the queue, is what's sent.
      */
-    commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
+    commit(command: ConfigCommand, handles: readonly string[] = [], prepare?: () => Promise<ConfigCommand>): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const environment = commandEnvironment(command);
       const key = environment ? environmentKey(environment) : "";
       // A command that edits Working State expects the newest revision, as an edit does, and is tracked like one; a
       // Batch holding an edit is tracked too, so a command spanning Environments waits for it.
       const expects = "expect" in command;
       const edits = expects || (command.command === "batch" && command.commands.some((inner) => inner.command === "edit"));
-      const save = async () => {
-        const written = await send(expects ? { ...command, expect: expected(key) } : command);
+      const save = async (sent: ConfigCommand) => {
+        const written = await send("expect" in sent ? { ...sent, expect: expected(key) } : sent);
         const revision = writtenRevision(written);
         if (revision !== null) committed.set(key, revision);
         return written;
@@ -167,7 +173,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.
       const spans = SPANS.has(command.command) || commandEnvironments(command).length > 1;
       const preceding = spans ? [...unsettled] : [];
-      const work = async () => { await Promise.all(preceding); return save(); };
+      const work = async () => { await Promise.all(preceding); return save(prepare ? await prepare() : command); };
       const promise = queued(key, command, work, expects, handles);
       if (edits) trackEdit(promise);
       return observeFailure({ isPersisted: { promise } });
