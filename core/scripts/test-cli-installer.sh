@@ -44,6 +44,8 @@ EOF
 cat > "$TMP/bin/curl" <<'EOF'
 #!/bin/sh
 echo "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
+# Like curl when nothing answers on any address it resolved: exit 7, no HTTP status.
+[ -z "${FAKE_UNREACHABLE:-}" ] || exit 7
 write_out=
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -173,6 +175,30 @@ if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/relea
     exit 1
 fi
 [ "$("$TMP/install/ployz")" = installed ]
+
+# A server that can't connect to the releases says why. An IPv6-only server can't reach
+# github.com, which has no IPv6 address; `ip` reports the routes the server has.
+cat > "$TMP/bin/ip" <<'EOF'
+#!/bin/sh
+case "$*" in
+    '-4 route show default') [ -z "${FAKE_IPV4_ROUTE:-}" ] || echo 'default via 192.0.2.1 dev eth0' ;;
+    '-6 route show default') echo 'default via fe80::1 dev eth0 proto ra' ;;
+esac
+EOF
+chmod 0755 "$TMP/bin/ip"
+for routes in ipv6-only dual-stack; do
+    if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" FAKE_UNREACHABLE=1 \
+        FAKE_IPV4_ROUTE=$([ "$routes" = ipv6-only ] || echo 1) INSTALL_BIN_DIR="$TMP/install" \
+        PLOYZ_GITHUB_URL=https://github.com/getployz/ployz sh "$ROOT/install.sh" 1.2.3 > "$TMP/error" 2>&1; then
+        echo "installed with no route to the releases ($routes)" >&2
+        exit 1
+    fi
+    case $routes in
+        ipv6-only) expected="ERROR: Can't reach github.com, which serves Ployz releases: this server has no IPv4 route, and github.com has no IPv6 address. Give the server outbound IPv4, or NAT64 and DNS64: https://ployz.dev/docs/servers/add-a-server#ipv6-only-servers" ;;
+        dual-stack) expected="ERROR: Can't reach github.com, which serves Ployz releases. Check this server's outbound internet access." ;;
+    esac
+    grep -Fqx "$expected" "$TMP/error" || { cat "$TMP/error" >&2; exit 1; }
+done
 
 install_fails() {
     local message=$1 path=${2:-$TMP/bin:$PATH}

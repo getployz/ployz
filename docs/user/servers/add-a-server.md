@@ -17,8 +17,9 @@ your other servers on a private network.
 - **A main disk of 30 GiB or more.** Ployz keeps a quarter of the disk, at least 10 GiB, free for
   the system. On EC2, raise the root volume from its 8 GB default when you launch the instance.
 - **Root**, or a user that can run `sudo`.
-- **Outbound internet access**, and a **public IP address** on at least one server so visitors
-  can reach your apps.
+- **Outbound internet access over IPv4**, and a **public IP address** on at least one server so
+  visitors can reach your apps. A server with only IPv6 needs NAT64 and DNS64; see
+  [IPv6-only servers](#ipv6-only-servers).
 
 You don't need Docker: Ployz installs it if it's missing.
 
@@ -299,7 +300,27 @@ these there:
 | TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic |
 | UDP 51820 | Your other servers | Services on different servers reaching each other |
 
-## Good to know
+## IPv6-only servers
+
+Ployz downloads its releases from github.com and its Corrosion image from ghcr.io, and neither has
+an IPv6 address. A server whose only route out is IPv6 can't reach them, so the install stops:
+
+```
+ERROR: Can't reach github.com, which serves Ployz releases: this server has no IPv4 route, and github.com has no IPv6 address. Give the server outbound IPv4, or NAT64 and DNS64: https://ployz.dev/docs/servers/add-a-server#ipv6-only-servers
+```
+
+Do one of these, then run the install line again:
+
+- **Give the server an IPv4 address.** Most providers sell one as an add-on, such as a Hetzner
+  Primary IPv4. The server is then dual-stack and installs like any other.
+- **Use NAT64 and DNS64.** DNS64 answers an IPv6 address for names that only have IPv4 ones, and
+  NAT64 carries that traffic to IPv4. Point the server's resolver at your provider's DNS64
+  service, or at a public one. With both in place, the install line and `ployz server add` work as
+  usual.
+
+Keep the IPv4 address or NAT64 for as long as the server runs Ployz. Ployz upgrades download from
+github.com too.
+
 
 - **Operating system updates stay with you.** Ployz doesn't install them.
 - **Already running Docker?** Ployz keeps it and its settings, if it's Docker 29.2 or newer

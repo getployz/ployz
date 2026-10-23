@@ -140,6 +140,19 @@ resolve_install() {
     printf '%s\n' "${resolved#v}"
 }
 
+# Why the release host didn't answer. github.com has no IPv6 address, so a server with only an
+# IPv6 route can never reach it.
+unreachable() {
+    host=${PLOYZ_GITHUB_URL#*://}
+    host=${host%%/*}
+    if [ "$host" = github.com ] && command -v ip >/dev/null 2>&1 &&
+        [ -z "$(ip -4 route show default 2>/dev/null)" ] &&
+        [ -n "$(ip -6 route show default 2>/dev/null)" ]; then
+        error "Can't reach $host, which serves Ployz releases: this server has no IPv4 route, and github.com has no IPv6 address. Give the server outbound IPv4, or NAT64 and DNS64: https://ployz.dev/docs/servers/add-a-server#ipv6-only-servers"
+    fi
+    error "Can't reach $host, which serves Ployz releases. Check this server's outbound internet access."
+}
+
 install_cli() {
     [ -d "$INSTALL_BIN_DIR" ] ||
         error "$INSTALL_BIN_DIR is not a directory. Create it first, or set INSTALL_BIN_DIR to a directory that exists."
@@ -155,7 +168,11 @@ install_cli() {
 
     # Every release has checksums.txt, so a 404 for it means the release doesn't exist.
     # A file:// mirror, as verify-release.sh uses, answers 000 when curl succeeds.
-    status=$(curl -sSL -w '%{http_code}' -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt") || status=
+    # curl exits 6 when the name doesn't resolve and 7 when nothing answers.
+    status=$(curl -sSL -w '%{http_code}' -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt") || {
+        case $? in 6|7) unreachable ;; esac
+        status=
+    }
     case "$status" in
         2??|000) ;;
         404) error "There's no Ployz release $version. Releases: $PLOYZ_GITHUB_URL/releases" ;;
