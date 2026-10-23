@@ -670,10 +670,12 @@ where
                 (error, retry)
             }
             _ => {
+                // A lost reply isn't the Machine's answer either: a later silence is
+                // stronger news, as `keep_lost_call` holds.
                 if !error.reply_lost() {
                     lost = None;
+                    answer = Some(error.clone());
                 }
-                answer = Some(error.clone());
                 let retry = error.code.retry();
                 (error, retry)
             }
