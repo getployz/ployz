@@ -1,8 +1,9 @@
 name: Fast CI
 
 on:
-  # Draft PRs run no checks, and CI ready fails on them so a draft never satisfies branch protection.
-  # Marking a PR ready starts CI, later pushes run it again, and converting back to draft fails CI ready again.
+  # Draft PRs run no checks, and CI ready reports skipped on them. A draft can't merge, and the merge queue runs
+  # CI ready again on its own merge_group run, so skipped there lets nothing unchecked onto main.
+  # Marking a PR ready starts CI, later pushes run it again, and converting back to draft skips CI ready again.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   # The merge queue runs the PR checks on the PR merged with main and the PRs queued ahead of it.
@@ -358,17 +359,13 @@ jobs:
 
   ready:
     name: CI ready
-    # Never skipped: branch protection counts a skipped required check as passing.
-    if: ${{ always() }}
+    # Skipped only on a draft. Branch protection counts a skipped required check as passing, so every other run
+    # must reach the step below, whatever its checks did: a draft can't merge, and the queue runs this job again.
+    if: ${{ always() && !github.event.pull_request.draft }}
     needs: [changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Refuse draft PRs
-        if: ${{ github.event.pull_request.draft }}
-        run: |
-          echo "::error::PR is a draft. Mark it ready for review to run CI."
-          exit 1
       - uses: actions/checkout@v4
       - name: Require every selected check to pass
         env:
