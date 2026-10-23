@@ -220,13 +220,15 @@ export function findDuplicateJsonKeys(text: string): string[] {
 export type RawEditorDiff = {
   /** With `sealed`, the raw editor ticked it Sealed. */
   creates: { key: string; value: string; sealed?: boolean }[];
-  updates: { variableId: string; key: string; value: string }[];
+  updates: { variableId: string; key: string; value: string; sealed?: boolean }[];
   deletes: string[];
 };
 
 export function diffVariables(
   parsed: ParsedEntry[],
   current: VariableRecord[],
+  /** Keys ticked Sealed: each line goes Sealed, as a create or an update, even when its value is unchanged. */
+  sealed: ReadonlySet<string> = new Set(),
 ): RawEditorDiff {
   const editableCurrent = current.filter(isPlainVariable);
   const currentByKey = new Map(editableCurrent.map((v) => [v.key, v]));
@@ -237,15 +239,17 @@ export function diffVariables(
 
   for (const entry of parsed) {
     const existing = currentByKey.get(entry.key);
+    const seal = sealed.has(entry.key) ? { sealed: true } : {};
     if (!existing) {
-      creates.push({ key: entry.key, value: entry.value });
+      creates.push({ key: entry.key, value: entry.value, ...seal });
       continue;
     }
-    if (existing.value.value === entry.value) continue;
+    if (existing.value.value === entry.value && !sealed.has(entry.key)) continue;
     updates.push({
       variableId: existing.id,
       key: entry.key,
       value: entry.value,
+      ...seal,
     });
   }
 

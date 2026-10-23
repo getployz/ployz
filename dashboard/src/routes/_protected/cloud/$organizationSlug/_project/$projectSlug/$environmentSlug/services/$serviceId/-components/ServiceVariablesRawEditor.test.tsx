@@ -52,18 +52,19 @@ const SECRET: VariableRecord = { id: "SECRET", serviceId: "web", key: "SECRET", 
 const LOG_LEVEL: VariableRecord = { id: "LOG_LEVEL", serviceId: "web", key: "LOG_LEVEL", description: null, exported: false, value: { type: "plain", value: "info" } };
 
 /** The Service tab's wiring: the raw editor's Apply through the real variables writer, over a Store writer that records each edit. */
-function StoreHarness({ sealing, edits, prepare }: {
+function StoreHarness({ sealing, edits, prepare, variables = [SECRET, LOG_LEVEL] }: {
   sealing: "off" | "no_server" | "ready";
   edits: StoreEdit[];
   prepare: Sealing["prepare"];
+  variables?: VariableRecord[];
 }) {
   const [open, setOpen] = useState(true);
   const store = asTestDouble<ReturnType<typeof useStoreWriter>>()({
     edit: (edit: StoreEdit) => { edits.push(edit); return { isPersisted: { promise: Promise.resolve() } }; },
   });
-  const writer = storeVariableWriter(store, { project: "shop", environment: "production" }, "web", [SECRET, LOG_LEVEL], new Map(),
+  const writer = storeVariableWriter(store, { project: "shop", environment: "production" }, "web", variables, new Map(),
     { prepare, target: { environment: "0e7c2f3a-5b1d-4c8e-9f60-1a2b3c4d5e6f", service: "7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6" } });
-  return <ServiceVariablesRawEditor open={open} onOpenChange={setOpen} variables={[SECRET, LOG_LEVEL]} sealing={sealing}
+  return <ServiceVariablesRawEditor open={open} onOpenChange={setOpen} variables={variables} sealing={sealing}
     onApply={({ creates, updates, deletes }) => writer.replace([...creates, ...updates], deletes)} />;
 }
 
@@ -118,6 +119,26 @@ it.each(["no_server", "off"] as const)("a key ticked Sealed still goes Sealed on
   expect(JSON.stringify(edits[0]?.changes)).not.toContain("tok_live_123456");
   // The write's fresh read decides: here off, so trunk's legacy secret.
   expect(await edits[0]?.prepare?.()).toEqual([{ op: "set", path: "web.env.TOKEN", value: { secret: "tok_live_123456" } }]);
+});
+
+it.each([
+  ["another value", "other-tab-value"],
+  ["the same value", "tok_live_123456"],
+])("a key ticked Sealed goes Sealed when another tab makes it plain first, with %s", async (_, theirs) => {
+  const edits: StoreEdit[] = [];
+  const prepare = vi.fn(async (items: readonly SealItem[]) => items.map((item) => ({ sealedFor: item.target.environment, value: { sealed: "c2VhbGVk", scope: { service: item.target.service }, key: item.key } })));
+  const { rerender } = render(<StoreHarness sealing="ready" edits={edits} prepare={prepare} />);
+  fireEvent.change(env(), { target: { value: "LOG_LEVEL=info\nTOKEN=tok_live_123456" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Seal TOKEN" }));
+  const token: VariableRecord = { ...LOG_LEVEL, id: "TOKEN", key: "TOKEN", value: { type: "plain", value: theirs } };
+  rerender(<StoreHarness sealing="ready" edits={edits} prepare={prepare} variables={[SECRET, LOG_LEVEL, token]} />);
+  expect(screen.getByRole("checkbox", { name: "Seal TOKEN" }).getAttribute("aria-checked")).toBe("true");
+  fireEvent.click(screen.getByRole("button", { name: "Update variables" }));
+
+  expect(edits).toHaveLength(1);
+  expect(JSON.stringify(edits[0]?.changes)).not.toContain("tok_live_123456");
+  expect(JSON.stringify(await edits[0]?.prepare?.())).not.toContain("tok_live_123456");
+  expect(prepare).toHaveBeenCalledWith([{ key: "TOKEN", value: "tok_live_123456", target: expect.anything() }]);
 });
 
 it("holds a value it can't seal, saying why", () => {

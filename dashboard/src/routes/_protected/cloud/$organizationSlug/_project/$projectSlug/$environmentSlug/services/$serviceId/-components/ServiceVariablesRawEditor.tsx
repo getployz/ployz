@@ -213,10 +213,10 @@ export function ServiceVariablesRawEditor({
       return;
     }
 
-    if (entries.some((entry) => editor.sealing.includes(entry.key) && !taken.has(entry.key) && sealedValueProblem(entry.key, entry.value) !== null)) return;
-    // A ticked key goes Sealed whatever the cached state says: the write's fresh read seals it, sends it legacy, or refuses.
-    const plain = diffVariables(entries, editableVariables);
-    const diff = { ...plain, creates: plain.creates.map((create) => editor.sealing.includes(create.key) ? { ...create, sealed: true } : create) };
+    if (entries.some((entry) => editor.sealing.includes(entry.key) && sealedValueProblem(entry.key, entry.value) !== null)) return;
+    // A ticked line goes Sealed whatever the cached state says, and whether another tab made its key meanwhile: the
+    // write's fresh read seals it, sends it legacy, or refuses.
+    const diff = diffVariables(entries, editableVariables, new Set(editor.sealing));
     if (
       diff.creates.length === 0 &&
       diff.updates.length === 0 &&
@@ -250,9 +250,9 @@ export function ServiceVariablesRawEditor({
   const parsed = offered ? parseForMode(editor.mode === "env" ? editor.envText : editor.jsonText, editor.mode) : null;
   const taken = new Set(variables.map((variable) => variable.key));
   const newKeys = parsed && Result.isSuccess(parsed)
-    ? [...new Set(parsed.success.flatMap((entry) => taken.has(entry.key) ? [] : [entry.key]))] : [];
+    ? [...new Set(parsed.success.flatMap((entry) => taken.has(entry.key) && !editor.sealing.includes(entry.key) ? [] : [entry.key]))] : [];
   const problems = new Map(parsed && Result.isSuccess(parsed) ? parsed.success.flatMap((entry) => {
-    const problem = editor.sealing.includes(entry.key) && !taken.has(entry.key) ? sealedValueProblem(entry.key, entry.value) : null;
+    const problem = editor.sealing.includes(entry.key) ? sealedValueProblem(entry.key, entry.value) : null;
     return problem === null ? [] : [[entry.key, problem] as const];
   }) : []);
 
