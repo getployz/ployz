@@ -413,6 +413,28 @@ impl Failure {
                     Vec::new(),
                 )
             }
+            // The call to the row's Server went unanswered, by the router's or this
+            // client's deadline, and the client's message leads with the Machine as it
+            // knew it. The row knows its name, so the reason names it and the cause
+            // keeps what the transport said.
+            ExecutionError::Machine { action, error }
+                if let Some(id) = machine
+                    && error.target_unanswered() =>
+            {
+                let id = id.to_string();
+                let server = server_of(&id, operations);
+                let said = [&id, server.trim_start_matches("Server ")]
+                    .into_iter()
+                    .find_map(|known| {
+                        error
+                            .message
+                            .strip_prefix(&format!("Machine {known} did not answer: "))
+                    })
+                    .unwrap_or(&error.message);
+                let mut cause = vec![said.to_owned()];
+                cause.extend(ployz_core::error_chain::causes(error));
+                (format!("{server} did not answer during {action}"), cause)
+            }
             ExecutionError::Machine {
                 action: MachineAction::PullImage,
                 error,
@@ -1492,6 +1514,50 @@ mod tests {
         let kept = Failure::on(&untagged, &operations, Some(machine));
         assert_eq!(kept.reason, "create Container failed");
         assert_eq!(kept.cause, [format!("No Server named {machine_id:?}")]);
+    }
+
+    /// A Server that left a call unanswered is named from its row, not by the id the
+    /// client's deadline put in the message (#3277).
+    #[test]
+    fn a_server_that_did_not_answer_is_named_from_its_row() {
+        let machine_id = "a".repeat(32);
+        let machine = ployz_core::MachineId::parse(&machine_id).unwrap();
+        let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": {"type": "pending"}
+        }]))
+        .unwrap();
+        let unanswered = |said: String| ExecutionError::Machine {
+            action: MachineAction::CreateContainer,
+            error: RpcError::unanswered_target(RpcErrorCode::Unavailable, said),
+        };
+        let by_id = unanswered(format!(
+            "Machine {machine_id} did not answer: target Machine RPC timed out"
+        ));
+        let named = Failure::on(&by_id, &operations, Some(machine));
+        assert_eq!(
+            named.reason,
+            "Server prod-1 did not answer during create Container"
+        );
+        assert_eq!(named.cause, ["target Machine RPC timed out"]);
+        // The deploy names a Machine it already knows silent by name.
+        let by_name = unanswered("Machine prod-1 did not answer: deadline has elapsed".into());
+        let named = Failure::on(&by_name, &operations, Some(machine));
+        assert_eq!(
+            named.reason,
+            "Server prod-1 did not answer during create Container"
+        );
+        assert_eq!(named.cause, ["deadline has elapsed"]);
+        // A reader that doesn't know which Machine the call went to keeps the client's words.
+        let kept = Failure::of(&by_id, &operations);
+        assert_eq!(kept.reason, "create Container failed");
+        assert_eq!(
+            kept.cause,
+            [format!(
+                "Machine {machine_id} did not answer: target Machine RPC timed out"
+            )]
+        );
     }
 
     #[test]
