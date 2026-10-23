@@ -425,6 +425,8 @@ impl DeploySnapshot {
             })
     }
 
+    /// The Servers an Ingress Proxy belongs on. One whose daemon says it is leaving
+    /// is on its way out with its ingress role, so it gets no proxy and owes no check.
     fn ingress_eligible(&self) -> impl Iterator<Item = &MachineObservation> {
         let placement = self
             .system_ingress()
@@ -435,6 +437,7 @@ impl DeploySnapshot {
         self.machines.iter().filter(move |machine| {
             machine.invites_rpc()
                 && machine.machine.accepts_ingress
+                && !machine.machine.runtime.leaving
                 && ployz_core::machine_matches_placement(&machine.machine, &placement)
         })
     }

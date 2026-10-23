@@ -381,6 +381,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         store_filesystem: None,
         capabilities: Default::default(),
         management_identity: None,
+        leaving: false,
     })
     .unwrap();
     fs::write(&path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();

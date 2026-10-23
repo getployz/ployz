@@ -96,6 +96,25 @@ impl MachinePublicationGuard<'_> {
         self.store.api.execute(removal(machine_id)).await
     }
 
+    /// Say in `machine_id`'s row that it is leaving, or take that back, for a deploy
+    /// that plans the Ingress Proxy and checks it (#3277). An update in place: a row
+    /// the Cluster already forgot stays gone rather than coming back marked.
+    pub(crate) async fn mark_leaving(
+        &self,
+        machine_id: &MachineId,
+        leaving: bool,
+    ) -> Result<(), Error> {
+        let statement = if leaving {
+            "UPDATE machines SET info = json_set(info, '$.runtime.leaving', json('true')) WHERE id = ?"
+        } else {
+            "UPDATE machines SET info = json_remove(info, '$.runtime.leaving') WHERE id = ?"
+        };
+        self.store
+            .api
+            .execute([Statement::new(statement, [json!(machine_id)])])
+            .await
+    }
+
     /// Remove a Machine another Machine forgot, leaving a tombstone keyed by the
     /// row's Management Identity so the forgotten Machine can learn it was forgotten
     /// (#2927). A row without an identity leaves none. One transaction, so no

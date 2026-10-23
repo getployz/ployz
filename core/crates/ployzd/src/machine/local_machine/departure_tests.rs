@@ -439,3 +439,74 @@ async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
     );
     assert_eq!(test.local.record().phase(), LocalMachinePhase::Joining);
 }
+
+/// While a Leave runs, this Machine's row says so, so a deploy plans no Ingress Proxy
+/// here and the ingress check doesn't call it unchecked (#3277). The row goes with the
+/// Leave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_leave_marks_its_row_leaving_until_the_row_goes() {
+    let (test, _) = participating().await;
+    let replicated = test.local.replicated().unwrap().clone();
+    let me = test.local.record().machine().unwrap().clone();
+    let seen_leaving = std::sync::Arc::new(std::sync::Mutex::new(None));
+    test.plugin.on("Storage.Demote", {
+        let (replicated, seen_leaving) = (replicated.clone(), seen_leaving.clone());
+        move || {
+            let row = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(replicated.machine(me.id.as_str()))
+            });
+            *seen_leaving.lock().unwrap() = Some(row.unwrap().map(|row| row.runtime.leaving));
+        }
+    });
+
+    test.local.leave(LeaveRequest::default()).await.unwrap();
+
+    assert_eq!(
+        *seen_leaving.lock().unwrap(),
+        Some(Some(true)),
+        "the row says leaving while storage departs"
+    );
+    assert_eq!(replicated.machine(me.id.as_str()).await.unwrap(), None);
+}
+
+/// A Leave that fails leaves the Machine in place, and its row says so again.
+#[tokio::test]
+async fn a_failed_leave_unmarks_its_row() {
+    let (test, _) = participating().await;
+    let replicated = test.local.replicated().unwrap().clone();
+    let me = test.local.record().machine().unwrap().clone();
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Err": {"code": "internal", "message": "zfs rename failed", "details": null}}),
+    );
+
+    test.local.leave(LeaveRequest::default()).await.unwrap_err();
+
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Participating
+    );
+    assert_eq!(
+        replicated.machine(me.id.as_str()).await.unwrap(),
+        Some(me),
+        "the row is as published, with no leaving mark"
+    );
+}
+
+/// The mark updates a row in place: one the Cluster already forgot, as when this Machine
+/// fences itself after a Forget, stays gone rather than coming back marked.
+#[tokio::test]
+async fn a_leaving_mark_never_brings_back_a_forgotten_row() {
+    let (test, _) = participating().await;
+    let replicated = test.local.replicated().unwrap().clone();
+    let forgotten = MachineId::random();
+
+    replicated
+        .machine_publication()
+        .await
+        .mark_leaving(&forgotten, true)
+        .await
+        .unwrap();
+
+    assert_eq!(replicated.machine(forgotten.as_str()).await.unwrap(), None);
+}
