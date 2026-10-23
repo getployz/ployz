@@ -106,7 +106,7 @@ scripts/verify/down.sh        # stops vite, Inngest, the worker and the cluster;
 ```
 
 The instance runs `down.sh` by itself after 15 minutes with nothing connected to vite; an open page counts as connected. `VERIFY_IDLE_TIMEOUT=<seconds>` changes that, and `0` keeps it up.
-Every `up.sh` first runs `scripts/verify/reap.sh`, which removes verify containers another checkout left behind: ones whose checkout is gone, or whose vite has stopped for more than 10 minutes. It also starts a dead watchdog again, with the timeout its own `up.sh` chose, for an instance that is still running. It leaves a checkout whose parent directory this host cannot see. `VERIFY_REAP_DRY=1 scripts/verify/reap.sh` lists what it would remove.
+Every `up.sh` first runs `scripts/verify/reap.sh`, which removes verify containers another checkout left behind: ones whose checkout is gone, or whose vite has stopped for more than 10 minutes. It keeps an instance whose vite still runs and names one whose idle watchdog died; that checkout's own `up.sh` starts a watchdog again. It leaves a checkout this host cannot fully see, such as an unmounted or private directory. `VERIFY_REAP_DRY=1 scripts/verify/reap.sh` lists what it would remove.
 
 ## Known gaps
 

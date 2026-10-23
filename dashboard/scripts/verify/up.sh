@@ -242,9 +242,6 @@ until [ -f node_modules/.vite/deps/_metadata.json ]; do
   [ "$SECONDS" -lt "$deadline" ] || { echo "up.sh: vite has not finished bundling dependencies after 5 minutes (see $run/vite.log)" >&2; exit 1; }
   sleep 0.5
 done
-# The watchdog reads this timeout each step and stops once idle.pid names another, so a watchdog reap.sh restarts
-# meanwhile never acts on a timeout this replaces.
-echo "${VERIFY_IDLE_TIMEOUT:-900}" > "$run/idle-timeout"
 if [ -f "$run/idle.pid" ]; then kill -TERM -- "-$(cat "$run/idle.pid")" 2>/dev/null || true; rm -f "$run/idle.pid"; fi
 if [ "${VERIFY_IDLE_TIMEOUT:-900}" != 0 ]; then
   setsid nohup "$dash/scripts/verify/idle.sh" "$port" > "$run/idle.log" 2>&1 < /dev/null &
