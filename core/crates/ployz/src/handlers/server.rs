@@ -24,7 +24,7 @@ use crate::{
     cloud_login::{CredentialStore, LoginError},
     cluster::RoleWaitError,
     connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
-    context::{Config, ConnectionSource, ContextError, SelectedConnections},
+    context::{Config, Connection, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
     ui::progress::StartFailure,
 };
@@ -97,8 +97,8 @@ pub(super) async fn connect_full(
     context: Option<&str>,
 ) -> Result<Client, Error> {
     let config = super::config_path(matches)?;
+    let key = super::device::key::path(&config);
     let direct = matches.get_one::<String>("connect").map(String::as_str);
-    let device = super::device::key::load(&super::device::key::path(&config))?;
     let explicit = direct.is_some() || context.is_some();
     let credential = if explicit {
         None
@@ -109,8 +109,14 @@ pub(super) async fn connect_full(
             Err(error) => return Err(error.into()),
         }
     };
-    let local = match full_entries(&config, direct, context, device) {
-        Ok(selected) => {
+    let local = match crate::connect::resolve_connections(
+        &config,
+        direct,
+        context,
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    ) {
+        Ok(mut selected) => {
+            selected.connections = as_device(selected.connections, &key)?;
             let connector =
                 SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
             crate::connect::connect_selected_with(selected, Arc::new(connector)).await
@@ -124,39 +130,32 @@ pub(super) async fn connect_full(
         return Ok(client);
     }
     let mut access = cloud_account::server_access(&credential).await?;
-    access.connections = as_device(access.connections, device);
+    access.connections = as_device(access.connections, &key)?;
     dial(matches, access).await?.ok_or_else(no_servers)
 }
 
-/// The `--connect`, `--context` or local daemon connections, as [`connect_full`] dials them.
-fn full_entries(
-    config: &std::path::Path,
-    direct: Option<&str>,
-    context: Option<&str>,
-    device: Option<[u8; 32]>,
-) -> Result<SelectedConnections, ConnectError> {
-    let mut selected = crate::connect::resolve_connections(
-        config,
-        direct,
-        context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
-    )?;
-    selected.connections = as_device(selected.connections, device);
-    Ok(selected)
-}
-
-/// `connections`, each dialing as the Device holding `device` when there is one.
+/// `connections`, each Management Capability one dialing as the Device whose key is at `key`
+/// when there is one. SSH and the local socket never read the key.
 fn as_device(
-    connections: Vec<crate::context::Connection>,
-    device: Option<[u8; 32]>,
-) -> Vec<crate::context::Connection> {
-    match device {
+    connections: Vec<Connection>,
+    key: &std::path::Path,
+) -> Result<Vec<Connection>, super::device::key::KeyError> {
+    let management = |connection: &Connection| {
+        matches!(
+            connection.transport(),
+            crate::context::Transport::Management(_)
+        )
+    };
+    if !connections.iter().any(management) {
+        return Ok(connections);
+    }
+    Ok(match super::device::key::load(key)? {
         Some(secret) => connections
             .into_iter()
             .map(|connection| connection.with_device(secret))
             .collect(),
         None => connections,
-    }
+    })
 }
 
 /// Signed out with no context or local daemon: the fix is signing in, not a config file.
@@ -1906,33 +1905,23 @@ mod tests {
     }
 
     #[test]
-    fn full_scope_dials_a_context_capability_as_the_device() {
+    fn full_scope_dials_management_connections_as_the_device() {
         use std::os::unix::fs::PermissionsExt;
 
-        use crate::context::{Connection, Context, Transport};
+        use crate::context::Transport;
         use ployz_core::{ManagementCapability, ManagementIdentity};
 
         let dir = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let config = dir.path().join("config.yaml");
+        let key = dir.path().join("device.key");
         let operator = ManagementCapability::new(ManagementIdentity::from_bytes([1; 32]), [2; 32]);
         let ssh: Connection = "root@node-a".parse().unwrap();
-        let saved = Context {
-            connections: vec![
-                Connection::management(operator.to_secret_string()).unwrap(),
-                ssh.clone(),
-            ],
-        };
-        Config::new(
-            &config,
-            Some("first".into()),
-            BTreeMap::from([("first".into(), saved.clone())]),
-        )
-        .save()
-        .unwrap();
-        let dialed = |device| {
-            let selected = full_entries(&config, None, None, device).unwrap();
-            let [management, other] = selected.connections.as_slice() else {
+        let context = vec![
+            Connection::management(operator.to_secret_string()).unwrap(),
+            ssh.clone(),
+        ];
+        let dialed = |connections| {
+            let dialed = as_device(connections, &key).unwrap();
+            let [management, other] = dialed.as_slice() else {
                 panic!("the context's two connections");
             };
             let Transport::Management(capability) = management.transport() else {
@@ -1942,15 +1931,18 @@ mod tests {
             capability.to_secret_string()
         };
 
+        assert_eq!(dialed(context.clone()), operator.to_secret_string());
+        std::fs::write(&key, [3; 32]).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(
-            dialed(Some([3; 32])),
+            dialed(context.clone()),
             ManagementCapability::new(*operator.machine(), [3; 32]).to_secret_string()
         );
-        assert_eq!(dialed(None), operator.to_secret_string());
-        assert_eq!(
-            Config::load(&config).unwrap().contexts.get("first"),
-            Some(&saved)
-        );
+
+        std::fs::write(&key, b"broken").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(as_device(vec![ssh.clone()], &key).unwrap(), vec![ssh]);
+        assert!(as_device(context, &key).is_err());
     }
 
     #[test]
