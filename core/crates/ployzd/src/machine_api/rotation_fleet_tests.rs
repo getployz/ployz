@@ -2258,9 +2258,6 @@ fn held_creation_on_wire(
     Arc<Notify>,
     Arc<Notify>,
 ) {
-    let mut new = new_copy(key, spec, 1);
-    new.answer = AnswerWhen::Settled;
-    new.deployment_id = Some(run("run-a"));
     let reached = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let mut service = node.service.clone();
@@ -2269,7 +2266,19 @@ fn held_creation_on_wire(
         reached: Arc::clone(&reached),
         release: Arc::clone(&release),
     });
-    let creating = tokio::spawn(async move {
+    (creation_on_wire(service, key, spec), reached, release)
+}
+
+/// A Settled creation of `spec` under `key` sent to `service` over the wire.
+fn creation_on_wire(
+    service: MachineService,
+    key: &str,
+    spec: ResolvedServiceSpec,
+) -> tokio::task::JoinHandle<RpcResponse> {
+    let mut new = new_copy(key, spec, 1);
+    new.answer = AnswerWhen::Settled;
+    new.deployment_id = Some(run("run-a"));
+    tokio::spawn(async move {
         let want = ContainerWant::Running {
             container: RunTarget::New(new),
             rotation: RunRotation::Pending,
@@ -2282,8 +2291,23 @@ fn held_creation_on_wire(
             .into_inner()
             .decode_response()
             .unwrap()
-    });
-    (creating, reached, release)
+    })
+}
+
+/// A Leave on `node` held at its listing of the copies it will take. The returned
+/// barrier releases it; the Leave holds the admission turn throughout.
+async fn leave_held_at_listing(
+    node: &Node,
+) -> (
+    tokio::task::JoinHandle<Result<ployz_core::Left, LocalMachineError>>,
+    Arc<tokio::sync::Barrier>,
+) {
+    let listing = Arc::new(tokio::sync::Barrier::new(2));
+    *node.fake.listed_hold.lock().unwrap() = Some(Arc::clone(&listing));
+    let local = node.service.local.clone();
+    let leaving = tokio::spawn(async move { local.leave(ployz_core::LeaveRequest {}).await });
+    listing.wait().await;
+    (leaving, listing)
 }
 
 /// A Leave on `node`. This fleet has no volume plugin, so a Leave that stopped and
@@ -2368,12 +2392,12 @@ async fn a_creation_queued_behind_a_failed_leave_keeps_its_copy() {
     );
 }
 
-/// While a Leave is under way only new Container work is refused. A stop or remove
-/// of a copy the Leave already took runs as it would for any missing copy, so a
-/// deploy tearing down old copies on a removed Server never reports them left
-/// running.
+/// Container work runs while a Leave is under way, as on main. A stop or remove of
+/// a copy the Leave already took runs as it would for any missing copy, so a deploy
+/// tearing down old copies on a removed Server never reports them left running, and
+/// a creation makes its copy and answers it.
 #[tokio::test]
-async fn stop_and_remove_run_while_a_leave_is_under_way() {
+async fn stops_removes_and_creations_run_while_a_leave_is_under_way() {
     let fleet = Fleet::start().await;
     let node = fleet.node(0);
     let a = fleet.pending(0, "a", "api", 1).await;
@@ -2392,21 +2416,26 @@ async fn stop_and_remove_run_while_a_leave_is_under_way() {
 
     let mut new = new_copy("b", spec("api"), 1);
     new.answer = AnswerWhen::Settled;
-    let error = node
+    let reply = node
         .service
         .local
         .ensure_container(ContainerWant::Running {
             container: RunTarget::New(new),
             rotation: RunRotation::Pending,
         })
-        .await
-        .expect_err("new work waits for the Leave");
+        .await;
+    let reply = reply.unwrap_or_else(|error| panic!("a creation during a Leave runs: {error}"));
     assert!(
-        error
-            .to_string()
-            .contains("Server local is being removed from the Cluster"),
-        "{error}"
+        matches!(
+            reply,
+            EnsuredContainer::Ensured {
+                health: Some(HealthVerdict::Healthy),
+                ..
+            }
+        ),
+        "{reply:?}"
     );
+    assert!(node.running(present(&reply)));
 }
 
 /// A Leave that takes the copy while a deploy waits for it to settle: the creation
@@ -2498,12 +2527,8 @@ async fn a_docker_error_during_a_leave_keeps_its_answer_and_its_copy() {
     assert!(node.running(b));
 
     // The Leave lists its copies and is held there; its stop of B then fails.
-    let listing = Arc::new(tokio::sync::Barrier::new(2));
-    *node.fake.listed_hold.lock().unwrap() = Some(Arc::clone(&listing));
     node.fake.refuse_stop.store(true, Ordering::SeqCst);
-    let local = node.service.local.clone();
-    let leaving = tokio::spawn(async move { local.leave(ployz_core::LeaveRequest {}).await });
-    listing.wait().await;
+    let (leaving, listing) = leave_held_at_listing(node).await;
 
     node.fake
         .fail_inspect_once
@@ -2567,4 +2592,99 @@ async fn a_creation_queued_behind_a_failed_leave_answers_its_unhealthy_copy() {
         node.container(observed.container_id).is_some(),
         "the unhealthy copy stays until the deploy removes it"
     );
+}
+
+/// A creation that arrives while a Leave holds the admission turn waits for it and
+/// runs, as on main. When that Leave fails, the Server stays, so the creation makes
+/// its copy there and answers it. A refusal would answer a Conflict for a Server the
+/// deploy can still use (#2924).
+#[tokio::test]
+async fn a_creation_during_a_leave_that_fails_waits_and_completes() {
+    // No rescans: the Leave's own listing is the one the hold catches.
+    let fleet = Fleet::rescanning(Duration::from_secs(3600)).await;
+    let node = fleet.node(0);
+    let (leaving, listing) = leave_held_at_listing(node).await;
+
+    let creating = creation_on_wire(node.service.clone(), "a", spec("api"));
+    tokio::task::yield_now().await;
+    assert!(
+        !creating.is_finished(),
+        "a creation sent during a Leave waits for the Leave's turn"
+    );
+
+    listing.wait().await;
+    let left = leaving.await.unwrap();
+    assert!(left.is_err(), "{left:?}");
+    let reply = creating.await.unwrap();
+    if let RpcResponseBody::Error(error) = &reply.body {
+        panic!("a creation during a Leave that failed answers what it made: {error:?}");
+    }
+    let ensured = reply.decode::<op::EnsureContainer>().unwrap();
+    assert!(
+        matches!(
+            ensured,
+            EnsuredContainer::Ensured {
+                health: Some(HealthVerdict::Healthy),
+                ..
+            }
+        ),
+        "{ensured:?}"
+    );
+    assert!(node.running(present(&ensured)));
+}
+
+/// A resend of a creation whose reply was lost, arriving while a Leave is under way,
+/// gets main's answer: the copy its first attempt made, re-observed. A Conflict here
+/// would strand that copy when the Leave fails, since a deploy discards no slot after
+/// a Conflict (#2924).
+#[tokio::test]
+async fn a_resend_during_a_leave_re_observes_its_copy() {
+    // No rescans: the Leave's own listing is the one the hold catches.
+    let fleet = Fleet::rescanning(Duration::from_secs(3600)).await;
+    let node = fleet.node(0);
+    let api = spec("api");
+    let mut first = new_copy("b", api.clone(), 1);
+    first.answer = AnswerWhen::Settled;
+    first.deployment_id = Some(run("run-a"));
+    let reply = ensure(
+        node,
+        ContainerWant::Running {
+            container: RunTarget::New(first),
+            rotation: RunRotation::Pending,
+        },
+    )
+    .await;
+    let b = present(&reply);
+
+    // The Leave lists B and is held there; its stop of B then fails, so the Leave fails.
+    node.fake.refuse_stop.store(true, Ordering::SeqCst);
+    let (leaving, listing) = leave_held_at_listing(node).await;
+
+    let resending = creation_on_wire(node.service.clone(), "b", api);
+    listing.wait().await;
+    let left = leaving.await.unwrap();
+    assert!(left.is_err(), "{left:?}");
+    let reply = resending.await.unwrap();
+    if let RpcResponseBody::Error(error) = &reply.body {
+        panic!("a resend during a Leave re-observes its copy: {error:?}");
+    }
+    let ensured = reply.decode::<op::EnsureContainer>().unwrap();
+    assert_eq!(present(&ensured), b, "{ensured:?}");
+    assert!(
+        matches!(
+            ensured,
+            EnsuredContainer::Ensured {
+                health: Some(HealthVerdict::Healthy),
+                ..
+            }
+        ),
+        "{ensured:?}"
+    );
+    assert!(
+        node.running(b),
+        "the copy the Leave failed to stop keeps running"
+    );
+    assert_eq!(node.only_copy(), b, "the resend made no second copy");
+    node.fake.refuse_stop.store(false, Ordering::SeqCst);
+    takes_creations_again(node, "a failed Leave").await;
 }
