@@ -1111,14 +1111,22 @@ fn a_branch_whose_name_makes_a_generated_hostname_too_long_is_refused() {
         fix: None,
     };
 
-    let refused = store
-        .write_trusted(&who, &branch("fixit"), &trusted)
-        .unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
-    assert!(refused.message.contains("253"), "{refused:?}");
-    assert_eq!(refused.details["hostname"], format!("web-fixit.{cluster}"));
+    admit(&store, &who, 1, &trusted).unwrap();
+    apply(&store, 1);
 
-    store.write_trusted(&who, &branch("fix"), &trusted).unwrap();
+    // Without Cloud's evidence, the Cluster Domain the Parent last deployed under.
+    for refused in [
+        store
+            .write_trusted(&who, &branch("fixit"), &trusted)
+            .unwrap_err(),
+        store.write(&who, &branch("fixit")).unwrap_err(),
+    ] {
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+        assert!(refused.message.contains("253"), "{refused:?}");
+        assert_eq!(refused.details["hostname"], format!("web-fixit.{cluster}"));
+    }
+
+    store.write(&who, &branch("fix")).unwrap();
 }
 
 #[test]
