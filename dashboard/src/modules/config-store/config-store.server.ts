@@ -170,6 +170,8 @@ function statusFor(code: string) {
   }
 }
 
+export const refusedPublicly = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect;
+
 /** A Cloud command's refusal also names its `field`, what fits there and whether it wrote, as Store tools refuse. */
 export function refusal(error: StoreRefusal | CommandRefusal) {
   const { code, message, details } = error;

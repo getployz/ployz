@@ -3,6 +3,7 @@ import { ConfigProvider, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { refusedPublicly } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
@@ -17,6 +18,7 @@ import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volum
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+import { encodePublicError } from "#/server/public-error";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
@@ -47,6 +49,8 @@ describe("volume placement", () => {
   let inFlight: boolean;
   let status: string;
   let unreadable: boolean;
+  // The Store refuses reading the Environment's Volumes with this code: removed, say, since the page loaded.
+  let refusing: string | null;
   let deleting: boolean;
   // Runs once, as the Store answers `query`: a Deploy admitted while the edit is between its check and its write.
   let between: { readonly query: string; readonly run: () => Promise<void> } | null;
@@ -66,6 +70,7 @@ describe("volume placement", () => {
             await admit();
           }
           if (query.query === "deployment" && unreadable) throw new RpcError({ code: "unavailable", message: "Store down", details: null });
+          if (query.query === "volumes" && refusing !== null) throw new RpcError({ code: refusing, message: "Environment shop/production is gone", details: null });
           if (query.query === "namespaces") {
             return { namespaces: ["production", "staging"].map((name) => ({ namespace: `shop-${name}`, project: "shop", environment: name })) };
           }
@@ -94,6 +99,7 @@ describe("volume placement", () => {
     inFlight = true;
     status = "running";
     unreadable = false;
+    refusing = null;
     deleting = false;
     between = null;
     await harness.pool.query(`
@@ -152,6 +158,18 @@ describe("volume placement", () => {
     expect(await run(discardPlacement(organizationId, null, volumeId, environment)))
       .toMatchObject({ ok: false, refusal: { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { primary: web("web-2") }, deploymentId: "dep-1" }]);
+  });
+
+  it("answers a Store refusal of staging with its own status, not a 500", async () => {
+    const answered = (code: string) => {
+      refusing = code;
+      return run(stagePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] }).pipe(refusedPublicly, Effect.flip))
+        .then(encodePublicError);
+    };
+    expect(await answered("not_found")).toMatchObject({ code: "NOT_FOUND" });
+    expect(await answered("conflict")).toMatchObject({ code: "CONFLICT", message: "Environment shop/production is gone" });
+    expect(await answered("invalid_argument")).toMatchObject({ code: "VALIDATION_FAILED" });
+    expect(await answered("internal")).toMatchObject({ code: "INTERNAL" });
   });
 
   it("refuses edits and Discard when the Store can't say whether the Deploy still runs", async () => {
