@@ -13,7 +13,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
-use ployz::sealing::testing::Keypair;
 use ployz_core::config::{ClientSealedValue, ServiceGitAccess};
 use ployz_core::{RpcError, SealedIdentity};
 use ployz_store::{
@@ -26,6 +25,10 @@ use serde_json::{Value, json};
 #[allow(dead_code, reason = "This file's Engine answers only the Server list.")]
 #[path = "connect/support.rs"]
 mod engine;
+#[path = "support/keypair.rs"]
+mod keypair;
+
+use keypair::Keypair;
 
 /// Where the CLI's Config Store is.
 enum Target {
