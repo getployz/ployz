@@ -1028,7 +1028,6 @@ async fn tunnel_contract() {
         }
     }
 
-    // Removing the Device ends the open tunnel and refuses new ones as cleared.
     local
         .set_device(SetDeviceRequest::Remove { code: key.code() })
         .await

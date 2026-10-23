@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 
-/** A Device key as it travels: its 32 bytes as lowercase hex. */
 export const DEVICE_KEY = /^[0-9a-f]{64}$/;
 
 /**

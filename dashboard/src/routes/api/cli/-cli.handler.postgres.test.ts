@@ -2807,7 +2807,6 @@ it.live(
   60_000,
 );
 
-/** The contract's vector: this key's code is `mmg42klgyq`. */
 const deviceKey = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
 it.live(
@@ -2826,7 +2825,6 @@ it.live(
         const first = Date.parse(requested.json.expires_at ?? assert.fail("no expiry"));
         assert.closeTo(first - Date.now(), 24 * 60 * 60 * 1000, 60_000);
 
-        // Reading leaves it, and a code as a person types it reads the same row.
         const read = yield* cli("GET", "device-requests/mmg42klgyq", alice);
         assert.strictEqual(read.status, 200, read.text);
         assert.deepStrictEqual(JSON.parse(read.text), { code: "mmg42klgyq", key: deviceKey, expires_at: requested.json.expires_at });
@@ -2836,7 +2834,6 @@ it.live(
         assert.strictEqual(again.status, 200, again.text);
         assert.isAbove(Date.parse(again.json.expires_at ?? assert.fail("no expiry")), first);
 
-        // Another key at the code is refused while it lives, and takes the code once it has expired.
         yield* drizzle.update(deviceRequest).set({ key: "f".repeat(64) }).where(eq(deviceRequest.organizationId, alice.organization.id));
         const taken = yield* cli("POST", "device-requests", alice, { key: deviceKey });
         assert.strictEqual(taken.status, 409);
@@ -2848,7 +2845,6 @@ it.live(
         assert.strictEqual((yield* cli("POST", "device-requests", alice, { key: deviceKey })).status, 200);
         assert.strictEqual(JSON.parse((yield* cli("GET", "device-requests/mmg42klgyq", alice)).text).key, deviceKey);
 
-        // An unknown code, or one only another Organization holds, is missing.
         const unknown = yield* cli("GET", "device-requests/aaaaaaaaaa", alice);
         assert.deepStrictEqual([unknown.status, unknown.json.error?.code], [404, "not_found"]);
         const elsewhere = yield* cli("GET", "device-requests/mmg42klgyq", bob);

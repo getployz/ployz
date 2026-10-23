@@ -177,8 +177,6 @@ async fn approve_with<T>(
     set(SetDeviceRequest::Approve { key: pending.key }).await
 }
 
-/// Send `request` to every Machine, the one this client enters through last, so removing
-/// the Device it dials with can't cut the rest off.
 async fn set_everywhere(client: &mut Client, request: SetDeviceRequest) -> Result<Settled, Error> {
     let reach = Reach::of(client).await?;
     let (answers, gaps) = reach
@@ -232,7 +230,6 @@ async fn devices_on(
     ))
 }
 
-/// A Machine's refusal of Cloud's own capability for a Full verb or a tunnel.
 pub(super) fn needs_device(error: &str) -> bool {
     error.contains("need Full access") || error.contains("needs Full access")
 }
@@ -274,7 +271,7 @@ mod compat {
 struct Reach {
     asked: Vec<MachineId>,
     silent: Vec<MachineId>,
-    last: Option<MachineId>,
+    entry: Option<MachineId>,
     names: BTreeMap<MachineId, MachineName>,
 }
 
@@ -287,7 +284,7 @@ impl Reach {
         Ok(Self {
             asked: asked.iter().map(|observed| observed.machine.id).collect(),
             silent: silent.iter().map(|observed| observed.machine.id).collect(),
-            last: client.entry_machine(),
+            entry: client.entry_machine(),
             names: machines
                 .iter()
                 .map(|observed| (observed.machine.id, observed.machine.name.clone()))
@@ -302,9 +299,9 @@ impl Reach {
         F: Fn(MachineId) -> Fut,
         Fut: Future<Output = Result<Option<T>, RpcError>> + Send + 'static,
     {
-        let last = self.last.filter(|entry| self.asked.contains(entry));
+        let entry = self.entry.filter(|id| self.asked.contains(id));
         let mut tasks = JoinSet::new();
-        for &machine_id in self.asked.iter().filter(|id| Some(**id) != last) {
+        for &machine_id in self.asked.iter().filter(|id| Some(**id) != entry) {
             let answer = call(machine_id);
             tasks.spawn(async move { (machine_id, answer.await) });
         }
@@ -320,7 +317,7 @@ impl Reach {
             let (machine_id, answer) = joined.expect("a Device fan-out task does not panic");
             sort(machine_id, answer);
         }
-        if let Some(machine_id) = last {
+        if let Some(machine_id) = entry {
             sort(machine_id, call(machine_id).await);
         }
         answers
