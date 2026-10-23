@@ -75,10 +75,10 @@ Services or their dependencies, or to observed work the deploy affected. An Entr
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
 
-When the CLI says `Server machine-2: deployment observations are incomplete`, it does not
-repeat a container or volume omission for that same Server. `--json` keeps every warning,
-including the individual omissions. A project without volumes can have an incomplete
-Server observation too.
+When the CLI says `Server machine-2: deployment observations are incomplete`, it includes
+distinct failure causes in that Server's line and does not repeat its container or volume
+omissions. The Server's observation can be incomplete even if the project has no volumes.
+`--json` keeps every warning, including the individual omissions and failures.
 
 If Cloud stops answering while the CLI follows a Deployment, the command exits 1 with
 `Stopped following Deployment #N; it keeps running in Ployz Cloud.` and an `inspect:` line

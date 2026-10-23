@@ -329,11 +329,18 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             let mut session = match open_exec(client, &service, container.as_ref(), options).await {
                 Ok(session) => session,
                 Err(error) => {
-                    if let OperatorError::NotRunningOnAnswered { gaps, names, .. } = &error {
+                    if let OperatorError::NotRunningOnAnswered {
+                        service,
+                        gaps,
+                        names,
+                    } = &error
+                    {
                         let gaps = crate::ui::Gaps::of(gaps)
                             .named(names.iter().map(|(id, name)| (*id, name)));
                         return crate::ui::finish_fanout("container", &None::<()>, &gaps, || {
-                            crate::ui::note(error.to_string());
+                            crate::ui::note(format_args!(
+                                "No running container of {service:?} on the Servers that answered."
+                            ));
                         });
                     }
                     return Err(error.into());

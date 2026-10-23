@@ -668,7 +668,6 @@ fn unqualified_observation_notice_does_not_repeat_a_named_server_gap() {
             initial.clone(),
             vec![(1, Message::Finish(initial, Disposition::Settled))],
         );
-        eprintln!("{text}");
         assert_eq!(
             text.matches("deployment observations are incomplete")
                 .count(),
@@ -752,6 +751,23 @@ fn observation_cause_waits_for_a_later_named_server_gap() {
     assert_eq!(text.matches("volume query timed out").count(), 1, "{text}");
     assert!(text.contains("Server machine-2"), "{text}");
     assert!(!text.contains(machine_id.as_str()), "{text}");
+}
+
+#[test]
+fn observation_without_a_named_gap_still_appears_at_settle() {
+    use ployz_core::ObservationKind;
+    let mut initial = frame(State::Completed);
+    initial.notices.push(DeployWarning::ObservationFailed {
+        kind: ObservationKind::Volume,
+        machine_id: MachineId::random(),
+        message: "volume query timed out".into(),
+        gap: None,
+    });
+    let text = plain(
+        initial.clone(),
+        vec![(1, Message::Finish(initial, Disposition::Settled))],
+    );
+    assert_eq!(text.matches("volume query timed out").count(), 1, "{text}");
 }
 
 #[test]

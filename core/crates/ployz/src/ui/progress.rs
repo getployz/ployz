@@ -498,7 +498,7 @@ fn drive(
     let interval = if interactive { REDRAW } else { HEARTBEAT };
     let mut deadline = inbox.now() + interval;
     if !interactive {
-        let _ = changes(writer, None, &frame, color);
+        let _ = changes(writer, None, &frame, color, false);
     }
     backend.draw(&frame, tick, color);
     let mut pending = None;
@@ -515,7 +515,7 @@ fn drive(
                 let changed = !frame.same_evidence(&next);
                 if changed {
                     if !interactive {
-                        let _ = changes(writer, Some(&frame), &next, color);
+                        let _ = changes(writer, Some(&frame), &next, color, false);
                     }
                     if frame.run != next.run {
                         backend.clear();
@@ -815,7 +815,7 @@ pub(crate) fn live_lines(
     height: usize,
     color: bool,
 ) -> Vec<String> {
-    let notes = notices(frame);
+    let notes = notices(frame, false);
     // Notices give way to the rows on a terminal too short for both.
     if notes.is_empty() || height < notes.len() + 3 {
         return row_lines(frame, tick, width, height, color);
@@ -901,6 +901,7 @@ fn changes(
     previous: Option<&Frame>,
     frame: &Frame,
     color: bool,
+    settled: bool,
 ) -> io::Result<()> {
     let previous = previous.filter(|previous| previous.run == frame.run);
     if previous.is_none_or(|previous| previous.title != frame.title) {
@@ -952,8 +953,10 @@ fn changes(
             writeln!(writer, "  {}: {text}", label(&row.subject, frame))?;
         }
     }
-    let previous_notices = previous.map(notices).unwrap_or_default();
-    for notice in notices(frame) {
+    let previous_notices = previous
+        .map(|frame| notices(frame, false))
+        .unwrap_or_default();
+    for notice in notices(frame, settled) {
         if !previous_notices.contains(&notice) {
             writeln!(
                 writer,
@@ -965,7 +968,7 @@ fn changes(
     writer.flush()
 }
 
-fn notices(frame: &Frame) -> Vec<String> {
+fn notices(frame: &Frame, settled: bool) -> Vec<String> {
     let mut seen = BTreeSet::new();
     frame
         .notices
@@ -984,7 +987,13 @@ fn notices(frame: &Frame) -> Vec<String> {
                     .find(|(id, _)| id == machine_id)
             });
             let Some((id, gap)) = observation else {
-                return Some(warning.to_string());
+                return (settled
+                    || !matches!(
+                        warning,
+                        DeployWarning::ObservationFailed { .. }
+                            | DeployWarning::ObservationOmitted { .. }
+                    ))
+                .then(|| warning.to_string());
             };
             if !seen.insert(id) {
                 return None;
@@ -1083,11 +1092,11 @@ fn finish(
         ) {
             writeln!(writer, "{}", paint(&text, tone, color))?;
         }
-        for notice in notices(frame) {
+        for notice in notices(frame, true) {
             writeln!(writer, "! {notice}")?;
         }
     } else {
-        changes(writer, Some(previous), frame, color)?;
+        changes(writer, Some(previous), frame, color, true)?;
     }
     let mut counts = Vec::new();
     let gaps = frame
@@ -1177,7 +1186,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) fn settled_text(frame: &Frame) -> String {
     let mut output = Vec::new();
-    changes(&mut output, None, frame, false).unwrap();
+    changes(&mut output, None, frame, false, false).unwrap();
     finish(
         &mut output,
         frame,
