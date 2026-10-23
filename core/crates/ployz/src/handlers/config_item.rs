@@ -171,8 +171,7 @@ pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
     let file = file_name(matches)?;
     let content = String::from_utf8(bytes).map_err(|_| {
         Error::usage(format!(
-            "{}: a Config file is UTF-8 text; this one is binary",
-            crate::ui::escaped(&file.to_string())
+            "{file}: a Config file is UTF-8 text; this one is binary"
         ))
     })?;
     let mode = if matches.get_flag("executable") {

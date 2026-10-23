@@ -1080,6 +1080,14 @@ fn a_bidi_override_in_a_message_or_config_file_name_prints_escaped() {
         &store,
         &["deploy", "--skip-deploy", "--message", "fix \u{202E}evil"],
     );
+    std::fs::write(file.path(), "changed").unwrap();
+    ok(
+        &store,
+        &["config", "put", "app", "a\u{202E}b.txt", "--from", from],
+    );
+    ok(&store, &["deploy", "--skip-deploy"]);
+    let saved = ok(&store, &["history"]);
+    assert!(saved.to_string().contains("fix \u{202E}evil"), "{saved}");
     for shown in [
         put,
         human(&["config", "ls"]),
@@ -1089,7 +1097,9 @@ fn a_bidi_override_in_a_message_or_config_file_name_prints_escaped() {
         assert!(!shown.contains('\u{202E}'), "{shown}");
     }
     assert!(human(&["config", "ls"]).contains(r"a\u{202e}b.txt"));
-    assert!(human(&["history"]).contains(r"fix \u{202e}evil"));
+    let history = human(&["history"]);
+    assert!(history.contains(r"fix \u{202e}evil"), "{history}");
+    assert!(history.contains(r"a\u{202e}b.txt"), "{history}");
 }
 
 #[test]
