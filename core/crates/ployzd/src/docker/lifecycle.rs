@@ -134,6 +134,10 @@ impl ContainerRuntime {
             },
             "create container"
         );
+        // Before any Volume is made, so a bridge without IPv6 refuses with nothing to undo.
+        if spec.container.ipv6 && !self.docker.bridge_takes_ipv6().await.map_err(E::from)? {
+            return Err(E::from(Error::BridgeIpv6Unavailable));
+        }
         require_eligible(
             self.admit_and_ensure_volumes(machine, namespace, spec, storage)
                 .await
@@ -174,9 +178,6 @@ impl ContainerRuntime {
             creation_key.map(|key| creation_name(&machine.id, namespace, &spec.name, kind, key));
         if create::holds_sealed(kind, spec) {
             self.log_store.admit_sealed().await?;
-        }
-        if spec.container.ipv6 && !self.docker.bridge_takes_ipv6().await? {
-            return Err(Error::BridgeIpv6Unavailable);
         }
         let mut body = create::container_create_body(
             &machine.id,

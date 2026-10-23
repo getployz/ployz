@@ -1,8 +1,10 @@
 use std::sync::atomic::Ordering;
 
 use ployz_core::{
-    BRIDGE_IPV6_CAPABILITY, MachineId, MachineObservation, MembershipObservation, RpcErrorCode,
+    BRIDGE_IPV6_CAPABILITY, MachineId, MachineObservation, MachineTarget, MembershipObservation,
+    RpcErrorCode, RpcRequestBody,
 };
+use serde_json::json;
 
 use crate::global_fixtures::machine;
 use crate::sealed_compat::tests::{Fleet, listing, spec, want};
@@ -71,4 +73,44 @@ async fn a_spec_that_takes_ipv6_is_refused_when_the_target_is_not_listed() {
         error.message
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn a_volume_move_creates_a_copy_that_takes_ipv6_only_where_it_is_advertised() {
+    let target = MachineTarget::from(&MachineId::parse("a".repeat(32)).unwrap());
+    for (claims, ipv6, admitted) in [
+        (&[BRIDGE_IPV6_CAPABILITY][..], true, true),
+        (&[][..], true, false),
+        (&[][..], false, true),
+    ] {
+        let mut a = machine('a', "machine-a");
+        a.runtime.capabilities = claims.iter().copied().map(String::from).collect();
+        let Fleet { client, server, .. } =
+            listing(vec![MachineObservation::new(a, MembershipObservation::Up)]).await;
+        let mut spec = spec(false);
+        spec.container.ipv6 = ipv6;
+        let body = RpcRequestBody::SetVolumeCopy(
+            serde_json::from_value(json!({
+                "name": "app_data", "expect": {"kind": "writer", "epoch": 1},
+                "want": {"kind": "writer", "at": "7", "epoch": 2, "start": {
+                    "kind": "create", "namespace": "app", "resolved_spec": spec,
+                    "creation_key": "move-1", "gen": 1, "rotation": "pending"}}
+            }))
+            .unwrap(),
+        );
+
+        let result = super::admit_switch(&client, &target, &body).await;
+
+        if admitted {
+            result.unwrap();
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, RpcErrorCode::Unsupported);
+            assert_eq!(
+                error.details,
+                json!({ "capability": BRIDGE_IPV6_CAPABILITY })
+            );
+        }
+        server.abort();
+    }
 }

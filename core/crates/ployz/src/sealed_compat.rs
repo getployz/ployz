@@ -64,7 +64,7 @@ pub(crate) async fn admit(
     )))
 }
 
-pub(crate) fn unsupported(message: String) -> RpcError {
+fn unsupported(message: String) -> RpcError {
     RpcError {
         code: RpcErrorCode::Unsupported,
         message,

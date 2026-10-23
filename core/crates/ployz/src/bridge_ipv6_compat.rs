@@ -2,12 +2,11 @@
 //! Delete once no supported release lacks the capability.
 
 use ployz_core::{
-    BRIDGE_IPV6_CAPABILITY, ContainerWant, MachineTarget, RpcError, RunTarget,
-    machine_matches_target,
+    BRIDGE_IPV6_CAPABILITY, ContainerWant, MachineTarget, ResolvedServiceSpec, RpcError,
+    RpcErrorCode, RpcRequestBody, RunTarget, Start, WantedCopy, machine_matches_target,
 };
 
 use crate::cluster::Client;
-use crate::sealed_compat::unsupported;
 
 /// Refuses a new Container whose spec takes IPv6 unless its target advertises
 /// that it gives it.
@@ -23,11 +22,38 @@ pub(crate) async fn admit(
     else {
         return Ok(());
     };
-    if !new.resolved_spec.container.ipv6 {
+    admit_spec(client, target, &new.resolved_spec).await
+}
+
+/// [`admit`] for a Volume Move's destination copy, which `SetVolumeCopy` creates.
+pub(crate) async fn admit_switch(
+    client: &Client,
+    target: &MachineTarget,
+    body: &RpcRequestBody,
+) -> Result<(), RpcError> {
+    let RpcRequestBody::SetVolumeCopy(request) = body else {
+        return Ok(());
+    };
+    let WantedCopy::Writer {
+        start: Some(Start::Create { resolved_spec, .. }),
+        ..
+    } = &request.want
+    else {
+        return Ok(());
+    };
+    admit_spec(client, target, resolved_spec).await
+}
+
+async fn admit_spec(
+    client: &Client,
+    target: &MachineTarget,
+    spec: &ResolvedServiceSpec,
+) -> Result<(), RpcError> {
+    if !spec.container.ipv6 {
         return Ok(());
     }
     let machines = client.clone().machines().await.map_err(RpcError::from)?;
-    match machines
+    let message = match machines
         .iter()
         .find(|observation| machine_matches_target(&observation.machine, target))
     {
@@ -38,16 +64,22 @@ pub(crate) async fn admit(
                 .capabilities
                 .contains(BRIDGE_IPV6_CAPABILITY) =>
         {
-            Ok(())
+            return Ok(());
         }
-        Some(observation) => Err(unsupported(format!(
+        Some(observation) => format!(
             "{} runs a ployzd that can't give a Service IPv6 on the ployz bridge; upgrade it before deploying a Service that takes IPv6",
             observation.machine.name
-        ))),
-        None => Err(unsupported(format!(
+        ),
+        None => format!(
             "{target} shows no evidence it can give a Service IPv6; refusing to deploy it there"
-        ))),
-    }
+        ),
+    };
+    Err(RpcError {
+        code: RpcErrorCode::Unsupported,
+        message,
+        details: serde_json::json!({ "capability": BRIDGE_IPV6_CAPABILITY }),
+        cause: Vec::new(),
+    })
 }
 
 #[cfg(test)]

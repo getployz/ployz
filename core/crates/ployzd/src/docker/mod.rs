@@ -1572,7 +1572,7 @@ pub enum Error {
     MissingPreDeployHook,
     /// The spec takes IPv6, but this Machine's ployz bridge is IPv4-only.
     #[error(
-        "this Server's ployz bridge has no IPv6, so it can't give the Service an IPv6 address; the bridge stays IPv4-only when the host has no IPv6, an interface accepts router advertisements, or Docker's ip6tables is off"
+        "this Server's ployz bridge has no IPv6, so it can't give the Service an IPv6 address; the bridge stays IPv4-only when the host has no IPv6, an interface accepts router advertisements, Docker's ip6tables is off, or the IPv6 mesh fence is missing"
     )]
     BridgeIpv6Unavailable,
     #[error("container duration exceeds Docker's range")]
