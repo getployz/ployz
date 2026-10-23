@@ -528,7 +528,7 @@ mod tests {
             )
         );
 
-        // As a daemon refuses today: no next step, and a message that ends its own sentence.
+        // A refusal with no next step, whose message already ends its sentence.
         let status = ployz_core::rpc::caused_status(
             tonic::Code::PermissionDenied,
             &std::io::Error::other("Only Cloud manages management slots."),
