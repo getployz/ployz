@@ -2135,18 +2135,14 @@ fn sealing_targets_resolve_each_row_as_the_sync_does_to_the_receiver_s_own_servi
         let targets = sync_targets(&store, &who, &review.version, &[asked]).unwrap();
         let SealingTargetsView::Sync {
             organization,
-            from,
             into,
-            version,
             values,
         } = targets
         else {
             panic!("{targets:?}");
         };
         assert_eq!(organization, "org");
-        assert_eq!(from.name.as_str(), "fix-web");
         assert_eq!(into.name.as_str(), "production");
-        assert_eq!(version, review.version);
         assert_eq!(values.len(), 1, "{values:?}");
         assert_eq!(values[0].asked, asked.into());
         assert_eq!(values[0].row, api_key);
