@@ -543,12 +543,16 @@ fn too_long(key: &str, value: &str) -> bool {
     key.len() + value.len() + 2 > MAX_ENV_STRING
 }
 
-/// The most Linux passes a program for its variables and arguments together: a quarter
-/// of the default 8 MiB stack. Each `KEY=value` string counts with its NUL and an
-/// 8-byte pointer to it. A Container given more never starts.
-const MAX_ENV_TOTAL: usize = 2 * 1024 * 1024;
+/// The most Linux passes a program for its variables and arguments together with
+/// Docker's default 8 MiB stack: a quarter of it. Each `KEY=value` string counts with
+/// its NUL and an 8-byte pointer to it.
+const DEFAULT_ENV_TOTAL: usize = 2 * 1024 * 1024;
 
-/// What `KEY=value` takes of [`MAX_ENV_TOTAL`].
+/// The most Linux passes whatever the stack limit: three quarters of `_STK_LIM`.
+/// A Container given more never starts on any Server.
+const MAX_ENV_TOTAL: usize = 6 * 1024 * 1024;
+
+/// What `KEY=value` takes of a program's environment.
 const fn env_bytes(key: usize, value: usize) -> usize {
     key + 1 + value + 1 + 8
 }
@@ -561,7 +565,7 @@ fn too_big(service: &str, bytes: usize) -> Result<(), RpcError> {
     }
     Err(error::invalid(
         format!(
-            "{service}: too big for a Container's environment: its variables take {} KiB, and Linux passes at most {} KiB of variables and arguments together",
+            "{service}: too big for a Container's environment: its variables take {} KiB, and Linux passes at most {} KiB of variables and arguments together, whatever the stack limit",
             bytes.div_ceil(1024),
             MAX_ENV_TOTAL / 1024
         ),
@@ -569,33 +573,48 @@ fn too_big(service: &str, bytes: usize) -> Result<(), RpcError> {
     ))
 }
 
-/// Refuse `service` holding more variable text than a Container's environment takes.
-/// Counts only what Working State knows: literal values and a template's text, not
-/// secrets or what references resolve to, which deploy checks.
-pub(crate) fn refuse_too_big(
+/// Refuse `service` holding more literal variable text than any Container's
+/// environment takes, and note when it holds more than Docker's default stack lets
+/// Linux pass. Counts only literal values, which always reach the Container whole;
+/// what templates, references and secrets resolve to is judged at deploy.
+pub(crate) fn environment_note(
     environment: &Environment,
     service: &ServiceName,
-) -> Result<(), RpcError> {
+) -> Result<Option<String>, RpcError> {
     let bytes = environment
         .service(service)?
         .variables
         .iter()
-        .map(|variable| {
-            let known = match &variable.value {
-                SavedVariableValue::Literal { value } => value.len(),
-                SavedVariableValue::Template { parts } => parts
-                    .iter()
-                    .map(|part| match part {
-                        ValuePart::Text { value } => value.len(),
-                        ValuePart::Ref { .. } => 0,
-                    })
-                    .sum(),
-                SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue => 0,
-            };
-            env_bytes(variable.key.len(), known)
+        .filter_map(|variable| match &variable.value {
+            SavedVariableValue::Literal { value } => {
+                Some(env_bytes(variable.key.len(), value.len()))
+            }
+            SavedVariableValue::Template { .. }
+            | SavedVariableValue::Secret { .. }
+            | SavedVariableValue::SecretWithoutValue => None,
         })
         .sum();
-    too_big(service.as_str(), bytes)
+    too_big(service.as_str(), bytes)?;
+    Ok((bytes > DEFAULT_ENV_TOTAL).then(|| {
+        format!(
+            "{service}'s variables take {} KiB. With Docker's default 8 MiB stack, Linux passes a Container at most {} KiB of variables and arguments, so it won't start unless the Server raises that limit",
+            bytes.div_ceil(1024),
+            DEFAULT_ENV_TOTAL / 1024
+        )
+    }))
+}
+
+/// Refuse resolved environment `env` of `service` when no Container could take it.
+pub(crate) fn refuse_too_big(
+    service: &str,
+    env: &BTreeMap<String, String>,
+) -> Result<(), RpcError> {
+    too_big(
+        service,
+        env.iter()
+            .map(|(key, value)| env_bytes(key.len(), value.len()))
+            .sum(),
+    )
 }
 
 /// Plain and secret values must survive the container's environment unchanged.
@@ -890,12 +909,6 @@ pub(crate) fn resolve(
                 env.insert(key.clone(), value);
             }
         }
-        too_big(
-            config.settings.private_dns.as_str(),
-            env.iter()
-                .map(|(key, value)| env_bytes(key.len(), value.len()))
-                .sum(),
-        )?;
         if !not_set.is_empty() {
             resolved.not_set.insert(node.node_id.clone(), not_set);
         }

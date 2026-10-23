@@ -227,61 +227,100 @@ fn a_value_too_long_for_the_environment_is_refused_when_set() {
     }
 }
 
-/// Linux passes a program its variables and arguments together in at most 2 MiB: each
-/// `KEY=value` string with its NUL, and an 8-byte pointer to it.
+/// What `KEY=value` takes of a program's environment: the string with its NUL, and
+/// an 8-byte pointer to it.
 fn env_bytes(keys: impl Iterator<Item = String>, value: usize) -> usize {
     keys.map(|key| key.len() + 1 + value + 1 + 8).sum()
 }
 
+fn too_big(service: &str, kib: usize) -> String {
+    format!(
+        "{service}: too big for a Container's environment: its variables take {kib} KiB, and Linux passes at most 6144 KiB of variables and arguments together, whatever the stack limit"
+    )
+}
+
 #[test]
-fn an_environment_too_big_for_a_container_is_refused_when_set() {
+fn an_environment_no_container_takes_is_refused_when_set() {
     let store = backend::open();
     shop(&store);
-    let value = "x".repeat(600);
-    let paths: Vec<String> = (0..4000).map(|n| format!("web.env.V{n}")).collect();
+    let big = "x".repeat(64 * 1024);
+    let paths: Vec<String> = (0..100).map(|n| format!("web.env.V{n}")).collect();
     let changes: Vec<(&str, Value)> = paths
         .iter()
-        .map(|path| (path.as_str(), json!(value)))
+        .map(|path| (path.as_str(), json!(big)))
         .collect();
     let before = get(&store, None);
     let error = set(&store, &changes).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    let kib = env_bytes((0..4000).map(|n| format!("V{n}")), 600).div_ceil(1024);
-    assert_eq!(
-        error.message,
-        format!(
-            "web: too big for a Container's environment: its variables take {kib} KiB, and Linux passes at most 2048 KiB of variables and arguments together"
-        )
-    );
+    let kib = env_bytes((0..100).map(|n| format!("V{n}")), 64 * 1024).div_ceil(1024);
+    assert_eq!(error.message, too_big("web", kib));
     assert_eq!(get(&store, None), before);
 
+    // Past what Docker's default stack lets Linux pass, a set lands with a note.
+    let edited = set(&store, &changes[..40]).unwrap();
+    let kib = env_bytes((0..40).map(|n| format!("V{n}")), 64 * 1024).div_ceil(1024);
+    assert_eq!(
+        edited
+            .notes
+            .iter()
+            .map(|noted| noted.note.as_str())
+            .collect::<Vec<_>>(),
+        [format!(
+            "web's variables take {kib} KiB. With Docker's default 8 MiB stack, Linux passes a Container at most 2048 KiB of variables and arguments, so it won't start unless the Server raises that limit"
+        )]
+    );
+
     // What fits is judged where the whole edit leaves it.
-    set(&store, &changes[..3000]).unwrap();
+    set(&store, &changes[..95]).unwrap();
     let mut swap = vec![(changes[0].0, json!(""))];
-    swap.extend(changes[3000..3001].iter().cloned());
+    swap.extend(changes[95..96].iter().cloned());
     set(&store, &swap).unwrap();
+
+    // A template counts only at deploy: a broken reference leaves its variable out.
+    set(
+        &store,
+        &[(
+            "web.env.T",
+            json!(format!("{}${{{{ MISSING }}}}", "x".repeat(90 * 1024))),
+        )],
+    )
+    .unwrap();
 }
 
 #[test]
-fn references_that_resolve_too_big_for_a_container_refuse_the_deploy() {
+fn references_that_resolve_past_any_container_refuse_only_a_deploy_that_starts_them() {
     let store = backend::open();
     shop(&store);
-    let paths: Vec<String> = (0..25).map(|n| format!("web.env.R{n}")).collect();
+    let paths: Vec<String> = (0..65).map(|n| format!("web.env.R{n}")).collect();
     let mut changes: Vec<(&str, Value)> = paths
         .iter()
         .map(|path| (path.as_str(), json!("${{ api.HALF }}")))
         .collect();
     changes.push(("api.env.HALF", json!("x".repeat(100 * 1024))));
-    set(&store, &changes).unwrap();
+    let edited = set(&store, &changes).unwrap();
+    assert!(edited.notes.is_empty(), "{:?}", edited.notes);
     let error = admit(&store, 1).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    let kib = env_bytes((0..25).map(|n| format!("R{n}")), 100 * 1024).div_ceil(1024);
-    assert_eq!(
-        error.message,
-        format!(
-            "web: too big for a Container's environment: its variables take {kib} KiB, and Linux passes at most 2048 KiB of variables and arguments together"
+    let kib = env_bytes((0..65).map(|n| format!("R{n}")), 100 * 1024).div_ceil(1024);
+    assert_eq!(error.message, too_big("web", kib));
+
+    // A Deployment of api alone starts nothing web holds.
+    store
+        .write_trusted(
+            &who(),
+            &Admit::Deploy(Deploy {
+                id: DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap(),
+                environment: EnvironmentRef::default(),
+                services: vec![ServiceName::parse("api").unwrap()],
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+            }),
+            &ployz_store::Trusted::default(),
         )
-    );
+        .unwrap();
 }
 
 #[test]

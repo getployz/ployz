@@ -217,10 +217,16 @@ pub(crate) fn edit(
     for (service, volume) in &mounted {
         crate::volume::refuse_shared_path(&editing.environment, service, volume)?;
     }
-    for service in &grown {
-        variables::refuse_too_big(&editing.environment, service)?;
-    }
     let mut notes = Vec::<SettingNote>::new();
+    // Each Service a variable was set on, by the environment the whole edit leaves.
+    for service in &grown {
+        if let Some(note) = variables::environment_note(&editing.environment, service)? {
+            notes.push(SettingNote {
+                path: SettingPath::whole(service),
+                note,
+            });
+        }
+    }
     for (service, setting) in set {
         let config = &editing.environment.service(&service)?.config;
         if !setting.applies(config) {
