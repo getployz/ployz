@@ -3,7 +3,7 @@
 //! a write that carries plain text; the Store says where each secret lands. Off, the
 //! write goes exactly as it always has. The in-process Store seals every secret itself.
 
-use ployz_core::{RpcError, RpcErrorCode, SealedIdentity, SealingPublicKey};
+use ployz_core::{RpcErrorCode, SealedIdentity, SealingPublicKey};
 use ployz_store::{
     Ask as _, Edit, EnvironmentSummary, SealingTargetsQuery, SealingTargetsView, SecretValue,
     SyncChanges, View,
@@ -51,25 +51,24 @@ impl Backend {
 
 impl Store<'_> {
     /// `edit` with each new secret's plain text sealed for the Service it sets, when
-    /// the Organization seals on the client.
+    /// the Organization seals on the client. `fail` maps what Cloud or the Store
+    /// refuses, as it maps the write's own refusal.
     ///
     /// # Errors
     /// `conflict` when the Organization seals on the client but has no Server; what
     /// Cloud or the Store refused, the text included.
-    pub(crate) fn seal_edit(&self, mut edit: Edit) -> Result<Edit, Error> {
-        let fail = |error| self.fail(error);
-        let mut plain = false;
-        edit.map_plaintext_secrets(|_| {
-            plain = true;
-            Ok::<_, RpcError>(None)
-        })?;
-        if !plain {
+    pub(crate) fn seal_edit(
+        &self,
+        mut edit: Edit,
+        fail: impl Fn(StoreCallError) -> Error,
+    ) -> Result<Edit, Error> {
+        if !edit.carries_plaintext_secret() {
             return Ok(edit);
         }
         let query = SealingTargetsQuery::Edit {
             environment: edit.environment.clone(),
         };
-        let Some((recipient, targets)) = self.ready(&query, fail)? else {
+        let Some((recipient, targets)) = self.ready(&query, &fail)? else {
             return Ok(edit);
         };
         let SealingTargetsView::Edit {
@@ -81,7 +80,8 @@ impl Store<'_> {
             return Err(unexpected("an Edit's targets"));
         };
         let environment_id = bound(&environment)?;
-        edit.map_plaintext_secrets(|secret| {
+        let refused = |error| fail(StoreCallError::Refused(error));
+        edit.map_plaintext_secrets(refused, |secret| {
             let service = secret.service();
             let Some(target) = services.iter().find(|target| &target.name == service) else {
                 return Err(Error::coded(
@@ -97,9 +97,7 @@ impl Store<'_> {
                 environment: environment_id,
                 service: target.service,
             };
-            let plaintext = secret
-                .admit()
-                .map_err(|error| fail(StoreCallError::Refused(error)))?;
+            let plaintext = secret.admit().map_err(refused)?;
             seal(&recipient, &identity, secret.key(), plaintext).map(Some)
         })?;
         Ok(edit)

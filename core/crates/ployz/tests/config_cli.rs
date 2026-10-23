@@ -8561,3 +8561,69 @@ fn env_sync_with_a_value_at_a_stale_version_names_the_plan_as_it_does_unsealed()
     assert_eq!((code, &sealed), (Some(1), &legacy));
     assert_eq!(written, 0);
 }
+
+#[test]
+fn a_patch_with_a_bad_variable_name_and_a_secret_reaches_the_store_and_fails_as_it_always_has() {
+    let patch = r#"{"env":{"1BAD":"x","TOKEN":{"secret":"patch-s3cr3t"}}}"#;
+    let args = ["set", "web", "--patch", "-"];
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let (code, refused_locally) = ployz_with_stdin(&local, &args, patch);
+    assert_eq!(code, Some(2), "{refused_locally}");
+    let refused_locally: Value = serde_json::from_str(&refused_locally).unwrap();
+
+    let (code, refused, written) =
+        refused_by((SealingState::Off, false), one_service, &args, patch);
+    assert_eq!(code, Some(2), "{refused}");
+    assert_eq!(refused, refused_locally);
+    assert_eq!(
+        refused["error"]["code"],
+        json!("invalid_argument"),
+        "{refused}"
+    );
+    // Cloud said the Store seals, and the Store refused the name.
+    assert_eq!(written, 1);
+}
+
+#[test]
+fn a_patch_s_secret_under_a_bad_variable_name_is_refused_as_the_store_does_and_never_sent() {
+    let patch = r#"{"env":{"1BAD":{"secret":"patch-s3cr3t"}}}"#;
+    let args = ["set", "web", "--patch", "-"];
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let (code, refused_locally) = ployz_with_stdin(&local, &args, patch);
+    assert_eq!(code, Some(2), "{refused_locally}");
+    let refused_locally: Value = serde_json::from_str(&refused_locally).unwrap();
+
+    let (code, refused, written) = refused_by(sealing_ready(), one_service, &args, patch);
+    assert_eq!((code, &refused), (Some(2), &refused_locally));
+    assert_eq!(written, 0);
+    cloud_never_saw("patch-s3cr3t");
+}
+
+#[test]
+fn a_local_store_seals_every_secret_itself_and_asks_nothing_even_with_the_flag_on() {
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let Target::Local(dir) = &local else {
+        unreachable!()
+    };
+    rusqlite::Connection::open(dir.path().join("store.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO config_sealed_variables (organization_id) VALUES ('local')",
+            [],
+        )
+        .unwrap();
+    // A sealing question would go to the unreachable Cloud this process points at.
+    let (code, set) = ployz_with_stdin(
+        &local,
+        &["set", "web.env.TOKEN", "--secret"],
+        "local-s3cr3t\n",
+    );
+    assert_eq!(code, Some(0), "{set}");
+    assert_eq!(
+        ok(&local, &["get", "web.env.TOKEN"])["settings"][0]["value"],
+        json!({ "secret": true })
+    );
+}
