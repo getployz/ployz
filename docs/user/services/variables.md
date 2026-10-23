@@ -14,7 +14,7 @@ your app always gets the database of the environment it runs in.
    underscores and can't start with a digit. Ployz uppercases what you type.
 3. Tick **Sealed** for a secret: you can't read it back or unseal it. Leave it unticked for a
    value you want to see, or one that holds a [reference](#reference-another-services-variable).
-   Click **Add**.
+   Click **Add**. If a value can't be sealed, the form says why and keeps what you typed.
 4. Click **Deploy**.
 
 <!-- screenshot: the Variables tab with a few variables, Raw editor and New Variable -->
@@ -30,8 +30,9 @@ Click **Raw editor** to see the service's variables as a `.env` file (**ENV**) o
 Paste or edit them, then click **Update variables**.
 
 - Deleting a line deletes that variable.
-- Sealed variables aren't shown and stay as they are.
-- Values you save here are plain text. Seal secrets afterwards from their menu.
+- Sealed variables stay as they are. To delete one, use its menu.
+- Values you save here are plain text, unless a **Sealed** choice shows beside a new line and
+  you tick it. You can also seal a variable afterwards from its menu.
 
 ## Rename a variable
 

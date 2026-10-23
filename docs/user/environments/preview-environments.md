@@ -104,7 +104,8 @@ production's value → the preview's, like `CACHE_TTL 30 → 60`. In a row's ⋯
 A setting production changed after the preview started reads `production 45 → 60`: the preview's
 value wins when it merges. A secret the preview added that production has no value for reads
 **Not set in production**. Set it in production, or with **Edit**, before you merge; otherwise
-production's deploy skips it, and any variable that references it, and warns. Removed variables
+production's deploy skips it, and any variable that references it, and warns. For a service
+that's new to production, set its sealed values after the merge. Removed variables
 and settings ride too. Replicas, CPU and memory limits, and custom domains never do.
 
 A service or config the preview removed reads **Removes db**. If production changed it since the
