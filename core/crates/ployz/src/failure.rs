@@ -1189,6 +1189,7 @@ mod tests {
                 },
                 ConfigError::Parse {
                     path: "c".into(),
+                    line: String::new(),
                     source: serde_norway::from_str::<String>("[").unwrap_err(),
                 },
                 ConfigError::PrivatePermissions("c".into()),

@@ -95,6 +95,10 @@ impl Config {
         let mut config =
             serde_norway::from_str::<Self>(&yaml).map_err(|source| ConfigError::Parse {
                 path: path.clone(),
+                line: source
+                    .location()
+                    .map(|location| format!(" (line {})", location.line()))
+                    .unwrap_or_default(),
                 source,
             })?;
         if config.has_capability() {
@@ -864,12 +868,11 @@ pub enum ConfigError {
     Context(#[from] ContextError),
     #[error("Could not read Ployz config {path}.")]
     Read { path: PathBuf, source: io::Error },
-    #[error(
-        "Could not parse Ployz config {path}{line}.",
-        line = .source.location().map(|location| format!(" (line {})", location.line())).unwrap_or_default()
-    )]
+    #[error("Could not parse Ployz config {path}{line}.")]
     Parse {
         path: PathBuf,
+        /// ` (line N)` where the parser stopped, or empty.
+        line: String,
         source: serde_norway::Error,
     },
     #[error("credential storage {0} must not grant group or other permissions")]
