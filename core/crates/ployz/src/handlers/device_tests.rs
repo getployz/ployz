@@ -90,6 +90,43 @@ fn approve() -> SetDeviceRequest {
     SetDeviceRequest::Approve { key: key(0) }
 }
 
+fn token(cloud: String) -> Credential {
+    Credential::Token {
+        cloud,
+        token: Secret::new("ployz_secret".to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn request_shows_the_code_its_own_key_hashes_to() {
+    let cloud = crate::cloud_login::tests::fake_cloud(|route, body| {
+        assert_eq!(route, "POST /api/cli/device-requests");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            json!({ "key": key(0) })
+        );
+        (200, json!({ "code": key(0).code(), "expires_at": "x" }))
+    });
+
+    let requested = request_with(&token(cloud), key(0)).await.unwrap();
+
+    assert_eq!(requested.code, key(0).code());
+    assert_eq!(requested.expires_at, "x");
+}
+
+#[tokio::test]
+async fn request_refuses_a_reply_naming_another_code() {
+    let cloud = crate::cloud_login::tests::fake_cloud(|_, _| {
+        (200, json!({ "code": key(1).code(), "expires_at": "x" }))
+    });
+
+    let error = request_with(&token(cloud), key(0)).await.unwrap_err();
+
+    let message = error.report().message;
+    assert!(message.contains(key(0).code().as_str()), "{message}");
+    assert!(message.contains(key(1).code().as_str()), "{message}");
+}
+
 #[tokio::test]
 async fn a_key_that_does_not_hash_to_the_code_is_refused_before_any_machine() {
     let cloud = crate::cloud_login::tests::fake_cloud(|route, _| {
@@ -99,10 +136,7 @@ async fn a_key_that_does_not_hash_to_the_code_is_refused_before_any_machine() {
             json!({ "code": "mmg42klgyq", "key": key(1), "expires_at": "x" }),
         )
     });
-    let credential = Credential::Token {
-        cloud,
-        token: Secret::new("ployz_secret".to_owned()),
-    };
+    let credential = token(cloud);
     let calls = AtomicUsize::new(0);
     let code = DeviceCode::parse("mmg42klgyq").unwrap();
     assert_eq!(key(0).code(), code);

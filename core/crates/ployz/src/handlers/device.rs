@@ -49,12 +49,13 @@ pub(crate) fn remove_command(command: Command) -> Command {
 }
 
 pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
-    let secret = key::load_or_create(&key::path(&config_path(leaf_matches(root))?))?;
+    let config = config_path(leaf_matches(root))?;
+    let secret = key::load_or_create(&key::path(&config))?;
     let key = key::public(&secret);
-    let body = json!({ "key": key.to_string() });
-    let requested = super::account::in_cloud(root, async |_, credential| {
-        cloud_account::call::<Requested>(credential, Method::POST, "device-requests", Some(&body))
-            .await
+    let store = CredentialStore::beside(&config);
+    let requested = runtime()?.block_on(async {
+        let credential = cloud_account::from_env(&store).await?;
+        request_with(&credential, key).await
     })?;
     let code = requested.code;
     ui::finish(&requested, || {
@@ -62,6 +63,26 @@ pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
         ui::note(format_args!(
             "Approve it from an approved device, or over SSH on a server:\n  ployz device approve {code}"
         ));
+    })
+}
+
+/// File `key` with Cloud and show the code computed here from it. A reply naming another
+/// code is refused: the approver's check only means something against the local code.
+async fn request_with(credential: &Credential, key: DeviceKey) -> Result<Requested, Error> {
+    let code = key.code();
+    let body = json!({ "key": key.to_string() });
+    let filed =
+        cloud_account::call::<Requested>(credential, Method::POST, "device-requests", Some(&body))
+            .await?;
+    if filed.code != code {
+        return Err(Error::conflict(format!(
+            "Ployz Cloud filed this device as {} but its key hashes to {code}. Nothing changed.",
+            filed.code
+        )));
+    }
+    Ok(Requested {
+        code,
+        expires_at: filed.expires_at,
     })
 }
 
@@ -139,7 +160,7 @@ fn typed_code(leaf: &ArgMatches) -> Result<DeviceCode, Error> {
     )?)
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Requested {
     code: DeviceCode,
     expires_at: String,
