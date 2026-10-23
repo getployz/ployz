@@ -32,7 +32,14 @@ impl LocalDocker {
             .client
             .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
             .await?;
-        Ok(network.enable_ipv6 == Some(true) && crate::network::container_ipv6_fenced())
+        if network.enable_ipv6 != Some(true) {
+            return Ok(false);
+        }
+        Ok(
+            tokio::task::spawn_blocking(crate::network::container_ipv6_fenced)
+                .await
+                .unwrap_or(false),
+        )
     }
 
     pub(super) async fn bridge(&self) -> Result<Bridge, Error> {

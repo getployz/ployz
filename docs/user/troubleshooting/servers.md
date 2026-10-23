@@ -481,9 +481,10 @@ takes IPv6. Give the service a domain to see their addresses.
 
 A deploy of a service with `ipv6: true` fails on one server with one of these:
 
-- `this Server's ployz bridge has no IPv6`: the server's container network is IPv4-only. Fix it
-  as in [Apps see IPv6 visitors as 10.210.x.1](#apps-see-ipv6-visitors-as-10210x1), then deploy
-  again.
+- `this Server's ployz bridge has no IPv6`: the server's container network is IPv4-only, or its
+  IPv6 mesh fence is missing even though `docker network inspect ployz` shows `EnableIPv6: true`.
+  Fix it as in [Apps see IPv6 visitors as 10.210.x.1](#apps-see-ipv6-visitors-as-10210x1); for
+  the fence, `sudo systemctl restart ployz` puts it back. Then deploy again.
 - `runs a ployzd that can't give a Service IPv6`: the server runs an older Ployz. Run
   `ployz server upgrade <server>`, then deploy again.
 

@@ -109,11 +109,11 @@ pub(super) fn docker_ipv6_firewall() -> bool {
     command_succeeds("ip6tables", &["-w", "-t", "filter", "-S", "DOCKER-USER"])
 }
 
-/// Whether the mesh fence is in DOCKER-USER now.
+/// Whether the mesh fence is in DOCKER-USER now. Waits at most 5 s for the xtables lock.
 #[must_use]
 pub fn container_ipv6_fenced() -> bool {
     let rule = container_mesh_fence();
-    let mut check = vec!["-w", "-t", "filter", "-C", "DOCKER-USER"];
+    let mut check = vec!["-w", "5", "-t", "filter", "-C", "DOCKER-USER"];
     check.extend(rule.split(' '));
     command_succeeds("ip6tables", &check)
 }
