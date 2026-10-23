@@ -162,7 +162,7 @@ jobs:
             assert.equal(typeof require("@ployz/sdk").openConfigStore, "function");
             for (const file of [".output/server/index.mjs", ".output/worker/index.mjs", "node_modules/drizzle-kit/bin.cjs"]) assert.ok(fs.existsSync(file), file);
             require.resolve("inngest/connect");
-            assert.notEqual(process.getuid(), 0, "runs as a non-root user");
+            assert.equal(process.getuid(), 1000, "runs as node, uid 1000");
             const detectors = require("@opentelemetry/auto-instrumentations-node").getResourceDetectors().map(d => d.constructor.name);
             assert.deepEqual(detectors, ["EnvDetector", "HostDetector", "OSDetector", "ProcessDetector", "ServiceInstanceIdDetector", "ContainerDetector"], "probes no cloud metadata server");
           '
