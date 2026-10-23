@@ -264,6 +264,11 @@ pub(crate) fn escaped(text: &str) -> String {
         .collect()
 }
 
+/// `text` [`escaped`] line by line, so it keeps its line breaks.
+pub(crate) fn escaped_lines(text: &str) -> String {
+    text.split('\n').map(escaped).collect::<Vec<_>>().join("\n")
+}
+
 /// `arg` as one shell word: a word with an [`unprintable`] character in `$'…'` form, so it
 /// shows as its bytes and pastes back as itself.
 pub(crate) fn shell_word(arg: &str) -> std::borrow::Cow<'_, str> {
@@ -299,6 +304,18 @@ pub(crate) fn printable(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_warning_prints_an_invisible_character_as_its_code_and_keeps_its_lines() {
+        assert_eq!(
+            escaped_lines("Left KEY empty in app/a\u{202E}b.txt: it is not set.\nDeploy\r again."),
+            "Left KEY empty in app/a\\u{202e}b.txt: it is not set.\nDeploy\\u{d} again."
+        );
+        assert_eq!(
+            escaped_lines("Docker volume (not recommended)"),
+            "Docker volume (not recommended)"
+        );
+    }
 
     #[test]
     fn a_retry_line_escapes_what_would_steer_the_terminal() {

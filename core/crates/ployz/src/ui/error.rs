@@ -161,7 +161,8 @@ impl Hint {
 
 /// `command` with each word that holds an [`unprintable`] character in [`shell_word`]'s
 /// `$'…'` form, so it shows safely and still pastes as the same command. Every other word
-/// stays as written; a command that doesn't parse prints [`escaped`].
+/// stays as written; a word bash would read differently, or a command that doesn't parse,
+/// prints [`escaped`].
 fn pasteable(command: &str) -> String {
     if !command.chars().any(unprintable) {
         return command.to_owned();
@@ -178,7 +179,7 @@ fn pasteable(command: &str) -> String {
             Err(_) => open = Some(chunk),
             Ok(_) if !chunk.chars().any(unprintable) => words.push(chunk),
             Ok(parsed) => words.push(match parsed.as_slice() {
-                [word] => shell_word(word).into_owned(),
+                [word] if quoted_literally(&chunk) => shell_word(word).into_owned(),
                 _ => escaped(&chunk),
             }),
         }
@@ -187,6 +188,28 @@ fn pasteable(command: &str) -> String {
         Some(_) => escaped(command),
         None => words.join(" "),
     }
+}
+
+/// Whether bash reads `word` as [`shell_words::split`] does: outside single quotes it holds
+/// nothing bash would expand, glob or read as an operator. A backslash escapes the same in
+/// both, but one that ends `word` would join it to the next.
+fn quoted_literally(word: &str) -> bool {
+    let (mut single, mut double, mut escaping) = (false, false, false);
+    for c in word.chars() {
+        match c {
+            _ if escaping => escaping = false,
+            '\'' if !double => single = !single,
+            _ if single => {}
+            '\\' => escaping = true,
+            '"' => double = !double,
+            '$' | '`' | '!' => return false,
+            '~' | '*' | '?' | '[' | '{' | ';' | '&' | '|' | '<' | '>' | '(' | ')' if !double => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    !escaping
 }
 
 pub use ployz_core::error_chain::causes;
@@ -200,10 +223,16 @@ fn inline(error: Chain<'_>) -> String {
 }
 
 /// Foreign text on one line: a registry's `denied\ndenied` would break the
-/// indented line it lands in. Repeated lines print once.
+/// indented line it lands in. Repeated lines print once. A trim keeps an [`unprintable`]
+/// character other than a tab, so [`escaped`] can show it.
 fn one_line(text: &str) -> String {
+    let blank = |c: char| c == '\t' || (c.is_whitespace() && !unprintable(c));
     let mut lines: Vec<&str> = Vec::new();
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in text
+        .split('\n')
+        .map(|line| line.trim_matches(blank))
+        .filter(|line| !line.is_empty())
+    {
         if lines.last() != Some(&line) {
             lines.push(line);
         }
@@ -281,7 +310,7 @@ pub fn write(
     cause: Option<&str>,
     hints: &[Hint],
 ) -> io::Result<()> {
-    let mut lines = message.lines().map(escaped);
+    let mut lines = message.split_terminator('\n').map(escaped);
     writeln!(
         out,
         "{} {}",
@@ -361,6 +390,23 @@ mod tests {
         assert_eq!(
             String::from_utf8(out.into_inner()).unwrap(),
             "error: Could not create the Container.\n  cause: error from registry: denied; denied\n"
+        );
+    }
+
+    #[test]
+    fn a_carriage_return_prints_as_its_code() {
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "Config app has no file a.txt\r\n  Shown as stored.\n",
+            Some("refused a.txt\r\n\tdenied \n"),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            "error: Config app has no file a.txt\\u{d}\n  Shown as stored.\n  \
+             cause: refused a.txt\\u{d}; denied\n"
         );
     }
 
@@ -470,6 +516,46 @@ mod tests {
         assert_eq!(
             String::from_utf8(out.into_inner()).unwrap(),
             "next: cd \"x y\" && ployz  rm $'a\\xe2\\x80\\xaeb'\n"
+        );
+    }
+
+    #[test]
+    fn a_command_hint_never_pastes_as_a_different_command() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a\u{202E}bX"), "").unwrap();
+        let argv = |command: &str| {
+            let output = std::process::Command::new("bash")
+                .args(["-c", &format!("printf '%s\\0' {command}")])
+                .current_dir(dir.path())
+                .env("HOME", "/home/u")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{command}: {output:?}");
+            output.stdout
+        };
+        for hint in [
+            "ployz config put app \"$HOME/a\u{202E}b.txt\"",
+            "ployz config put app $'a\u{202E}b'",
+            "ployz config put app ~/a\u{202E}b",
+            "ployz config put app a\u{202E}b*",
+            "ployz config put app \"`printf x`a\u{202E}b\"",
+            "ployz config put app a\\ \u{202E}b",
+            "ployz config put app \"a\\\"\u{202E}b\\$\"",
+            "ployz config put app '$HOME/a\u{202E}b*'",
+            "ployz config put app 'it'\\''s\u{202E}b'",
+            "ployz config put app a\\'$HOME\u{202E}",
+            "ployz config put app \u{202E}\\ b",
+        ] {
+            let shown = pasteable(hint);
+            assert!(!shown.chars().any(unprintable), "{shown}");
+            assert!(
+                shown == escaped(hint) || argv(&shown) == argv(hint),
+                "{hint:?} shows as {shown}"
+            );
+        }
+        assert_eq!(
+            pasteable("ployz config put app '$HOME/a\u{202E}b*' 'it'\\''s\u{202E}b'"),
+            "ployz config put app $'$HOME/a\\xe2\\x80\\xaeb*' $'it\\'s\\xe2\\x80\\xaeb'"
         );
     }
 

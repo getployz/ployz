@@ -884,6 +884,40 @@ fn observation_without_a_named_gap_still_appears_at_settle() {
 }
 
 #[test]
+fn a_store_warning_prints_an_invisible_character_as_its_code() {
+    use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
+    let failed = |machine_id| DeployWarning::ObservationFailed {
+        kind: ObservationKind::Volume,
+        machine_id,
+        message: "no file a\u{202E}b.txt".into(),
+        gap: None,
+    };
+    let named = MachineId::random();
+    let mut initial = frame(State::Completed);
+    initial.notices = vec![
+        failed(MachineId::random()),
+        failed(named),
+        DeployWarning::ObservationOmitted {
+            kind: ObservationKind::Container,
+            machine_id: named,
+            gap: Some(ObservationGap {
+                machine_name: MachineName::parse("edge").unwrap(),
+                reason: ObservationGapReason::Down,
+            }),
+        },
+    ];
+    let settled = plain(
+        initial.clone(),
+        vec![(1, Message::Finish(initial.clone(), Disposition::Settled))],
+    );
+    let live = live_lines(&initial, 0, 200, 20, false).join("\n");
+    for text in [settled, live] {
+        assert!(!text.contains('\u{202E}'), "{text}");
+        assert_eq!(text.matches("no file a\\u{202e}b.txt").count(), 2, "{text}");
+    }
+}
+
+#[test]
 fn qualified_notices_group_by_machine_identity_and_count_each_gap_once() {
     use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
     let mut initial = frame(State::Completed);

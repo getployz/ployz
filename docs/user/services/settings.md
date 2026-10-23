@@ -11,7 +11,7 @@ service's domains. Text prints in quotes, like `"nginx:1"`, and `-` means unset.
 with no default, such as `image`, says `(no default)` beside its value. An invisible
 character, such as a right-to-left override, prints as its code, like `\u{202e}`, so text
 reads as stored. A deploy message in `ployz history`, a Config file name in the `ployz config`
-commands, and a name an error message repeats print the same way. `ployz get
+commands, and a name an error message or deploy warning repeats print the same way. `ployz get
 web.domains` prints only the domains; change them with the `ployz domain` commands, not
 `ployz set`. `ployz explain web` lists every setting a service takes, with its default.
 `ployz explain mounts` lists them for a service named `mounts`, and says `ployz explain
