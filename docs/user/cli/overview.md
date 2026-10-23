@@ -135,7 +135,8 @@ Some things are not tools. Run these yourself in a terminal:
 - `server enroll`, which enrolls servers waiting in Cloud by name or glob.
 - `exec`, `service port-forward`, `logs --follow` and `up`.
 - Branches, tokens and Fleet Tokens (`server token`).
-- Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
+- Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret. In an
+  organization with Sealed values, a new secret needs a server first: `ployz server add`.
 
 Tools that can delete something when they run are marked destructive: `deploy`,
 `deployment_retry`, `deployment_start`, `discard`, `environment_remove`, `project_remove`, the
