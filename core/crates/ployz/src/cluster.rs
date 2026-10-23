@@ -138,7 +138,8 @@ impl Client {
     }
 
     /// [`Self::redial`] for a client shared by reference, as a Deploy's is. Its entry
-    /// stays the Machine it confirmed, so an endpoint that now reaches another is refused.
+    /// stays the Machine it confirmed, so an endpoint that now reaches another is refused,
+    /// even after a failed redial made this client forget its entry.
     ///
     /// # Errors
     ///
@@ -146,7 +147,7 @@ impl Client {
     /// entry doesn't answer on the new channel.
     pub(crate) async fn redial_shared(&self) -> Result<(), ConnectError> {
         let (channel, entry) = self.dial_confirmed().await?;
-        if let (Some(expected), Some(actual)) = (self.entry, entry)
+        if let (Some(expected), Some(actual)) = (self.entry.or(self.confirmed), entry)
             && expected != actual
         {
             return Err(ConnectError::IdentityMismatch { expected, actual });
