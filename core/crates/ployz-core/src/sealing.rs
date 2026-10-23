@@ -350,7 +350,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(!refused.contains("ABCDE"), "{refused}");
-        let backup = SealingKeyBackup::from_bytes(vec![3; 109]);
+        let backup = SealingKeyBackup::from_bytes(vec![3; 77]);
         assert_eq!(format!("{backup:?}"), "SealingKeyBackup(..)");
         let json = serde_json::to_string(&backup).unwrap();
         assert_eq!(

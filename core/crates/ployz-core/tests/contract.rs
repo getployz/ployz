@@ -1866,7 +1866,7 @@ fn sealing_key_backfill_rpcs_have_one_typed_wire_contract() {
 fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
     let code = ployz_core::RecoveryCode::generate();
     let public_key = ployz_core::SealingPublicKey::from_bytes([9; 32]);
-    let backup = ployz_core::SealingKeyBackup::from_bytes(vec![3; 109]);
+    let backup = ployz_core::SealingKeyBackup::from_bytes(vec![3; 77]);
 
     let wrap = ployz_core::WrapSealingKeyRequest { code: code.clone() };
     assert_eq!(
