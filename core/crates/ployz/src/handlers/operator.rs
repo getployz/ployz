@@ -304,20 +304,17 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         ServiceSelector::parse(typed.clone())?,
         scope(root)?.as_ref(),
     )?;
-    let scope_flags: String = ["project", "env"]
-        .into_iter()
-        .filter(|id| leaf.value_source(id) == Some(ValueSource::CommandLine))
-        .filter_map(|id| Some(format!("--{id} {} ", leaf.get_one::<String>(id)?)))
-        .collect();
+    let scope_flags = typed_scope(leaf);
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
         .map(|selector| ContainerSelector::parse(selector.as_str()))
         .transpose()?;
-    let command = leaf
+    let command: Vec<String> = leaf
         .get_many::<String>("command")
         .map(|values| values.cloned().collect())
         .unwrap_or_default();
+    let again = exec_again(&typed, leaf.get_flag("no-tty"), &scope_flags, &command);
     let options = exec_options(
         command,
         ExecMode::resolve(
@@ -365,10 +362,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 .await
             {
                 let hint = if stopped.another_runs {
-                    Hint::Retry(format!(
-                        "ployz exec {scope_flags}{}",
-                        session.target.identity
-                    ))
+                    Hint::Retry(again)
                 } else {
                     Hint::Inspect("ployz ps".into())
                 };
@@ -382,6 +376,42 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             }
         })
     })
+}
+
+/// The flags that chose where the command ran, typed or from the environment. A variable may
+/// have been set for that one command (`PLOYZ_ENV=staging ployz exec …`), so the retry spells
+/// it out rather than trust the shell to still hold it.
+fn typed_scope(leaf: &ArgMatches) -> Vec<(&'static str, String)> {
+    ["context", "connect", "project", "env"]
+        .into_iter()
+        .filter(|id| {
+            matches!(
+                leaf.value_source(id),
+                Some(ValueSource::CommandLine | ValueSource::EnvVariable)
+            )
+        })
+        .filter_map(|id| Some((id, leaf.get_one::<String>(id)?.clone())))
+        .collect()
+}
+
+/// The `ployz exec` that runs `command` again as it was typed: the Service by the name the
+/// user gave, `-T` when they asked for no terminal, and the context, connection, Project and
+/// Environment they named.
+/// No container: the retry attaches to whichever of the Service's containers runs.
+fn exec_again(service: &str, no_tty: bool, scope: &[(&str, String)], command: &[String]) -> String {
+    let mut words = vec!["ployz".to_owned(), "exec".to_owned()];
+    if no_tty {
+        words.push("-T".to_owned());
+    }
+    words.push(service.to_owned());
+    for (flag, value) in scope {
+        words.extend([format!("--{flag}"), value.clone()]);
+    }
+    if !command.is_empty() {
+        words.push("--".to_owned());
+        words.extend(command.iter().cloned());
+    }
+    shell_words::join(words)
 }
 
 /// How long a failed exec waits to learn whether its container stopped before it
@@ -1296,6 +1326,75 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn the_retry_keeps_the_typed_flags_that_chose_where_the_command_ran() {
+        let leaf = exec_command(Command::new("exec"))
+            .try_get_matches_from([
+                "exec",
+                "-c",
+                "staging",
+                "--connect",
+                "ops",
+                "--env",
+                "production",
+                "web",
+                "--",
+                "true",
+            ])
+            .unwrap();
+        assert_eq!(
+            typed_scope(&leaf),
+            [
+                ("context", "staging".to_owned()),
+                ("connect", "ops".to_owned()),
+                ("env", "production".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_retry_spells_out_scope_that_came_from_the_environment() {
+        // As `PLOYZ_ENV=staging ployz exec …` sets it, for that one command; PATH stands in
+        // because every test process already has it.
+        let path = std::env::var("PATH").unwrap();
+        let leaf = exec_command(Command::new("exec"))
+            .mut_arg("env", |env| env.env("PATH"))
+            .try_get_matches_from(["exec", "web"])
+            .unwrap();
+        assert_eq!(typed_scope(&leaf), [("env", path)]);
+    }
+
+    #[test]
+    fn the_retry_after_a_stopped_container_runs_the_same_command_again() {
+        let scope = [
+            ("project", "a--b".to_owned()),
+            ("env", "production".to_owned()),
+        ];
+        assert_eq!(
+            exec_again("s1", true, &scope, &["sleep".to_owned(), "120".to_owned()]),
+            "ployz exec -T s1 --project a--b --env production -- sleep 120"
+        );
+        assert_eq!(
+            exec_again(
+                "web",
+                false,
+                &[],
+                &["sh".to_owned(), "-c".to_owned(), "echo hi".to_owned()]
+            ),
+            "ployz exec web -- sh -c 'echo hi'"
+        );
+        assert_eq!(exec_again("web", false, &[], &[]), "ployz exec web");
+        assert_eq!(
+            exec_again(
+                "web",
+                false,
+                &[("context", "staging".to_owned())],
+                &["--".to_owned(), "-T".to_owned()]
+            ),
+            "ployz exec web --context staging -- -- -T"
+        );
+    }
 
     #[tokio::test]
     async fn a_local_port_in_use_is_named_in_the_refusal() {
