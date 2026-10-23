@@ -172,6 +172,9 @@ impl ContainerRuntime {
     ) -> Result<ContainerCreated, Error> {
         let reserved_name =
             creation_key.map(|key| creation_name(&machine.id, namespace, &spec.name, kind, key));
+        if create::holds_sealed(kind, spec) {
+            self.log_store.admit_sealed().await?;
+        }
         let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
