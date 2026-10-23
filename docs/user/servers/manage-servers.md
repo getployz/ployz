@@ -547,7 +547,9 @@ warning. After the removal it warns which replicated services now run no replica
 them were on that server, and prints `ployz deploy` as the next step. It warns separately which
 other replicated services may now run short of replicas. A deploy that still has work on that
 server when the removal finishes fails on its turn with `Server machine-2 was removed while the
-deploy ran`, and the deploy's web traffic check doesn't count the removed server as unchecked. With `--json` the removal lists every
+deploy ran`, and the deploy's web traffic check doesn't count the removed server as unchecked.
+That needs Ployz 0.3.4 or later on the server the CLI connects through; an older one names the
+server's ID instead. With `--json` the removal lists every
 service left short as `under_replicated`. It also lists a service as `no_copies` when every other
 server answered and none showed a replica of it. If a server didn't answer, the service is listed
 only as `under_replicated`. `ployz status` keeps naming a service with no replicas until a deploy

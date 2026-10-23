@@ -1403,6 +1403,18 @@ mod tests {
         );
         assert!(named.cause.is_empty());
         assert!(!named.same_again);
+        // The row a reader tracks names it too, as Cloud's per-Server row shows it.
+        let failed: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1", "service_name": "web",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": OperationStatus::Failed { error: removed.clone() },
+        }]))
+        .unwrap();
+        let tracked = super::RowTracker::default().changes(&failed);
+        let Some(RowState::Failed { reason, .. }) = tracked.first().map(|row| &row.state) else {
+            panic!("expected a failed row, got {tracked:?}");
+        };
+        assert_eq!(reason, "Server prod-1 was removed while the deploy ran");
         assert_eq!(
             Failure::on(&removed, &[], Some(machine)).reason,
             format!("Server {machine_id} was removed while the deploy ran")
