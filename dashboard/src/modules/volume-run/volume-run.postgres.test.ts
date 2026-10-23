@@ -2568,6 +2568,34 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
+    it("a start whose answer was lost says at most how long the Service was stopped once its retried attempt answers", async () => {
+      let clock = 0;
+      const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+      try {
+        failNext.set("writer@fsn-2", "lost");
+        beforeSet.set("writer@fsn-2", () => {
+          clock = 10_000;
+        });
+        const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+        const lost = await execute(run.id);
+        expect(lost.error).toBeDefined();
+        const ran = vi.mocked(lost.ctx.step.run).mock.calls.map(([id]) => String(id)).filter((id) => id !== "07-start");
+        const memoized = await Promise.all(ran.map(async (id) => {
+          // SAFETY: each step this run memoized returned JSON.
+          const value = (await lost.state[createHash("sha1").update(id).digest("hex")]) as object | undefined;
+          return { id, handler: () => value };
+        }));
+        clock = 43_000;
+
+        const retried = await execute(run.id, "run-1", memoized, volumeId, undefined, 1);
+
+        expect(retried.result).toEqual({ runId: run.id, moved: "fsn-2" });
+        expect(await rows()).toMatchObject([{ state: "done", message: "web was stopped at most 43s" }]);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
     it("a final pull that fails releases back to A, forgetting nothing B lacks", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "f-1", kind: "fail" } };
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
