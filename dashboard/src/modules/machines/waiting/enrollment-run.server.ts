@@ -119,7 +119,7 @@ const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where
     yield* drizzle.insert(fleetTokenJoin).values(ended.map((row) => ({ attemptId: row.id, fleetTokenId: row.fleetTokenId })));
   }
   if (ending.state !== "joined" && ended.length > 0) {
-    yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: now }).where(and(
+    yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: sql`now()` }).where(and(
       inArray(machineEnrollmentToken.id, ended.map((row) => row.enrollTokenId)),
       isNull(machineEnrollmentToken.joinedMachineId),
     ));

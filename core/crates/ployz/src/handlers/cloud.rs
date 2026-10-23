@@ -654,12 +654,7 @@ where
 }
 
 fn shows_code(matches: &ArgMatches, reader: Reader, json: bool, stdout_is_terminal: bool) -> bool {
-    let shown = if json {
-        matches.get_flag("show-recovery-code")
-    } else {
-        stdout_is_terminal
-    };
-    reader == Reader::Person && shown
+    reader == Reader::Person && super::recovery::shows_code(matches, json, stdout_is_terminal)
 }
 
 /// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.

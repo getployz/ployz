@@ -28,6 +28,8 @@ const ROTATE_AGAIN: &str =
     "The old recovery code may no longer work. Run ployz recovery rotate now.";
 const RECOVERY_ROW: &str = "sealing/recovery";
 const ROTATE_ROW: &str = "sealing/rotate";
+const NO_ONE_SEES_THE_CODE: &str = "No terminal to show the new recovery code; nothing was \
+     rotated. Run it in a terminal, or pass --json --show-recovery-code.";
 
 pub(super) fn group(command: Command) -> Command {
     base(command, "Back up the Sealing Key with a recovery code")
@@ -44,11 +46,22 @@ pub(super) fn recover_command(command: Command) -> Command {
 }
 
 pub(super) fn rotate_command(command: Command) -> Command {
-    base(command, "Make a new recovery code").long_about(
-        "Wraps the Sealing Key under a fresh code, stores that backup in Cloud, then prints \
+    base(command, "Make a new recovery code")
+        .long_about(
+            "Wraps the Sealing Key under a fresh code, stores that backup in Cloud, then prints \
          the code once. The old code stops working. Runs on the Server or over --connect; \
          never through Cloud.",
-    )
+        )
+        .arg(switch("show-recovery-code", None).help("Print the recovery code under --json"))
+}
+
+/// Whether a person sees a fresh recovery code: on a terminal, or under `--json` only on request.
+pub(super) fn shows_code(matches: &ArgMatches, json: bool, stdout_is_terminal: bool) -> bool {
+    if json {
+        matches.get_flag("show-recovery-code")
+    } else {
+        stdout_is_terminal
+    }
 }
 
 pub(super) fn recover(root: &ArgMatches) -> Result<(), Error> {
@@ -97,7 +110,15 @@ fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
 }
 
 pub(super) fn rotate(root: &ArgMatches) -> Result<(), Error> {
+    rotate_for(root, ui::stdout_is_terminal())
+}
+
+fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    // Rotating retires the old code, so never mint a new one no one will see.
+    if !shows_code(matches, ui::json(), stdout_is_terminal) {
+        return Err(Error::usage(NO_ONE_SEES_THE_CODE));
+    }
     let runtime = runtime()?;
     let Some(credential) = server::signed_in(&runtime, matches)? else {
         return Err(Error::coded(
@@ -247,11 +268,12 @@ async fn recover_with(
     Ok(recovered.public_key)
 }
 
+/// The daemon answers a refusal as its own error, so it arrives as [`ConnectError::Remote`].
 fn refusal(error: &ConnectError) -> Option<RecoveryRefusal> {
-    let ConnectError::Rpc(transport) = error else {
+    let ConnectError::Remote(answered) = error else {
         return None;
     };
-    transport.to_rpc_error().recovery_refusal()
+    answered.recovery_refusal()
 }
 
 fn recover_failure(error: ConnectError) -> Error {
@@ -364,6 +386,7 @@ mod tests {
     use std::io::Cursor;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use ployz_core::{RpcRequestBody, RpcResponse, SealingKeyRecovered, SealingKeyWrapped};
@@ -375,6 +398,7 @@ mod tests {
     use crate::handlers::verbs;
 
     const CODE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const ROTATE: &[&str] = &["recovery", "rotate", "--show-recovery-code"];
     const CAPABILITY_LEN: usize = 86;
 
     fn key(byte: u8) -> SealingPublicKey {
@@ -448,6 +472,7 @@ mod tests {
 
     struct Daemon {
         socket: PathBuf,
+        requests: Arc<AtomicUsize>,
         recoveries: Arc<Mutex<Vec<Option<SealingKeyBackup>>>>,
         _runtime: tokio::runtime::Runtime,
     }
@@ -459,9 +484,12 @@ mod tests {
     /// A Server whose seed opens under `seed`, and any sent backup under [`CODE`].
     fn seeded_under(dir: &Path, held: SealingPublicKey, seed: Option<&'static str>) -> Daemon {
         let socket = dir.join("ployzd.sock");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counted = requests.clone();
         let recoveries = Arc::new(Mutex::new(Vec::new()));
         let seen = recoveries.clone();
         let runtime = unix_daemon(&socket, move |body| {
+            counted.fetch_add(1, Ordering::SeqCst);
             let seen = seen.clone();
             async move {
                 if let RpcRequestBody::WrapSealingKey(_) = body {
@@ -477,27 +505,31 @@ mod tests {
                 let opens = match (&request.backup, seed) {
                     (Some(_), _) => CODE,
                     (None, Some(seed)) => seed,
-                    (None, None) => return Err(refused(RecoveryRefusal::NoBackup)),
+                    (None, None) => return Ok(refused(RecoveryRefusal::NoBackup)),
                 };
                 if request.code.as_bytes() != opens.as_bytes() {
-                    return Err(refused(RecoveryRefusal::WrongCode));
+                    return Ok(refused(RecoveryRefusal::WrongCode));
                 }
                 Ok(RpcResponse::from(SealingKeyRecovered { public_key: held }))
             }
         });
         Daemon {
             socket,
+            requests,
             recoveries,
             _runtime: runtime,
         }
     }
 
-    fn refused(refusal: RecoveryRefusal) -> tonic::Status {
-        ployz_core::rpc::hinted_status(
-            tonic::Code::FailedPrecondition,
-            &std::io::Error::other("refused"),
-            refusal.details(),
-        )
+    /// Refused the way ployzd's `recovery_error` answers: an error payload, not a gRPC status.
+    fn refused(refusal: RecoveryRefusal) -> RpcResponse {
+        RpcResponse::from(ployz_core::RpcError {
+            details: refusal.details(),
+            ..ployz_core::RpcError::caused(
+                RpcErrorCode::InvalidArgument,
+                &std::io::Error::other("refused"),
+            )
+        })
     }
 
     fn config_dir(cloud: Option<&str>, contexts: &str) -> tempfile::TempDir {
@@ -557,7 +589,7 @@ mod tests {
         });
         let dir = config_dir(Some(&cloud.url), "");
         let daemon = daemon(dir.path(), key(1), true);
-        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+        let root = root(dir.path(), Some(&daemon.socket), ROTATE);
 
         let (result, printed) = rotate_json(&root);
 
@@ -575,6 +607,33 @@ mod tests {
     }
 
     #[test]
+    fn rotate_refuses_before_any_call_when_no_one_would_see_the_code() {
+        // Off a terminal the opt-in is not enough, and on one plain --json is not.
+        for (json, terminal, tail) in [
+            (false, false, ROTATE),
+            (true, true, &["recovery", "rotate"][..]),
+        ] {
+            let cloud = cloud(|route, _| panic!("unexpected {route}"));
+            let dir = config_dir(Some(&cloud.url), "");
+            let daemon = daemon(dir.path(), key(1), true);
+            let root = root(dir.path(), Some(&daemon.socket), tail);
+            ui::init(json, ui::Color::Never);
+
+            let (result, printed) = ui::captured(|| rotate_for(&root, terminal));
+
+            let error = result.unwrap_err();
+            assert!(printed.is_none());
+            assert_eq!(error.report().code, RpcErrorCode::InvalidArgument);
+            assert!(
+                error.to_string().contains("--json --show-recovery-code"),
+                "{error}"
+            );
+            assert!(cloud.routes().is_empty());
+            assert_eq!(daemon.requests.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
     fn rotate_prints_no_code_when_another_rotation_won() {
         let cloud = cloud(|route, _| match route {
             "POST /api/cli/sealing/recovery" => (200, recovery_row(key(1), None)),
@@ -583,7 +642,7 @@ mod tests {
         });
         let dir = config_dir(Some(&cloud.url), "");
         let daemon = daemon(dir.path(), key(1), true);
-        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+        let root = root(dir.path(), Some(&daemon.socket), ROTATE);
 
         let (result, printed) = rotate_json(&root);
 
@@ -607,7 +666,7 @@ mod tests {
             });
             let dir = config_dir(Some(&cloud.url), "");
             let daemon = daemon(dir.path(), key(1), true);
-            let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+            let root = root(dir.path(), Some(&daemon.socket), ROTATE);
 
             let (result, printed) = rotate_json(&root);
 
@@ -628,7 +687,7 @@ mod tests {
         });
         let dir = config_dir(Some(&cloud.url), "");
         let daemon = daemon(dir.path(), key(1), true);
-        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+        let root = root(dir.path(), Some(&daemon.socket), ROTATE);
 
         let (result, printed) = rotate_json(&root);
 
@@ -646,7 +705,7 @@ mod tests {
         });
         let dir = config_dir(Some(&cloud.url), "");
         let daemon = daemon(dir.path(), key(1), true);
-        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+        let root = root(dir.path(), Some(&daemon.socket), ROTATE);
 
         let (result, printed) = rotate_json(&root);
 
@@ -662,7 +721,7 @@ mod tests {
         let cloud = cloud(|_, _| (404, json!({ "error": "not found" })));
         let dir = config_dir(Some(&cloud.url), "");
         let daemon = daemon(dir.path(), key(1), true);
-        let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
+        let root = root(dir.path(), Some(&daemon.socket), ROTATE);
 
         let (result, printed) = rotate_json(&root);
 
@@ -676,7 +735,7 @@ mod tests {
     fn rotate_needs_a_sign_in() {
         let dir = config_dir(None, "");
         let socket = dir.path().join("absent.sock");
-        let root = root(dir.path(), Some(&socket), &["recovery", "rotate"]);
+        let root = root(dir.path(), Some(&socket), ROTATE);
 
         let (result, printed) = rotate_json(&root);
 
@@ -921,10 +980,7 @@ mod tests {
         );
         let cloud = cloud(|route, _| panic!("unexpected {route}"));
         let dir = config_dir(Some(&cloud.url), &contexts);
-        for tail in [
-            &["recovery", "rotate"][..],
-            &["recover", "--code-stdin"][..],
-        ] {
+        for tail in [ROTATE, &["recover", "--code-stdin"][..]] {
             let root = root(dir.path(), None, tail);
 
             let (result, printed) = if tail.first() == Some(&"recover") {
@@ -981,7 +1037,7 @@ mod tests {
             let daemon = daemon(dir.path(), key(1), true);
             let root = root(dir.path(), Some(&daemon.socket), &["recovery", "rotate"]);
             ui::init(false, ui::Color::Never);
-            rotate(&root).unwrap();
+            rotate_for(&root, true).unwrap();
             return;
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())

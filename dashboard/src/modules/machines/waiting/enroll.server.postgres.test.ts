@@ -293,7 +293,7 @@ it("spares a join the host reported committed before its run recorded it, and ke
   expect(await outbox()).not.toContain("server/enrollment.cancel");
   expect(await checkin(a, { attempt: { attemptId, stage: "joining" } })).toMatchObject({ kind: "enroll", attemptId });
   expect(await statusRows()).toEqual([["web-a", "running", "storage"]]);
-  await harness.pool.query("update server_enrollment set state = 'joined', ended_at = now()");
+  await harness.pool.query("update server_enrollment set state = 'joined', ended_at = $1", [new Date()]);
   expect(await statusRows()).toEqual([["web-a", "joined", "storage"]]);
 });
 

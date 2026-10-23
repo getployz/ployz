@@ -684,6 +684,20 @@ describe("organization enrollment coordinator", () => {
     expect(await fake.coordinator.checkin(attempt.checkin())).toMatchObject({ kind: "stop", reason: "rejected" });
   });
 
+  it("refuses a cancelled attempt's token while Cloud's clock runs ahead of Postgres's", async () => {
+    const fake = fakeSession(harness.database);
+    const token = await issueToken(undefined, "founder");
+    const attempt = await waitingAttempt(token, "installing", "founder");
+    await harness.pool.query("update server_enrollment set inngest_run_id = null where id = $1", [attempt.id]);
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 60_000 });
+    try {
+      await fake.coordinator.reject(attempt.waiting_server_id);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await fake.coordinator.enroll({ token, identity: identity(0) })).toMatchObject({ failure: { _tag: "Unauthorized" } });
+  });
+
   it("reports the Server that completed enrollment with a CLI-minted token, and only to members", async () => {
     const fake = fakeSession(harness.database);
     const minted = await fake.coordinator.mintCli();
@@ -705,7 +719,7 @@ describe("organization enrollment coordinator", () => {
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "joined", machineId: founder.machineId } });
     expect(await fake.coordinator.read(minted.id, plainMember)).toMatchObject({ success: { status: "joined", machineId: founder.machineId } });
 
-    await harness.pool.query("update machine_enrollment_token set joined_machine_id = null, expires_at = now() - interval '1 second' where id = $1", [minted.id]);
+    await harness.pool.query("update machine_enrollment_token set joined_machine_id = null, expires_at = $2 where id = $1", [minted.id, new Date(Date.now() - 1000)]);
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "expired" } });
     expect(await fake.coordinator.read("00000000-0000-4000-8000-000000000498")).toMatchObject({ failure: { _tag: "NotFound" } });
   });
