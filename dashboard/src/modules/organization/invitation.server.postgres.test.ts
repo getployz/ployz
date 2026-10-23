@@ -237,6 +237,10 @@ describe("member commands", () => {
       ok: false,
       refusal: { code: "conflict", message: "An Organization needs an owner. Make someone else an owner first.", writes: "none" },
     });
+    expect(await as("ada", "org_member_role", { member: "ada@example.test", role: "member" }, "cli")).toMatchObject({
+      ok: false,
+      refusal: { code: "conflict", message: "An Organization needs an owner. Make someone else an owner first.", writes: "none" },
+    });
     expect(await approvals()).toBe(asked);
     expect(await roleOf(ids.ada)).toBe("owner");
 

@@ -146,8 +146,11 @@ export const orgMemberInvite = defineCommand({
 
 const RoleInput = Schema.Struct({ member: MemberSelector, role: MemberRole.annotate({ description: "The new role: owner, admin or member" }) });
 
+// Refused before the gate, so demoting the last owner never asks for an approval it can't use.
 const roleTarget = (caller: Caller, input: typeof RoleInput.Type) =>
-  managed(caller, input.member, (role) => role === "owner" || input.role === "owner");
+  managed(caller, input.member, (role) => role === "owner" || input.role === "owner").pipe(
+    Effect.flatMap((target) => target.lastOwner && input.role !== "owner" ? Effect.fail(refuse("conflict", OWNERLESS)) : Effect.succeed(target)),
+  );
 
 export const orgMemberRole = defineCommand({
   name: "org_member_role",

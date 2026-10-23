@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import type { ConfigCommand, ConfigStore, RuntimeWatchView } from "@ployz/sdk";
 import { reconstructChat } from "@tanstack/ai-persistence";
 import { type AnyTextAdapter, EventType, type TokenUsage, type ModelMessage, type RunAgentResumeItem, type StreamChunk, StreamProcessor } from "@tanstack/ai";
-import { sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Exit, Layer, Schema, Tracer } from "effect";
 import { expect, vi } from "vitest";
 import { fakeText } from "@tanstack/ai/testing";
@@ -16,6 +16,7 @@ import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/mod
 import { approvalBadge } from "#/modules/approvals/approvals";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
+import { member, user } from "#/modules/identity/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { AuthLive } from "#/server/auth.server";
@@ -270,19 +271,29 @@ it.live("a denied Service restart names the restart and its Service", () =>
     expect(resumed.results).toMatchObject([{ ok: false, refusal: { code: "approval_denied", message: "A human denied this restart web: not now" } }]);
   }));
 
+// Bob is a member and Carol an owner. Carol makes Ada an admin after Ada approved making Bob an owner, so the run refuses.
 it.live("the model repeats an approved Cloud command that refused once it ran under the approval the sidebar holds, asking no one again", () =>
   Effect.gen(function* () {
-    const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: false });
-    const demote = { name: "org_member_role", input: { member: "ada@example.test", role: "member" } };
+    const { provided, caller, userId, say, resume, pending } = yield* sidebar({ removeWeb: false });
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const people = yield* drizzle.insert(user).values([{ email: "bob@example.test", name: "Bob" }, { email: "carol@example.test", name: "Carol" }]).returning();
+      yield* drizzle.insert(member).values(people.map((person) => ({ userId: person.id, organizationId: ORGANIZATION, role: person.name === "Bob" ? "member" as const : "owner" as const })));
+    }));
+    const promote = { name: "org_member_role", input: { member: "bob@example.test", role: "owner" } };
     const model = fakeText();
-    model.setResponses([{ toolCalls: [demote] }, { toolCalls: [demote] }, { text: "You stay the owner." }]);
-    const approval = yield* waitingApproval(yield* say("make me a member", {}, model), pending);
+    model.setResponses([{ toolCalls: [promote] }, { toolCalls: [promote] }, { text: "Bob stays a member." }]);
+    const approval = yield* waitingApproval(yield* say("make Bob an owner", {}, model), pending);
     yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(member).set({ role: "admin" }).where(and(eq(member.userId, userId), eq(member.organizationId, ORGANIZATION)));
+    }));
 
     const resumed = yield* resume("resolved", {}, model);
     expect(resumed.interrupts).toEqual([]);
-    const owner = { ok: false, refusal: { message: "An Organization needs an owner. Make someone else an owner first." } };
-    expect(resumed.results).toMatchObject([owner, owner]);
+    const refused = { ok: false, refusal: { message: "Only an owner can make or remove an owner." } };
+    expect(resumed.results).toMatchObject([refused, refused]);
     expect(resumed.heard.join("")).not.toContain(approval.id);
     expect(yield* pending).toEqual([]);
   }));
