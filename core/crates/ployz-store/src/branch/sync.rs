@@ -7,7 +7,7 @@ use ployz_core::config::SecretCiphertext;
 use super::proposal;
 use super::*;
 use crate::variables::{VariableKey, validate_text};
-use crate::{SealingKey, Trusted};
+use crate::{SealingKey, SecretValue, Trusted, client_sealed};
 
 /// Sync one Environment's changes into another of its Project, staged in the
 /// receiver's Working State. Nothing is deleted, published or deployed.
@@ -38,11 +38,11 @@ pub struct SyncChanges {
     #[serde(default)]
     #[ts(as = "Option<Vec<RowRef>>", optional)]
     pub skip: Vec<RowRef>,
-    /// A value for each picked secret the receiver lacks: sealed at once, never
-    /// shown back.
+    /// A value for each picked secret the receiver lacks: plain text sealed at once,
+    /// never shown back, or a value the browser sealed for the receiver.
     #[serde(default)]
-    #[ts(as = "Option<BTreeMap<RowRef, String>>", optional)]
-    pub values: BTreeMap<RowRef, String>,
+    #[ts(as = "Option<BTreeMap<RowRef, SecretValue>>", optional)]
+    pub values: BTreeMap<RowRef, SecretValue>,
     /// The Sync's ID, so a retry is answered with what it did; omitted, a new one.
     #[serde(default)]
     #[ts(optional = nullable)]
@@ -224,7 +224,16 @@ pub(crate) fn sync(
     let sides = [&from.working, &into.working];
     let (picks, values) = picks(checked.rows(), &sides, request)?;
     proposal::refuse_held(checked.rows(), &sides, &picks, &owners)?;
-    let values = sealed(sealing, checked.rows(), &sides, &picks, &values)?;
+    let enabled = values.values().any(SecretValue::is_client_sealed)
+        && client_sealed::enabled(tx, &who.organization)?;
+    let values = sealed(
+        sealing,
+        checked.rows(),
+        [&from, &into],
+        enabled,
+        &picks,
+        &values,
+    )?;
     let id = match &request.id {
         Some(id) => id.clone(),
         None => SyncId::parse(uuid::Uuid::new_v4().to_string())?,
@@ -252,7 +261,7 @@ pub(crate) fn sync(
     let fingerprints = request
         .values
         .iter()
-        .map(|(row, value)| (row, sealing.fingerprint(value)))
+        .map(|(row, value)| (row, value.fingerprint(sealing)))
         .collect::<BTreeMap<_, _>>();
     let asked = json!({
         "version": request.version,
@@ -409,7 +418,7 @@ pub(crate) fn picks(
     rows: &[PlannedRow],
     sides: &[&SavedEnvironmentIntent; 2],
     request: &SyncChanges,
-) -> Result<(BTreeSet<RowId>, BTreeMap<RowId, String>), RpcError> {
+) -> Result<(BTreeSet<RowId>, BTreeMap<RowId, SecretValue>), RpcError> {
     let moves = rows.iter().filter(|row| {
         matches!(
             row.verdict,
@@ -449,19 +458,22 @@ pub(crate) fn picks(
     Ok((landing, values))
 }
 
-/// `values` sealed, each for a picked secret the receiver lacks.
+/// `values` sealed, each for a picked secret the receiver `into` lacks; a value the
+/// browser sealed is taken only with `client_sealed` on.
 pub(crate) fn sealed(
     sealing: &SealingKey,
     rows: &[PlannedRow],
-    sides: &[&SavedEnvironmentIntent; 2],
+    [from, into]: [&Environment; 2],
+    client_sealed: bool,
     picks: &BTreeSet<RowId>,
-    values: &BTreeMap<RowId, String>,
+    values: &BTreeMap<RowId, SecretValue>,
 ) -> Result<BTreeMap<RowId, SealedCell>, RpcError> {
+    let sides = [&from.working, &into.working];
     values
         .iter()
         .map(|(row, value)| {
             let label =
-                named(sides, row).map_or_else(|| row.to_string(), |named| named.to_string());
+                named(&sides, row).map_or_else(|| row.to_string(), |named| named.to_string());
             let needs = rows.iter().any(|planned| {
                 planned.id == *row
                     && matches!(
@@ -478,18 +490,22 @@ pub(crate) fn sealed(
                     json!({ "row": row }),
                 ));
             }
-            let sealed = seal_secret(sealing, row, &label, value)?;
+            let sealed = seal_secret(sealing, row, &label, value, into, client_sealed)?;
             Ok((row.clone(), SealedCell::Secret(sealed)))
         })
         .collect()
 }
 
-/// `value`, sealed for secret `row` (labelled `label`), once it is one the row takes.
+/// `value`, sealed for secret `row` (labelled `label`) of `receiver`, once it is one
+/// the row takes. A client-sealed value binds to the receiver's own Service, so it
+/// needs that Service there already.
 pub(crate) fn seal_secret(
     sealing: &SealingKey,
     row: &RowId,
     label: &str,
-    value: &str,
+    value: &SecretValue,
+    receiver: &Environment,
+    client_sealed: bool,
 ) -> Result<SealedSecret, RpcError> {
     let At::Variable(key) = row.at() else {
         return Err(error::invalid(
@@ -497,17 +513,41 @@ pub(crate) fn seal_secret(
             json!({ "row": row }),
         ));
     };
-    if value.is_empty() {
-        return Err(error::invalid(
-            format!("{label}: a secret needs a value"),
-            json!({ "row": row }),
-        ));
+    let key = VariableKey::parse(key)?;
+    match value {
+        SecretValue::Text(value) => {
+            if value.is_empty() {
+                return Err(error::invalid(
+                    format!("{label}: a secret needs a value"),
+                    json!({ "row": row }),
+                ));
+            }
+            validate_text(&key, value)?;
+            Ok(SealedSecret {
+                fingerprint: sealing.fingerprint(value),
+                value: SecretCiphertext::Store(sealing.seal(value)),
+            })
+        }
+        SecretValue::ClientSealed(value) => {
+            let refuse = |message: &str| {
+                error::invalid(format!("{label}: {message}"), json!({ "row": row }))
+            };
+            let service = receiver
+                .working
+                .services
+                .iter()
+                .find(|service| service.lineage_id == row.lineage())
+                .ok_or_else(|| {
+                    refuse("its Service isn't there yet, so nothing can be sealed for it")
+                })?;
+            let receiver = client_sealed::Receiver {
+                environment: &receiver.summary.id,
+                service,
+                enabled: client_sealed,
+            };
+            client_sealed::accept(value.clone(), &key, &receiver, refuse)
+        }
     }
-    validate_text(&VariableKey::parse(key)?, value)?;
-    Ok(SealedSecret {
-        fingerprint: sealing.fingerprint(value),
-        value: SecretCiphertext::Store(sealing.seal(value)),
-    })
 }
 
 /// Refuse to close a kept Branch, or one the Store can't remove.

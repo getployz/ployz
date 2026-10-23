@@ -1,16 +1,18 @@
-//! The `sealedVariables` flag through the Store's interface only, on SQLite and on
-//! Postgres (see `backend`): off for every Organization until a row exists, which
-//! nothing in the Store inserts, and gone when the Organization is torn down.
+//! The `sealedVariables` flag and a variable value Edit the browser sealed, through
+//! the Store's interface only, on SQLite and on Postgres (see `backend`): the flag
+//! is off for every Organization until a row exists, which nothing in the Store
+//! inserts, and gone when the Organization is torn down; a sealed value is taken
+//! only with it on, only sealed for the variable it lands in, and never read.
 #![expect(
     clippy::indexing_slicing,
     reason = "Fixed JSON results use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::ServiceName;
+use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
-    DiffQuery, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId,
-    ProjectName, RunnerId, ServiceLineageId, SettingPath,
+    DiffQuery, Edit, Edited, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId,
+    ProjectId, ProjectName, RunnerId, ServiceLineageId, SettingPath,
 };
 use serde_json::{Value, json};
 
@@ -53,20 +55,45 @@ fn shop(store: &ConfigStore) {
         .unwrap();
 }
 
+fn uuid(n: u8) -> String {
+    format!("00000000-0000-4000-8000-0000000000{n:02}")
+}
+
+fn edit(store: &ConfigStore, path: &str, value: Value) -> Result<Edited, RpcError> {
+    store.write(
+        &who(),
+        &Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes: vec![Change::Set {
+                path: SettingPath::parse(path).unwrap(),
+                value,
+            }],
+        },
+    )
+}
+
 fn set(store: &ConfigStore, path: &str, value: Value) {
-    store
-        .write(
-            &who(),
-            &Edit {
-                environment: EnvironmentRef::default(),
-                expect: None,
-                changes: vec![Change::Set {
-                    path: SettingPath::parse(path).unwrap(),
-                    value,
-                }],
-            },
-        )
-        .unwrap();
+    edit(store, path, value).unwrap();
+}
+
+fn staged(edited: &Edited) -> Vec<String> {
+    edited.staged.iter().map(ToString::to_string).collect()
+}
+
+/// `web.env.PASSWORD` sealed in the browser for `web` of the default Environment.
+fn password(n: u8) -> Value {
+    json!({ "secret": backend::client_sealed(&uuid(2), &uuid(3), "PASSWORD", n) })
+}
+
+/// `edit` refused as invalid, naming the variable and why, never the ciphertext.
+fn refused(store: &ConfigStore, path: &str, value: Value, why: &str) {
+    let error = edit(store, path, value).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    let key = path.rsplit('.').next().unwrap();
+    assert!(error.message.starts_with(key), "{error:?}");
+    assert!(error.message.contains(why), "{error:?}");
+    assert!(!format!("{error:?}").contains("AAAA"), "{error:?}");
 }
 
 fn value(store: &ConfigStore, path: &str) -> Value {
@@ -82,14 +109,6 @@ fn value(store: &ConfigStore, path: &str) -> Value {
         .settings
         .remove(0)
         .value
-}
-
-/// Turn the flag on for `organization` beside the Store, the way no Store code does.
-fn turn_on(url: &str, organization: &str) {
-    backend::execute(
-        url,
-        &format!("INSERT INTO config_sealed_variables (organization_id) VALUES ('{organization}')"),
-    );
 }
 
 #[test]
@@ -148,11 +167,111 @@ fn the_flag_is_on_only_with_a_row_and_teardown_of_the_organization_deletes_it() 
     let store = ConfigStore::open(&url, backend::key()).unwrap();
     let other = OrganizationId::parse("other").unwrap();
     assert!(!store.sealed_variables(&org()).unwrap());
-    turn_on(&url, "org");
-    turn_on(&url, "other");
+    backend::sealed_variables_on(&url, "org");
+    backend::sealed_variables_on(&url, "other");
     assert!(store.sealed_variables(&org()).unwrap());
     assert!(store.sealed_variables(&other).unwrap());
     store.remove_organization(&who()).unwrap();
     assert!(!store.sealed_variables(&org()).unwrap());
     assert!(store.sealed_variables(&other).unwrap());
+}
+
+#[test]
+fn a_sealed_value_is_taken_only_with_the_flag_on_and_only_sealed_for_its_variable() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    refused(
+        &store,
+        "web.env.PASSWORD",
+        password(1),
+        "off for this Organization",
+    );
+    refused(
+        &store,
+        "web.env.PASSWORD",
+        json!({ "secret": { "sealedFor": uuid(2) } }),
+        "sealed in the browser",
+    );
+
+    backend::sealed_variables_on(&url, "org");
+    let sealed = |environment: u8, service: u8, key: &str| json!({ "secret": backend::client_sealed(&uuid(environment), &uuid(service), key, 1) });
+    refused(
+        &store,
+        "web.env.PASSWORD",
+        sealed(9, 3, "PASSWORD"),
+        "sealed for another Environment",
+    );
+    refused(
+        &store,
+        "web.env.PASSWORD",
+        sealed(2, 3, "OTHER"),
+        "sealed for another variable",
+    );
+    refused(
+        &store,
+        "web.env.PASSWORD",
+        sealed(2, 4, "PASSWORD"),
+        "sealed for another Service",
+    );
+    let shared = json!({ "secret": {
+        "sealedFor": uuid(2),
+        "value": { "sealed": backend::ciphertext(1), "scope": "shared", "key": "PASSWORD" },
+    } });
+    refused(
+        &store,
+        "web.env.PASSWORD",
+        shared,
+        "sealed for every Service",
+    );
+    let edited = edit(&store, "web.env.PASSWORD", password(1)).unwrap();
+    assert_eq!(staged(&edited), ["web.env.PASSWORD"]);
+    assert_eq!(value(&store, "web.env.PASSWORD"), json!({ "secret": true }));
+    let diff = store.read(&who(), &DiffQuery::default()).unwrap();
+    assert!(!format!("{diff:?}").contains("AAAA"), "{diff:?}");
+}
+
+#[test]
+fn a_sealed_secret_is_kept_by_its_marker_and_never_becomes_plain() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+    set(&store, "web.env.PASSWORD", password(1));
+    for same in [json!({ "secret": true }), password(1)] {
+        let edited = edit(&store, "web.env.PASSWORD", same).unwrap();
+        assert!(staged(&edited).is_empty(), "{edited:?}");
+    }
+    let error = edit(&store, "web.env.PASSWORD", json!("plain now")).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert!(error.message.contains("never becomes plain text"));
+    // A new secret replaces it, sealed either way.
+    for new in [json!({ "secret": SECRET }), password(2)] {
+        let edited = edit(&store, "web.env.PASSWORD", new).unwrap();
+        assert_eq!(staged(&edited), ["web.env.PASSWORD"]);
+    }
+    assert_eq!(value(&store, "web.env.PASSWORD"), json!({ "secret": true }));
+}
+
+#[test]
+fn a_sealed_value_skips_the_text_and_typed_address_checks_that_need_its_plaintext() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+    // A plain secret named like an address is checked for one; a sealed one can't be.
+    let sealed = json!({ "secret": backend::client_sealed(&uuid(2), &uuid(3), "DATABASE_URL", 1) });
+    let edited = edit(&store, "web.env.DATABASE_URL", sealed).unwrap();
+    assert_eq!(staged(&edited), ["web.env.DATABASE_URL"]);
+    assert!(edited.typed_addresses.is_empty(), "{edited:?}");
+    // The length bound still holds, on the plaintext's size the ciphertext implies.
+    let long = "A".repeat(4 * 44 * 1024);
+    let too_long = json!({ "secret": {
+        "sealedFor": uuid(2),
+        "value": { "sealed": long, "scope": { "service": uuid(3) }, "key": "PASSWORD" },
+    } });
+    refused(&store, "web.env.PASSWORD", too_long, "too long");
 }

@@ -10,20 +10,20 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use ployz_core::config::{
-    CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput, ResolveVariablesResult,
-    ResolvedConfigFile, ResolverValue, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
-    SecretCiphertext, ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer,
-    is_deleted_owner, parse_variable_template, render_variable_parts, resolve_config_file,
-    resolve_variables,
+    ClientSealedValue, CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput,
+    ResolveVariablesResult, ResolvedConfigFile, ResolverValue, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, SecretCiphertext, ServiceEnvValue, ValuePart,
+    ValuePartOwner, VariableProducer, is_deleted_owner, parse_variable_template,
+    render_variable_parts, resolve_config_file, resolve_variables,
 };
 use ployz_core::{ConfigFileName, RpcError, ServiceName};
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{Map, Value, json};
 
-use crate::error;
 use crate::scope::Environment;
 use crate::sealing::{SealingKey, plain_fingerprint};
 use crate::typed_address::{self, Typed};
+use crate::{client_sealed, error};
 
 /// A variable's name: letters, digits and `_`, not starting with a digit, at most
 /// 128 characters. Stored uppercase, as the dashboard stores it.
@@ -61,6 +61,9 @@ enum Input {
     /// `{"secret": true}` or `{"secret": false}`: keep the stored secret.
     Keep,
     Seal(String),
+    /// `{"secret": {"sealedFor": ..., "value": ...}}`: a value the browser sealed for
+    /// this Environment, stored as it came.
+    ClientSealed(ClientSealedValue),
     /// `{"secret": {"generate": true}}`: a random secret, unless one is stored already.
     Generate,
 }
@@ -146,6 +149,7 @@ pub(crate) fn set(
     key: &VariableKey,
     value: Value,
     sealing: &SealingKey,
+    client_sealed: impl FnOnce() -> Result<bool, RpcError>,
 ) -> Result<(bool, Option<Typed>), RpcError> {
     refuse_reserved(key)?;
     let (input, exported) = match value {
@@ -240,6 +244,22 @@ pub(crate) fn set(
             (stored(parts), fingerprint, typed)
         }
         (Some(Input::Seal(plaintext)), _) => seal(plaintext)?,
+        (Some(Input::ClientSealed(value)), _) => {
+            let receiver = client_sealed::Receiver {
+                environment: &environment.summary.id,
+                service: environment.service(service)?,
+                enabled: client_sealed()?,
+            };
+            let sealed =
+                client_sealed::accept(value, key, &receiver, |message| invalid(key, message))?;
+            (
+                SavedVariableValue::Secret {
+                    encrypted_value: Some(sealed.value),
+                },
+                sealed.fingerprint,
+                None,
+            )
+        }
     };
     let next = SavedVariableIntent {
         id: current.map_or_else(
@@ -536,9 +556,9 @@ pub(crate) fn stored(mut parts: Vec<ValuePart>) -> SavedVariableValue {
 
 /// The longest `KEY=value` string Linux passes a program, with its closing NUL:
 /// `MAX_ARG_STRLEN`. A Container given a longer one never starts.
-const MAX_ENV_STRING: usize = 128 * 1024;
+pub(crate) const MAX_ENV_STRING: usize = 128 * 1024;
 
-const TOO_LONG: &str = "too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
+pub(crate) const TOO_LONG: &str = "too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
 
 fn too_long(key: &str, value: &str) -> bool {
     key.len() + value.len() + 2 > MAX_ENV_STRING
@@ -691,6 +711,14 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
                 if asked.len() == 1 && asked.get("generate") == Some(&Value::Bool(true)) =>
             {
                 Ok(Input::Generate)
+            }
+            // A fixed message: a serde error would echo the value.
+            Some(sealed @ Value::Object(asked)) if asked.contains_key("sealedFor") => {
+                serde_json::from_value(sealed.clone())
+                    .map(Input::ClientSealed)
+                    .map_err(|_| {
+                        invalid(key, "expected sealedFor and a value sealed in the browser")
+                    })
             }
             Some(_) | None => Err(invalid(key, "expected {\"secret\": true} or a new secret")),
         },
