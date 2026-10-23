@@ -22,6 +22,8 @@ if [ "${1:-}" = --fresh ]; then fresh=1; shift; fi
 [ -n "${SERVERS:-}" ] && export VERIFY_REAL_SERVERS=1
 if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ] || [ "${FAKE_GITHUB:-0}" = 1 ] || [ "${MAIL:-0}" = 1 ]; then with_inngest=1; else with_inngest=0; fi
 cd "$dash"
+# Containers other checkouts left behind hold the shared host's memory.
+"$dash/scripts/verify/reap.sh" || true
 
 # Fresh checkouts have neither node_modules nor the native SDK; rebuild the SDK when core sources are newer.
 install=0; build_sdk=0
