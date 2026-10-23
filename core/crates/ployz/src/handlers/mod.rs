@@ -19,6 +19,7 @@ mod data_loss;
 #[cfg(feature = "verify-faults")]
 pub(crate) mod debug;
 pub(crate) mod deploy;
+pub(crate) mod device;
 pub(crate) mod docs;
 pub(crate) mod domain;
 pub(crate) mod env;
@@ -647,6 +648,20 @@ where
     })
 }
 
+fn with_full_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
+    let leaf = leaf_matches(root);
+    let context = leaf.get_one::<String>("context").map(String::as_str);
+    runtime()?.block_on(async {
+        let mut client = server::connect_full(leaf, context).await?;
+        work(&mut client).await
+    })
+}
+
 /// [`with_client`] for a read Cloud also answers: `work` runs against the Servers, or the
 /// credential comes back when Cloud refuses it Server access, to ask Cloud instead.
 fn with_reader<F>(
@@ -916,6 +931,10 @@ mod tests {
             (&["server", "ls"], Some("b")),
             (&["ps"], Some("b")),
             (&["deploy"], Some("b")),
+            (&["device", "request"], None),
+            (&["device", "ls"], Some("b")),
+            (&["device", "rm", "mmg42klgyq"], Some("b")),
+            (&["device", "approve", "mmg42klgyq"], Some("b")),
         ] {
             let argv = args
                 .iter()

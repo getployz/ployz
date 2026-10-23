@@ -29,6 +29,8 @@ pub(super) struct LocalMachineRecordWire {
     pinned_addresses: Option<PinnedAddresses>,
     #[serde(default)]
     push_target: Option<Url>,
+    #[serde(default)]
+    device_slots_vetted: bool,
 }
 
 impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
@@ -44,6 +46,7 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
             .pinned_addresses
             .unwrap_or_else(|| pins_when_none_stored(&record));
         record.push_target = wire.push_target;
+        record.device_slots_vetted = wire.device_slots_vetted;
         Ok(record)
     }
 }

@@ -50,6 +50,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
                     visible_peers: vec![machine],
                     target_versions: BTreeMap::new(),
                     sealing_key: None,
+                    devices: Vec::new(),
                 },
             },
             wireguard_mtu: None,

@@ -143,6 +143,50 @@ async fn register_does_not_reconstruct_membership_while_joining() {
 }
 
 #[tokio::test]
+async fn register_carries_the_entrys_devices_to_the_joiner() {
+    let (entry, replicated, _founder, data_dir, server) = participating().await;
+    let device = ployz_core::DeviceKey::from_bytes([5; 32]);
+    entry
+        .set_device(ployz_core::SetDeviceRequest::Approve { key: device })
+        .await
+        .unwrap();
+    let joiner_dir =
+        std::env::temp_dir().join(format!("ployzd-register-devices-{}", MachineId::random()));
+    let joiner_store = RecordOwner::spawn(LocalMachineStore::open(&joiner_dir).unwrap()).unwrap();
+    let mut identity = request(
+        "peer",
+        joiner_store.record().wireguard_private_key.public_key(),
+    );
+    identity.machine_id = joiner_store.record().id();
+    let registered = entry.register(identity).await.unwrap();
+    assert_eq!(registered.devices, [device]);
+    let joiner = LocalMachine::new(joiner_store).with_cluster(Some((
+        replicated.clone(),
+        AdminClient::new("/no/such/ployz-admin.sock"),
+    )));
+    joiner
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Member {
+                registration: registered,
+            },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        joiner.record().management_scope(device.as_bytes()),
+        Some(ployz_core::ManagementScope::Full)
+    );
+
+    server.abort();
+    drop(entry);
+    drop(joiner);
+    let _ = std::fs::remove_dir_all(data_dir);
+    let _ = std::fs::remove_dir_all(joiner_dir);
+}
+
+#[tokio::test]
 async fn client_assignment_publishes_through_entry_and_a_changed_register_overwrites_it() {
     let (local, replicated, founder, data_dir, server) = participating().await;
     let id = MachineId::random();

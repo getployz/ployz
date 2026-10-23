@@ -58,6 +58,7 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
         visible_peers: Vec::new(),
         target_versions: Default::default(),
         sealing_key: None,
+        devices: Vec::new(),
     });
     let address = serve_machine(daemon.clone()).await;
     let directory = tempfile::tempdir().unwrap();

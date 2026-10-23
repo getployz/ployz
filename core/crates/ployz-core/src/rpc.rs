@@ -25,10 +25,10 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerAddress, ContainerId,
-    ContainerKind, ContainerObservation, Machine, MachineId, MachineLogService, MachineName,
-    MachineObservation, MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel,
-    Namespace, PinnedAddresses, PullPolicy, QualifiedService, ResolvedServiceSpec,
-    SelectedEndpoint, StorageChoice, WireGuardPublicKey,
+    ContainerKind, ContainerObservation, DeviceCode, DeviceKey, Machine, MachineId,
+    MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineUpdate,
+    ManagementCapability, ManagementClientLabel, Namespace, PinnedAddresses, PullPolicy,
+    QualifiedService, ResolvedServiceSpec, SelectedEndpoint, StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -50,8 +50,9 @@ pub enum CapabilityAdvertisement {
     Cluster,
 }
 
-/// What a Management Client may call on a Machine, from its slot's label. Cloud's
-/// `cloud` slot is `Operator`; every other slot and the local socket are `Full`.
+/// What a Management Client may call on a Machine. A slot is `Full` only when its label
+/// is the [`DeviceCode`](crate::DeviceCode) label of the key it holds; `cloud`, every
+/// `cli-*` slot Cloud minted and any other label are `Operator`. The local socket is `Full`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ManagementScope {
     /// Drives Deploys and reads state, but never execs into a container, opens a
@@ -62,11 +63,11 @@ pub enum ManagementScope {
 
 impl ManagementScope {
     #[must_use]
-    pub fn of(label: &crate::ManagementClientLabel) -> Self {
-        if label.as_str() == "cloud" {
-            Self::Operator
-        } else {
+    pub fn of(label: &crate::ManagementClientLabel, key: &[u8; 32]) -> Self {
+        if *label == DeviceKey::from_bytes(*key).label() {
             Self::Full
+        } else {
+            Self::Operator
         }
     }
 }
@@ -429,6 +430,29 @@ pub enum SetManagementClientRequest {
 pub struct SetManagementClientResponse {
     #[ts(type = "string | null")]
     pub capability: Option<ManagementCapability>,
+}
+
+/// Approve a Device on this Machine, or remove one, at Full scope only.
+///
+/// `Approve` carries the Device's public key, never a secret; the Machine stores it in
+/// the slot the key's [`DeviceCode`] names. Strict for the same reason as
+/// [`SetManagementClientRequest`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SetDeviceRequest {
+    Approve { key: DeviceKey },
+    Remove { code: DeviceCode },
+}
+
+/// What a [`SetDeviceRequest`] changed on this Machine. Each outcome is final, so a
+/// rerun reports `AlreadyApproved` or `NotPresent` rather than failing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum DeviceSet {
+    Approved { code: DeviceCode },
+    AlreadyApproved { code: DeviceCode },
+    Removed { code: DeviceCode },
+    NotPresent { code: DeviceCode },
 }
 
 /// Where this Machine's observe process pushes crash events, or `None` to stop pushing.
@@ -1127,6 +1151,11 @@ pub struct Registered {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub sealing_key: Option<crate::SealedSealingKey>,
+    /// The issuer's approved Devices, which a fresh joiner admits at Full scope.
+    /// Absent from an issuer that predates Devices: the joiner starts with none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<crate::DeviceKey>>")]
+    pub devices: Vec<crate::DeviceKey>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1554,6 +1583,7 @@ define_responses! {
     Enrolled(Enrolled) => "enrolled";
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
+    DeviceSet(DeviceSet) => "device_set";
     PushTargetSet(PushTargetSet) => "push_target_set";
     EndpointSelected(EndpointSelected) => "endpoint_selected";
     MachineList(MachineList) => "machine_list";
@@ -2345,6 +2375,7 @@ mod set_management_client_wire {
                     visible_peers: vec![machine()],
                     target_versions: BTreeMap::new(),
                     sealing_key: None,
+                    devices: Vec::new(),
                 },
             },
             wireguard_mtu: Some(1380),
@@ -2471,19 +2502,28 @@ mod streaming_routing_tests {
     }
 
     #[test]
-    fn only_exec_needs_full_scope() {
-        assert_eq!(crate::rpc_catalog!(full_scope_routes), ["Exec"]);
+    fn only_exec_and_set_device_need_full_scope() {
+        assert_eq!(
+            crate::rpc_catalog!(full_scope_routes),
+            ["SetDevice", "Exec"]
+        );
         assert_eq!(super::scope_of("/ployz.rpc.v1.MachineRpc/Nope"), None);
     }
 
     #[test]
-    fn only_the_cloud_slot_is_operator() {
-        let scope = |label: &str| {
-            super::ManagementScope::of(&crate::ManagementClientLabel::parse(label).unwrap())
+    fn only_a_device_slot_holding_its_own_key_is_full() {
+        let key = [9; 32];
+        let scope = |label: &str, key: &[u8; 32]| {
+            super::ManagementScope::of(&crate::ManagementClientLabel::parse(label).unwrap(), key)
         };
-        assert_eq!(scope("cloud"), super::ManagementScope::Operator);
-        for label in ["cli-0123456789abcdef0123456789ab", "cloud-2", "laptop"] {
-            assert_eq!(scope(label), super::ManagementScope::Full);
+        let device = crate::DeviceKey::from_bytes(key).label();
+        assert_eq!(scope(device.as_str(), &key), super::ManagementScope::Full);
+        assert_eq!(
+            scope(device.as_str(), &[8; 32]),
+            super::ManagementScope::Operator
+        );
+        for label in ["cloud", "cli-0123456789abcdef0123456789ab", "laptop"] {
+            assert_eq!(scope(label, &key), super::ManagementScope::Operator);
         }
     }
 

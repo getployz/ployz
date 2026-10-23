@@ -10,7 +10,7 @@ use iroh::{
 use ployz_core::{
     DEFAULT_RELAY_URL, DescribeContractRequest, MANAGEMENT_ALPN, MANAGEMENT_PROOF_LABEL,
     MachineRpcClient, ManagementCapability, ManagementProof, TUNNEL_ALPN, TUNNEL_FAILED,
-    TUNNEL_OPEN, op,
+    TUNNEL_NEEDS_FULL, TUNNEL_OPEN, op,
 };
 use std::{
     io,
@@ -289,6 +289,8 @@ pub(super) async fn dial_tunnel(
             ConnectError::ClientRefused
         } else if close.error_code == CLIENT_CLEARED {
             ConnectError::ClientCleared
+        } else if close.error_code == VarInt::from_u32(TUNNEL_NEEDS_FULL) {
+            ConnectError::TunnelNeedsFull
         } else if close.error_code == VarInt::from_u32(TUNNEL_FAILED) {
             ConnectError::Attempt(String::from_utf8_lossy(&close.reason).into_owned().into())
         } else {

@@ -12,10 +12,11 @@ use ployz_core::{
     PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTED_ADDRESSES_CAPABILITY,
     READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
-    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
-    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
-    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, op,
+    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_DEVICE_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
+    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
+    VOLUME_SHRINK_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -34,6 +35,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             SET_MANAGEMENT_CLIENT_CAPABILITY,
             "ployz.machine.set-management-client.v1",
         ),
+        (SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1"),
         (
             SET_PUSH_TARGET_CAPABILITY,
             "ployz.machine.set-push-target.v1",
@@ -132,6 +134,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.enroll.v1",
             "ployz.machine.register.v1",
             "ployz.machine.set-management-client.v1",
+            "ployz.machine.set-device.v1",
             "ployz.machine.set-push-target.v1",
             "ployz.network.select-endpoint.v1",
             "ployz.machine.list.v1",
@@ -348,6 +351,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.sealing.install.v1",
         "gated: the backfill skips a Machine that lacks it and reports it as skipped",
+    ),
+    (
+        "ployz.machine.set-device.v1",
+        "gated: `ployz device` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
     ),
 ];
 

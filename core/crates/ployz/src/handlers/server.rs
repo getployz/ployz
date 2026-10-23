@@ -24,7 +24,7 @@ use crate::{
     cloud_login::{CredentialStore, LoginError},
     cluster::RoleWaitError,
     connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
-    context::{Config, ConnectionSource, ContextError, SelectedConnections},
+    context::{Config, Connection, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
     ui::progress::StartFailure,
 };
@@ -85,6 +85,88 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
     connect_or_none(matches, context)
         .await?
         .ok_or_else(no_servers)
+}
+
+/// [`connect`] for what needs Full scope: exec, tunnels and the Device roster. The
+/// `--connect`, `--context` or current context, or the local daemon, goes first, so over SSH
+/// on a Server that approves the first Device; signed in, Cloud's Server Access follows.
+/// Only a Device slot grants Full, so with a Device key every Management Capability
+/// connection dials as the Device.
+pub(super) async fn connect_full(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Client, Error> {
+    let config = super::config_path(matches)?;
+    let key = super::device::key::path(&config);
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let explicit = direct.is_some() || context.is_some();
+    let credential = if explicit {
+        None
+    } else {
+        match cloud_account::from_env(&CredentialStore::beside(&config)).await {
+            Ok(credential) => Some(credential),
+            Err(LoginError::SignedOut) => None,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let local = match crate::connect::resolve_connections(
+        &config,
+        direct,
+        context,
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    ) {
+        Ok(mut selected) => {
+            selected.connections = as_device(selected.connections, &key)?;
+            let connector =
+                SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+            crate::connect::connect_selected_with(selected, Arc::new(connector)).await
+        }
+        Err(error) => Err(error),
+    };
+    let Some(credential) = credential else {
+        return local.map_err(|error| signed_out_unless_configured(error, !explicit));
+    };
+    if let Ok(client) = local {
+        return Ok(client);
+    }
+    let mut access = cloud_account::server_access(&credential).await?;
+    access.connections = as_device(access.connections, &key)?;
+    dial(matches, access).await?.ok_or_else(no_servers)
+}
+
+/// `connections`, each Management Capability one dialing as the Device whose key is at `key`
+/// when there is one. SSH and the local socket never read the key.
+fn as_device(
+    connections: Vec<Connection>,
+    key: &std::path::Path,
+) -> Result<Vec<Connection>, super::device::key::KeyError> {
+    let management = |connection: &Connection| {
+        matches!(
+            connection.transport(),
+            crate::context::Transport::Management(_)
+        )
+    };
+    if !connections.iter().any(management) {
+        return Ok(connections);
+    }
+    Ok(match super::device::key::load(key)? {
+        Some(secret) => connections
+            .into_iter()
+            .map(|connection| connection.with_device(secret))
+            .collect(),
+        None => connections,
+    })
+}
+
+/// Signed out with no context or local daemon: the fix is signing in, not a config file.
+/// The hidden test Store is never signed in, so it keeps the cause.
+fn signed_out_unless_configured(error: ConnectError, signed_out: bool) -> Error {
+    let no_config = matches!(error, ConnectError::Context(ContextError::NoConfig));
+    if signed_out && no_config && !super::store::local_mode() {
+        LoginError::SignedOut.into()
+    } else {
+        error.into()
+    }
 }
 
 /// [`connect`], or `None` when Cloud says this Organization has no Servers yet.
@@ -393,17 +475,7 @@ async fn entries(
         context,
         std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
     )
-    .map_err(|error| {
-        let no_config = matches!(
-            error,
-            crate::connect::ConnectError::Context(ContextError::NoConfig)
-        );
-        if signed_out && no_config && !super::store::local_mode() {
-            LoginError::SignedOut.into()
-        } else {
-            error.into()
-        }
-    })
+    .map_err(|error| signed_out_unless_configured(error, signed_out))
 }
 
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
@@ -1827,6 +1899,47 @@ mod tests {
             None,
             "a failure on another Server"
         );
+    }
+
+    #[test]
+    fn full_scope_dials_management_connections_as_the_device() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use crate::context::Transport;
+        use ployz_core::{ManagementCapability, ManagementIdentity};
+
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("device.key");
+        let operator = ManagementCapability::new(ManagementIdentity::from_bytes([1; 32]), [2; 32]);
+        let ssh: Connection = "root@node-a".parse().unwrap();
+        let context = vec![
+            Connection::management(operator.to_secret_string()).unwrap(),
+            ssh.clone(),
+        ];
+        let dialed = |connections| {
+            let dialed = as_device(connections, &key).unwrap();
+            let [management, other] = dialed.as_slice() else {
+                panic!("the context's two connections");
+            };
+            let Transport::Management(capability) = management.transport() else {
+                panic!("the context's first connection is a Management Capability");
+            };
+            assert_eq!(other, &ssh);
+            capability.to_secret_string()
+        };
+
+        assert_eq!(dialed(context.clone()), operator.to_secret_string());
+        std::fs::write(&key, [3; 32]).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            dialed(context.clone()),
+            ManagementCapability::new(*operator.machine(), [3; 32]).to_secret_string()
+        );
+
+        std::fs::write(&key, b"broken").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(as_device(vec![ssh.clone()], &key).unwrap(), vec![ssh]);
+        assert!(as_device(context, &key).is_err());
     }
 
     #[test]

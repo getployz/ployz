@@ -279,7 +279,7 @@ fn refuse_scope(path: &str, scope: ManagementScope) -> Option<http::Response<Bod
         ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &NeedsFullAccess { capability },
-            serde_json::json!({ "capability": capability }),
+            serde_json::json!({ "capability": capability, "next": "ployz device request" }),
         )
         .into_http(),
     )
