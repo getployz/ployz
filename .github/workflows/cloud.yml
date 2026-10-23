@@ -19,9 +19,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Main groups by commit and never cancels a running main run here, though a newer run of the same commit can
-  # replace one still waiting. Fast CI calls this workflow; its main runs finish once started, but a waiting one
-  # can be replaced, so not every main commit leaves builds behind.
+  # A manual run on main groups by commit and is never cancelled once started. Fast CI calls this workflow; each
+  # merge queue entry has its own ref, so a queue run is never replaced by another entry's.
   group: cloud-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
