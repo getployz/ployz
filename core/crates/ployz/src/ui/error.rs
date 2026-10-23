@@ -4,7 +4,7 @@ use std::io;
 
 use serde_json::{Map, Value};
 
-use super::{Tone, escaped};
+use super::{Tone, escaped, shell_word, unprintable};
 
 /// Most choices a `valid:` line lists before it says how many more there are.
 pub const VALID_SHOWN: usize = 8;
@@ -58,19 +58,23 @@ impl Hint {
         }
     }
 
+    /// What the reader sees: a command they can paste, or names [`escaped`] to read as stored.
     fn text(&self) -> String {
         match self {
             Self::Next(command)
             | Self::Inspect(command)
             | Self::Retry(command)
-            | Self::Undo(command) => command.clone(),
-            Self::Closest(name) => format!("did you mean {name}?"),
-            Self::Valid(names) => match names.split_at_checked(VALID_SHOWN) {
-                Some((shown, rest)) if !rest.is_empty() => {
-                    format!("{}, and {} more", shown.join(", "), rest.len())
+            | Self::Undo(command) => pasteable(command),
+            Self::Closest(name) => format!("did you mean {}?", escaped(name)),
+            Self::Valid(names) => {
+                let names: Vec<_> = names.iter().map(|name| escaped(name)).collect();
+                match names.split_at_checked(VALID_SHOWN) {
+                    Some((shown, rest)) if !rest.is_empty() => {
+                        format!("{}, and {} more", shown.join(", "), rest.len())
+                    }
+                    _ => names.join(", "),
                 }
-                _ => names.join(", "),
-            },
+            }
         }
     }
 
@@ -80,7 +84,7 @@ impl Hint {
     ///
     /// Returns the writer's error.
     pub fn write(&self, out: &mut dyn io::Write) -> io::Result<()> {
-        let text = escaped(&self.text());
+        let text = self.text();
         match self.label() {
             Some(label) => writeln!(out, "{} {text}", Tone::Label.paint(label)),
             None => writeln!(out, "{text}"),
@@ -152,6 +156,36 @@ impl Hint {
         if !inspect.is_empty() {
             fields.insert("inspect".into(), inspect.into());
         }
+    }
+}
+
+/// `command` with each word that holds an [`unprintable`] character in [`shell_word`]'s
+/// `$'…'` form, so it shows safely and still pastes as the same command. Every other word
+/// stays as written; a command that doesn't parse prints [`escaped`].
+fn pasteable(command: &str) -> String {
+    if !command.chars().any(unprintable) {
+        return command.to_owned();
+    }
+    let mut words = Vec::new();
+    let mut open: Option<String> = None;
+    // A quoted word can hold spaces, so a piece joins the next until it parses.
+    for piece in command.split(' ') {
+        let chunk = match open.take() {
+            Some(open) => format!("{open} {piece}"),
+            None => piece.to_owned(),
+        };
+        match shell_words::split(&chunk) {
+            Err(_) => open = Some(chunk),
+            Ok(_) if !chunk.chars().any(unprintable) => words.push(chunk),
+            Ok(parsed) => words.push(match parsed.as_slice() {
+                [word] => shell_word(word).into_owned(),
+                _ => escaped(&chunk),
+            }),
+        }
+    }
+    match open {
+        Some(_) => escaped(command),
+        None => words.join(" "),
     }
 }
 
@@ -235,8 +269,8 @@ pub(crate) fn chain_text(error: Chain<'_>) -> String {
 }
 
 /// Write the human error: `error:` with our sentence, one `cause:` line with the
-/// deepest source, then the hints, with each [`escaped`] so a name from the Store reads
-/// as stored. `--json` keeps every cause, and the raw text.
+/// deepest source, then the hints. Each line is [`escaped`] so a name from the Store reads
+/// as stored, and a command hint is [`pasteable`]. `--json` keeps every cause, and the raw text.
 ///
 /// # Errors
 ///
@@ -349,7 +383,93 @@ mod tests {
              Already shown: a\\u{202e}b.txt\n  \
              cause: refused a\\u{202e}b.txt\n\
              did you mean a\\u{202e}b.txt?\n\
-             next: ployz config rm-file app a\\u{202e}b.txt\n"
+             next: ployz config rm-file app $'a\\xe2\\x80\\xaeb.txt'\n"
+        );
+    }
+
+    #[test]
+    fn a_command_hint_quotes_an_invisible_character_so_it_pastes_back() {
+        let name = "a\u{202E}b.txt";
+        let config = format!("/tmp/{name}/config.yaml");
+        let next = ["ployz", "config", "rm-file", "app", name];
+        let retry = ["ployz", "--ployz-config", config.as_str(), "deploy"];
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "Config app has no file.",
+            None,
+            &[
+                Hint::Next(shell_words::join(next)),
+                Hint::Retry(shell_words::join(retry)),
+                Hint::Undo("ployz config rm-file app 'a\u{202E}b.txt".into()),
+            ],
+        )
+        .unwrap();
+        let shown = String::from_utf8(out.into_inner()).unwrap();
+        assert_eq!(
+            shown,
+            "error: Config app has no file.\n\
+             next: ployz config rm-file app $'a\\xe2\\x80\\xaeb.txt'\n\
+             retry: ployz --ployz-config $'/tmp/a\\xe2\\x80\\xaeb.txt/config.yaml' deploy\n\
+             undo: ployz config rm-file app 'a\\u{202e}b.txt\n"
+        );
+        for (line, words) in shown.lines().skip(1).zip([&next[..], &retry[..]]) {
+            let (_, command) = line.split_once(": ").unwrap();
+            let parsed = std::process::Command::new("bash")
+                .args(["-c", &format!("printf '%s\\0' {command}")])
+                .output()
+                .unwrap();
+            assert!(parsed.status.success(), "{parsed:?}");
+            let parsed = String::from_utf8(parsed.stdout).unwrap();
+            assert_eq!(
+                parsed
+                    .trim_end_matches('\0')
+                    .split('\0')
+                    .collect::<Vec<_>>(),
+                words
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_hint_without_an_invisible_character_prints_as_built() {
+        let hints = [
+            "unset PLOYZ_TOKEN && ployz login",
+            "ployz config put app 'a b.txt' --from \"./x y\"",
+            "ployz  env sync --undo $'a\\xe2\\x80\\xaeb'",
+            "ployz logs web",
+        ];
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "Refused.",
+            None,
+            &[
+                Hint::Next(hints[0].into()),
+                Hint::Retry(hints[1].into()),
+                Hint::Undo(hints[2].into()),
+                Hint::Inspect(hints[3].into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            format!(
+                "error: Refused.\nnext: {}\nretry: {}\nundo: {}\ninspect: {}\n",
+                hints[0], hints[1], hints[2], hints[3]
+            )
+        );
+    }
+
+    #[test]
+    fn only_the_word_with_an_invisible_character_is_requoted() {
+        let mut out = anstream::StripStream::new(Vec::new());
+        Hint::Next("cd \"x y\" && ployz  rm a\u{202E}b".into())
+            .write(&mut out)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            "next: cd \"x y\" && ployz  rm $'a\\xe2\\x80\\xaeb'\n"
         );
     }
 

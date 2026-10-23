@@ -264,6 +264,30 @@ pub(crate) fn escaped(text: &str) -> String {
         .collect()
 }
 
+/// `arg` as one shell word: a word with an [`unprintable`] character in `$'…'` form, so it
+/// shows as its bytes and pastes back as itself.
+pub(crate) fn shell_word(arg: &str) -> std::borrow::Cow<'_, str> {
+    use std::fmt::Write as _;
+    if !arg.chars().any(unprintable) {
+        return shell_words::quote(arg);
+    }
+    let mut word = String::from("$'");
+    for c in arg.chars() {
+        match c {
+            '\\' | '\'' => word.extend(['\\', c]),
+            c if !unprintable(c) => word.push(c),
+            // Bash decodes \u by the locale; bytes read the same under any.
+            _ => {
+                for byte in c.encode_utf8(&mut [0; 4]).bytes() {
+                    let _ = write!(word, "\\x{byte:02x}");
+                }
+            }
+        }
+    }
+    word.push('\'');
+    word.into()
+}
+
 pub(crate) const REPLACED: char = '\u{FFFD}';
 
 pub(crate) fn printable(text: &str) -> String {
@@ -275,6 +299,39 @@ pub(crate) fn printable(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_retry_line_escapes_what_would_steer_the_terminal() {
+        assert_eq!(shell_word("web-*"), "'web-*'");
+        assert_eq!(shell_word("web-1"), "web-1");
+        assert_eq!(shell_word("web\u{1b}[31m'1"), "$'web\\x1b[31m\\'1'");
+        assert_eq!(shell_word("evil\u{202E}1\\"), "$'evil\\xe2\\x80\\xae1\\\\'");
+        assert_eq!(
+            shell_word("a\u{85}\u{E0001}"),
+            "$'a\\xc2\\x85\\xf3\\xa0\\x80\\x81'"
+        );
+    }
+
+    #[test]
+    fn bash_reads_a_retry_word_back_as_the_same_bytes_in_any_locale() {
+        let words = [
+            "a\u{85}b",
+            "evil\u{202E}1",
+            "\u{E0001}tag\u{85}a",
+            "\u{1F600}\u{1b}[0m\u{1F600}",
+        ];
+        for locale in ["C", "C.UTF-8"] {
+            for word in words {
+                let output = std::process::Command::new("bash")
+                    .args(["-c", &format!("printf %s {}", shell_word(word))])
+                    .env("LC_ALL", locale)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{locale} {word:?}");
+                assert_eq!(output.stdout, word.as_bytes(), "{locale} {word:?}");
+            }
+        }
+    }
 
     fn written(table: &Table, aligned: bool) -> String {
         let mut out = anstream::StripStream::new(Vec::new());

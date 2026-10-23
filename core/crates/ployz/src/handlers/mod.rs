@@ -533,7 +533,7 @@ pub(crate) fn typed_with(extra: &[&str]) -> String {
     std::iter::once("ployz".to_owned())
         .chain(std::env::args().skip(1))
         .chain(extra.iter().map(|arg| (*arg).to_owned()))
-        .map(|arg| shell_word(&arg).into_owned())
+        .map(|arg| crate::ui::shell_word(&arg).into_owned())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -546,33 +546,11 @@ pub(crate) fn pasteable(command: &str) -> String {
         |words| {
             words
                 .iter()
-                .map(|word| shell_word(word))
+                .map(|word| crate::ui::shell_word(word))
                 .collect::<Vec<_>>()
                 .join(" ")
         },
     )
-}
-
-fn shell_word(arg: &str) -> std::borrow::Cow<'_, str> {
-    use std::fmt::Write as _;
-    if !arg.chars().any(crate::ui::unprintable) {
-        return shell_words::quote(arg);
-    }
-    let mut word = String::from("$'");
-    for c in arg.chars() {
-        match c {
-            '\\' | '\'' => word.extend(['\\', c]),
-            c if !crate::ui::unprintable(c) => word.push(c),
-            // Bash decodes \u by the locale; bytes read the same under any.
-            _ => {
-                for byte in c.encode_utf8(&mut [0; 4]).bytes() {
-                    let _ = write!(word, "\\x{byte:02x}");
-                }
-            }
-        }
-    }
-    word.push('\'');
-    word.into()
 }
 
 fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
@@ -762,39 +740,6 @@ mod tests {
             ])),
             "ployz config put app $'a\\xe2\\x80\\xaeb.txt'"
         );
-    }
-
-    #[test]
-    fn a_retry_line_escapes_what_would_steer_the_terminal() {
-        assert_eq!(shell_word("web-*"), "'web-*'");
-        assert_eq!(shell_word("web-1"), "web-1");
-        assert_eq!(shell_word("web\u{1b}[31m'1"), "$'web\\x1b[31m\\'1'");
-        assert_eq!(shell_word("evil\u{202E}1\\"), "$'evil\\xe2\\x80\\xae1\\\\'");
-        assert_eq!(
-            shell_word("a\u{85}\u{E0001}"),
-            "$'a\\xc2\\x85\\xf3\\xa0\\x80\\x81'"
-        );
-    }
-
-    #[test]
-    fn bash_reads_a_retry_word_back_as_the_same_bytes_in_any_locale() {
-        let words = [
-            "a\u{85}b",
-            "evil\u{202E}1",
-            "\u{E0001}tag\u{85}a",
-            "\u{1F600}\u{1b}[0m\u{1F600}",
-        ];
-        for locale in ["C", "C.UTF-8"] {
-            for word in words {
-                let output = std::process::Command::new("bash")
-                    .args(["-c", &format!("printf %s {}", shell_word(word))])
-                    .env("LC_ALL", locale)
-                    .output()
-                    .unwrap();
-                assert!(output.status.success(), "{locale} {word:?}");
-                assert_eq!(output.stdout, word.as_bytes(), "{locale} {word:?}");
-            }
-        }
     }
 
     #[test]

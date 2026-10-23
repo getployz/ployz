@@ -15,7 +15,7 @@ use std::{
 use ployz_core::{MachineFailure, MachineId, MachineName, PartialResult, RpcError};
 use serde::Serialize;
 
-use super::{Fields, Hint, Mode, Table, Tone};
+use super::{Fields, Hint, Mode, Table, Tone, escaped};
 use crate::failure::Failure;
 
 thread_local! {
@@ -87,7 +87,21 @@ pub(crate) fn record_warning(warning: String) {
 
 /// A warning on stderr that the JSON result already carries elsewhere.
 fn flag(warning: &str) {
-    let _ = writeln!(anstream::stderr(), "{} {warning}", Tone::Change.paint("!"));
+    let _ = writeln!(
+        anstream::stderr(),
+        "{} {}",
+        Tone::Change.paint("!"),
+        shown(warning)
+    );
+}
+
+/// `warning` [`escaped`] line by line, so a name from the Store reads as stored.
+fn shown(warning: &str) -> String {
+    warning
+        .split('\n')
+        .map(escaped)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Run a command as one step of another: the JSON result it would print is
@@ -471,6 +485,18 @@ mod tests {
                 "machine-4 did not answer; its rows are missing.".to_owned(),
                 Some("deadline has elapsed".to_owned())
             )
+        );
+    }
+
+    #[test]
+    fn a_warning_prints_an_invisible_character_as_its_code_and_keeps_its_lines() {
+        assert_eq!(
+            shown("Left KEY empty in app/a\u{202E}b.txt: it is not set.\nDeploy\r again."),
+            "Left KEY empty in app/a\\u{202e}b.txt: it is not set.\nDeploy\\u{d} again."
+        );
+        assert_eq!(
+            shown("Docker volume (not recommended)"),
+            "Docker volume (not recommended)"
         );
     }
 }
