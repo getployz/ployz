@@ -38,7 +38,8 @@ fn find<'a>(root: &'a Command, path: &[String]) -> Option<&'a Command> {
         .try_fold(root, |command, name| command.find_subcommand(name))
 }
 
-/// A group only Cloud published has no description of its own: it lists its commands.
+/// A group only Cloud published has no description of its own. The CLI describes the ones it
+/// knows, and lists the commands of any other.
 fn described(parent: Command, path: &[String]) -> Command {
     let [name, rest @ ..] = path else {
         let commands = parent
@@ -46,7 +47,10 @@ fn described(parent: Command, path: &[String]) -> Command {
             .map(|command| command.get_name().to_owned())
             .collect::<Vec<_>>()
             .join(", ");
-        return parent.about(format!("Commands: {commands}"));
+        return match parent.get_name() {
+            "uptime" => parent.about("See whether visitors reach a Service, from every region"),
+            _ => parent.about(format!("Commands: {commands}")),
+        };
     };
     parent.mut_subcommand(name.clone(), |group| described(group, rest))
 }
@@ -188,6 +192,19 @@ mod tests {
         assert_eq!(
             show.get_one::<String>("environment").map(String::as_str),
             Some("staging")
+        );
+    }
+
+    #[test]
+    fn uptime_says_what_it_is_for() {
+        let root = attach(crate::cli::compiled(), &published());
+        let about = root
+            .find_subcommand("uptime")
+            .and_then(Command::get_about)
+            .map(ToString::to_string);
+        assert_eq!(
+            about.as_deref(),
+            Some("See whether visitors reach a Service, from every region")
         );
     }
 

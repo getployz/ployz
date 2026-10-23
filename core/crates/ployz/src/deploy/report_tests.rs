@@ -189,6 +189,19 @@ fn a_failed_replica_keeps_its_service_active_while_others_still_run() {
     assert_eq!(row.detail, None);
 }
 
+#[test]
+fn a_rollback_does_not_count_new_copies_that_are_going_away() {
+    let groups = [group("web", &[])];
+    let frame = graph_frame(
+        &groups,
+        &[("web", &["failed", "compensating", "compensating"])],
+    );
+    assert_eq!(
+        lines(&frame),
+        ["depth 0", "  ⠋ web  rolling back (1 failed)"]
+    );
+}
+
 fn group(service: &str, dependencies: &[&str]) -> ServiceGroup {
     ServiceGroup {
         service: Some(ServiceName::parse(service).unwrap()),
@@ -843,14 +856,14 @@ fn a_stop_first_replacement_reads_stopping_old_until_its_start_runs() {
 }
 
 #[test]
-fn rollback_and_health_waits_read_their_own_words_with_the_count() {
+fn rollback_and_health_waits_read_their_own_words() {
     let groups = [group("web", &[])];
     assert_eq!(
         lines(&graph_frame(
             &groups,
             &[("web", &["completed", "compensating"])]
         )),
-        ["depth 0", "  ◐ web  rolling back 1/2"]
+        ["depth 0", "  ◐ web  rolling back"]
     );
     assert_eq!(
         lines(&graph_frame(&groups, &[("web", &["completed", "health"])])),

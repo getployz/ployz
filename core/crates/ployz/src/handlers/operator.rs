@@ -436,14 +436,23 @@ async fn forward_exec(
     output: &mut crate::operator::ExecOutput,
     detach: bool,
 ) -> Result<i32, Error> {
+    let mut first = true;
     while let Some(payload) = output.next().await {
         match ExecResponseFrame::decode(&payload?)? {
             ExecResponseFrame::ExecId(_) if detach => return Ok(0),
             ExecResponseFrame::ExecId(_) => {}
-            ExecResponseFrame::Stdout(bytes) => {
-                write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?
+            ExecResponseFrame::Stdout(bytes) if start_failure(first, &bytes) => {
+                first = false;
+                std::io::stderr().write_all(&bytes)?;
             }
-            ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
+            ExecResponseFrame::Stdout(bytes) => {
+                first = false;
+                write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?;
+            }
+            ExecResponseFrame::Stderr(bytes) => {
+                first = false;
+                std::io::stderr().write_all(&bytes)?;
+            }
             ExecResponseFrame::Exit(code) => return Ok(code),
             ExecResponseFrame::Error(error) => return Err(error.into()),
         }
@@ -456,6 +465,12 @@ async fn forward_exec(
             "Exec stream ended without an exit status"
         },
     ))
+}
+
+/// Docker writes why it couldn't start an exec's command, such as a missing binary, into the
+/// exec's stdout stream, ahead of anything the command writes. `first` says no output came yet.
+fn start_failure(first: bool, bytes: &[u8]) -> bool {
+    first && bytes.starts_with(b"OCI runtime exec failed: ")
 }
 
 /// Stream Service logs; every Service of the Environment when none is named.
@@ -1338,6 +1353,18 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn a_command_docker_could_not_start_reports_on_stderr() {
+        let missing = b"OCI runtime exec failed: exec failed: unable to start container process: \
+            exec: \"nope\": executable file not found in $PATH: unknown\r\n";
+        assert!(start_failure(true, missing));
+        assert!(
+            !start_failure(false, missing),
+            "only the first output can be Docker's"
+        );
+        assert!(!start_failure(true, b"hello\n"));
+    }
 
     #[test]
     fn the_retry_keeps_the_typed_flags_that_chose_where_the_command_ran() {
