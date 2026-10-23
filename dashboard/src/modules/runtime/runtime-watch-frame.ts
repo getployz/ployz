@@ -199,7 +199,6 @@ export function runtimeWatchFrameForTransport(
   });
 }
 
-/** The SDK's `MachineRuntime` does not declare `sealing` yet, though a daemon that reports it sends it. */
 function runtimeSealing(runtime: MachineRuntime & { sealing?: Sealing | null }) {
   return runtime.sealing ?? null;
 }

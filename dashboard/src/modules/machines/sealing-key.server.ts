@@ -68,7 +68,6 @@ const recordOrganizationSealingKey = Effect.fn("SealingKey.recordOrganizationKey
 
 const backupConflict = () => new Conflict({ message: "The Organization's Sealing Key or its recovery backup has changed." });
 
-/** The founder's first backup: written where none is stored yet, accepted again as is, refused otherwise. */
 export const recordFirstRecoveryBackup = Effect.fn("SealingKey.recordFirstRecoveryBackup")(function* (
   organizationId: string, publicKey: SealingPublicKey, backup: string,
 ) {
@@ -91,7 +90,6 @@ export const readSealingRecovery = Effect.fn("SealingKey.readRecovery")(function
   };
 });
 
-/** Replaces the backup the caller last read; a retry of a rotation that already landed succeeds. */
 export const rotateRecoveryBackup = Effect.fn("SealingKey.rotateRecoveryBackup")(function* (
   organizationId: string, publicKey: string, currentDigest: string | null, backup: string,
 ) {
@@ -112,7 +110,6 @@ export const rotateRecoveryBackup = Effect.fn("SealingKey.rotateRecoveryBackup")
   }));
 });
 
-/** `ployz recover` and `ployz recovery rotate`: the Organization's key and the backup they last stored. */
 export const readCliSealingRecovery = Effect.fn("SealingKey.readRecoveryForCli")(function* (
   actor: Actor, input: CliReadSealingRecoveryInput,
 ) {

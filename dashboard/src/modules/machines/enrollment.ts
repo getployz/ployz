@@ -180,7 +180,6 @@ const Sealing = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("needs_access") }),
 ]);
 
-/** The founder's held Sealing Key, wrapped under the recovery code it shows its user. */
 const FounderRecoveryBackup = Schema.Struct({ publicKey: SealingPublicKey, backup: RecoveryBackup });
 
 export const enrollmentCallbackBodySchema = Schema.Union([

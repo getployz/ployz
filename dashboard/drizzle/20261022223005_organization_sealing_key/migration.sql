@@ -9,7 +9,6 @@ CREATE TABLE "organization_sealing_key" (
 );
 --> statement-breakpoint
 ALTER TABLE "organization_sealing_key" ADD CONSTRAINT "organization_sealing_key_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
--- Only an Organization whose Clusters all reported one Sealing Key.
 INSERT INTO "organization_sealing_key" ("organization_id", "public_key")
 SELECT "organization_id", min("public_key")
 FROM "cluster_sealing_key"
