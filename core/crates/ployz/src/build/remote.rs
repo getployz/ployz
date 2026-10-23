@@ -216,7 +216,10 @@ async fn execute_attempt(
     mut progress: impl FnMut(Progress),
 ) -> Completion {
     let mut evidence = ployz_build::WorkEvidence::new(&definition.targets);
-    if let Err(error) = remote::validate_capture(inputs.root(), &definition) {
+    // The Builder opens the Sealed values; here their files are named, not present.
+    if let Err(error) =
+        remote::validate_capture(inputs.root(), &definition, remote::SealedFiles::Pending)
+    {
         return Completion::Report(
             failed(Stage::Preparation, error.to_string()).with_work(evidence),
         );

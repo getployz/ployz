@@ -622,6 +622,7 @@ mod tests {
                 no_cache: false,
                 pull: false,
             },
+            ployz_build::remote::SealedFiles::Opened,
         )
         .unwrap();
         for target in [root.path().join("outside"), "../outside".into()] {
@@ -778,13 +779,15 @@ mod tests {
             no_cache: false,
             pull: false,
         };
+        use ployz_build::remote::{SealedFiles, validate_capture};
         assert!(
-            ployz_build::remote::validate_capture(captured.inputs.root(), &definition).is_err()
+            validate_capture(captured.inputs.root(), &definition, SealedFiles::Opened).is_err()
         );
+        validate_capture(captured.inputs.root(), &definition, SealedFiles::Pending).unwrap();
         let opened = captured.inputs.root().join("private/sealed");
         fs::create_dir(&opened).unwrap();
         fs::write(opened.join("NPM_TOKEN"), "opened").unwrap();
-        ployz_build::remote::validate_capture(captured.inputs.root(), &definition).unwrap();
+        validate_capture(captured.inputs.root(), &definition, SealedFiles::Opened).unwrap();
     }
 
     #[test]

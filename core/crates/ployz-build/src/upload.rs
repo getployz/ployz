@@ -342,8 +342,12 @@ impl CompletedUpload {
         let mut upload = self.0;
         // Declared after `upload` so the files go before the root does.
         let _opened = crate::sealed::OpenedFiles::write(&upload.root, opened)?;
-        let railpack = crate::received_recipe::validate_capture(&upload.root, definition)
-            .map_err(|error| BuildError::Request(error.to_string()))?;
+        let railpack = crate::received_recipe::validate_capture(
+            &upload.root,
+            definition,
+            crate::received_recipe::SealedFiles::Opened,
+        )
+        .map_err(|error| BuildError::Request(error.to_string()))?;
         for (path, mode) in upload.directories.iter().rev() {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))
                 .map_err(|error| BuildError::Request(io_error(error).to_string()))?;

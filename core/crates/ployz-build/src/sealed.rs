@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DIRECTORY: &str = "private/sealed";
+pub(crate) const DIRECTORY: &str = "private/sealed";
 
 /// Where one Sealed value opens for BuildKit, relative to the capture root.
 #[must_use]
