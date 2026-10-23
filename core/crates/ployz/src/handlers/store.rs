@@ -532,11 +532,12 @@ impl<'m> Store<'m> {
 
     /// This command's failure for a Store error; a refusal to delete Volume data
     /// names this command again accepting each Volume it lists, at the version it
-    /// reviewed.
+    /// reviewed. When this command already accepts each, the refusal is about its
+    /// version, and says so.
     pub(crate) fn accepting(&self, error: impl Into<Refusal>) -> Error {
         let refusal = match error.into() {
             Refusal {
-                error: StoreCallError::Refused(error),
+                error: StoreCallError::Refused(mut error),
                 ..
             } if error.code == RpcErrorCode::ConfirmationRequired => {
                 let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
@@ -548,6 +549,18 @@ impl<'m> Store<'m> {
                     }
                 }
                 let version = error.details.get("version").and_then(text);
+                if let (Some(typed), Some(bound)) = (&carried.version, &version)
+                    && typed != bound
+                    && !accept.is_empty()
+                    && accept.iter().all(|name| carried.accept.contains(name))
+                {
+                    error.message = format!(
+                        "{} {typed} doesn't cover deleting the data of {}. Retry with the \
+                         version below",
+                        self.version_flag().1,
+                        accept.join(", ")
+                    );
+                }
                 let retry = self.retry(Carried {
                     accept,
                     version: version.or(carried.version),
@@ -564,7 +577,9 @@ impl<'m> Store<'m> {
     }
 
     /// A conflict handing back the fresh review (`details.diff`) names this command
-    /// again at its version; any other names `read`, as [`with_refresh_hint`] does.
+    /// again at its version, without the Volume losses accepted at the stale one:
+    /// what the fresh review deletes is for its own refusal to name. Any other
+    /// conflict names `read`, as [`with_refresh_hint`] does.
     pub(crate) fn at_review(&self, error: impl Into<Refusal>, read: &str) -> Refusal {
         let refusal = error.into();
         let version = match &refusal.error {
@@ -583,6 +598,7 @@ impl<'m> Store<'m> {
                 |_| true,
                 || {
                     self.retry(Carried {
+                        accept: Vec::new(),
                         version: Some(version),
                         ..self.carried()
                     })
@@ -1769,6 +1785,110 @@ mod tests {
         assert_eq!(
             next_of(json!({})),
             [Hint::Next("ployz diff --env staging".into())]
+        );
+    }
+
+    /// A stale version's next line drops the Volume losses accepted at it, so running
+    /// it shows what the fresh review deletes, and its retry line binds that.
+    #[test]
+    fn a_stale_version_leaves_its_accepted_volume_loss_behind() {
+        let typed = [
+            "ployz",
+            "deploy",
+            "--accept-volume-loss",
+            "big1",
+            "--expect-version",
+            "1:1:0.1:deadbeef",
+            "--env",
+            "staging",
+        ];
+        let root = crate::cli::command().try_get_matches_from(typed).unwrap();
+        let key = SealingKey::new(&[7; 32]).unwrap();
+        let store = Store {
+            backend: Backend::Local(
+                std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+            ),
+            matches: leaf_matches(&root),
+            words: vec!["deploy".to_owned()],
+        };
+        let refusal = store.at_review(
+            StoreCallError::Refused(ployz_core::RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "The Environment changed after this review. Review the latest changes \
+                          and try again"
+                    .into(),
+                details: json!({ "diff": { "version": "33:4:0.4" } }),
+                cause: Vec::new(),
+            }),
+            "diff",
+        );
+        assert_eq!(
+            Error::from(refusal.error).hint(refusal.hint).hints(),
+            [Hint::Next(
+                "ployz deploy --expect-version 33:4:0.4 --env staging".into()
+            )]
+        );
+    }
+
+    /// Accepting every Volume a refusal lists, at a version that doesn't bind their
+    /// loss, is refused for the version: naming them again would change nothing.
+    #[test]
+    fn a_version_short_of_the_loss_is_refused_for_the_version() {
+        let accepting = |typed: &[&str]| {
+            let root = crate::cli::command().try_get_matches_from(typed).unwrap();
+            let key = SealingKey::new(&[7; 32]).unwrap();
+            let store = Store {
+                backend: Backend::Local(
+                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+                ),
+                matches: leaf_matches(&root),
+                words: vec!["deploy".to_owned()],
+            };
+            let error = store.accepting(StoreCallError::Refused(ployz_core::RpcError {
+                code: RpcErrorCode::ConfirmationRequired,
+                message: "This permanently deletes the data of big1, big2. Accept each by name"
+                    .into(),
+                details: json!({
+                    "version": "33:4:0.4:481da69fb1927724",
+                    "accept": ["big1", "big2"],
+                }),
+                cause: Vec::new(),
+            }));
+            (error.hints(), error.report().message)
+        };
+        let retry = "ployz deploy --accept-volume-loss big1 --accept-volume-loss big2 \
+                     --expect-version 33:4:0.4:481da69fb1927724";
+        let (hints, message) = accepting(&[
+            "ployz",
+            "deploy",
+            "--accept-volume-loss",
+            "big2",
+            "--accept-volume-loss",
+            "big1",
+            "--expect-version",
+            "33:4:0.4",
+        ]);
+        assert_eq!(hints, [Hint::Retry(retry.into())]);
+        assert_eq!(
+            message,
+            "--expect-version 33:4:0.4 doesn't cover deleting the data of big1, big2. \
+             Retry with the version below"
+        );
+        // Naming only some of them is still answered by naming each.
+        let (hints, message) = accepting(&[
+            "ployz",
+            "deploy",
+            "--accept-volume-loss",
+            "big1",
+            "--expect-version",
+            "33:4:0.4",
+        ]);
+        assert_eq!(hints, [Hint::Retry(retry.into())]);
+        assert_eq!(
+            message,
+            "This permanently deletes the data of big1, big2. Accept each by name"
         );
     }
 
