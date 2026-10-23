@@ -31,7 +31,7 @@ const pullRequest = { repository_id: 7, number: 146 };
 const summary = (name: string) => ({ id: `id-${name}`, project: "blog", name, revision: 1 });
 const row = (name: string, extra: Partial<MergeRow>): MergeRow => ({
   production: null, lands: null, preview: null, ride: "rides", conflict: false, requires: null,
-  row: `w:${name}` as RowId, node: "web", kind: "service", name, ...extra,
+  row: `w:${name.replace(/^env\./u, "variables.")}` as RowId, node: "web", kind: "service", name, ...extra,
 });
 const rows: MergeRow[] = [
   row("env.API_URL", { production: "http://a", preview: "http://b", lands: "http://b" }),
@@ -169,14 +169,14 @@ it("edits what lands, and resets it", async () => {
   fireEvent.click(edit.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(item(list, "API_URL").textContent).toBe("webAPI_URLhttp://a→http://cEditedpr-146: http://b"));
   expect(commands()[0]).toEqual({
-    command: "set_merge_value", environment: pr146, into: { project: "blog", environment: "production" }, row: "w:env.API_URL", value: "http://c",
+    command: "set_merge_value", environment: pr146, into: { project: "blog", environment: "production" }, row: "w:variables.API_URL", value: "http://c",
   });
 
   store.onMerge = onMerge();
   await choose(list, "API_URL", "Reset");
   await waitFor(() => expect(item(list, "API_URL").textContent).toBe("webAPI_URLhttp://a→http://b"));
   expect(commands()[1]).toEqual({
-    command: "set_merge_value", environment: pr146, into: { project: "blog", environment: "production" }, row: "w:env.API_URL", value: undefined,
+    command: "set_merge_value", environment: pr146, into: { project: "blog", environment: "production" }, row: "w:variables.API_URL", value: undefined,
   });
 });
 
@@ -205,7 +205,7 @@ it("dims a row while the Store answers its Exclude, and shows the answer once it
   expect(within(item(list, "LOG_LEVEL")).queryByText("Saving…")).toBeNull();
 });
 
-it("dims a row while the Store answers its Edit, and frees it when the write fails", async () => {
+it("dims a row while the Store answers its Edit, and frees it when the write fails, reopening Edit on what was typed", async () => {
   const { write } = open();
   const answer = deferred();
   write.mockReturnValueOnce(answer.promise);
@@ -219,6 +219,10 @@ it("dims a row while the Store answers its Edit, and frees it when the write fai
 
   answer.reject(new Error("down"));
   await waitFor(() => expect(within(item(list, "API_URL")).queryByText("Saving…")).toBeNull());
+  const again = within(await screen.findByRole("dialog", { name: /API_URL/u }));
+  expect(again.getByLabelText<HTMLInputElement>("API_URL in production").value).toBe("http://c");
+  fireEvent.click(again.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: /API_URL/u })).toBeNull());
   expect(item(list, "API_URL").textContent).toBe("webAPI_URLhttp://a→http://b");
   expect(list.getByRole("button", { name: "More for API_URL" }).hasAttribute("disabled")).toBe(false);
 });
@@ -292,13 +296,13 @@ it("excludes a row, greyed, and includes it again", async () => {
   store.onMerge = onMerge(rows.map((entry) => entry.name === "env.LOG_LEVEL" ? { ...entry, ride: "excluded" } : entry));
   await choose(list, "LOG_LEVEL", "Exclude");
   await waitFor(() => expect(within(item(list, "LOG_LEVEL")).getByText("Excluded")).toBeTruthy());
-  expect(commands()[0]).toEqual({ command: "never_sync", environment: pr146, rows: ["w:env.LOG_LEVEL"], off: false });
+  expect(commands()[0]).toEqual({ command: "never_sync", environment: pr146, rows: ["w:variables.LOG_LEVEL"], off: false });
   expect(screen.getByRole("button", { name: "On merge · 4" })).toBeTruthy();
 
   store.onMerge = onMerge();
   fireEvent.click(within(item(list, "LOG_LEVEL")).getByRole("button", { name: "Include" }));
   await waitFor(() => expect(within(item(list, "LOG_LEVEL")).queryByText("Excluded")).toBeNull());
-  expect(commands()[1]).toEqual({ command: "never_sync", environment: pr146, rows: ["w:env.LOG_LEVEL"], off: true });
+  expect(commands()[1]).toEqual({ command: "never_sync", environment: pr146, rows: ["w:variables.LOG_LEVEL"], off: true });
 });
 
 it("reads a removed node as what the merge does to it, without its record", async () => {
@@ -341,9 +345,9 @@ it("reads a Kept row of any kind as Kept, with nothing to do", async () => {
 
 /** What a secret's Edit, a plain Edit and a Reset handed the server function at 686f82827. */
 const TRUNK_MERGE = [
-  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:env.TOKEN\",\"value\":\"merge-secret\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
-  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:env.API_URL\",\"value\":\"http://c\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
-  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:env.TOKEN\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:variables.TOKEN\",\"value\":\"merge-secret\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:variables.API_URL\",\"value\":\"http://c\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:variables.TOKEN\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
 ];
 
 it("sends trunk's exact Edit and Reset while sealing is off, sealing nothing", async () => {
@@ -393,8 +397,8 @@ it("seals a secret's Edit for the Destination's Service, and keeps a plain Edit 
 
   expect(JSON.stringify(write.mock.calls)).not.toContain("merge-secret");
   expect(commands()).toMatchObject([
-    { command: "set_merge_value", row: "w:env.TOKEN", value: { sealedFor: PRODUCTION_ID, value: { scope: { service: WEB_ID }, key: "TOKEN" } } },
-    { command: "set_merge_value", row: "w:env.API_URL", value: "http://c" },
+    { command: "set_merge_value", row: "w:variables.TOKEN", value: { sealedFor: PRODUCTION_ID, value: { scope: { service: WEB_ID }, key: "TOKEN" } } },
+    { command: "set_merge_value", row: "w:variables.API_URL", value: "http://c" },
   ]);
 });
 
@@ -407,4 +411,24 @@ it("holds a secret's Edit while its Service is new in the Destination", async ()
   await secret.findByText("Set this value after merging.");
   expect(secret.getByLabelText("TOKEN in production")).toHaveProperty("disabled", true);
   expect(secret.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+});
+
+it("refuses a secret's Edit, keeping what was typed, when the fresh read seals and its Service is new in the Destination", async () => {
+  const kem = new DhkemX25519HkdfSha256();
+  const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
+  vi.spyOn(sealingFunctions, "readSealingFn")
+    .mockResolvedValueOnce({ organizationId: "org", sealing: { state: "off" } })
+    .mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)) } });
+  const { write } = open({ services: [] });
+  const list = await panel();
+  await choose(list, "TOKEN", "Edit");
+  const secret = within(await screen.findByRole("dialog", { name: /TOKEN/u }));
+  expect(secret.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+  fireEvent.change(secret.getByLabelText("TOKEN in production"), { target: { value: "merge-secret" } });
+  fireEvent.click(secret.getByRole("button", { name: "Save" }));
+
+  const again = within(await screen.findByRole("dialog", { name: /TOKEN/u }));
+  expect(again.getByLabelText<HTMLInputElement>("TOKEN in production").value).toBe("merge-secret");
+  expect(toast.error).toHaveBeenCalledWith("Set this value after merging.");
+  expect(write).not.toHaveBeenCalled();
 });

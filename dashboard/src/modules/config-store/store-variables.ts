@@ -6,6 +6,7 @@ import { renameReferences } from "#/modules/variables/variable-template";
 import type { VariableWriter } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
 import type { SealItem, Sealing } from "#/modules/variables/sealing";
+import { SealError } from "#/modules/sealing/seal-error";
 import { serviceSettingRows } from "./store-services";
 import type { useStoreWriter } from "./store-write";
 
@@ -46,6 +47,8 @@ const SEALING = { secret: { sealing: true } };
 
 /** A change, or a Sealed value of variable `key` that `useSealing`'s `prepare` turns into one in the edit's turn. */
 type Write = Change | { readonly key: string; readonly sealed: string };
+
+const UNPLACED = "Set this value after merging.";
 
 const leavesValueless = Schema.is(Schema.Struct({ after: Schema.Struct({ secret: Schema.Literal(false) }) }));
 
@@ -170,30 +173,42 @@ export function storeReferenceTargets(view: EnvironmentView, services: readonly 
   });
 }
 
+/** A Sync or On merge row's node lineage, and its variable key when it is one, as the Store reads the RowId. */
+function rowAt(row: RowId) {
+  const colon = row.indexOf(":");
+  if (colon <= 0) return null;
+  const at = row.slice(colon + 1);
+  return { lineage: row.slice(0, colon), key: at.startsWith("variables.") && at.length > "variables.".length ? at.slice("variables.".length) : null };
+}
+
 /**
  * The Service of `services` (a receiving Environment's) that a Sync or On merge row lands in: the one of its node's
  * lineage, matched by `ServiceListing.row` and never by name. None while it is new there or being removed.
  */
 export function receivingService(row: RowId, services: readonly ServiceListing[]) {
-  const lineage = row.slice(0, row.indexOf(":"));
-  return services.find((service) => service.row === `${lineage}:node` && service.change !== "delete");
+  const lineage = rowAt(row)?.lineage;
+  return lineage === undefined ? undefined : services.find((service) => service.row === `${lineage}:node` && service.change !== "delete");
 }
 
 /**
  * What a Sync or On merge sends for secret rows given values typed for them: each value sealed for the Service it lands
  * in, once a fresh read says the Organization seals; else trunk's plaintext. A row whose Service is new in the receiver
- * has nothing to seal for, so its value stays out and the row arrives Not set.
+ * has nothing to seal for: with `unplaced` "drop" its value stays out and the row arrives Not set, with "refuse" the
+ * write is refused, since leaving it out would take back an On merge Edit.
  */
-export async function receivingValues<T extends { readonly row: RowId; readonly name: string | null; readonly value: string }>(
+export async function receivingValues<T extends { readonly row: RowId; readonly value: string }>(
   sealing: Pick<Sealing, "sealer">, typed: readonly T[], receiver: () => Promise<{ environment: string; services: readonly ServiceListing[] }>,
+  unplaced: "drop" | "refuse",
 ): Promise<(T & { value: SecretValue })[]> {
   const seal = await sealing.sealer();
   if (!seal) return [...typed];
   const { environment, services } = await receiver();
   return (await Promise.all(typed.map(async (one) => {
+    const key = rowAt(one.row)?.key;
+    if (!key) throw new Error(`${one.row} is not a variable.`);
     const service = receivingService(one.row, services);
-    const key = one.name === null ? undefined : VARIABLE.exec(one.name)?.[1];
-    if (!service || key === undefined) return [];
+    if (!service && unplaced === "refuse") throw new SealError(UNPLACED);
+    if (!service) return [];
     return [{ ...one, value: await seal({ key, value: one.value, target: { environment, service: service.id } }) }];
   }))).flat();
 }

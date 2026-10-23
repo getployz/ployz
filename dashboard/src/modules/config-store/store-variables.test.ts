@@ -1,14 +1,16 @@
 import { expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import type { EnvironmentRef, EnvironmentView, RowId, ServiceListing } from "@ployz/sdk";
+import type { ClientSealedValue, EnvironmentRef, EnvironmentView, RowId, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
 import {
   notSetVariables,
   receivingService,
+  receivingValues,
   serviceVariables,
   storeVariableWriter,
   variableReferrers,
 } from "./store-variables";
+import { SealError } from "#/modules/sealing/seal-error";
 import { withPendingChanges } from "./store-pending";
 
 const view: EnvironmentView = {
@@ -182,4 +184,19 @@ it("finds where a Sync row lands by its node's lineage, never by name, and not i
   expect(receivingService("a:variables.TOKEN" as RowId, services)?.id).toBe("api-there");
   expect(receivingService("c:variables.TOKEN" as RowId, services)).toBeUndefined();
   expect(receivingService("w:variables.KEY" as RowId, services)).toBeUndefined();
+});
+
+it("seals a Sync row for the Service its lineage lands in, keyed by the row's variable, and drops or refuses one that lands nowhere", async () => {
+  const services = [asTestDouble<ServiceListing>()({ row: "a:node" as RowId, id: "api-there", name: "web", change: null })];
+  const seal = vi.fn(async ({ key, value, target }: { key: string; value: string; target: { environment: string; service: string } }) =>
+    asTestDouble<ClientSealedValue>()({ sealedFor: `${key}=${value}@${target.environment}/${target.service}` }));
+  const sealing = { sealer: async () => seal };
+  const receiver = async () => ({ environment: "env-there", services });
+  const typed = [{ row: "a:variables.TOKEN" as RowId, value: "one" }, { row: "b:variables.TOKEN" as RowId, value: "two" }];
+
+  expect(await receivingValues(sealing, typed, receiver, "drop")).toEqual([{ row: "a:variables.TOKEN", value: { sealedFor: "TOKEN=one@env-there/api-there" } }]);
+  await expect(receivingValues(sealing, typed, receiver, "refuse")).rejects.toBeInstanceOf(SealError);
+  await expect(receivingValues(sealing, [{ row: "a:variables." as RowId, value: "x" }], receiver, "drop")).rejects.toThrow("is not a variable");
+  await expect(receivingValues(sealing, [{ row: "a:configs.app" as RowId, value: "x" }], receiver, "drop")).rejects.toThrow("is not a variable");
+  expect(await receivingValues({ sealer: async () => null }, typed, receiver, "refuse")).toEqual(typed);
 });

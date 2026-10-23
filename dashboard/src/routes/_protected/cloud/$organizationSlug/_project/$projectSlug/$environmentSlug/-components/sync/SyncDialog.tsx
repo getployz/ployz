@@ -88,13 +88,13 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
       command: "sync", from, into: receiving, picks: [...pickedRows],
       values: sent, version: view.value.version, id: last.id, close_after: closeAfterSync,
     });
-    const entries = picked.flatMap((row) => typed[row.row] === undefined ? [] : [{ row: row.row, name: row.name, value: typed[row.row] ?? "" }]);
+    const entries = picked.flatMap((row) => typed[row.row] === undefined ? [] : [{ row: row.row, value: typed[row.row] ?? "" }]);
     // Sent as made in its turn in the queue: a typed value goes sealed, or as typed while sealing is off.
     const prepare = async () => {
       last.sent ??= receivingValues(sealing, entries, async () => {
         const services = await fetchStoreView(organizationSlug, scope, servicesQuery(receiving));
         return { environment: services.environment.id, services: services.services };
-      }).then((sent) => command(Object.fromEntries(sent.map((one) => [one.row, one.value]))));
+      }, "drop").then((sent) => command(Object.fromEntries(sent.map((one) => [one.row, one.value]))));
       try {
         return await last.sent;
       } catch (error) {

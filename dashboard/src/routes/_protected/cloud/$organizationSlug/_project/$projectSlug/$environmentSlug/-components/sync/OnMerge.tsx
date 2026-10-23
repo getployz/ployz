@@ -118,6 +118,8 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   const pendingRows = useStoreMergeRowsPending(organizationSlug, store);
   const saving = pendingRows.has(row.row) || row.requires !== null && pendingRows.has(row.requires);
   const [editing, setEditing] = useState(false);
+  // What was typed when its write was refused: Edit reopens on it.
+  const [draft, setDraft] = useState("");
   // A variable's key and a file's path are machine values; a node's name and a Setting's title are not.
   const { name, variable: mono } = row.name === null ? { name: row.node, variable: false }
     : isFile(row) ? { name: row.name.slice("files.".length), variable: true } : settingName(row.name);
@@ -136,15 +138,19 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   const land = (value?: string) => {
     const command = (sent: Extract<ConfigCommand, { command: "set_merge_value" }>["value"]): ConfigCommand =>
       ({ command: "set_merge_value", environment: store, into: destination, row: row.row, value: sent });
-    if (!secret || value === undefined) return void writer.commit(command(value));
+    if (!secret || value === undefined) return writer.commit(command(value));
     // A secret's Edit shows with no value and goes sealed, or as typed while sealing is off, in its turn in the queue.
-    void writer.commit(command(undefined), [], async () => {
-      const [sent] = await receivingValues(sealing, [{ row: row.row, name: row.name, value }], async () => {
+    return writer.commit(command(undefined), [], async () => {
+      const [sent] = await receivingValues(sealing, [{ row: row.row, value }], async () => {
         const services = await fetchStoreView(organizationSlug, scope, servicesQuery(destination));
         return { environment: services.environment.id, services: services.services };
-      });
+      }, "refuse");
       return command(sent?.value);
     });
+  };
+  const save = (value: string) => {
+    setEditing(false);
+    land(value).isPersisted.promise.then(() => setDraft(""), () => { setDraft(value); setEditing(true); });
   };
   return (
     <li className={cn("grid grid-cols-[6rem_minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-x-3 border-b px-4 py-2 last:border-b-0",
@@ -164,13 +170,13 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             {!excluded && row.preview !== null && row.name?.startsWith("env.") ? <DropdownMenuItem onClick={() => setEditing(true)}>Edit</DropdownMenuItem> : null}
-            {edited ? <DropdownMenuItem onClick={() => land()}>Reset</DropdownMenuItem> : null}
+            {edited ? <DropdownMenuItem onClick={() => void land()}>Reset</DropdownMenuItem> : null}
             <DropdownMenuItem onClick={() => exclude(excluded)}>{excluded ? "Include" : "Exclude"}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>}
       </span>
-      {editing ? <EditValue row={row} name={name} into={into} preview={preview} secret={secret} homeless={homeless} onClose={() => setEditing(false)}
-        onSave={(value) => { setEditing(false); land(value); }} /> : null}
+      {editing ? <EditValue row={row} name={name} into={into} preview={preview} secret={secret} homeless={homeless} draft={draft}
+        onClose={() => { setEditing(false); setDraft(""); }} onSave={save} /> : null}
     </li>
   );
 }
@@ -226,13 +232,15 @@ function RowValue({ row, preview }: { row: MergeRow; preview: string }) {
 }
 
 /** What the merge lands in a variable instead: a secret sealed and never shown back; any other value starts from what lands now. */
-function EditValue({ row, name, into, preview, secret, homeless, onClose, onSave }: {
+function EditValue({ row, name, into, preview, secret, homeless, draft, onClose, onSave }: {
   row: MergeRow; name: string; into: string; preview: string; secret: boolean;
   /** Its Service is new in `into`, so a sealed value can't go with it. */
   homeless: boolean;
+  /** What was typed for a refused write, else "". */
+  draft: string;
   onClose: () => void; onSave: (value: string) => void;
 }) {
-  const start = secret ? "" : row.lands;
+  const start = draft !== "" ? draft : secret ? "" : row.lands;
   const [value, setValue] = useState(isText(start) ? start : "");
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -245,13 +253,13 @@ function EditValue({ row, name, into, preview, secret, homeless, onClose, onSave
               : <>{preview}: <span className="font-mono">{row.preview === null ? "removed" : text(row.preview)}</span></>}
           </DialogDescription>
         </DialogHeader>
-        <form id={`edit-${row.row}`} onSubmit={(event) => { event.preventDefault(); onSave(value); }}>
+        <form id={`edit-${row.row}`} onSubmit={(event) => { event.preventDefault(); if (!secret || value !== "") onSave(value); }}>
           <Input aria-label={`${name} in ${into}`} type={secret ? "password" : "text"} autoComplete="off" placeholder={secret ? "Value" : undefined}
             value={value} onChange={(event) => setValue(event.target.value)} className="ph-no-capture font-mono" disabled={secret && homeless} autoFocus />
         </form>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button type="submit" form={`edit-${row.row}`} disabled={secret && homeless}>Save</Button>
+          <Button type="submit" form={`edit-${row.row}`} disabled={secret && (homeless || value === "")}>Save</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
