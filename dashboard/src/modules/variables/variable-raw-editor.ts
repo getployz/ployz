@@ -134,8 +134,9 @@ export function parseJson(
     try {
       parsed = JSON.parse(trimmed);
     } catch (cause) {
-      // The parser's message quotes the text, which may hold a secret: keep only where it stopped.
-      const at = cause instanceof Error ? /line (\d+) column (\d+)/.exec(cause.message) : null;
+      // The parser's message quotes the text, which may hold a secret: keep only where it stopped, from V8's
+      // closing "(line L column C)", which follows any quote.
+      const at = cause instanceof Error ? /\(line (\d+) column (\d+)\)$/.exec(cause.message) : null;
       throw new RawEditorParseError(at ? `Invalid JSON at line ${at[1]}, column ${at[2]}.` : "Invalid JSON.");
     }
     const data = asRecord(parsed);
