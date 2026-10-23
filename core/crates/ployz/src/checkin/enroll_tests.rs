@@ -591,7 +591,7 @@ async fn a_zfs_build_that_cannot_be_discarded_fails_the_attempt_before_enrolling
 
 #[test]
 fn a_cloud_name_taken_from_an_invalid_hostname_is_normalised() {
-    assert_eq!(add_name("HP-WIN11", "HP-WIN11"), "hp-win11");
+    assert_eq!(add_name("MY-SERVER", "MY-SERVER"), "my-server");
     assert_eq!(add_name("my_box.lan", "my_box.lan"), "my-box-lan");
     // Nothing usable: server add names it from the Machine ID.
     assert_eq!(add_name("___", "___"), "");

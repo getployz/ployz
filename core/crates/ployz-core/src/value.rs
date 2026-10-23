@@ -1121,7 +1121,7 @@ mod tests {
         let long = format!("{}-tail", "a".repeat(66));
         let cut_at_a_dash = format!("{}_b", "a".repeat(62));
         for (hostname, name) in [
-            ("HP-WIN11", "hp-win11"),
+            ("MY-SERVER", "my-server"),
             ("vultr1", "vultr1"),
             ("my_box__01", "my-box-01"),
             ("web.example.com", "web-example-com"),
