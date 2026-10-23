@@ -1246,6 +1246,12 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
         },
     };
     let short = || crate::deploy::DeployError::Plan(storage());
+    let wrapped = || {
+        crate::deploy::DeployError::Plan(crate::deploy::PlanError::Service {
+            service: "web".into(),
+            source: Box::new(storage()),
+        })
+    };
     let deleting = |on: char| {
         vec![ployz_core::DockerVolumeId {
             machine_id: machine(on),
@@ -1254,17 +1260,16 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
     };
     let note = " Volumes this deploy deletes free their space only after it succeeds, so they don't make room for its new volumes.";
 
-    // Planned directly, for a Volume Services share, which names the Service, and planned
-    // after a Build, which rewrites the error's details.
+    // Planned directly, and planned after a Build, which rewrites the error's details;
+    // each also wrapped in the Service it was planned for.
     for refused in [
         crate::sdk::Unprepared::from(short()),
-        crate::sdk::Unprepared::from(crate::deploy::DeployError::Plan(
-            crate::deploy::PlanError::Service {
-                service: "web".into(),
-                source: Box::new(storage()),
-            },
-        )),
+        crate::sdk::Unprepared::from(wrapped()),
         crate::sdk::unprepared(crate::sdk::prepare::PreparationError::Plan(short()), false),
+        crate::sdk::unprepared(
+            crate::sdk::prepare::PreparationError::Plan(wrapped()),
+            false,
+        ),
     ] {
         let plain = Failure::from(&refused.error).reason;
         let failure = refused_before_deletes(&refused, &deleting('a'));
