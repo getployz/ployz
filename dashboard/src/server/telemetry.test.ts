@@ -12,7 +12,7 @@ const execFile = promisify(execFileCallback);
 const dashboard = new URL("../..", import.meta.url).pathname;
 
 // The app as web starts it: a named ESM import of node:http, which only the loader hook can instrument.
-// It exits by draining, so the SDK flushes its spans on beforeExit, as web's does on shutdown.
+// It exits by draining, so the SDK flushes its spans on beforeExit before the test reads the collector.
 const app = `
 import { createServer, request } from "node:http";
 const server = createServer((_, response) => response.end("ok")).listen(0, () => {

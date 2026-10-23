@@ -58,5 +58,5 @@ COPY dashboard/drizzle/ drizzle/
 COPY dashboard/scripts/check-schema.ts dashboard/scripts/telemetry.ts scripts/
 COPY dashboard/src/server/schema-compatibility.ts src/server/schema-compatibility.ts
 USER node
-# telemetry.ts loads the OpenTelemetry SDK before the app, only when an OTLP endpoint is set.
+# telemetry.ts starts the OpenTelemetry SDK before the app, only with an OTLP endpoint or a named exporter.
 CMD ["node", "--import", "./scripts/telemetry.ts", "--import", "./scripts/check-schema.ts", ".output/server/index.mjs"]

@@ -166,10 +166,13 @@ jobs:
             const detectors = require("@opentelemetry/auto-instrumentations-node").getResourceDetectors().map(d => d.constructor.name);
             assert.deepEqual(detectors, ["EnvDetector", "HostDetector", "OSDetector", "ProcessDetector", "ServiceInstanceIdDetector", "ContainerDetector"], "probes no cloud metadata server");
           '
-          # web starts the OpenTelemetry SDK only with an OTLP endpoint, and its loader hook resolves in the pruned image.
+          # web starts the OpenTelemetry SDK only with an OTLP endpoint or a named exporter, and its loader hook
+          # resolves in the pruned image. Each run is its own assignment, so a failed docker run fails the step.
           sdk='process.stdout.write(String(Symbol.for("opentelemetry.js.api.1") in globalThis)); process.exit(0)'
-          test "$(docker run --rm --entrypoint node ployz-cloud:ci --import ./scripts/telemetry.ts -e "$sdk")" = false
-          test "$(docker run --rm -e OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9 --entrypoint node ployz-cloud:ci --import ./scripts/telemetry.ts -e "$sdk")" = true
+          off=$(docker run --rm --entrypoint node ployz-cloud:ci --import ./scripts/telemetry.ts -e "$sdk")
+          on=$(docker run --rm -e OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9 --entrypoint node ployz-cloud:ci --import ./scripts/telemetry.ts -e "$sdk")
+          test "$off" = false
+          test "$on" = true
       # The publish job pushes this exact image once every leg has passed.
       - name: Save the image for publishing
         if: matrix.part == 'build' && (inputs.release-tag != '' || github.event_name == 'merge_group')
