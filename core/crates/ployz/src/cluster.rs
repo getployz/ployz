@@ -190,7 +190,8 @@ impl Client {
     }
 
     /// The Machine this channel's daemon describes itself as, checked against the
-    /// connection. None when the connection names no Machine and the daemon doesn't say.
+    /// connection. None when neither the connection nor a confirmed entry names a Machine
+    /// and the daemon doesn't say.
     async fn confirmed_entry(&self) -> Result<Option<MachineId>, ConnectError> {
         let confirm = async {
             let payload =
@@ -215,7 +216,11 @@ impl Client {
                     }
                     Ok(Some(description.machine_id))
                 }
-                Err(ConnectError::Remote(_)) if self.connection.machine_id().is_none() => Ok(None),
+                Err(ConnectError::Remote(_))
+                    if self.connection.machine_id().is_none() && self.entry.is_none() =>
+                {
+                    Ok(None)
+                }
                 Err(error) => Err(error),
             }
         };
