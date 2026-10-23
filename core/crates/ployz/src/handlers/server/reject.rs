@@ -40,9 +40,15 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         .ok_or_else(|| Error::usage("pattern is required"))?;
     let runtime = runtime()?;
     let credential = waiting::credential(&runtime, matches)?;
-    let (waiting, attempts) = runtime.block_on(async {
+    let (waiting, mut attempts) = runtime.block_on(async {
         tokio::try_join!(waiting::fetch(&credential), waiting::enrolling(&credential))
     })?;
+    // A host that began enrolling between the two reads is in both; keep it once, as waiting.
+    attempts.retain(|attempt| {
+        !waiting
+            .iter()
+            .any(|host| host.row.id == attempt.waiting_server_id)
+    });
     let Matched {
         waiting: matched,
         attempts: open,
@@ -51,7 +57,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         open.into_iter().partition(|attempt| attempt.joining());
     if matched.is_empty() && enrolling.is_empty() {
         if !joining.is_empty() {
-            return Err(Error::detailed(
+            let refusal = Error::detailed(
                 RpcErrorCode::Conflict,
                 format!(
                     "{}. Nothing rejected. {}",
@@ -59,7 +65,14 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
                     remove_hint(&joining)
                 ),
                 json!({ "joining": attempts_json(&joining) }),
-            ));
+            );
+            return Err(match joining.as_slice() {
+                [one] => refusal.hint(Hint::Next(format!(
+                    "ployz server rm {}",
+                    printable(&one.name)
+                ))),
+                _ => refusal,
+            });
         }
         return Err(Error::not_found(format!(
             "No waiting server matches {}. Nothing rejected.",

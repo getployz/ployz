@@ -135,8 +135,8 @@ Add `--yes` to skip the question, for example in a script. Without `--yes` outsi
 fails with `confirmation_required` and rejects nothing.
 
 A server whose enrollment has started has left the waiting list, but `ployz server reject` still
-matches it by its planned name or its id. Rejecting it cancels the enrollment, like Cancel in the
-dashboard. Once Ployz Cloud has sent its join, the server may already be in the Cluster, so Ployz
+matches it by its planned name or its id. Rejecting it cancels the enrollment and turns the server
+away under its Fleet Token, where Cancel in the dashboard returns it to Waiting. Once Ployz Cloud has sent its join, the server may already be in the Cluster, so Ployz
 doesn't reject it. It prints `web-1 may already be in the Cluster: Cloud sent its join` and rejects
 the rest. Once that server has joined, remove it with `ployz server rm`. `--json` lists the
 enrollments it cancels under `enrolling` and the ones it left alone under `joining`.
