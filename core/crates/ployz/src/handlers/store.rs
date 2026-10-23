@@ -629,6 +629,15 @@ impl<'m> Store<'m> {
                 None
             }
         };
+        if let (Some((_, accept)), StoreCallError::Refused(error)) = (&next, &mut refusal.error)
+            && !accept.is_empty()
+        {
+            error.message = format!(
+                "{}. The command below still deletes the data of {}.",
+                error.message.trim_end_matches('.'),
+                accept.join(", ")
+            );
+        }
         match next {
             Some((version, accept)) => with_next(
                 refusal,
@@ -1867,17 +1876,30 @@ mod tests {
                 }),
                 "diff",
             );
-            Error::from(refusal.error).hint(refusal.hint).hints()
+            let message = match &refusal.error {
+                StoreCallError::Refused(error) => error.message.clone(),
+                StoreCallError::Cloud(_) | StoreCallError::Stopped(_) => String::new(),
+            };
+            (
+                message,
+                Error::from(refusal.error).hint(refusal.hint).hints(),
+            )
         };
+        let (message, hints) = next(json!(["big1"]));
         assert_eq!(
-            next(json!(["big1"])),
+            message,
+            "The Environment changed after this review. Review the latest changes and try \
+             again. The command below still deletes the data of big1."
+        );
+        assert_eq!(
+            hints,
             [Hint::Next(
                 "ployz deploy --accept-volume-loss big1 --expect-version 33:4:0.4:cafe --env staging"
                     .into()
             )]
         );
         assert_eq!(
-            next(json!(["big1", "big3"])),
+            next(json!(["big1", "big3"])).1,
             [Hint::Next(
                 "ployz deploy --expect-version 33:4:0.4 --env staging".into()
             )]
