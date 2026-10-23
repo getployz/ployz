@@ -1271,6 +1271,8 @@ fn finish(
         "running",
         "unchanged",
         "failed",
+        "cancelled",
+        "interrupted",
         "warning",
         "not attempted",
         "unknown",
@@ -1326,7 +1328,7 @@ fn finish(
         Disposition::LocalInterrupted => {
             writeln!(
                 writer,
-                "Interrupted after waiting for owned work to report its outcome."
+                "Interrupted after the steps under way reported their outcome."
             )
         }
         Disposition::Settled | Disposition::UpToDate => Ok(()),
