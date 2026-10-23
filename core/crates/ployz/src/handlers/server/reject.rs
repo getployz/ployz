@@ -1,5 +1,6 @@
-//! `server reject`: turn away the waiting servers a glob matches. Their check-in loop stops
-//! and they won't come back under the same Fleet Token.
+//! `server reject`: turn away the waiting servers a glob matches, and the enrolling ones whose
+//! join Cloud hasn't sent, cancelling their attempt. Their check-in loop stops and they won't
+//! come back under the same Fleet Token.
 
 use std::io::IsTerminal;
 
@@ -8,7 +9,7 @@ use globset::Glob;
 use ployz_core::RpcErrorCode;
 use serde_json::json;
 
-use super::waiting::{self, Rejection, Stopped, Waiting};
+use super::waiting::{self, Enrolling, Rejection, Stopped, Waiting};
 use crate::cli::{base, positional};
 use crate::handlers::{Error, leaf_matches, runtime, typed_with};
 use crate::ui::{self, Cell, Hint, Table, printable};
@@ -18,6 +19,8 @@ pub(crate) fn command(command: Command) -> Command {
         .long_about(
             "Reject the servers waiting to join whose names match a glob, such as 'web-*', \
              or one by its id. \
+             It also rejects enrolling servers and cancels their attempt, \
+             unless Cloud already sent the join; remove those with ployz server rm once joined. \
              It lists the matches and asks before it rejects them; --yes skips the ask. \
              A rejected server stops checking in and won't come back under the same Fleet Token; \
              revoke the token to turn away every server that holds it. \
@@ -37,9 +40,25 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         .ok_or_else(|| Error::usage("pattern is required"))?;
     let runtime = runtime()?;
     let credential = waiting::credential(&runtime, matches)?;
-    let waiting = runtime.block_on(waiting::fetch(&credential))?;
+    let (waiting, attempts) = runtime.block_on(async {
+        tokio::try_join!(waiting::fetch(&credential), waiting::enrolling(&credential))
+    })?;
     let matched = matching(&waiting, pattern)?;
-    if matched.is_empty() {
+    let (joining, enrolling): (Vec<_>, Vec<_>) = enrolling_matches(&attempts, pattern)?
+        .into_iter()
+        .partition(|attempt| attempt.joining());
+    if matched.is_empty() && enrolling.is_empty() {
+        if !joining.is_empty() {
+            return Err(Error::detailed(
+                RpcErrorCode::Conflict,
+                format!(
+                    "{}. Nothing rejected. {}",
+                    sent(&joining),
+                    remove_hint(&joining)
+                ),
+                json!({ "joining": attempts_json(&joining) }),
+            ));
+        }
         return Err(Error::not_found(format!(
             "No waiting server matches {}. Nothing rejected.",
             printable(pattern)
@@ -58,6 +77,8 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect();
+    let listed_enrolling = attempts_json(&enrolling);
+    let listed_joining = attempts_json(&joining);
     if !ui::json() {
         let mut table = Table::new(["ID", "NAME", "IP", "TOKEN"], "");
         for host in &matched {
@@ -68,28 +89,49 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
                 Cell::from(printable(&host.row.fleet_token)),
             ]);
         }
+        for attempt in &enrolling {
+            table.row([
+                Cell::from(printable(ui::short_id(&attempt.waiting_server_id))),
+                Cell::from(printable(&attempt.name)),
+                Cell::from("enrolling"),
+                Cell::from("-"),
+            ]);
+        }
         let stderr = std::io::stderr();
         let _ = table.write(&mut anstream::stderr(), stderr.is_terminal());
+        if !joining.is_empty() {
+            let them = if joining.len() == 1 { "it" } else { "them" };
+            ui::warn(format!(
+                "{}. Not rejecting {them}. {}",
+                sent(&joining),
+                remove_hint(&joining)
+            ));
+        }
     }
+    let described = described(matched.len(), enrolling.len());
     if !matches.get_flag("yes") {
-        let count = matched.len();
         ui::confirm(
-            &format!("Reject {count} waiting server{}?", plural(count)),
+            &format!("Reject {described}?"),
             || {
                 Error::detailed(
                     RpcErrorCode::ConfirmationRequired,
-                    format!(
-                        "Rejecting {count} waiting server{} needs confirmation. Nothing rejected.",
-                        plural(count)
-                    ),
-                    json!({ "waiting_servers": listed }),
+                    format!("Rejecting {described} needs confirmation. Nothing rejected."),
+                    json!({ "waiting_servers": listed, "enrolling": listed_enrolling, "joining": listed_joining }),
                 )
                 .hint(Hint::Retry(typed_with(&["--yes"])))
             },
             "Nothing rejected.",
         )?;
     }
-    let ids: Vec<&str> = matched.iter().map(|host| host.row.id.as_str()).collect();
+    let ids: Vec<&str> = matched
+        .iter()
+        .map(|host| host.row.id.as_str())
+        .chain(
+            enrolling
+                .iter()
+                .map(|attempt| attempt.waiting_server_id.as_str()),
+        )
+        .collect();
     let Rejection { rejected, stopped } = runtime.block_on(waiting::reject(&credential, &ids))?;
     let matched = ids.len();
     let Some(Stopped {
@@ -108,7 +150,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
             }
         };
         return ui::done(
-            &json!({ "rejected": rejected, "matched": matched, "waiting_servers": listed }),
+            &json!({ "rejected": rejected, "matched": matched, "waiting_servers": listed, "enrolling": listed_enrolling, "joining": listed_joining }),
             sentence,
         );
     };
@@ -117,6 +159,8 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
             "rejected": rejected,
             "matched": matched,
             "waiting_servers": listed,
+            "enrolling": listed_enrolling,
+            "joining": listed_joining,
             "uncertain": uncertain,
             "not_rejected": not_rejected,
             "error": error.json(),
@@ -148,7 +192,37 @@ fn matching<'a>(waiting: &'a [Waiting], pattern: &str) -> Result<Vec<&'a Waiting
     if !named.is_empty() {
         return Ok(named);
     }
-    let glob = Glob::new(pattern)
+    let glob = glob(pattern)?;
+    Ok(waiting
+        .iter()
+        .filter(|host| glob.is_match(&host.row.name))
+        .collect())
+}
+
+/// The open attempts `pattern` names by attempt id, waiting server id or name, else those
+/// whose name the glob matches.
+fn enrolling_matches<'a>(
+    attempts: &'a [Enrolling],
+    pattern: &str,
+) -> Result<Vec<&'a Enrolling>, Error> {
+    let named: Vec<_> = attempts
+        .iter()
+        .filter(|attempt| {
+            attempt.id == pattern || attempt.waiting_server_id == pattern || attempt.name == pattern
+        })
+        .collect();
+    if !named.is_empty() {
+        return Ok(named);
+    }
+    let glob = glob(pattern)?;
+    Ok(attempts
+        .iter()
+        .filter(|attempt| glob.is_match(&attempt.name))
+        .collect())
+}
+
+fn glob(pattern: &str) -> Result<globset::GlobMatcher, Error> {
+    Ok(Glob::new(pattern)
         .map_err(|error| {
             Error::usage(format!(
                 "{} is not a valid glob: {}",
@@ -156,11 +230,64 @@ fn matching<'a>(waiting: &'a [Waiting], pattern: &str) -> Result<Vec<&'a Waiting
                 error.kind()
             ))
         })?
-        .compile_matcher();
-    Ok(waiting
+        .compile_matcher())
+}
+
+fn attempts_json(attempts: &[&Enrolling]) -> Vec<serde_json::Value> {
+    attempts
         .iter()
-        .filter(|host| glob.is_match(&host.row.name))
-        .collect())
+        .map(|attempt| {
+            json!({
+                "id": attempt.waiting_server_id,
+                "enrollment_id": attempt.id,
+                "name": attempt.name,
+            })
+        })
+        .collect()
+}
+
+fn names(attempts: &[&Enrolling]) -> String {
+    attempts
+        .iter()
+        .map(|attempt| printable(&attempt.name).to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn sent(joining: &[&Enrolling]) -> String {
+    match joining {
+        [one] => format!(
+            "{} may already be in the Cluster: Cloud sent its join",
+            printable(&one.name)
+        ),
+        many => format!(
+            "{} may already be in the Cluster: Cloud sent their joins",
+            names(many)
+        ),
+    }
+}
+
+fn remove_hint(joining: &[&Enrolling]) -> String {
+    match joining {
+        [one] => format!(
+            "Once it has joined, remove it with ployz server rm {}.",
+            printable(&one.name)
+        ),
+        _ => "Once they have joined, remove them with ployz server rm.".to_owned(),
+    }
+}
+
+fn described(waiting: usize, enrolling: usize) -> String {
+    let count = |count: usize, kind: &str| format!("{count} {kind} server{}", plural(count));
+    match (waiting, enrolling) {
+        (_, 0) => count(waiting, "waiting"),
+        (0, _) => count(enrolling, "enrolling"),
+        _ => format!(
+            "{} and {}",
+            count(waiting, "waiting"),
+            count(enrolling, "enrolling")
+        ),
+    }
 }
 
 fn plural(count: usize) -> &'static str {

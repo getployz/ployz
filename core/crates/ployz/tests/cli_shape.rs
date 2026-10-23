@@ -3561,3 +3561,81 @@ fn server_rm_empty_name_uses_server_wording() {
     );
     assert!(message(&json).contains("Name a Server"), "{json}");
 }
+
+#[test]
+fn server_reject_cancels_an_open_enrollment_and_refuses_one_whose_join_was_sent() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    // The fake Cloud ends every attempt after its first enrollments read, so each run gets its own.
+    let cloud = || {
+        let mut joining = open_enrollment("b", "web-b");
+        joining
+            .as_object_mut()
+            .unwrap()
+            .insert("stage".into(), serde_json::json!("joining"));
+        let mut joined = open_enrollment("c", "web-c");
+        *joined.get_mut("state").unwrap() = serde_json::json!("joined");
+        waiting_cloud(
+            routes.clone(),
+            WaitingCloud {
+                enrollments: vec![open_enrollment("a", "web-a"), joining, joined],
+                ..WaitingCloud::of(vec![waiting_row("d", "web-d", "waiting")])
+            },
+        )
+    };
+    let posted = || -> Vec<String> {
+        routes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|route| route.starts_with("POST /api/cli/reject-servers"))
+            .cloned()
+            .collect()
+    };
+
+    let (code, stdout, _) = run_token_cloud(&cloud(), &["server", "reject", "web-a", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(2), "{json}");
+    assert_eq!(
+        json.pointer("/error/details/enrolling").unwrap(),
+        &serde_json::json!([{ "id": "a", "enrollment_id": "attempt-a", "name": "web-a" }])
+    );
+    assert!(posted().is_empty(), "{:?}", posted());
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-a", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(posted(), [r#"POST /api/cli/reject-servers {"ids":["a"]}"#]);
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-b", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "conflict");
+    assert_eq!(
+        message(&json),
+        "web-b may already be in the Cluster: Cloud sent its join. Nothing rejected. \
+         Once it has joined, remove it with ployz server rm web-b."
+    );
+    assert_eq!(posted().len(), 1);
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-*", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(
+        json.get("joining").unwrap(),
+        &serde_json::json!([{ "id": "b", "enrollment_id": "attempt-b", "name": "web-b" }])
+    );
+    assert_eq!(
+        posted().get(1).map(String::as_str),
+        Some(r#"POST /api/cli/reject-servers {"ids":["d","a"]}"#)
+    );
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-c", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "not_found");
+    assert_eq!(posted().len(), 2);
+}

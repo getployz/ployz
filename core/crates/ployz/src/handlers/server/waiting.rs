@@ -158,6 +158,37 @@ pub(super) async fn fetch(credential: &Credential) -> Result<Vec<Waiting>, Error
         .collect()
 }
 
+/// An open enroll attempt. Its host has left the waiting list, and rejecting the host by
+/// `waiting_server_id` cancels the attempt, unless Cloud sent its join.
+#[derive(Deserialize)]
+pub(super) struct Enrolling {
+    pub(super) id: String,
+    pub(super) waiting_server_id: String,
+    pub(super) name: String,
+    state: String,
+    stage: Option<String>,
+}
+
+impl Enrolling {
+    /// Whether Cloud sent the join, so the Server may already be in the Cluster.
+    pub(super) fn joining(&self) -> bool {
+        matches!(self.stage.as_deref(), Some("joining" | "publishing"))
+    }
+}
+
+pub(super) async fn enrolling(credential: &Credential) -> Result<Vec<Enrolling>, Error> {
+    #[derive(Deserialize)]
+    struct Reply {
+        enrollments: Vec<Enrolling>,
+    }
+    let Reply { enrollments } =
+        cloud_account::refusable(credential, Method::GET, "enrollments", None).await?;
+    Ok(enrollments
+        .into_iter()
+        .filter(|attempt| !matches!(attempt.state.as_str(), "joined" | "failed" | "cancelled"))
+        .collect())
+}
+
 pub(super) async fn detail(credential: &Credential, id: &str) -> Result<Detail, Error> {
     #[derive(Deserialize)]
     struct Reply {
