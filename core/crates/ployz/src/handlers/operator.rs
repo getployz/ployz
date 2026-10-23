@@ -75,6 +75,11 @@ pub(super) fn logs_command(command: Command) -> Command {
             .requires("deployment")
             .help("The Deployment's build logs instead: its Git Services' builds, or those named"),
     )
+    .after_help(
+        "Read from your Servers, each line goes to stdout or stderr, as the container wrote \
+         it. Many images log to stderr; add 2>&1 to pipe every line:\n  ployz logs web 2>&1 | \
+         grep error\nLogs read through Ployz Cloud, and --build, print every line on stdout.",
+    )
 }
 
 pub(super) fn ps_command(command: Command) -> Command {
