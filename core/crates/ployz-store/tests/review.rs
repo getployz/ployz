@@ -4829,3 +4829,102 @@ fn discard_review_abandons_a_staged_roll_back() {
         );
     }
 }
+
+/// `web.env.TOKEN` sealed in the browser for `web` of the default Environment.
+fn browser_sealed(n: u8) -> Value {
+    json!({ "secret": backend::client_sealed(ENVIRONMENT, "00000000-0000-4000-8000-000000000003", "TOKEN", n) })
+}
+
+#[test]
+fn review_shows_a_sealed_value_entered_again_as_changed_and_never_shows_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    backend::sealed_variables_on(&url, "org");
+    set(&store, &who, "web.env.TOKEN", browser_sealed(1));
+    publish(&store, &who, None).unwrap();
+    assert_eq!(diff(&store, &who).draft_count, 0);
+    set(&store, &who, "web.env.TOKEN", browser_sealed(1));
+    assert_eq!(diff(&store, &who).draft_count, 0);
+    set(&store, &who, "web.env.TOKEN", browser_sealed(2));
+    let review = diff(&store, &who);
+    assert_eq!(review.draft_count, 1);
+    assert!(changed(&store, &who, "web").contains(&"web.env.TOKEN".to_owned()));
+    let row = review
+        .draft_changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|row| row.path == "web.env.TOKEN")
+        .unwrap();
+    assert_eq!(row.before, json!({ "secret": true }));
+    assert_eq!(row.after, json!({ "secret": true }));
+    let public = serde_json::to_string(&review).unwrap();
+    assert!(!public.contains(&backend::ciphertext(1)), "{public}");
+    assert!(!public.contains(&backend::ciphertext(2)), "{public}");
+}
+
+#[test]
+fn history_past_a_sealed_value_brings_the_variable_back_not_set_and_never_an_older_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    backend::sealed_variables_on(&url, "org");
+    set(&store, &who, "web.env.TOKEN", json!("plain-value"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.TOKEN", browser_sealed(1));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.TOKEN", browser_sealed(2));
+    publish(&store, &who, None).unwrap();
+    // Back to the first sealed value: History keeps the one it has.
+    for (revision, action) in [
+        (2, ployz_store::HistoryAction::Restore),
+        (3, ployz_store::HistoryAction::Undo),
+    ] {
+        let preview = history_preview(&store, &who, revision, action).unwrap();
+        assert_eq!(preview.total_count, 0, "#{revision} {action:?}");
+        stage_history(&store, &who, revision, action);
+        assert_eq!(diff(&store, &who).draft_count, 0);
+    }
+    let deployed = backend::deploy(&store, &who, "production", 1).to_string();
+    assert!(deployed.contains(&backend::ciphertext(2)));
+    assert!(!deployed.contains(&backend::ciphertext(1)));
+    // Once the key is gone, History past a sealed value brings it back Not set:
+    // never the plain text before it, never a ciphertext.
+    unset(&store, &who, "web.env.TOKEN");
+    publish(&store, &who, None).unwrap();
+    for revision in [1, 2] {
+        store
+            .write(
+                &who,
+                &Discard {
+                    target: Some(ployz_store::DiscardTarget::Saved),
+                    ..Discard::default()
+                },
+            )
+            .unwrap();
+        let preview =
+            history_preview(&store, &who, revision, ployz_store::HistoryAction::Restore).unwrap();
+        let public = serde_json::to_string(&preview).unwrap();
+        assert!(!public.contains("plain-value"), "#{revision} {public}");
+        assert!(
+            !public.contains(&backend::ciphertext(1)),
+            "#{revision} {public}"
+        );
+        assert!(
+            !public.contains(&backend::ciphertext(2)),
+            "#{revision} {public}"
+        );
+        let staged = stage_history(&store, &who, revision, ployz_store::HistoryAction::Restore);
+        assert_eq!(not_set(&staged), ["web.TOKEN"], "#{revision}");
+        assert_eq!(
+            value(&store, &who, "web.env.TOKEN"),
+            Some(json!({ "secret": false })),
+            "#{revision}"
+        );
+        assert!(
+            !serde_json::to_string(&working(&store, &who))
+                .unwrap()
+                .contains("plain-value")
+        );
+    }
+}
