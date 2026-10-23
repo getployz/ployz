@@ -468,7 +468,7 @@ fn moving(rows: &[PlannedRow]) -> impl Iterator<Item = &RowId> {
 
 /// Where each of `rows` lands in a Sync of `from` into `into` at `version`: the
 /// receiver's own Service, by ID, and the variable, resolved as the Sync resolves
-/// them. Returns the two sides with the targets.
+/// them. Returns the receiver with the targets.
 pub(crate) fn sealing_targets(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -477,7 +477,6 @@ pub(crate) fn sealing_targets(
     rows: &[RowRef],
 ) -> Result<
     (
-        EnvironmentSummary,
         EnvironmentSummary,
         Vec<crate::sealing_targets::SyncSealingTarget>,
     ),
@@ -512,7 +511,7 @@ pub(crate) fn sealing_targets(
             })
         })
         .collect::<Result<_, RpcError>>()?;
-    Ok((from.summary, into.summary, values))
+    Ok((into.summary, values))
 }
 
 /// `row` as reads show it in either side, else its RowId.

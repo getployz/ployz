@@ -50,9 +50,7 @@ pub enum SealingTargetsView {
     },
     Sync {
         organization: String,
-        from: EnvironmentSummary,
         into: EnvironmentSummary,
-        version: String,
         /// Each row asked for, resolved as the Sync resolves it.
         values: Vec<SyncSealingTarget>,
     },
@@ -155,13 +153,11 @@ pub(crate) fn targets(
             version,
             rows,
         } => {
-            let (from, into, values) =
+            let (into, values) =
                 branch::sealing_targets(tx, who, (from, into.as_ref()), version, rows)?;
             Ok(SealingTargetsView::Sync {
                 organization,
-                from,
                 into,
-                version: version.clone(),
                 values,
             })
         }
