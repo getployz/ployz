@@ -218,7 +218,10 @@ struct Call {
 
 struct TestFn {
     name: Vec<String>,
+    method: bool,
     is_test: bool,
+    /// A future created while paused can be awaited after the caller resumes.
+    paused: bool,
     resumes: bool,
     callees: Vec<Call>,
     sleeps: Vec<Sleep>,
@@ -247,10 +250,11 @@ fn analyze(source: &str, file: &syn::File, in_test: bool) -> Analysis {
             };
             let targets: Vec<_> = match resolved {
                 Some(name) => vec![name],
-                None => names
+                None => fns
                     .iter()
-                    .filter(|name| name.last() == call.path.last())
-                    .cloned()
+                    .filter(|target| !call.method || target.method)
+                    .filter(|target| target.name.last() == call.path.last())
+                    .map(|target| target.name.clone())
                     .collect(),
             };
             for name in targets {
@@ -267,9 +271,9 @@ fn analyze(source: &str, file: &syn::File, in_test: bool) -> Analysis {
             .filter(|helper| !helper.is_test && !inherited.contains(&helper.name))
             .filter(|helper| {
                 callers.get(&helper.name).is_some_and(|calls| {
-                    calls
-                        .iter()
-                        .all(|(f, paused)| *paused || (!f.resumes && inherited.contains(&f.name)))
+                    calls.iter().all(|(f, paused)| {
+                        (*paused && f.paused) || (!f.resumes && inherited.contains(&f.name))
+                    })
                 })
             })
             .map(|helper| helper.name.clone())
@@ -474,7 +478,6 @@ impl Items {
             in_test: in_test || test_attr.is_some() || is_cfg_test(attrs),
             paused: start_paused,
             resumes: false,
-            loops: Vec::new(),
             callees: Vec::new(),
             sleeps: Vec::new(),
         };
@@ -482,19 +485,14 @@ impl Items {
         self.fns.extend(body.nested_fns);
         self.fns.push(TestFn {
             name,
+            method: sig.receiver().is_some(),
             is_test: test_attr.is_some(),
+            paused: body.paused,
             resumes: body.resumes,
             callees: body.callees,
             sleeps: body.sleeps,
         });
     }
-}
-
-#[derive(Clone)]
-struct LoopExit {
-    label: Option<String>,
-    paused: Option<bool>,
-    backedge_paused: bool,
 }
 
 struct Body {
@@ -504,10 +502,9 @@ struct Body {
     imported_sleeps: HashMap<String, Clock>,
     imported_paths: HashMap<String, Vec<String>>,
     in_test: bool,
-    /// Whether the clock is paused at the point the visit has reached.
+    /// Clock changes follow syntax visit order, including conditional and deferred code.
     paused: bool,
     resumes: bool,
-    loops: Vec<LoopExit>,
     callees: Vec<Call>,
     sleeps: Vec<Sleep>,
 }
@@ -556,45 +553,6 @@ impl Body {
         });
     }
 
-    /// Every break must be paused. A condition exit also includes the next iteration,
-    /// so revisit with real time if the body or a continue can resume the clock.
-    fn loop_body(
-        &mut self,
-        label: Option<&syn::Label>,
-        block: &syn::Block,
-        condition_exit: Option<bool>,
-    ) {
-        let outer_loops = self.loops.clone();
-        let (calls, sleeps, nested) =
-            (self.callees.len(), self.sleeps.len(), self.nested_fns.len());
-        let mut entry_paused = self.paused;
-        loop {
-            self.paused = entry_paused;
-            self.loops.push(LoopExit {
-                label: label.map(|label| label.name.ident.to_string()),
-                paused: condition_exit,
-                backedge_paused: true,
-            });
-            self.visit_block(block);
-            let exits = self
-                .loops
-                .pop()
-                .expect("the loop being visited has an exit record");
-            let backedge_paused = self.paused && exits.backedge_paused;
-            if entry_paused && !backedge_paused {
-                entry_paused = false;
-                self.loops.clone_from(&outer_loops);
-                self.callees.truncate(calls);
-                self.sleeps.truncate(sleeps);
-                self.nested_fns.truncate(nested);
-                continue;
-            }
-            self.paused =
-                exits.paused.unwrap_or(false) && (condition_exit.is_none() || backedge_paused);
-            break;
-        }
-    }
-
     fn expand_path(&self, path: &[String]) -> Vec<String> {
         match path
             .first()
@@ -629,10 +587,7 @@ impl Body {
                         && colons == 0
                         && !path.is_empty()
                     {
-                        let paused = self.paused;
                         self.call(&path, last_span, group.stream().is_empty());
-                        // Macro tokens do not prove that a pause runs on every branch.
-                        self.paused &= paused;
                     }
                     path.clear();
                     colons = 0;
@@ -681,130 +636,8 @@ impl<'ast> Visit<'ast> for Body {
 
     fn visit_expr(&mut self, expr: &'ast syn::Expr) {
         let in_test = self.in_test;
-        let paused = self.paused;
         syn::visit::visit_expr(self, expr);
-        if matches!(expr, syn::Expr::Closure(_) | syn::Expr::Async(_)) {
-            self.paused &= paused;
-        }
         self.in_test = in_test;
-    }
-
-    fn visit_expr_await(&mut self, expr: &'ast syn::ExprAwait) {
-        let mut base = &*expr.base;
-        loop {
-            let (attrs, inner) = match base {
-                syn::Expr::Paren(paren) => (&paren.attrs, &*paren.expr),
-                syn::Expr::Group(group) => (&group.attrs, &*group.expr),
-                _ => break,
-            };
-            for attr in attrs {
-                self.visit_attribute(attr);
-            }
-            base = inner;
-        }
-        if let syn::Expr::Async(inline) = base {
-            for attr in expr.attrs.iter().chain(&inline.attrs) {
-                self.visit_attribute(attr);
-            }
-            self.visit_block(&inline.block);
-        } else {
-            syn::visit::visit_expr_await(self, expr);
-        }
-    }
-
-    fn visit_expr_loop(&mut self, expr: &'ast syn::ExprLoop) {
-        for attr in &expr.attrs {
-            self.visit_attribute(attr);
-        }
-        self.loop_body(expr.label.as_ref(), &expr.body, None);
-    }
-
-    fn visit_expr_while(&mut self, expr: &'ast syn::ExprWhile) {
-        for attr in &expr.attrs {
-            self.visit_attribute(attr);
-        }
-        self.visit_expr(&expr.cond);
-        let paused = self.paused;
-        self.loop_body(expr.label.as_ref(), &expr.body, Some(paused));
-        self.paused &= paused;
-    }
-
-    fn visit_expr_for_loop(&mut self, expr: &'ast syn::ExprForLoop) {
-        for attr in &expr.attrs {
-            self.visit_attribute(attr);
-        }
-        self.visit_expr(&expr.expr);
-        let paused = self.paused;
-        self.loop_body(expr.label.as_ref(), &expr.body, Some(paused));
-        self.paused &= paused;
-    }
-
-    fn visit_expr_break(&mut self, expr: &'ast syn::ExprBreak) {
-        syn::visit::visit_expr_break(self, expr);
-        let label = expr.label.as_ref().map(|label| label.ident.to_string());
-        if let Some(exit) = self
-            .loops
-            .iter_mut()
-            .rev()
-            .find(|exit| label.is_none() || exit.label == label)
-        {
-            exit.paused = Some(exit.paused.unwrap_or(true) && self.paused);
-        }
-    }
-
-    fn visit_expr_continue(&mut self, expr: &'ast syn::ExprContinue) {
-        syn::visit::visit_expr_continue(self, expr);
-        let label = expr.label.as_ref().map(|label| label.ident.to_string());
-        if let Some(exit) = self
-            .loops
-            .iter_mut()
-            .rev()
-            .find(|exit| label.is_none() || exit.label == label)
-        {
-            exit.backedge_paused &= self.paused;
-        }
-    }
-
-    fn visit_expr_if(&mut self, expr: &'ast syn::ExprIf) {
-        for attr in &expr.attrs {
-            self.visit_attribute(attr);
-        }
-        self.visit_expr(&expr.cond);
-        let paused = self.paused;
-        self.visit_block(&expr.then_branch);
-        let then_paused = self.paused;
-        self.paused = paused;
-        if let Some((_, otherwise)) = &expr.else_branch {
-            self.visit_expr(otherwise);
-        }
-        self.paused &= then_paused;
-    }
-
-    fn visit_expr_match(&mut self, expr: &'ast syn::ExprMatch) {
-        for attr in &expr.attrs {
-            self.visit_attribute(attr);
-        }
-        self.visit_expr(&expr.expr);
-        let paused = self.paused;
-        let mut all_paused = true;
-        for arm in &expr.arms {
-            self.paused = paused;
-            self.visit_arm(arm);
-            all_paused &= self.paused;
-        }
-        self.paused = all_paused;
-    }
-
-    fn visit_expr_binary(&mut self, expr: &'ast syn::ExprBinary) {
-        for attr in &expr.attrs {
-            self.visit_attribute(attr);
-        }
-        self.visit_expr(&expr.left);
-        let paused = self.paused;
-        self.visit_expr(&expr.right);
-        if matches!(expr.op, syn::BinOp::And(_) | syn::BinOp::Or(_)) {
-            self.paused &= paused;
-        }
     }
 
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
@@ -1365,7 +1198,7 @@ mod tests {
     }
 
     #[test]
-    fn conditional_pauses_do_not_pause_following_code() {
+    fn conditional_pauses_follow_visit_order() {
         let source = r#"
 #[cfg(test)]
 mod tests {
@@ -1378,13 +1211,7 @@ mod tests {
     }
 }
 "#;
-        assert_eq!(
-            lint(source),
-            [
-                "4: real-clock sleep in test code",
-                "9: real-clock sleep in test code",
-            ]
-        );
+        assert!(lint(source).is_empty(), "{:?}", lint(source));
     }
 
     #[test]
@@ -1398,7 +1225,7 @@ async fn waits() { sleep(d); }
     }
 
     #[test]
-    fn optional_or_deferred_pauses_do_not_escape() {
+    fn expression_pauses_follow_visit_order() {
         for setup in [
             "if ready() { tokio::time::pause(); }",
             "match flag { true => tokio::time::pause(), false => {} }",
@@ -1408,21 +1235,16 @@ async fn waits() { sleep(d); }
             "let later = async { tokio::time::pause(); };",
             "let _ = ready() && { tokio::time::pause(); true };",
             "tokio::select! { _ = ready() => { tokio::time::pause(); } }",
-            "fn later() { tokio::time::pause(); }",
         ] {
             let source = format!(
                 "#[tokio::test]\nasync fn waits() {{ {setup}\ntokio::time::sleep(d).await; }}"
             );
-            assert_eq!(
-                lint(&source),
-                ["3: real-clock sleep in test code"],
-                "{setup}"
-            );
+            assert!(lint(&source).is_empty(), "{setup}: {:?}", lint(&source));
         }
     }
 
     #[test]
-    fn keeps_branch_clocks_separate_and_allows_definite_pauses() {
+    fn branch_clocks_follow_visit_order() {
         let source = r#"
 #[tokio::test]
 async fn waits() {
@@ -1438,13 +1260,7 @@ async fn waits() {
     tokio::time::sleep(d).await;
 }
 "#;
-        assert_eq!(
-            lint(source),
-            [
-                "8: real-clock sleep in test code",
-                "13: real-clock sleep in test code",
-            ]
-        );
+        assert_eq!(lint(source), ["13: real-clock sleep in test code"]);
     }
 
     #[test]
@@ -1543,11 +1359,7 @@ mod tests {
 
     #[test]
     fn imported_and_unresolved_real_callers_keep_helpers_real() {
-        for real_call in [
-            "settle().await",
-            "unknown::settle().await",
-            "worker.settle().await",
-        ] {
+        for real_call in ["settle().await", "unknown::settle().await"] {
             let source = format!(
                 r#"
 #[cfg(test)]
@@ -1607,7 +1419,7 @@ fn production() {
     }
 
     #[test]
-    fn definite_loop_and_awaited_async_pauses_escape() {
+    fn loop_and_async_pauses_follow_visit_order() {
         for setup in [
             "loop { if ready() { tokio::time::pause(); break; } yield_now().await; }",
             "loop { tokio::time::pause(); if ready() { break; } else { break; } }",
@@ -1623,7 +1435,7 @@ fn production() {
     }
 
     #[test]
-    fn loop_back_edges_can_resume_before_a_later_break() {
+    fn loop_resumes_follow_visit_order() {
         for body in [
             "if ready() { break; } tokio::time::resume();",
             "if ready() { tokio::time::resume(); continue; } break;",
@@ -1635,24 +1447,6 @@ fn production() {
                 lint(&source),
                 ["3: real-clock sleep in test code"],
                 "{body}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_loop_exit_must_pause() {
-        for setup in [
-            "loop { if ready() { break; } tokio::time::pause(); break; }",
-            "while ready() { tokio::time::pause(); break; }",
-            "for _ in values { tokio::time::pause(); break; }",
-        ] {
-            let source = format!(
-                "#[tokio::test]\nasync fn waits() {{ {setup}\ntokio::time::sleep(d).await; }}"
-            );
-            assert_eq!(
-                lint(&source),
-                ["3: real-clock sleep in test code"],
-                "{setup}"
             );
         }
     }
@@ -1734,6 +1528,94 @@ use std::thread as th;
 async fn waits() { th::sleep(d); }
 "#;
         assert_eq!(lint(source), ["4: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn round2_future_awaited_after_resume_stays_real() {
+        let source = r#"
+#[cfg(test)]
+mod tests {
+    async fn helper() { tokio::time::sleep(d).await; }
+    #[tokio::test(start_paused = true)]
+    async fn waits() {
+        let future = helper();
+        tokio::time::resume();
+        future.await;
+    }
+}
+"#;
+        assert_eq!(lint(source), ["4: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn round2_loops_without_visible_breaks_keep_paused_time() {
+        for setup in [
+            "tokio::spawn(async { loop { tokio::time::sleep(d).await; } });",
+            "loop { tokio::select! { _ = event() => break } }",
+            "let result: Result<(), E> = async { loop { event()?; } }.await;",
+            "'ready: { loop { break 'ready; } }",
+        ] {
+            let source = format!(
+                "#[tokio::test(start_paused = true)]\nasync fn waits() {{ {setup}\ntokio::time::sleep(d).await; }}"
+            );
+            assert_eq!(lint(&source), Vec::<String>::new(), "{setup}");
+        }
+    }
+
+    #[test]
+    fn round2_nonlocal_exits_do_not_revisit_loop_sleeps() {
+        for body in [
+            "tokio::time::sleep(d).await; loop { break 'outer; }",
+            "tokio::time::sleep(d).await; if ready() { tokio::time::resume(); return; } break;",
+        ] {
+            let source = format!(
+                "#[tokio::test(start_paused = true)]\nasync fn waits() {{ 'outer: loop {{ {body} }} }}"
+            );
+            assert_eq!(lint(&source), Vec::<String>::new(), "{body}");
+        }
+    }
+
+    #[test]
+    fn round2_returning_branch_keeps_visit_order_clock() {
+        for setup in [
+            "if skip { return; } else { tokio::time::pause(); }",
+            "match skip { true => return, false => tokio::time::pause() }",
+        ] {
+            let source = format!(
+                "#[tokio::test]\nasync fn waits() {{ {setup}\ntokio::time::sleep(d).await; }}"
+            );
+            assert_eq!(lint(&source), Vec::<String>::new(), "{setup}");
+        }
+    }
+
+    #[test]
+    fn round2_production_method_only_falls_back_to_receiver_methods() {
+        let source = r#"
+async fn production(child: &mut tokio::process::Child) {
+    child.wait().await;
+}
+#[cfg(test)]
+mod tests {
+    async fn wait() { tokio::time::sleep(d).await; }
+    struct Worker;
+    impl Worker { async fn wait() { tokio::time::sleep(d).await; } }
+    #[tokio::test(start_paused = true)]
+    async fn waits() { wait().await; Worker::wait().await; }
+}
+"#;
+        assert_eq!(lint(source), Vec::<String>::new());
+    }
+
+    #[test]
+    fn round2_join_pause_reaches_following_sleep() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    tokio::join!(async { tokio::time::pause(); });
+    tokio::time::sleep(d).await;
+}
+"#;
+        assert_eq!(lint(source), Vec::<String>::new());
     }
 
     #[test]
