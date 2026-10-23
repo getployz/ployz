@@ -804,20 +804,11 @@ impl<'ast> Visit<'ast> for Body {
                 body.in_test = in_test;
             }));
             // Past a pattern every value matches, each path to the next arm ran the guard.
-            // A capitalized name, like `None` or a constant, is a pattern to match, not a
-            // binding.
-            let every_value = match &arm.pat {
-                syn::Pat::Wild(_) => true,
-                syn::Pat::Ident(ident) => {
-                    ident.subpat.is_none()
-                        && ident
-                            .ident
-                            .to_string()
-                            .starts_with(|first: char| first == '_' || first.is_lowercase())
-                }
-                _ => false,
+            next = if matches_every_value(&arm.pat) {
+                tried
+            } else {
+                next && tried
             };
-            next = if every_value { tried } else { next && tried };
         }
         self.join(start, ways);
     }
@@ -1218,6 +1209,23 @@ fn compact(tokens: TokenStream) -> String {
         .collect()
 }
 
+/// Whether every value matches `pat`, judged from its syntax alone. A capitalized name, like
+/// `None` or a constant, is a pattern to match, not a binding.
+fn matches_every_value(pat: &syn::Pat) -> bool {
+    match pat {
+        syn::Pat::Wild(_) => true,
+        syn::Pat::Paren(pat) => matches_every_value(&pat.pat),
+        syn::Pat::Or(pat) => pat.cases.iter().any(matches_every_value),
+        syn::Pat::Ident(ident) => match &ident.subpat {
+            Some((_, subpat)) => matches_every_value(subpat),
+            None => ident
+                .ident
+                .to_string()
+                .starts_with(|first: char| first == '_' || first.is_lowercase()),
+        },
+        _ => false,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1524,6 +1532,34 @@ async fn waits_for_none() {
                 "20: real-clock sleep in test code"
             ]
         );
+    }
+
+    #[test]
+    fn a_guard_behind_a_pattern_every_value_matches_runs_before_the_next_arm() {
+        let source = r#"
+#[tokio::test]
+async fn waits_for_either() {
+    match value {
+        Some(_) | x if { tokio::time::pause(); false } => (),
+        _ => tokio::time::sleep(d).await,
+    }
+}
+#[tokio::test]
+async fn waits_for_a_binding() {
+    match value {
+        x @ (_) if { tokio::time::pause(); false } => (),
+        _ => tokio::time::sleep(d).await,
+    }
+}
+#[tokio::test]
+async fn waits_for_a_variant() {
+    match value {
+        x @ (Some(_) | None) if { tokio::time::pause(); false } => (),
+        _ => tokio::time::sleep(d).await,
+    }
+}
+"#;
+        assert_eq!(lint(source), ["20: real-clock sleep in test code"]);
     }
 
     #[test]
