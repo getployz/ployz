@@ -87,21 +87,22 @@ pub(crate) fn builders(
         return Ok(Cow::Owned(able));
     }
     let reason = if behind.is_empty() {
-        format!("{SEALED_BUILDS_RUN_ON_SERVER} No Server is enrolled.")
+        "No Server is enrolled.".to_owned()
     } else {
         let names: Vec<_> = behind
             .iter()
             .map(|observation| observation.machine.name.to_string())
             .collect();
         format!(
-            "{SEALED_BUILDS_RUN_ON_SERVER} {} cannot open sealed values; upgrade every Server first.",
+            "{} cannot open sealed values; upgrade every Server first.",
             names.join(", ")
         )
     };
-    let mut error = unsupported(reason.clone());
+    let mut error = unsupported(format!("{SEALED_BUILDS_RUN_ON_SERVER} {reason}"));
     error.details = serde_json::json!({
         "rejections": {"cannot open sealed values": behind.len()},
         "reasons": [reason],
+        "lead": SEALED_BUILDS_RUN_ON_SERVER,
     });
     Err(ConnectError::Remote(error))
 }

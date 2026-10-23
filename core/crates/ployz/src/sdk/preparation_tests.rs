@@ -751,6 +751,7 @@ async fn builder_selection_filters_observations_without_using_service_policy_or_
             &mut client,
             &build_targets(&["linux/amd64"]),
             &visible,
+            false,
             Default::default(),
             &Default::default()
         )
@@ -780,6 +781,7 @@ async fn builder_selection_reports_missing_capability() {
         &mut client,
         &build_targets(&["linux/amd64"]),
         &visible,
+        false,
         Default::default(),
         &Default::default(),
     )
@@ -815,6 +817,7 @@ async fn failed_builder_selection_records_why_each_machine_was_rejected_without_
         &mut client,
         &build_targets(&["linux/amd64"]),
         &visible,
+        false,
         Default::default(),
         &Default::default(),
     )
@@ -845,6 +848,57 @@ async fn failed_builder_selection_records_why_each_machine_was_rejected_without_
 }
 
 #[tokio::test]
+async fn a_sealed_build_with_no_server_to_take_it_leads_with_the_server_line() {
+    let (root, mut service, builds) = fixture();
+    service.builds = None;
+    let mut disabled = machine('b', "disabled");
+    disabled.machine.accepts_builds = false;
+    let mut down = machine('c', "down");
+    down.membership = MembershipObservation::Down;
+    let (mut client, server) =
+        connected(service.with_machines(vec![machine('a', "builder"), disabled, down])).await;
+    let visible = client.machines().await.unwrap();
+    let exhausted = crate::sdk::prepare::select_build_machine(
+        &mut client,
+        &build_targets(&["linux/amd64"]),
+        &visible,
+        true,
+        Default::default(),
+        &Default::default(),
+    )
+    .await
+    .err()
+    .unwrap();
+    let behind = crate::sealed_compat::builders(&visible, true)
+        .err()
+        .unwrap();
+    for (selection, rejection) in [
+        (exhausted, "Server disabled (bbbb"),
+        (behind, "builder, disabled, down cannot open sealed values"),
+    ] {
+        let error = crate::sdk::preparation_error(
+            crate::sdk::prepare::PreparationError::Selection(selection),
+            false,
+        );
+        let recorded = ployz_store::Failure::from(&error);
+        assert_eq!(
+            recorded.reason,
+            "Builds that read a sealed value run on your server. No eligible Build Machine was selected; no build was started."
+        );
+        assert_eq!(
+            error.details.pointer("/preparation/message"),
+            Some(&Value::from(recorded.reason.as_str()))
+        );
+        let cause = recorded.cause.last().expect("a cause names the rejections");
+        assert!(cause.contains(rejection), "{cause}");
+        assert!(!cause.contains("Builds that read"), "{cause}");
+    }
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn builder_selection_requires_one_worker_for_every_command_target_before_upload() {
     let (root, service, builds) = fixture();
     let amd = machine('a', "amd");
@@ -860,6 +914,7 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
         &mut client,
         &build_targets(&["linux/arm64"]),
         &visible,
+        false,
         Default::default(),
         &Default::default(),
     )
@@ -871,6 +926,7 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
         &mut client,
         &targets,
         &visible,
+        false,
         Default::default(),
         &Default::default(),
     )
