@@ -971,6 +971,196 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resumed_enrollment_founder_waits_for_published_machine() {
+        assert_resumed_enrollment_waits_for_published_machine(true).await;
+    }
+
+    #[tokio::test]
+    async fn resumed_enrollment_joiner_waits_for_published_machine() {
+        assert_resumed_enrollment_waits_for_published_machine(false).await;
+    }
+
+    async fn assert_resumed_enrollment_waits_for_published_machine(founder: bool) {
+        use crate::connect::test_support::{unix_client, unix_daemon};
+        use ployz_core::{
+            MachineList, MachineObservation, MembershipObservation, RpcRequestBody, RpcResponse,
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let mut machine = crate::global_fixtures::machine('a', "web-3");
+        machine.accepts_ingress = true;
+        machine.runtime.daemon_version = "fixture".into();
+        let details = MachineDetails {
+            id: machine.id,
+            phase: LocalMachinePhase::Participating,
+            public_key: machine.public_key,
+            advertised_endpoints: Vec::new(),
+            machine: Some(machine.clone()),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            management_clients: Vec::new(),
+            telemetry: None,
+            storage: None,
+            upgrade: None,
+            token: None,
+            sealing: None,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ployz.sock");
+        let listed = Arc::new(AtomicBool::new(false));
+        let listing_observed = Arc::new(AtomicBool::new(false));
+        let inspecting = Arc::new(tokio::sync::Notify::new());
+        let publish = Arc::new(tokio::sync::Notify::new());
+        let following = Arc::new(tokio::sync::Notify::new());
+        let server = {
+            let machine = machine.clone();
+            let details = details.clone();
+            let listed = Arc::clone(&listed);
+            let listing_observed = Arc::clone(&listing_observed);
+            let inspecting = Arc::clone(&inspecting);
+            let publish = Arc::clone(&publish);
+            let following = Arc::clone(&following);
+            unix_daemon(&path, move |body| {
+                let machine = machine.clone();
+                let details = details.clone();
+                let listed = Arc::clone(&listed);
+                let listing_observed = Arc::clone(&listing_observed);
+                let inspecting = Arc::clone(&inspecting);
+                let publish = Arc::clone(&publish);
+                let following = Arc::clone(&following);
+                async move {
+                    let response = if matches!(body, RpcRequestBody::Inspect(_)) {
+                        if !listed.load(Ordering::SeqCst) {
+                            inspecting.notify_one();
+                            publish.notified().await;
+                        }
+                        RpcResponse::from(details)
+                    } else if matches!(body, RpcRequestBody::ListMachines(_)) {
+                        let machines = if listed.load(Ordering::SeqCst) {
+                            listing_observed.store(true, Ordering::SeqCst);
+                            vec![MachineObservation::new(machine, MembershipObservation::Up)]
+                        } else {
+                            Vec::new()
+                        };
+                        RpcResponse::from(MachineList {
+                            enrollment: None,
+                            machines,
+                        })
+                    } else {
+                        following.notify_one();
+                        return std::future::pending().await;
+                    };
+                    Ok(response)
+                }
+            })
+        };
+        let mut client = unix_client(&path).await;
+        assert!(client.machines().await.unwrap().is_empty());
+        let connection = format!("unix://{}", path.display());
+        let root = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "--connect",
+                &connection,
+                "server",
+                "add",
+                "--yes",
+                "--ingress-image",
+                "caddy:2.11.2",
+            ])
+            .unwrap();
+        let matches = leaf_matches(&root);
+        let token = CloudEnrollToken::parse("pmet_resumed_enroll").unwrap();
+        let pairing = CloudPairing {
+            secret: cloud_enroll::PairingCredential::parse("pairing").unwrap(),
+        };
+        let policy = ployz_core::InitialMachinePolicy::default();
+        let mut report = SetupReport::start();
+        let install = |_| async { Ok(()) };
+        let enrolling = async {
+            if founder {
+                enroll_founder(
+                    EnrollCommand::ServerAdd,
+                    matches,
+                    client,
+                    details,
+                    MachineToken {
+                        id: machine.id,
+                        public_key: machine.public_key,
+                        public_ip: None,
+                        advertised_endpoints: Vec::new(),
+                        runtime: Default::default(),
+                        memory_total_bytes: None,
+                        disk_total_bytes: None,
+                        disk_available_bytes: None,
+                    },
+                    machine.name.clone(),
+                    policy,
+                    "10.210.0.0/16".parse().unwrap(),
+                    InitializeMode::Resume,
+                    pairing,
+                    StorageChoice::None.into(),
+                    "http://unused.invalid",
+                    &token,
+                    &install,
+                    &mut report,
+                    &|_| {},
+                )
+                .await
+            } else {
+                enroll_join(
+                    EnrollCommand::ServerAdd,
+                    matches,
+                    client,
+                    details,
+                    Join {
+                        pairing,
+                        storage: StorageChoice::None.into(),
+                        registration: ployz_core::Registered {
+                            assigned_machine: machine,
+                            visible_peers: Vec::new(),
+                            target_versions: Default::default(),
+                            sealing_key: None,
+                        },
+                    },
+                    &policy,
+                    "http://unused.invalid",
+                    &token,
+                    &install,
+                    &mut report,
+                    &|_| {},
+                )
+                .await
+            }
+        };
+        tokio::pin!(enrolling);
+        let result = tokio::select! {
+            outcome = &mut enrolling => Err(format!("enrollment ended before publication: {outcome:?}")),
+            () = inspecting.notified() => Ok(()),
+            () = following.notified() => Err("enrollment follow-up ran before this Machine was listed".into()),
+        };
+        let result = if result.is_ok() {
+            listed.store(true, Ordering::SeqCst);
+            publish.notify_one();
+            tokio::select! {
+                outcome = &mut enrolling => Err(format!("enrollment ended before follow-up: {outcome:?}")),
+                () = following.notified() => Ok(()),
+            }
+        } else {
+            result
+        };
+        server.shutdown_background();
+        result.unwrap();
+        assert!(
+            listing_observed.load(Ordering::SeqCst),
+            "founder={founder}: enrollment follow-up ran before observing this Machine listed"
+        );
+    }
+
+    #[tokio::test]
     async fn unacknowledged_enroll_never_reports_committed_joining() {
         use ployz_core::{OpaquePayload, RpcRequestBody, RpcResponse};
         use std::cell::RefCell;
