@@ -299,7 +299,7 @@ fn refuse_declared_args<'name>(
         .map_err(|error| Error::Io(format!("read captured Dockerfile: {error}")))?;
     let declared = DockerfileFacts::parse(&contents).args;
     match sealed.find(|name| declared.contains(*name)) {
-        Some(name) => Err(invalid(format!(
+        Some(name) => Err(Error::Sealed(format!(
             "{name} is sealed. Read it with RUN --mount=type=secret,id={name},env={name}."
         ))),
         None => Ok(()),
@@ -897,7 +897,7 @@ mod tests {
                 .to_string();
             assert_eq!(
                 error,
-                "invalid Build: NPM_TOKEN is sealed. Read it with RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN.",
+                "NPM_TOKEN is sealed. Read it with RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN.",
                 "{dockerfile}"
             );
             assert!(!error.contains(&ciphertext));
