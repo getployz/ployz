@@ -4,7 +4,7 @@ use std::io;
 
 use serde_json::{Map, Value};
 
-use super::Tone;
+use super::{Tone, escaped};
 
 /// Most choices a `valid:` line lists before it says how many more there are.
 pub const VALID_SHOWN: usize = 8;
@@ -80,9 +80,10 @@ impl Hint {
     ///
     /// Returns the writer's error.
     pub fn write(&self, out: &mut dyn io::Write) -> io::Result<()> {
+        let text = escaped(&self.text());
         match self.label() {
-            Some(label) => writeln!(out, "{} {}", Tone::Label.paint(label), self.text()),
-            None => writeln!(out, "{}", self.text()),
+            Some(label) => writeln!(out, "{} {text}", Tone::Label.paint(label)),
+            None => writeln!(out, "{text}"),
         }
     }
 
@@ -234,7 +235,8 @@ pub(crate) fn chain_text(error: Chain<'_>) -> String {
 }
 
 /// Write the human error: `error:` with our sentence, one `cause:` line with the
-/// deepest source, then the hints. `--json` keeps every cause.
+/// deepest source, then the hints, with each [`escaped`] so a name from the Store reads
+/// as stored. `--json` keeps every cause, and the raw text.
 ///
 /// # Errors
 ///
@@ -245,7 +247,7 @@ pub fn write(
     cause: Option<&str>,
     hints: &[Hint],
 ) -> io::Result<()> {
-    let mut lines = message.lines();
+    let mut lines = message.lines().map(escaped);
     writeln!(
         out,
         "{} {}",
@@ -256,7 +258,12 @@ pub fn write(
         writeln!(out, "{line}")?;
     }
     if let Some(cause) = cause {
-        writeln!(out, "  {} {}", Tone::Bad.paint("cause:"), one_line(cause))?;
+        writeln!(
+            out,
+            "  {} {}",
+            Tone::Bad.paint("cause:"),
+            escaped(&one_line(cause))
+        )?;
     }
     for hint in hints {
         hint.write(out)?;
@@ -320,6 +327,29 @@ mod tests {
         assert_eq!(
             String::from_utf8(out.into_inner()).unwrap(),
             "error: Could not create the Container.\n  cause: error from registry: denied; denied\n"
+        );
+    }
+
+    #[test]
+    fn an_invisible_character_prints_as_its_code_once() {
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "Config app has no file a\u{202E}b.txt\nAlready shown: a\\u{202e}b.txt",
+            Some("refused a\u{202E}b.txt"),
+            &[
+                Hint::Closest("a\u{202E}b.txt".into()),
+                Hint::Next("ployz config rm-file app a\u{202E}b.txt".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            "error: Config app has no file a\\u{202e}b.txt\n\
+             Already shown: a\\u{202e}b.txt\n  \
+             cause: refused a\\u{202e}b.txt\n\
+             did you mean a\\u{202e}b.txt?\n\
+             next: ployz config rm-file app a\\u{202e}b.txt\n"
         );
     }
 
