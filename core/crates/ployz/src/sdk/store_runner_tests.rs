@@ -1236,17 +1236,16 @@ async fn only_a_removed_services_left_copy_may_leave_it_empty() {
 #[test]
 fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
     let machine = |c: char| ployz_core::MachineId::parse(c.to_string().repeat(32)).unwrap();
-    let short = || {
-        crate::deploy::DeployError::Plan(crate::deploy::PlanError::Storage {
-            machine_id: machine('a'),
-            machine: ployz_core::MachineName::parse("machine-1").unwrap(),
-            source: ployz_core::StorageCapacityError::InsufficientStorage {
-                required_growth_bytes: 4 << 30,
-                available_bytes: 1 << 30,
-                reserve_bytes: 0,
-            },
-        })
+    let storage = || crate::deploy::PlanError::Storage {
+        machine_id: machine('a'),
+        machine: ployz_core::MachineName::parse("machine-1").unwrap(),
+        source: ployz_core::StorageCapacityError::InsufficientStorage {
+            required_growth_bytes: 4 << 30,
+            available_bytes: 1 << 30,
+            reserve_bytes: 0,
+        },
     };
+    let short = || crate::deploy::DeployError::Plan(storage());
     let deleting = |on: char| {
         vec![ployz_core::DockerVolumeId {
             machine_id: machine(on),
@@ -1255,9 +1254,16 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
     };
     let note = " Volumes this deploy deletes free their space only after it succeeds, so they don't make room for its new volumes.";
 
-    // Planned directly, and planned after a Build, which rewrites the error's details.
+    // Planned directly, for a Volume Services share, which names the Service, and planned
+    // after a Build, which rewrites the error's details.
     for refused in [
         crate::sdk::Unprepared::from(short()),
+        crate::sdk::Unprepared::from(crate::deploy::DeployError::Plan(
+            crate::deploy::PlanError::Service {
+                service: "web".into(),
+                source: Box::new(storage()),
+            },
+        )),
         crate::sdk::unprepared(crate::sdk::prepare::PreparationError::Plan(short()), false),
     ] {
         let plain = Failure::from(&refused.error).reason;
