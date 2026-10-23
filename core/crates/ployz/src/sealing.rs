@@ -61,77 +61,16 @@ pub fn seal_value(
     })
 }
 
-/// A throwaway Sealing Key for tests that open what the CLI sealed.
-#[doc(hidden)]
-pub mod testing {
-    use hpke::{
-        Deserializable as _, Kem as _, OpModeR, Serializable as _, aead::ChaCha20Poly1305,
-        kdf::HkdfSha256,
-    };
-    use ployz_core::{
-        SEALED_VALUE_INFO, SealedIdentity, SealingPublicKey, config::ClientSealedValue,
-    };
-    use rand_core::{OsRng, TryRngCore as _};
-
-    use super::Kem;
-
-    const ENCAPPED_KEY_LEN: usize = 32;
-
-    pub struct Keypair {
-        private: <Kem as hpke::Kem>::PrivateKey,
-        public: SealingPublicKey,
-    }
-
-    impl Keypair {
-        #[must_use]
-        pub fn generate() -> Self {
-            let (private, public) = Kem::gen_keypair(&mut OsRng.unwrap_err());
-            Self {
-                private,
-                public: SealingPublicKey::from_bytes(public.to_bytes().into()),
-            }
-        }
-
-        #[must_use]
-        pub fn public(&self) -> SealingPublicKey {
-            self.public
-        }
-
-        /// The plaintext of `sealed` as `identity` authored it, or `None` when it
-        /// was sealed to another key or another identity.
-        #[must_use]
-        pub fn open(
-            &self,
-            identity: &SealedIdentity,
-            sealed: &ClientSealedValue,
-        ) -> Option<String> {
-            let aad = sealed.value.associated_data(identity);
-            let (encapped, ciphertext) = sealed
-                .value
-                .sealed
-                .as_bytes()
-                .split_at_checked(ENCAPPED_KEY_LEN)?;
-            let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped).ok()?;
-            let plaintext = hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
-                &OpModeR::Base,
-                &self.private,
-                &encapped,
-                SEALED_VALUE_INFO,
-                ciphertext,
-                &aad,
-            )
-            .ok()?;
-            String::from_utf8(plaintext).ok()
-        }
-    }
-}
+#[cfg(test)]
+#[path = "../tests/support/keypair.rs"]
+mod keypair;
 
 #[cfg(test)]
 mod tests {
     use ployz_core::{SealedIdentity, SealedScope};
     use uuid::Uuid;
 
-    use super::{seal_value, testing::Keypair};
+    use super::{keypair::Keypair, seal_value};
 
     fn authored() -> SealedIdentity {
         SealedIdentity {
