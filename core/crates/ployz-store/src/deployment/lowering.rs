@@ -605,6 +605,65 @@ pub(super) struct Lowered {
     pub(super) warnings: Vec<DeploymentWarning>,
 }
 
+/// `saved` compiled, and its variables and Config files resolved as [`lower`]
+/// resolves them. The compiled producers are `saved`'s own: live values order
+/// nothing, since what provides them runs elsewhere.
+fn resolve(
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+    cluster_domain: Option<&Hostname>,
+    branch: &crate::branch::Lowering,
+    unseal: Option<&SealingKey>,
+) -> Result<
+    (
+        ployz_core::config::CompiledEnvironmentIntent,
+        variables::Resolved,
+    ),
+    RpcError,
+> {
+    let mut compiled = compile_environment_intent(
+        environment.as_str(),
+        crate::domain::expand(saved, cluster_domain),
+    );
+    let own = compiled.variable_producers.len();
+    compiled
+        .variable_producers
+        .extend(branch.live.iter().cloned());
+    let resolved = variables::resolve(&compiled, environment.as_str(), unseal)?;
+    compiled.variable_producers.truncate(own);
+    Ok((compiled, resolved))
+}
+
+/// The first variable of each Service of `saved`, by Service ID, whose value reads
+/// a value sealed in the browser, resolved as [`lower`] resolves it. Names only:
+/// no value leaves here.
+pub(super) fn first_sealed(
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+    cluster_domain: Option<&Hostname>,
+    branch: &crate::branch::Lowering,
+    sealing: &SealingKey,
+) -> Result<BTreeMap<String, String>, RpcError> {
+    let resolved = match resolve(environment, saved, cluster_domain, branch, Some(sealing)) {
+        Ok((_, resolved)) => resolved,
+        // Lowering refuses the same way, so nothing builds or ships.
+        Err(refused) if refused.code == ployz_core::RpcErrorCode::InvalidArgument => {
+            return Ok(BTreeMap::new());
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(resolved
+        .env
+        .into_iter()
+        .filter_map(|(service, env)| {
+            let name = env
+                .into_iter()
+                .find_map(|(name, value)| value.is_sealed().then_some(name))?;
+            Some((service, name))
+        })
+        .collect())
+}
+
 /// Lower Saved revision `saved` to the Deploy Intent of a Deployment that
 /// `ships` into its Namespace, with generated domains under the
 /// Cluster Domain. Variables and Config files resolve here, a Branch's Live Node
@@ -623,6 +682,7 @@ pub(super) fn lower(
     unseal: Option<(&SealingKey, &OrganizationId)>,
 ) -> Result<Lowered, RpcError> {
     let (unseal, organization) = unseal.unzip();
+    let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch, unseal)?;
     let (narrowed, services, removals, prune): (bool, &[ServiceName], _, _) = match ships {
         Ships::All { removals, prune } => (
             false,
@@ -638,20 +698,11 @@ pub(super) fn lower(
             (true, services.as_slice(), removals, PruneScope::Namespace)
         }
     };
-    let mut compiled = compile_environment_intent(
-        environment.as_str(),
-        crate::domain::expand(saved, cluster_domain),
-    );
-    // Live values order nothing: what provides them runs elsewhere.
     let lineages: BTreeMap<String, String> = compiled
         .variable_producers
         .iter()
         .map(|producer| (producer.owner_lineage_id.clone(), producer.owner_id.clone()))
         .collect();
-    compiled
-        .variable_producers
-        .extend(branch.live.iter().cloned());
-    let mut resolved = variables::resolve(&compiled, environment.as_str(), unseal)?;
     let targeted: Vec<&str> = saved
         .services
         .iter()

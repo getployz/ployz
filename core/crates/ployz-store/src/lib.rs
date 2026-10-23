@@ -353,7 +353,8 @@ impl ConfigStore {
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, or a storage error.
     pub fn sources(&self, deployment: &DeploymentId) -> Result<Vec<GitSource>, RpcError> {
-        self.storage.read(|tx| build::sources(tx, deployment))
+        self.storage
+            .read(|tx| build::sources(tx, deployment, &self.sealing))
     }
 
     /// Pin the commit each Git Service of Deployment `deployment` builds, by runtime
@@ -370,7 +371,10 @@ impl ConfigStore {
         deployment: &DeploymentId,
         commits: &std::collections::BTreeMap<ployz_core::ServiceName, CommitSha>,
     ) -> Result<Vec<GitSource>, RpcError> {
-        self.storage.write(|tx| build::pin(tx, deployment, commits))
+        self.storage.write(|tx| {
+            build::pin(tx, deployment, commits)?;
+            build::sources(tx, deployment, &self.sealing)
+        })
     }
 
     /// Apply what Cloud observed of GitHub: a branch's head or a check suite's result,
