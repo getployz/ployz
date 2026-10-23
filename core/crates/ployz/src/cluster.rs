@@ -1683,6 +1683,7 @@ fn listed_unless_forgotten<'list>(
 /// A role setting a caller waits for this entry to observe.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum RoleSetting {
+    ServicesOn,
     ServicesOff,
     IngressOn,
     IngressOff,
@@ -1691,13 +1692,14 @@ pub(crate) enum RoleSetting {
 impl RoleSetting {
     fn role(self) -> &'static str {
         match self {
-            Self::ServicesOff => "services",
+            Self::ServicesOn | Self::ServicesOff => "services",
             Self::IngressOn | Self::IngressOff => "ingress",
         }
     }
 
     fn holds(self, machine: &Machine) -> bool {
         match self {
+            Self::ServicesOn => machine.accepts_services,
             Self::ServicesOff => !machine.accepts_services,
             Self::IngressOn => machine.accepts_ingress,
             Self::IngressOff => !machine.accepts_ingress,

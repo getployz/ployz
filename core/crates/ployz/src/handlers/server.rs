@@ -861,6 +861,13 @@ pub(crate) async fn apply_update(
     rerun: String,
     recovery: ArgMatches,
 ) -> Result<(), Error> {
+    let services_role = update.accepts_services.map(|accepts| {
+        if accepts {
+            crate::cluster::RoleSetting::ServicesOn
+        } else {
+            crate::cluster::RoleSetting::ServicesOff
+        }
+    });
     let accepts_ingress = update.accepts_ingress;
     let was_off = match accepts_ingress {
         Some(true) => ingress_off(client, &selector).await,
@@ -911,6 +918,16 @@ pub(crate) async fn apply_update(
         }
         (Err((_, error)), _) => return Err(error.into()),
     };
+    if let Some(setting) = services_role
+        && let Err(error) =
+            crate::cluster::wait_for_role(client, &machine.id, setting, &CancellationToken::new())
+                .await
+    {
+        crate::ui::warn(format!(
+            "Server {} changed, but this Entry Server could not confirm its new services role ({error}). Check with ployz server ls before deploying.",
+            machine.name
+        ));
+    }
     crate::ui::stream(format_args!("Updated Server {}.", machine.name));
     let next =
         public_ip_removed.then(|| format!("ployz server set {} --public-ip IP", machine.name));
