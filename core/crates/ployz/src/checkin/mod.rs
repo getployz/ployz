@@ -812,7 +812,7 @@ async fn check_in<H: Host>(
     let seen = host.prepare_running().await;
     // Only a unit seen running may vouch for a stopped Docker; an unreadable one still counts as
     // running so as not to start a second preparation.
-    let confirmed = seen == Ok(true);
+    let mut confirmed = seen == Ok(true);
     let running = seen.unwrap_or_else(|why| {
         crate::ui::note(format!("Could not read {}: {why}", unit::PREPARE));
         true
@@ -833,6 +833,8 @@ async fn check_in<H: Host>(
     if let Some(run) = due {
         match host.start_prepare().await {
             Ok(()) => {
+                // The run just started may already be installing Docker before the probe below.
+                confirmed = host.prepare_running().await == Ok(true);
                 prepare_started = Some(now);
                 if run == PrepareRun::Retry {
                     prepare_retries += 1;
