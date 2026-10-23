@@ -87,36 +87,87 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
         .ok_or_else(no_servers)
 }
 
-/// [`connect`] for what needs Full scope: exec, tunnels and the Device roster. The current
-/// context or local daemon goes first, so over SSH on a Server that approves the first
-/// Device. Otherwise Cloud's own capability can't do these, so through Cloud this device
-/// dials as its Device.
+/// [`connect`] for what needs Full scope: exec, tunnels and the Device roster. The
+/// `--connect`, `--context` or current context, or the local daemon, goes first, so over SSH
+/// on a Server that approves the first Device; signed in, Cloud's Server Access follows.
+/// Only a Device slot grants Full, so with a Device key every Management Capability
+/// connection dials as the Device.
 pub(super) async fn connect_full(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<Client, Error> {
-    if matches.get_one::<String>("connect").is_some() || context.is_some() {
-        return super::connect_context(matches, context).await;
-    }
     let config = super::config_path(matches)?;
-    let credential = match cloud_account::from_env(&CredentialStore::beside(&config)).await {
-        Ok(credential) => credential,
-        Err(LoginError::SignedOut) => return connect(matches, context).await,
-        Err(error) => return Err(error.into()),
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let device = super::device::key::load(&super::device::key::path(&config))?;
+    let explicit = direct.is_some() || context.is_some();
+    let credential = if explicit {
+        None
+    } else {
+        match cloud_account::from_env(&CredentialStore::beside(&config)).await {
+            Ok(credential) => Some(credential),
+            Err(LoginError::SignedOut) => None,
+            Err(error) => return Err(error.into()),
+        }
     };
-    if let Ok(client) = super::connect_context(matches, None).await {
+    let local = match full_entries(&config, direct, context, device) {
+        Ok(selected) => {
+            let connector =
+                SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+            crate::connect::connect_selected_with(selected, Arc::new(connector)).await
+        }
+        Err(error) => Err(error),
+    };
+    let Some(credential) = credential else {
+        return local.map_err(|error| signed_out_unless_configured(error, !explicit));
+    };
+    if let Ok(client) = local {
         return Ok(client);
     }
-    let device = super::device::key::load(&super::device::key::path(&config))?;
     let mut access = cloud_account::server_access(&credential).await?;
-    if let Some(secret) = device {
-        access.connections = access
-            .connections
+    access.connections = as_device(access.connections, device);
+    dial(matches, access).await?.ok_or_else(no_servers)
+}
+
+/// The `--connect`, `--context` or local daemon connections, as [`connect_full`] dials them.
+fn full_entries(
+    config: &std::path::Path,
+    direct: Option<&str>,
+    context: Option<&str>,
+    device: Option<[u8; 32]>,
+) -> Result<SelectedConnections, ConnectError> {
+    let mut selected = crate::connect::resolve_connections(
+        config,
+        direct,
+        context,
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )?;
+    selected.connections = as_device(selected.connections, device);
+    Ok(selected)
+}
+
+/// `connections`, each dialing as the Device holding `device` when there is one.
+fn as_device(
+    connections: Vec<crate::context::Connection>,
+    device: Option<[u8; 32]>,
+) -> Vec<crate::context::Connection> {
+    match device {
+        Some(secret) => connections
             .into_iter()
             .map(|connection| connection.with_device(secret))
-            .collect();
+            .collect(),
+        None => connections,
     }
-    dial(matches, access).await?.ok_or_else(no_servers)
+}
+
+/// Signed out with no context or local daemon: the fix is signing in, not a config file.
+/// The hidden test Store is never signed in, so it keeps the cause.
+fn signed_out_unless_configured(error: ConnectError, signed_out: bool) -> Error {
+    let no_config = matches!(error, ConnectError::Context(ContextError::NoConfig));
+    if signed_out && no_config && !super::store::local_mode() {
+        LoginError::SignedOut.into()
+    } else {
+        error.into()
+    }
 }
 
 /// [`connect`], or `None` when Cloud says this Organization has no Servers yet.
@@ -425,17 +476,7 @@ async fn entries(
         context,
         std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
     )
-    .map_err(|error| {
-        let no_config = matches!(
-            error,
-            crate::connect::ConnectError::Context(ContextError::NoConfig)
-        );
-        if signed_out && no_config && !super::store::local_mode() {
-            LoginError::SignedOut.into()
-        } else {
-            error.into()
-        }
-    })
+    .map_err(|error| signed_out_unless_configured(error, signed_out))
 }
 
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
@@ -1861,6 +1902,54 @@ mod tests {
             own_start_failure(&failed_on(MachineId::random()), one, Some(one)),
             None,
             "a failure on another Server"
+        );
+    }
+
+    #[test]
+    fn full_scope_dials_a_context_capability_as_the_device() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use crate::context::{Connection, Context, Transport};
+        use ployz_core::{ManagementCapability, ManagementIdentity};
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = dir.path().join("config.yaml");
+        let operator = ManagementCapability::new(ManagementIdentity::from_bytes([1; 32]), [2; 32]);
+        let ssh: Connection = "root@node-a".parse().unwrap();
+        let saved = Context {
+            connections: vec![
+                Connection::management(operator.to_secret_string()).unwrap(),
+                ssh.clone(),
+            ],
+        };
+        Config::new(
+            &config,
+            Some("first".into()),
+            BTreeMap::from([("first".into(), saved.clone())]),
+        )
+        .save()
+        .unwrap();
+        let dialed = |device| {
+            let selected = full_entries(&config, None, None, device).unwrap();
+            let [management, other] = selected.connections.as_slice() else {
+                panic!("the context's two connections");
+            };
+            let Transport::Management(capability) = management.transport() else {
+                panic!("the context's first connection is a Management Capability");
+            };
+            assert_eq!(other, &ssh);
+            capability.to_secret_string()
+        };
+
+        assert_eq!(
+            dialed(Some([3; 32])),
+            ManagementCapability::new(*operator.machine(), [3; 32]).to_secret_string()
+        );
+        assert_eq!(dialed(None), operator.to_secret_string());
+        assert_eq!(
+            Config::load(&config).unwrap().contexts.get("first"),
+            Some(&saved)
         );
     }
 
