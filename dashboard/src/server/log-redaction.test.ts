@@ -1,10 +1,10 @@
 import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
-import { Cause, Data, Effect, Exit, Layer, Logger, Tracer } from "effect";
+import { Cause, Data, Effect, Exit, Layer, Logger, References, Tracer } from "effect";
 import { SqlError, UnknownError } from "effect/unstable/sql/SqlError";
 import { inspect } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { RedactedLogsLive, redactingLogger, redactSpanExits } from "#/server/log-redaction";
-import { loggableCause } from "#/server/public-error";
+import { encodePublicBoundaryError, loggableCause } from "#/server/public-error";
 
 const failedQuery = () => new EffectDrizzleQueryError({
   query: "insert into machine_enrollment_token (token_hash) values ($1)",
@@ -97,6 +97,24 @@ describe("redacted logs", () => {
     const loggable = loggableCause(Cause.die(new Error("wrapper", { cause: { error: failedQuery() } })));
 
     expect(Cause.isCause(loggable) ? Cause.pretty(loggable) : loggable).not.toMatch(/secret-/u);
+  });
+
+  it("encodes a public boundary's defect whose code getter throws", () => {
+    const error = new Error("wrapper");
+    Object.defineProperty(error, "code", { get: (): never => { throw new Error("unreadable"); } });
+    const reported: unknown[] = [];
+
+    encodePublicBoundaryError(Cause.die(error), { report: (_kind, cause) => reported.push(cause) });
+
+    expect(reported).toEqual(["unreadable"]);
+  });
+
+  it("logs with annotations it cannot read", () => {
+    const annotations = new Proxy({}, { ownKeys: () => { throw new Error("unreadable"); } });
+
+    const text = logged(Effect.logWarning("A sweep failed.").pipe(Effect.provideService(References.CurrentLogAnnotations, annotations)));
+
+    expect(text).toContain("A sweep failed.");
   });
 
   it("logs an undefined value", () => {

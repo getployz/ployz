@@ -212,17 +212,23 @@ export function mayCarryQuery(cause: unknown): boolean {
 
 /**
  * `value` by its tags, SQLSTATE and any failed query's statement, or else its error class: never a message or field,
- * since a query's message holds its params and the database's can quote the values it refused.
+ * since a query's message holds its params and the database's can quote the values it refused. `unreadable` when
+ * reading it throws.
  */
 export function safeSummary(cause: unknown): string {
-  const tags = typedFailureSummary(cause);
-  const name = Option.getOrUndefined(decodeErrorName(cause))?.name;
-  const kind = tags.length > 0 ? tags : name !== undefined && IDENTIFIER.test(name) ? name : "defect";
-  const query = causeValues(cause)
-    ?.map((at) => Option.getOrUndefined(decodeFailedQuery(at))?.query)
-    .find((at) => at !== undefined);
-  const statement = query === undefined ? undefined : statementName(query);
-  return statement === undefined ? kind : `${kind} in ${statement}`;
+  try {
+    const tags = typedFailureSummary(cause);
+    const name = Option.getOrUndefined(decodeErrorName(cause))?.name;
+    const kind = tags.length > 0 ? tags : name !== undefined && IDENTIFIER.test(name) ? name : "defect";
+    const query = causeValues(cause)
+      ?.map((at) => Option.getOrUndefined(decodeFailedQuery(at))?.query)
+      .find((at) => at !== undefined);
+    const statement = query === undefined ? undefined : statementName(query);
+    return statement === undefined ? kind : `${kind} in ${statement}`;
+  } catch {
+    // A getter that throws hides what the value is; it is named as nothing more.
+    return "unreadable";
+  }
 }
 
 /** How many values [`holdsQuery`] reads before it treats a value as holding a query. */

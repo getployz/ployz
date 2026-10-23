@@ -53,6 +53,17 @@ function redactedCause(cause: Cause.Cause<unknown>): Cause.Cause<unknown> {
   }
 }
 
+/** `annotations` by [`redactFields`], or one `[redacted]` field when they cannot be read. */
+// Log annotations are whatever their callers set, so their fields are too.
+// oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type
+function redactedAnnotations(annotations: Readonly<Record<string, unknown>>): ReturnType<typeof redactFields> {
+  try {
+    return redactFields(annotations, 0);
+  } catch {
+    return { annotations: "[redacted]" };
+  }
+}
+
 /**
  * `fiber` as a logger reads it, with its log annotations redacted: the default loggers print them beside the message.
  * The fiber itself when none may hold a failed query.
@@ -60,7 +71,7 @@ function redactedCause(cause: Cause.Cause<unknown>): Cause.Cause<unknown> {
 function redactedFiber(fiber: Fiber.Fiber<unknown, unknown>): Fiber.Fiber<unknown, unknown> {
   const annotations = fiber.getRef(References.CurrentLogAnnotations);
   if (!holdsQuery(annotations)) return fiber;
-  const context = Context.add(fiber.context, References.CurrentLogAnnotations, redactFields(annotations, 0));
+  const context = Context.add(fiber.context, References.CurrentLogAnnotations, redactedAnnotations(annotations));
   return new Proxy(fiber, {
     get(target, key) {
       if (key === "getRef") return <A>(ref: Context.Reference<A>) => Context.get(context, ref);
