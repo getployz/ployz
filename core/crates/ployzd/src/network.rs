@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    net::{IpAddr, SocketAddr},
+    io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
+    path::Path,
     process::{Command, Output},
     time::{Duration, SystemTime},
 };
@@ -96,6 +98,16 @@ pub enum NetworkError {
     Json(#[from] serde_json::Error),
     #[error("{program} failed: {stderr}")]
     Command { program: String, stderr: String },
+    #[error(
+        "UDP port {port} is in use by {}, so WireGuard can't listen; find it with sudo ss -ulpn 'sport = :{port}' and free the port",
+        holder.as_deref().unwrap_or("another program")
+    )]
+    WireGuardPortInUse {
+        port: u16,
+        holder: Option<String>,
+        #[source]
+        source: defguard_wireguard_rs::error::WireguardInterfaceError,
+    },
 }
 
 #[must_use]
@@ -426,6 +438,24 @@ fn checked_command(program: &str, args: &[&str]) -> Result<Output, NetworkError>
     }
 }
 
+/// The WireGuard `failure`, named [`NetworkError::WireGuardPortInUse`] when another program holds
+/// UDP `port`. Netlink reports the clash only as text, so this binds the port itself to read the
+/// errno, and keeps `failure` as the cause in case an earlier step is what failed.
+fn port_held_elsewhere(
+    port: u16,
+    failure: defguard_wireguard_rs::error::WireguardInterfaceError,
+) -> NetworkError {
+    let taken = |ip: IpAddr| matches!(UdpSocket::bind((ip, port)), Err(error) if error.kind() == io::ErrorKind::AddrInUse);
+    if !taken(Ipv4Addr::UNSPECIFIED.into()) && !taken(Ipv6Addr::UNSPECIFIED.into()) {
+        return failure.into();
+    }
+    NetworkError::WireGuardPortInUse {
+        port,
+        holder: ployz_core::port_holder::udp_holder(Path::new("/proc"), port),
+        source: failure,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, net::SocketAddr};
@@ -453,6 +483,62 @@ mod tests {
             runtime: MachineRuntime::default(),
             build_concurrency: None,
         }
+    }
+
+    fn netlink_failure() -> defguard_wireguard_rs::error::WireguardInterfaceError {
+        defguard_wireguard_rs::error::WireguardInterfaceError::NetlinkError(
+            "Address in use (os error 98)".to_owned(),
+        )
+    }
+
+    #[test]
+    fn a_port_another_program_holds_is_named_with_its_holder() {
+        let held = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+
+        let error = port_held_elsewhere(port, netlink_failure());
+
+        let NetworkError::WireGuardPortInUse { holder, .. } = &error else {
+            panic!("unexpected error: {error:?}");
+        };
+        let holder = holder.as_deref().expect("this test process is named");
+        assert!(
+            holder.contains(&format!("(pid {})", std::process::id())),
+            "{holder}"
+        );
+        assert_eq!(
+            ployz_core::error_chain::inline(&error),
+            format!(
+                "UDP port {port} is in use by {holder}, so WireGuard can't listen; find it with sudo ss -ulpn 'sport = :{port}' and free the port: Netlink error: Address in use (os error 98)"
+            )
+        );
+    }
+
+    #[test]
+    fn a_free_port_is_no_clash() {
+        let port = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+
+        let error = port_held_elsewhere(port, netlink_failure());
+
+        assert!(matches!(error, NetworkError::WireGuard(_)), "{error:?}");
+    }
+
+    #[test]
+    fn a_clash_whose_holder_is_unknown_still_names_the_port() {
+        let error = NetworkError::WireGuardPortInUse {
+            port: WIREGUARD_PORT,
+            holder: None,
+            source: netlink_failure(),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "UDP port 51820 is in use by another program, so WireGuard can't listen; find it with sudo ss -ulpn 'sport = :51820' and free the port"
+        );
     }
 
     #[test]

@@ -6,7 +6,8 @@ use std::{fs, path::Path};
 /// it: ployzd running WireGuard in userspace, or this CLI listening for Cloud's port check. A socket
 /// no process holds is the kernel's, as WireGuard's is; whether it is Ployz's interface or another
 /// can't be read here, and a program that just let go leaves one too, so it names no one.
-pub(crate) fn udp_holder(proc: &Path, port: u16) -> Option<String> {
+#[must_use]
+pub fn udp_holder(proc: &Path, port: u16) -> Option<String> {
     let sockets: Vec<String> = ["net/udp", "net/udp6"]
         .iter()
         .filter_map(|table| fs::read_to_string(proc.join(table)).ok())

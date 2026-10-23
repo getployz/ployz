@@ -17,6 +17,7 @@ use bollard::{
 };
 use defguard_wireguard_rs::{
     InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi,
+    error::WireguardInterfaceError,
     host::{Host, Peer},
     key::Key,
     net::IpAddrMask,
@@ -37,7 +38,7 @@ use super::{
     WIREGUARD_INTERFACE_NAME, WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey,
     attach_peer_selections, checked_command, choose_endpoint,
     firewall::{docker_ipv6_firewall, fence_container_ipv6, remove_firewall_rules},
-    peers_for,
+    peers_for, port_held_elsewhere,
 };
 use crate::{
     corrosion::{MachineView, ReplicatedObservations},
@@ -302,7 +303,8 @@ impl NetworkPlane {
                     port: WIREGUARD_PORT,
                     peers: Vec::new(),
                     mtu: Some(self.mtu),
-                })?;
+                })
+                .map_err(|error| self.port_clash(error))?;
         } else {
             self.wireguard.assign_address(&address)?;
             checked_command(
@@ -318,6 +320,19 @@ impl NetworkPlane {
             )?;
         }
         Ok(())
+    }
+
+    /// Names another program holding the WireGuard port, unless this interface listens on it
+    /// already and the setup failed after that.
+    fn port_clash(&self, failure: WireguardInterfaceError) -> NetworkError {
+        let listening = self
+            .wireguard
+            .read_interface_data()
+            .is_ok_and(|host| host.listen_port == WIREGUARD_PORT);
+        if listening {
+            return failure.into();
+        }
+        port_held_elsewhere(WIREGUARD_PORT, failure)
     }
 
     fn apply_peers(&mut self, peers: &[MeshPeer], set: PeerSet) -> Result<(), NetworkError> {

@@ -7,7 +7,6 @@
 
 mod client;
 mod enroll;
-mod port_holder;
 mod probe;
 pub(crate) mod unit;
 mod wire;
@@ -278,7 +277,7 @@ impl Host for System {
     }
 
     fn wireguard_port_holder(&self) -> Option<String> {
-        port_holder::udp_holder(Path::new("/proc"), ployz_core::WIREGUARD_PORT)
+        ployz_core::port_holder::udp_holder(Path::new("/proc"), ployz_core::WIREGUARD_PORT)
     }
 
     async fn participating(&self) -> Option<String> {
