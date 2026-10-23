@@ -335,10 +335,11 @@ Do one of these, then run the install line again:
   NAT64 carries that traffic to IPv4. You need both, and they must agree on the prefix: a DNS64
   resolver alone, such as a public one, gives addresses nothing answers unless a NAT64 gateway
   serves its prefix. Use your provider's NAT64 and DNS64, or a public service that runs both.
-  With both in place, the install line works and a single server sets up and runs. Behind
-  NAT64, the server advertises the gateway's IPv4 address as its own
-  ([#3166](https://github.com/getployz/ployz/issues/3166)), and containers can't reach the DNS
-  resolvers Docker gives them ([#3167](https://github.com/getployz/ployz/issues/3167)).
+  With both in place, the install line works and a single server sets up and runs. The server
+  advertises only its own IPv6 addresses, never the gateway's IPv4 one, and your services
+  resolve names through Ployz as on any other server. A container you start yourself with
+  `docker run` on Docker's default network has only IPv4, so it reaches neither its resolvers
+  nor anything else. Run it with `--network host`, or on a Docker network with IPv6 turned on.
 
 Keep the IPv4 address or NAT64 for as long as the server runs Ployz. Ployz upgrades download from
 github.com too.
