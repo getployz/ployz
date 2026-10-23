@@ -50,12 +50,19 @@ Commands act on your only project and its default environment. With more than on
 your app's directory.
 `ployz ctx` shows where commands act from here. In a directory with no project linked, it asks Cloud
 which projects there are: it names your only project, says the organization has none yet, or says
-it has several and how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
-`ployz link` step. When signed out, it says `organization = no one` and suggests `ployz login`.
-With no context, sign-in or token, it reports no local daemon socket when that socket is absent.
-Socket presence alone does not confirm that the daemon answers. In JSON, `credential` names
-`device`, `token` or `local`, or is null when signed out. `servers.local_socket_exists` records
-the socket check for the local fallback; `servers.via` still names the selected route.
+it has several and how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)`.
+With a token or device sign-in, it still suggests `ployz link`. When signed out, it says
+`organization = (none: not signed in)` and suggests
+`ployz login` only when it has no Server route. A selected context, `PLOYZ_CONTEXT`, or `--connect`
+still provides a Server route without Cloud sign-in.
+
+With no context, `--connect`, sign-in or token, it reports no local daemon socket when that socket
+is absent. If it cannot inspect the socket because of permissions, it says to use `sudo` or join
+the `ployz` group. Socket presence alone does not confirm that the daemon answers. In JSON,
+`credential` names `device`, `token` or `local`, or is null when signed out.
+`servers.local_socket_exists` is true only when the local socket is visible. The added
+`servers.local_socket_status` distinguishes `visible`, `missing`, `permission_denied` and
+`unknown`; `servers.via` still names the selected route.
 
 A link belongs to the organization it was made in. Acting in another one, a command that uses the
 link, such as `ployz status`, refuses. When both are Ployz Cloud organizations, it names

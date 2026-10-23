@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -988,7 +989,7 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
         .default
         .as_ref()
         .and_then(|default| default.project.as_ref().zip(default.environment.as_ref()));
-    let hint = if context.credential.is_none() {
+    let hint = if context.credential.is_none() && context.servers.needs_login() {
         Some("ployz login")
     } else {
         match (&scope.project, &context.default, only) {
@@ -1030,7 +1031,7 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
             "organization",
             context.organization.as_ref().map_or(
                 if context.credential.is_none() {
-                    "no one"
+                    "(none: not signed in)"
                 } else {
                     "(the token's)"
                 },
@@ -1039,16 +1040,7 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
         )
         .field("project", project)
         .field("environment", environment)
-        .field(
-            "servers",
-            context.servers.context.as_ref().map_or_else(
-                || match context.servers.local_socket_exists {
-                    Some(false) => "(none: no local daemon socket)".to_owned(),
-                    Some(true) | None => format!("via {}", context.servers.via),
-                },
-                |name| format!("via context {name}"),
-            ),
-        );
+        .field("servers", context.servers.label());
     crate::ui::fields(&Next::new(&context, hint.clone()), &record)?;
     if let Some(hint) = hint {
         crate::ui::hint(&Hint::Next(hint));
@@ -1092,6 +1084,64 @@ struct Servers {
     context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     local_socket_exists: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_socket_status: Option<LocalSocketStatus>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalSocketStatus {
+    Visible,
+    Missing,
+    PermissionDenied,
+    Unknown,
+}
+
+impl Servers {
+    fn local(result: io::Result<bool>) -> Self {
+        let status = match result {
+            Ok(true) => LocalSocketStatus::Visible,
+            Ok(false) => LocalSocketStatus::Missing,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                LocalSocketStatus::PermissionDenied
+            }
+            Err(_) => LocalSocketStatus::Unknown,
+        };
+        Self {
+            via: "local",
+            context: None,
+            local_socket_exists: Some(status == LocalSocketStatus::Visible),
+            local_socket_status: Some(status),
+        }
+    }
+
+    fn needs_login(&self) -> bool {
+        matches!(
+            self.local_socket_status,
+            Some(
+                LocalSocketStatus::Missing
+                    | LocalSocketStatus::PermissionDenied
+                    | LocalSocketStatus::Unknown
+            )
+        )
+    }
+
+    fn label(&self) -> String {
+        if let Some(name) = &self.context {
+            return format!("via context {name}");
+        }
+        match self.local_socket_status {
+            Some(LocalSocketStatus::Missing) => "(none: no local daemon socket)".to_owned(),
+            Some(LocalSocketStatus::PermissionDenied) => {
+                "(none: can't read the local daemon socket; run with sudo or join the ployz group)"
+                    .to_owned()
+            }
+            Some(LocalSocketStatus::Unknown) => {
+                "(none: can't check the local daemon socket)".to_owned()
+            }
+            Some(LocalSocketStatus::Visible) | None => format!("via {}", self.via),
+        }
+    }
 }
 
 /// In `server::connect`'s order. A `--connect` target isn't echoed: it can carry a capability.
@@ -1099,8 +1149,8 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     let via = |via, context| Servers {
         via,
         context,
-        local_socket_exists: (via == "local")
-            .then(|| Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists()),
+        local_socket_exists: None,
+        local_socket_status: None,
     };
     if matches.get_one::<String>("connect").is_some() {
         return Ok(via("connect", None));
@@ -1117,13 +1167,52 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
         .map(str::to_owned);
     Ok(match current {
         Some(context) => via("context", Some(context)),
-        None => via("local", None),
+        None => Servers::local(Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).try_exists()),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_socket_check_distinguishes_visibility_and_permission() {
+        let cases = [
+            (Ok(true), LocalSocketStatus::Visible, "via local", true),
+            (
+                Ok(false),
+                LocalSocketStatus::Missing,
+                "(none: no local daemon socket)",
+                false,
+            ),
+            (
+                Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+                LocalSocketStatus::PermissionDenied,
+                "(none: can't read the local daemon socket; run with sudo or join the ployz group)",
+                false,
+            ),
+            (
+                Err(io::Error::other("unavailable")),
+                LocalSocketStatus::Unknown,
+                "(none: can't check the local daemon socket)",
+                false,
+            ),
+        ];
+        for (result, status, label, exists) in cases {
+            let servers = Servers::local(result);
+            assert_eq!(servers.label(), label);
+            assert_eq!(servers.needs_login(), !exists);
+            let json = serde_json::to_value(&servers).unwrap();
+            assert_eq!(
+                json.pointer("/local_socket_exists"),
+                Some(&serde_json::json!(exists))
+            );
+            assert_eq!(
+                json.pointer("/local_socket_status"),
+                Some(&serde_json::to_value(status).unwrap())
+            );
+        }
+    }
 
     fn linked_in(id: &str, slug: &str) -> Link {
         Link {
