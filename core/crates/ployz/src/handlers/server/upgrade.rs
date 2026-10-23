@@ -819,7 +819,7 @@ fn went_away(
     Error::caused(
         ployz_core::RpcErrorCode::Unavailable,
         format!(
-            "Server {name} stopped answering during upgrade {attempt_id} and didn't answer again within {} minutes. It may have powered off or lost its network. Once it's back, `ployz server show {name}` shows how the upgrade ended.",
+            "Server {name} stopped answering during upgrade {attempt_id} and didn't answer again within {} minutes. It may have powered off, lost its network or still be restarting. Once it answers, `ployz server show {name}` shows how the upgrade ended.",
             ployz_core::MACHINE_START_WAIT.as_secs() / 60,
         ),
         error,
@@ -1069,6 +1069,8 @@ mod tests {
 
     /// Accepts the upgrade, then never answers again, as a Server that lost power.
     struct GoneAfterAccepting {
+        /// Polls answered with a restart in progress before the Server goes silent.
+        answers: usize,
         waits: Vec<Duration>,
     }
 
@@ -1088,11 +1090,21 @@ mod tests {
 
         async fn poll_upgrade(
             &mut self,
-            _request: RequestMachineUpgradeRequest,
+            request: RequestMachineUpgradeRequest,
             _machine: &Machine,
             wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
             self.waits.push(wait);
+            if let Some(left) = self.answers.checked_sub(1) {
+                self.answers = left;
+                return Ok(MachineUpgradeAttempt {
+                    attempt_id: request.attempt_id,
+                    target: MachineVersion::parse("1.2.3").unwrap(),
+                    outcome: MachineUpgradeOutcome::Running {
+                        stage: ployz_core::MachineUpgradeStage::Restarting,
+                    },
+                });
+            }
             Err(crate::setup_retry::Error::Exhausted {
                 operation: "RequestUpgrade".into(),
                 wait,
@@ -1108,7 +1120,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_gone_mid_upgrade_is_given_up_on_after_its_start_window() {
-        let mut client = GoneAfterAccepting { waits: Vec::new() };
+        let mut client = GoneAfterAccepting {
+            answers: 0,
+            waits: Vec::new(),
+        };
         let (result, outcome) = run_all(
             &mut client,
             &[machine('a', 1)],
@@ -1125,11 +1140,36 @@ mod tests {
         assert!(
             text.contains("Server a stopped answering during upgrade")
                 && text.contains("didn't answer again within 5 minutes.")
-                && text.contains("It may have powered off or lost its network.")
+                && text
+                    .contains("It may have powered off, lost its network or still be restarting.")
                 && text.contains("`ployz server show a`"),
             "{text}"
         );
         assert!(result.is_some(), "the accepted attempt is kept");
+    }
+
+    #[tokio::test]
+    async fn each_answer_gives_a_restarting_server_its_start_window_again() {
+        let mut client = GoneAfterAccepting {
+            answers: 1,
+            waits: Vec::new(),
+        };
+        let (_, outcome) = run_all(
+            &mut client,
+            &[machine('a', 1)],
+            MachineRelease::Stable,
+            IngressImage::Latest,
+            "ployz server upgrade stable a".into(),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(outcome.is_err());
+        assert_eq!(
+            client.waits.get(1),
+            Some(&ployz_core::MACHINE_START_WAIT),
+            "{:?}",
+            client.waits
+        );
     }
 
     #[tokio::test]
