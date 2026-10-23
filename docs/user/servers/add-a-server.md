@@ -113,7 +113,10 @@ from and its provider, its CPU, memory and main disk size, and its status. **Ins
 still getting ready, and **Ready** means Docker is in place. **Building ZFS** under **Ready** means
 its ZFS build is still running, and an enrollment with ZFS volumes waits for it. **Blocked** rows say what
 is wrong with the server, in the server's own words, such as `Disk is 20 GiB. Ployz needs 30 GiB.`
-A server that still belongs to another organization is blocked until you run `ployz server rm` for it there, and
+A server that still belongs to another organization is blocked until you run `ployz server rm` for it there. A server
+where another program holds UDP port 51820, which Ployz needs for WireGuard, is blocked and names that program, for
+example `UDP port 51820 is in use by avahi-daemon (pid 812).` Free the port and the block clears on its next
+check-in.
 **Offline** means it stopped checking in. You can't select a blocked server. Once more than ten
 servers wait, filter the list by readiness, provider and token, or search by name or IP address.
 
