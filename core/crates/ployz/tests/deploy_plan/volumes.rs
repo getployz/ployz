@@ -2260,3 +2260,36 @@ fn services_sharing_a_volume_on_a_down_server_block_only_themselves() {
         operations(&preview)
     );
 }
+
+/// Plain Volumes split across two answering Servers still refuse the whole Deploy under
+/// the runner, though no Server was asked for its storage: a plain Volume needs none.
+#[test]
+fn plain_volumes_on_answering_servers_still_refuse_under_the_runner() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "a");
+    add_named_volume(&mut db, "b");
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &web],
+        PlanOptions::default(),
+    );
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![
+            observed_volume(machine_id('1'), "a"),
+            observed_volume(machine_id('2'), "b"),
+        ])
+        .expect("valid Volume Snapshot fixture"),
+        ..Default::default()
+    };
+
+    assert!(preview_deploy(&intent, &snapshot).is_err());
+    let preview = runner_preview(&intent, &snapshot);
+    assert!(preview.is_err(), "{:?}", preview.map(|plan| plan.blocked));
+}

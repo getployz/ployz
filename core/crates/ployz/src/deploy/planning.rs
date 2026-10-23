@@ -826,14 +826,23 @@ fn hostname_policy_for(
     Ok(warnings)
 }
 
-/// Whether `error` says only that the Service's Volume sits on a Machine that can't
-/// take it now: down, or silent this Deploy. Configuration that matches no Machine,
-/// or a Volume on a Machine that answered, still fails the Deploy.
-fn volume_server_away(error: &PlanError, snapshot: &DeploySnapshot) -> bool {
+/// Whether `error` says only that `spec`'s Volume sits on a Machine that can't take it
+/// now: down, silent this Deploy, or, for a provisioned Volume, without its storage.
+/// Configuration that matches no Machine, or a Volume on a Machine that answered,
+/// still fails the Deploy.
+fn volume_server_away(
+    error: &PlanError,
+    snapshot: &DeploySnapshot,
+    spec: &RequestedServiceSpec,
+) -> bool {
     let PlanError::NoEligibleMachines { constraints } = error else {
         return false;
     };
-    let away = |name: &ployz_core::MachineName| {
+    let away = |volume: &ployz_core::DockerVolumeName, name: &ployz_core::MachineName| {
+        let provisioned = spec
+            .volume_graph()
+            .mounted_provisioned_volumes()
+            .any(|mounted| mounted.source.docker_volume_name() == Some(volume));
         snapshot
             .machines
             .iter()
@@ -841,15 +850,15 @@ fn volume_server_away(error: &PlanError, snapshot: &DeploySnapshot) -> bool {
             .is_some_and(|machine| {
                 machine.membership == MembershipObservation::Down
                     || snapshot.silent(machine)
-                    || storage::capacity(snapshot, machine).is_err()
+                    || (provisioned && storage::capacity(snapshot, machine).is_err())
             })
     };
     let constraints = constraints.as_slice();
     let located = constraints
         .iter()
         .filter_map(|constraint| {
-            if let EliminatingConstraint::VolumeAlreadyOn { located_on, .. } = constraint {
-                Some(located_on)
+            if let EliminatingConstraint::VolumeAlreadyOn { volume, located_on } = constraint {
+                Some((volume, located_on))
             } else {
                 None
             }
@@ -858,8 +867,7 @@ fn volume_server_away(error: &PlanError, snapshot: &DeploySnapshot) -> bool {
     !located.is_empty()
         && located
             .iter()
-            .flat_map(|machines| machines.iter())
-            .all(away)
+            .all(|(volume, located_on)| located_on.iter().all(|machine| away(volume, machine)))
         && constraints.iter().all(|constraint| {
             matches!(
                 constraint,
@@ -1027,7 +1035,8 @@ fn assemble_plan(
                 continue;
             }
             Err(error)
-                if intent.options.block_unmountable && volume_server_away(&error, snapshot) =>
+                if intent.options.block_unmountable
+                    && volume_server_away(&error, snapshot, spec) =>
             {
                 blocked.push(BlockedService {
                     service: spec.name.clone(),

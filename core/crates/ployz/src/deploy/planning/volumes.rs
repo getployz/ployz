@@ -461,7 +461,7 @@ impl VolumePlan<'_> {
                     | PlanError::CopiesUnknown { .. }
                     | PlanError::VolumeServerTakesNoServices { .. },
                 ) => {}
-                Err(error) if super::volume_server_away(&error, snapshot) => {}
+                Err(error) if super::volume_server_away(&error, snapshot, spec) => {}
                 result => result.map_err(|source| {
                     super::service_error(name_errors_with_service, spec.name.as_str(), source)
                 })?,
@@ -769,7 +769,7 @@ impl VolumePlan<'_> {
             ) {
                 Ok(anchor) => anchor,
                 Err(error) if options.block_unmountable => {
-                    let error = unmountable(error, snapshot)?.into_rpc_error();
+                    let error = unmountable(error, snapshot, requested)?.into_rpc_error();
                     blocked.extend(component.service_names().map(|service| BlockedService {
                         service: service.clone(),
                         error: error.clone(),
@@ -789,7 +789,11 @@ impl VolumePlan<'_> {
 ///
 /// # Errors
 /// Hands back any other error, which still fails the Deploy.
-fn unmountable(error: PlanError, snapshot: &DeploySnapshot) -> Result<PlanError, PlanError> {
+fn unmountable(
+    error: PlanError,
+    snapshot: &DeploySnapshot,
+    requested: &[RequestedServiceSpec],
+) -> Result<PlanError, PlanError> {
     let PlanError::Service { service, source } = error else {
         return Err(error);
     };
@@ -798,7 +802,10 @@ fn unmountable(error: PlanError, snapshot: &DeploySnapshot) -> Result<PlanError,
         PlanError::NoWriter { .. }
             | PlanError::CopiesUnknown { .. }
             | PlanError::VolumeHolderUnknown { .. }
-    ) || super::volume_server_away(&source, snapshot)
+    ) || requested
+        .iter()
+        .find(|spec| spec.name.as_str() == service)
+        .is_some_and(|spec| super::volume_server_away(&source, snapshot, spec))
     {
         Ok(*source)
     } else {
