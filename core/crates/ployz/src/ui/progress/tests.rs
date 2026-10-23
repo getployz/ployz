@@ -591,6 +591,8 @@ fn repeated_snapshots_at_the_deadline_cannot_starve_heartbeats() {
 
 #[test]
 fn progress_drop_joins_its_worker_without_a_summary() {
+    use ployz_core::ObservationKind;
+
     let initial = frame(State::Pending);
     let (sender, receiver) = mpsc::channel();
     let bytes = Arc::new(Mutex::new(Vec::new()));
@@ -615,11 +617,18 @@ fn progress_drop_joins_its_worker_without_a_summary() {
     };
     let mut next = initial;
     next.rows.first_mut().unwrap().state = State::Running(RowPhase::Starting);
+    next.notices.push(DeployWarning::ObservationFailed {
+        kind: ObservationKind::Volume,
+        machine_id: MachineId::random(),
+        message: "volume query timed out".into(),
+        gap: None,
+    });
     progress.update(next);
     open();
     drop(progress);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
-    assert!(text.ends_with("alpha: starting\n"), "{text}");
+    assert!(text.contains("alpha: starting\n"), "{text}");
+    assert_eq!(text.matches("volume query timed out").count(), 1, "{text}");
     assert!(!text.contains("deployed"));
 }
 
@@ -751,6 +760,41 @@ fn observation_cause_waits_for_a_later_named_server_gap() {
     assert_eq!(text.matches("volume query timed out").count(), 1, "{text}");
     assert!(text.contains("Server machine-2"), "{text}");
     assert!(!text.contains(machine_id.as_str()), "{text}");
+}
+
+#[test]
+fn observation_notice_without_a_next_frame_gap_prints_before_a_later_named_gap() {
+    use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
+    let machine_id = MachineId::random();
+    let mut initial = frame(State::Running(RowPhase::Starting));
+    initial.notices.push(DeployWarning::ObservationFailed {
+        kind: ObservationKind::Volume,
+        machine_id,
+        message: "volume query timed out".into(),
+        gap: None,
+    });
+    let mut still_running = initial.clone();
+    still_running.rows.first_mut().unwrap().state = State::Running(RowPhase::WaitingForHealth);
+    let mut named = still_running.clone();
+    named.notices.push(DeployWarning::ObservationOmitted {
+        kind: ObservationKind::Container,
+        machine_id,
+        gap: Some(ObservationGap {
+            machine_name: MachineName::parse("machine-2").unwrap(),
+            reason: ObservationGapReason::Down,
+        }),
+    });
+    let text = plain(
+        initial,
+        vec![
+            (1, Message::Update(still_running)),
+            (2, Message::Update(named.clone())),
+            (3, Message::Finish(named, Disposition::Settled)),
+        ],
+    );
+    assert_eq!(text.matches("volume query timed out").count(), 1, "{text}");
+    assert!(text.contains(machine_id.as_str()), "{text}");
+    assert!(text.contains("Server machine-2"), "{text}");
 }
 
 #[test]
