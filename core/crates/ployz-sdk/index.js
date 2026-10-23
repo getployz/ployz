@@ -209,24 +209,50 @@ function settledWithin(promise, ms) {
   return Promise.race([promise, elapsed]).finally(() => clearTimeout(timer));
 }
 
+function safeDialTiming(timing) {
+  if (timing == null || typeof timing !== "object") return undefined;
+  const outcome = ["answered", "cancelled", "timed_out", "refused", "unanswered"].includes(timing.outcome)
+    ? timing.outcome : "unanswered";
+  const pathKind = ["direct", "relayed", "unknown"].includes(timing.pathKind) ? timing.pathKind : "unknown";
+  const safe = { outcome, pathKind };
+  for (const field of ["totalMs", "endpointBindMs", "irohConnectMs", "proofMs", "http2ChannelMs", "probeDescribeContractMs", "entryDescribeContractMs"]) {
+    if (Number.isSafeInteger(timing[field]) && timing[field] >= 0) safe[field] = timing[field];
+  }
+  const unfinished = ["endpoint_bind", "iroh_connect", "proof", "http2_channel", "probe_describe_contract", "entry_describe_contract"];
+  if (unfinished.includes(timing.unfinishedStage)) safe.unfinishedStage = timing.unfinishedStage;
+  return Object.freeze(safe);
+}
+
+function readDialTiming(attempt) {
+  try { return safeDialTiming(attempt.dialTimings?.()); } catch { return undefined; }
+}
+
+function reportDialTiming(callback, timing) {
+  if (timing == null) return;
+  // A diagnostic callback cannot change the connection's result.
+  try { callback?.(timing); } catch {}
+}
+
 async function connect(options) {
-  const { signal, timeoutMs } = options;
+  const { signal, timeoutMs, onDialTiming } = options;
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2147483647)) {
     throw new TypeError("timeoutMs must be a positive 32-bit integer");
   }
   signal?.throwIfAborted();
   let attempt;
-  try { attempt = native.startConnections(options.connections); } catch (error) { throwRpcError(error); }
+  try { attempt = native.startConnections(options.connections, options.sampleDialTiming); } catch (error) { throwRpcError(error); }
   let client;
   let timer;
   let stopped = false;
   // The caller's own close reports a failed close; this one has nobody awaiting it.
-  const stop = () => { stopped = true; attempt.cancel(); void client?.close().catch(() => {}); };
-  const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", stop); };
-  signal?.addEventListener("abort", stop, { once: true });
-  if (timeoutMs !== undefined) timer = setTimeout(stop, timeoutMs);
+  const stop = (timedOut) => { stopped = true; attempt.cancel(timedOut); void client?.close().catch(() => {}); };
+  const abort = () => stop(false);
+  const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (timeoutMs !== undefined) timer = setTimeout(() => stop(true), timeoutMs);
   try {
     client = new Client(await withRpcError(attempt.wait()));
+    client.dialTiming = readDialTiming(attempt);
     const close = client.close.bind(client);
     // Keep listening until the close finishes, so an abort during it still reaches the session.
     client.close = async () => { try { return await close(); } finally { cleanup(); } };
@@ -236,8 +262,17 @@ async function connect(options) {
       signal?.throwIfAborted();
       throw new Error("session deadline exceeded");
     }
+    reportDialTiming(onDialTiming, client.dialTiming);
     return client;
-  } catch (error) { cleanup(); throw error; }
+  } catch (error) {
+    const timing = readDialTiming(attempt);
+    reportDialTiming(onDialTiming, timing);
+    if (timing != null && error != null && typeof error === "object") {
+      try { error.dialTiming = timing; } catch {}
+    }
+    cleanup();
+    throw error;
+  }
 }
 
 async function openConfigStore(url, sealingSecret) {

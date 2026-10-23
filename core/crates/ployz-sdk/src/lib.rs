@@ -8,6 +8,7 @@ pub mod config_store;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use ployz::connect::diagnostics::{DialOutcome, DialTimings, should_emit};
 use ployz::sdk;
 use ployz_core::{
     DataLossConfirmation, ManagementClientLabel, Namespace, RemoveVolumesRequest, RpcError,
@@ -19,6 +20,23 @@ use ployz_core::{
 pub struct PendingConnection {
     connections: std::sync::Mutex<Option<Vec<ployz::context::Connection>>>,
     cancel: tokio_util::sync::CancellationToken,
+    timed_out: std::sync::atomic::AtomicBool,
+    timings: std::sync::Mutex<Option<serde_json::Value>>,
+    sampled: bool,
+    diagnose: bool,
+}
+
+static DIAL_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn dial_sample_rate() -> u64 {
+    static RATE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *RATE.get_or_init(|| {
+        std::env::var("PLOYZ_DIAL_SAMPLE_N")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|rate| (1..=10_000).contains(rate))
+            .unwrap_or(100)
+    })
 }
 
 /// Parse the shared descriptor shape without reflecting capabilities in errors.
@@ -28,14 +46,27 @@ pub struct PendingConnection {
 #[napi]
 pub fn start_connections(
     #[napi(ts_arg_type = "readonly Connection[]")] connections: serde_json::Value,
+    sample_dial_timing: Option<bool>,
 ) -> Result<PendingConnection> {
     let connections = parse_connections(connections)?;
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty"));
     }
+    let diagnose = matches!(connections.as_slice(), [connection]
+        if matches!(connection.transport(), ployz::context::Transport::Management(_)));
     Ok(PendingConnection {
         connections: std::sync::Mutex::new(Some(connections)),
         cancel: tokio_util::sync::CancellationToken::new(),
+        timed_out: std::sync::atomic::AtomicBool::new(false),
+        timings: std::sync::Mutex::new(None),
+        sampled: diagnose
+            && sample_dial_timing.unwrap_or_else(|| {
+                DIAL_SEQUENCE
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    .wrapping_add(1)
+                    .is_multiple_of(dial_sample_rate())
+            }),
+        diagnose,
     })
 }
 
@@ -65,8 +96,18 @@ pub(crate) fn parse_connections(
 impl PendingConnection {
     /// Cancel this attempt; dropping the dial future closes its transport.
     #[napi]
-    pub fn cancel(&self) {
+    pub fn cancel(&self, timed_out: Option<bool>) {
+        if timed_out == Some(true) && !self.cancel.is_cancelled() {
+            self.timed_out
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         self.cancel.cancel();
+    }
+
+    /// Diagnostic stages from the completed attempt, present only when sampled, slow, or unanswered.
+    #[napi(ts_return_type = "Record<string, unknown> | null")]
+    pub fn dial_timings(&self) -> Option<serde_json::Value> {
+        self.timings.lock().ok().and_then(|timings| timings.clone())
     }
 
     /// Await one confirmed session.
@@ -82,15 +123,42 @@ impl PendingConnection {
             .take()
             .ok_or_else(|| Error::from_reason("connection already awaited"))?;
         let connector = std::sync::Arc::new(ployz::connect::SystemConnector::default());
-        tokio::select! {
+        let timings = std::sync::Arc::new(std::sync::Mutex::new(DialTimings::default()));
+        let started = std::time::Instant::now();
+        let result = tokio::select! {
             biased;
-            () = self.cancel.cancelled() => Err(call_to_napi(sdk::CallError {
+            () = self.cancel.cancelled() => Err(sdk::CallError {
                 error: RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null, cause: Vec::new() },
                 unanswered: true,
                 target_unreached: false,
-            })),
-            result = sdk::connect_answered(connections, connector) => Ok(Client { inner: result.map_err(call_to_napi)? }),
+            }),
+            result = ployz::connect::diagnostics::scope(std::sync::Arc::clone(&timings), sdk::connect_answered(connections, connector)) => result,
+        };
+        let total_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let outcome = match &result {
+            Ok(_) => DialOutcome::Answered,
+            Err(_) if self.timed_out.load(std::sync::atomic::Ordering::Relaxed) => {
+                DialOutcome::TimedOut
+            }
+            Err(_) if self.cancel.is_cancelled() => DialOutcome::Cancelled,
+            Err(error) if !error.unanswered => DialOutcome::Refused,
+            Err(_) if total_ms >= 10_000 => DialOutcome::TimedOut,
+            Err(_) => DialOutcome::Unanswered,
+        };
+        if self.diagnose
+            && should_emit(self.sampled, total_ms, outcome)
+            && let Ok(timings) = timings.lock()
+            && let Ok(serde_json::Value::Object(mut fields)) = serde_json::to_value(timings.clone())
+        {
+            fields.insert("totalMs".into(), serde_json::json!(total_ms));
+            fields.insert("outcome".into(), serde_json::json!(outcome));
+            if let Ok(mut slot) = self.timings.lock() {
+                *slot = Some(serde_json::Value::Object(fields));
+            }
         }
+        Ok(Client {
+            inner: result.map_err(call_to_napi)?,
+        })
     }
 }
 

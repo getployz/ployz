@@ -26,13 +26,15 @@ class NativeClient {
 // Each connect's native session arrives through `connecting`, which a test may hold back.
 const arriveAtOnce = async () => (session = new NativeClient());
 let connecting = arriveAtOnce;
+let diagnostic = null;
+let cancelReasons = [];
 const native = new Module(addon);
 native.loaded = true;
 native.exports = {
   Client: NativeClient,
   ConfigStore: class {},
   SealedNames: class {},
-  startConnections: () => ({ cancel() {}, wait: () => connecting() }),
+  startConnections: () => ({ cancel: (timedOut) => cancelReasons.push(timedOut), wait: () => connecting(), dialTimings: () => diagnostic }),
 };
 require.cache[addon] = native;
 const sdk = require(dir);
@@ -50,6 +52,29 @@ test("a cancelled native dial says no Server answered", async () => {
 
 const abortListeners = signal => getEventListeners(signal, "abort").length;
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test("sampled dial reports only stage durations and enum values", async () => {
+  const lines = [];
+  diagnostic = {
+    totalMs: 71, endpointBindMs: 17, pathKind: "relayed", outcome: "answered",
+    capability: "ployz1:private-fixture", relayUrl: "https://secret-relay.example.com",
+  };
+  try {
+    const client = await sdk.connect({
+      connections: [{ management: "ployz1:private-fixture" }],
+      onDialTiming: (timing) => lines.push(timing),
+    });
+    assert.equal(client.dialTiming.endpointBindMs, 17);
+    const logged = JSON.stringify(lines);
+    assert.match(logged, /endpointBindMs/);
+    assert.doesNotMatch(logged, /private-fixture|secret-relay\.example\.com/);
+    const closing = client.close();
+    session.finishClose();
+    await closing;
+  } finally {
+    diagnostic = null;
+  }
+});
 const activeTimeouts = () => process.getActiveResourcesInfo().filter(resource => resource === "Timeout").length;
 
 test("an abort during close reaches the native session, and a second abort changes nothing", async () => {
@@ -111,10 +136,12 @@ async function stopWhileConnectingThenFailClose(signal, timeoutMs, stopConnectin
   process.on("unhandledRejection", record);
   let arrive;
   connecting = () => new Promise(resolve => (arrive = resolve));
+  cancelReasons = [];
   try {
     const timeouts = activeTimeouts();
     const connected = sdk.connect({ connections: [{ tcp: "127.0.0.1:1" }], signal, timeoutMs });
     await stopConnecting();
+    assert.equal(cancelReasons.at(-1), timeoutMs !== undefined, "the native dial records the deadline reason");
     arrive((session = new NativeClient()));
     await tick();
     assert.equal(session.stops, 1, "connect closed the session that arrived after it stopped");
@@ -135,6 +162,17 @@ test("an abort while connecting rejects with the abort reason even when the nati
   const abort = new AbortController();
   const reason = new Error("caller gave up");
   await stopWhileConnectingThenFailClose(abort.signal, undefined, async () => abort.abort(reason), error => error === reason);
+});
+
+test("a frozen abort reason survives diagnostic attachment", async () => {
+  const abort = new AbortController();
+  const reason = Object.freeze(new Error("caller gave up"));
+  diagnostic = { totalMs: 12, outcome: "cancelled", pathKind: "unknown" };
+  try {
+    await stopWhileConnectingThenFailClose(abort.signal, undefined, async () => abort.abort(reason), error => error === reason);
+  } finally {
+    diagnostic = null;
+  }
 });
 
 test("a deadline while connecting rejects as exceeded even when the native close fails", async () => {

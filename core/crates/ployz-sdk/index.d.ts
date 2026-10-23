@@ -78,6 +78,24 @@ export type ConnectOptions = {
   readonly signal?: AbortSignal;
   /** Total connection/session lifetime budget; close cancels this timer. */
   readonly timeoutMs?: number;
+  /** Receives the optional safe stage record even when the caller stops waiting. */
+  readonly onDialTiming?: (timing: DialTiming) => void;
+  /** Match the caller's sample decision; slow and failed dials still emit. */
+  readonly sampleDialTiming?: boolean;
+};
+
+/** Native stages observed before a pending management dial settled. No identity or address is retained. */
+export type DialTiming = {
+  readonly totalMs: number;
+  readonly endpointBindMs?: number;
+  readonly irohConnectMs?: number;
+  readonly proofMs?: number;
+  readonly http2ChannelMs?: number;
+  readonly probeDescribeContractMs?: number;
+  readonly entryDescribeContractMs?: number;
+  readonly pathKind: "direct" | "relayed" | "unknown";
+  readonly unfinishedStage?: "endpoint_bind" | "iroh_connect" | "proof" | "http2_channel" | "probe_describe_contract" | "entry_describe_contract";
+  readonly outcome: "answered" | "cancelled" | "timed_out" | "refused" | "unanswered";
 };
 
 export type WatchOptions = {
@@ -136,7 +154,7 @@ export declare const RpcError: {
   new (
     error: RpcErrorPayload & { unanswered?: boolean; targetUnreached?: boolean },
     options?: ErrorOptions,
-  ): Error & RpcErrorPayload & { readonly unanswered: boolean; readonly targetUnreached: boolean };
+  ): Error & RpcErrorPayload & { readonly unanswered: boolean; readonly targetUnreached: boolean; readonly dialTiming?: DialTiming };
 };
 
 /** Private build evidence; never proof that content still exists on a Machine. */
@@ -255,6 +273,8 @@ type WrappedClientMethods =
   | "dataLossIfNamespaceDestroyed" | "destroyNamespace";
 
 export interface Client extends Omit<native.Client, WrappedClientMethods> {
+  /** Present only for a sampled, slow, or unanswered pending dial. */
+  readonly dialTiming?: DialTiming;
   prepare(input: PreparationInput, options?: WatchOptions): RunningPreparation;
   /** One Image Build. `input` holds exactly one Git Service with its checkout and commit; its receipt is a reuse hint. */
   build(input: PreparationInput, options?: BuildOptions): RunningBuild;
