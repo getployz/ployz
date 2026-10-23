@@ -499,7 +499,17 @@ pub(crate) fn sealing_targets(
             let At::Variable(key) = row.at().clone() else {
                 return Err(refuse("it isn't a secret"));
             };
-            let service = receiving(&into, &row, &refuse)?;
+            let service = receiving(&into, &row).ok_or_else(|| {
+                let EnvironmentSummary { name, project, .. } = &into.summary;
+                let set = format!("ployz set {label} --secret --env {name} --project {project}");
+                error::invalid(
+                    format!("{label}: {NOT_THERE}"),
+                    json!({
+                        "row": row,
+                        "next": format!("sync without --value first, then {set}"),
+                    }),
+                )
+            })?;
             let service = Uuid::parse_str(&service.id)
                 .map_err(|_| refuse(crate::sealing_targets::UNBOUND))?;
             Ok(crate::sealing_targets::SyncSealingTarget {
@@ -519,20 +529,21 @@ fn label(sides: &[&SavedEnvironmentIntent; 2], row: &RowId) -> String {
     named(sides, row).map_or_else(|| row.to_string(), |named| named.to_string())
 }
 
-/// The receiver's own Service that secret `row` lands in: what a client-sealed
-/// value binds to, so it must be there already.
+/// The receiver's own Service that secret `row` lands in: what a client-sealed value
+/// binds to, so it must be there already.
 fn receiving<'receiver>(
     receiver: &'receiver Environment,
     row: &RowId,
-    refuse: &impl Fn(&str) -> RpcError,
-) -> Result<&'receiver SavedServiceIntent, RpcError> {
+) -> Option<&'receiver SavedServiceIntent> {
     receiver
         .working
         .services
         .iter()
         .find(|service| service.lineage_id == row.lineage())
-        .ok_or_else(|| refuse("its Service isn't there yet, so nothing can be sealed for it"))
 }
+
+/// Why a client-sealed value for a row can't land: its Service isn't in the receiver.
+const NOT_THERE: &str = "its Service isn't there yet, so nothing can be sealed for it";
 
 /// `values` sealed, each for a picked secret the receiver `into` lacks; plain text
 /// passes the guard in `client_sealed`, and a value the browser sealed is taken only
@@ -604,7 +615,7 @@ pub(crate) fn seal_secret(
             let refuse = |message: &str| {
                 error::invalid(format!("{label}: {message}"), json!({ "row": row }))
             };
-            let service = receiving(receiver, row, &refuse)?;
+            let service = receiving(receiver, row).ok_or_else(|| refuse(NOT_THERE))?;
             let receiver = client_sealed::Receiver {
                 environment: &receiver.summary.id,
                 service,

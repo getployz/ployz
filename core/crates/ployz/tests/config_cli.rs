@@ -8627,3 +8627,46 @@ fn a_local_store_seals_every_secret_itself_and_asks_nothing_even_with_the_flag_o
         json!({ "secret": true })
     );
 }
+
+#[test]
+fn env_sync_with_a_value_for_a_service_the_sync_brings_names_the_set_after_it() {
+    fn branch_with_a_new_service(cloud: &Target) {
+        one_service(cloud);
+        ok(cloud, &["env", "branch", "fix-key", "--copy", "web"]);
+        let api = [
+            "service", "add", "api", "--image", "api:1", "--env", "fix-key",
+        ];
+        ok(cloud, &api);
+        let key = ["set", "api.env.KEY", "--secret", "--env", "fix-key"];
+        let (code, set) = ployz_with_stdin(cloud, &key, "branch-key\n");
+        assert_eq!(code, Some(0), "{set}");
+    }
+    let args = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--value",
+        "api.env.KEY",
+    ];
+    let (code, refused, written) = refused_by(
+        sealing_ready(),
+        branch_with_a_new_service,
+        &args,
+        "given-key\n",
+    );
+    assert_eq!(code, Some(2), "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        json!("api.env.KEY: its Service isn't there yet, so nothing can be sealed for it")
+    );
+    assert_eq!(
+        refused["error"]["details"]["next"],
+        json!(
+            "sync without --value first, then ployz set api.env.KEY --secret --env production --project shop"
+        )
+    );
+    assert_eq!(written, 0);
+    cloud_never_saw("given-key");
+}
