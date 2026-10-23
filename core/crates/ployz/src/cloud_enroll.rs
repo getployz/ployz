@@ -1569,6 +1569,7 @@ mod tests {
             .flat_map(|publishing| [(publishing, cant_reach), (publishing, b"busy".as_slice())])
         {
             let (listener, url) = listen().await;
+            let (finished, client_finished) = tokio::sync::oneshot::channel::<()>();
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 read_http(&mut stream).await;
@@ -1578,11 +1579,16 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                // Spend the stage's wait while the second attempt awaits its answer, so it ends in flight.
+                // The client closes after the answer, then retries after a second; spend the
+                // stage's wait in that second, so the deadline cuts the next attempt in flight.
                 read_http(&mut stream).await;
                 tokio::time::pause();
                 tokio::time::advance(crate::setup_retry::WAIT).await;
                 tokio::time::resume();
+                // A closed listener resets the next attempt's connection, and that error would
+                // replace Cloud's answer as the stage's last.
+                let _ = client_finished.await;
+                drop(listener);
             });
             let credential = PairingCredential::parse("pairing-secret").unwrap();
             let result = if publishing {
@@ -1609,6 +1615,7 @@ mod tests {
                 )
                 .await
             };
+            finished.send(()).unwrap();
             let error = result.unwrap_err();
             if body != cant_reach {
                 // A proxy in front of a down Cloud answers 503 too; that is not Cloud's diagnosis.
