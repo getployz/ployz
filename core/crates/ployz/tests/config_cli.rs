@@ -1077,12 +1077,12 @@ fn a_bidi_override_in_a_message_or_config_file_name_prints_escaped() {
         ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
         let put = human(&["config", "put", "app", "a\u{202E}b.txt", "--from", from]);
         ok(
-            &store,
+            store,
             &["deploy", "--skip-deploy", "--message", "fix \u{202E}evil"],
         );
         std::fs::write(file.path(), "changed").unwrap();
         ok(
-            &store,
+            store,
             &["config", "put", "app", "a\u{202E}b.txt", "--from", from],
         );
         ok(store, &["deploy", "--skip-deploy"]);
