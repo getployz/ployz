@@ -399,9 +399,17 @@ impl<'m> Store<'m> {
             .ok()
             .flatten()
             .cloned();
-        Ok(Some(runtime.block_on(async {
+        runtime.block_on(async {
             let mut client = match super::server::connect(self.matches, context).await {
                 Ok(client) => client,
+                Err(error)
+                    if matches!(
+                        error.context_error(),
+                        Some(crate::context::ContextError::NoConnections { .. })
+                    ) =>
+                {
+                    return Err(StoreCallError::Stopped(error));
+                }
                 Err(error) => {
                     let failure = if error.daemon_answered() {
                         ObservationFailure::answered(None, error.report())
@@ -409,10 +417,10 @@ impl<'m> Store<'m> {
                         ObservationFailure::unreachable(error.report())
                     };
                     let failure = failure.at_endpoint(endpoint);
-                    return VolumeObservation::failed(sought, Vec::new(), failure);
+                    return Ok(Some(VolumeObservation::failed(sought, Vec::new(), failure)));
                 }
             };
-            match client.observe_volumes(sought.clone()).await {
+            Ok(Some(match client.observe_volumes(sought.clone()).await {
                 Ok(observed) => observed,
                 Err(error) => {
                     let server = client.entry_machine();
@@ -420,8 +428,8 @@ impl<'m> Store<'m> {
                         .at_endpoint(endpoint.filter(|_| server.is_none()));
                     VolumeObservation::failed(sought, server.into_iter().collect(), failure)
                 }
-            }
-        })))
+            }))
+        })
     }
 
     /// The Servers' certificates and ingress addresses, through `--connect` or the

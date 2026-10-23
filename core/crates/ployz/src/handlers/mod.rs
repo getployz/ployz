@@ -77,7 +77,7 @@ pub fn run() -> Result<(), Error> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let before_parse = crate::ui::Mode::resolve(crate::ui::Surroundings::of_process(false));
     crate::ui::Color::requested(&command, &args).apply(before_parse);
-    let matches = match command.clone().try_get_matches() {
+    let matches = match parse(&command, &args) {
         Ok(matches) => matches,
         Err(error) => {
             // A word the tree lacks may be a command Cloud published since the
@@ -86,10 +86,7 @@ pub fn run() -> Result<(), Error> {
                 return Err(usage_failure(error, &command));
             };
             command = crate::published::attach(crate::cli::compiled(), &published);
-            command
-                .clone()
-                .try_get_matches()
-                .map_err(|error| usage_failure(error, &command))?
+            parse(&command, &args).map_err(|error| usage_failure(error, &command))?
         }
     };
     let color = matches
@@ -99,6 +96,31 @@ pub fn run() -> Result<(), Error> {
     let result = dispatch(&matches, &mut command);
     follow_cloud_revision();
     result
+}
+
+fn parse(command: &Command, args: &[std::ffi::OsString]) -> Result<ArgMatches, clap::Error> {
+    fn without_context_env(command: Command) -> Command {
+        command
+            .mut_args(|arg| {
+                if arg.get_id() == "context" {
+                    arg.env(None::<&str>)
+                } else {
+                    arg
+                }
+            })
+            .mut_subcommands(without_context_env)
+    }
+
+    let argv = || std::iter::once(std::ffi::OsString::from("ployz")).chain(args.iter().cloned());
+    let matches = command.clone().try_get_matches_from(argv())?;
+    if matches.value_source("context") != Some(clap::parser::ValueSource::EnvVariable)
+        || verbs::find(&command_path(&matches))
+            .is_some_and(|verb| takes_value(verb.path.split(' '), "context"))
+    {
+        return Ok(matches);
+    }
+    // Clap propagates group environment values through the root's global argument.
+    without_context_env(command.clone()).try_get_matches_from(argv())
 }
 
 /// Every `/api/cli` reply names Cloud's manifest revision. One the cache lacks means
@@ -317,7 +339,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         if let Some(cached) = setup.cached()
             && let Some(published) = cached.find(&path)
         {
-            if context_above_leaf(matches) {
+            if matches.value_source("context") == Some(clap::parser::ValueSource::CommandLine) {
                 return Err(Error::usage(format!("ployz {path} doesn't use a context")));
             }
             return crate::published::run(matches, published, &setup);
@@ -338,19 +360,19 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
             "ployz {path} does not support --json"
         )));
     }
-    if context_above_leaf(matches) {
+    if matches.value_source("context") == Some(clap::parser::ValueSource::CommandLine)
+        && !takes_value(path.split(' '), "context")
+    {
         // Store commands address a Project and Environment, never a context.
         let takes = |id| takes_value(path.split(' '), id);
-        return Err(Error::usage(if takes("context") {
-            format!("--context goes after the command: ployz {path} --context NAME")
-        } else if takes("project") {
+        return Err(Error::usage(if takes("project") {
             format!("ployz {path} doesn't use a context; it takes --project and --env")
         } else {
             format!("ployz {path} doesn't use a context")
         }));
     }
     (verb.run)(matches)
-        .map_err(|failure| context::with_no_contexts_next(failure, leaf_matches(matches)))
+        .map_err(|failure| context::with_context_next(failure, leaf_matches(matches)))
 }
 
 /// Whether the compiled command at `words` takes a value for the option `id`; a
@@ -367,29 +389,13 @@ fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
         let Some(child) = command.find_subcommand(word) else {
             break;
         };
-        inherited |= command
-            .get_arguments()
-            .any(|arg| arg.is_global_set() && takes(arg));
+        inherited |= id != "context"
+            && command
+                .get_arguments()
+                .any(|arg| arg.is_global_set() && takes(arg));
         command = child;
     }
     inherited || command.get_arguments().any(takes)
-}
-
-/// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
-/// reads it, so it would be ignored and the command would run against the default connection.
-// ponytail: refuses rather than forwards; make --context global if the per-command copies go.
-fn context_above_leaf(root: &ArgMatches) -> bool {
-    let mut matches = root;
-    while let Some((_, child)) = matches.subcommand() {
-        // Not every group defines --context, and asking clap about one it lacks panics.
-        if matches.ids().any(|id| id == "context")
-            && matches.value_source("context") == Some(clap::parser::ValueSource::CommandLine)
-        {
-            return true;
-        }
-        matches = child;
-    }
-    false
 }
 
 /// Print the shell hook that asks `ployz` itself for completions, so Setting paths
@@ -587,12 +593,14 @@ fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> St
         .chain(connect)
         .chain(command.iter().copied())
         .chain(["--context", context]);
-    // A hint that names a removed command is worse than no hint.
     debug_assert!(
         crate::cli::command()
             .try_get_matches_from(args.clone())
-            .is_ok(),
-        "recovery hint does not parse: {command:?}"
+            .is_ok_and(|matches| {
+                matches.value_source("context") != Some(clap::parser::ValueSource::CommandLine)
+                    || takes_value(command_path(&matches).split(' '), "context")
+            }),
+        "recovery hint does not parse or accept its context: {command:?}"
     );
     shell_words::join(args)
 }
@@ -750,26 +758,11 @@ mod tests {
     }
 
     #[test]
-    fn a_context_typed_before_the_last_subcommand_is_caught() {
-        let parsed = |args: &[&str]| crate::cli::command().try_get_matches_from(args).unwrap();
-        assert!(context_above_leaf(&parsed(&["ployz", "-c", "prod", "ps"])));
-        assert!(context_above_leaf(&parsed(&[
-            "ployz", "server", "-c", "prod", "ls"
-        ])));
-        assert!(!context_above_leaf(&parsed(&["ployz", "ps", "-c", "prod"])));
-        assert!(!context_above_leaf(&parsed(&["ployz", "ps"])));
-    }
-
-    #[test]
-    fn a_context_above_the_leaf_names_where_the_leaf_takes_its_scope() {
+    fn an_explicit_context_names_where_a_cloud_command_takes_its_scope() {
         let mut command = command();
         for (args, expected) in [
             (
-                &["ps"][..],
-                "--context goes after the command: ployz ps --context NAME",
-            ),
-            (
-                &["config", "ls"],
+                &["config", "ls"][..],
                 "ployz config ls doesn't use a context; it takes --project and --env",
             ),
             (&["org", "ls"], "ployz org ls doesn't use a context"),
@@ -933,6 +926,75 @@ mod tests {
             .try_get_matches_from(["ployz", "server", "add", "--standalone", "root@host"])
             .unwrap();
         recovery_command(leaf_matches(&matches), "staging", &["no-such", "command"]);
+    }
+
+    #[test]
+    fn context_config_environment_reaches_only_context_aware_leaves() {
+        if std::env::var_os("PLOYZ_CONTEXT").as_deref() != Some(std::ffi::OsStr::new("b")) {
+            let home = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "handlers::tests::context_config_environment_reaches_only_context_aware_leaves",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("HOME", home.path())
+                .env("PLOYZ_CONTEXT", "b")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        for (args, context) in [
+            (&["volume", "add", "data"][..], None),
+            (&["volume", "rm", "data"], None),
+            (&["service", "rm", "web"], None),
+            (&["set", "web.image=web:2"], None),
+            (&["org", "ls"], None),
+            (&["ctx", "use", "other"], None),
+            (&["ctx"], Some("b")),
+            (&["server", "ls"], Some("b")),
+            (&["ps"], Some("b")),
+            (&["deploy"], Some("b")),
+        ] {
+            let argv = args
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            let root = parse(&crate::cli::command(), &argv).unwrap();
+            let mut leaf = &root;
+            while let Some((_, child)) = leaf.subcommand() {
+                leaf = child;
+            }
+            assert_eq!(
+                leaf.ids().any(|id| id == "context"),
+                context.is_some(),
+                "{args:?}"
+            );
+            assert_eq!(rerun(leaf, args).contains("--context"), context.is_some());
+            if context.is_some() {
+                assert_eq!(
+                    leaf.get_one::<String>("context").map(String::as_str),
+                    context
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "recovery hint does not parse")]
+    fn context_config_recovery_asserts_dispatch_accepts_the_context() {
+        let matches = command()
+            .try_get_matches_from(["ployz", "server", "ls"])
+            .unwrap();
+        recovery_command(leaf_matches(&matches), "b", &["org", "ls"]);
     }
 
     #[test]

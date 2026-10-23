@@ -50,6 +50,24 @@ it doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md)
 Add more servers the same way, even at different providers. Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
+## Add a standalone server
+
+To start a Cluster outside Ployz Cloud, run this on the Linux server:
+
+```sh
+sudo ployz server add --standalone --context NAME
+```
+
+From your computer, give the server's SSH destination instead:
+
+```sh
+ployz server add --standalone root@HOST --context NAME
+```
+
+No Cloud sign-in or enrollment token is needed. A new or empty context gets its first
+Server and becomes the current context. To add another Server to a context that already
+has connections, use the SSH form. It joins the existing Cluster.
+
 ## Add servers from the dashboard
 
 Before your first server, the **Servers** page shows one card instead of a list. Click

@@ -793,3 +793,48 @@ async fn ctrl_c_during_cleanup_prints_each_copy_left_running_and_exits_non_zero(
     );
     assert!(!printed.contains(&old_id.to_string()), "{printed}");
 }
+
+#[tokio::test]
+async fn context_config_empty_context_deploy_names_add_servers_before_a_volume_check() {
+    let home = tempfile::tempdir().unwrap();
+    let db = home.path().join("store.db");
+    let (_, server) = removing_deployed_data(&db, DeployService::new(machine('a', "one"))).await;
+    server.abort();
+    let path = home.path().join("config.yaml");
+    ployz::context::Config::new(
+        &path,
+        Some("verify".into()),
+        std::collections::BTreeMap::from([(
+            "verify".into(),
+            ployz::context::Context {
+                connections: Vec::new(),
+            },
+        )]),
+    )
+    .save()
+    .unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["deploy", "--json"])
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("PLOYZ_CONFIG", &path)
+        .env("PLOYZ_STORE", format!("sqlite:{}", db.display()))
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_TOKEN")
+        .env_remove("PLOYZ_PROJECT")
+        .env_remove("PLOYZ_ENV")
+        .output()
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{json}");
+    assert_eq!(
+        json["error"]["message"], "Context verify has no Servers.",
+        "{json}"
+    );
+    assert_eq!(
+        json["error"]["details"]["next"], "ployz server add --standalone --context verify",
+        "{json}"
+    );
+}

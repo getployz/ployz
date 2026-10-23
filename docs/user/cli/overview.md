@@ -337,6 +337,13 @@ with: `ployz logout` doesn't revoke it.
 When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying
 error, such as the operating system's or the server's own message.
 
+Commands that take `--context` accept it before or after the command. For example,
+`ployz --context verify server ls` and `ployz server ls --context verify` act on the same
+Servers. `-c` is the short form. Commands that use only Ployz Cloud refuse a context.
+`ctx ls`, `ctx use`, and `ctx rm` also refuse `--context`; `ctx use` and `ctx rm` take the
+context's name as a positional argument.
+`PLOYZ_CONTEXT` applies only to commands that take `--context`.
+
 A command prints its result on stdout and everything else on stderr: progress, warnings, the
 `next:` line, prompts and errors. `ployz service ls > services.txt` saves only the table.
 
@@ -361,6 +368,9 @@ While a deployment runs, status skips the copy check on purpose, and that alone 
 through its local socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
 Cloud for server access once per run. The first `ployz status` or other server command for a
 sign-in or token also waits while Cloud sets up your access on each server.
+
+`ployz status` fails with exit code 1 if the Ployz config exists but cannot be read or parsed.
+The error names the file and keeps the underlying error as its cause. A missing config is allowed.
 
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,

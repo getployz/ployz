@@ -36,12 +36,17 @@ fn no_contexts_next(leaf: &ArgMatches) -> Option<String> {
     Some(shell_words::join(args))
 }
 
-/// Whatever command failed for want of a context gets the line `ctx ls` prints.
-pub(super) fn with_no_contexts_next(failure: Error, leaf: &ArgMatches) -> Error {
-    if !failure.has_no_contexts() {
-        return failure;
-    }
-    failure.hint(no_contexts_next(leaf).map(Hint::Next))
+pub(super) fn with_context_next(failure: Error, leaf: &ArgMatches) -> Error {
+    let next = match failure.context_error() {
+        Some(ContextError::NoContexts(_)) => no_contexts_next(leaf),
+        Some(ContextError::NoConnections { name, .. }) => Some(super::recovery_command(
+            leaf,
+            name,
+            &["server", "add", "--standalone"],
+        )),
+        _ => None,
+    };
+    failure.hint(next.map(Hint::Next))
 }
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
@@ -267,10 +272,10 @@ fn connection_index(
     requested: &str,
 ) -> Result<usize, Error> {
     if connections.is_empty() {
-        return Err(Error::not_found(format!(
-            "no connections found in context {}",
-            context.escape_debug()
-        )));
+        return Err(ContextError::NoConnections {
+            name: context.to_owned(),
+        }
+        .into());
     }
     if is_management_capability(requested) {
         return Err(Error::usage(
@@ -307,25 +312,25 @@ pub(super) fn command(command: Command) -> Command {
 }
 
 pub(super) fn list_command(command: Command) -> Command {
-    base(command, "List contexts")
+    command.about("List contexts")
 }
 
 pub(super) fn select_command(command: Command) -> Command {
-    base(
-        command,
-        "Select a context and optionally its default connection",
-    )
-    .arg(
-        positional("context-name", false)
-            .help("The context to select; the current one when omitted"),
-    )
-    .arg(
-        value("connection", None).help("Connection label or 1-based index in the selected context"),
-    )
+    command
+        .about("Select a context and optionally its default connection")
+        .arg(
+            positional("context-name", false)
+                .help("The context to select; the current one when omitted"),
+        )
+        .arg(
+            value("connection", None)
+                .help("Connection label or 1-based index in the selected context"),
+        )
 }
 
 pub(super) fn remove_command(command: Command) -> Command {
-    base(command, "Remove a local context")
+    command
+        .about("Remove a local context")
         .arg(positional("context-name", true).help("The context to remove"))
 }
 
