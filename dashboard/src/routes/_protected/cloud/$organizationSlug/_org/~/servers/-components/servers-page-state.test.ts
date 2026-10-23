@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { serversPageState } from "./servers-page-state";
+import { foundingFirstServer, serversPageState } from "./servers-page-state";
 
 test("zero servers with nothing waiting is first run without the intake tray", () => {
   expect(serversPageState({ list: "live", servers: 0, waiting: 0, enrolling: 0 })).toEqual({ kind: "first-run", intake: false });
@@ -31,4 +31,14 @@ test("the first server's enrollment shows its progress, not unreachable, before 
 
 test("a server that joined and stopped answering is unreachable", () => {
   expect(serversPageState({ list: "unreachable", servers: 0, waiting: 0, enrolling: 1, founding: false })).toEqual({ kind: "unreachable", intake: true });
+});
+
+test("only an open first-server enrollment before the cluster is founded counts as founding", () => {
+  const founder = { role: "founder" as const, endedAt: null };
+  expect(foundingFirstServer({ founded: false, attempts: [founder] })).toBe(true);
+  // A founder that resumes after founding, or an outage while it is still open, keeps the unreachable view.
+  expect(foundingFirstServer({ founded: true, attempts: [founder] })).toBe(false);
+  expect(foundingFirstServer({ founded: false, attempts: [{ role: "founder", endedAt: "2026-10-23T05:00:00.000Z" }] })).toBe(false);
+  expect(foundingFirstServer({ founded: false, attempts: [{ role: "joiner", endedAt: null }] })).toBe(false);
+  expect(foundingFirstServer(undefined)).toBe(false);
 });
