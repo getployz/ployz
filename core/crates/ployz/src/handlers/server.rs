@@ -861,13 +861,7 @@ pub(crate) async fn apply_update(
     rerun: String,
     recovery: ArgMatches,
 ) -> Result<(), Error> {
-    let services_role = update.accepts_services.map(|accepts| {
-        if accepts {
-            crate::cluster::RoleSetting::ServicesOn
-        } else {
-            crate::cluster::RoleSetting::ServicesOff
-        }
-    });
+    let planned = crate::cluster::PlannedChange::of(&update);
     let accepts_ingress = update.accepts_ingress;
     let was_off = match accepts_ingress {
         Some(true) => ingress_off(client, &selector).await,
@@ -918,15 +912,22 @@ pub(crate) async fn apply_update(
         }
         (Err((_, error)), _) => return Err(error.into()),
     };
-    if let Some(setting) = services_role
-        && let Err(error) =
-            crate::cluster::wait_for_role(client, &machine.id, setting, &CancellationToken::new())
-                .await
+    // A deploy right after this plans from the Entry's list, so wait until it lists the change.
+    let listed = if planned.is_empty() {
+        Ok(())
+    } else {
+        crate::cluster::wait_for_change(client, &machine, &planned, &CancellationToken::new()).await
+    };
+    // Turning ingress on reports a missed connection as an unfinished follow-up instead.
+    if let Err(error) = &listed
+        && (accepts_ingress != Some(true) || matches!(error, RoleWaitError::ChangeNotObserved))
     {
         let reason = match error {
-            RoleWaitError::NotObserved(_) => "still hasn't listed its new services role".to_owned(),
+            RoleWaitError::NotObserved(_) | RoleWaitError::ChangeNotObserved => {
+                "still hasn't listed the change".to_owned()
+            }
             error @ (RoleWaitError::Cancelled | RoleWaitError::Connect(_)) => {
-                format!("could not confirm its new services role ({error})")
+                format!("could not confirm the change ({error})")
             }
         };
         crate::ui::warn(format!(
@@ -955,20 +956,28 @@ pub(crate) async fn apply_update(
             "next": next,
         }));
     }
+    let unobserved = |error| match error {
+        RoleWaitError::Connect(error) => Error::from(error),
+        error @ (RoleWaitError::NotObserved(_)
+        | RoleWaitError::ChangeNotObserved
+        | RoleWaitError::Cancelled) => Error::from(error),
+    };
     let followed = async {
-        crate::cluster::wait_for_role(
-            client,
-            &machine.id,
-            crate::cluster::RoleSetting::IngressOn,
-            &CancellationToken::new(),
-        )
-        .await
-        .map_err(|error| match error {
-            RoleWaitError::Connect(error) => Error::from(error),
-            error @ (RoleWaitError::NotObserved(_) | RoleWaitError::Cancelled) => {
-                Error::from(error)
+        match listed {
+            Ok(()) => {}
+            // Only the ingress role gates the proxy start; another unlisted field only warned.
+            // One more list, not another wait, so the command keeps the one wait's budget.
+            Err(RoleWaitError::ChangeNotObserved) => {
+                let ingress = crate::cluster::RoleSetting::IngressOn;
+                if !crate::cluster::lists_role(client, &machine.id, ingress)
+                    .await
+                    .map_err(unobserved)?
+                {
+                    return Err(unobserved(RoleWaitError::NotObserved(ingress)));
+                }
             }
-        })?;
+            Err(error) => return Err(unobserved(error)),
+        }
         crate::ingress::follow_roles(client, ingress).await
     }
     .await;
@@ -1532,6 +1541,158 @@ mod tests {
         }
     }
 
+    /// A deploy right after `server set` plans from the Entry's list, so every changed field
+    /// it reads must be listed there before the command returns.
+    #[tokio::test(start_paused = true)]
+    async fn every_planned_field_waits_until_the_entry_lists_it() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        use ployz_core::{
+            MachineLabelKey, MachineLabelValue, MachineList, MachineUpdated, MembershipObservation,
+            OpaquePayload, RpcRequestBody, RpcResponse,
+        };
+        use tonic::{Request, Response};
+
+        type Step = fn(&mut Machine);
+        let zone = MachineLabelKey::parse("zone").unwrap();
+        let east = MachineLabelValue::parse("east").unwrap();
+        let add_zone: Step = |machine| {
+            machine.labels.insert(
+                MachineLabelKey::parse("zone").unwrap(),
+                MachineLabelValue::parse("east").unwrap(),
+            );
+        };
+        let builds_off: Step = |machine| machine.accepts_builds = false;
+        // Each case: what the Server held before, then the changes the Entry lists one at a time.
+        let cases: [(&str, Step, Vec<Step>, MachineUpdate); 5] = [
+            (
+                "a new label",
+                |_| {},
+                vec![add_zone],
+                MachineUpdate {
+                    label_changes: [(zone.clone(), Some(east.clone()))].into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "a removed label",
+                add_zone,
+                vec![|machine| machine.labels.clear()],
+                MachineUpdate {
+                    label_changes: [(zone.clone(), None)].into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "builds off",
+                |_| {},
+                vec![builds_off],
+                MachineUpdate {
+                    accepts_builds: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "ingress off",
+                |_| {},
+                vec![|machine| machine.accepts_ingress = false],
+                MachineUpdate {
+                    accepts_ingress: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "a label and builds off, listed one after the other",
+                |_| {},
+                vec![add_zone, builds_off],
+                MachineUpdate {
+                    label_changes: [(zone, Some(east))].into(),
+                    accepts_builds: Some(false),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (change, before, steps, update) in cases {
+            let mut first = web("machine-3", true, None, MembershipObservation::Up);
+            before(&mut first.machine);
+            let id = first.machine.id;
+            let mut listed = vec![first];
+            for step in &steps {
+                let mut next = listed.last().unwrap().clone();
+                step(&mut next.machine);
+                listed.push(next);
+            }
+            let saved = listed.last().unwrap().machine.clone();
+            let stage = Arc::new(AtomicUsize::new(0));
+            let (mut client, server) = crate::connect::test_support::rpc_client({
+                let stage = Arc::clone(&stage);
+                move |request: Request<OpaquePayload>| {
+                    let stage = stage.load(Ordering::SeqCst);
+                    let listed = listed.get(stage).unwrap().clone();
+                    let saved = saved.clone();
+                    async move {
+                        #[expect(
+                            clippy::wildcard_enum_match_arm,
+                            reason = "server set sends only the update and the list"
+                        )]
+                        let response = match request.into_inner().decode_request().unwrap().body {
+                            RpcRequestBody::UpdateMachine(_) => {
+                                RpcResponse::from(MachineUpdated { machine: saved })
+                            }
+                            RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                                enrollment: None,
+                                machines: vec![listed],
+                            }),
+                            other => panic!("unexpected RPC: {other:?}"),
+                        };
+                        Ok(Response::new(response.encode().unwrap()))
+                    }
+                }
+            })
+            .await;
+            let recovery = crate::cli::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "server",
+                    "set",
+                    id.as_str(),
+                    "--accepts-builds=false",
+                ])
+                .unwrap()
+                .subcommand_matches("server")
+                .and_then(|server| server.subcommand_matches("set"))
+                .unwrap()
+                .clone();
+            let setting = apply_update(
+                &mut client,
+                MachineTarget::from(&id),
+                update,
+                None,
+                IngressImage::Given("caddy:2".into()),
+                String::new(),
+                recovery,
+            );
+            tokio::pin!(setting);
+            for listed in 0..steps.len() {
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_secs(5), &mut setting)
+                        .await
+                        .is_err(),
+                    "server set returned when the Entry listed {listed} of the changes in {change}"
+                );
+                stage.store(listed + 1, Ordering::SeqCst);
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(1), &mut setting)
+                .await
+                .unwrap()
+                .unwrap();
+            server.abort();
+        }
+    }
+
     #[test]
     fn setting_services_warns_when_the_entry_never_lists_the_new_role() {
         use ployz_core::{
@@ -1628,7 +1789,7 @@ mod tests {
         assert_eq!(
             captured.pointer("/warnings/0"),
             Some(&json!(
-                "Server machine-3 changed, but the Server this command connects through still hasn't listed its new services role. Check with ployz server ls before deploying."
+                "Server machine-3 changed, but the Server this command connects through still hasn't listed the change. Check with ployz server ls before deploying."
             ))
         );
     }
