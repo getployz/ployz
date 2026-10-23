@@ -5,8 +5,8 @@
 
 use ployz_core::{RpcErrorCode, SealedIdentity, SealingPublicKey};
 use ployz_store::{
-    Ask as _, Edit, EnvironmentSummary, SealingTargetsQuery, SealingTargetsView, SecretValue,
-    SyncChanges, View,
+    Ask as _, Edit, EnvironmentSummary, SealingService, SealingTargetsQuery, SealingTargetsView,
+    SecretValue, SyncChanges, View,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -82,20 +82,13 @@ impl Store<'_> {
         let environment_id = bound(&environment)?;
         let refused = |error| fail(StoreCallError::Refused(error));
         edit.map_plaintext_secrets(refused, |secret| {
-            let service = secret.service();
-            let Some(target) = services.iter().find(|target| &target.name == service) else {
-                return Err(Error::coded(
-                    RpcErrorCode::NotFound,
-                    format!(
-                        "No Service named {service} in {}/{}",
-                        environment.project, environment.name
-                    ),
-                ));
-            };
+            let service =
+                SealingService::bind(&services, &environment, secret.service(), secret.key())
+                    .map_err(refused)?;
             let identity = SealedIdentity {
                 organization: organization.clone(),
                 environment: environment_id,
-                service: target.service,
+                service,
             };
             let plaintext = secret.admit().map_err(refused)?;
             seal(&recipient, &identity, secret.key(), plaintext).map(Some)

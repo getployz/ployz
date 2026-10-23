@@ -2107,7 +2107,7 @@ fn sealing_targets_resolve_each_row_as_the_sync_does_to_the_receiver_s_own_servi
         .iter()
         .find(|service| service.name.as_str() == "web")
         .unwrap();
-    assert_eq!(web.service.to_string(), copy.as_str());
+    assert_eq!(web.service.unwrap().to_string(), copy.as_str());
     // production calls web site now: the row is web.env.API_KEY in fix-web and
     // site.env.API_KEY in production, and lands in production's site.
     store

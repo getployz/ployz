@@ -675,7 +675,7 @@ fn sealing_targets_name_the_organization_the_environment_and_each_service_by_id(
         services,
         [SealingService {
             name: ServiceName::parse("web").unwrap(),
-            service: uuid(3).parse().unwrap(),
+            service: Some(uuid(3).parse().unwrap()),
         }]
     );
     let missing = store
@@ -690,4 +690,42 @@ fn sealing_targets_name_the_organization_the_environment_and_each_service_by_id(
         )
         .unwrap_err();
     assert_eq!(missing.code, RpcErrorCode::NotFound, "{missing:?}");
+}
+
+#[test]
+fn a_secret_binds_to_its_service_s_id_and_is_refused_as_the_store_refuses_it_without_one() {
+    let store = backend::open();
+    shop(&store);
+    let view = store
+        .read(
+            &who(),
+            &SealingTargetsQuery::Edit {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    let SealingTargetsView::Edit {
+        environment,
+        mut services,
+        ..
+    } = view
+    else {
+        panic!("{view:?}");
+    };
+    let web = ServiceName::parse("web").unwrap();
+    let bound = SealingService::bind(&services, &environment, &web, "TOKEN").unwrap();
+    assert_eq!(bound.to_string(), uuid(3));
+
+    let api = ServiceName::parse("api").unwrap();
+    let missing = SealingService::bind(&services, &environment, &api, "TOKEN").unwrap_err();
+    let written = edit(&store, "api.env.TOKEN", json!({ "secret": SECRET })).unwrap_err();
+    assert_eq!(missing, written);
+
+    services[0].service = None;
+    let unbound = SealingService::bind(&services, &environment, &web, "TOKEN").unwrap_err();
+    assert_eq!(unbound.code, RpcErrorCode::InvalidArgument, "{unbound:?}");
+    assert_eq!(
+        unbound.message,
+        "web.env.TOKEN: this Service has no ID a sealed value binds to"
+    );
 }
