@@ -572,6 +572,26 @@ async fn mock_machine() -> (
     (session, server, one.machine.id)
 }
 
+#[tokio::test]
+async fn a_runner_names_its_entry_after_a_plain_transport_failure() {
+    let (session, server, machine_id) = mock_machine().await;
+    let client = session.client().unwrap();
+    assert_eq!(client.entry_machine(), Some(machine_id));
+    assert_eq!(client.server().as_deref(), Some(machine_id.as_str()));
+    let names = BTreeMap::from([(machine_id, MachineName::parse("machine-1").unwrap())]);
+    let failure = crate::failure::Failure::from(crate::connect::ConnectError::Rpc(
+        crate::connect::TransportError::budget_expired("no reply"),
+    ));
+
+    assert_eq!(
+        ingress_failure_message(&client, &names)(failure),
+        "Server machine-1 isn't answering (no reply)"
+    );
+
+    session.close().await;
+    server.abort();
+}
+
 fn lines(log: &LogText) -> Vec<String> {
     match log {
         LogText::Shown(excerpt) => excerpt.lines().to_vec(),

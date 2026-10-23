@@ -84,6 +84,10 @@ the next progress update or heartbeat, using the Machine ID if it still lacks a 
 Interactive progress can show it at once. If following stops first while progress is showing,
 the warning still prints.
 
+If Ployz cannot read every required Server's Containers and Volumes while deploying a Service
+with an ingress hostname, it warns that hostname conflicts were not fully checked. Resolve the
+observation warnings, then deploy again.
+
 If Cloud stops answering while the CLI follows a Deployment, the command exits 1 with
 `Stopped following Deployment #N; it keeps running in Ployz Cloud.` and an `inspect:` line
 for `ployz deployment show N`. Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment

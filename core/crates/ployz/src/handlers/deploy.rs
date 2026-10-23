@@ -1100,13 +1100,13 @@ fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, U
             let mut client = super::server::connect(matches, context)
                 .await
                 .map_err(|error| Unchecked {
-                    cause: crate::ingress::unchecked(&error, None),
+                    cause: crate::ingress::unchecked(&error, None, None),
                     silent: super::server::Silent::of(&error),
                 })?;
             let server = client.server();
             crate::ingress::planned_slots(&mut client)
                 .await
-                .map_err(|error| unchecked(crate::ingress::unchecked(&error, server)))
+                .map_err(|error| unchecked(crate::ingress::unchecked(&error, server, None)))
         })
 }
 

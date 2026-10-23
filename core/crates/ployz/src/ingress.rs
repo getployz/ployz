@@ -5,9 +5,9 @@ use std::{collections::BTreeSet, future::Future};
 use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerWant,
-    DeployOutcome, EnvironmentValues, FailedOperation, HealthFailure, MachineObservation,
-    PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError, RunRotation, RunTarget,
-    caddy_service_spec,
+    DeployOutcome, EnvironmentValues, FailedOperation, HealthFailure, MachineId, MachineName,
+    MachineObservation, PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError,
+    RunRotation, RunTarget, caddy_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use serde::{Deserialize, Serialize};
@@ -162,7 +162,11 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, F
 /// names the Server it went to, and when no daemon replied, says it isn't answering
 /// with the transport's last word. Any other failure, such as the image lookup this
 /// process makes itself, is about no Server and keeps its whole line.
-pub(crate) fn unchecked(failure: &Failure, server: Option<String>) -> String {
+pub(crate) fn unchecked(
+    failure: &Failure,
+    server: Option<String>,
+    known: Option<(&MachineId, &MachineName)>,
+) -> String {
     let Some(connect) = failure.connect_error() else {
         return crate::ui::row(failure);
     };
@@ -171,8 +175,12 @@ pub(crate) fn unchecked(failure: &Failure, server: Option<String>) -> String {
     } else {
         None
     };
+    let name = |server: String| match known {
+        Some((id, machine_name)) if server == id.to_string() => machine_name.to_string(),
+        Some(_) | None => server,
+    };
     let unanswered = connect.unreached() || connect.unreplied();
-    match (named, server) {
+    match (named.map(&name), server.map(name)) {
         (Some(server), _) | (None, Some(server)) if unanswered => {
             match ployz_core::error_chain::causes(failure).pop() {
                 Some(why) => format!("Server {server} isn't answering ({why})"),
@@ -406,11 +414,11 @@ mod tests {
             crate::connect::TransportError::budget_expired("no reply"),
         ));
         assert_eq!(
-            unchecked(&silent, Some("box-node-09c8".into())),
+            unchecked(&silent, Some("box-node-09c8".into()), None),
             "Server box-node-09c8 isn't answering (no reply)"
         );
         // Unnamed, it keeps the whole line.
-        assert_eq!(unchecked(&silent, None), crate::ui::row(&silent));
+        assert_eq!(unchecked(&silent, None, None), crate::ui::row(&silent));
 
         let answered = Failure::from(ConnectError::Remote(RpcError {
             code: RpcErrorCode::Internal,
@@ -419,7 +427,7 @@ mod tests {
             cause: Vec::new(),
         }));
         assert_eq!(
-            unchecked(&answered, Some("box-node-09c8".into())),
+            unchecked(&answered, Some("box-node-09c8".into()), None),
             "Docker is down (on Server box-node-09c8)"
         );
 
@@ -428,7 +436,7 @@ mod tests {
             "Docker Hub didn't answer".into(),
         ));
         assert_eq!(
-            unchecked(&local, Some("box-node-09c8".into())),
+            unchecked(&local, Some("box-node-09c8".into()), None),
             crate::ui::row(&local)
         );
 
@@ -445,8 +453,44 @@ mod tests {
             )))),
         });
         assert_eq!(
-            unchecked(&refused, Some("other".into())),
+            unchecked(&refused, Some("other".into()), None),
             "Server web-2 isn't answering (connection refused)"
+        );
+
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let raw = Failure::from(ConnectError::AllFailed {
+            relayed: false,
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 1,
+            server: Some(machine_id.to_string()),
+            retry: ployz_core::Retry::Never,
+            reached: false,
+            last: Some(Box::new(ConnectError::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        let machine_name = MachineName::parse("machine-1").unwrap();
+        assert_eq!(
+            unchecked(
+                &raw,
+                Some(machine_id.to_string()),
+                Some((&machine_id, &machine_name))
+            ),
+            "Server machine-1 isn't answering (connection refused)"
+        );
+        assert_eq!(
+            unchecked(&raw, Some(machine_id.to_string()), None),
+            format!("Server {machine_id} isn't answering (connection refused)")
+        );
+        let id_shaped_name = "2".repeat(32);
+        let other_name = MachineName::parse("machine-2").unwrap();
+        assert_eq!(
+            unchecked(
+                &silent,
+                Some(id_shaped_name.clone()),
+                Some((&machine_id, &other_name)),
+            ),
+            format!("Server {id_shaped_name} isn't answering (no reply)")
         );
     }
 

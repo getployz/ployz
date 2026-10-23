@@ -184,7 +184,7 @@ Some still carry it in the message:
 - `Cloud answered HTTP 405` as `invalid_argument` ([cloud/errors.md](cloud/errors.md))
 - `Server gamma failed to upgrade to 0.2.3 while launching: could not inspect the Machine upgrade worker: No such file or directory (os error 2)`, then `inspect: journalctl -u ployz-upgrade-….service`. The testkit has no systemd, so the upgrade fails at launch ([cluster/server.md](cluster/server.md)).
 - `Server 7f00d39ce93641bd8c5fdd7d91395aa7 isn't answering. Check that its Ployz daemon is running, then retry: …`, inside server add's wait line, by Machine ID because the Server has no name there yet ([cluster/server.md](cluster/server.md)). Pinned by `cli_shape::a_server_cloud_handed_a_connection_for_that_does_not_answer_is_named`.
-- `Couldn't check ingress: Server 0123456789abcdef0123456789abcdef isn't answering (Connection refused (os error 111)).` on `deploy --plan`, and as the deploy's `! Couldn't check ingress: … Deploy again to retry.` warning. No capture yet: pinned by `config_cli::an_agent_adds_checks_and_removes_domains` and `ingress::tests::an_unchecked_ingress_names_the_server_and_why`.
+- `Couldn't check ingress: Server 0123456789abcdef0123456789abcdef isn't answering (Connection refused (os error 111)).` on `deploy --plan`, and as the deploy's `! Couldn't check ingress: … Deploy again to retry.` warning. A Deployment uses the planned Server name when known and the ID otherwise; pinned by `config_cli::an_agent_adds_checks_and_removes_domains`, `ingress::tests::an_unchecked_ingress_names_the_server_and_why`, and `sdk::store_runner::tests::a_runner_names_its_entry_after_a_plain_transport_failure`.
 
 ## 7. Follow-up hints
 
