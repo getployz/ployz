@@ -2,10 +2,14 @@
 //! carries as ciphertext and never opens. Off for every Organization until its
 //! `config_sealed_variables` row exists, and nothing here inserts one.
 
-use ployz_core::config::{ClientSealedValue, SavedServiceIntent, SealedSecret, SecretCiphertext};
+use ployz_core::config::{
+    ClientSealedValue, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue,
+    SealedSecret, SecretCiphertext,
+};
 use ployz_core::{RpcError, SealedScope, SealedValue};
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -78,6 +82,54 @@ pub(crate) fn plaintext_len(value: &SealedValue) -> usize {
     value.sealed.as_bytes().len().saturating_sub(HPKE_OVERHEAD)
 }
 
+/// Why PORT never holds a client-sealed value: Ployz reads it to route traffic.
+pub(crate) const PORT_REFUSED: &str = "can't be sealed: Ployz reads it to route traffic";
+
+/// Refuse a PORT holding a value the browser sealed that `target` gives a Service
+/// and `now` doesn't. Every write of Working State comes through here, so neither a
+/// rename nor History brings one in.
+///
+/// # Errors
+/// Returns `invalid_argument` naming the Service's PORT.
+pub(crate) fn refuse_new_port(
+    now: &SavedEnvironmentIntent,
+    target: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    for service in &target.services {
+        let Some(value) = sealed_port(service) else {
+            continue;
+        };
+        let held = now
+            .services
+            .iter()
+            .any(|held| held.id == service.id && sealed_port(held) == Some(value));
+        if !held {
+            return Err(crate::error::invalid(
+                format!("PORT: {PORT_REFUSED}"),
+                json!({ "service": service.slug, "variable": "PORT" }),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The value the browser sealed that `service`'s PORT holds, if it holds one.
+fn sealed_port(service: &SavedServiceIntent) -> Option<&SavedVariableValue> {
+    service
+        .variables
+        .iter()
+        .find(|variable| variable.key == "PORT")
+        .map(|variable| &variable.value)
+        .filter(|value| {
+            matches!(
+                value,
+                SavedVariableValue::Secret {
+                    encrypted_value: Some(SecretCiphertext::ClientSealed(_))
+                }
+            )
+        })
+}
+
 /// Where a client-sealed value lands, and whether its Organization takes one.
 pub(crate) struct Receiver<'a> {
     pub(crate) environment: &'a EnvironmentId,
@@ -117,7 +169,7 @@ pub(crate) fn accept(
         return Err(refuse("sealed for another variable"));
     }
     if key.as_str() == "PORT" {
-        return Err(refuse("can't be sealed: Ployz reads it to route traffic"));
+        return Err(refuse(PORT_REFUSED));
     }
     match value.value.scope {
         SealedScope::Service(scope) if scope == service => {}

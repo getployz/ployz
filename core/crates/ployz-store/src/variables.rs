@@ -983,6 +983,17 @@ pub(crate) fn resolve(
                 },
             };
             if let Some(value) = value {
+                // A reference can bring a Sealed value into PORT after PORT is saved.
+                if key == "PORT" && !matches!(value, EnvValue::Text(_)) {
+                    return Err(error::invalid(
+                        format!(
+                            "{}.env.PORT {}",
+                            config.settings.private_dns,
+                            client_sealed::PORT_REFUSED
+                        ),
+                        json!({ "variable": key }),
+                    ));
+                }
                 if too_long(key, opened_len(&value)) {
                     return Err(error::invalid(
                         format!("{}.env.{key} is {TOO_LONG}", config.settings.private_dns),

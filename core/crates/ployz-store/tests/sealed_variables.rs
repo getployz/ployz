@@ -416,3 +416,52 @@ fn a_sealed_port_is_refused() {
         "route traffic",
     );
 }
+
+#[test]
+fn a_sealed_variable_is_never_renamed_to_port() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+    set(&store, "web.env.PASSWORD", password(1));
+    let error = store
+        .write(
+            &who(),
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Rename {
+                    path: SettingPath::parse("web.env.PASSWORD").unwrap(),
+                    to: "PORT".into(),
+                    update_references: false,
+                }],
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    assert!(error.message.starts_with("PORT"), "{error:?}");
+    assert!(error.message.contains("route traffic"), "{error:?}");
+    assert!(!format!("{error:?}").contains("AQEB"), "{error:?}");
+    assert_eq!(value(&store, "web.env.PASSWORD"), json!({ "secret": true }));
+}
+
+#[test]
+fn a_port_that_reads_a_sealed_value_is_refused_at_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+    // PORT reads PASSWORD while it is plain text, and still once it is sealed.
+    set(&store, "web.env.PASSWORD", json!("8080"));
+    set(&store, "web.env.PORT", json!("${{ PASSWORD }}"));
+    set(&store, "web.env.PASSWORD", password(1));
+    let error = try_claim(&store).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(
+        error.message.contains("web.env.PORT can't be sealed"),
+        "{error:?}"
+    );
+    assert!(!format!("{error:?}").contains("AQEB"), "{error:?}");
+}

@@ -4928,3 +4928,59 @@ fn history_past_a_sealed_value_brings_the_variable_back_not_set_and_never_an_old
         );
     }
 }
+
+#[test]
+fn history_never_brings_a_sealed_value_back_as_port() {
+    for first in [json!("8080"), json!({ "secret": "8080" })] {
+        for (revision, action) in [
+            (2, ployz_store::HistoryAction::Undo),
+            (1, ployz_store::HistoryAction::Restore),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let url = backend::fresh_url(&dir);
+            let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+            backend::sealed_variables_on(&url, "org");
+            set(&store, &who, "web.env.PORT", first.clone());
+            publish(&store, &who, None).unwrap();
+            rename_variable(&store, &who, "web.env.PORT", "TOKEN");
+            publish(&store, &who, None).unwrap();
+            set(&store, &who, "web.env.TOKEN", browser_sealed(1));
+            publish(&store, &who, None).unwrap();
+            let query = ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(revision),
+                action,
+                change: None,
+            };
+            let case = format!("{first} #{revision} {action:?}");
+            let previewed = store.read(&who, &query).unwrap_err();
+            let staged = store
+                .write(
+                    &who,
+                    &ployz_store::StageHistory {
+                        environment: EnvironmentRef::default(),
+                        revision: query.revision,
+                        action,
+                        change: None,
+                        version: diff(&store, &who).version,
+                        accept_overwrite: true,
+                    },
+                )
+                .unwrap_err();
+            for error in [previewed, staged] {
+                assert_eq!(
+                    error.code,
+                    RpcErrorCode::InvalidArgument,
+                    "{case} {error:?}"
+                );
+                assert!(error.message.contains("route traffic"), "{case} {error:?}");
+                assert!(
+                    !format!("{error:?}").contains(&backend::ciphertext(1)),
+                    "{case} {error:?}"
+                );
+            }
+            assert_eq!(value(&store, &who, "web.env.PORT"), None, "{case}");
+            assert_eq!(diff(&store, &who).draft_count, 0, "{case}");
+        }
+    }
+}
