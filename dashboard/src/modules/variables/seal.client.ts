@@ -15,6 +15,8 @@ const encoder = new TextEncoder();
  */
 export function sealedValueProblem(key: string, value: string): string | null {
   if (key === "PORT") return "PORT can't be sealed: Ployz reads it to route traffic.";
+  // The Store refuses a NUL in a plain value, and can't see one inside a sealed value: no environment can hold it.
+  if (value.includes("\0")) return "A value can't hold a null character.";
   if (value.includes("${{")) return "A sealed value is stored as-is. Untick Sealed to use a reference.";
   if (hasShortRow(value)) return "Each line of a multiline sealed value needs at least 6 characters.";
   if (encoder.encode(key).length + encoder.encode(value).length + 2 > MAX_ENV_STRING) {

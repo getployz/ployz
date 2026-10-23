@@ -93,6 +93,7 @@ describe("sealedValueProblem", () => {
     ["multi-byte characters count in bytes", "ééé\nabcdef", null],
     ["two 2-byte characters are 4 bytes", "éé\nabcdef", "Each line of a multiline sealed value needs at least 6 characters."],
     ["a reference", "${{ db.URL }}", "A sealed value is stored as-is. Untick Sealed to use a reference."],
+    ["a null character", "abc\0def", "A value can't hold a null character."],
   ])("%s", (_, value, problem) => {
     expect(sealedValueProblem(KEY, value)).toBe(problem);
   });

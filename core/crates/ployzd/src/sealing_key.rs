@@ -495,10 +495,17 @@ mod tests {
         }
         assert!(SealingKey::generate().open_value(&own, &sealed).is_none());
         let bytes = sealed.as_bytes();
-        let truncated = Ciphertext::from_bytes(bytes[..bytes.len() - 1].to_vec());
-        assert!(key.open_value(&own, &truncated).is_none());
+        let mut truncated = bytes.to_vec();
+        truncated.pop();
+        assert!(
+            key.open_value(&own, &Ciphertext::from_bytes(truncated))
+                .is_none()
+        );
         let mut flipped = bytes.to_vec();
         *flipped.last_mut().unwrap() ^= 0x01;
-        assert!(key.open_value(&own, &Ciphertext::from_bytes(flipped)).is_none());
+        assert!(
+            key.open_value(&own, &Ciphertext::from_bytes(flipped))
+                .is_none()
+        );
     }
 }
