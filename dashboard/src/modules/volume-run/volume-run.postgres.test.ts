@@ -2591,6 +2591,10 @@ describe("volume runs", () => {
 
         expect(retried.result).toEqual({ runId: run.id, moved: "fsn-2" });
         expect(await rows()).toMatchObject([{ state: "done", message: "web was stopped about 43s (its start was retried)" }]);
+        // An older version of this function, replaying the memoized start after a rollback, reads `at` as exact.
+        // SAFETY: the start step returned JSON.
+        const start = (await retried.state[createHash("sha1").update("07-start").digest("hex")]) as object;
+        expect(start).not.toHaveProperty("at");
       } finally {
         now.mockRestore();
       }
