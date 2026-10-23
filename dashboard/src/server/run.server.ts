@@ -6,7 +6,7 @@ import { NonRetriableError } from "inngest";
 import type { ManagedRuntime } from "effect";
 import { parseErrorEvidence } from "#/lib/error-evidence";
 import { asRecord } from "#/lib/json";
-import { PublicErrorCategory } from "#/server/public-error";
+import { loggableCause, PublicErrorCategory } from "#/server/public-error";
 import { AppRuntime, type AppServices } from "#/server/runtime.server";
 
 type Runtime<R, ER> = Pick<ManagedRuntime.ManagedRuntime<R, ER>, "runPromiseExit">;
@@ -41,6 +41,8 @@ export function isNonRetriableInngestCause(cause: unknown): boolean {
 }
 
 function describeCause(cause: Cause.Cause<unknown>) {
+  const loggable = loggableCause(cause);
+  if (!Cause.isCause(loggable)) return loggable;
   const squashed = Cause.squash(cause);
   return squashed instanceof Error && squashed.message.length > 0
     ? squashed.message
@@ -76,7 +78,7 @@ export function makeEffectRunner<R, ER>(runtime: Runtime<R, ER>) {
     if (Option.isSome(failure)) {
       if (Cause.hasDies(exit.cause)) {
         Effect.runFork(
-          Effect.logError("Defect shadowed by a typed failure.", exit.cause),
+          Effect.logError("Defect shadowed by a typed failure.", loggableCause(exit.cause)),
         );
       }
       throw failure.value;
@@ -98,17 +100,22 @@ export function makeInngestEffectRunner<R>(runEffect: EffectRunner<R>) {
       return await runEffect(program);
     } catch (cause) {
       const failure = Cause.isCause(cause) ? Cause.squash(cause) : cause;
-      if (failure instanceof NonRetriableError) throw failure;
+      // Inngest keeps a thrown error's cause in its run history, so a redacted one goes without it.
+      const redacted = Cause.isCause(cause) && !Cause.isCause(loggableCause(cause));
+      if (failure instanceof NonRetriableError) {
+        throw redacted ? new NonRetriableError(describeCause(cause)) : failure;
+      }
       const message = Cause.isCause(cause)
         ? describeCause(cause)
         : cause instanceof Error
           ? cause.message
           : "Effect activity failed.";
+      const attached = redacted ? {} : { cause };
       if (isNonRetriableInngestCause(cause)) {
-        throw new NonRetriableError(message, { cause });
+        throw new NonRetriableError(message, attached);
       }
       if (cause instanceof Error) throw cause;
-      throw new Error(message, { cause });
+      throw new Error(message, attached);
     }
   };
 }

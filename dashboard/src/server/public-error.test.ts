@@ -183,6 +183,107 @@ describe("encodePublicError", () => {
     expect(response.status).toBe(500);
   });
 
+  it("reports a query that died by its kind and statement, never its params or message", () => {
+    const report = vi.fn();
+    const died = Cause.die(failedQuery());
+
+    const error = encodePublicBoundaryError(died, { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      "defect",
+      "EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token",
+    );
+    expect(error.code).toBe("INTERNAL");
+  });
+
+  it("names a died failure that wraps a query by its tags and the query's statement", () => {
+    const report = vi.fn();
+
+    encodePublicBoundaryError(Cause.die(new CollectionReadFailure({ cause: failedQuery() })), { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      "defect",
+      "CollectionReadFailure > EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token",
+    );
+  });
+
+  it("names no statement whose words sit in a literal or comment, and none when one is left open", () => {
+    const named = (query: string) => {
+      const report = vi.fn();
+      encodePublicBoundaryError(
+        Cause.die(new EffectDrizzleQueryError({ query, params: [], cause: Cause.fail(new SqlError({ reason: new UnknownError({ cause: {} }) })) })),
+        { report },
+      );
+      return String(report.mock.calls[0]?.[1]);
+    };
+
+    expect(named('select "id" from "t" where "a" = $1')).toMatch(/ in select t$/u);
+    for (const query of [
+      "select 'from secret_literal' from t",
+      "select $tag$update secret_dollar$tag$ from t",
+      "select $é$from secret_dollar$é$ from t",
+      "select 1 /* outer /* inner */ from secret_comment */ from t",
+      "select 1 -- from secret_line\nfrom t",
+      "select E'it\\'s from secret_literal --' from t",
+      'select 1 from "has""quote"',
+    ]) {
+      expect(named(query), query).not.toMatch(/secret_| in /u);
+    }
+  });
+
+  it("names every reason beside a died query safely, and the interruption too", () => {
+    const report = vi.fn();
+    const query = failedQuery();
+    const cause = Cause.combine(
+      Cause.combine(Cause.fail(new Error("safe-first secret-a")), Cause.die(query)),
+      Cause.combine(Cause.die(new Error(query.message)), Cause.combine(Cause.fail(new DatabaseFailure({ cause: new Error("secret-d"), providerBody: "secret-b", secret: "secret-c" })), Cause.interrupt(3))),
+    );
+
+    encodePublicBoundaryError(cause, { report });
+
+    const logged = report.mock.calls.map((call) => String(call[1])).join("\n");
+    expect(report).toHaveBeenCalledTimes(2);
+    expect(logged).toContain("EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token");
+    expect(logged).toContain("DatabaseFailure");
+    expect(logged).not.toMatch(/secret-|safe-first/u);
+  });
+
+  it("finds a died query in any branch of a Cause a failure wraps, and fails closed past what it reads", () => {
+    const report = vi.fn();
+    const nested = new CollectionReadFailure({ cause: Cause.combine(Cause.die(new Error("ordinary")), Cause.die(failedQuery())) });
+    let deep = new Error("wrapper", { cause: failedQuery() });
+    for (let depth = 0; depth < 100; depth += 1) deep = new Error(`wrapper ${depth}`, { cause: deep });
+
+    encodePublicBoundaryError(Cause.die(nested), { report });
+    encodePublicBoundaryError(Cause.die(deep), { report });
+
+    const logged = report.mock.calls.map((call) => String(call[1])).join("\n");
+    expect(logged).toContain("CollectionReadFailure");
+    expect(logged).not.toMatch(/secret-|wrapper/u);
+  });
+
+  it("names a thrown Error that wraps a failed query by its class and the query", () => {
+    const report = vi.fn();
+
+    encodePublicBoundaryError(new Error("outer secret-outer", { cause: failedQuery() }), { report });
+
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      "defect",
+      "EffectDrizzleQueryError > SqlError > UnknownError (P0001) in insert machine_enrollment_token",
+    );
+  });
+
+  it("stops reading a cause that only ever holds itself", () => {
+    const report = vi.fn();
+    const reasons: Cause.Reason<never>[] = [];
+    const cyclic = Cause.fromReasons(reasons);
+    reasons.push(Cause.makeDieReason(cyclic));
+
+    encodePublicBoundaryError(Cause.die(cyclic), { report });
+
+    expect(report).toHaveBeenCalledOnce();
+  });
+
   it("reports full defect and interruption causes separately while redacting transport", async () => {
     const report = vi.fn();
     const defect = Cause.die(new Error("provider-token"));
