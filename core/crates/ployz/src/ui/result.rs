@@ -473,4 +473,27 @@ mod tests {
             )
         );
     }
+
+    /// A Server that refuses on scope answered: it names its reason and next step, never
+    /// "did not answer".
+    #[test]
+    fn a_refusing_server_says_why_and_what_to_do_next() {
+        let machine_id = MachineId::parse("4".repeat(32)).unwrap();
+        let name = MachineName::parse("machine-4").unwrap();
+        let status = ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &std::io::Error::other("set_device needs Full access"),
+            serde_json::json!({ "capability": "set_device", "next": "ployz device request" }),
+        );
+        let error = crate::connect::TransportError::from(status).to_rpc_error();
+        let gaps = Gaps::default().named([(machine_id, &name)]);
+
+        assert_eq!(
+            gaps.warning(&MachineFailure { machine_id, error }),
+            (
+                "machine-4 refused: set_device needs Full access.".to_owned(),
+                Some("next: ployz device request".to_owned())
+            )
+        );
+    }
 }
