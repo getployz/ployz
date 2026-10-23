@@ -282,9 +282,20 @@ If it still can't start, the section says why again and the switch stays off.
 From the CLI, `ployz server set web-1 --accepts-ingress=false` turns the role off but leaves the web
 server running; use the switch to stop it. `--accepts-ingress=true` turns the role on before it
 starts the web server, so while the web server starts, the line under the switch reads **The web server
-isn't running, so your domains don't point here.** It reads the same when the start fails: the command
-exits with code 3 and leaves the role on. To try again from Ployz Cloud, turn the switch off, then on.
-If the web server still can't start, the section says why and the switch goes back off.
+isn't running, so your domains don't point here.** When the role was off and the command sees that no
+web server is left on the server, it turns the role back off and says why. That happens when something
+else holds the port: `Web traffic stays off on web-1: port 80 or 443 is in use. Free it, then try
+again.` It also happens when the web server stopped right after it started and Ployz removed it. The
+command exits with code 3, and the line under the switch reads **Web traffic is off**. If turning the
+role back off fails too, it says so and prints the command that turns it off.
+
+Any other failed start leaves the role on, says `Server updated; the Ingress Proxy did not follow`
+with the cause, and exits with code 3. That covers an image that won't pull, any other error from
+Docker, a web server Ployz couldn't remove, a server that stopped answering, and a role that was
+already on. It also covers a server that still has a web server after the failure: an older one Ployz
+started again, or one another `ployz` or Ployz Cloud started there meanwhile. Until a web server runs
+there, the page reads **The web server isn't running, so your domains don't point here.** To try again
+from Ployz Cloud, turn the switch off, then on.
 
 ## Upgrade Ployz on a server
 
