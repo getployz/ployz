@@ -1,5 +1,5 @@
 import { useRef, useState, useTransition } from "react";
-import type { EnvironmentRef, NeverSyncedRow, RowId, SyncRow, Synced } from "@ployz/sdk";
+import type { ConfigCommand, EnvironmentRef, NeverSyncedRow, RowId, SecretValue, SyncRow, Synced } from "@ployz/sdk";
 import { ArrowRightIcon, ChevronDownIcon, HardDriveIcon, PackageIcon, PinIcon, PinOffIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
@@ -13,7 +13,10 @@ import { cn } from "#/lib/utils";
 import { nodeName, settingName } from "#/modules/config-store/store-branches";
 import { useStoreBusy, useStoreNeverSyncs } from "#/modules/config-store/store-pending";
 import { flipRow, flipsMoved, showNeverSyncing, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
-import { syncQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { fetchStoreView, servicesQuery, syncQuery, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
+import { receivingService, receivingValues } from "#/modules/config-store/store-variables";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { useSealing } from "#/modules/variables/sealing";
 import { isRequested, useStoreWriter } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -35,6 +38,8 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
   onSynced: (into: string, changes: number, synced: Synced) => void;
 }) {
   const writer = useStoreWriter(organizationSlug);
+  const scope = useCollectionScope();
+  const sealing = useSealing(organizationSlug);
   const [into, setInto] = useState(first);
   // The open review stays up while the picked place's loads.
   const [, startTransition] = useTransition();
@@ -52,12 +57,16 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
   const [stale, setStale] = useState(false);
   // The id of the last Sync sent and what it asked: an identical retry reuses it, so a lost response never syncs twice,
   // and changed picks, values or version mint a new one, so the Store never answers them with the old Sync.
-  const lastSync = useRef<{ intent: string; id: string } | null>(null);
+  // A Sync that seals keeps what it sent too, so its retry sends the same ciphertext.
+  const lastSync = useRef<{ intent: string; id: string; sent?: Promise<ConfigCommand> } | null>(null);
   const [neverSyncedOpen, setNeverSyncedOpen] = useState(false);
   const name = from.environment ?? "";
   const rows = view.ok ? view.value.rows : [];
   const picked = syncPicks(rows, flips);
   const pickedRows = new Set(picked.map((row) => row.row));
+  // Only while sealing shows ready does the dialog watch `into`'s Services, to hold a value for a Service new there.
+  const receiver = useCachedStoreView(organizationSlug, sealing.state === "ready" ? servicesQuery({ project: from.project, environment: into }) : null);
+  const homeless = (row: SyncRow) => receiver?.ok === true && receivingService(row.row, receiver.value.services) === undefined;
   const neverSync = (environment: string, row: RowId, off: boolean) =>
     writer.commit({ command: "never_sync", environment: { project: from.project, environment }, rows: [row], off });
 
@@ -68,19 +77,36 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
     const typed: Record<RowId, string> = {};
     for (const row of picked) {
       const value = values[row.row];
-      if (row.secret && value) typed[row.row] = value;
+      if (row.secret && value && !homeless(row)) typed[row.row] = value;
     }
     const closeAfterSync = closable(into) && closeAfter;
     const intent = JSON.stringify([into, [...pickedRows], typed, view.value.version, closeAfterSync]);
     if (lastSync.current?.intent !== intent) lastSync.current = { intent, id: crypto.randomUUID() };
-    const id = lastSync.current.id;
+    const last = lastSync.current;
+    const receiving = { project: from.project, environment: into };
+    const command = (sent: Record<RowId, SecretValue>): ConfigCommand => ({
+      command: "sync", from, into: receiving, picks: [...pickedRows],
+      values: sent, version: view.value.version, id: last.id, close_after: closeAfterSync,
+    });
+    const entries = picked.flatMap((row) => typed[row.row] === undefined ? [] : [{ row: row.row, name: row.name, value: typed[row.row] ?? "" }]);
+    // Sent as made in its turn in the queue: a typed value goes sealed, or as typed while sealing is off.
+    const prepare = async () => {
+      last.sent ??= receivingValues(sealing, entries, async () => {
+        const services = await fetchStoreView(organizationSlug, scope, servicesQuery(receiving));
+        return { environment: services.environment.id, services: services.services };
+      }).then((sent) => command(Object.fromEntries(sent.map((one) => [one.row, one.value]))));
+      try {
+        return await last.sent;
+      } catch (error) {
+        // A refused seal sends nothing, so the next try seals afresh.
+        last.sent = undefined;
+        throw error;
+      }
+    };
     let written;
     try {
       // Awaited: the page opens the receiver once it holds the changes, and a stale review stays open, refetched.
-      written = await writer.commit({
-        command: "sync", from, into: { project: from.project, environment: into }, picks: [...pickedRows],
-        values: typed, version: view.value.version, id, close_after: closeAfterSync,
-      }, ["conflict"]).isPersisted.promise;
+      written = await writer.commit(entries.length ? command({}) : command(typed), ["conflict"], entries.length ? prepare : undefined).isPersisted.promise;
     } catch (error) {
       // Asked for instead: the writer says Requested, and an owner or admin syncs it on approval.
       if (error instanceof Error && isRequested(error)) return onClose();
@@ -98,7 +124,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             Make {places.length > 1 ? (
-              <NativeSelect size="sm" aria-label="Place to sync into" value={into} onChange={(event) => {
+              <NativeSelect size="sm" aria-label="Place to sync into" value={into} disabled={pending} onChange={(event) => {
                 const picked = event.target.value;
                 startTransition(() => { setInto(picked); setFlips(new Map()); setValues({}); });
               }}>
@@ -122,7 +148,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
                   <SyncRowItem key={row.row} row={row} into={into} ticked={pickedRows.has(row.row)}
                     left={row.requires !== null && !pickedRows.has(row.requires)}
                     onFlip={() => setFlips((current) => flipRow(current, row))} onNeverSync={() => neverSync(name, row.row, false)}
-                    value={values[row.row] ?? ""} onValue={(value) => setValues((current) => ({ ...current, [row.row]: value }))} />
+                    homeless={homeless(row)} value={values[row.row] ?? ""} onValue={(value) => setValues((current) => ({ ...current, [row.row]: value }))} />
                 ))}
               </ul>
             </section>
@@ -166,8 +192,10 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
  * lacks takes `into`'s value there instead. Unticked, it dims and offers Never sync instead. A row of a new node sits
  * under it, and is left out with it (`left`).
  */
-function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, value, onValue }: {
+function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, homeless, value, onValue }: {
   row: SyncRow; into: string; ticked: boolean; left: boolean; onFlip: () => void; onNeverSync: () => void;
+  /** Its Service is new in `into`, so a sealed value can't go with it. */
+  homeless: boolean;
   value: string; onValue: (value: string) => void;
 }) {
   const line = syncLine(row, into);
@@ -183,6 +211,8 @@ function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, value, onVa
       </label>
       {!ticked && row.name !== null && !left && !held ? (
         <Button variant="outline" size="sm" onClick={onNeverSync}><PinIcon data-icon="inline-start" />Never sync</Button>
+      ) : row.secret && homeless ? (
+        <span className="text-xs text-muted-foreground">Set this value after syncing.</span>
       ) : row.secret ? (
         <Input type="password" autoComplete="off" aria-label={`Set ${into}'s value of ${line.name}`}
           placeholder={`Set ${into}'s value`} value={value}

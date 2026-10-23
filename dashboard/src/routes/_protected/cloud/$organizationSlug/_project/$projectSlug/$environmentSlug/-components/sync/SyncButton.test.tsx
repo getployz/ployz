@@ -13,12 +13,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
 import * as functions from "#/modules/config-store/store.functions";
+import * as sealingFunctions from "#/modules/sealing/sealing.functions";
 import { branchQuery, environmentsQuery, storeViewPrefix, syncQuery } from "#/modules/config-store/store-view.queries";
 import { SyncButton } from "./SyncButton";
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   Element.prototype.scrollIntoView ??= () => {};
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "off" } });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 

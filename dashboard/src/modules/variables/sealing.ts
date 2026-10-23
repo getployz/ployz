@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type { SecretValue } from "@ployz/sdk";
+import type { ClientSealedValue, SecretValue } from "@ployz/sdk";
 import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import { SealError, sealValue } from "./seal.client";
 
@@ -18,6 +18,7 @@ const NO_SERVER = "Add a server to set sealed values.";
  * Whether the Organization's Sealed controls show as sealing (`state`, cached, for display only), and `prepare`, which
  * turns Sealed values into what the Store takes: one fresh read per call, then the legacy plaintext while sealing is
  * off, or each value sealed to the key that read returned. It rejects with `SealError` and never falls back to plaintext.
+ * `sealer` is that read alone, for a write that must find where its values go once it knows it seals them.
  */
 export function useSealing(organizationSlug: string) {
   const queryClient = useQueryClient();
@@ -25,21 +26,29 @@ export function useSealing(organizationSlug: string) {
   const { data } = useQuery(sealingQueryOptions(organizationSlug));
   return {
     state: data?.sealing.state ?? "off",
-    prepare: (items: readonly SealItem[]) => prepare(queryClient, organizationSlug, items),
+    prepare: async (items: readonly SealItem[]): Promise<SecretValue[]> => {
+      const seal = await sealer(queryClient, organizationSlug);
+      return seal ? await Promise.all(items.map(seal)) : items.map((item) => item.value);
+    },
+    sealer: () => sealer(queryClient, organizationSlug),
   };
 }
 
 export type Sealing = ReturnType<typeof useSealing>;
 
-async function prepare(queryClient: QueryClient, organizationSlug: string, items: readonly SealItem[]): Promise<SecretValue[]> {
+/** Seals one item to the key a fresh read returned. */
+export type Sealer = (item: SealItem) => Promise<ClientSealedValue>;
+
+/** One fresh read: null while sealing is off, else a `Sealer` bound to the key it returned. */
+async function sealer(queryClient: QueryClient, organizationSlug: string): Promise<Sealer | null> {
   const fresh = await queryClient.fetchQuery({ ...sealingQueryOptions(organizationSlug), staleTime: 0 })
     .catch(() => { throw new SealError(UNREAD); });
   const { sealing, organizationId } = fresh;
-  if (sealing.state === "off") return items.map((item) => item.value);
+  if (sealing.state === "off") return null;
   if (sealing.state === "no_server") throw new SealError(NO_SERVER);
   const recipient = { organizationId, publicKey: sealing.publicKey };
-  return await Promise.all(items.map(async ({ key, value, target }): Promise<SecretValue> =>
-    ({ sealedFor: target.environment, value: { sealed: await sealed(recipient, target, key, value), scope: { service: target.service }, key } })));
+  return async ({ key, value, target }) =>
+    ({ sealedFor: target.environment, value: { sealed: await sealed(recipient, target, key, value), scope: { service: target.service }, key } });
 }
 
 async function sealed(...input: Parameters<typeof sealValue>) {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Schema } from "effect";
 import { useLoaderData, useParams, useRouterState } from "@tanstack/react-router";
-import type { EnvironmentRef, MergeRow, OnMergeCheck, PullRequestRef } from "@ployz/sdk";
+import type { ConfigCommand, EnvironmentRef, MergeRow, OnMergeCheck, PullRequestRef } from "@ployz/sdk";
 import { CircleCheckIcon, CircleMinusIcon, EllipsisIcon, ExternalLinkIcon, GitMergeIcon, LockIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
@@ -13,7 +13,10 @@ import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { settingName } from "#/modules/config-store/store-branches";
 import { onMergeCount, onMergeLists, onMergeQuery, prPlansQuery, pullRequestQuery } from "#/modules/config-store/store-pull-requests";
-import { branchQuery, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
+import { branchQuery, fetchStoreView, servicesQuery, useCachedStoreView, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
+import { receivingService, receivingValues } from "#/modules/config-store/store-variables";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { useSealing } from "#/modules/variables/sealing";
 import { useStoreMergeRowsPending } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useGithubWebOrigin } from "#/modules/github/github.queries";
@@ -110,6 +113,8 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   row: MergeRow; rows: readonly MergeRow[]; organizationSlug: string; store: EnvironmentRef; into: string;
 }) {
   const writer = useStoreWriter(organizationSlug);
+  const scope = useCollectionScope();
+  const sealing = useSealing(organizationSlug);
   const pendingRows = useStoreMergeRowsPending(organizationSlug, store);
   const saving = pendingRows.has(row.row) || row.requires !== null && pendingRows.has(row.requires);
   const [editing, setEditing] = useState(false);
@@ -123,8 +128,24 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   const preview = store.environment ?? "";
   const node = rows.find((entry) => entry.row === row.requires && entry.ride === "excluded");
   const exclude = (off: boolean) => void writer.commit({ command: "never_sync", environment: store, rows: [off && node ? node.row : row.row], off });
-  const land = (value?: string) =>
-    void writer.commit({ command: "set_merge_value", environment: store, into: { project: store.project, environment: into }, row: row.row, value });
+  const destination = { project: store.project, environment: into };
+  const secret = isSecret(row.preview) || isSecret(row.production);
+  // Only while sealing shows ready does the row watch the Destination's Services, to hold a value for a Service new there.
+  const receiver = useCachedStoreView(organizationSlug, secret && sealing.state === "ready" ? servicesQuery(destination) : null);
+  const homeless = receiver?.ok === true && receivingService(row.row, receiver.value.services) === undefined;
+  const land = (value?: string) => {
+    const command = (sent: Extract<ConfigCommand, { command: "set_merge_value" }>["value"]): ConfigCommand =>
+      ({ command: "set_merge_value", environment: store, into: destination, row: row.row, value: sent });
+    if (!secret || value === undefined) return void writer.commit(command(value));
+    // A secret's Edit shows with no value and goes sealed, or as typed while sealing is off, in its turn in the queue.
+    void writer.commit(command(undefined), [], async () => {
+      const [sent] = await receivingValues(sealing, [{ row: row.row, name: row.name, value }], async () => {
+        const services = await fetchStoreView(organizationSlug, scope, servicesQuery(destination));
+        return { environment: services.environment.id, services: services.services };
+      });
+      return command(sent?.value);
+    });
+  };
   return (
     <li className={cn("grid grid-cols-[6rem_minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-x-3 border-b px-4 py-2 last:border-b-0",
       excluded && "text-muted-foreground", saving && "opacity-60")} aria-busy={saving}>
@@ -148,7 +169,7 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
           </DropdownMenuContent>
         </DropdownMenu>}
       </span>
-      {editing ? <EditValue row={row} name={name} into={into} preview={preview} onClose={() => setEditing(false)}
+      {editing ? <EditValue row={row} name={name} into={into} preview={preview} secret={secret} homeless={homeless} onClose={() => setEditing(false)}
         onSave={(value) => { setEditing(false); land(value); }} /> : null}
     </li>
   );
@@ -205,10 +226,12 @@ function RowValue({ row, preview }: { row: MergeRow; preview: string }) {
 }
 
 /** What the merge lands in a variable instead: a secret sealed and never shown back; any other value starts from what lands now. */
-function EditValue({ row, name, into, preview, onClose, onSave }: {
-  row: MergeRow; name: string; into: string; preview: string; onClose: () => void; onSave: (value: string) => void;
+function EditValue({ row, name, into, preview, secret, homeless, onClose, onSave }: {
+  row: MergeRow; name: string; into: string; preview: string; secret: boolean;
+  /** Its Service is new in `into`, so a sealed value can't go with it. */
+  homeless: boolean;
+  onClose: () => void; onSave: (value: string) => void;
 }) {
-  const secret = isSecret(row.preview) || isSecret(row.production);
   const start = secret ? "" : row.lands;
   const [value, setValue] = useState(isText(start) ? start : "");
   return (
@@ -217,17 +240,18 @@ function EditValue({ row, name, into, preview, onClose, onSave }: {
         <DialogHeader>
           <DialogTitle><span className="font-mono">{name}</span> <span className="font-normal text-muted-foreground">· {into}</span></DialogTitle>
           <DialogDescription className="flex items-center gap-1">
-            {secret ? <><LockIcon className="size-3" />Sealed</>
+            {secret && homeless ? "Set this value after merging."
+              : secret ? <><LockIcon className="size-3" />Sealed</>
               : <>{preview}: <span className="font-mono">{row.preview === null ? "removed" : text(row.preview)}</span></>}
           </DialogDescription>
         </DialogHeader>
         <form id={`edit-${row.row}`} onSubmit={(event) => { event.preventDefault(); onSave(value); }}>
           <Input aria-label={`${name} in ${into}`} type={secret ? "password" : "text"} autoComplete="off" placeholder={secret ? "Value" : undefined}
-            value={value} onChange={(event) => setValue(event.target.value)} className="ph-no-capture font-mono" autoFocus />
+            value={value} onChange={(event) => setValue(event.target.value)} className="ph-no-capture font-mono" disabled={secret && homeless} autoFocus />
         </form>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button type="submit" form={`edit-${row.row}`}>Save</Button>
+          <Button type="submit" form={`edit-${row.row}`} disabled={secret && homeless}>Save</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

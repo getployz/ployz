@@ -4,11 +4,13 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
-import type { BranchView, ConfigCommand, ConfigQuery, ConfigView, MergeRow, OnMerge, PrPlansView, PullRequestView, RowId } from "@ployz/sdk";
+import type { BranchView, ConfigCommand, ConfigQuery, ConfigView, MergeRow, OnMerge, PrPlansView, PullRequestView, RowId, ServiceListing } from "@ployz/sdk";
 import { CipherSuite } from "@hpke/core";
+import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 import { toast } from "sonner";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
+import { asTestDouble } from "#/lib/test-double";
 import * as functions from "#/modules/config-store/store.functions";
 import * as sealingFunctions from "#/modules/sealing/sealing.functions";
 import type { StoreWriteResult } from "#/modules/config-store/store.contract";
@@ -20,6 +22,7 @@ import { OnMergeButton } from "./OnMerge";
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   Element.prototype.scrollIntoView ??= () => {};
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "off" } });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
@@ -61,7 +64,12 @@ const plans: PrPlansView = {
   }],
 };
 
-function open({ at = "/cloud/acme/blog/pr-146", list = onMerge(), isOpen = true } = {}) {
+/** production's Services, as a Sealed Edit reads them: its web, with its own id there. */
+const PRODUCTION_ID = "0e7c2f3a-5b1d-4c8e-9f60-1a2b3c4d5e6f";
+const WEB_ID = "7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6";
+const productionWeb = [asTestDouble<ServiceListing>()({ row: "w:node" as RowId, id: WEB_ID, name: "web", change: null })];
+
+function open({ at = "/cloud/acme/blog/pr-146", list = onMerge(), isOpen = true, services = productionWeb } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
@@ -73,6 +81,7 @@ function open({ at = "/cloud/acme/blog/pr-146", list = onMerge(), isOpen = true 
       case "on_merge": return { view: "on_merge", ...store.onMerge };
       case "pull_request": return { view: "pull_request", ...facts(isOpen) };
       case "pr_plans": return { view: "pr_plans", ...plans };
+      case "services": return { view: "services", environment: { ...summary("production"), id: PRODUCTION_ID }, services };
       default: return null;
     }
   };
@@ -338,7 +347,6 @@ const TRUNK_MERGE = [
 ];
 
 it("sends trunk's exact Edit and Reset while sealing is off, sealing nothing", async () => {
-  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "off" } });
   const hpke = vi.spyOn(CipherSuite.prototype, "seal");
   const { store, write } = open();
   const list = await panel();
@@ -359,4 +367,44 @@ it("sends trunk's exact Edit and Reset while sealing is off, sealing nothing", a
   await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
   expect(write.mock.calls.map(([call]) => JSON.stringify(call.data))).toEqual(TRUNK_MERGE);
   expect(hpke).not.toHaveBeenCalled();
+});
+
+async function sealingReady() {
+  const kem = new DhkemX25519HkdfSha256();
+  const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)) } });
+}
+
+it("seals a secret's Edit for the Destination's Service, and keeps a plain Edit as typed", async () => {
+  await sealingReady();
+  const { commands, write } = open();
+  const list = await panel();
+  await choose(list, "TOKEN", "Edit");
+  const secret = within(await screen.findByRole("dialog", { name: /TOKEN/u }));
+  fireEvent.change(secret.getByLabelText("TOKEN in production"), { target: { value: "merge-secret" } });
+  fireEvent.click(secret.getByRole("button", { name: "Save" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(item(list, "TOKEN").getAttribute("aria-busy")).toBe("false"));
+  await choose(list, "API_URL", "Edit");
+  const plain = within(await screen.findByRole("dialog", { name: /API_URL/u }));
+  fireEvent.change(plain.getByLabelText("API_URL in production"), { target: { value: "http://c" } });
+  fireEvent.click(plain.getByRole("button", { name: "Save" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+
+  expect(JSON.stringify(write.mock.calls)).not.toContain("merge-secret");
+  expect(commands()).toMatchObject([
+    { command: "set_merge_value", row: "w:env.TOKEN", value: { sealedFor: PRODUCTION_ID, value: { scope: { service: WEB_ID }, key: "TOKEN" } } },
+    { command: "set_merge_value", row: "w:env.API_URL", value: "http://c" },
+  ]);
+});
+
+it("holds a secret's Edit while its Service is new in the Destination", async () => {
+  await sealingReady();
+  open({ services: [] });
+  const list = await panel();
+  await choose(list, "TOKEN", "Edit");
+  const secret = within(await screen.findByRole("dialog", { name: /TOKEN/u }));
+  await secret.findByText("Set this value after merging.");
+  expect(secret.getByLabelText("TOKEN in production")).toHaveProperty("disabled", true);
+  expect(secret.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
 });

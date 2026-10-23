@@ -1,9 +1,10 @@
 import { expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import type { EnvironmentRef, EnvironmentView, RowId } from "@ployz/sdk";
+import type { EnvironmentRef, EnvironmentView, RowId, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
 import {
   notSetVariables,
+  receivingService,
   serviceVariables,
   storeVariableWriter,
   variableReferrers,
@@ -172,4 +173,13 @@ it("writes a plain variable as before, with nothing to prepare", () => {
     { op: "set", path: "web.env.LOG_LEVEL.exported", value: true },
   ] });
   expect(unsealed.prepare).not.toHaveBeenCalled();
+});
+
+it("finds where a Sync row lands by its node's lineage, never by name, and not in a Service being removed", () => {
+  const listing = (row: string, id: string, name: string, change: ServiceListing["change"] = null) =>
+    asTestDouble<ServiceListing>()({ row: row as RowId, id, name, change });
+  const services = [listing("a:node", "api-there", "web"), listing("b:node", "api-namesake", "api"), listing("c:node", "going", "jobs", "delete")];
+  expect(receivingService("a:variables.TOKEN" as RowId, services)?.id).toBe("api-there");
+  expect(receivingService("c:variables.TOKEN" as RowId, services)).toBeUndefined();
+  expect(receivingService("w:variables.KEY" as RowId, services)).toBeUndefined();
 });

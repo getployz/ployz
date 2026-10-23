@@ -169,3 +169,31 @@ export function storeReferenceTargets(view: EnvironmentView, services: readonly 
     })),
   });
 }
+
+/**
+ * The Service of `services` (a receiving Environment's) that a Sync or On merge row lands in: the one of its node's
+ * lineage, matched by `ServiceListing.row` and never by name. None while it is new there or being removed.
+ */
+export function receivingService(row: RowId, services: readonly ServiceListing[]) {
+  const lineage = row.slice(0, row.indexOf(":"));
+  return services.find((service) => service.row === `${lineage}:node` && service.change !== "delete");
+}
+
+/**
+ * What a Sync or On merge sends for secret rows given values typed for them: each value sealed for the Service it lands
+ * in, once a fresh read says the Organization seals; else trunk's plaintext. A row whose Service is new in the receiver
+ * has nothing to seal for, so its value stays out and the row arrives Not set.
+ */
+export async function receivingValues<T extends { readonly row: RowId; readonly name: string | null; readonly value: string }>(
+  sealing: Pick<Sealing, "sealer">, typed: readonly T[], receiver: () => Promise<{ environment: string; services: readonly ServiceListing[] }>,
+): Promise<(T & { value: SecretValue })[]> {
+  const seal = await sealing.sealer();
+  if (!seal) return [...typed];
+  const { environment, services } = await receiver();
+  return (await Promise.all(typed.map(async (one) => {
+    const service = receivingService(one.row, services);
+    const key = one.name === null ? undefined : VARIABLE.exec(one.name)?.[1];
+    if (!service || key === undefined) return [];
+    return [{ ...one, value: await seal({ key, value: one.value, target: { environment, service: service.id } }) }];
+  }))).flat();
+}
