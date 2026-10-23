@@ -8,6 +8,8 @@
 //! targets, `#[test]` functions, and the `*-testkit` crates. A `tokio::time` sleep is
 //! virtual, and allowed, inside a `start_paused` test, after a `tokio::time::pause()` with
 //! no `resume()` between, or in a helper whose callers in the same file are all paused.
+//! A `pause()` counts only on the paths that run it: one in a branch, a loop, a closure or
+//! an async block that isn't awaited in place leaves a sleep after it real.
 //! `std::thread::sleep` always blocks for real.
 //!
 //! A wait on the OS with nothing to await (a process exit, a file another process writes)
@@ -480,6 +482,8 @@ impl Items {
             in_test: in_test || test_attr.is_some() || is_cfg_test(attrs),
             paused: start_paused,
             resumes: false,
+            diverged: false,
+            loops: Vec::new(),
             callees: Vec::new(),
             sleeps: Vec::new(),
         };
@@ -497,6 +501,15 @@ impl Items {
     }
 }
 
+/// Where control leaves a loop: its `break`s, and its `continue`s back to the top.
+struct Loop {
+    label: Option<String>,
+    /// Paused at every `break` seen so far; `None` before the first.
+    breaks: Option<bool>,
+    /// Paused at every `continue` seen so far; `None` before the first.
+    continues: Option<bool>,
+}
+
 struct Body {
     name: Vec<String>,
     nested_fns: Vec<TestFn>,
@@ -504,14 +517,125 @@ struct Body {
     imported_sleeps: HashMap<String, Clock>,
     imported_paths: HashMap<String, Vec<String>>,
     in_test: bool,
-    /// Clock changes follow syntax visit order, including conditional and deferred code.
+    /// Whether the clock is paused on the path being visited. Paths join where control
+    /// flow does: after a branch, it is paused only if every branch that falls through
+    /// paused it, and after a loop only if every `break` did. A `resume()` anywhere counts
+    /// as run.
     paused: bool,
     resumes: bool,
+    /// The path being visited has returned, broken out or panicked, so no later code in
+    /// its block runs on it.
+    diverged: bool,
+    /// The loops around the code being visited, innermost last.
+    loops: Vec<Loop>,
     callees: Vec<Call>,
     sleeps: Vec<Sleep>,
 }
 
 impl Body {
+    /// Visits code that may not run, or not before what follows it: the right side of
+    /// `&&` or `||`, or a macro's tokens. Paused time leaves it only if it was paused on
+    /// the way in and nothing inside resumed.
+    fn may_not_run(&mut self, visit: impl FnOnce(&mut Self)) {
+        let (paused, diverged) = (self.paused, self.diverged);
+        visit(self);
+        self.paused &= paused;
+        self.diverged = diverged;
+    }
+
+    /// Visits a closure or an async block that isn't awaited where it's written. It may run
+    /// later or never, and its `return`s and `break`s don't leave the code around it.
+    fn deferred(&mut self, visit: impl FnOnce(&mut Self)) {
+        let loops = std::mem::take(&mut self.loops);
+        self.may_not_run(visit);
+        self.loops = loops;
+    }
+
+    /// Visits one way through a branch, starting from `paused`. `None` when it diverged.
+    fn branch(&mut self, paused: bool, visit: impl FnOnce(&mut Self)) -> Option<bool> {
+        self.paused = paused;
+        self.diverged = false;
+        visit(self);
+        (!self.diverged).then_some(self.paused)
+    }
+
+    /// Joins the ways through a branch: paused if every one that fell through paused, and
+    /// diverged if none did.
+    fn join(&mut self, paused: bool, ways: impl IntoIterator<Item = Option<bool>>) {
+        let mut through = ways.into_iter().flatten().peekable();
+        self.diverged = through.peek().is_none();
+        self.paused = if self.diverged {
+            paused
+        } else {
+            through.all(|way| way)
+        };
+    }
+
+    /// Visits a loop. The body runs twice: once to learn what a later iteration starts
+    /// with, discarding what it found, then for real from that start. Returns the loop's
+    /// breaks and where its body ended, if it fell through.
+    fn in_loop(
+        &mut self,
+        label: Option<&syn::Label>,
+        visit: impl Fn(&mut Self),
+    ) -> (Option<bool>, Option<bool>) {
+        let start = self.paused;
+        let found = (self.sleeps.len(), self.callees.len(), self.nested_fns.len());
+        let iterate = |body: &mut Self, paused: bool| {
+            body.loops.push(Loop {
+                label: label.map(|label| label.name.ident.to_string()),
+                breaks: None,
+                continues: None,
+            });
+            let end = body.branch(paused, &visit);
+            let ended = body.loops.pop().expect("pushed above");
+            (ended, end)
+        };
+        let (first, end) = iterate(self, start);
+        self.sleeps.truncate(found.0);
+        self.callees.truncate(found.1);
+        self.nested_fns.truncate(found.2);
+        let later = [Some(start), end, first.continues]
+            .into_iter()
+            .flatten()
+            .all(|way| way);
+        let (ended, end) = iterate(self, later);
+        (ended.breaks, end)
+    }
+
+    /// Records that the innermost loop may end here without a `break`: a `while` whose
+    /// condition fails, or a `for` with nothing left.
+    fn exit_here(&mut self) {
+        let paused = self.paused;
+        if let Some(target) = self.loops.last_mut() {
+            target.breaks = Some(target.breaks.unwrap_or(true) && paused);
+        }
+    }
+
+    /// Records a `break` or `continue` from here to the loop it names.
+    fn leave(&mut self, label: Option<&syn::Lifetime>, continues: bool) {
+        let paused = self.paused;
+        let target = match label {
+            Some(label) => {
+                let name = label.ident.to_string();
+                self.loops
+                    .iter_mut()
+                    .rev()
+                    .find(|target| target.label.as_deref() == Some(name.as_str()))
+            }
+            None => self.loops.last_mut(),
+        };
+        if let Some(target) = target {
+            let ways = if continues {
+                &mut target.continues
+            } else {
+                &mut target.breaks
+            };
+            *ways = Some(ways.unwrap_or(true) && paused);
+        }
+        self.diverged = true;
+    }
+
     /// `no_args` tells `tokio::time::pause()` from a test's own `pause(duration)`.
     fn call(&mut self, segments: &[String], span: Span, no_args: bool) {
         let imported_clock = match segments {
@@ -622,13 +746,135 @@ impl<'ast> Visit<'ast> for Body {
         if let Some((_, diverge)) = &init.diverge {
             self.visit_expr(diverge);
         }
+        // The `else` diverges, so the code after the `let` runs only on the other path.
         self.paused = paused;
+        self.diverged = false;
     }
 
     fn visit_arm(&mut self, arm: &'ast syn::Arm) {
         let in_test = self.in_test;
         syn::visit::visit_arm(self, arm);
         self.in_test = in_test;
+    }
+
+    fn visit_expr_if(&mut self, expr: &'ast syn::ExprIf) {
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        self.visit_expr(&expr.cond);
+        let start = self.paused;
+        let then = self.branch(start, |body| body.visit_block(&expr.then_branch));
+        let otherwise = match &expr.else_branch {
+            Some((_, otherwise)) => self.branch(start, |body| body.visit_expr(otherwise)),
+            None => Some(start),
+        };
+        self.join(start, [then, otherwise]);
+    }
+
+    fn visit_expr_match(&mut self, expr: &'ast syn::ExprMatch) {
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        self.visit_expr(&expr.expr);
+        let start = self.paused;
+        let ways: Vec<_> = expr
+            .arms
+            .iter()
+            .map(|arm| self.branch(start, |body| body.visit_arm(arm)))
+            .collect();
+        self.join(start, ways);
+    }
+
+    fn visit_expr_binary(&mut self, expr: &'ast syn::ExprBinary) {
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        self.visit_expr(&expr.left);
+        if matches!(expr.op, syn::BinOp::And(_) | syn::BinOp::Or(_)) {
+            self.may_not_run(|body| body.visit_expr(&expr.right));
+        } else {
+            self.visit_expr(&expr.right);
+        }
+    }
+
+    fn visit_expr_loop(&mut self, expr: &'ast syn::ExprLoop) {
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        let (breaks, _) = self.in_loop(expr.label.as_ref(), |body| body.visit_block(&expr.body));
+        // A loop no `break` leaves runs forever or returns, so nothing after it runs.
+        self.diverged = breaks.is_none();
+        self.paused = breaks.unwrap_or(self.paused);
+    }
+
+    fn visit_expr_while(&mut self, expr: &'ast syn::ExprWhile) {
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        let (breaks, _) = self.in_loop(expr.label.as_ref(), |body| {
+            body.visit_expr(&expr.cond);
+            body.exit_here();
+            body.visit_block(&expr.body);
+        });
+        self.diverged = false;
+        self.paused = breaks.unwrap_or(self.paused);
+    }
+
+    fn visit_expr_for_loop(&mut self, expr: &'ast syn::ExprForLoop) {
+        for attr in &expr.attrs {
+            self.visit_attribute(attr);
+        }
+        self.visit_expr(&expr.expr);
+        let (breaks, _) = self.in_loop(expr.label.as_ref(), |body| {
+            body.exit_here();
+            body.visit_pat(&expr.pat);
+            body.visit_block(&expr.body);
+        });
+        self.diverged = false;
+        self.paused = breaks.unwrap_or(self.paused);
+    }
+
+    fn visit_expr_break(&mut self, expr: &'ast syn::ExprBreak) {
+        syn::visit::visit_expr_break(self, expr);
+        self.leave(expr.label.as_ref(), false);
+    }
+
+    fn visit_expr_continue(&mut self, expr: &'ast syn::ExprContinue) {
+        syn::visit::visit_expr_continue(self, expr);
+        self.leave(expr.label.as_ref(), true);
+    }
+
+    fn visit_expr_return(&mut self, expr: &'ast syn::ExprReturn) {
+        syn::visit::visit_expr_return(self, expr);
+        self.diverged = true;
+    }
+
+    fn visit_expr_closure(&mut self, expr: &'ast syn::ExprClosure) {
+        self.deferred(|body| syn::visit::visit_expr_closure(body, expr));
+    }
+
+    fn visit_expr_async(&mut self, expr: &'ast syn::ExprAsync) {
+        self.deferred(|body| syn::visit::visit_expr_async(body, expr));
+    }
+
+    /// An async block awaited where it's written runs there, like a block.
+    fn visit_expr_await(&mut self, expr: &'ast syn::ExprAwait) {
+        let mut base = &*expr.base;
+        while let syn::Expr::Paren(syn::ExprParen { expr: inner, .. }) = base {
+            base = inner;
+        }
+        let syn::Expr::Async(block) = base else {
+            syn::visit::visit_expr_await(self, expr);
+            return;
+        };
+        for attr in expr.attrs.iter().chain(&block.attrs) {
+            self.visit_attribute(attr);
+        }
+        let loops = std::mem::take(&mut self.loops);
+        self.visit_block(&block.block);
+        self.loops = loops;
+        // A `return` in it ends the block, not the function.
+        self.diverged = false;
     }
 
     fn visit_field_value(&mut self, field: &'ast syn::FieldValue) {
@@ -657,9 +903,9 @@ impl<'ast> Visit<'ast> for Body {
     }
 
     fn visit_item(&mut self, item: &'ast syn::Item) {
-        let paused = self.paused;
+        let (paused, diverged) = (self.paused, self.diverged);
         syn::visit::visit_item(self, item);
-        self.paused = paused;
+        (self.paused, self.diverged) = (paused, diverged);
     }
 
     fn visit_block(&mut self, block: &'ast syn::Block) {
@@ -725,8 +971,20 @@ impl<'ast> Visit<'ast> for Body {
         });
     }
 
+    /// `join!` runs every future it's given, so its tokens run in order. Other macros,
+    /// such as `select!`, may run only some of theirs.
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-        self.tokens(mac.tokens.clone());
+        let name = mac.path.segments.last().map(|seg| seg.ident.to_string());
+        match name.as_deref() {
+            Some("join" | "try_join") => self.tokens(mac.tokens.clone()),
+            _ => self.may_not_run(|body| body.tokens(mac.tokens.clone())),
+        }
+        if matches!(
+            name.as_deref(),
+            Some("panic" | "unreachable" | "todo" | "unimplemented")
+        ) {
+            self.diverged = true;
+        }
     }
 }
 
