@@ -38,6 +38,7 @@ import { resolveCaller } from "#/modules/identity/caller.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
+import { deviceRequest } from "#/modules/devices/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
 import { handleCliRequest as handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
@@ -264,6 +265,9 @@ const Reply = Schema.Struct({
   })),
   id: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(Schema.String),
+  code: Schema.optionalKey(Schema.String),
+  key: Schema.optionalKey(Schema.String),
+  expiresAt: Schema.optionalKey(Schema.String),
   revoking: Schema.optionalKey(Schema.Array(Schema.Struct({
     id: Schema.String, kind: Schema.String, unconfirmed: Schema.Array(Schema.String),
   }))),
@@ -2798,6 +2802,91 @@ it.live(
         if (process.env["PLOYZ_WRITE_WAITING_FIXTURE"] === "1") writeFileSync(WAITING_FIXTURE, `${JSON.stringify(served, null, 2)}\n`);
         const fixture: unknown = JSON.parse(readFileSync(WAITING_FIXTURE, "utf8"));
         assert.deepStrictEqual(served, fixture, "core's waiting-servers.json is stale: run `pnpm waiting:fixture` in dashboard/ and commit it");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** The contract's vector: this key's code is `mmg42klgyq`. */
+const deviceKey = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+it.live(
+  "a Device request is read back by its code until it expires, and another key can't take its code",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+
+        const requested = yield* cli("POST", "device-requests", alice, { key: deviceKey });
+        assert.strictEqual(requested.status, 200, requested.text);
+        assert.strictEqual(requested.json.code, "mmg42klgyq");
+        const first = Date.parse(requested.json.expiresAt ?? assert.fail("no expiry"));
+        assert.closeTo(first - Date.now(), 24 * 60 * 60 * 1000, 60_000);
+
+        // Reading leaves it, and a code as a person types it reads the same row.
+        const read = yield* cli("GET", "device-requests/mmg42klgyq", alice);
+        assert.strictEqual(read.status, 200, read.text);
+        assert.deepStrictEqual(JSON.parse(read.text), { code: "mmg42klgyq", key: deviceKey, expiresAt: requested.json.expiresAt });
+        assert.deepStrictEqual(JSON.parse((yield* cli("GET", "device-requests/%20MMG42KLGYQ%20", alice)).text), JSON.parse(read.text));
+
+        const again = yield* cli("POST", "device-requests", alice, { key: deviceKey });
+        assert.strictEqual(again.status, 200, again.text);
+        assert.isAbove(Date.parse(again.json.expiresAt ?? assert.fail("no expiry")), first);
+
+        // Another key at the code is refused while it lives, and takes the code once it has expired.
+        yield* drizzle.update(deviceRequest).set({ key: "f".repeat(64) }).where(eq(deviceRequest.organizationId, alice.organization.id));
+        const taken = yield* cli("POST", "device-requests", alice, { key: deviceKey });
+        assert.strictEqual(taken.status, 409);
+        assert.strictEqual(taken.json.error?.code, "device_request_conflict");
+        assert.strictEqual(JSON.parse((yield* cli("GET", "device-requests/mmg42klgyq", alice)).text).key, "f".repeat(64));
+        yield* drizzle.update(deviceRequest).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(deviceRequest.organizationId, alice.organization.id));
+        const expired = yield* cli("GET", "device-requests/mmg42klgyq", alice);
+        assert.deepStrictEqual([expired.status, expired.json.error?.code], [404, "not_found"]);
+        assert.strictEqual((yield* cli("POST", "device-requests", alice, { key: deviceKey })).status, 200);
+        assert.strictEqual(JSON.parse((yield* cli("GET", "device-requests/mmg42klgyq", alice)).text).key, deviceKey);
+
+        // An unknown code, or one only another Organization holds, is missing.
+        const unknown = yield* cli("GET", "device-requests/aaaaaaaaaa", alice);
+        assert.deepStrictEqual([unknown.status, unknown.json.error?.code], [404, "not_found"]);
+        const elsewhere = yield* cli("GET", "device-requests/mmg42klgyq", bob);
+        assert.deepStrictEqual([elsewhere.status, elsewhere.json.error?.code], [404, "not_found"]);
+
+        const badBodies: JsonObject[] = [{ key: deviceKey.toUpperCase() }, { key: deviceKey.slice(2) }, {}];
+        for (const body of badBodies) {
+          assert.notStrictEqual((yield* cli("POST", "device-requests", alice, body)).status, 200);
+        }
+        assert.lengthOf(yield* drizzle.select().from(deviceRequest), 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "any member requests a Device, only an owner or admin reads one, and an Organization Token does neither",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 1 })).json.token ?? assert.fail("no token");
+        const asToken = { bearer: token.secret };
+
+        for (const [method, path, body] of [["POST", "device-requests", { key: deviceKey }], ["GET", "device-requests/mmg42klgyq", undefined]] as const) {
+          const refused = yield* cli(method, path, asToken, body);
+          assert.strictEqual(refused.status, 403);
+          assert.deepStrictEqual([refused.json.error?.code, refused.json.error?.details], ["forbidden", { next: "ployz login" }]);
+        }
+        assert.lengthOf(yield* drizzle.select().from(deviceRequest), 0);
+
+        yield* drizzle.update(member).set({ role: "member" }).where(eq(member.organizationId, alice.organization.id));
+        assert.strictEqual((yield* cli("POST", "device-requests", alice, { key: deviceKey })).status, 200);
+        const read = yield* cli("GET", "device-requests/mmg42klgyq", alice);
+        assert.deepStrictEqual([read.status, read.json.error?.code], [403, "forbidden"]);
+        assert.isUndefined(read.json.key);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -152,6 +152,7 @@ const REFUSAL_STATUS: ReadonlyMap<string, number> = new Map([
   ["confirmation_required", 409],
   ["approval_required", 409],
   ["channel_mismatch", 409],
+  ["device_request_conflict", 409],
   ["unauthenticated", 401],
   ["forbidden", 403],
   ["approval_denied", 403],
