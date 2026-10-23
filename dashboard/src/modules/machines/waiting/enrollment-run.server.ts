@@ -5,7 +5,9 @@ import { Effect } from "effect";
 import type { RunEnd } from "#/modules/inngest/attempt-lifecycle";
 import { createServerEnrollmentCancelEvent } from "#/modules/inngest/events";
 import type { MachineId } from "#/db/tables";
-import { machineEnrollmentToken } from "#/modules/machines/tables";
+import { decryptPairingSecret } from "#/modules/machines/connections.server";
+import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
+import { enrollmentAllocation, machineEnrollmentToken } from "#/modules/machines/tables";
 import { committedAfter, ENROLLMENT_STAGES, type EnrollmentFailure, type EnrollmentStage } from "#/modules/machines/waiting/server-enrollment";
 import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -165,20 +167,60 @@ export const closeServerEnrollment = Effect.fn("ServerEnrollment.closeRun")(func
 const enqueueCancels = (attemptIds: ReadonlyArray<string>) =>
   Effect.forEach([...attemptIds].sort(), (attemptId) => enqueueEvent(createServerEnrollmentCancelEvent({ attemptId })), { discard: true });
 
-/** Cancels the open attempts among `attemptIds`: a bound attempt's run ends it, and an unbound one ends here. */
+/**
+ * Cancels the open attempts among `attemptIds`: a bound attempt's run ends it, and an unbound one ends here. Spares, and
+ * returns, those whose join Cloud may have sent: cancelling sends no Leave, so that Server would stay in the Cluster.
+ */
 export const cancelServerEnrollments = Effect.fn("ServerEnrollment.cancelAttempts")(function* (
   organizationId: string,
   attemptIds: ReadonlyArray<string>,
 ) {
-  if (attemptIds.length === 0) return;
+  if (attemptIds.length === 0) return [];
   const { drizzle } = yield* Database;
-  const locked = yield* drizzle.select({ id: serverEnrollment.id, runId: serverEnrollment.inngestRunId }).from(serverEnrollment)
+  const locked = yield* drizzle.select({ id: serverEnrollment.id, runId: serverEnrollment.inngestRunId, tokenId: serverEnrollment.enrollTokenId })
+    .from(serverEnrollment)
     .where(and(eq(serverEnrollment.organizationId, organizationId), inArray(serverEnrollment.id, [...attemptIds]), open))
     .orderBy(serverEnrollment.id)
     .for("update");
-  const unbound = locked.filter((row) => row.runId === null).map((row) => row.id);
+  if (locked.length === 0) return [];
+  // A join saves its assignment holding the token's row lock, then sends Register. Lock the tokens, then read in a new statement.
+  const tokenIds = locked.map((row) => row.tokenId);
+  yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken)
+    .where(inArray(machineEnrollmentToken.id, tokenIds)).orderBy(machineEnrollmentToken.id).for("update");
+  const sent = yield* joinsSent(organizationId, tokenIds);
+  const cancelling = locked.filter((row) => !sent.has(row.tokenId));
+  // Expired now, not when the run ends the attempt, so a join after this cancel finds the token dead.
+  if (cancelling.length > 0) {
+    yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: new Date() }).where(and(
+      inArray(machineEnrollmentToken.id, cancelling.map((row) => row.tokenId)),
+      isNull(machineEnrollmentToken.joinedMachineId),
+    ));
+  }
+  const unbound = cancelling.filter((row) => row.runId === null).map((row) => row.id);
   if (unbound.length > 0) yield* endAndRevokeTokensNow(and(inArray(serverEnrollment.id, unbound), open), { state: "cancelled" });
-  yield* enqueueCancels(locked.map((row) => row.id));
+  yield* enqueueCancels(cancelling.map((row) => row.id));
+  return locked.filter((row) => sent.has(row.tokenId)).map((row) => row.id);
+});
+
+/** The enroll tokens whose join Cloud may have sent: joined, or their Machine holds an assignment. */
+export const joinsSent = Effect.fn("ServerEnrollment.joinsSent")(function* (
+  organizationId: string,
+  tokenIds: ReadonlyArray<string>,
+) {
+  const { drizzle } = yield* Database;
+  // Only the current pairing's assignments: a Machine keeps its ID across a pairing that was forgotten. Only a claimed token has one.
+  const [pairing] = yield* drizzle.select({ secret: organizationPairing.encryptedPairingSecret }).from(organizationPairing)
+    .where(and(eq(organizationPairing.organizationId, organizationId), exists(drizzle.select({ one: sql`1` }).from(machineEnrollmentToken)
+      .where(and(inArray(machineEnrollmentToken.id, [...tokenIds]), isNotNull(machineEnrollmentToken.claimedMachineId))))));
+  const clusterKey = pairing === undefined ? null : hashEnrollmentToken(yield* decryptPairingSecret(pairing.secret));
+  return new Set((yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken).where(and(
+    inArray(machineEnrollmentToken.id, [...tokenIds]),
+    or(isNotNull(machineEnrollmentToken.joinedMachineId), clusterKey === null ? undefined : exists(drizzle.select({ one: sql`1` }).from(enrollmentAllocation).where(and(
+      eq(enrollmentAllocation.organizationId, machineEnrollmentToken.organizationId),
+      eq(enrollmentAllocation.clusterKey, clusterKey),
+      sql`${enrollmentAllocation.assignments} @> jsonb_build_array(jsonb_build_object('machine', jsonb_build_object('id', ${machineEnrollmentToken.claimedMachineId}::text)))`,
+    )))),
+  ))).map((row) => row.id));
 });
 
 export const cancelOpenServerEnrollments = Effect.fn("ServerEnrollment.cancelOpen")(function* (organizationId: string) {
@@ -221,6 +263,7 @@ export const openAttemptFor = Effect.fn("ServerEnrollment.openFor")(function* (w
     stage: serverEnrollment.stage,
     instruction: serverEnrollment.instruction,
     encryptedToken: serverEnrollment.encryptedToken,
+    tokenId: serverEnrollment.enrollTokenId,
   }).from(serverEnrollment).where(and(eq(serverEnrollment.waitingServerId, waitingServerId), open, isNotNull(serverEnrollment.encryptedToken)));
   return row ?? null;
 });
