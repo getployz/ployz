@@ -16,9 +16,9 @@ use ployz_store::{
     CreateService, DeploymentId, DeploymentStatus, DeploymentSummary, Discard, Edit, EnvironmentId,
     EnvironmentName, EnvironmentRef, EnvironmentRemoval, EnvironmentsQuery, KeepBranch,
     OrganizationId, Permission, ProjectId, ProjectName, Publish, Removal, Remove, RemoveService,
-    RemovedBecause, RenameService, SecretRow, ServiceLineageId, ServiceQuery, SettingPath, Sweep,
-    SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, SystemEvent, Trusted,
-    UndoSync, Written,
+    RemovedBecause, RenameService, SecretRow, SecretValue, ServiceLineageId, ServiceQuery,
+    SettingPath, Sweep, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced,
+    SystemEvent, Trusted, UndoSync, Written,
 };
 use serde_json::{Value, json};
 
@@ -469,6 +469,49 @@ fn a_row_lands_in_what_the_receiver_calls_its_node() {
         .write(&who, &sync(&review, Some(&["site.env.X"])))
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Ambiguous, "{refused:?}");
+}
+
+#[test]
+fn a_synced_mount_never_lands_where_the_receiver_mounts_another_volume() {
+    let (store, who) = shop(false);
+    let volume = |environment: &str, n: u8, name: &str, at: &str| {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateVolume {
+                    shared_writes: false,
+                    storage_locked: false,
+                    restored_from: None,
+                    storage: ployz_core::config::VolumeKind::Docker {},
+                    id: ployz_store::VolumeId::parse(uuid(n)).unwrap(),
+                    environment: self::at(environment),
+                    name: ployz_store::VolumeName::parse(name).unwrap(),
+                    mounts: vec![ployz_store::Mount {
+                        service: ServiceName::parse("web").unwrap(),
+                        path: at.into(),
+                    }],
+                },
+            )
+            .unwrap();
+    };
+    volume("production", 20, "logs", "/logs");
+    branch(&store, &who, 21, "production", "fix-logs");
+    set(
+        &store,
+        &who,
+        "fix-logs",
+        &[("web.mounts.logs", json!("/x"))],
+    );
+    volume("production", 22, "cache", "/x/");
+    let review = offered(&store, &who, "fix-logs", "production");
+    let refused = store
+        .write(&who, &sync(&review, Some(&["web.mounts.logs"])))
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "web already mounts Volume cache at /x; pick another directory"
+    );
 }
 
 /// Sync what `view` offers now, the rows named `only` (or else those ticked) less
@@ -1869,5 +1912,142 @@ fn picking_a_config_file_by_name_picks_that_file_and_not_one_its_name_prefixes()
     assert_eq!(
         contents.into_iter().collect::<Vec<_>>(),
         [(file("app.conf"), "new\n".to_owned())]
+    );
+}
+
+/// `web.env.API_KEY` of `production` sealed in the browser, holding ciphertext `n`.
+fn api_key(n: u8) -> SecretValue {
+    sealed(2, 3, "API_KEY", n)
+}
+
+/// A value sealed in the browser for variable `key` of Service `service` in
+/// Environment `environment`, holding ciphertext `n`.
+fn sealed(environment: u8, service: u8, key: &str, n: u8) -> SecretValue {
+    let value = backend::client_sealed(&uuid(environment), &uuid(service), key, n);
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn a_value_sealed_in_the_browser_fills_a_secret_only_with_the_flag_on_and_sealed_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), false);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.API_KEY", json!({ "secret": "test-key" }))],
+    );
+    service(&store, &who, "fix-web", 5, "api", "api:1");
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("api.env.KEY", json!({ "secret": "test-api-key" }))],
+    );
+    let review = view(&store, &who);
+    let with = |picks: Option<&[&str]>, label: &str, value: SecretValue| SyncChanges {
+        values: BTreeMap::from([(row(&review, label).at.row().clone().into(), value)]),
+        ..sync(&review, picks)
+    };
+    let refused = |changes: SyncChanges, why: &str| {
+        let error = store.write(&who, &changes).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+        assert!(error.message.contains(why), "{error:?}");
+        assert!(!format!("{error:?}").contains("AAAA"), "{error:?}");
+    };
+    refused(
+        with(Some(&["web.env.API_KEY"]), "web.env.API_KEY", api_key(1)),
+        "off for this Organization",
+    );
+
+    backend::sealed_variables_on(&url, "org");
+    for (value, why) in [
+        (sealed(9, 3, "API_KEY", 1), "sealed for another Environment"),
+        (sealed(2, 3, "TOKEN", 1), "sealed for another variable"),
+        (sealed(2, 4, "API_KEY", 1), "sealed for another Service"),
+    ] {
+        refused(
+            with(Some(&["web.env.API_KEY"]), "web.env.API_KEY", value),
+            why,
+        );
+    }
+    // A new Service has no ID in the receiver yet to seal for.
+    refused(
+        with(
+            Some(&["api", "api.env.KEY"]),
+            "api.env.KEY",
+            sealed(2, 5, "KEY", 1),
+        ),
+        "isn't there yet",
+    );
+    let synced = store
+        .write(
+            &who,
+            &with(Some(&["web.env.API_KEY"]), "web.env.API_KEY", api_key(1)),
+        )
+        .unwrap();
+    assert!(!format!("{synced:?}").contains("AAAA"), "{synced:?}");
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["API_KEY"],
+        json!({ "secret": true })
+    );
+    assert_eq!(labels(&view(&store, &who)), ["api", "api.env.KEY"]);
+}
+
+#[test]
+fn a_value_sealed_for_the_parent_arrives_not_set_in_a_branch_created_from_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), false);
+    backend::sealed_variables_on(&url, "org");
+    let value = backend::client_sealed(&uuid(2), &uuid(3), "API_KEY", 1);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.API_KEY", json!({ "secret": value }))],
+    );
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["API_KEY"],
+        json!({ "secret": true })
+    );
+    branch(&store, &who, 10, "production", "fix-two");
+    assert_eq!(
+        values(&store, &who, "fix-two", "web")["env"]["API_KEY"],
+        json!({ "secret": false })
+    );
+    // Follow carries it to fix-web the same way once production deploys it.
+    deploy(&store, &who, "production", 2);
+    assert_eq!(
+        values(&store, &who, "fix-web", "web")["env"]["API_KEY"],
+        json!({ "secret": false })
+    );
+    // A value the Branch sealed for its own copy of web stays through its
+    // Parent's next Deploy.
+    let copy = store
+        .read(
+            &who,
+            &ServiceQuery {
+                environment: at("fix-two"),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap()
+        .service
+        .service
+        .id;
+    let own = backend::client_sealed(&uuid(10), copy.as_str(), "API_KEY", 2);
+    set(
+        &store,
+        &who,
+        "fix-two",
+        &[("web.env.API_KEY", json!({ "secret": own }))],
+    );
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    deploy(&store, &who, "production", 3);
+    assert_eq!(
+        values(&store, &who, "fix-two", "web")["env"]["API_KEY"],
+        json!({ "secret": true })
     );
 }

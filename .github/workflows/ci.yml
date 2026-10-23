@@ -6,18 +6,18 @@ on:
   # Marking a PR ready starts CI, later pushes run it again, and converting back to draft skips CI ready again.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-  # The merge queue runs the PR checks on the PR merged with main and the PRs queued ahead of it.
+  # The merge queue runs the PR checks on the PR merged with main and the PRs queued ahead of it. The queue then
+  # fast-forwards main to that exact commit, so this run is also main's: it writes kache, publishes the Cloud and
+  # uptime images, and uploads the verify binaries, and a push to main runs nothing more (#3206). The trade-off,
+  # accepted: a PR the queue later drops has already written the cache and pushed images and binaries under its
+  # own commit, which never reaches main.
   merge_group:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
-  # A main run that has started always finishes. Main pushes share one group, so one run goes while the newest
-  # push waits, and a newer push replaces the waiting one. Each finished main run refreshes kache: PR builds sit
-  # on top of main, so when main runs were cancelled before writing, every PR recompiled what main had changed.
-  # A manual run of main groups by commit; a newer manual run of the same commit can replace it while it waits.
-  # Manual runs and pushes never cancel each other. PR runs and other branches cancel their older run.
+  # Each queue entry has its own ref, so its run is never replaced by another entry's. A manual run of main
+  # groups by commit; a newer manual run of the same commit can replace it while it waits, and a running one
+  # always finishes. PR runs and other branches cancel their older run.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
@@ -26,18 +26,18 @@ permissions:
 
 # CI does not use debugger symbols or per-checkout incremental compilation.
 env:
-  # Only main pushes receive write keys; all other runs use R2 read-only keys.
+  # Only merge queue runs receive write keys; all other runs use R2 read-only keys.
   # Missing credentials (including fork PRs) select the GitHub-cache fallback.
   KACHE_S3_BUCKET: >-
-    ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID) &&
-        (github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY) &&
+    ${{ (github.event_name == 'merge_group' && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID) &&
+        (github.event_name == 'merge_group' && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY) &&
         vars.KACHE_S3_BUCKET || '' }}
   KACHE_S3_REGION: ${{ vars.KACHE_S3_REGION || 'auto' }}
   KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
-  KACHE_S3_ACCESS_KEY_ID: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID }}
-  KACHE_S3_SECRET_ACCESS_KEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY }}
-  # Without write keys a main push silently falls back to read keys, so setup-rust fails it instead.
-  KACHE_S3_WRITES: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_ACCESS_KEY_ID != '' && secrets.KACHE_S3_SECRET_ACCESS_KEY != '' && vars.KACHE_S3_BUCKET != '' }}
+  KACHE_S3_ACCESS_KEY_ID: ${{ github.event_name == 'merge_group' && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID }}
+  KACHE_S3_SECRET_ACCESS_KEY: ${{ github.event_name == 'merge_group' && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY }}
+  # Without write keys a queue run silently falls back to read keys, so setup-rust fails it instead.
+  KACHE_S3_WRITES: ${{ github.event_name == 'merge_group' && secrets.KACHE_S3_ACCESS_KEY_ID != '' && secrets.KACHE_S3_SECRET_ACCESS_KEY != '' && vars.KACHE_S3_BUCKET != '' }}
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   CARGO_INCREMENTAL: 0
@@ -218,15 +218,19 @@ jobs:
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
         run: bash scripts/test-missing-ssh-client.sh
-      # Main pushes only: it mostly catches drift in the newest Docker release, and costs 2 minutes per run.
+      # Merge queue runs only: it mostly catches drift in the newest Docker release, and costs 2 minutes per run.
+      # It reports without gating: a new Docker release, or Docker Hub, must not block every merge.
       - name: Decode the latest Docker's local log files as docker logs prints them
-        if: matrix.group == 'daemon' && matrix.half == 1 && github.event_name == 'push'
+        if: matrix.group == 'daemon' && matrix.half == 1 && github.event_name == 'merge_group'
+        continue-on-error: true
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
         run: |
           curl -fsSL https://get.docker.com | sudo sh >/dev/null
           docker version --format 'Docker {{.Server.Version}}'
-          docker pull --quiet alpine:3.23.3
+          # Docker Hub refuses anonymous pulls at times, so pull through Google's mirror of it.
+          docker pull --quiet mirror.gcr.io/library/alpine:3.23.3 || docker pull --quiet alpine:3.23.3
+          docker image inspect alpine:3.23.3 >/dev/null 2>&1 || docker tag mirror.gcr.io/library/alpine:3.23.3 alpine:3.23.3
           cargo nextest run --package ployzd --all-features --locked --run-ignored only -E 'test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
       - uses: actions/upload-artifact@v4
         if: always()
@@ -241,8 +245,8 @@ jobs:
       run:
         working-directory: dashboard/uptime
     needs: changes
-    # Main always runs it, so every main commit has a ployz-uptime:<sha> for Railway to pin.
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
+    # Every queue run runs it, so every main commit has a ployz-uptime:<sha> for Railway to pin.
+    if: github.event_name == 'merge_group' || contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -261,11 +265,13 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       # The Postgres tests start their own postgres:16-alpine containers through the Docker CLI.
-      - run: docker pull --quiet postgres:16-alpine
+      - run: |
+          docker pull --quiet mirror.gcr.io/library/postgres:16-alpine || docker pull --quiet postgres:16-alpine
+          docker image inspect postgres:16-alpine >/dev/null 2>&1 || docker tag mirror.gcr.io/library/postgres:16-alpine postgres:16-alpine
       - run: cargo nextest run --locked
-      # Main builds and publishes the image for every commit, so PRs skip the 3-4 minute release build.
+      # The queue builds and publishes the image for every commit, so PRs skip the 3-4 minute release build.
       - name: Build and publish the Railway image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'merge_group'
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
@@ -292,12 +298,12 @@ jobs:
 
   cloud:
     needs: changes
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'cloud')
+    if: github.event_name == 'merge_group' || contains(fromJSON(needs.changes.outputs.jobs), 'cloud')
     uses: ./.github/workflows/cloud.yml
     permissions:
       contents: read
       actions: write
-      # Main commits and release tags publish the Cloud image.
+      # Queue runs (main's commits) and release tags publish the Cloud image.
       packages: write
     secrets: inherit
 
@@ -310,12 +316,12 @@ jobs:
       actions: write
     secrets: inherit
 
-  # The binaries the verify harness runs, built on main so local runs download them. A cancelled main run may
-  # upload none, so a commit's nearest build can be several commits back.
+  # The binaries the verify harness runs, built for each main commit in its queue run so local runs download
+  # them. A cancelled run may upload none, so a commit's nearest build can be several commits back.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
     needs: changes
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     defaults:
       run:
         working-directory: core
@@ -347,14 +353,14 @@ jobs:
         with:
           name: ${{ steps.ployz.outputs.name }}
           path: ${{ runner.temp }}/binaries/ployz
-          retention-days: ${{ github.ref == 'refs/heads/main' && 14 || 3 }}
+          retention-days: ${{ github.event_name == 'merge_group' && 14 || 3 }}
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: steps.ployzd.outputs.run-id == ''
         with:
           name: ${{ steps.ployzd.outputs.name }}
           path: ${{ runner.temp }}/binaries/ployzd
-          retention-days: ${{ github.ref == 'refs/heads/main' && 14 || 3 }}
+          retention-days: ${{ github.event_name == 'merge_group' && 14 || 3 }}
           if-no-files-found: error
 
   ready:

@@ -208,6 +208,26 @@ pub enum MoveFailure {
     Refused { reason: StayReason },
 }
 
+impl MoveFailure {
+    /// Whether this was a move of another Server's copy that left nothing behind: that
+    /// copy still serves there, and no replacement this move started is left. A
+    /// cancellation is the Drain's own, so it never qualifies.
+    pub(crate) fn clean_elsewhere(&self, server: &MachineId) -> bool {
+        match self {
+            Self::NoDestination { from, .. }
+            | Self::SourceTooOld { from }
+            | Self::ReadImage { from, .. }
+            | Self::CopyImage { from, .. } => from.id != *server,
+            Self::NotServing {
+                from,
+                replacement_removed,
+                ..
+            } => from.id != *server && *replacement_removed,
+            Self::Cancelled { .. } | Self::Refused { .. } => false,
+        }
+    }
+}
+
 impl fmt::Display for MoveFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

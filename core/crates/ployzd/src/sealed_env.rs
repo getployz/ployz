@@ -9,7 +9,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use ployz_core::scrub::{Channel, FrameScrub, SealedForms, SealedValues};
+use ployz_core::scrub::{self, Channel, FrameScrub, SealedForms, SealedValues};
 use ployz_core::{
     ContainerId, EnvPart, EnvValue, HistoryRow, OpaquePayload, SealedIdentity, SealedScope,
     SealedValue,
@@ -51,6 +51,8 @@ pub enum OpenError {
     Unbound(String),
     #[error("env {0} does not open with this Cluster's Sealing Key")]
     Unopenable(String),
+    #[error("env {0} holds a multiline Sealed value with a line too short to scrub from logs")]
+    ShortLine(String),
 }
 
 pub(crate) struct OpenedEnv {
@@ -126,6 +128,9 @@ impl SealedRecord {
                         Part::Text(text) => opened.whole.push_str(text),
                         Part::Sealed(sealed) => {
                             let plaintext = self.open(key, name, sealed)?;
+                            if scrub::has_short_row(&plaintext) {
+                                return Err(OpenError::ShortLine(name.clone()));
+                            }
                             opened.whole.push_str(&plaintext);
                             opened.parts.push((sealed.key.clone(), plaintext));
                         }
@@ -631,6 +636,66 @@ mod tests {
             EnvValue::Sealed(cluster.seal("PORT", own(), "80")),
         )]);
         assert!(matches!(cluster.open(port), Err(OpenError::SealedPort)));
+    }
+
+    #[test]
+    fn a_multiline_sealed_value_with_a_short_line_is_refused_without_echoing_it() {
+        let cluster = Cluster::new();
+        let leaky = "line-one-QX7MARKER\nZq9\n";
+        let direct = EnvValue::Sealed(cluster.seal("CERT", own(), leaky));
+        let in_template = EnvValue::Template(Template {
+            template: vec![
+                EnvPart::Text("pem:".into()),
+                EnvPart::Sealed(cluster.seal("KEY", own(), leaky)),
+            ],
+        });
+        for value in [direct, in_template] {
+            let refused = cluster
+                .open(BTreeMap::from([("CERT".to_owned(), value)]))
+                .err()
+                .unwrap();
+            assert!(matches!(&refused, OpenError::ShortLine(key) if key == "CERT"));
+            let mut shown = vec![refused.to_string(), format!("{refused:?}")];
+            let mut source = std::error::Error::source(&refused);
+            while let Some(cause) = source {
+                shown.extend([cause.to_string(), format!("{cause:?}")]);
+                source = cause.source();
+            }
+            for part in ["QX7MARKER", "Zq9"] {
+                assert!(shown.iter().all(|text| !text.contains(part)), "{shown:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn template_text_and_a_short_value_on_one_line_are_not_refused() {
+        let cluster = Cluster::new();
+        let env = BTreeMap::from([
+            (
+                "CERT".to_owned(),
+                EnvValue::Template(Template {
+                    template: vec![
+                        EnvPart::Text("a\nb\n".into()),
+                        EnvPart::Sealed(cluster.seal("KEY", own(), "line-one\n\nline-three\n")),
+                    ],
+                }),
+            ),
+            (
+                "PIN".to_owned(),
+                EnvValue::Sealed(cluster.seal("PIN", own(), "4821")),
+            ),
+        ]);
+        let opened = cluster.open(env).unwrap();
+        assert_eq!(
+            opened.values,
+            BTreeMap::from([
+                (
+                    "CERT".to_owned(),
+                    "a\nb\nline-one\n\nline-three\n".to_owned()
+                ),
+                ("PIN".to_owned(), "4821".to_owned()),
+            ])
+        );
     }
 
     fn token_record(cluster: &Cluster) -> SealedRecord {

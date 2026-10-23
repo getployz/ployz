@@ -463,7 +463,9 @@ impl Editing<'_> {
             }
             (Some(Target::Variable(key)), Some(value)) => {
                 let (changed, typed) =
-                    variables::set(environment, service, key, value, self.sealing)?;
+                    variables::set(environment, service, key, value, self.sealing, || {
+                        crate::client_sealed::enabled(&mut *self.tx, &self.who.organization)
+                    })?;
                 self.typed_addresses
                     .extend(typed.map(|Typed { services, instead }| TypedAddresses {
                         path: path.clone(),

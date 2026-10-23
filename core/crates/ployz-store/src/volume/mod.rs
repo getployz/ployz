@@ -9,7 +9,8 @@ pub(crate) mod size;
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    RestoredFrom, SavedEnvironmentIntent, SavedVolumeIntent, VolumeAttachment, VolumeKind,
+    RestoredFrom, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, VolumeAttachment,
+    VolumeKind,
 };
 use ployz_core::{ContainerPath, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -388,14 +389,8 @@ pub(crate) fn attach(
     if node.volume_attachments.contains(&mount) {
         return Ok(false);
     }
-    let at = mount.container_path();
-    if let Some(kernel) = crate::config_item::kernel_filled(&at) {
-        return Err(error::invalid(
-            format!(
-                "{service}.mounts.{volume}: {at} is under {kernel}, which the kernel fills, so it can't hold a Volume"
-            ),
-            json!({ "example": "/var/lib/data" }),
-        ));
+    if let Some(refused) = kernel_refusal(service.as_str(), volume.as_str(), &mount) {
+        return Err(refused);
     }
     node.volume_attachments
         .retain(|mount| mount.volume_resource_id != id);
@@ -413,19 +408,140 @@ pub(crate) fn refuse_shared_path(
 ) -> Result<(), RpcError> {
     let id = &environment.volume(volume)?.resource_id;
     let node = environment.service(service)?;
-    let Some(at) = node
+    match node
         .volume_attachments
         .iter()
         .find(|mount| &mount.volume_resource_id == id)
-        .map(VolumeAttachment::container_path)
-    else {
-        return Ok(());
-    };
-    let working = &environment.working;
+    {
+        Some(mount) => shared_path(&environment.working, node, mount).map_or(Ok(()), Err),
+        None => Ok(()),
+    }
+}
+
+/// Refuse a Volume mount `after` breaks that neither `before` nor `from` already
+/// broke: one under a kernel filesystem, or one where its Service mounts something
+/// else. Whatever write made it, a Discard or a Sync among them. The refusal names
+/// the clash from the mount `before` lacks.
+pub(crate) fn refuse_new_mounts(
+    before: &SavedEnvironmentIntent,
+    from: Option<&SavedEnvironmentIntent>,
+    after: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    let held: Vec<Found> = std::iter::once(before)
+        .chain(from)
+        .flat_map(broken)
+        .collect();
+    let mounted: Vec<MountKey> = mounts(before).map(|(key, _)| key).collect();
+    let new: Vec<Found> = broken(after)
+        .into_iter()
+        .filter(|found| held.iter().all(|held| held.rule != found.rule))
+        .collect();
+    let mounted_before = |found: &Found| mounted.contains(&found.mount);
+    match new
+        .iter()
+        .find(|found| !mounted_before(found))
+        .or(new.first())
+    {
+        Some(found) => Err(found.refused.clone()),
+        None => Ok(()),
+    }
+}
+
+/// A mount rule an intent breaks, by lineage, so an Environment and its Branch agree.
+#[derive(Debug, PartialEq, Eq)]
+enum Broken {
+    Kernel { service: String, at: String },
+    Shared { service: String, at: String },
+}
+
+/// A mount's Service and Volume, by lineage, and its container path.
+type MountKey = (String, String, String);
+
+struct Found {
+    rule: Broken,
+    mount: MountKey,
+    refused: RpcError,
+}
+
+/// Each Volume mount of `intent` with its key and Service.
+fn mounts(
+    intent: &SavedEnvironmentIntent,
+) -> impl Iterator<
+    Item = (
+        MountKey,
+        (&SavedServiceIntent, &SavedVolumeIntent, &VolumeAttachment),
+    ),
+> {
+    intent.services.iter().flat_map(move |node| {
+        node.volume_attachments.iter().filter_map(move |mount| {
+            let volume = intent
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == mount.volume_resource_id)?;
+            let key = (
+                node.lineage_id.clone(),
+                volume.resource_lineage_id.clone(),
+                mount.container_path(),
+            );
+            Some((key, (node, volume, mount)))
+        })
+    })
+}
+
+fn broken(intent: &SavedEnvironmentIntent) -> Vec<Found> {
+    let mut found = Vec::new();
+    for (key, (node, volume, mount)) in mounts(intent) {
+        let service = node.lineage_id.clone();
+        let at = key.2.clone();
+        if let Some(refused) = kernel_refusal(&node.slug, &volume.name, mount) {
+            let rule = Broken::Kernel {
+                service: service.clone(),
+                at: at.clone(),
+            };
+            found.push(Found {
+                rule,
+                mount: key.clone(),
+                refused,
+            });
+        }
+        if let Some(refused) = shared_path(intent, node, mount) {
+            let rule = Broken::Shared { service, at };
+            found.push(Found {
+                rule,
+                mount: key,
+                refused,
+            });
+        }
+    }
+    found
+}
+
+/// The refusal of `mount` on `service` when it lands under a kernel filesystem.
+fn kernel_refusal(service: &str, volume: &str, mount: &VolumeAttachment) -> Option<RpcError> {
+    let at = mount.container_path();
+    let kernel = crate::config_item::kernel_filled(&at)?;
+    Some(error::invalid(
+        format!(
+            "{service}.mounts.{volume}: {at} is under {kernel}, which the kernel fills, so it can't hold a Volume"
+        ),
+        json!({ "example": "/var/lib/data" }),
+    ))
+}
+
+/// The refusal of `mount` on `node` when `node` mounts another Volume or a Config
+/// where it lands in `working`.
+fn shared_path(
+    working: &SavedEnvironmentIntent,
+    node: &SavedServiceIntent,
+    mount: &VolumeAttachment,
+) -> Option<RpcError> {
+    let at = mount.container_path();
     let same_volume = node
         .volume_attachments
         .iter()
-        .filter(|held| &held.volume_resource_id != id && held.container_path() == at)
+        .filter(|held| {
+            held.volume_resource_id != mount.volume_resource_id && held.container_path() == at
+        })
         .find_map(|held| {
             working
                 .volumes
@@ -444,13 +560,12 @@ pub(crate) fn refuse_shared_path(
                 .find(|config| config.resource_id == held.config_resource_id)
                 .map(|config| format!("Config {}", config.name))
         });
-    match same_volume.or(same_config) {
-        Some(what) => Err(error::conflict(
-            format!("{service} already mounts {what} at {at}; pick another directory"),
-            json!({ "service": service, "dir": at }),
-        )),
-        None => Ok(()),
-    }
+    let what = same_volume.or(same_config)?;
+    let service = &node.slug;
+    Some(error::conflict(
+        format!("{service} already mounts {what} at {at}; pick another directory"),
+        json!({ "service": service, "dir": at }),
+    ))
 }
 
 /// Detach Volume `volume` from `service`; the Volume and its data stay. Returns

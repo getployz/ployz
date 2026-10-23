@@ -1365,9 +1365,23 @@ pub(crate) fn settled_text(frame: &Frame) -> String {
 #[derive(Debug, Default)]
 pub(crate) struct Diagnostic {
     pub failed_machine: Option<MachineId>,
+    /// How a new Container that replaced none failed to start on `failed_machine`. `None`
+    /// when the outcome there is unknown, as after a lost connection or a listing that
+    /// failed, or when an old Container was brought back in its place.
+    pub start_failure: Option<StartFailure>,
     pub failures: Vec<Detail>,
     pub logs: Vec<LogTail>,
     pub compensation: Vec<Detail>,
+}
+
+/// How a Deploy's new Container failed to start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartFailure {
+    /// Docker refused it a port something else holds, so it never ran.
+    PortTaken,
+    /// Its health check saw it stop, or never turn healthy. It may still run, or run again
+    /// under Docker's restart policy, until it's gone from its Server.
+    Unhealthy,
 }
 
 /// One distinct failed task or observed compensation action.

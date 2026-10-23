@@ -9,7 +9,7 @@ use ts_rs::TS;
 use crate::{ConfigFileName, ConfigName, ContainerPath};
 
 use super::{
-    AuthoredServiceConfig, ConfigError, EncryptedSecretValue, ValuePart, ValuePartOwner,
+    AuthoredServiceConfig, ConfigError, SecretCiphertext, ValuePart, ValuePartOwner,
     parse_service_config,
 };
 
@@ -294,7 +294,7 @@ pub enum SavedVariableValue {
     Secret {
         /// Absent in the browser-readable authored document. Cloud keeps the
         /// ciphertext privately and captures it into each immutable publication.
-        encrypted_value: Option<EncryptedSecretValue>,
+        encrypted_value: Option<SecretCiphertext>,
     },
     /// A secret that arrived without its value: Sync never carries one up or across.
     /// It has no fingerprint, and a Deployment leaves it out until a value is set.
@@ -602,10 +602,10 @@ fn validate_variables(variables: &[SavedVariableIntent]) -> Result<(), ConfigErr
                 "Only a secret without a value has no fingerprint",
             ));
         }
-        if let SavedVariableValue::Secret { encrypted_value } = &variable.value
-            && encrypted_value
-                .as_ref()
-                .is_some_and(|value| value.version != 1)
+        if let SavedVariableValue::Secret {
+            encrypted_value: Some(SecretCiphertext::Store(value)),
+        } = &variable.value
+            && value.version != 1
         {
             return Err(ConfigError::at(
                 "variables.value",

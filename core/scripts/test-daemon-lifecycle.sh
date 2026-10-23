@@ -111,13 +111,16 @@ chmod 0755 "$TMP/bin"/*
 run_uninstall() {
     sudo env PATH="$TMP/bin:$PATH" LOG="$LOG" SCENARIO="$SCENARIO" DOCKER_ROOT="$DOCKER_ROOT" PLOYZ_AUTO_CONFIRM=true \
         INSTALL_BIN_DIR="$TMP/install" INSTALL_SYSTEMD_DIR="$TMP/systemd" RUNTIME_SYSTEMD_DIR="$TMP/runtime-systemd" \
-        PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" bash "$ROOT/scripts/uninstall.sh"
+        PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" PLOYZ_CHECKIN_DIR="$TMP/checkin" \
+        PLOYZ_FLEET_TOKEN_FILE="$TMP/etc/fleet-token" bash "$ROOT/scripts/uninstall.sh"
 }
 
 for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure active late absent checkin-stop-failure worker-stop-failure list-failure daemon-stop-failure wireguard-delete-failure busy; do
     : > "$LOG"
     mkdir -p "$TMP/state" "$TMP/run"
     touch "$TMP/state/receipt" "$TMP/run/socket"
+    mkdir -p "$TMP/checkin" "$TMP/etc"
+    touch "$TMP/checkin/key" "$TMP/checkin/status.json" "$TMP/etc/fleet-token" "$TMP/etc/config.yaml"
     if [ "$SCENARIO" != absent ]; then touch "$TMP/run/checkin" "$TMP/run/worker" "$TMP/run/daemon" "$TMP/run/dns"; fi
     touch "$TMP/systemd/ployz-checkin.service"
     touch "$TMP/runtime-systemd/ployz-dns.service" "$TMP/runtime-systemd/ployz-observe.service"
@@ -175,6 +178,9 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         [ ! -e "$TMP/runtime-systemd/ployz-dns.service" ]
         [ ! -e "$TMP/runtime-systemd/ployz-observe.service" ]
         [ ! -e "$TMP/state" ]
+        # A reinstall must check in as a new host, not as the Server this one was.
+        [ ! -e "$TMP/checkin" ]
+        [ ! -e "$TMP/etc/fleet-token" ]
         # Keep the lock inode: unlinking it lets a concurrent installer bypass ownership.
         [ "$(ls -A "$TMP/run")" = .install.lock ]
         sudo flock -n "$TMP/run/.install.lock" true
@@ -191,6 +197,8 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         [ -e "$TMP/install/ployzd" ] && [ -e "$TMP/install/ployz-uninstall" ]
         [ -e "$TMP/state/receipt" ] && [ -e "$TMP/run/socket" ] && [ -e "$TMP/runtime-systemd/ployz-dns.service" ]
         [ -e "$TMP/runtime-systemd/ployz-observe.service" ]
+        [ -e "$TMP/checkin/key" ]
+        [ -e "$TMP/etc/fleet-token" ]
         if [ "$SCENARIO" = wireguard-delete-failure ]; then
             grep -Fxq 'ip link delete ployz-wg' "$LOG"
         elif grep -q '^docker ' "$LOG"; then
@@ -201,8 +209,9 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     if [ "$SCENARIO" = busy ]; then exec {lock_fd}>&-; fi
     [ "$(cat "$TMP/install/ployz")" = 'CLI retained' ]
     [ -e "$TMP/install/ployz-corrosion" ]
+    [ -e "$TMP/etc/config.yaml" ]
     [ -f "$TMP/docker" ] && [ -f "$TMP/images" ] && [ -f "$TMP/volumes" ] && [ -f "$TMP/docker-config" ]
-    sudo rm -rf "$TMP/run" "$TMP/state"
+    sudo rm -rf "$TMP/run" "$TMP/state" "$TMP/checkin" "$TMP/etc"
 done
 
 for flag in --help -h; do

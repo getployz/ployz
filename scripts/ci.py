@@ -28,11 +28,11 @@ def select(paths, pull_request=False):
         path.startswith("core/.cargo/") or (path.startswith("core/") and Path(path).name in {"Cargo.toml", "Cargo.lock"})
         for path in paths
     )
-    # A Cargo-only PR leaves the release builds to its merge's main run: two macOS builds cost a PR more than
+    # A Cargo-only PR leaves the release builds to its merge queue run: two macOS builds cost a PR more than
     # every other check together, and they almost never fail where the Linux checks pass.
     if release_inputs_changed(paths) or (cargo_changed and not pull_request):
         selected.add("release-contracts")
-    # The macOS check runs after merge: macOS minutes cost ten times Linux ones, and over two weeks
+    # The macOS check runs in the merge queue: macOS minutes cost ten times Linux ones, and over two weeks
     # it never failed on a PR without another check failing too.
     if pull_request:
         selected.discard("macos-cli")
@@ -178,8 +178,8 @@ def main():
     commands.add_parser("ready")
     args = parser.parse_args()
     if args.command == "select":
-        # The merge queue gates a PR on the same checks as its PR run; main runs the rest after the merge.
-        pull_request = os.environ.get("GITHUB_EVENT_NAME") in {"pull_request", "merge_group"}
+        # A PR leaves its costliest checks to main, whose only run is the merge queue's (#3206).
+        pull_request = os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
         # A manual quick run covers every normal check, without release/cluster work.
         if args.base and set(args.base) != {"0"}:
             paths = changed_paths(args.base, args.head)

@@ -77,7 +77,8 @@ the disk, or when the disk drops below 10% free (at least 2 GiB).
 
 Everything Ployz captured from your app stays in those files, secrets included. The dashboard, an agent, and
 `ployz logs` through Ployz Cloud hide Sealed values when they show a line. A value shorter than 6 bytes
-is hidden only where its name labels it, as in `PIN=4821`. `ployz logs` run with
+is hidden only where its name labels it, as in `PIN=4821`. A multiline Sealed value with a line
+of 1 to 5 bytes can't be hidden, so a deploy that uses one is refused. `ployz logs` run with
 server access, and the files on the server, keep the line as printed. They live in
 `/var/lib/docker/ployz-observe/v1/containers/<container id>/`, or under Docker's data directory
 if you moved it. The log files keep Docker's own permissions, `0640` and owned by root on a

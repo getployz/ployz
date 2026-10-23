@@ -262,6 +262,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
         stagedChanges={placements.groups.reduce((count, group) => count + group.changeCount, draftCount)}
         undeployedSave={draftCount === 0 && diff.total_count > 0 ? diff.saved : null}
+        ranNothingSave={diff.saved_ran_nothing ? diff.saved : null}
         notSet={store.services.reduce((count, service) => count + service.notSet.length, 0)}
         canSave={hasSomethingToSave}
         onDeploy={actions.deploy}

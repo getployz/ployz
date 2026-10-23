@@ -19,9 +19,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Main groups by commit and never cancels a running main run here, though a newer run of the same commit can
-  # replace one still waiting. Fast CI calls this workflow; its main runs finish once started, but a waiting one
-  # can be replaced, so not every main commit leaves builds behind.
+  # A manual run on main groups by commit and is never cancelled once started. Fast CI calls this workflow; each
+  # merge queue entry has its own ref, so a queue run is never replaced by another entry's.
   group: cloud-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
@@ -35,18 +34,18 @@ defaults:
 
 # CI does not use debugger symbols or per-checkout incremental compilation.
 env:
-  # Only main pushes receive write keys; all other runs use R2 read-only keys.
+  # Only merge queue runs receive write keys; all other runs use R2 read-only keys.
   # Missing credentials (including fork PRs) select the GitHub-cache fallback.
   KACHE_S3_BUCKET: >-
-    ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID) &&
-        (github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY) &&
+    ${{ (github.event_name == 'merge_group' && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID) &&
+        (github.event_name == 'merge_group' && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY) &&
         vars.KACHE_S3_BUCKET || '' }}
   KACHE_S3_REGION: ${{ vars.KACHE_S3_REGION || 'auto' }}
   KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
-  KACHE_S3_ACCESS_KEY_ID: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID }}
-  KACHE_S3_SECRET_ACCESS_KEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY }}
-  # Without write keys a main push silently falls back to read keys, so setup-rust fails it instead.
-  KACHE_S3_WRITES: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_ACCESS_KEY_ID != '' && secrets.KACHE_S3_SECRET_ACCESS_KEY != '' && vars.KACHE_S3_BUCKET != '' }}
+  KACHE_S3_ACCESS_KEY_ID: ${{ github.event_name == 'merge_group' && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID }}
+  KACHE_S3_SECRET_ACCESS_KEY: ${{ github.event_name == 'merge_group' && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY }}
+  # Without write keys a queue run silently falls back to read keys, so setup-rust fails it instead.
+  KACHE_S3_WRITES: ${{ github.event_name == 'merge_group' && secrets.KACHE_S3_ACCESS_KEY_ID != '' && secrets.KACHE_S3_SECRET_ACCESS_KEY != '' && vars.KACHE_S3_BUCKET != '' }}
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   CARGO_INCREMENTAL: 0
@@ -78,11 +77,12 @@ jobs:
           RELEASE_TAG: ${{ inputs.release-tag }}
           EVENT: ${{ github.event_name }}
         # A release builds its own SDK rather than reuse one an earlier run uploaded.
-        # A PR or merge queue run builds dev, so its upload takes a name no release lookup matches.
+        # A PR builds dev, so its upload takes a name no release lookup matches. A merge queue run is main's,
+        # so it builds release for the image it publishes and for later lookups.
         run: |
           python3 ../core/scripts/artifacts.py lookup sdk --extra "features= profile=release" > "$RUNNER_TEMP/lookup.out"
           if [ -n "$RELEASE_TAG" ]; then sed -i 's/^run-id=.*/run-id=/' "$RUNNER_TEMP/lookup.out"; fi
-          if { [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ]; } && grep -qx 'run-id=' "$RUNNER_TEMP/lookup.out"; then sed -i 's/^name=.*/&-pr-dev/' "$RUNNER_TEMP/lookup.out"; fi
+          if [ "$EVENT" = pull_request ] && grep -qx 'run-id=' "$RUNNER_TEMP/lookup.out"; then sed -i 's/^name=.*/&-pr-dev/' "$RUNNER_TEMP/lookup.out"; fi
           cat "$RUNNER_TEMP/lookup.out" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-cloud
         with:
@@ -103,11 +103,11 @@ jobs:
         if: steps.lookup.outputs.run-id == ''
         with:
           tool: wasm-bindgen@0.2.127
-      # A PR or merge queue run only tests against its SDK, so it builds dev.
+      # A PR only tests against its SDK, so it builds dev.
       - name: Build and test the SDK
         if: steps.lookup.outputs.run-id == ''
         env:
-          PLOYZ_SDK_PROFILE: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'dev' || 'release' }}
+          PLOYZ_SDK_PROFILE: ${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
         run: bash scripts/pr-check.sh sdk
       # Local verify runs download these too, so main keeps them longer. One leg uploads: a run's artifact names are unique.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -117,7 +117,7 @@ jobs:
           path: |
             core/crates/ployz-sdk/ployz-sdk.node
             core/crates/ployz-sdk/generated/**
-          retention-days: ${{ github.ref == 'refs/heads/main' && 14 || 3 }}
+          retention-days: ${{ github.event_name == 'merge_group' && 14 || 3 }}
           if-no-files-found: error
       # Runs only when every step above passed; each check below needs the SDK and nothing else before it.
       - name: SDK ready
@@ -168,12 +168,12 @@ jobs:
           '
       # The publish job pushes this exact image once every leg has passed.
       - name: Save the image for publishing
-        if: matrix.part == 'build' && (inputs.release-tag != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        if: matrix.part == 'build' && (inputs.release-tag != '' || github.event_name == 'merge_group')
         run: |
           set -o pipefail
           docker save ployz-cloud:ci | zstd -T0 -3 > "$RUNNER_TEMP/ployz-cloud.tar.zst"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: matrix.part == 'build' && (inputs.release-tag != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        if: matrix.part == 'build' && (inputs.release-tag != '' || github.event_name == 'merge_group')
         with:
           name: ployz-cloud-image
           path: ${{ runner.temp }}/ployz-cloud.tar.zst
@@ -181,11 +181,11 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # Railway's web and worker deploy a pinned ployz-cloud:<sha>, so every main commit publishes one.
+  # Railway's web and worker deploy a pinned ployz-cloud:<sha>, so every main commit's queue run publishes one.
   publish:
     name: Publish image
     needs: check
-    if: inputs.release-tag != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: inputs.release-tag != '' || github.event_name == 'merge_group'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

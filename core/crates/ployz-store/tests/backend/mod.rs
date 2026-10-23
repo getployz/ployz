@@ -36,6 +36,30 @@ pub fn execute(url: &str, sql: &str) {
     }
 }
 
+/// Turn `sealedVariables` on for `organization` beside the Store at `url`, the way no
+/// Store code does: a throwaway test store only.
+pub fn sealed_variables_on(url: &str, organization: &str) {
+    execute(
+        url,
+        &format!("INSERT INTO config_sealed_variables (organization_id) VALUES ('{organization}')"),
+    );
+}
+
+/// 48 bytes of ciphertext the browser could have sealed: `n` repeated.
+pub fn ciphertext(n: u8) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode([n; 48])
+}
+
+/// A variable value the browser sealed for Service `service` of Environment
+/// `environment`, as variable `key`, holding [`ciphertext`] `n`.
+pub fn client_sealed(environment: &str, service: &str, key: &str, n: u8) -> serde_json::Value {
+    serde_json::json!({
+        "sealedFor": environment,
+        "value": { "sealed": ciphertext(n), "scope": { "service": service }, "key": key },
+    })
+}
+
 /// A new, empty Store.
 pub fn open() -> ConfigStore {
     let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {

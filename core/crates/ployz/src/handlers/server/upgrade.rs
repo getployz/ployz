@@ -694,17 +694,18 @@ async fn run_one(
         if waited.is_err() {
             return Err(uncertain_timeout(machine, attempt_id));
         }
+        // A restarting daemon answers within its start window; a Server silent longer has gone away.
+        let left = deadline.saturating_duration_since(Instant::now());
+        let wait = ployz_core::MACHINE_START_WAIT.min(left);
         let polled = tokio::select! {
-            polled = client.poll_upgrade(
-                request.clone(),
-                machine,
-                deadline.saturating_duration_since(Instant::now()),
-            ) => polled,
+            polled = client.poll_upgrade(request.clone(), machine, wait) => polled,
             () = cancellation.cancelled() => return Err(stopped_following(machine, attempt_id, true)),
         };
         let observed = polled.map_err(|error| match error {
             crate::setup_retry::Error::Permanent(error) => error.into(),
-            exhausted => uncertain(machine, attempt_id, exhausted),
+            // The observation deadline cut this poll short, not the Server's silence.
+            _ if wait < ployz_core::MACHINE_START_WAIT => uncertain_timeout(machine, attempt_id),
+            exhausted => went_away(machine, attempt_id, exhausted),
         })?;
         if observed.is_terminal() {
             return Ok(observed);
@@ -803,6 +804,23 @@ fn uncertain(
         format!(
             "Cannot tell whether Server {} finished upgrade {attempt_id}. Reconnect and compare it with the upgrade attempt `ployz server show {}` shows.",
             machine.name, machine.name,
+        ),
+        error,
+    )
+    .hint(journal_hint(attempt_id))
+}
+
+fn went_away(
+    machine: &Machine,
+    attempt_id: MachineUpgradeAttemptId,
+    error: crate::setup_retry::Error<ConnectError>,
+) -> Error {
+    let name = &machine.name;
+    Error::caused(
+        ployz_core::RpcErrorCode::Unavailable,
+        format!(
+            "Server {name} stopped answering during upgrade {attempt_id} and didn't answer again within {} minutes. It may have powered off, lost its network or still be restarting. Once it answers, `ployz server show {name}` shows how the upgrade ended.",
+            ployz_core::MACHINE_START_WAIT.as_secs() / 60,
         ),
         error,
     )
@@ -1047,6 +1065,111 @@ mod tests {
         )
         .await;
         assert!(!outcome.unwrap_err().is_outcome());
+    }
+
+    /// Accepts the upgrade, then never answers again, as a Server that lost power.
+    struct GoneAfterAccepting {
+        /// Polls answered with a restart in progress before the Server goes silent.
+        answers: usize,
+        waits: Vec<Duration>,
+    }
+
+    impl UpgradeRequests for GoneAfterAccepting {
+        async fn request_upgrade(
+            &mut self,
+            request: RequestMachineUpgradeRequest,
+            _machine: &Machine,
+            _wait: Duration,
+        ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+            Ok(MachineUpgradeAttempt {
+                attempt_id: request.attempt_id,
+                target: MachineVersion::parse("1.2.3").unwrap(),
+                outcome: MachineUpgradeOutcome::Accepted,
+            })
+        }
+
+        async fn poll_upgrade(
+            &mut self,
+            request: RequestMachineUpgradeRequest,
+            _machine: &Machine,
+            wait: Duration,
+        ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+            self.waits.push(wait);
+            if let Some(left) = self.answers.checked_sub(1) {
+                self.answers = left;
+                return Ok(MachineUpgradeAttempt {
+                    attempt_id: request.attempt_id,
+                    target: MachineVersion::parse("1.2.3").unwrap(),
+                    outcome: MachineUpgradeOutcome::Running {
+                        stage: ployz_core::MachineUpgradeStage::Restarting,
+                    },
+                });
+            }
+            Err(crate::setup_retry::Error::Exhausted {
+                operation: "RequestUpgrade".into(),
+                wait,
+                last: Some(ConnectError::EntryNotReady),
+                in_flight: true,
+            })
+        }
+
+        async fn move_ingress(&mut self, _image: IngressImage) -> Result<Option<Outcome>, Error> {
+            panic!("an unfinished upgrade does not move the Ingress Proxy")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_gone_mid_upgrade_is_given_up_on_after_its_start_window() {
+        let mut client = GoneAfterAccepting {
+            answers: 0,
+            waits: Vec::new(),
+        };
+        let (result, outcome) = run_all(
+            &mut client,
+            &[machine('a', 1)],
+            MachineRelease::Stable,
+            IngressImage::Latest,
+            "ployz server upgrade stable a".into(),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(client.waits, [ployz_core::MACHINE_START_WAIT]);
+        let error = outcome.unwrap_err();
+        assert!(!error.is_outcome());
+        let text = crate::ui::plain(&error);
+        assert!(
+            text.contains("Server a stopped answering during upgrade")
+                && text.contains("didn't answer again within 5 minutes.")
+                && text
+                    .contains("It may have powered off, lost its network or still be restarting.")
+                && text.contains("`ployz server show a`"),
+            "{text}"
+        );
+        assert!(result.is_some(), "the accepted attempt is kept");
+    }
+
+    #[tokio::test]
+    async fn each_answer_gives_a_restarting_server_its_start_window_again() {
+        let mut client = GoneAfterAccepting {
+            answers: 1,
+            waits: Vec::new(),
+        };
+        let (_, outcome) = run_all(
+            &mut client,
+            &[machine('a', 1)],
+            MachineRelease::Stable,
+            IngressImage::Latest,
+            "ployz server upgrade stable a".into(),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(outcome.is_err());
+        assert_eq!(
+            client.waits.get(1),
+            Some(&ployz_core::MACHINE_START_WAIT),
+            "{:?}",
+            client.waits
+        );
     }
 
     #[tokio::test]

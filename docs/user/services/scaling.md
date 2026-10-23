@@ -86,24 +86,23 @@ answer does not mean it is gone. `ployz ps` and `ployz logs` also name servers t
 
 To bring services back:
 
-1. Deploy the services that don't use a volume on the offline server. They start on your other
-   servers:
+1. Deploy. Services that don't use a volume on the offline server start on your other servers.
+   A service whose volume is on the offline server isn't started: the deploy reports it, and
+   every service that depends on it, as **Not attempted**, naming the server, and the deployment
+   ends **Failed**. This works from **Deploy** in the dashboard or `ployz deploy`. To deploy only
+   some services, name them:
 
    ```sh
    ployz deploy web worker
    ```
 
-   Use the CLI and name them: a deploy that includes a service whose volume is on the offline
-   server fails before it changes anything, and the dashboard's **Deploy** includes every
-   service.
-
    A server that stopped answering moments ago may not show **Offline** yet. The deploy skips it
    the same way: it names the server, starts nothing there, and exits 3. The new replicas start
    serving on your other servers, but the deploy finishes only once they mark that server
    offline. If that takes more than 5 minutes, the service fails and the deploy names the server.
-   A service with a Docker volume fails before it changes anything when no answering server holds
-   the volume, because it may be on that server. So does any service when the deploy can't read
-   which replicas that server runs.
+   A service with a Docker volume isn't attempted when no answering server holds the volume,
+   because it may be on that server. Any service fails before it changes anything when the deploy
+   can't read which replicas that server runs.
    A server the others still count as online but that doesn't answer fails the deploy.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your

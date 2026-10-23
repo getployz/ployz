@@ -381,6 +381,20 @@ impl Failure {
                 };
                 (refusal.to_string(), Vec::new())
             }
+            // The entry Machine stopped listing the Server the call went to, as after
+            // `ployz server rm`, so the plan's name for it says what happened.
+            ExecutionError::Machine { error, .. }
+                if let Some(id) = machine
+                    && error.server_unlisted(&id) =>
+            {
+                (
+                    format!(
+                        "{} was removed while the deploy ran",
+                        server_of(&id.to_string(), operations)
+                    ),
+                    Vec::new(),
+                )
+            }
             ExecutionError::Machine {
                 action: MachineAction::PullImage,
                 error,
@@ -657,6 +671,7 @@ impl RowTracker {
                 .is_some_and(|(index, _)| self.containers.contains_key(index));
             let state = state(
                 snapshot,
+                key.1,
                 &statuses,
                 self.last.get(&key),
                 container,
@@ -728,9 +743,11 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
     }
 }
 
-/// A failed row's `log` waits as unanswered until the runner reads its Container's tail.
+/// The state of one Service's rows on `machine`. A failed row's `log` waits as
+/// unanswered until the runner reads its Container's tail.
 fn state(
     operations: &[OperationRow],
+    machine: MachineId,
     statuses: &[(&OperationStatus, bool)],
     last: Option<&RowState>,
     container: bool,
@@ -757,7 +774,7 @@ fn state(
         }
     }
     if let Some(error) = failed.or(cancelled) {
-        let Failure { reason, cause, .. } = Failure::of(error, operations);
+        let Failure { reason, cause, .. } = Failure::on(error, operations, Some(machine));
         return RowState::Failed {
             reason,
             cause,
@@ -1193,7 +1210,7 @@ mod tests {
 
     fn server(statuses: &[OperationStatus]) -> RowState {
         let statuses: Vec<_> = statuses.iter().map(|status| (status, true)).collect();
-        super::state(&[], &statuses, None, true, false)
+        super::state(&[], any_machine(), &statuses, None, true, false)
     }
 
     #[test]
@@ -1225,6 +1242,7 @@ mod tests {
         assert_eq!(
             super::state(
                 &[],
+                any_machine(),
                 &[(&switch, true), (&OperationStatus::Pending, false)],
                 None,
                 true,
@@ -1296,6 +1314,10 @@ mod tests {
         );
     }
 
+    fn any_machine() -> ployz_core::MachineId {
+        ployz_core::MachineId::parse("1".repeat(32)).unwrap()
+    }
+
     fn reason(observation: ContainerRuntimeObservation) -> String {
         failure(observation).reason
     }
@@ -1345,6 +1367,67 @@ mod tests {
                 "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
             )
         );
+    }
+
+    /// A Server removed while the deploy ran is gone from the entry Machine's routing
+    /// by its turn, which refuses with the ID it looked up. The row the call went to
+    /// names the Server (#3151).
+    #[test]
+    fn a_server_removed_while_the_deploy_ran_is_named_from_its_row() {
+        let machine_id = "a".repeat(32);
+        let machine = ployz_core::MachineId::parse(&machine_id).unwrap();
+        let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": {"type": "pending"}
+        }]))
+        .unwrap();
+        let not_found = |details| ExecutionError::Machine {
+            action: MachineAction::CreateContainer,
+            error: RpcError {
+                code: RpcErrorCode::NotFound,
+                message: format!("No Server named {machine_id:?}"),
+                details,
+                cause: Vec::new(),
+            },
+        };
+        let removed = not_found(serde_json::json!({
+            "reason": "no_such_server",
+            "targets": [machine_id],
+        }));
+        let named = Failure::on(&removed, &operations, Some(machine));
+        assert_eq!(
+            named.reason,
+            "Server prod-1 was removed while the deploy ran"
+        );
+        assert!(named.cause.is_empty());
+        assert!(!named.same_again);
+        // The row a reader tracks names it too, as Cloud's per-Server row shows it.
+        let failed: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1", "service_name": "web",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": OperationStatus::Failed { error: removed.clone() },
+        }]))
+        .unwrap();
+        let tracked = super::RowTracker::default().changes(&failed);
+        let Some(RowState::Failed { reason, .. }) = tracked.first().map(|row| &row.state) else {
+            panic!("expected a failed row, got {tracked:?}");
+        };
+        assert_eq!(reason, "Server prod-1 was removed while the deploy ran");
+        assert_eq!(
+            Failure::on(&removed, &[], Some(machine)).reason,
+            format!("Server {machine_id} was removed while the deploy ran")
+        );
+        // A reader that doesn't know which Machine the call went to keeps the answer.
+        assert_eq!(
+            Failure::of(&removed, &operations).reason,
+            "create Container failed"
+        );
+        // A daemon from before the tag, or a Server's own not-found, reads as before.
+        let untagged = not_found(serde_json::json!({}));
+        let kept = Failure::on(&untagged, &operations, Some(machine));
+        assert_eq!(kept.reason, "create Container failed");
+        assert_eq!(kept.cause, [format!("No Server named {machine_id:?}")]);
     }
 
     #[test]

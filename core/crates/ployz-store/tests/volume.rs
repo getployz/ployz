@@ -662,6 +662,56 @@ fn a_volume_never_mounts_over_the_kernel_filesystems_or_another_mount() {
 }
 
 #[test]
+fn a_discard_never_puts_a_mount_back_where_another_volume_now_mounts() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("web.mounts.data"),
+            value: json!("/moved"),
+        },
+    )
+    .unwrap();
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                restored_from: None,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000012").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("cache").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data/".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let refused = store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: Some(path("web.mounts.data")),
+                version: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "web already mounts Volume cache at /data; pick another directory"
+    );
+}
+
+#[test]
 fn an_undeployed_volume_is_removed_without_servers() {
     let (store, who) = shop();
     let removed = store

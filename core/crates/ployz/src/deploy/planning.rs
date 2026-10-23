@@ -826,6 +826,80 @@ fn hostname_policy_for(
     Ok(warnings)
 }
 
+/// Whether `error` says only that `spec`'s Volume sits on a Machine that can't take it
+/// now: down, silent this Deploy, or, for a provisioned Volume, without its storage.
+/// Configuration that matches no Machine, or a Volume on a Machine that answered,
+/// still fails the Deploy.
+fn volume_server_away(
+    error: &PlanError,
+    snapshot: &DeploySnapshot,
+    spec: &RequestedServiceSpec,
+) -> bool {
+    let PlanError::NoEligibleMachines { constraints } = error else {
+        return false;
+    };
+    let away = |volume: &ployz_core::DockerVolumeName, name: &ployz_core::MachineName| {
+        let provisioned = spec
+            .volume_graph()
+            .mounted_provisioned_volumes()
+            .any(|mounted| mounted.source.docker_volume_name() == Some(volume));
+        snapshot
+            .machines
+            .iter()
+            .find(|machine| &machine.machine.name == name)
+            .is_some_and(|machine| {
+                machine.membership == MembershipObservation::Down
+                    || snapshot.silent(machine)
+                    || (provisioned && storage::capacity(snapshot, machine).is_err())
+            })
+    };
+    let constraints = constraints.as_slice();
+    let located = constraints
+        .iter()
+        .filter_map(|constraint| {
+            if let EliminatingConstraint::VolumeAlreadyOn { volume, located_on } = constraint {
+                Some((volume, located_on))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    !located.is_empty()
+        && located
+            .iter()
+            .all(|(volume, located_on)| located_on.iter().all(|machine| away(volume, machine)))
+        && constraints.iter().all(|constraint| {
+            matches!(
+                constraint,
+                EliminatingConstraint::VolumeAlreadyOn { .. }
+                    | EliminatingConstraint::MachineDown { .. }
+                    | EliminatingConstraint::Unanswered { .. }
+            )
+        })
+}
+
+/// The unknown storage of a Machine where `operations` start a Service that mounts a
+/// provisioned Volume. The Deploy's storage budget needs it there.
+fn silent_volume_server(
+    operations: &[DeployOperation],
+    snapshot: &DeploySnapshot,
+) -> Option<PlanError> {
+    operations
+        .iter()
+        .filter(|operation| {
+            operation
+                .spec()
+                .is_some_and(|spec| spec.volume_graph().has_mounted_provisioned_volume())
+        })
+        .find_map(|operation| {
+            let machine = snapshot
+                .machines
+                .iter()
+                .find(|machine| machine.machine.id == operation.machine_id())?;
+            storage::capacity(snapshot, machine).err()
+        })
+}
+
 fn assemble_plan(
     intent: &DeployIntent,
     bound: BoundIntent,
@@ -933,6 +1007,9 @@ fn assemble_plan(
             continue;
         }
         let first = service_operations.len();
+        // Placement spends capacity and host ports as it goes, so a Service blocked once
+        // it is placed puts back the budget it found.
+        let before = intent.options.block_unmountable.then(|| budget.clone());
         let operations = match plan_one_service(
             spec,
             &intent.namespace,
@@ -957,6 +1034,17 @@ fn assemble_plan(
                 budget.release(&spec.name);
                 continue;
             }
+            Err(error)
+                if intent.options.block_unmountable
+                    && volume_server_away(&error, snapshot, spec) =>
+            {
+                blocked.push(BlockedService {
+                    service: spec.name.clone(),
+                    error: error.into_rpc_error(),
+                });
+                budget.release(&spec.name);
+                continue;
+            }
             Err(source) => {
                 return Err(service_error(
                     name_errors_with_service,
@@ -965,6 +1053,21 @@ fn assemble_plan(
                 ));
             }
         };
+        // A Volume on a Server that didn't return its storage can't be budgeted there, so
+        // only the Service mounting it waits; the rest of the Deploy goes ahead (bet 4).
+        if intent.options.block_unmountable
+            && let Some(error) = silent_volume_server(&operations, snapshot)
+        {
+            blocked.push(BlockedService {
+                service: spec.name.clone(),
+                error: error.into_rpc_error(),
+            });
+            if let Some(before) = before {
+                budget = before;
+            }
+            budget.release(&spec.name);
+            continue;
+        }
         if let Some(machine_id) = operations.iter().find_map(|operation| match operation {
             DeployOperation::RunContainer { machine_id, .. }
             | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {

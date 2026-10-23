@@ -246,6 +246,9 @@ struct Scripted {
     /// An In ask on this copy lands and the copy runs, but the Machine answers
     /// with an error, as when its inspect after the write fails.
     answered_error_after_in: BTreeSet<ContainerId>,
+    /// An In ask on this copy is answered by the entry Machine's routing, which no
+    /// longer lists its Server.
+    unrouted_in: BTreeSet<ContainerId>,
     /// A Held ask on this copy lands, but no reply to it, or to a resend,
     /// ever arrives.
     unanswered_held: BTreeSet<ContainerId>,
@@ -312,6 +315,7 @@ impl Scripted {
             unhealthy_in: BTreeMap::new(),
             unanswered_in: BTreeSet::new(),
             answered_error_after_in: BTreeSet::new(),
+            unrouted_in: BTreeSet::new(),
             unanswered_held: BTreeSet::new(),
             unanswered_reason: "no answer before the deadline",
             failed_route_reads: Mutex::new(0),
@@ -826,6 +830,9 @@ impl Scripted {
             Decision::Write(to) => to,
         };
         let routing = to == CopyRotation::In;
+        if routing && self.unrouted_in.contains(&container_id) {
+            return Err(no_server_named(machine_id));
+        }
         if routing {
             let stopped = self
                 .copies
@@ -1616,6 +1623,20 @@ fn error(message: &str) -> RpcError {
         code: RpcErrorCode::Internal,
         message: message.into(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
+}
+
+/// What the entry Machine's routing answers for a Server it no longer lists.
+fn no_server_named(machine_id: &MachineId) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::NotFound,
+        message: format!("No Server named {:?}", machine_id.to_string()),
+        details: serde_json::json!({
+            "inspect": ["ployz server ls"],
+            "reason": "no_such_server",
+            "targets": [machine_id.to_string()],
+        }),
         cause: Vec::new(),
     }
 }

@@ -88,7 +88,11 @@ fn an_unknown_server_is_not_found_only_when_members_are_visible() {
     assert_eq!(status.message(), r#"No Server named "nope""#);
     assert_eq!(
         ployz_core::rpc::status_details(status.details()),
-        Some(serde_json::json!({ "inspect": ["ployz server ls"] }))
+        Some(serde_json::json!({
+            "inspect": ["ployz server ls"],
+            "reason": "no_such_server",
+            "targets": ["nope"],
+        }))
     );
     assert_eq!(
         super::route_status(&missing, &[]).code(),

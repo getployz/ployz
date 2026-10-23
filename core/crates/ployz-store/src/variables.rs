@@ -10,19 +10,20 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use ployz_core::config::{
-    CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput, ResolveVariablesResult,
-    ResolvedConfigFile, ResolverValue, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
-    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, is_deleted_owner,
-    parse_variable_template, render_variable_parts, resolve_config_file, resolve_variables,
+    ClientSealedValue, CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput,
+    ResolveVariablesResult, ResolvedConfigFile, ResolverValue, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, SecretCiphertext, ServiceEnvValue, ValuePart,
+    ValuePartOwner, VariableProducer, is_deleted_owner, parse_variable_template,
+    render_variable_parts, resolve_config_file, resolve_variables,
 };
-use ployz_core::{ConfigFileName, RpcError, ServiceName};
+use ployz_core::{ConfigFileName, EnvPart, EnvValue, RpcError, SealedScope, ServiceName, Template};
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{Map, Value, json};
 
-use crate::error;
 use crate::scope::Environment;
 use crate::sealing::{SealingKey, plain_fingerprint};
 use crate::typed_address::{self, Typed};
+use crate::{client_sealed, error};
 
 /// A variable's name: letters, digits and `_`, not starting with a digit, at most
 /// 128 characters. Stored uppercase, as the dashboard stores it.
@@ -60,6 +61,9 @@ enum Input {
     /// `{"secret": true}` or `{"secret": false}`: keep the stored secret.
     Keep,
     Seal(String),
+    /// `{"secret": {"sealedFor": ..., "value": ...}}`: a value the browser sealed for
+    /// this Environment, stored as it came.
+    ClientSealed(ClientSealedValue),
     /// `{"secret": {"generate": true}}`: a random secret, unless one is stored already.
     Generate,
 }
@@ -145,6 +149,7 @@ pub(crate) fn set(
     key: &VariableKey,
     value: Value,
     sealing: &SealingKey,
+    client_sealed: impl FnOnce() -> Result<bool, RpcError>,
 ) -> Result<(bool, Option<Typed>), RpcError> {
     refuse_reserved(key)?;
     let (input, exported) = match value {
@@ -190,7 +195,7 @@ pub(crate) fn set(
                 current.value.clone()
             }
             Some(_) | None => SavedVariableValue::Secret {
-                encrypted_value: Some(sealing.seal(&plaintext)),
+                encrypted_value: Some(SecretCiphertext::Store(sealing.seal(&plaintext))),
             },
         };
         Ok((value, fingerprint, typed))
@@ -239,6 +244,22 @@ pub(crate) fn set(
             (stored(parts), fingerprint, typed)
         }
         (Some(Input::Seal(plaintext)), _) => seal(plaintext)?,
+        (Some(Input::ClientSealed(value)), _) => {
+            let receiver = client_sealed::Receiver {
+                environment: &environment.summary.id,
+                service: environment.service(service)?,
+                enabled: client_sealed()?,
+            };
+            let sealed =
+                client_sealed::accept(value, key, &receiver, |message| invalid(key, message))?;
+            (
+                SavedVariableValue::Secret {
+                    encrypted_value: Some(sealed.value),
+                },
+                sealed.fingerprint,
+                None,
+            )
+        }
     };
     let next = SavedVariableIntent {
         id: current.map_or_else(
@@ -535,12 +556,12 @@ pub(crate) fn stored(mut parts: Vec<ValuePart>) -> SavedVariableValue {
 
 /// The longest `KEY=value` string Linux passes a program, with its closing NUL:
 /// `MAX_ARG_STRLEN`. A Container given a longer one never starts.
-const MAX_ENV_STRING: usize = 128 * 1024;
+pub(crate) const MAX_ENV_STRING: usize = 128 * 1024;
 
-const TOO_LONG: &str = "too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
+pub(crate) const TOO_LONG: &str = "too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
 
-fn too_long(key: &str, value: &str) -> bool {
-    key.len() + value.len() + 2 > MAX_ENV_STRING
+pub(crate) const fn too_long(key: &str, value: usize) -> bool {
+    key.len() + value + 2 > MAX_ENV_STRING
 }
 
 /// The most Linux passes a program for its variables and arguments together with
@@ -607,14 +628,27 @@ pub(crate) fn environment_note(
 /// Refuse resolved environment `env` of `service` when no Container could take it.
 pub(crate) fn refuse_too_big(
     service: &str,
-    env: &BTreeMap<String, String>,
+    env: &BTreeMap<String, EnvValue>,
 ) -> Result<(), RpcError> {
     too_big(
         service,
         env.iter()
-            .map(|(key, value)| env_bytes(key.len(), value.len()))
+            .map(|(key, value)| env_bytes(key.len(), opened_len(value)))
             .sum(),
     )
+}
+
+/// The bytes `value` takes in the Container once its Sealed parts are opened.
+fn opened_len(value: &EnvValue) -> usize {
+    let part = |part: &EnvPart| match part {
+        EnvPart::Text(text) => text.len(),
+        EnvPart::Sealed(sealed) => client_sealed::plaintext_len(sealed),
+    };
+    match value {
+        EnvValue::Text(text) => text.len(),
+        EnvValue::Sealed(sealed) => client_sealed::plaintext_len(sealed),
+        EnvValue::Template(template) => template.template.iter().map(part).sum(),
+    }
 }
 
 /// Plain and secret values must survive the container's environment unchanged.
@@ -625,7 +659,7 @@ pub(crate) fn validate_text(key: &VariableKey, text: &str) -> Result<(), RpcErro
     if text.contains('\0') {
         return Err(invalid(key, "null characters are not allowed"));
     }
-    if too_long(key.as_str(), text) {
+    if too_long(key.as_str(), text.len()) {
         return Err(invalid(key, TOO_LONG));
     }
     Ok(())
@@ -690,6 +724,14 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
                 if asked.len() == 1 && asked.get("generate") == Some(&Value::Bool(true)) =>
             {
                 Ok(Input::Generate)
+            }
+            // A fixed message: a serde error would echo the value.
+            Some(sealed @ Value::Object(asked)) if asked.contains_key("sealedFor") => {
+                serde_json::from_value(sealed.clone())
+                    .map(Input::ClientSealed)
+                    .map_err(|_| {
+                        invalid(key, "expected sealedFor and a value sealed in the browser")
+                    })
             }
             Some(_) | None => Err(invalid(key, "expected {\"secret\": true} or a new secret")),
         },
@@ -777,8 +819,9 @@ pub(crate) fn schema() -> Value {
 
 /// Compiled Saved State with every reference resolved.
 pub(crate) struct Resolved {
-    /// Each Service's environment, by Service ID.
-    pub(crate) env: BTreeMap<String, BTreeMap<String, String>>,
+    /// Each Service's environment, by Service ID. A value sealed in the browser is
+    /// Sealed, or a Template holding it, for the Machine to open.
+    pub(crate) env: BTreeMap<String, BTreeMap<String, EnvValue>>,
     /// Each Config's files, by Config ID.
     pub(crate) configs: BTreeMap<String, BTreeMap<ConfigFileName, ResolvedConfigFile>>,
     /// Each Service's variables left out because a secret without a value reaches
@@ -790,22 +833,39 @@ pub(crate) struct Resolved {
 }
 
 /// Every Service's environment and every Config's files, resolved from compiled
-/// Saved State against the frozen producers. With `unseal`, secrets and values
-/// that reference one resolve to plaintext. Without it, such a variable is left
-/// out and such a file is empty. A variable a secret without a value, or a broken
-/// reference, reaches is always left out; in a file either is empty.
+/// Saved State against the frozen producers, for a Deploy of Environment
+/// `environment`. With `unseal`, secrets and values that reference one resolve to
+/// plaintext. Without it, such a variable is left out and such a file is empty. A
+/// variable a secret without a value, or a broken reference, reaches is always
+/// left out; in a file either is empty. A value sealed in the browser is never
+/// opened here: with `unseal`, sealed for `environment` it reaches the Service as
+/// a Sealed part, sealed for another Environment it is Not set.
 ///
 /// # Errors
-/// Returns `invalid_argument` for a reference cycle or a value too long for the
-/// environment, or `internal` when a sealed value can't be opened.
+/// Returns `invalid_argument` for a reference cycle, a value too long for the
+/// environment or a Config file that reads a value sealed in the browser, or
+/// `internal` when a sealed value can't be opened.
 pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
+    environment: &str,
     unseal: Option<&SealingKey>,
 ) -> Result<Resolved, RpcError> {
-    let open = |sealed: Option<&ployz_core::config::EncryptedSecretValue>| match (unseal, sealed) {
-        (Some(key), Some(sealed)) => key.open(sealed).map(Some),
+    let environment = uuid::Uuid::parse_str(environment).ok();
+    let stored = |sealed: Option<&SecretCiphertext>| match (unseal, sealed) {
+        // Without the key a secret still marks what references it.
+        (None, _) => Ok(ResolverValue::Secret {
+            value: String::new(),
+        }),
+        (Some(_), Some(SecretCiphertext::ClientSealed(client))) => match environment {
+            Some(id) if client.sealed_for == id => Ok(ResolverValue::Sealed {
+                value: client.value.clone(),
+            }),
+            _ => Ok(ResolverValue::NotSet),
+        },
+        (Some(key), Some(SecretCiphertext::Store(sealed))) => Ok(ResolverValue::Secret {
+            value: key.open(sealed)?,
+        }),
         (Some(_), None) => Err(error::corrupt("sealed secret")),
-        (None, _) => Ok(None),
     };
     let mut producers = Vec::new();
     for producer in &compiled.variable_producers {
@@ -816,10 +876,7 @@ pub(crate) fn resolve(
             SavedVariableValue::Template { parts } => ResolverValue::Template {
                 parts: parts.clone(),
             },
-            // Without the key a secret still marks what references it.
-            SavedVariableValue::Secret { encrypted_value } => ResolverValue::Secret {
-                value: open(encrypted_value.as_ref())?.unwrap_or_default(),
-            },
+            SavedVariableValue::Secret { encrypted_value } => stored(encrypted_value.as_ref())?,
             SavedVariableValue::SecretWithoutValue => ResolverValue::NotSet,
         };
         producers.push(VariableProducer {
@@ -845,6 +902,9 @@ pub(crate) fn resolve(
                 for (name, file) in &config.files {
                     let mut file = resolve_config_file(name.as_str(), &file.content, &producers)
                         .map_err(|path| cycle(compiled, &path))?;
+                    if let Some(reference) = file.sealed.first() {
+                        return Err(sealed_in_file(compiled, &config.name, name, reference));
+                    }
                     if file.secret && unseal.is_none() {
                         file.content.clear();
                     }
@@ -860,7 +920,9 @@ pub(crate) fn resolve(
         let mut broken = Vec::new();
         for (key, value) in &config.env {
             let value = match value {
-                ServiceEnvValue::Literal { value, parts: None } => Some(value.clone()),
+                ServiceEnvValue::Literal { value, parts: None } => {
+                    Some(EnvValue::Text(value.clone()))
+                }
                 ServiceEnvValue::Literal {
                     parts: Some(parts), ..
                 } => match resolve_variables(&ResolveVariablesInput {
@@ -897,10 +959,42 @@ pub(crate) fn resolve(
                 }
                 ServiceEnvValue::Secret {
                     encrypted_value, ..
-                } => open(encrypted_value.as_ref())?,
+                } => match stored(encrypted_value.as_ref())? {
+                    // Only a value sealed for this very variable is bound to its name. A
+                    // renamed one keeps the key it was sealed under, so it reaches the
+                    // Machine as a Template part, which opens under that key.
+                    ResolverValue::Sealed { value }
+                        if value.key == *key
+                            && value.scope == SealedScope::Service(node_uuid(&node.node_id)) =>
+                    {
+                        Some(EnvValue::Sealed(value))
+                    }
+                    ResolverValue::Sealed { value } => Some(EnvValue::Template(Template {
+                        template: vec![EnvPart::Sealed(value)],
+                    })),
+                    ResolverValue::NotSet => {
+                        not_set.push(key.clone());
+                        None
+                    }
+                    ResolverValue::Secret { value } => {
+                        unseal.is_some().then_some(EnvValue::Text(value))
+                    }
+                    ResolverValue::Literal { .. } | ResolverValue::Template { .. } => None,
+                },
             };
             if let Some(value) = value {
-                if too_long(key, &value) {
+                // A reference can bring a Sealed value into PORT after PORT is saved.
+                if key == "PORT" && !matches!(value, EnvValue::Text(_)) {
+                    return Err(error::invalid(
+                        format!(
+                            "{}.env.PORT {}",
+                            config.settings.private_dns,
+                            client_sealed::PORT_REFUSED
+                        ),
+                        json!({ "variable": key }),
+                    ));
+                }
+                if too_long(key, opened_len(&value)) {
                     return Err(error::invalid(
                         format!("{}.env.{key} is {TOO_LONG}", config.settings.private_dns),
                         json!({ "variable": key }),
@@ -920,24 +1014,57 @@ pub(crate) fn resolve(
     Ok(resolved)
 }
 
+/// A Service ID as a UUID; one that isn't parses to nil, which no Sealed scope names.
+fn node_uuid(id: &str) -> uuid::Uuid {
+    uuid::Uuid::parse_str(id).unwrap_or_default()
+}
+
+/// A Config file reads a value sealed in the browser, which only the Machine opens.
+fn sealed_in_file(
+    compiled: &CompiledEnvironmentIntent,
+    config: &ployz_core::ConfigName,
+    file: &ConfigFileName,
+    reference: &ployz_core::config::FragileReference,
+) -> RpcError {
+    let service = match &reference.owner {
+        ValuePartOwner::Service { lineage_id } => compiled
+            .variable_producers
+            .iter()
+            .find(|producer| producer.owner_lineage_id == *lineage_id)
+            .and_then(|producer| service_name(compiled, &producer.owner_id)),
+        ValuePartOwner::Self_ => None,
+    };
+    let variable = match service {
+        Some(service) => format!("{service}.{}", reference.key),
+        None => reference.key.clone(),
+    };
+    error::invalid(
+        format!(
+            "Config {config} file {file} reads {variable}, a value sealed in the browser: only a Service's environment carries one"
+        ),
+        json!({ "config": config, "file": file, "variable": variable }),
+    )
+}
+
+/// The name of Service `node_id`, as a refusal names it.
+fn service_name(compiled: &CompiledEnvironmentIntent, node_id: &str) -> Option<String> {
+    compiled
+        .node_snapshots
+        .iter()
+        .find(|node| node.node_id == node_id)
+        .and_then(|node| match &node.snapshot.0 {
+            CompiledNodeConfig::Service(config) => Some(config.settings.private_dns.to_string()),
+            CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
+        })
+}
+
 /// A reference cycle, named by Service and variable.
 fn cycle(compiled: &CompiledEnvironmentIntent, path: &[String]) -> RpcError {
     let names = path
         .iter()
         .map(|step| {
             let (owner, key) = step.split_once("::").unwrap_or(("", step));
-            let service = compiled
-                .node_snapshots
-                .iter()
-                .find(|node| node.node_id == owner)
-                .and_then(|node| match &node.snapshot.0 {
-                    ployz_core::config::CompiledNodeConfig::Service(config) => {
-                        Some(config.settings.private_dns.to_string())
-                    }
-                    ployz_core::config::CompiledNodeConfig::Volume(_)
-                    | ployz_core::config::CompiledNodeConfig::Config(_) => None,
-                })
-                .unwrap_or_default();
+            let service = service_name(compiled, owner).unwrap_or_default();
             format!("{service}.env.{key}")
         })
         .collect::<Vec<_>>();
@@ -959,6 +1086,91 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn a_sealed_value_counts_toward_a_containers_environment_at_its_opened_length() {
+        let sealed = |opened: usize| ployz_core::SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![0; opened + 48]),
+            scope: SealedScope::Service(uuid::Uuid::from_u128(3)),
+            key: "K".into(),
+        };
+        let fits = MAX_ENV_TOTAL - env_bytes(1, 0);
+        let env = |value: EnvValue| BTreeMap::from([("K".to_owned(), value)]);
+        let template = |opened: usize| {
+            EnvValue::Template(Template {
+                template: vec![EnvPart::Text("ab".into()), EnvPart::Sealed(sealed(opened))],
+            })
+        };
+        refuse_too_big("web", &env(EnvValue::Sealed(sealed(fits)))).unwrap();
+        refuse_too_big("web", &env(EnvValue::Sealed(sealed(fits + 1)))).unwrap_err();
+        refuse_too_big("web", &env(template(fits - 2))).unwrap();
+        refuse_too_big("web", &env(template(fits - 1))).unwrap_err();
+    }
+
+    #[test]
+    fn a_config_file_that_reads_a_value_sealed_in_the_browser_is_refused_by_name() {
+        use base64::Engine as _;
+        let environment = uuid::Uuid::from_u128(2);
+        let ciphertext = base64::engine::general_purpose::STANDARD.encode([1; 48]);
+        let sealed: ClientSealedValue = serde_json::from_value(json!({
+            "sealedFor": environment,
+            "value": { "sealed": ciphertext, "scope": { "service": uuid::Uuid::from_u128(3) }, "key": "P" },
+        }))
+        .unwrap();
+        let compiled = CompiledEnvironmentIntent {
+            node_snapshots: vec![CompiledEnvironmentNode {
+                environment_id: environment.to_string(),
+                node_id: "sentry".into(),
+                node_lineage_id: "sentry".into(),
+                snapshot: CompiledNodeSnapshot(CompiledNodeConfig::Config(ConfigNodeConfig {
+                    version: 1,
+                    name: ConfigName::parse("sentry").unwrap(),
+                    files: BTreeMap::from([(
+                        ConfigFileName::parse("secret.yml").unwrap(),
+                        SavedConfigFile {
+                            content: parse_variable_template("p: ${{ web.P }}", |_, _| {
+                                Some("web-lineage".to_owned())
+                            })
+                            .parts,
+                            mode: FileMode::READ_ONLY,
+                            uid: 0,
+                            gid: 0,
+                        },
+                    )]),
+                })),
+                encrypted_registry_username: None,
+                encrypted_registry_secret: None,
+            }],
+            variable_producers: vec![SavedVariableProducer {
+                owner_scope: "service".into(),
+                owner_id: "web".into(),
+                owner_lineage_id: "web-lineage".into(),
+                key: "P".into(),
+                value: SavedVariableValue::Secret {
+                    encrypted_value: Some(SecretCiphertext::ClientSealed(sealed)),
+                },
+            }],
+        };
+        let key = SealingKey::new(b"test-encryption-secret").unwrap();
+        let error = resolve(&compiled, &environment.to_string(), Some(&key))
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(error.code, ployz_core::RpcErrorCode::InvalidArgument);
+        assert!(error.message.contains("sentry"), "{error:?}");
+        assert!(error.message.contains("secret.yml"), "{error:?}");
+        assert!(error.message.contains("reads P"), "{error:?}");
+        assert!(!format!("{error:?}").contains(&ciphertext), "{error:?}");
+        // A plan, without the key, leaves every secret out and checks the rest.
+        let mut planned = resolve(&compiled, &environment.to_string(), None).unwrap();
+        let files = planned.configs.remove("sentry").unwrap();
+        assert_eq!(
+            files
+                .values()
+                .map(|file| file.content.as_str())
+                .collect::<Vec<_>>(),
+            [""]
+        );
+    }
 
     #[test]
     fn a_config_file_that_reads_a_secret_is_empty_without_the_key() {
@@ -994,12 +1206,12 @@ mod tests {
                 owner_lineage_id: "web-lineage".into(),
                 key: "P".into(),
                 value: SavedVariableValue::Secret {
-                    encrypted_value: Some(key.seal("s3cr3t")),
+                    encrypted_value: Some(SecretCiphertext::Store(key.seal("s3cr3t"))),
                 },
             }],
         };
         let contents = |unseal| {
-            resolve(&compiled, unseal)
+            resolve(&compiled, "env", unseal)
                 .unwrap()
                 .configs
                 .remove("sentry")

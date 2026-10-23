@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 
 use crate::backend;
 use crate::support::{
-    HEAD, LATER, MERGE, at, check, deployed, exclude, history, labels, merge_value, merged,
-    merged_within, on_merge, preview_listed, production_diff, pull, push, row, rows, save, set,
-    shop, shop_with, system, unset, value, watching,
+    HEAD, LATER, MERGE, at, check, deployed, exclude, history, labels, merge_sealed, merge_value,
+    merged, merged_within, on_merge, preview_listed, production_diff, pull, push, row, rows, save,
+    set, shop, shop_in, shop_with, system, unset, uuid, value, watching,
 };
 
 #[test]
@@ -129,6 +129,68 @@ fn a_new_secret_lands_not_set_unless_edited_and_its_edit_stays_sealed() {
     assert_eq!(
         (token.lands, token.ride),
         (json!({ "secret": false }), Ride::Rides)
+    );
+}
+
+#[test]
+fn a_new_secret_takes_a_value_sealed_in_the_browser_for_it_with_the_flag_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ployz_store::ConfigStore::open(&url, backend::key()).unwrap();
+    let (store, who) = shop_in(store, |_, _| {}, None);
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("web.env.TOKEN", json!({ "secret": "test-token" })),
+            ("web.env.A", json!("2")),
+        ],
+    );
+    let sealed = |environment: u8, service: u8, key: &str| {
+        backend::client_sealed(&uuid(environment), &uuid(service), key, 1)
+    };
+    let refused = |edit: ployz_store::SetMergeValue, why: &str| {
+        let error = store.write(&who, &edit).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+        assert!(error.message.contains(why), "{error:?}");
+        assert!(!format!("{error:?}").contains("AAAA"), "{error:?}");
+    };
+    refused(
+        merge_sealed("web.env.TOKEN", sealed(2, 3, "TOKEN")),
+        "off for this Organization",
+    );
+
+    backend::sealed_variables_on(&url, "org");
+    for (value, why) in [
+        (sealed(9, 3, "TOKEN"), "sealed for another Environment"),
+        (sealed(2, 3, "A"), "sealed for another variable"),
+        (sealed(2, 4, "TOKEN"), "sealed for another Service"),
+    ] {
+        refused(merge_sealed("web.env.TOKEN", value), why);
+    }
+    refused(
+        merge_sealed("web.env.A", sealed(2, 3, "A")),
+        "only a secret takes a value sealed in the browser",
+    );
+    let edited = store
+        .write(&who, &merge_sealed("web.env.TOKEN", sealed(2, 3, "TOKEN")))
+        .unwrap();
+    let token = edited.destinations[0]
+        .rows
+        .iter()
+        .find(|row| row.at.to_string() == "web.env.TOKEN")
+        .unwrap();
+    assert_eq!(
+        (&token.lands, token.ride),
+        (&json!({ "secret": true }), Ride::Edited)
+    );
+    assert!(!format!("{edited:?}").contains("AAAA"));
+
+    merged(&store, &who, "2024-01-02T00:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.TOKEN"),
+        Some(json!({ "secret": true }))
     );
 }
 

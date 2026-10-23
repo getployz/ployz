@@ -386,11 +386,22 @@ impl DeploySnapshot {
     }
 
     /// The ingress Servers whose containers went unobserved, so whether their Ingress
-    /// Proxy runs is unknown, each with why.
+    /// Proxy runs is unknown, each with why. One the entry Machine stopped listing
+    /// left the Cluster, and its ingress role with it, so there is nothing to check.
     fn unobserved_ingress(&self) -> Vec<(&MachineObservation, String)> {
         self.ingress_eligible()
+            .filter(|machine| !self.unlisted(machine.machine.id))
             .filter_map(|machine| Some((machine, self.unobserved(machine.machine.id)?)))
             .collect()
+    }
+
+    /// Whether the entry Machine no longer listed `machine` when its Containers were
+    /// asked for: it left the Cluster after this snapshot's membership read, as after
+    /// `ployz server rm`.
+    fn unlisted(&self, machine: MachineId) -> bool {
+        self.container_failures
+            .iter()
+            .any(|failure| failure.machine_id == machine && failure.error.server_unlisted(&machine))
     }
 
     /// Whether `machine` left this snapshot's Container listing unanswered as a

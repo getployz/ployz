@@ -106,17 +106,26 @@ pub struct DrainReport {
 impl DrainReport {
     /// Every chosen Service left the Server, every moved copy's old copy stopped, every
     /// copy left Out there is gone, the Drain ran to its end, and what remains was
-    /// observed.
+    /// observed. Another Server's move that failed and left nothing behind is reported,
+    /// but is that Server's to finish.
     #[must_use]
     pub fn complete(&self) -> bool {
         let Remaining::Observed { services, .. } = &self.remaining else {
             return false;
         };
+        let done = |outcome: &DrainOutcome| {
+            if let DrainOutcome::Failed { moves, failure } = outcome
+                && failure.clean_elsewhere(&self.server.id)
+            {
+                return moves.iter().all(|step| step.old == OldCopyEnd::Stopped);
+            }
+            outcome.complete()
+        };
         self.stopped.is_none()
             && self
                 .services
                 .iter()
-                .all(|service| service.outcome.complete() && !services.contains(&service.service))
+                .all(|service| done(&service.outcome) && !services.contains(&service.service))
     }
 }
 

@@ -37,6 +37,8 @@ use store::PENDING_RESET_FILE_NAME;
 pub use store::{EnrollPlan, LocalMachineStore, StoreError};
 pub(crate) use store::{InterruptedReset, Opened};
 
+#[cfg(test)]
+pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{CutRefusal, RecoveryError, RuntimeWatchTelemetry, SealingError};
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
 

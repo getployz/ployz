@@ -14,9 +14,9 @@ use crate::{
     ContainerResources, CpuNanos, DependencyCondition, DeployIntent, EnvValue, HealthcheckCommand,
     HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost, Namespace, Operator, PlanOptions,
     PortPublication, PreDeployCommand, PreDeployHook, PruneScope, PullPolicy, RawVolumeSource,
-    RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceConfigGraph, ServiceContainerSpec,
-    ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceRemovals, ServiceVolume,
-    ServiceVolumeGraph, UpdateConfig, VolumeDriver,
+    RequestedServiceSpec, RestartPolicy, SealedIdentity, ServiceAttempt, ServiceConfigGraph,
+    ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount, ServiceName,
+    ServiceRemovals, ServiceVolume, ServiceVolumeGraph, UpdateConfig, VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.
@@ -24,15 +24,38 @@ pub const DEFAULT_SERVICE_PORT: u16 = 8080;
 
 fn target_port(
     explicit: Option<u16>,
-    environment: &BTreeMap<String, String>,
+    environment: &BTreeMap<String, EnvValue>,
     path: &str,
 ) -> Result<std::num::NonZeroU16, ConfigError> {
     explicit
-        .or_else(|| environment.get("PORT").and_then(|value| value.parse().ok()))
+        .or_else(|| {
+            environment
+                .get("PORT")
+                .and_then(EnvValue::text)
+                .and_then(|value| value.parse().ok())
+        })
         .and_then(std::num::NonZeroU16::new)
         .ok_or_else(|| {
             ConfigError::at(path, "Expected a target port or PORT variable from 1–65535")
         })
+}
+
+/// Who a Service's Sealed values open for: only a Deploy that knows its Organization
+/// and Environment, of an authored Service, carries them.
+fn sealed_identity(
+    sealed_for: Option<&SealedFor>,
+    service_id: Option<&str>,
+) -> Result<SealedIdentity, ConfigError> {
+    let sealed = || ConfigError::at("env", "A sealed value needs the Deploy's Environment");
+    let sealed_for = sealed_for.ok_or_else(sealed)?;
+    let service = service_id
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        .ok_or_else(sealed)?;
+    Ok(SealedIdentity {
+        organization: sealed_for.organization.clone(),
+        environment: sealed_for.environment,
+        service,
+    })
 }
 
 /// Captured node settings plus adapter-resolved runtime inputs for one Namespace.
@@ -67,6 +90,18 @@ pub struct LowerDeploymentInput {
     /// The Cluster Domain generated domains were expanded under, when any were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_domain: Option<IngressHost>,
+    /// Whose Sealing Key opens a Sealed value in `resolved_env`: the Organization and
+    /// Environment the Deploy is for. Required once any Service's env holds one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_for: Option<SealedFor>,
+}
+
+/// The Organization and Environment a Deploy's Sealed values were sealed for.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SealedFor {
+    pub organization: String,
+    pub environment: uuid::Uuid,
 }
 
 /// One Service's captured settings and the runtime inputs resolved for it.
@@ -80,9 +115,10 @@ pub struct LowerDeploymentSnapshot {
     /// Replicas overriding the authored count, such as a PR Environment's one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<u8>,
-    /// Its variables with every reference resolved, by key.
+    /// Its variables with every reference resolved, by key. A value sealed in the
+    /// browser stays Sealed, or a Template around it, for the Machine to open.
     #[serde(default)]
-    pub resolved_env: BTreeMap<String, String>,
+    pub resolved_env: BTreeMap<String, EnvValue>,
     /// Run in order after the service's own pre-deploy command, in the same hook.
     #[serde(default)]
     pub setup_commands: Vec<String>,
@@ -190,7 +226,12 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         let mut environment = snapshot.resolved_env;
         environment
             .entry("PORT".into())
-            .or_insert_with(|| DEFAULT_SERVICE_PORT.to_string());
+            .or_insert_with(|| EnvValue::Text(DEFAULT_SERVICE_PORT.to_string()));
+        let sealed_identity = environment
+            .values()
+            .any(EnvValue::is_sealed)
+            .then(|| sealed_identity(input.sealed_for.as_ref(), snapshot.service_id.as_deref()))
+            .transpose()?;
         let route_ports = config
             .routes
             .iter()
@@ -400,11 +441,8 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             container: ServiceContainerSpec {
                 image: image.clone(),
                 command,
-                environment: environment
-                    .into_iter()
-                    .map(|(key, value)| (key, EnvValue::Text(value)))
-                    .collect(),
-                sealed_identity: None,
+                environment,
+                sealed_identity,
                 pull_policy: PullPolicy::Missing,
                 restart,
                 healthcheck,
@@ -607,4 +645,25 @@ fn lowering_error(_: impl std::fmt::Display) -> ConfigError {
         "service",
         "Authored service could not be lowered to a runtime specification",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sealed_identity_needs_the_deploy_environment_and_an_authored_service() {
+        let sealed_for = SealedFor {
+            organization: "org".into(),
+            environment: uuid::Uuid::from_u128(2),
+        };
+        let service = uuid::Uuid::from_u128(3).to_string();
+        let identity = sealed_identity(Some(&sealed_for), Some(&service)).unwrap();
+        assert_eq!(identity.organization, "org");
+        assert_eq!(identity.environment, sealed_for.environment);
+        assert_eq!(identity.service.to_string(), service);
+        assert!(sealed_identity(None, Some(&service)).is_err());
+        assert!(sealed_identity(Some(&sealed_for), None).is_err());
+        assert!(sealed_identity(Some(&sealed_for), Some("web")).is_err());
+    }
 }

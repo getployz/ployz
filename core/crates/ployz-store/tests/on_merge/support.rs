@@ -54,7 +54,15 @@ pub(crate) fn shop_copying(
     setup: impl FnOnce(&ConfigStore, &Actor),
     copy: Option<Vec<NodeName>>,
 ) -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open(), setup, copy)
+}
+
+/// [`shop_copying`] on `store`.
+pub(crate) fn shop_in(
+    store: ConfigStore,
+    setup: impl FnOnce(&ConfigStore, &Actor),
+    copy: Option<Vec<NodeName>>,
+) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -235,6 +243,16 @@ pub(crate) fn merge_value(label: &str, value: Option<&str>) -> SetMergeValue {
         into: None,
         row: label.into(),
         value: value.map(Into::into),
+    }
+}
+
+/// [`merge_value`] with `value` sealed in the browser.
+pub(crate) fn merge_sealed(label: &str, value: Value) -> SetMergeValue {
+    SetMergeValue {
+        environment: at("pr-5"),
+        into: None,
+        row: label.into(),
+        value: Some(serde_json::from_value(value).unwrap()),
     }
 }
 

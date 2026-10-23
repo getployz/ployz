@@ -116,6 +116,23 @@ pub(super) struct DeployService {
     pull_failures: BTreeSet<MachineId>,
     /// What a rejected pull answers.
     pull_failure: RpcError,
+    /// The ingress role each `UpdateMachine` set, which `ListMachines` then answers.
+    ingress_roles: Arc<Mutex<BTreeMap<MachineId, bool>>>,
+    /// What an `UpdateMachine` turning the ingress role off answers instead.
+    role_off_refusal: Option<RpcError>,
+    /// `ListMachines` answers this many more times, on any route, with every replicated
+    /// row lacking the ingress role, as before a role just set on a Server's own record
+    /// reached the rows. `Inspect` answers the record.
+    row_lag: Arc<AtomicUsize>,
+    /// The only Machine `start_error` fails on; every Machine when `None`.
+    start_error_on: Option<MachineId>,
+    /// What removing a Container answers instead, so it stays where it was.
+    removal_refusal: Option<RpcError>,
+    /// Each Machine's listing also shows the Containers created there and not yet removed.
+    lists_created: bool,
+    /// Another operator's Ingress Proxy starts on the Server once a start there fails or a
+    /// Container there is removed.
+    rival_proxy: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -194,6 +211,13 @@ impl DeployService {
                 details: Value::Null,
                 cause: Vec::new(),
             },
+            ingress_roles: Arc::default(),
+            role_off_refusal: None,
+            row_lag: Arc::default(),
+            start_error_on: None,
+            removal_refusal: None,
+            lists_created: false,
+            rival_proxy: false,
         }
     }
 
@@ -229,6 +253,46 @@ impl DeployService {
             details: Value::Null,
             cause: Vec::new(),
         });
+        self
+    }
+
+    /// Like [`Self::fail_starts`], on `machine_id` only.
+    pub(super) fn fail_starts_on(self, machine_id: MachineId, message: &str) -> Self {
+        Self {
+            start_error_on: Some(machine_id),
+            ..self.fail_starts(message)
+        }
+    }
+
+    /// Every Container removal is refused, so a failed start's Container stays.
+    pub(super) fn refuse_removals(mut self, message: &str) -> Self {
+        self.removal_refusal = Some(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: message.into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        });
+        self
+    }
+
+    /// The next `reads` `ListMachines` answers show no Server with the ingress role, while
+    /// each Server's own record, which `Inspect` answers, holds the role it was given.
+    pub(super) fn rows_lag_ingress(self, reads: usize) -> Self {
+        self.row_lag.store(reads, Ordering::SeqCst);
+        self
+    }
+
+    /// Each Machine lists the Containers created on it that weren't removed, as Docker
+    /// keeps them.
+    pub(super) fn lists_created(mut self) -> Self {
+        self.lists_created = true;
+        self
+    }
+
+    /// Another operator's Ingress Proxy starts on a Server right after a start fails or a
+    /// Container is removed there.
+    pub(super) fn rival_proxy(mut self) -> Self {
+        self.rival_proxy = true;
         self
     }
 
@@ -399,6 +463,59 @@ impl DeployService {
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
         self.machines = machines;
         self
+    }
+
+    pub(super) fn refuse_role_off(mut self, message: &str) -> Self {
+        self.role_off_refusal = Some(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: message.into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        });
+        self
+    }
+
+    /// With [`Self::rival_proxy`], another operator's Ingress Proxy now runs on `machine_id`.
+    fn rival_starts(&self, machine_id: MachineId) {
+        if !self.rival_proxy {
+            return;
+        }
+        let rival = ContainerId::parse("f".repeat(64)).unwrap();
+        let ingress = QualifiedService::system_ingress();
+        let mut proxy = self.observed(machine_id, rival, resolved(spec(ingress.name.as_str())));
+        proxy
+            .try_update(|parts| {
+                parts.namespace = ingress.namespace;
+                parts.runtime = ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                };
+            })
+            .unwrap();
+        let mut listed = self.listed_containers.lock().unwrap();
+        if !listed
+            .iter()
+            .any(|container| container.container_id == rival)
+        {
+            listed.push(proxy);
+        }
+    }
+
+    fn start_error(&self, machine_id: MachineId) -> Option<&RpcError> {
+        self.start_error
+            .as_ref()
+            .filter(|_| self.start_error_on.is_none_or(|on| on == machine_id))
+    }
+
+    /// The Machines as `ListMachines` answers them, with each role `UpdateMachine` set.
+    fn listed_machines(&self) -> Vec<MachineObservation> {
+        let roles = self.ingress_roles.lock().unwrap();
+        let mut machines = self.machines.clone();
+        for observed in &mut machines {
+            if let Some(role) = roles.get(&observed.machine.id) {
+                observed.machine.accepts_ingress = *role;
+            }
+        }
+        machines
     }
 
     pub(super) fn fail_inspects(mut self, message: &str) -> Self {
@@ -775,9 +892,21 @@ impl FakeMachine for DeployService {
         if let Some(error) = self.machines_error.lock().unwrap().clone() {
             return encoded(RpcResponse::from(error));
         }
+        let mut machines = self.listed_machines();
+        let lags = self
+            .row_lag
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reads| {
+                reads.checked_sub(1)
+            })
+            .is_ok();
+        if lags {
+            for observed in &mut machines {
+                observed.machine.accepts_ingress = false;
+            }
+        }
         encoded(RpcResponse::from(MachineList {
             enrollment: None,
-            machines: self.machines.clone(),
+            machines,
         }))
     }
 
@@ -850,10 +979,16 @@ impl FakeMachine for DeployService {
             return Err(Status::invalid_argument("expected Inspect"));
         };
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
+        // The Machine's own record, which a role change reaches before its replicated row.
+        let record = self
+            .listed_machines()
+            .into_iter()
+            .find(|observed| observed.machine.id == machine_id)
+            .map(|observed| observed.machine);
         encoded(RpcResponse::from(MachineDetails {
             id: machine_id,
             phase: LocalMachinePhase::Participating,
-            machine: None,
+            machine: record,
             public_key: WireGuardPublicKey([0; 32]),
             advertised_endpoints: Vec::new(),
             store_version: BTreeMap::new(),
@@ -1052,23 +1187,27 @@ impl FakeMachine for DeployService {
                         container_id
                     }
                 };
-                if let Some(error) = &self.start_error {
+                if let Some(error) = self.start_error(machine_id) {
+                    self.rival_starts(machine_id);
                     return encoded(RpcResponse::from(error.clone()));
                 }
-                (
-                    ContainerNow::Present(self.observed(
-                        machine_id,
-                        container_id,
-                        new.resolved_spec,
-                    )),
-                    None,
-                )
+                let mut observed = self.observed(machine_id, container_id, new.resolved_spec);
+                observed
+                    .try_update(|parts| parts.namespace = new.slot.namespace.clone())
+                    .unwrap();
+                if self.lists_created && existing.is_none() {
+                    self.listed_containers
+                        .lock()
+                        .unwrap()
+                        .push(observed.clone());
+                }
+                (ContainerNow::Present(observed), None)
             }
             ployz_core::ContainerWant::Running {
                 container: RunTarget::Existing(locator),
                 ..
             } => {
-                if let Some(error) = &self.start_error {
+                if let Some(error) = self.start_error(machine_id) {
                     return encoded(RpcResponse::from(error.clone()));
                 }
                 let container_id = self.located(&locator)?;
@@ -1101,11 +1240,21 @@ impl FakeMachine for DeployService {
                 )
             }
             ployz_core::ContainerWant::Gone { container, .. } => {
+                if let Some(refusal) = &self.removal_refusal {
+                    return encoded(RpcResponse::from(refusal.clone()));
+                }
                 if let Ok(container_id) = self.located(&container) {
                     if let Err(answer) = turned(container_id).await {
                         return encoded(RpcResponse::from(answer));
                     }
                     self.removed.lock().unwrap().insert(container_id);
+                    if self.lists_created {
+                        self.listed_containers
+                            .lock()
+                            .unwrap()
+                            .retain(|listed| listed.container_id != container_id);
+                    }
+                    self.rival_starts(machine_id);
                 }
                 (ContainerNow::Absent { of: container }, None)
             }
@@ -1337,10 +1486,28 @@ impl FakeMachine for DeployService {
     }
     async fn update_machine(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        unused()
+        let machine_id = machine_from_metadata(&request)?;
+        let RpcRequestBody::UpdateMachine(update) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected update_machine"));
+        };
+        if let Some(role) = update.update.accepts_ingress {
+            if let (false, Some(refusal)) = (role, &self.role_off_refusal) {
+                return encoded(RpcResponse::from(refusal.clone()));
+            }
+            self.ingress_roles.lock().unwrap().insert(machine_id, role);
+        }
+        let machine = self
+            .listed_machines()
+            .into_iter()
+            .find(|observed| observed.machine.id == machine_id)
+            .ok_or_else(|| Status::not_found("no such Machine"))?
+            .machine;
+        encoded(RpcResponse::from(ployz_core::MachineUpdated { machine }))
     }
     async fn leave(
         &self,
@@ -1606,7 +1773,9 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             labels: Default::default(),
             accepts_builds: true,
             accepts_services: true,
-            accepts_ingress: true,
+            // An ingress Machine with no Ingress Proxy running makes a deploy look up the
+            // latest Caddy on Docker Hub, which these tests must not reach.
+            accepts_ingress: false,
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())

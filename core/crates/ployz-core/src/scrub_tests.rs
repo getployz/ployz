@@ -247,6 +247,37 @@ fn each_line_of_a_multiline_value_is_scrubbed() {
 }
 
 #[test]
+fn every_log_row_of_a_multiline_value_is_scrubbed_unless_the_value_is_refused() {
+    let cases = [
+        ("-----BEGIN-----\r\nMIIBOgIBAAJ\r\n-----END-----\r\n", false),
+        ("abcde\r\nfghijk", false),
+        ("abc\rdef\nghijkl", false),
+        ("first-line\n\nthird-line\n", false),
+        ("first-line\nab\n", true),
+        ("abcdef\r\nxy\r\nghijkl", true),
+        ("\nabc", true),
+        ("first-line\n\r\nthird-line", true),
+    ];
+    for (value, refused) in cases {
+        assert_eq!(has_short_row(value), refused, "{value:?}");
+        if refused {
+            continue;
+        }
+        let forms = SealedForms::compile(&secrets(&[("CERT", value)]));
+        // Docker ends a log row at each `\n`, dropping it and keeping a `\r`.
+        for row in value.split('\n').filter(|row| !row.is_empty()) {
+            assert!(
+                !forms.scrub(row, &mut 0).contains(row),
+                "{value:?} shows {row:?}"
+            );
+        }
+    }
+    for one_row in ["t0ken", "t0ken\n"] {
+        assert!(!has_short_row(one_row), "{one_row:?} is refused");
+    }
+}
+
+#[test]
 fn a_line_end_releases_beside_a_multiline_value() {
     let forms = SealedForms::compile(&secrets(&[("CERT", "line1-secret\nline2-secret")]));
     let mut scrub = FrameScrub::new();

@@ -617,11 +617,28 @@ pub(crate) fn ingress_headline(stem: &str, error: &Error) -> String {
 }
 
 /// Direct ingress diagnostics acquire their command scope before committed output is serialized.
-pub(crate) fn ingress_hints(mut error: Error, command: impl Fn(&[&str]) -> String) -> Error {
+pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> String) -> Error {
+    let retry = error
+        .diagnostic()
+        .and_then(|diagnostic| diagnostic.failed_machine)
+        .map(|machine| {
+            crate::ui::Hint::Retry(command(&[
+                "server",
+                "set",
+                &machine.to_string(),
+                "--accepts-ingress=true",
+            ]))
+        });
+    ingress_log_hints(error, command).hint(retry)
+}
+
+/// [`ingress_hints`] without the retry, for a failure that has the reader do something else
+/// first.
+pub(crate) fn ingress_log_hints(mut error: Error, command: impl Fn(&[&str]) -> String) -> Error {
     let Some(diagnostic) = error.diagnostic() else {
         return error;
     };
-    let mut hints = diagnostic
+    let hints = diagnostic
         .logs
         .iter()
         .map(|tail| {
@@ -633,14 +650,6 @@ pub(crate) fn ingress_hints(mut error: Error, command: impl Fn(&[&str]) -> Strin
             ]))
         })
         .collect::<Vec<_>>();
-    if let Some(machine) = diagnostic.failed_machine {
-        hints.push(crate::ui::Hint::Retry(command(&[
-            "server",
-            "set",
-            &machine.to_string(),
-            "--accepts-ingress=true",
-        ])));
-    }
     for hint in hints {
         error = error.hint(hint);
     }

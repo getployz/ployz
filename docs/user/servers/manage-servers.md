@@ -258,10 +258,13 @@ so; the next drain removes it, along with any old container an earlier drain lef
 container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`
 names a draining container only when the service has too few others serving.
 If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
-reads **Drain again**. Turning services back on doesn't move anything back.
+reads **Drain again**. One failure doesn't count: a drain also moves containers off other servers whose
+services are off, and when one of those moves fails without leaving anything behind, its row says the
+service still runs on that server, but that failure alone doesn't make this server's drain incomplete. Turning services back on doesn't
+move anything back.
 
 `ployz server drain web-2` does the same from the CLI and exits non-zero if anything stayed or
-failed. It waits for an approval first when a global service would run on no other server (see
+failed, apart from that other server's move. It waits for an approval first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
@@ -282,9 +285,20 @@ If it still can't start, the section says why again and the switch stays off.
 From the CLI, `ployz server set web-1 --accepts-ingress=false` turns the role off but leaves the web
 server running; use the switch to stop it. `--accepts-ingress=true` turns the role on before it
 starts the web server, so while the web server starts, the line under the switch reads **The web server
-isn't running, so your domains don't point here.** It reads the same when the start fails: the command
-exits with code 3 and leaves the role on. To try again from Ployz Cloud, turn the switch off, then on.
-If the web server still can't start, the section says why and the switch goes back off.
+isn't running, so your domains don't point here.** When the role was off and the command sees that no
+web server is left on the server, it turns the role back off and says why. That happens when something
+else holds the port: `Web traffic stays off on web-1: port 80 or 443 is in use. Free it, then try
+again.` It also happens when the web server stopped right after it started and Ployz removed it. The
+command exits with code 3, and the line under the switch reads **Web traffic is off**. If turning the
+role back off fails too, it says so and prints the command that turns it off.
+
+Any other failed start leaves the role on, says `Server updated; the Ingress Proxy did not follow`
+with the cause, and exits with code 3. That covers an image that won't pull, any other error from
+Docker, a web server Ployz couldn't remove, a server that stopped answering, and a role that was
+already on. It also covers a server that still has a web server after the failure: an older one Ployz
+started again, or one another `ployz` or Ployz Cloud started there meanwhile. Until a web server runs
+there, the page reads **The web server isn't running, so your domains don't point here.** To try again
+from Ployz Cloud, turn the switch off, then on.
 
 ## Upgrade Ployz on a server
 
@@ -395,7 +409,12 @@ the daemon version observed before the request. When that version is known, succ
 include `change` as `upgraded`, `downgraded`, or `unchanged`. Otherwise the command says the Server
 `now runs` the returned version and leaves out `change`.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
-command quickly instead of waiting out the upgrade.
+command quickly instead of waiting out the upgrade. Once a server has taken the upgrade, it gets
+up to 5 minutes to answer again, the time its daemon has to restart, within the command's overall
+16 minutes. Without Ployz Cloud, a server that powers off or loses its network while it upgrades
+stops the command after those 5 minutes with
+`Server machine-1 stopped answering during upgrade …`, and exits 3. Once it's back,
+`ployz server show` says how the upgrade ended.
 
 An upgrade doesn't always replace the web server Ployz runs on each server. One created by an
 earlier release can hang a request for about 15 minutes when a server running one of your
@@ -545,7 +564,11 @@ the drain command. The warning leaves out what a drain won't move: services with
 mount on the server, global services, and Ployz's own web server. On your last server it skips that
 warning. After the removal it warns which replicated services now run no replicas, because all of
 them were on that server, and prints `ployz deploy` as the next step. It warns separately which
-other replicated services may now run short of replicas. With `--json` the removal lists every
+other replicated services may now run short of replicas. A deploy that still has work on that
+server when the removal finishes fails on its turn with `Server machine-2 was removed while the
+deploy ran`, and the deploy's web traffic check doesn't count the removed server as unchecked.
+That needs Ployz 0.3.4 or later on the server the CLI connects through; an older one names the
+server's ID instead. With `--json` the removal lists every
 service left short as `under_replicated`. It also lists a service as `no_copies` when every other
 server answered and none showed a replica of it. If a server didn't answer, the service is listed
 only as `under_replicated`. `ployz status` keeps naming a service with no replicas until a deploy
@@ -633,7 +656,8 @@ and the server is gone but still listed.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
-data stay on the disk. If it says `Ployz mutation or installation is active; retry uninstall`,
+data stay on the disk. It also removes the server's Fleet Token and its check-in identity, so
+installing it again with a Fleet Token checks it in as a new host, as on any other server. If it says `Ployz mutation or installation is active; retry uninstall`,
 wait for the upgrade or install to finish and run it again. Nothing was removed.
 
 ## Forget a server that is gone

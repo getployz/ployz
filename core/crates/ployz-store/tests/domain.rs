@@ -1038,6 +1038,46 @@ fn a_generated_prefix_changes_to_a_free_dns_label() {
 }
 
 #[test]
+fn a_generated_hostname_longer_than_a_hostname_is_refused_when_its_prefix_is_chosen() {
+    let (store, who) = shop();
+    let mut trusted = cloud();
+    // 245 characters: `web` fits under it, a 10-character prefix makes 256.
+    let cluster = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(53)
+    );
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host(&cluster);
+    let added = store
+        .write_trusted(&who, &add(None, None), &trusted)
+        .unwrap();
+    assert_eq!(added.written.domain.shown(), format!("web.{cluster}"));
+
+    let long = "abcdefghij";
+    for refused in [
+        store
+            .write_trusted(&who, &set_prefix(None, long), &trusted)
+            .unwrap_err(),
+        store
+            .write_trusted(&who, &add_prefix(long), &trusted)
+            .unwrap_err(),
+    ] {
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+        assert!(refused.message.contains("253"), "{refused:?}");
+        assert_eq!(refused.details["hostname"], format!("{long}.{cluster}"));
+    }
+    assert_eq!(
+        rows(&store, &who, &trusted)
+            .iter()
+            .map(|row| row.domain.shown().to_owned())
+            .collect::<Vec<_>>(),
+        [format!("web.{cluster}")]
+    );
+}
+
+#[test]
 fn a_new_generated_prefix_avoids_published_hostnames() {
     let (store, who) = shop();
     let added = store

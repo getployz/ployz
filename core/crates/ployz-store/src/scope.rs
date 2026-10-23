@@ -891,6 +891,7 @@ pub(crate) fn validate_and_refresh_working_from(
         .intent(0, "Working State")?;
     // Every write of Working State, whole or not, comes through here.
     crate::names::refuse_new_reserved(&before, &environment.working)?;
+    crate::client_sealed::refuse_port(&environment.working)?;
     let (working, live) = checked(
         tx,
         &environment.summary,
@@ -927,6 +928,7 @@ pub(crate) fn checked(
     from: Option<&SavedEnvironmentIntent>,
     after: &SavedEnvironmentIntent,
 ) -> Result<(SavedEnvironmentIntent, BTreeMap<String, String>), RpcError> {
+    crate::volume::refuse_new_mounts(before, from, after)?;
     let document = serde_json::to_value(after).expect("an intent is JSON");
     let after = parse_environment_intent(document)
         .map_err(|error| error::invalid(error.message, json!({ "path": error.path })))?;

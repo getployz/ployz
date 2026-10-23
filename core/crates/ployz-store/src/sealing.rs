@@ -19,7 +19,7 @@ use serde_json::json;
 
 use crate::error;
 
-const FINGERPRINT_VERSION: &str = "v1";
+pub(crate) const FINGERPRINT_VERSION: &str = "v1";
 const FINGERPRINT_KEY_PURPOSE: &[u8] = b"ployz:variable-value-fingerprint:v1";
 const SEALED_FINGERPRINT_PURPOSE: &[u8] = b"ployz:sealed-variable-value:v1";
 
