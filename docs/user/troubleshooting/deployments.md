@@ -11,7 +11,9 @@ name first. The page opens on the card that failed, with its servers and logs. S
 
 `ployz deploy` and `ployz up` show progress on stderr. On a terminal, the live block
 shows one row per Service, grouped under the depth at which it starts. The count on a
-row is Servers, not replicas. A booting Service counts each Server whose new
+row is Servers, not replicas. A deploy first downloads every image it runs onto each
+Server, before any Server starts work. Until then each row reads `waiting 0/3 (pulling
+<image>)`, and a large image can hold it there for minutes. A booting Service counts each Server whose new
 Containers are ready, so it can read `booting 1/3` while the others boot. Once every
 Server is ready it reads `switching N/N` until they switch together, then
 `switched N/N`. A row whose new Containers already serve shows a `draining old` line

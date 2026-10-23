@@ -20,6 +20,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 pub(super) fn frame(view: &DeploymentView) -> Frame {
     let mut rows = Vec::new();
+    let pulling = pulling(view);
     for (index, node) in view.nodes.iter().enumerate() {
         let DeployedNode::Service { name, .. } = &node.node else {
             rows.push(Row {
@@ -39,6 +40,9 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         };
         let runtime = view.runtime_names.get(name).unwrap_or(name);
         let mut row = runtime_row(view, name, runtime, &node.rows);
+        if pulling && row.state == State::Pending {
+            row.detail = image(view, runtime).map(|image| format!("pulling {image}"));
+        }
         if node.rows.is_empty() {
             let build = view.builds.iter().find(|build| build.service == *name);
             row.state = node_state(
@@ -153,6 +157,34 @@ fn by_service_name(view: &DeploymentView, mut warning: DeployWarning) -> DeployW
 
 /// Service `name`'s row from its recorded work on each Server, read against the plan
 /// for `runtime`.
+/// Whether the run is pulling its images: a Deploy pulls every image it runs on each
+/// Server before any Server starts work, so a running Deploy whose builds are done
+/// and whose every row still waits is pulling.
+fn pulling(view: &DeploymentView) -> bool {
+    view.deployment.status == DeploymentStatus::Running
+        && view.preview.is_some()
+        && view
+            .builds
+            .iter()
+            .all(|build| !matches!(build.status, BuildStatus::Pending | BuildStatus::Building))
+        && view
+            .nodes
+            .iter()
+            .flat_map(|node| &node.rows)
+            .all(|row| matches!(row.state, RowState::Pending))
+}
+
+/// The image the plan runs for Service `runtime`.
+fn image<'a>(view: &'a DeploymentView, runtime: &ServiceName) -> Option<&'a str> {
+    view.preview
+        .as_ref()?
+        .operations
+        .iter()
+        .filter(|row| row.service_name() == Some(runtime))
+        .find_map(|row| row.operation.spec())
+        .map(|spec| spec.container.image.as_str())
+}
+
 fn runtime_row(
     view: &DeploymentView,
     name: &ServiceName,
@@ -1848,6 +1880,74 @@ mod tests {
             ingress_warnings(&view),
             ["Couldn't check ingress. Deploy again to retry."]
         );
+    }
+
+    /// A Deploy pulls every image before any Server starts work (#2879).
+    fn pulling_view(row: &str) -> DeploymentView {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Running;
+        view.deployment.outcome = None;
+        view.runtime_names.clear();
+        let requested: ployz_core::RequestedServiceSpec = serde_json::from_value(json!({
+            "name": "web", "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": "pytorch/pytorch:2.5.1", "pull_policy": "missing"}
+        }))
+        .unwrap();
+        let spec = requested
+            .to_resolved(
+                ployz_core::ServiceId::random(),
+                ployz_core::ResolvedUpdateConfig {
+                    order: ployz_core::UpdateOrder::StartFirst,
+                    monitor_millis: None,
+                },
+            )
+            .unwrap();
+        let machine: ployz_core::MachineId = "a".repeat(32).parse().unwrap();
+        view.preview = Some(ployz_core::DeployPreview::new(
+            vec![ployz_core::OperationRow {
+                index: 0,
+                machine_id: machine,
+                machine_name: None,
+                service_name: Some("web".parse().unwrap()),
+                display_name: None,
+                operation: ployz_core::DeployOperation::RunContainer {
+                    machine_id: machine,
+                    spec,
+                    skip_health_monitor: false,
+                },
+                status: ployz_core::OperationStatus::Pending,
+            }],
+            Vec::new(),
+            view.namespace.clone(),
+        ));
+        view.nodes = serde_json::from_value(json!([
+            {"type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "pending", "rows": [
+                {"machine_id": "a".repeat(32), "server": "edge", "state": row}
+            ]}
+        ]))
+        .unwrap();
+        view
+    }
+
+    #[test]
+    fn a_service_whose_servers_pull_its_image_says_so() {
+        let frame = frame(&pulling_view("pending"));
+        let row = frame.rows.first().unwrap();
+        assert_eq!(row.state, State::Pending);
+        assert_eq!(row.detail.as_deref(), Some("pulling pytorch/pytorch:2.5.1"));
+    }
+
+    #[test]
+    fn once_a_server_starts_work_nothing_is_pulling() {
+        let mut view = pulling_view("pending");
+        view.nodes = serde_json::from_value(json!([
+            {"type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "pending", "rows": [
+                {"machine_id": "a".repeat(32), "server": "edge", "state": "running", "phase": "starting", "serving": false}
+            ]}
+        ]))
+        .unwrap();
+        let frame = frame(&view);
+        assert_eq!(frame.rows.first().unwrap().detail, None);
     }
 
     #[test]
