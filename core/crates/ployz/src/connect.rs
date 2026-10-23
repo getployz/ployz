@@ -1190,6 +1190,13 @@ impl TransportError {
             || !self.detailed)
     }
 
+    /// The call's path to its target went away: the client's connection or stream broke, the
+    /// call was cancelled, its session closed, or the entry marked the target silent or unreached.
+    /// A status tonic or the daemon made, such as a decode failure, is not one.
+    pub(crate) fn connection_lost(&self) -> bool {
+        self.unanswered || self.session_closed || self.routed_unanswered || self.routed_unreached
+    }
+
     pub(crate) fn budget_expired(message: &str) -> Self {
         Self {
             budget_expired: true,
