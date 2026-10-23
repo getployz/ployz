@@ -581,6 +581,71 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
 }
 
 #[test]
+fn a_volume_never_mounts_over_the_kernel_filesystems_or_another_mount() {
+    let (store, who) = shop();
+    let create = |n: u8, name: &str, at: &str| {
+        store
+            .write(
+                &who,
+                &CreateVolume {
+                    shared_writes: false,
+                    storage_locked: false,
+                    restored_from: None,
+                    storage: ployz_core::config::VolumeKind::Docker {},
+                    id: VolumeId::parse(format!("00000000-0000-4000-8000-0000000000{n:02}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: VolumeName::parse(name).unwrap(),
+                    mounts: vec![Mount {
+                        service: ServiceName::parse("web").unwrap(),
+                        path: at.into(),
+                    }],
+                },
+            )
+            .map(|_| ())
+    };
+    let set = |at: &str, to: &str| {
+        edit(
+            &store,
+            &who,
+            Change::Set {
+                path: path(at),
+                value: json!(to),
+            },
+        )
+    };
+
+    for at in ["/proc", "/sys/fs", "/dev/shm", "/proc/", "/var/../dev"] {
+        let refused = create(10, "kernel", at).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{at}");
+        assert!(
+            refused.message.contains("which the kernel fills"),
+            "{}",
+            refused.message
+        );
+    }
+
+    for at in ["/data", "/data/", "/data/.", "//data"] {
+        let refused = create(10, "again", at).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Conflict, "{at}");
+        assert_eq!(
+            refused.message,
+            "web already mounts Volume data at /data; pick another directory"
+        );
+    }
+    assert_eq!(listed(&store, &who).len(), 1);
+
+    create(11, "logs", "/devices").unwrap();
+    let moved = set("web.mounts.logs", "/data/").unwrap_err();
+    assert_eq!(moved.code, RpcErrorCode::Conflict);
+    let kernel = set("web.mounts.logs", "/sys").unwrap_err();
+    assert_eq!(kernel.code, RpcErrorCode::InvalidArgument);
+
+    // A Volume moving to another spelling of its own path is not a clash.
+    set("web.mounts.data", "/data/").unwrap();
+}
+
+#[test]
 fn an_undeployed_volume_is_removed_without_servers() {
     let (store, who) = shop();
     let removed = store

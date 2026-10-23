@@ -28,6 +28,9 @@ The volume shows as a tray under the service's card, and your app reads and writ
 that directory. Open the menu at the end of the mount's row and choose **Edit directory** to move it.
 Manage mounts from the volume's panel. Mount forms appear when you choose an action, and keep
 your entered directory if a write fails.
+Each directory holds one volume or config, so choose another directory if the service already
+mounts one there; `/data/` and `/data` are the same directory. A volume can't mount under `/proc`,
+`/sys` or `/dev`, which the kernel fills.
 
 ## Choose the storage limit
 

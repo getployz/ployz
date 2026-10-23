@@ -377,6 +377,8 @@ pub(crate) fn attach(
         )
     })?;
     let id = environment.volume(volume)?.resource_id.clone();
+    let volumes = environment.working.volumes.clone();
+    let configs = environment.working.configs.clone();
     let node = environment.service_mut(service)?;
     let mount = VolumeAttachment {
         volume_resource_id: id.clone(),
@@ -384,6 +386,41 @@ pub(crate) fn attach(
     };
     if node.volume_attachments.contains(&mount) {
         return Ok(false);
+    }
+    let at = mount.container_path();
+    if let Some(kernel) = crate::config_item::kernel_filled(&at) {
+        return Err(error::invalid(
+            format!(
+                "{service}.mounts.{volume}: {at} is under {kernel}, which the kernel fills, so it can't hold a Volume"
+            ),
+            json!({ "example": "/var/lib/data" }),
+        ));
+    }
+    let same_volume = node
+        .volume_attachments
+        .iter()
+        .filter(|held| held.volume_resource_id != id && held.container_path() == at)
+        .find_map(|held| {
+            volumes
+                .iter()
+                .find(|other| other.resource_id == held.volume_resource_id)
+                .map(|other| format!("Volume {}", other.name))
+        });
+    let same_config = node
+        .config_attachments
+        .iter()
+        .filter(|held| held.mount_dir.as_str() == at)
+        .find_map(|held| {
+            configs
+                .iter()
+                .find(|config| config.resource_id == held.config_resource_id)
+                .map(|config| format!("Config {}", config.name))
+        });
+    if let Some(what) = same_volume.or(same_config) {
+        return Err(error::conflict(
+            format!("{service} already mounts {what} at {at}; pick another directory"),
+            json!({ "service": service, "dir": at }),
+        ));
     }
     node.volume_attachments
         .retain(|mount| mount.volume_resource_id != id);
