@@ -8,7 +8,8 @@ use std::{
 };
 
 use ployz_core::{
-    MachineVersion, RELEASE_PUBLIC_KEY, RELEASE_SIGNATURE_ASSET, verify_release_checksums,
+    MachineVersion, RELEASE_MIRRORS, RELEASE_PUBLIC_KEY, RELEASE_SIGNATURE_ASSET,
+    from_release_mirrors, verify_release_checksums,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -16,7 +17,6 @@ use tokio::time::timeout;
 
 use super::ProvisionError;
 
-const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz";
 pub(super) const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A verified copy of this CLI release's daemon, owned by a private directory.
@@ -27,13 +27,11 @@ pub(super) struct Bootstrap {
 }
 
 impl Bootstrap {
-    /// Download, checksum, and extract this release's bootstrap for a Linux architecture.
+    /// Download, checksum, and extract this release's bootstrap for a Linux architecture, from
+    /// GitHub or, when GitHub can't be reached, ployz.sh.
     pub(super) async fn acquire(architecture: &str) -> Result<Self, ProvisionError> {
         let archive_name = daemon_archive(architecture)?;
-        let base = format!(
-            "{RELEASE_REPOSITORY}/releases/download/v{}",
-            env!("CARGO_PKG_VERSION")
-        );
+        let release = concat!("v", env!("CARGO_PKG_VERSION"));
         let client = reqwest::Client::builder()
             .https_only(true)
             .connect_timeout(Duration::from_secs(10))
@@ -44,22 +42,28 @@ impl Bootstrap {
                 stage: "build bootstrap download client",
                 source,
             })?;
-        let archive = download(
-            &client,
-            &format!("{base}/{archive_name}"),
-            "download bootstrap daemon archive",
+        let archive = from_release_mirrors(
+            &RELEASE_MIRRORS,
+            &format!("{release}/{archive_name}"),
+            |url| download(&client, url, "download bootstrap daemon archive"),
         )
         .await?;
-        let checksums = download(
-            &client,
-            &format!("{base}/checksums.txt"),
-            "download bootstrap release checksums",
+        let checksums = from_release_mirrors(
+            &RELEASE_MIRRORS,
+            &format!("{release}/checksums.txt"),
+            |url| download(&client, url, "download bootstrap release checksums"),
         )
         .await?;
-        let signature = download_if_present(
-            &client,
-            &format!("{base}/{RELEASE_SIGNATURE_ASSET}"),
-            "download bootstrap release checksums signature",
+        let signature = from_release_mirrors(
+            &RELEASE_MIRRORS,
+            &format!("{release}/{RELEASE_SIGNATURE_ASSET}"),
+            |url| {
+                download_if_present(
+                    &client,
+                    url,
+                    "download bootstrap release checksums signature",
+                )
+            },
         )
         .await?;
         Self::extract(
@@ -184,7 +188,7 @@ pub(super) async fn verify_command_version(
 
 async fn download(
     client: &reqwest::Client,
-    url: &str,
+    url: String,
     stage: &'static str,
 ) -> Result<Vec<u8>, ProvisionError> {
     client
@@ -203,7 +207,7 @@ async fn download(
 /// Download `url`, or `None` when the release does not publish it.
 async fn download_if_present(
     client: &reqwest::Client,
-    url: &str,
+    url: String,
     stage: &'static str,
 ) -> Result<Option<Vec<u8>>, ProvisionError> {
     let response = client
@@ -367,25 +371,52 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
         let url = serve_status("404 Not Found").await;
-        let absent = download_if_present(&client, &url, "signature")
+        let absent = download_if_present(&client, url, "signature")
             .await
             .unwrap();
         assert_eq!(absent, None);
 
         let url = serve_status("200 OK").await;
-        let present = download_if_present(&client, &url, "signature")
+        let present = download_if_present(&client, url, "signature")
             .await
             .unwrap();
         assert_eq!(present.as_deref(), Some(b"body".as_slice()));
 
         let url = serve_status("500 Internal Server Error").await;
-        let failed = download_if_present(&client, &url, "signature").await;
+        let failed = download_if_present(&client, url, "signature").await;
         assert!(matches!(
             failed,
             Err(ProvisionError::BootstrapDownload {
                 stage: "signature",
                 ..
             })
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_mirror_falls_back_through_the_download_error() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refused = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let fallback = serve_status("200 OK").await;
+        let fallback = fallback.trim_end_matches("/checksums.txt.minisig");
+        let fetched = from_release_mirrors(&[&refused, fallback], "checksums.txt.minisig", |url| {
+            download(&client, url, "signature")
+        })
+        .await
+        .unwrap();
+        assert_eq!(fetched, b"body");
+
+        let failing = serve_status("500 Internal Server Error").await;
+        let failing = failing.trim_end_matches("/checksums.txt.minisig");
+        let failed = from_release_mirrors(&[failing, &refused], "checksums.txt.minisig", |url| {
+            download(&client, url, "signature")
+        })
+        .await;
+        assert!(matches!(
+            failed,
+            Err(ProvisionError::BootstrapDownload { source, .. }) if source.status().is_some()
         ));
     }
 }

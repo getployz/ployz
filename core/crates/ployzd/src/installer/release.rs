@@ -18,11 +18,10 @@ use tokio::{process::Command, time::timeout};
 
 use super::{Error, InstallPaths, daemon_archive, run_command};
 use ployz_core::{
-    MachineRelease, MachineUpgradeStage, MachineVersion, RELEASE_SIGNATURE_ASSET,
-    verify_release_checksums,
+    MachineRelease, MachineUpgradeStage, MachineVersion, RELEASE_MIRRORS, RELEASE_SIGNATURE_ASSET,
+    from_release_mirrors, verify_release_checksums,
 };
 
-const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz";
 const CHANNEL_URL: &str = "https://ployz.sh";
 /// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
 const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
@@ -89,7 +88,14 @@ impl ReleaseSource {
         stage: &'static str,
     ) -> Result<Option<Vec<u8>>, Error> {
         match self {
-            Self::Published => fetch_if_present(&release_url(target, file), stage).await,
+            Self::Published => {
+                let client = download_client()?;
+                from_release_mirrors(&RELEASE_MIRRORS, &format!("v{target}/{file}"), |url| {
+                    get_if_present(&client, url)
+                })
+                .await
+                .map_err(|error| download_error(stage, &error))
+            }
             #[cfg(test)]
             Self::Local(directory) => match fs::read(directory.join(file)) {
                 Ok(bytes) => Ok(Some(bytes)),
@@ -170,47 +176,38 @@ pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
 
 /// Download `url`, or `None` when the server answers 404.
 async fn fetch_if_present(url: &str, stage: &str) -> Result<Option<Vec<u8>>, Error> {
-    let client = reqwest::Client::builder()
+    get_if_present(&download_client()?, url.to_owned())
+        .await
+        .map_err(|error| download_error(stage, &error))
+}
+
+fn download_client() -> Result<reqwest::Client, Error> {
+    reqwest::Client::builder()
         .https_only(true)
         .connect_timeout(DOWNLOAD_TIMEOUT)
         .read_timeout(DOWNLOAD_TIMEOUT)
         .user_agent("ployzd-installer")
         .build()
-        .map_err(|error| {
-            Error::ReleaseSelection(format!(
-                "build download client: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            ))
-        })?;
-    let response = client.get(url).send().await.map_err(|error| {
-        Error::ReleaseSelection(format!(
-            "{stage}: {error}",
-            error = ployz_core::error_chain::inline(&error),
-        ))
-    })?;
+        .map_err(|error| download_error("build download client", &error))
+}
+
+async fn get_if_present(
+    client: &reqwest::Client,
+    url: String,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    let response = client.get(url).send().await?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    let response = response.error_for_status().map_err(|error| {
-        Error::ReleaseSelection(format!(
-            "{stage}: {error}",
-            error = ployz_core::error_chain::inline(&error),
-        ))
-    })?;
-    response
-        .bytes()
-        .await
-        .map(|bytes| Some(bytes.to_vec()))
-        .map_err(|error| {
-            Error::ReleaseSelection(format!(
-                "{stage}: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            ))
-        })
+    let bytes = response.error_for_status()?.bytes().await?;
+    Ok(Some(bytes.to_vec()))
 }
 
-fn release_url(target: &MachineVersion, file: &str) -> String {
-    format!("{RELEASE_REPOSITORY}/releases/download/v{target}/{file}")
+fn download_error(stage: &str, error: &reqwest::Error) -> Error {
+    Error::ReleaseSelection(format!(
+        "{stage}: {error}",
+        error = ployz_core::error_chain::inline(error),
+    ))
 }
 
 pub(super) async fn install_binaries(
@@ -505,6 +502,10 @@ fn root_ownership(path: &Path, stage: &'static str) -> Result<(), Error> {
     let _ = (path, stage);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "release_mirror_tests.rs"]
+mod mirror_tests;
 
 #[cfg(test)]
 mod tests {
