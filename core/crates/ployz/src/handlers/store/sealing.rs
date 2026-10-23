@@ -13,7 +13,6 @@ use uuid::Uuid;
 
 use super::{Backend, Error, Store};
 use crate::cloud_account::{self, StoreCallError};
-use crate::cloud_login::LoginError;
 use crate::sealing::seal_value;
 use crate::ui::Hint;
 
@@ -38,17 +37,15 @@ impl Backend {
         let Self::Cloud(runtime, credential) = self else {
             return Ok(Sealing::Off);
         };
-        match runtime.block_on(cloud_account::config_store(
+        let answer = runtime.block_on(cloud_account::config_store_if_routed(
             credential,
             cloud_account::Via::Cli,
             "sealing",
             query,
-            None,
-        )) {
-            // A Cloud from before this CLI sealed has no such route: its Store seals.
-            Err(StoreCallError::Cloud(LoginError::Unsupported(_))) => Ok(Sealing::Off),
-            answer => answer,
-        }
+        ))?;
+        // Mixed-version: a Cloud from before this CLI sealed has no such route, and
+        // its Store seals. Delete with `ployz_store::old_cli`.
+        Ok(answer.unwrap_or(Sealing::Off))
     }
 }
 
