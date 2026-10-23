@@ -334,6 +334,12 @@ impl RunningCorrosion {
     /// actor is then a peer's like any other, so sync pulls back the versions of it that
     /// peers hold and this store lost. Corrosion runs again on every exit but one: a
     /// handoff left half done, which the next start finishes before Corrosion runs.
+    /// Whether a rotation stopped between dropping the old store's WAL and replacing it.
+    #[must_use]
+    pub fn handoff_pending(&self) -> bool {
+        rotation::half_done(&self.service.data_dir)
+    }
+
     pub async fn rotate_actor(&mut self) -> Result<(), Error> {
         self.stop_keeper().await;
         let rotated = async {
@@ -347,7 +353,7 @@ impl RunningCorrosion {
         }
         .await;
         // Mid-handoff, the old store has lost its WAL, so it must not run again.
-        if rotated.is_err() && rotation::half_done(&self.service.data_dir) {
+        if rotated.is_err() && self.handoff_pending() {
             return rotated;
         }
         let started = self.service.start(&self.files).await;

@@ -26,7 +26,7 @@ use tokio::time::Instant;
 
 use crate::{
     boot_pass::{actor_key, alone, target_versions},
-    corrosion::{RunningCorrosion, wait_for_catch_up},
+    corrosion::{Error, RunningCorrosion, wait_for_catch_up},
     filesystem::atomic_write,
     machine::RecordOwner,
     network::NetworkPlane,
@@ -153,13 +153,14 @@ pub(crate) fn decide(last: LastStop, tail: OwnTail, every_peer_answered: bool) -
 
 /// Runs the check, and the rotation it calls for, before any writer starts. A failure
 /// to check or rotate leaves the daemon starting, on the old actor or the new one, with
-/// Corrosion kept running.
+/// Corrosion kept running. Only a store handoff left half done fails the start, so the
+/// next one finishes it before Corrosion runs.
 pub(crate) async fn recover(
     corrosion: &mut RunningCorrosion,
     network: Option<&mut NetworkPlane>,
     local: &RecordOwner,
     data_dir: &Path,
-) {
+) -> Result<(), Error> {
     let last = last_stop(data_dir);
     let settled = if local.record().phase() != LocalMachinePhase::Participating {
         true
@@ -167,12 +168,13 @@ pub(crate) async fn recover(
         tracing::info!("lost-tail check skipped, the last stop lost no commit ({last:?})");
         true
     } else {
-        check(corrosion, network, local, last).await
+        check(corrosion, network, local, last).await?
     };
     // Recorded only once settled, so a start that dies mid-check checks again.
     if settled && let Err(error) = record_start(data_dir) {
         tracing::warn!(error = %ployz_core::error_chain::inline(&error), "could not record this start, so the next one checks the store after any reboot");
     }
+    Ok(())
 }
 
 /// Whether the store's actor is settled: kept with every reachable peer behind it, or
@@ -182,19 +184,19 @@ async fn check(
     network: Option<&mut NetworkPlane>,
     local: &RecordOwner,
     last: LastStop,
-) -> bool {
+) -> Result<bool, Error> {
     let record = local.record();
     let store = corrosion.store().clone();
     let machines = match store.machines().await {
         Ok(machines) => machines,
         Err(error) => {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "lost-tail check skipped, could not read the Machine list");
-            return false;
+            return Ok(false);
         }
     };
     if alone(&machines, &record.id(), record.bootstrap()) {
         tracing::info!("lost-tail check skipped, no peer to compare the store with");
-        return true;
+        return Ok(true);
     }
     // At boot WireGuard knows only the bootstrap peers; the rest come from the store.
     if let Some(network) = network
@@ -212,7 +214,7 @@ async fn check(
         }
         Err(error) => {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "lost-tail check skipped, could not read the store's versions");
-            return false;
+            return Ok(false);
         }
     };
     let peers = machines
@@ -232,7 +234,7 @@ async fn check(
         peers.len()
     );
     let Action::Rotate { pull } = decide(last, tail, every_peer_answered) else {
-        return true;
+        return Ok(true);
     };
     match &pull {
         Some((lost, peer_head)) => tracing::warn!(
@@ -244,13 +246,16 @@ async fn check(
         ),
     }
     if let Err(error) = corrosion.rotate_actor().await {
+        if corrosion.handoff_pending() {
+            return Err(error);
+        }
         tracing::warn!(error = %ployz_core::error_chain::inline(&error), "could not rotate the Corrosion actor");
-        return false;
+        return Ok(false);
     }
     let rotated = store.local_actor().await.unwrap_or_default();
     let Some((lost, peer_head)) = pull else {
         tracing::info!("rotated Corrosion actor {actor} to {rotated}");
-        return true;
+        return Ok(true);
     };
     let target = BTreeMap::from([(lost.clone(), peer_head)]);
     match tokio::time::timeout(CATCH_UP_FOR, wait_for_catch_up(&store, &target)).await {
@@ -267,7 +272,7 @@ async fn check(
             CATCH_UP_FOR.as_secs()
         ),
     }
-    true
+    Ok(true)
 }
 
 /// Each peer's answer, asking again those that have not answered until all have, one

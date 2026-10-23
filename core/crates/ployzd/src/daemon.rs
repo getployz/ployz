@@ -278,7 +278,7 @@ impl Daemon {
         if let Some(running) = &mut corrosion {
             let _extend =
                 extend_systemd_start_timeout("checking the store for commits a power cut lost");
-            crate::lost_tail::recover(running, network.as_mut(), &local, &config.data_dir).await;
+            crate::lost_tail::recover(running, network.as_mut(), &local, &config.data_dir).await?;
         }
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let plugin = config
