@@ -515,6 +515,32 @@ fn superseded(
     .hint(Hint::Inspect(inspect))
 }
 
+/// The Deployment among `candidates` that took `view`'s Environment over: the first
+/// newer one that started after it and executed. None when none did, as when
+/// `view`'s claim lapsed while a newer one waited or was refused at its claim.
+pub(super) fn taker<'a>(
+    view: &DeploymentView,
+    candidates: &'a [DeploymentSummary],
+) -> Option<&'a DeploymentSummary> {
+    let ours = &view.deployment;
+    candidates
+        .iter()
+        .filter(|newer| newer.number > ours.number && newer.started_at >= ours.started_at)
+        .filter(|newer| newer.started_at.is_some())
+        .filter(|newer| {
+            !matches!(
+                newer.status,
+                DeploymentStatus::Queued
+                    | DeploymentStatus::WaitingForCi
+                    | DeploymentStatus::Superseded
+            ) && !matches!(
+                newer.outcome,
+                Some(ployz_store::Outcome::NotExecuted { .. })
+            )
+        })
+        .min_by_key(|newer| newer.number)
+}
+
 /// A newer Deployment took over this Environment while this one ran, so what it did
 /// stays unknown. Deploying again would only redo the newer one.
 pub(super) fn replaced(
@@ -523,13 +549,14 @@ pub(super) fn replaced(
     command: impl Fn(&[&str]) -> String,
 ) -> Failure {
     let shown = target(newer);
-    Failure::coded(
+    Failure::detailed(
         RpcErrorCode::Conflict,
         format!(
             "Deployment {} was replaced by {} before it finished.",
             view.deployment.label(),
             newer.label()
         ),
+        serde_json::json!({ "deployment": view.deployment.id, "replaced_by": newer.id }),
     )
     .hint(Hint::Inspect(command(&[
         "deployment",
@@ -1583,6 +1610,51 @@ mod tests {
             hints(&failure),
             ["inspect: ployz deployment show 8 --project shop --env production"]
         );
+    }
+
+    #[test]
+    fn only_a_newer_deployment_that_started_took_over() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Unknown;
+        view.deployment.started_at = Some(100);
+        let numbered = |number: u64, status: DeploymentStatus, started_at: Option<i64>| {
+            let mut newer = view.deployment.clone();
+            newer.id =
+                serde_json::from_value(json!(format!("cccccccc-cccc-4ccc-8ccc-{number:012}")))
+                    .unwrap();
+            newer.number = Some(number);
+            newer.status = status;
+            newer.started_at = started_at;
+            newer.outcome = None;
+            newer
+        };
+        let older = numbered(6, DeploymentStatus::Applied, Some(50));
+        let queued = numbered(8, DeploymentStatus::Queued, None);
+        let mut refused = numbered(8, DeploymentStatus::Failed, Some(120));
+        refused.outcome = Some(ployz_store::Outcome::NotExecuted {
+            reason: "refused at claim".into(),
+            cause: Vec::new(),
+            needs_upload: Vec::new(),
+            same_again: false,
+        });
+        let took_over = numbered(8, DeploymentStatus::Applied, Some(120));
+        let after_it = numbered(9, DeploymentStatus::Running, Some(130));
+
+        // A lapsed claim with only an older, a queued or a refused one names none.
+        assert_eq!(
+            taker(&view, &[older.clone(), queued.clone(), refused]),
+            None
+        );
+        // Of those that started, the first took over.
+        assert_eq!(
+            taker(&view, &[after_it.clone(), queued, took_over.clone(), older])
+                .and_then(|newer| newer.number),
+            Some(8)
+        );
+        let failure = replaced(&view, &took_over, command);
+        let details = failure.report().details;
+        assert_eq!(details.get("deployment"), Some(&json!(view.deployment.id)));
+        assert_eq!(details.get("replaced_by"), Some(&json!(took_over.id)));
     }
 
     #[test]

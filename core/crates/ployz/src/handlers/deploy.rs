@@ -488,10 +488,10 @@ pub(super) fn execute(
             // name it rather than the store's refusal to record.
             let newer = (!interrupted
                 && followed.view.deployment.status == DeploymentStatus::Unknown)
-                .then(|| replacement(store, &followed.view).ok().flatten())
+                .then(|| taken_over_by(store, &followed.view))
                 .flatten();
             let error = match newer {
-                Some(Replacement::Follow(newer) | Replacement::Name(newer)) => {
+                Some(newer) => {
                     progress::replaced(&followed.view, &newer, |args| super::rerun(matches, args))
                 }
                 None => error,
@@ -897,6 +897,28 @@ fn ahead(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
         .into_iter()
         .filter(|older| older.number.is_some_and(|number| number < ours))
         .min_by_key(|older| older.number)
+}
+
+/// The newer Deployment that took `view`'s Environment over, among its newest page,
+/// the latest and those in flight. None when none did or the read fails.
+fn taken_over_by(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
+    let page = store
+        .read(&DeploymentsQuery {
+            environment: EnvironmentRef {
+                project: Some(view.environment.project.clone()),
+                environment: Some(view.environment.name.clone()),
+            },
+            limit: None,
+            cursor: None,
+        })
+        .ok()?;
+    let candidates: Vec<DeploymentSummary> = page
+        .deployments
+        .into_iter()
+        .chain(page.latest)
+        .chain(page.in_flight)
+        .collect();
+    progress::taker(view, &candidates).cloned()
 }
 
 /// What took superseded `view`'s place, among the latest and those in flight.
