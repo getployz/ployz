@@ -1,10 +1,11 @@
 import { Schema } from "effect";
-import type { Change, EnvironmentRef, EnvironmentView, RowId, ServiceListing, SettingRow } from "@ployz/sdk";
+import type { Change, EnvironmentRef, EnvironmentView, RowId, SecretValue, ServiceListing, SettingRow } from "@ployz/sdk";
 import { getManagedServiceExports } from "#/modules/variables/managed-service-exports";
 import { buildReferenceTargets } from "#/modules/variables/variable-autocomplete";
 import { renameReferences } from "#/modules/variables/variable-template";
 import type { VariableWriter } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
+import type { SealItem, Sealing } from "#/modules/variables/sealing";
 import { serviceSettingRows } from "./store-services";
 import type { useStoreWriter } from "./store-write";
 
@@ -40,6 +41,12 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
   }).sort((a, b) => a.key.localeCompare(b.key));
 }
 
+/** What a Sealed value shows while it saves: a secret with a value, never the value. It never reaches the Store. */
+const SEALING = { secret: { sealing: true } };
+
+/** A change, or a Sealed value of variable `key` that `useSealing`'s `prepare` turns into one in the edit's turn. */
+type Write = Change | { readonly key: string; readonly sealed: string };
+
 const leavesValueless = Schema.is(Schema.Struct({ after: Schema.Struct({ secret: Schema.Literal(false) }) }));
 
 /**
@@ -62,9 +69,30 @@ export function storeVariableWriter(
   writer: ReturnType<typeof useStoreWriter>, environment: EnvironmentRef, service: string, variables: readonly VariableRecord[],
   /** The Service's Setting rows (`serviceSettingRows`): each variable's row, which Never sync names. */
   settings: ReadonlyMap<string, SettingRow>,
+  /** How a Sealed value is sent, and the ids it is sealed for: this Environment's and this Service's own. */
+  sealing: { readonly prepare: Sealing["prepare"]; readonly target: SealItem["target"] },
 ) {
   const path = (key: string) => `${service}.env.${key}`;
   const edit = (...changes: Change[]) => writer.edit({ environment, changes });
+  const secret = (key: string, value: SecretValue | typeof SEALING.secret): Change => ({ op: "set", path: path(key), value: { secret: value } });
+  /** One edit; its Sealed values show as `SEALING` and are prepared together, all or none. */
+  const write = (writes: readonly Write[]) => {
+    const sealed = writes.flatMap((one) => "op" in one ? [] : [{ key: one.key, value: one.sealed, target: sealing.target }]);
+    if (sealed.length === 0) return edit(...writes.flatMap((one) => "op" in one ? [one] : []));
+    return writer.edit({
+      environment,
+      changes: writes.map((one) => "op" in one ? one : secret(one.key, SEALING.secret)),
+      prepare: async () => {
+        const values = (await sealing.prepare(sealed)).values();
+        return writes.map((one) => {
+          if ("op" in one) return one;
+          const { done, value } = values.next();
+          if (done) throw new Error("Sealed values went unprepared.");
+          return secret(one.key, value);
+        });
+      },
+    });
+  };
   // A variable is two rows, its value and whether it's exported; the dashboard sets each by its own path.
   const rows = (variable: VariableRecord): Change[] => [
     { op: "set", path: path(variable.key), value: variable.value.type === "plain" ? variable.value.value : { secret: true } },
@@ -82,10 +110,10 @@ export function storeVariableWriter(
   };
   return {
     ...panel,
-    create: (key: string, value: string, sealed: boolean, exported: boolean) => edit(
-      { op: "set", path: path(key), value: sealed ? { secret: value } : value },
+    create: (key: string, value: string, sealed: boolean, exported: boolean) => write([
+      sealed ? { key, sealed: value } : { op: "set", path: path(key), value },
       { op: "set", path: `${path(key)}.exported`, value: exported },
-    ),
+    ]),
     /**
      * Renames it, value, seal and export alike; the Store refuses a name in use. With `updateReferences`, the variables
      * that reference it switch to the new name; without, the Store refuses a referenced variable.
@@ -96,7 +124,8 @@ export function storeVariableWriter(
       if (updateReferences) change.update_references = true;
       return edit(change);
     },
-    seal: (key: string, value: string) => edit({ op: "set", path: path(key), value: { secret: value } }),
+    /** Seals a plain variable's value, or sets a Not set one's. */
+    seal: (key: string, value: string) => write([{ key, sealed: value }]),
     export: (key: string, exported: boolean) => edit({ op: "set", path: `${path(key)}.exported`, value: exported }),
     /** Marks the variable Never sync, or with `marked` false syncs it again: at once, nothing to deploy. */
     neverSync: (key: string, marked: boolean) => {
@@ -104,11 +133,11 @@ export function storeVariableWriter(
       if (!row) throw new Error("Variable is not loaded.");
       return writer.commit({ command: "never_sync", environment, rows: [row], off: !marked });
     },
-    /** The raw editor's changes: sets and removals in one edit. */
-    replace: (sets: readonly { key: string; value: string }[], removed: readonly string[]) => edit(
-      ...sets.map(({ key, value }): Change => ({ op: "set", path: path(key), value })),
+    /** The raw editor's changes: sets, the new ones it marks Sealed sealed, and removals in one edit. */
+    replace: (sets: readonly { key: string; value: string; sealed?: boolean }[], removed: readonly string[]) => write([
+      ...sets.map(({ key, value, sealed }): Write => sealed ? { key, sealed: value } : { op: "set", path: path(key), value }),
       ...removed.map((key): Change => ({ op: "unset", path: path(key) })),
-    ),
+    ]),
   };
 }
 

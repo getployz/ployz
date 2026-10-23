@@ -90,10 +90,12 @@ it("shows a deleted variable gone, and a pending rename under its old name until
   expect(variables(shown)).toEqual([{ key: "API_KEY", exported: false, value: "sealed" }]);
 });
 
+const unsealed = { prepare: vi.fn(), target: { environment: "env", service: "web-id" } };
+
 it("sends a rename as one Store edit on the variable's path", async () => {
   const edit = vi.fn().mockResolvedValue(undefined);
   const environment: EnvironmentRef = { project: "shop", environment: "production" };
-  const writer = storeVariableWriter(asTestDouble<Parameters<typeof storeVariableWriter>[0]>()({ edit }), environment, "web", [], new Map());
+  const writer = storeVariableWriter(asTestDouble<Parameters<typeof storeVariableWriter>[0]>()({ edit }), environment, "web", [], new Map(), unsealed);
   await writer.rename("API_KEY", "STRIPE_KEY");
   expect(edit).toHaveBeenCalledExactlyOnceWith({ environment, changes: [{ op: "rename", path: "web.env.API_KEY", to: "STRIPE_KEY" }] });
 });
@@ -119,9 +121,55 @@ it("finds the variables that reference a variable, in either form, and nothing t
 it("sends update_references only when asked", async () => {
   const edit = vi.fn().mockResolvedValue(undefined);
   const environment: EnvironmentRef = { project: "shop", environment: "production" };
-  const writer = storeVariableWriter(asTestDouble<Parameters<typeof storeVariableWriter>[0]>()({ edit }), environment, "web", [], new Map());
+  const writer = storeVariableWriter(asTestDouble<Parameters<typeof storeVariableWriter>[0]>()({ edit }), environment, "web", [], new Map(), unsealed);
   await writer.rename("LOG_LEVEL", "LEVEL", true);
   expect(edit).toHaveBeenCalledExactlyOnceWith({
     environment, changes: [{ op: "rename", path: "web.env.LOG_LEVEL", to: "LEVEL", update_references: true }],
   });
+});
+
+it("shows a Sealed value only as sealing, and sends what sealing prepares in its place, in order", async () => {
+  const edit = vi.fn().mockResolvedValue(undefined);
+  const environment: EnvironmentRef = { project: "shop", environment: "production" };
+  const sealed = { sealedFor: "env", value: { sealed: "c2VhbGVk", scope: { service: "web-id" }, key: "TOKEN" } };
+  const prepare = vi.fn(async (items: readonly { key: string }[]) => items.map(() => sealed));
+  const writer = storeVariableWriter(asTestDouble<Parameters<typeof storeVariableWriter>[0]>()({ edit }), environment, "web", [], new Map(),
+    { prepare, target: { environment: "env", service: "web-id" } });
+
+  void writer.replace([{ key: "LOG_LEVEL", value: "info" }, { key: "TOKEN", value: "tok_live_123456", sealed: true }, { key: "SALT", value: "salt_value_1", sealed: true }], ["OLD"]);
+
+  const [{ changes, prepare: prepared }] = edit.mock.calls[0] ?? [];
+  expect(changes).toEqual([
+    { op: "set", path: "web.env.LOG_LEVEL", value: "info" },
+    { op: "set", path: "web.env.TOKEN", value: { secret: { sealing: true } } },
+    { op: "set", path: "web.env.SALT", value: { secret: { sealing: true } } },
+    { op: "unset", path: "web.env.OLD" },
+  ]);
+  expect(JSON.stringify(changes)).not.toMatch(/tok_live|salt_value/u);
+  expect(prepare).not.toHaveBeenCalled();
+  const sent = await prepared();
+  expect(prepare).toHaveBeenCalledExactlyOnceWith([
+    { key: "TOKEN", value: "tok_live_123456", target: { environment: "env", service: "web-id" } },
+    { key: "SALT", value: "salt_value_1", target: { environment: "env", service: "web-id" } },
+  ]);
+  expect(sent).toEqual([
+    { op: "set", path: "web.env.LOG_LEVEL", value: "info" },
+    { op: "set", path: "web.env.TOKEN", value: { secret: sealed } },
+    { op: "set", path: "web.env.SALT", value: { secret: sealed } },
+    { op: "unset", path: "web.env.OLD" },
+  ]);
+  expect(JSON.stringify(sent)).not.toContain("sealing");
+});
+
+it("writes a plain variable as before, with nothing to prepare", () => {
+  const edit = vi.fn().mockResolvedValue(undefined);
+  const environment: EnvironmentRef = { project: "shop", environment: "production" };
+  const writer = storeVariableWriter(asTestDouble<Parameters<typeof storeVariableWriter>[0]>()({ edit }), environment, "web", [], new Map(), unsealed);
+
+  void writer.create("LOG_LEVEL", "info", false, true);
+  expect(edit).toHaveBeenCalledExactlyOnceWith({ environment, changes: [
+    { op: "set", path: "web.env.LOG_LEVEL", value: "info" },
+    { op: "set", path: "web.env.LOG_LEVEL.exported", value: true },
+  ] });
+  expect(unsealed.prepare).not.toHaveBeenCalled();
 });

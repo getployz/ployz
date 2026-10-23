@@ -5,6 +5,7 @@ import { brokenVariables } from "#/modules/config-store/store-broken";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter, variableReferrers } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useSealing } from "#/modules/variables/sealing";
 import { BracesIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
@@ -39,9 +40,11 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
   broken: readonly BrokenReference[];
 }) {
   const store = useStoreWriter(organizationSlug);
+  const sealing = useSealing(organizationSlug);
   const rows = serviceSettingRows(settings, service.name);
   const variables = serviceVariables(rows, service.id, changes, new Set(settings.never_synced), brokenVariables(broken, service.name));
-  const writer = storeVariableWriter(store, environment, service.name, variables, rows);
+  const writer = storeVariableWriter(store, environment, service.name, variables, rows,
+    { prepare: sealing.prepare, target: { environment: settings.environment.id, service: service.id } });
 
   return (
     <ServiceVariablesView
