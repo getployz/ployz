@@ -605,6 +605,18 @@ struct ThisServer {
     stopped: bool,
 }
 
+impl ThisServer {
+    fn read(checkin: LocalCheckin, left: bool, loop_stopped: bool) -> Self {
+        // A loop that ended or joined meant to stop; one that didn't left its last answer behind.
+        let stopped = loop_stopped && checkin.answer != Seen::Joined && !checkin.headline().ended;
+        Self {
+            checkin,
+            left,
+            stopped,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct Status {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -793,11 +805,7 @@ fn this_server() -> Option<ThisServer> {
                 })
         });
     let stopped = crate::checkin::loop_stopped(Path::new(Paths::CHECKIN_DIR));
-    Some(ThisServer {
-        checkin,
-        left,
-        stopped,
-    })
+    Some(ThisServer::read(checkin, left, stopped))
 }
 
 #[cfg(test)]
@@ -845,9 +853,7 @@ fn status_record(status: &Status) -> Fields {
             (_, true) => Tone::Bad,
             (_, false) => Tone::Change,
         };
-        // A loop that ended or joined meant to stop; one that didn't left its last answer behind.
-        let stopped = *stopped && checkin.answer != Seen::Joined && !ended;
-        if stopped {
+        if *stopped {
             record.push("this server", Cell::status("Check-in stopped", Tone::Bad));
             record.push("last answer", Cell::status(headline, tone));
         } else {
@@ -859,7 +865,7 @@ fn status_record(status: &Status) -> Fields {
         if let Some(message) = checkin.message.as_deref().filter(|_| checkin.says_why()) {
             record.push("reason", message);
         }
-        if stopped {
+        if *stopped {
             record.push(
                 "check-in",
                 "Not running. See why with `sudo systemctl status ployz-checkin`, then run `sudo ployz server checkin --install`.",
@@ -1195,11 +1201,11 @@ mod tests {
 
     fn status_of(record: &str, left: bool, stopped: bool) -> String {
         let status = Status {
-            this_server: Some(ThisServer {
-                checkin: serde_json::from_str(record).unwrap(),
+            this_server: Some(ThisServer::read(
+                serde_json::from_str(record).unwrap(),
                 left,
                 stopped,
-            }),
+            )),
             identity: None,
             scope: Scope {
                 project: None,
@@ -1256,6 +1262,28 @@ mod tests {
             status_of(WAITING, false, false)
         );
         assert!(status_of(JOINED, false, true).starts_with("this server = Joined\n"));
+    }
+
+    #[test]
+    fn json_says_stopped_only_where_the_text_does() {
+        let json = |record| {
+            serde_json::to_value(ThisServer::read(
+                serde_json::from_str(record).unwrap(),
+                false,
+                true,
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            json(WAITING).get("stopped"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert!(json(JOINED).get("stopped").is_none());
+        assert!(
+            json(&WAITING.replace(r#""wait""#, r#""stop""#))
+                .get("stopped")
+                .is_none()
+        );
     }
 
     #[test]
