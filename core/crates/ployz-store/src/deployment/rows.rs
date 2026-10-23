@@ -1347,6 +1347,56 @@ mod tests {
         );
     }
 
+    /// A Server removed while the deploy ran is gone from the entry Machine's routing
+    /// by its turn, which refuses with the ID it looked up. The row the call went to
+    /// names the Server (#3151).
+    #[test]
+    fn a_server_removed_while_the_deploy_ran_is_named_from_its_row() {
+        let machine_id = "a".repeat(32);
+        let machine = ployz_core::MachineId::parse(&machine_id).unwrap();
+        let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": {"type": "pending"}
+        }]))
+        .unwrap();
+        let not_found = |details| ExecutionError::Machine {
+            action: MachineAction::CreateContainer,
+            error: RpcError {
+                code: RpcErrorCode::NotFound,
+                message: format!("No Server named {machine_id:?}"),
+                details,
+                cause: Vec::new(),
+            },
+        };
+        let removed = not_found(serde_json::json!({
+            "inspect": ["ployz server ls"],
+            "reason": "no_such_server",
+            "targets": [machine_id],
+        }));
+        let named = Failure::on(&removed, &operations, Some(machine));
+        assert_eq!(
+            named.reason,
+            "Server prod-1 was removed while the deploy ran"
+        );
+        assert!(named.cause.is_empty());
+        assert!(!named.same_again);
+        assert_eq!(
+            Failure::on(&removed, &[], Some(machine)).reason,
+            format!("Server {machine_id} was removed while the deploy ran")
+        );
+        // A reader that doesn't know which Machine the call went to keeps the answer.
+        assert_eq!(
+            Failure::of(&removed, &operations).reason,
+            "create Container failed"
+        );
+        // A daemon from before the tag, or a Server's own not-found, reads as before.
+        let untagged = not_found(serde_json::json!({ "inspect": ["ployz server ls"] }));
+        let kept = Failure::on(&untagged, &operations, Some(machine));
+        assert_eq!(kept.reason, "create Container failed");
+        assert_eq!(kept.cause, [format!("No Server named {machine_id:?}")]);
+    }
+
     #[test]
     fn a_container_updated_in_place_serves_throughout() {
         let machine_id = "a".repeat(32);
