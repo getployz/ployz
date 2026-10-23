@@ -833,7 +833,12 @@ mod tests {
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
             Ok(MachineUpgradeAttempt {
                 attempt_id: request.attempt_id,
-                target: ployz_core::MachineVersion::parse("1.2.3").unwrap(),
+                target: match request.release {
+                    MachineRelease::Exact(version) => version,
+                    MachineRelease::Stable | MachineRelease::Beta => {
+                        MachineVersion::parse("1.2.3").unwrap()
+                    }
+                },
                 outcome: self.outcomes.pop_front().expect("one outcome per request"),
             })
         }
@@ -886,6 +891,65 @@ mod tests {
         )
         .await;
         (result, outcome, client.moved)
+    }
+
+    #[tokio::test]
+    async fn upgrade_reports_the_observed_version_and_direction() {
+        for (running, change) in [
+            ("1.2.3", "unchanged"),
+            ("1.2.4", "downgraded"),
+            ("1.2.2", "upgraded"),
+        ] {
+            let mut server = machine('a', 1);
+            server.name = MachineName::parse("machine-1").unwrap();
+            server.runtime.daemon_version = running.into();
+            let (result, outcome, _) = run_sequence(&[server], vec![succeeded()], None).await;
+            outcome.unwrap();
+            let result = result.unwrap();
+            assert_eq!(
+                result.pointer("/attempts/0/from_version"),
+                Some(&json!(running)),
+                "{result}"
+            );
+            assert_eq!(
+                result.pointer("/attempts/0/change"),
+                Some(&json!(change)),
+                "{result}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_release_is_not_found_before_any_server_changes() {
+        for reason in [
+            "release selection: no such release 9.9.9",
+            "release selection: download release checksums: release 9.9.9 has no checksums.txt",
+        ] {
+            let mut server = machine('a', 1);
+            server.name = MachineName::parse("machine-1").unwrap();
+            let mut client = Sequence {
+                outcomes: vec![MachineUpgradeOutcome::Failed {
+                    stage: ployz_core::MachineUpgradeStage::Acquiring,
+                    error: reason.into(),
+                }]
+                .into(),
+                ingress: None,
+                moved: Vec::new(),
+            };
+            let (_, outcome) = run_all(
+                &mut client,
+                &[server],
+                MachineRelease::parse("9.9.9").unwrap(),
+                IngressImage::Latest,
+                "ployz server upgrade 9.9.9 machine-1".into(),
+                &CancellationToken::new(),
+            )
+            .await;
+            let error = outcome.unwrap_err();
+            assert!(error.is_outcome());
+            assert_eq!(error.report().code, RpcErrorCode::NotFound);
+            assert_eq!(error.report().message, "No Ployz release 9.9.9.");
+        }
     }
 
     #[tokio::test]
