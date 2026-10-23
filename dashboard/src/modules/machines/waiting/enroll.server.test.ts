@@ -39,8 +39,8 @@ const input = (overrides: Partial<EnrollInput> = {}): EnrollInput => ({
   ...overrides,
 });
 
-const empty = { hasFirst: false };
-const founded = { hasFirst: true };
+const empty = { hasFirst: false, takenNames: new Set<string>() };
+const founded = { hasFirst: true, takenNames: new Set<string>() };
 
 const planned = (plan: EnrollPlan) => {
   if (plan.kind !== "planned") throw new Error(`expected a plan, got: ${plan.message}`);
@@ -111,6 +111,35 @@ describe("names", () => {
       message: "A name pattern needs {n} to name more than one server.",
     });
     expect(planned(planServerEnrollment(input({ names }), [row("a")], founded)).rows[0]?.instruction.name).toBe("web");
+  });
+
+  it("numbers a hostname another Server or this batch already holds, as ployz server add refuses it", () => {
+    const plan = planned(planServerEnrollment(
+      input({ ids: ["a", "b", "c"] }),
+      [row("a", { report: { hostname: "MY-SERVER" } }), row("b", { report: { hostname: "my-server" } }), row("c")],
+      { hasFirst: true, takenNames: new Set(["my-server", "host-c-2"]) },
+    ));
+    expect(plan.rows.map((r) => r.instruction.name)).toEqual(["my-server-2", "my-server-3", "host-c"]);
+  });
+
+  it("keeps a numbered name within 63 characters", () => {
+    const long = "a".repeat(63);
+    const plan = planned(planServerEnrollment(
+      input({ ids: ["a"] }), [row("a", { report: { hostname: long } })], { hasFirst: true, takenNames: new Set([long]) },
+    ));
+    expect(plan.rows[0]?.instruction.name).toBe(`${"a".repeat(61)}-2`);
+  });
+
+  it("skips the numbers a pattern would repeat, and numbers a taken pattern without {n}", () => {
+    const takenNames = new Set(["web-1", "web-3", "web"]);
+    const numbered = planned(planServerEnrollment(
+      input({ ids: ["a", "b"], names: { kind: "pattern", pattern: "web-{n}" } }), [row("a"), row("b")], { hasFirst: true, takenNames },
+    ));
+    expect(numbered.rows.map((r) => r.instruction.name)).toEqual(["web-2", "web-4"]);
+    const single = planned(planServerEnrollment(
+      input({ names: { kind: "pattern", pattern: "web" } }), [row("a")], { hasFirst: true, takenNames },
+    ));
+    expect(single.rows[0]?.instruction.name).toBe("web-2");
   });
 });
 

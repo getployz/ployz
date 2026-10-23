@@ -88,7 +88,7 @@ function network(ip: string) {
 export function planServerEnrollment(
   input: EnrollInput,
   candidates: ReadonlyArray<EnrollCandidate>,
-  organization: { readonly hasFirst: boolean },
+  organization: { readonly hasFirst: boolean; readonly takenNames: ReadonlySet<string> },
 ): EnrollPlan {
   const byId = new Map(candidates.map((row) => [row.id, row]));
   const ids = [...new Set(input.ids)];
@@ -131,19 +131,28 @@ export function planServerEnrollment(
     acceptsServices: input.runs.services,
     acceptsIngress: input.runs.ingress,
   };
-  const rows = ordered.map(({ row, storage }, index): PlannedEnrollment => ({
+  // A name another Server holds, or an earlier row takes, is numbered on, as `ployz server add` refuses it.
+  const taken = new Set(organization.takenNames);
+  let next = 1;
+  const nameFor = (row: EnrollCandidate) => {
+    let name: string;
+    if (names.kind === "pattern" && names.pattern.includes("{n}")) {
+      do name = names.pattern.replaceAll("{n}", String(next++)); while (taken.has(name));
+    } else {
+      // An unusable hostname gets the engine's `server-` fallback, from the id so the preview and the start agree.
+      const base = names.kind === "pattern" ? names.pattern : machineNameFromHostname(row.report.hostname) ?? `server-${row.id.slice(0, 8)}`;
+      name = base;
+      for (let n = 2; taken.has(name); n++) name = `${base.slice(0, 63 - `-${n}`.length).replace(/-+$/u, "")}-${n}`;
+    }
+    taken.add(name);
+    return name;
+  };
+  const rows = ordered.map(({ row, storage }): PlannedEnrollment => ({
     waitingServerId: row.id,
     fleetTokenId: row.fleetTokenId,
     hostname: row.report.hostname,
     role: row.id === founder ? "founder" : "joiner",
-    instruction: {
-      // An unusable hostname gets the engine's `server-` fallback, from the id so the preview and the start agree.
-      name: names.kind === "hostnames"
-        ? machineNameFromHostname(row.report.hostname) ?? `server-${row.id.slice(0, 8)}`
-        : names.pattern.replaceAll("{n}", String(index + 1)),
-      storage,
-      policy,
-    },
+    instruction: { name: nameFor(row), storage, policy },
   }));
   return {
     kind: "planned",
@@ -252,6 +261,16 @@ export const hasFirstServer = Effect.fn("ServerEnrollment.hasFirst")(function* (
   return (yield* enrollmentAuthority(organizationId, "preview")).hasFirst;
 });
 
+/** The names the Organization's Servers hold, and those its open enrollments give. */
+const takenNames = Effect.fn("ServerEnrollment.takenNames")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const servers = yield* drizzle.select({ name: organizationMachine.machineName }).from(organizationMachine)
+    .where(eq(organizationMachine.organizationId, organizationId));
+  const enrolling = yield* drizzle.select({ name: sql<string>`${serverEnrollment.instruction}->>'name'` }).from(serverEnrollment)
+    .where(and(eq(serverEnrollment.organizationId, organizationId), isNull(serverEnrollment.endedAt)));
+  return new Set([...servers, ...enrolling].flatMap(({ name }) => name === null ? [] : [name]));
+});
+
 const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   organizationId: string,
   input: EnrollInput,
@@ -271,7 +290,7 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   const plan = planServerEnrollment(
     input,
     ids.length === 0 ? [] : yield* candidatesOf(organizationId, ids, mode === "start"),
-    { hasFirst },
+    { hasFirst, takenNames: yield* takenNames(organizationId) },
   );
   if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
   return { ...plan, founded };
@@ -411,7 +430,7 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
     const plan = planServerEnrollment(input, [{
       id: host.id, fleetTokenId: token.id, report, observedIp: host.observedIp,
       rejected: false, enrolling: false, tokenEnded: null,
-    }], { hasFirst: true });
+    }], { hasFirst: true, takenNames: yield* takenNames(token.organizationId) });
     if (plan.kind !== "planned" || plan.rows.length === 0) return false;
     // A check-in answers before Inngest hears of the attempt; the outbox sweep sends any delivery that fails.
     yield* startPlannedEnrollment(token.organizationId, live.userId, { ...plan, founded: true }, "detach");

@@ -19,7 +19,8 @@ Enroll on arrival only adds servers to an organization that already has one. In 
 organization, enroll the first server yourself. Until then the install ends with
 `No cluster yet. Enroll one server in Ployz Cloud to start it.` and `ployz status` on the server
 shows `No cluster yet`. Ready servers then join on their next check-in. Blocked servers and servers
-still installing Docker or building ZFS keep waiting. Ployz keeps the hostnames and enables
+still installing Docker or building ZFS keep waiting. Ployz keeps the hostnames, numbering one another
+server already has, and enables
 Services, Web traffic, and Builds. It uses ZFS with a spare disk when available, or the main
 disk otherwise. Servers where ZFS cannot run, or its preparation failed, was skipped, or was
 turned off, use Docker volumes.
@@ -67,7 +68,9 @@ check-in refreshes the row. Offline servers have stopped checking in.
    `web-1`, `web-2`, and so on. A hostname becomes a valid server name: lowercase, with each
    run of other characters turned into one hyphen, so `MY-SERVER` becomes `my-server` and
    `my_box.lan` becomes `my-box-lan`. A hostname with no a-z letters or digits gets a name such as
-   `server-0f1e2d3c`. Choose whether the servers run **Services**, **Web traffic**,
+   `server-0f1e2d3c`. A name another server already has gets the next free number: a second
+   `my-server` becomes `my-server-2`, and `web-{n}` skips the numbers already taken. Choose
+   whether the servers run **Services**, **Web traffic**,
    and **Builds**. Review the names, storage choices and any **Skip** reasons, then click
    **Enroll N**. For a selection across providers or networks, first check that every source
    belongs to you.
