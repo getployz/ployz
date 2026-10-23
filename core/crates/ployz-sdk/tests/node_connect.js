@@ -8,7 +8,8 @@ const path = require("node:path");
 const Module = require("node:module");
 
 const pkg = path.join(__dirname, "..");
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ployz-sdk-connect-"));
+// Node caches the addon under its real path, so a symlinked temp dir (macOS /var) would miss the stub below.
+const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ployz-sdk-connect-")));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 for (const file of ["index.js", "wrap.js", "runtime-logs.js"]) fs.copyFileSync(path.join(pkg, file), path.join(dir, file));
 const addon = path.join(dir, "ployz-sdk.node");
