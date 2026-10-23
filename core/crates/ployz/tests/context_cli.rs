@@ -1265,18 +1265,89 @@ fn context_config_management_refuses_explicit_context_before_mutation() {
         &["ctx", "rm", "default"],
         &["ctx", "ls"],
     ] {
-        let output = run(&[&["-c", "other"], args, &["--json"]].concat());
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(output.status.code(), Some(2), "{args:?}: {json}");
+        for (args, message) in [
+            (
+                [&["-c", "other"][..], args, &["--json"]].concat(),
+                "doesn't use a context",
+            ),
+            (
+                [args, &["-c", "other", "--json"]].concat(),
+                "unexpected argument '-c' found",
+            ),
+        ] {
+            let output = run(&args);
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(output.status.code(), Some(2), "{args:?}: {json}");
+            assert_eq!(
+                json.pointer("/error/code").unwrap().as_str().unwrap(),
+                "invalid_argument",
+                "{args:?}: {json}"
+            );
+            assert!(
+                json.pointer("/error/message")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .contains(message),
+                "{args:?}: {json}"
+            );
+            assert_eq!(Config::load(&path).unwrap(), config, "{args:?}");
+        }
+    }
+}
+
+#[test]
+fn context_config_environment_reaches_only_context_aware_leaves() {
+    if std::env::var_os("PLOYZ_CONTEXT").as_deref() != Some(std::ffi::OsStr::new("b")) {
+        let home = tempfile::tempdir().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "context_config_environment_reaches_only_context_aware_leaves",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("PLOYZ_CONTEXT", "b")
+            .output()
+            .unwrap();
         assert!(
-            json.pointer("/error/message")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .contains("doesn't use a context"),
-            "{json}"
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(Config::load(&path).unwrap(), config, "{args:?}");
+        return;
+    }
+    for (args, context) in [
+        (&["volume", "add", "data"][..], None),
+        (&["volume", "rm", "data"], None),
+        (&["service", "rm", "web"], None),
+        (&["set", "web.image=web:2"], None),
+        (&["org", "ls"], None),
+        (&["ctx", "use", "other"], None),
+        (&["server", "ls"], Some("b")),
+        (&["ps"], Some("b")),
+        (&["deploy"], Some("b")),
+    ] {
+        let root = ployz::cli::command()
+            .try_get_matches_from(std::iter::once("ployz").chain(args.iter().copied()))
+            .unwrap();
+        let mut leaf = &root;
+        while let Some((_, child)) = leaf.subcommand() {
+            leaf = child;
+        }
+        assert_eq!(
+            leaf.ids().any(|id| id == "context"),
+            context.is_some(),
+            "{args:?}"
+        );
+        if context.is_some() {
+            assert_eq!(
+                leaf.get_one::<String>("context").map(String::as_str),
+                context
+            );
+        }
     }
 }
 
