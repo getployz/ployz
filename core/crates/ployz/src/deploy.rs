@@ -862,6 +862,24 @@ impl fmt::Display for MachineNames<'_> {
 }
 
 impl PlanError {
+    /// The Server whose storage can't hold the Deploy's Volumes, as opposed to a
+    /// conflict or capacity nobody could read.
+    #[must_use]
+    pub fn short_of_storage(&self) -> Option<MachineId> {
+        let Self::Storage {
+            machine_id, source, ..
+        } = self
+        else {
+            return None;
+        };
+        matches!(
+            source,
+            ployz_core::StorageCapacityError::InsufficientStorage { .. }
+                | ployz_core::StorageCapacityError::PoolCannotGrow { .. }
+        )
+        .then_some(*machine_id)
+    }
+
     /// Deploying the same thing again is refused this way again: the refusal was
     /// decided from this Deploy's intent alone, so it holds until something staged
     /// changes. A refusal the snapshot, placement or a Server's labels take part in

@@ -249,6 +249,19 @@ impl PreparationError {
     pub(crate) fn same_again(&self) -> bool {
         matches!(self, Self::Plan(error) if error.same_again())
     }
+
+    /// The Server a plan refusal found short of storage.
+    pub(crate) fn short_of_storage(&self) -> Option<MachineId> {
+        match self {
+            Self::Plan(error) => error.short_of_storage(),
+            Self::Build(_)
+            | Self::Connect(_)
+            | Self::Selection(_)
+            | Self::Delivery(_)
+            | Self::Cancelled
+            | Self::UploadNeeded(_) => None,
+        }
+    }
 }
 
 /// Caller-rendered preparation progress; no terminal or process ownership.
