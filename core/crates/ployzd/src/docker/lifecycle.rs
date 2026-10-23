@@ -717,6 +717,8 @@ impl ContainerRuntime {
     }
 
     pub async fn remove_all_managed(&self) -> Result<(), Error> {
+        self.departing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let mut config_operation = self.specs.config_operation().await;
         for container_id in self.docker.managed_container_ids().await? {
             match self

@@ -369,6 +369,24 @@ impl Failure {
         machine: Option<MachineId>,
     ) -> Self {
         let (reason, cause) = match error {
+            // The Leave explains whatever the copy did, so nothing of it is a cause.
+            ExecutionError::Machine { error, .. } if let Some(departure) = error.departure() => (
+                format!(
+                    "Server {} was removed while the deploy ran",
+                    departure.server
+                ),
+                Vec::new(),
+            ),
+            ExecutionError::Health {
+                departing: Some(departure),
+                ..
+            } => (
+                format!(
+                    "Server {} was removed while the deploy ran",
+                    departure.server
+                ),
+                Vec::new(),
+            ),
             ExecutionError::Machine { error, .. } if let Some(refusal) = error.refusal() => {
                 let name = operations
                     .iter()

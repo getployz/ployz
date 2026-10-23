@@ -898,8 +898,23 @@ fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
 
 #[allow(clippy::result_large_err)]
 fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
+    respond(local_failure(error)?)
+}
+
+/// `error` as the [`RpcError`] it answers, or the [`Status`] it fails the call with.
+#[allow(clippy::result_large_err)]
+fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
     match error {
-        LocalMachineError::Store(error) => respond(store_error(error)),
+        LocalMachineError::Departing {
+            server,
+            source: None,
+        } => Ok(RpcError::departing(&server)),
+        // A source that fails the call outright has no details to mark.
+        LocalMachineError::Departing {
+            server,
+            source: Some(source),
+        } => Ok(local_failure(*source)?.overlapping_leave(&server)),
+        LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::ManagementRevoked => Err(ployz_core::rpc::caused_status(
             tonic::Code::Unauthenticated,
             &error,
@@ -908,26 +923,24 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             tonic::Code::PermissionDenied,
             &error,
         )),
-        LocalMachineError::NotParticipating => respond(unavailable("Machine is not participating")),
+        LocalMachineError::NotParticipating => Ok(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
-            respond(unavailable("Cluster store is not available"))
+            Ok(unavailable("Cluster store is not available"))
         }
         LocalMachineError::ClusterNetworkUnpublished | LocalMachineError::ClusterStoreEmpty => {
-            respond(unavailable(&error.to_string()))
+            Ok(unavailable(&error.to_string()))
         }
         LocalMachineError::ClusterUnavailable => {
             Err(Status::unavailable("Cluster is not available"))
         }
-        LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
+        LocalMachineError::DockerUnavailable => Ok(unavailable("Docker is not available")),
         LocalMachineError::MissingAssignment
         | LocalMachineError::InvalidPushTarget(_)
-        | LocalMachineError::Seal(_) => {
-            respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
-        }
+        | LocalMachineError::Seal(_) => Ok(RpcError::caused(RpcErrorCode::InvalidArgument, &error)),
         LocalMachineError::Enrollment(error) => {
-            respond(RpcError::caused(RpcErrorCode::Conflict, &error))
+            Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
         }
-        LocalMachineError::EmptyUpdate => respond(RpcError {
+        LocalMachineError::EmptyUpdate => Ok(RpcError {
             code: RpcErrorCode::InvalidArgument,
             message: "at least one Machine update is required".into(),
             details: Value::Null,
@@ -946,23 +959,23 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             &error,
         )),
         LocalMachineError::IngressProxyServiceSpec(error) => {
-            respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
+            Ok(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }
         LocalMachineError::Network(error) => Err(ployz_core::rpc::caused_status(
             tonic::Code::Internal,
             &error,
         )),
-        LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
+        LocalMachineError::Docker(error) => Ok(RpcError::from(&error)),
         LocalMachineError::StoragePreparation(error) | LocalMachineError::FenceRefused(error) => {
-            respond(error)
+            Ok(error)
         }
-        LocalMachineError::Cleanup(message) => respond(RpcError {
+        LocalMachineError::Cleanup(message) => Ok(RpcError {
             code: RpcErrorCode::Internal,
             message,
             details: Value::Null,
             cause: Vec::new(),
         }),
-        LocalMachineError::Admission(crate::mutation::Error::Busy) => respond(RpcError {
+        LocalMachineError::Admission(crate::mutation::Error::Busy) => Ok(RpcError {
             code: RpcErrorCode::Conflict,
             message: "a Ployz installation or upgrade is active".into(),
             details: Value::Null,
@@ -971,8 +984,8 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         LocalMachineError::Admission(crate::mutation::Error::Io(error)) => Err(
             ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
         ),
-        LocalMachineError::Upgrade(error) => respond(upgrade_error(error)),
-        LocalMachineError::Sealing(error) => respond(sealing_error(error)),
+        LocalMachineError::Upgrade(error) => Ok(upgrade_error(error)),
+        LocalMachineError::Sealing(error) => Ok(sealing_error(error)),
     }
 }
 

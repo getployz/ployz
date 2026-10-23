@@ -27,7 +27,8 @@ use self::rotation::RotationWant;
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{
-    ContainerCreated, ContainerRequest, ImageIngest, RotationTurn, Withdrawal, same_creation,
+    ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
+    same_creation,
 };
 use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
@@ -735,17 +736,38 @@ impl LocalMachine {
 
     /// Make one Container match `want` and answer with what is then observed.
     ///
+    /// A Leave stops and removes every copy itself, so this call meets one by three
+    /// rules. A want that runs a copy ([`ContainerWant::Running`], new or existing,
+    /// Pending or In) is refused on entry while a Leave is under way or has
+    /// committed, with [`Error::Departing`] and no source: it did nothing. A stop, a
+    /// remove and a rotation write run as ever, and a copy the Leave took answers as
+    /// missing. A want that runs a copy and got past the entry answers exactly what
+    /// it saw, the same error or the same observed copy and verdict, and when it did
+    /// not deliver a running copy, by an error or by a verdict that is not Healthy,
+    /// and a Leave is under way or has committed as it returns, that answer carries
+    /// the Leave as a mark: the error becomes [`Error::Departing`] with the error as
+    /// its source, and the verdict names the Server under `departing`. A Leave that
+    /// failed before the call returned explains nothing, since the Server stays, so
+    /// the answer is unmarked. The mark adds; it never replaces, so a caller removes
+    /// the copy an answer names, or the slot a failed start left, as it would for
+    /// any failed start.
+    ///
     /// # Errors
     ///
     /// Returns when the Container cannot be observed as this Machine's own, Docker
-    /// is unavailable, or an effect fails for a reason that is not a refusal.
+    /// is unavailable, an effect fails for a reason that is not a refusal, or a
+    /// Leave refused the want on entry.
     pub(crate) async fn ensure_container(
         &self,
         want: ContainerWant,
     ) -> Result<EnsuredContainer, Error> {
+        let runs = matches!(want, ContainerWant::Running { .. });
+        if runs && self.departing() {
+            self.refuse_departing()?;
+        }
         #[cfg(test)]
         self.pause_for_test(EnsurePausePoint::BeforeWork).await;
-        match want {
+        let ensured = match want {
             ContainerWant::Out {
                 container,
                 allow_empty,
@@ -772,6 +794,64 @@ impl LocalMachine {
             }
             | ContainerWant::Stopped { .. }
             | ContainerWant::Gone { .. }) => self.ensure_docker(want).await,
+        };
+        if runs && self.departing() {
+            return self.marked_departing(ensured);
+        }
+        ensured
+    }
+
+    /// Whether a Leave is under way or has committed on this Machine.
+    fn departing(&self) -> bool {
+        self.containers
+            .as_ref()
+            .is_some_and(ContainerRuntime::departing)
+    }
+
+    /// Refuse because of a Leave, naming this Server. A Machine with no record is not
+    /// participating, which its refusals say for themselves.
+    fn refuse_departing(&self) -> Result<(), Error> {
+        match self.record().machine().map(|machine| machine.name.clone()) {
+            Some(server) => Err(Error::Departing {
+                server,
+                source: None,
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// `ensured`, marked with the Leave under way when it did not deliver a running
+    /// copy: an error becomes the source of [`Error::Departing`], and a verdict that
+    /// is not Healthy names the Server. A delivered copy, a refusal and a Machine with
+    /// no record answer as they were.
+    fn marked_departing(
+        &self,
+        ensured: Result<EnsuredContainer, Error>,
+    ) -> Result<EnsuredContainer, Error> {
+        let Some(server) = self.record().machine().map(|machine| machine.name.clone()) else {
+            return ensured;
+        };
+        let departure = ployz_core::Departure { server };
+        match ensured {
+            Err(source) => Err(Error::Departing {
+                server: departure.server,
+                source: Some(Box::new(source)),
+            }),
+            Ok(EnsuredContainer::Ensured {
+                now,
+                health: Some(mut health),
+            }) if health != HealthVerdict::Healthy => {
+                if let HealthVerdict::Failed { departing, .. }
+                | HealthVerdict::TimedOut { departing, .. } = &mut health
+                {
+                    *departing = Some(departure);
+                }
+                Ok(EnsuredContainer::Ensured {
+                    now,
+                    health: Some(health),
+                })
+            }
+            other => other,
         }
     }
 
