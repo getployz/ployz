@@ -81,7 +81,8 @@ omissions. The Server's observation can be incomplete even if the project has no
 `--json` keeps every warning, including the individual omissions and failures.
 If the CLI has no name for an observation failure yet, plain output prints the warning at
 the next progress update or heartbeat, using the Machine ID if it still lacks a name.
-Interactive progress can show it at once. If following stops first, the warning still prints.
+Interactive progress can show it at once. If following stops first while progress is showing,
+the warning still prints.
 
 If Cloud stops answering while the CLI follows a Deployment, the command exits 1 with
 `Stopped following Deployment #N; it keeps running in Ployz Cloud.` and an `inspect:` line
