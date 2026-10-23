@@ -1155,6 +1155,7 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        crate::sealed_compat::admit(self, &want).await?;
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
