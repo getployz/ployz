@@ -33,6 +33,27 @@ const PROBE: &str = r#"{
     }
 }"#;
 
+/// What `ployzd install --probe` says once dpkg has registered `docker-ce` but its unit is not yet
+/// started.
+const DOCKER_STOPPED_PROBE: &str = r#"{
+    "facts": {
+        "os": {"id": "ubuntu", "version_id": "24.04"},
+        "kernel": "6.8.0",
+        "arch": "x86_64",
+        "virt": "BareMetal",
+        "cgroup": "V2",
+        "cpu_count": 4,
+        "memory_total_bytes": 8589934592,
+        "disks": [],
+        "docker": "Stopped"
+    },
+    "assessment": {
+        "blockers": [{"code": "docker_stopped", "message": "Docker is installed but not running. Start it (systemctl start docker) and run this again."}],
+        "warnings": [],
+        "zfs": {"Ineligible": {"reason": {"code": "zfs_off", "message": "Off."}}}
+    }
+}"#;
+
 const OLD: &str = "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const NEW: &str = "pflt_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 const REFUSAL: &str = r#"{"error":"Authentication is required."}"#;
@@ -45,6 +66,7 @@ struct FakeHost {
     preparing: AtomicBool,
     probe_hangs: bool,
     probe_fails: bool,
+    docker_stopped: bool,
     /// A preparation that finishes, writing this state, while its unit is being checked.
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
@@ -59,7 +81,12 @@ impl Host for FakeHost {
         if self.probe_fails {
             return Err("ployzd crashed".to_owned());
         }
-        Ok(serde_json::from_str(PROBE).unwrap())
+        let probe = if self.docker_stopped {
+            DOCKER_STOPPED_PROBE
+        } else {
+            PROBE
+        };
+        Ok(serde_json::from_str(probe).unwrap())
     }
 
     fn hostname(&self) -> String {
@@ -2513,6 +2540,51 @@ async fn an_older_ployzd_blocks_the_server_in_cloud_and_in_status() {
         status.blockers.iter().any(|issue| issue.message == stale),
         "a probe the older ployzd fails still says why"
     );
+}
+
+#[tokio::test]
+async fn docker_stopped_mid_install_reads_as_installing_docker() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        r#"{"docker":{"state":"installing"},"zfs":{"state":"installing"}}"#,
+    )
+    .unwrap();
+    let (url, server) = cloud("200 OK", WAIT).await;
+    let host = FakeHost {
+        docker_stopped: true,
+        preparing: AtomicBool::new(true),
+        ..FakeHost::default()
+    };
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(!request.contains("docker_stopped"), "{request}");
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline().title, "Installing Docker");
+}
+
+#[tokio::test]
+async fn docker_stopped_with_no_preparation_running_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#,
+    )
+    .unwrap();
+    let (url, server) = cloud("200 OK", WAIT).await;
+    let host = FakeHost {
+        docker_stopped: true,
+        ..FakeHost::default()
+    };
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(request.contains(r#""code":"docker_stopped""#), "{request}");
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline().title, "Blocked");
 }
 
 #[tokio::test(start_paused = true)]
