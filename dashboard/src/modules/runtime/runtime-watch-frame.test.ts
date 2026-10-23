@@ -279,16 +279,19 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     expect(runtimeSnapshotFromWatchFrame(older.value).machines[0]?.poolCommittableBytes).toBeNull();
   });
 
-  it("reads whether a Server holds its Cluster's Sealing Key, and as unknown from a daemon that doesn't report it", () => {
+  it("reads whether a Server holds its Cluster's Sealing Key or awaits its recovery, and as unknown from a daemon that doesn't report it", () => {
     const base = runtimeWatchMachineFixture("machine-a", "edge-a");
     const needsAccess = { ...base.runtime, sealing: { kind: "needs_access" } as const };
+    const awaitsRecovery = { kind: "awaits_recovery", public_key: `${"A".repeat(43)}=` } as const;
+    const awaiting = runtimeWatchMachineFixture("machine-c", "edge-c");
     const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
       machines: [
         runtimeWatchMachineObservationFixture({ machine: { ...base, runtime: needsAccess } }),
         runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("machine-b", "edge-b") }),
+        runtimeWatchMachineObservationFixture({ machine: { ...awaiting, runtime: { ...awaiting.runtime, sealing: awaitsRecovery } } }),
       ],
     }));
-    expect(runtimeSnapshotFromWatchFrame(frame).machines.map((machine) => machine.sealing)).toEqual([{ kind: "needs_access" }, null]);
+    expect(runtimeSnapshotFromWatchFrame(frame).machines.map((machine) => machine.sealing)).toEqual([{ kind: "needs_access" }, null, awaitsRecovery]);
 
     const [machine] = frame.machines;
     if (!machine) throw new Error("Expected a machine.");
