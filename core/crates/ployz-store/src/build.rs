@@ -6,12 +6,10 @@
 use crate::id::{BranchName, CommitSha, OrganizationId, RepositoryId, RepositoryName};
 use std::collections::BTreeMap;
 
-use ployz_core::config::{
-    BuildMethod, LowerDeploymentInput, ServiceGitAccess, ServiceGitBranch, ServiceSource,
-};
+use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::builders::{self, Builder};
@@ -826,13 +824,17 @@ pub(crate) fn github_input(
             json!({ "service": id.service, "variable": sealed }),
         ));
     }
-    let mut input: LowerDeploymentInput =
-        serde_json::from_value(deployment::input(tx, &stored, sealing)?)
-            .map_err(|_| error::corrupt("lowering input"))?;
-    for snapshot in &mut input.snapshots {
-        snapshot.resolved_env.retain(|_, value| !value.is_sealed());
+    let mut input = deployment::input(tx, &stored, sealing)?;
+    // Text is a bare string; anything else carries a sealed part.
+    let snapshots = input.get_mut("snapshots").and_then(Value::as_array_mut);
+    for snapshot in snapshots.into_iter().flatten() {
+        if let Some(env) = snapshot
+            .get_mut("resolvedEnv")
+            .and_then(Value::as_object_mut)
+        {
+            env.retain(|_, value| value.is_string());
+        }
     }
-    let input = serde_json::to_value(input).expect("lowering input is JSON");
     // The latest receipt of the Service, a cache hint; its own when it has one.
     let receipt = deployment::receipts(tx, &stored.summary.environment_id)?
         .remove(&id.service)
