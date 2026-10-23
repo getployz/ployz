@@ -38,7 +38,9 @@ where
 /// reqwest follows it, so that host counts as the mirror: it is the one that must answer.
 ///
 /// hyper-util reports only the first error when a name has several addresses of one family,
-/// so a refusal from one can stand for another's timeout. github.com has one of each.
+/// so a refusal from one can stand for another's timeout. GitHub's asset hosts have several,
+/// so that mix can fall back; whatever ployz.sh serves is still checked against the signed
+/// checksums.
 #[must_use]
 pub fn release_mirror_unreachable(error: &reqwest::Error) -> bool {
     error.is_connect() && !error.is_timeout() && mirror_unreachable(error)
