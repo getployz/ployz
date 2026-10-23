@@ -856,11 +856,19 @@ fn the_builder_cache_is_not_user_data() {
     let cache = format!("buildx_buildkit_{}0_state", super::builder_name());
     assert!(super::is_builder_cache(&cache), "{cache}");
     assert!(super::is_builder_cache("buildx_buildkit_ployz-00_state"));
+    // Concurrent builds use numbered slots after slot 0.
+    let slot = format!("buildx_buildkit_{}-10_state", super::builder_name());
+    assert!(super::is_builder_cache(&slot), "{slot}");
+    assert!(super::is_builder_cache("buildx_buildkit_ployz-0-20_state"));
     for data in [
         "shop-production_pgdata",
         "buildx_buildkit_ployz-00",
         "buildx_buildkit_other-00_state",
         "buildx_buildkit_ployz-_state",
+        "buildx_buildkit_ployz-0-_state",
+        "buildx_buildkit_ployz--10_state",
+        "buildx_buildkit_ployz-0-1-20_state",
+        "buildx_buildkit_ployz-0-x0_state",
     ] {
         assert!(!super::is_builder_cache(data), "{data}");
     }
