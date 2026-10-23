@@ -18,7 +18,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{REVOKED, refusal, revoked};
-use crate::machine::LocalMachineRecord;
+use ipnet::Ipv4Net;
+
+use crate::machine::{LocalMachine, LocalMachineRecord};
 
 /// Bounds the client's header and the Machine's dial, so a stalled open never lingers.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -27,6 +29,7 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// is revoked, or `shutdown`.
 pub(super) async fn serve(
     connection: Connection,
+    local: LocalMachine,
     mut records: watch::Receiver<Arc<LocalMachineRecord>>,
     shutdown: CancellationToken,
 ) {
@@ -51,7 +54,7 @@ pub(super) async fn serve(
     let opened = tokio::select! {
         () = &mut revoked => return connection.close(REVOKED, b"revoked"),
         () = shutdown.cancelled() => return connection.close(VarInt::from_u32(0), b"shutdown"),
-        opened = tokio::time::timeout(OPEN_TIMEOUT, open(send, recv, &record)) => opened
+        opened = tokio::time::timeout(OPEN_TIMEOUT, open(send, recv, &record, &local)) => opened
             .unwrap_or(Err(TunnelError::Timeout)),
     };
     let (mut tcp, mut stream) = match opened {
@@ -71,6 +74,24 @@ pub(super) async fn serve(
             // Wait for the peer to hold the final bytes before the close discards them.
             let _ = tokio::time::timeout(OPEN_TIMEOUT, stream.writer().stopped()).await;
             connection.close(VarInt::from_u32(0), b"tunnel closed");
+        }
+    }
+}
+
+/// Only the founder records the Cluster network locally; a joined Machine reads it from
+/// the replicated Cluster record. `None` until it has replicated.
+async fn cluster_network(record: &LocalMachineRecord, local: &LocalMachine) -> Option<Ipv4Net> {
+    if let Some(network) = record.cluster_network() {
+        return Some(network);
+    }
+    if record.phase() != ployz_core::LocalMachinePhase::Participating {
+        return None;
+    }
+    match local.replicated().ok()?.cluster_network().await {
+        Ok(network) => network,
+        Err(error) => {
+            tracing::debug!(error = %ployz_core::error_chain::inline(&error), "tunnel could not read the Cluster network");
+            None
         }
     }
 }
@@ -104,6 +125,7 @@ async fn open(
     mut send: iroh::endpoint::SendStream,
     mut recv: iroh::endpoint::RecvStream,
     record: &LocalMachineRecord,
+    local: &LocalMachine,
 ) -> Result<(TcpStream, TunnelStream), TunnelError> {
     let length = recv.read_u8().await.map_err(TunnelError::Header)?;
     let mut target = vec![0; usize::from(length)];
@@ -114,7 +136,9 @@ async fn open(
         .ok()
         .and_then(|target| target.parse::<SocketAddr>().ok())
         .ok_or(TunnelError::Target)?;
-    let network = record.cluster_network().ok_or(TunnelError::NoCluster)?;
+    let network = cluster_network(record, local)
+        .await
+        .ok_or(TunnelError::NoCluster)?;
     if !matches!(target, SocketAddr::V4(address) if network.contains(address.ip())) {
         return Err(TunnelError::Outside {
             target,
@@ -129,3 +153,7 @@ async fn open(
         .map_err(TunnelError::Acknowledgement)?;
     Ok((tcp, tokio::io::join(recv, send)))
 }
+
+#[cfg(test)]
+#[path = "tunnel_tests.rs"]
+mod tests;

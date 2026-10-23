@@ -195,7 +195,6 @@ pub async fn serve<S, R>(
     S::Future: Send,
     R: Roster,
 {
-    let records = local.owner().watch();
     let answers = Arc::new(forgotten::Answers::new(roster));
     let handshakes = Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
     let mut connections = tokio::task::JoinSet::new();
@@ -214,7 +213,7 @@ pub async fn serve<S, R>(
         connections.spawn(serve_connection(
             incoming,
             permit,
-            records.clone(),
+            local.clone(),
             api.clone(),
             Arc::clone(&grants),
             Arc::clone(&answers),
@@ -228,7 +227,7 @@ pub async fn serve<S, R>(
 async fn serve_connection<S, R>(
     incoming: Incoming,
     permit: OwnedSemaphorePermit,
-    mut records: watch::Receiver<Arc<LocalMachineRecord>>,
+    local: LocalMachine,
     api: S,
     grants: Arc<BuildGrants>,
     answers: Arc<forgotten::Answers<R>>,
@@ -241,6 +240,7 @@ async fn serve_connection<S, R>(
     S::Future: Send,
     R: Roster,
 {
+    let mut records = local.owner().watch();
     let connection = match incoming.await {
         Ok(connection) => connection,
         Err(error) => {
@@ -255,7 +255,7 @@ async fn serve_connection<S, R>(
     }
     if connection.alpn() == TUNNEL_ALPN {
         drop(permit);
-        tunnel::serve(connection, records, shutdown).await;
+        tunnel::serve(connection, local, records, shutdown).await;
         return;
     }
     if connection.alpn() == FORGOTTEN_ALPN {
