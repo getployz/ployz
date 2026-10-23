@@ -29,6 +29,8 @@ pub use execution::{
 };
 mod railpack;
 pub use railpack::Railpack;
+mod sealed;
+pub use sealed::{sealed_file, valid_name};
 mod solve;
 pub use solve::PlainRenderer;
 

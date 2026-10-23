@@ -805,6 +805,7 @@ fn railpack_prepares_a_python_requirements_app() {
         name: "web".into(),
         context: "source/app".into(),
         variables: BTreeMap::new(),
+        sealed: BTreeMap::new(),
         refresh_cache: false,
     }];
     let environment = BTreeMap::new();

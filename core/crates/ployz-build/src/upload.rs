@@ -114,20 +114,34 @@ impl AdmittedUpload {
         self.upload.accept(frame)
     }
 
+    /// Read one file of the received private material, if the capture sent it.
+    /// # Errors
+    /// Reports a file that exists but cannot be read.
+    pub fn private_file(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+        match fs::read(self.upload.root.join("private").join(name)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Finish receiving and execute while retaining ownership through cleanup.
+    /// `opened` holds the Sealed values this host opened, by name; they become
+    /// secret files for the solve and are removed with it.
     /// # Errors
     /// Rejects incomplete captures or host execution failure.
     pub fn execute(
         self,
         definition: &Definition,
         docker: Option<&Path>,
+        opened: &BTreeMap<String, String>,
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<crate::RetainedImages, BuildError> {
         let _ownership = self.admission.lock.clone();
         self.upload
             .complete()
             .map_err(|error| BuildError::Request(error.to_string()).at(crate::Stage::Upload))?
-            .execute(definition, self.admission, docker, progress)
+            .execute(definition, self.admission, docker, opened, progress)
     }
 }
 
@@ -322,9 +336,12 @@ impl CompletedUpload {
         definition: &Definition,
         admission: Admission,
         docker: Option<&Path>,
+        opened: &BTreeMap<String, String>,
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<crate::RetainedImages, BuildError> {
         let mut upload = self.0;
+        // Declared after `upload` so the files go before the root does.
+        let _opened = crate::sealed::OpenedFiles::write(&upload.root, opened)?;
         let railpack = crate::received_recipe::validate_capture(&upload.root, definition)
             .map_err(|error| BuildError::Request(error.to_string()))?;
         for (path, mode) in upload.directories.iter().rev() {

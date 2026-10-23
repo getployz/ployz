@@ -189,6 +189,7 @@ fn capture_target(
                 name: name.clone(),
                 context: context.clone(),
                 variables: std::mem::take(&mut args),
+                sealed: BTreeMap::new(),
                 refresh_cache: false,
             })?;
             (BuildMethod::Railpack, context, None)
