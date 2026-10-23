@@ -455,18 +455,6 @@ pub enum DeviceSet {
     NotPresent { code: DeviceCode },
 }
 
-impl DeviceSet {
-    #[must_use]
-    pub const fn code(&self) -> DeviceCode {
-        match self {
-            Self::Approved { code }
-            | Self::AlreadyApproved { code }
-            | Self::Removed { code }
-            | Self::NotPresent { code } => *code,
-        }
-    }
-}
-
 /// Where this Machine's observe process pushes crash events, or `None` to stop pushing.
 ///
 /// Strict for the same reason as [`SetManagementClientRequest`].

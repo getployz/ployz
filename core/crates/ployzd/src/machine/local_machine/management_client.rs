@@ -380,17 +380,15 @@ mod tests {
         assert!(!records.has_changed().unwrap());
     }
 
-    fn device() -> (iroh::SecretKey, ployz_core::DeviceKey) {
-        let secret = iroh::SecretKey::generate();
-        let key = ployz_core::DeviceKey::from_bytes(*secret.public().as_bytes());
-        (secret, key)
+    fn device() -> ployz_core::DeviceKey {
+        ployz_core::DeviceKey::from_bytes(*iroh::SecretKey::generate().public().as_bytes())
     }
 
     #[tokio::test]
     async fn a_device_slot_is_full_only_when_set_device_writes_it() {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
-        let (_, key) = device();
+        let key = device();
         assert_eq!(
             local
                 .set_device(SetDeviceRequest::Approve { key })
@@ -437,7 +435,7 @@ mod tests {
     async fn no_caller_writes_a_device_slot_through_set_management_client() {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
-        let (_, key) = device();
+        let key = device();
         local
             .set_device(SetDeviceRequest::Approve { key })
             .await
@@ -467,7 +465,7 @@ mod tests {
     async fn remove_tombstones_the_slot_and_reports_a_rerun_as_not_present() {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
-        let (_, key) = device();
+        let key = device();
         local
             .set_device(SetDeviceRequest::Approve { key })
             .await
@@ -495,8 +493,8 @@ mod tests {
     async fn a_device_removed_while_its_request_waits_changes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
-        let (_, first) = device();
-        let (_, second) = device();
+        let first = device();
+        let second = device();
         local
             .set_device(SetDeviceRequest::Approve { key: first })
             .await
