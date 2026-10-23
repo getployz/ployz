@@ -9,6 +9,8 @@ RUNTIME_SYSTEMD_DIR=${RUNTIME_SYSTEMD_DIR:-/run/systemd/system}
 PLOYZ_USER=ployz
 PLOYZ_DATA_DIR=${PLOYZ_DATA_DIR:-/var/lib/ployz}
 PLOYZ_RUN_DIR=${PLOYZ_RUN_DIR:-/run/ployz}
+PLOYZ_CHECKIN_DIR=${PLOYZ_CHECKIN_DIR:-/var/lib/ployz-checkin}
+PLOYZ_FLEET_TOKEN_FILE=${PLOYZ_FLEET_TOKEN_FILE:-/etc/ployz/fleet-token}
 
 log() { echo "$1"; }
 error() { echo "ERROR: $1" >&2; exit 1; }
@@ -20,7 +22,7 @@ confirm() {
 }
 
 safe_owned_directory() {
-    case "$1" in /var/lib/ployz|/run/ployz|/tmp/*) return ;; *) return 1 ;; esac
+    case "$1" in /var/lib/ployz|/var/lib/ployz-checkin|/run/ployz|/tmp/*) return ;; *) return 1 ;; esac
 }
 
 stop_loaded_units() {
@@ -48,6 +50,8 @@ EOF
     [ "$EUID" -eq 0 ] || error "Run this uninstaller with sudo or as root"
     safe_owned_directory "$PLOYZ_DATA_DIR" || error "Refusing unsafe data directory: $PLOYZ_DATA_DIR"
     safe_owned_directory "$PLOYZ_RUN_DIR" || error "Refusing unsafe run directory: $PLOYZ_RUN_DIR"
+    safe_owned_directory "$PLOYZ_CHECKIN_DIR" || error "Refusing unsafe check-in directory: $PLOYZ_CHECKIN_DIR"
+    case "$PLOYZ_FLEET_TOKEN_FILE" in /etc/ployz/fleet-token|/tmp/*) ;; *) error "Refusing unsafe Fleet Token file: $PLOYZ_FLEET_TOKEN_FILE" ;; esac
     log "This removes Ployz state and managed containers but retains Docker, images, and named volumes."
     if ! confirm "Continue with destructive Ployz uninstall?"; then
         log "Uninstall cancelled"
@@ -123,6 +127,9 @@ EOF
     rm -f "$INSTALL_BIN_DIR/ployzd"
 
     rm -rf "$PLOYZ_DATA_DIR"
+    # The check-in key is this host's identity in Cloud. Kept, a reinstall checks in as the Server it was.
+    rm -rf "$PLOYZ_CHECKIN_DIR"
+    rm -f "$PLOYZ_FLEET_TOKEN_FILE"
     # Preserve the locked inode until reboot; replacing it would bypass exclusion.
     find "$PLOYZ_RUN_DIR" -mindepth 1 -maxdepth 1 ! -name .install.lock -exec rm -rf -- {} +
     if id "$PLOYZ_USER" >/dev/null 2>&1; then userdel "$PLOYZ_USER"; fi
