@@ -545,7 +545,9 @@ the drain command. The warning leaves out what a drain won't move: services with
 mount on the server, global services, and Ployz's own web server. On your last server it skips that
 warning. After the removal it warns which replicated services now run no replicas, because all of
 them were on that server, and prints `ployz deploy` as the next step. It warns separately which
-other replicated services may now run short of replicas. With `--json` the removal lists every
+other replicated services may now run short of replicas. A deploy still running when the removal
+finishes fails on that server's turn with `Server web-2 was removed while the deploy ran`, and
+its web traffic check doesn't count the removed server as unchecked. With `--json` the removal lists every
 service left short as `under_replicated`. It also lists a service as `no_copies` when every other
 server answered and none showed a replica of it. If a server didn't answer, the service is listed
 only as `under_replicated`. `ployz status` keeps naming a service with no replicas until a deploy

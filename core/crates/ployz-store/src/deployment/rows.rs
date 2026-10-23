@@ -381,6 +381,20 @@ impl Failure {
                 };
                 (refusal.to_string(), Vec::new())
             }
+            // The entry Machine stopped listing the Server the call went to, as after
+            // `ployz server rm`, so the plan's name for it says what happened.
+            ExecutionError::Machine { error, .. }
+                if let Some(id) = machine
+                    && error.server_unlisted(&id) =>
+            {
+                (
+                    format!(
+                        "{} was removed while the deploy ran",
+                        server_of(&id.to_string(), operations)
+                    ),
+                    Vec::new(),
+                )
+            }
             ExecutionError::Machine {
                 action: MachineAction::PullImage,
                 error,
@@ -657,6 +671,7 @@ impl RowTracker {
                 .is_some_and(|(index, _)| self.containers.contains_key(index));
             let state = state(
                 snapshot,
+                key.1,
                 &statuses,
                 self.last.get(&key),
                 container,
@@ -728,9 +743,11 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
     }
 }
 
-/// A failed row's `log` waits as unanswered until the runner reads its Container's tail.
+/// The state of one Service's rows on `machine`. A failed row's `log` waits as
+/// unanswered until the runner reads its Container's tail.
 fn state(
     operations: &[OperationRow],
+    machine: MachineId,
     statuses: &[(&OperationStatus, bool)],
     last: Option<&RowState>,
     container: bool,
@@ -757,7 +774,7 @@ fn state(
         }
     }
     if let Some(error) = failed.or(cancelled) {
-        let Failure { reason, cause, .. } = Failure::of(error, operations);
+        let Failure { reason, cause, .. } = Failure::on(error, operations, Some(machine));
         return RowState::Failed {
             reason,
             cause,
@@ -1193,7 +1210,7 @@ mod tests {
 
     fn server(statuses: &[OperationStatus]) -> RowState {
         let statuses: Vec<_> = statuses.iter().map(|status| (status, true)).collect();
-        super::state(&[], &statuses, None, true, false)
+        super::state(&[], any_machine(), &statuses, None, true, false)
     }
 
     #[test]
@@ -1225,6 +1242,7 @@ mod tests {
         assert_eq!(
             super::state(
                 &[],
+                any_machine(),
                 &[(&switch, true), (&OperationStatus::Pending, false)],
                 None,
                 true,
@@ -1294,6 +1312,10 @@ mod tests {
             .0,
             "a hook the cancel could not stop may still run"
         );
+    }
+
+    fn any_machine() -> ployz_core::MachineId {
+        ployz_core::MachineId::parse("1".repeat(32)).unwrap()
     }
 
     fn reason(observation: ContainerRuntimeObservation) -> String {

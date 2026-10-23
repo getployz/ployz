@@ -1,8 +1,8 @@
 use super::*;
 use ployz_core::OperationStatus;
-use ployz_core::{MachineName, OperationRow};
 use ployz_core::RunRotation;
 use ployz_core::labels::CREATION_KEY;
+use ployz_core::{MachineName, OperationRow};
 
 #[tokio::test]
 async fn dispatches_the_complete_algebra() {
@@ -258,7 +258,12 @@ fn named_rows(plan: &crate::deploy::DeployPlan) -> Vec<OperationRow> {
     plan.pending_rows()
         .into_iter()
         .map(|row| {
-            let hex = row.machine_id.to_string().chars().next().expect("a machine id");
+            let hex = row
+                .machine_id
+                .to_string()
+                .chars()
+                .next()
+                .expect("a machine id");
             OperationRow {
                 machine_name: Some(MachineName::parse(format!("machine-{hex}")).unwrap()),
                 ..row

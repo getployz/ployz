@@ -1796,6 +1796,24 @@ impl RpcError {
         self.details.get("reason").and_then(Value::as_str) == Some(TARGET_UNANSWERED_REASON)
     }
 
+    /// Whether an entry Machine's routing refused this call because it no longer lists
+    /// `machine_id`, as after `ployz server rm`. A daemon from before the tag, or a
+    /// Server's own not-found answer, is not.
+    #[must_use]
+    pub fn server_unlisted(&self, machine_id: &crate::MachineId) -> bool {
+        self.code == RpcErrorCode::NotFound
+            && self.details.get("reason").and_then(Value::as_str) == Some(NO_SUCH_SERVER_REASON)
+            && self
+                .details
+                .get("targets")
+                .and_then(Value::as_array)
+                .is_some_and(|targets| {
+                    targets
+                        .iter()
+                        .any(|target| target.as_str() == Some(machine_id.as_str()))
+                })
+    }
+
     /// The capability this error says its target Machine lacks, if it is a refusal.
     #[must_use]
     pub fn refusal(&self) -> Option<CapabilityRefusal> {
@@ -1959,6 +1977,10 @@ impl fmt::Display for CapabilityRefusal {
 pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
 
 const TARGET_UNANSWERED_REASON: &str = "target_unanswered";
+/// The `reason` an entry Machine's routing gives its not-found refusal of a Machine
+/// Target it does not list, beside the `targets` it looked up. Read back by
+/// [`RpcError::server_unlisted`].
+pub const NO_SUCH_SERVER_REASON: &str = "no_such_server";
 const REPLY_LOST_KEY: &str = "reply_lost";
 const REACHED_KEY: &str = "reached";
 
@@ -2089,6 +2111,35 @@ mod rpc_error_wire {
             Some(vec!["keep-alive timed out".to_owned()])
         );
         assert_eq!(status_causes(b"opaque"), None);
+    }
+
+    #[test]
+    fn a_routing_refusal_names_the_server_it_does_not_list() {
+        let machine = crate::MachineId::parse("1".repeat(32)).unwrap();
+        let other = crate::MachineId::parse("2".repeat(32)).unwrap();
+        let unlisted = RpcError {
+            code: RpcErrorCode::NotFound,
+            message: format!("No Server named {:?}", machine.to_string()),
+            details: json!({
+                "inspect": ["ployz server ls"],
+                "reason": NO_SUCH_SERVER_REASON,
+                "targets": [machine.to_string()],
+            }),
+            cause: Vec::new(),
+        };
+        assert!(unlisted.server_unlisted(&machine));
+        assert!(!unlisted.server_unlisted(&other));
+        // A daemon from before the tag answers the same refusal without it.
+        let untagged = RpcError {
+            details: json!({ "inspect": ["ployz server ls"] }),
+            ..unlisted.clone()
+        };
+        assert!(!untagged.server_unlisted(&machine));
+        let answered = RpcError {
+            code: RpcErrorCode::Internal,
+            ..unlisted
+        };
+        assert!(!answered.server_unlisted(&machine));
     }
 
     #[test]
