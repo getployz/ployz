@@ -52,8 +52,20 @@ Release notes build trust, and readers often hand them to an AI to judge whether
 - Have no Known issues section. Open bugs live in GitHub issues.
 - Keep only what a user must act on to upgrade safely: the upgrade path (for example, first Server over SSH, then the rest through it), real breaking changes, and self-hosted Cloud's Postgres backup and `db:migrate`. State them calmly and briefly.
 - Avoid alarming words such as critical, data loss, brick or freeze.
-- Under the Stable promise, name any new wire surface, such as an ALPN, as additive.
+- Leave the Stable promise out of release notes. Say in the PR body how a change keeps it.
 - End with the install lines and the Full Changelog link for the new tag.
+
+## Move hosted Cloud after Publish
+
+Hosted Ployz Cloud on np1 moves to every release right after Publish. The deploy config lives in the private `getployz/ops` repo; its `np1/README.md` has the commands.
+
+1. If `dashboard/drizzle` gained migrations since the last release, take a PlanetScale backup first and wait until it shows `success`.
+2. Merge a `getployz/ops` PR that sets `ployz-web` and `ployz-worker` to `ghcr.io/getployz/ployz-cloud:<tag>`.
+3. On np1, copy `/root/ployz/compose.prod.yaml` to `compose.prod.yaml.<previous tag>`, copy the new file over it, then run `./deploy.sh compose.prod.yaml ployz-web` and then `./deploy.sh compose.prod.yaml ployz-worker`.
+4. Check `https://ployz.dev`, `https://ployz.dev/api/health`, `https://dns.ployz.app/healthz` and `https://relay.ployz.dev/ping`, and that the worker is connected.
+5. If anything is unhealthy, redeploy the previous release's compose file and stop.
+
+Staging is deployed separately.
 
 ## What Publish does
 
