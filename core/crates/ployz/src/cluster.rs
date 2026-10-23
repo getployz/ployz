@@ -1684,6 +1684,7 @@ fn listed_unless_forgotten<'list>(
 /// A role setting a caller waits for this entry to observe.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum RoleSetting {
+    ServicesOn,
     ServicesOff,
     IngressOn,
     IngressOff,
@@ -1692,13 +1693,14 @@ pub(crate) enum RoleSetting {
 impl RoleSetting {
     fn role(self) -> &'static str {
         match self {
-            Self::ServicesOff => "services",
+            Self::ServicesOn | Self::ServicesOff => "services",
             Self::IngressOn | Self::IngressOff => "ingress",
         }
     }
 
     fn holds(self, machine: &Machine) -> bool {
         match self {
+            Self::ServicesOn => machine.accepts_services,
             Self::ServicesOff => !machine.accepts_services,
             Self::IngressOn => machine.accepts_ingress,
             Self::IngressOff => !machine.accepts_ingress,
@@ -1720,15 +1722,15 @@ pub(crate) enum RoleWaitError {
 /// Wait until this entry sees Machine `id` with `setting`, so what plans next plans from it.
 ///
 /// # Errors
-/// Fails when the entry hasn't observed it within 30 s, `cancellation` fires first, or
-/// listing Machines fails.
+/// Fails when the entry hasn't observed it within 30 s plus one list call,
+/// `cancellation` fires first, or listing Machines fails.
 pub(crate) async fn wait_for_role(
     client: &mut Client,
     id: &MachineId,
     setting: RoleSetting,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RoleWaitError> {
-    // ponytail: fixed 30 s bound; the role replicates within seconds on a healthy Cluster.
+    // ponytail: 30 s deadline plus one ListMachines call, capped at 10 s.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let machines = tokio::select! {
