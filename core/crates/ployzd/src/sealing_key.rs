@@ -438,4 +438,67 @@ mod tests {
                 .is_err()
         );
     }
+
+    /// The vector `dashboard/src/modules/variables/seal.client.test.ts` seals in the
+    /// browser, from the same literals. Test keys only.
+    #[test]
+    fn a_value_the_browser_sealed_opens_only_for_the_variable_it_was_sealed_as() {
+        use ployz_core::{SealedIdentity, SealedScope, SealedValue};
+        use uuid::Uuid;
+
+        let key = SealingKey(
+            hex::decode("347ace27753bb0420141f071765286281c5fb4c450a9811d4ab13b67ac3da146")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(
+            key.public_key().to_string(),
+            "NdiV1QY9P3ZyoC82YA/FaBs0zlWTG/CXU1tLfcS0CDg="
+        );
+        let sealed = Ciphertext::try_from(
+            "aQ3JpLLRSRFxTny/uywru4DsdBNaz2ed/8puzj80FnXxzlL2DR0xHieAOAisLAf2fr0pN6dractyCf7l0M6K2KvTlZZRDfI84Nb+Oja16vnS"
+                .to_owned(),
+        )
+        .unwrap();
+        let environment = Uuid::parse_str("0e7c2f3a-5b1d-4c8e-9f60-1a2b3c4d5e6f").unwrap();
+        let service = Uuid::parse_str("7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6").unwrap();
+        let aad = |organization: &str, environment: Uuid, service: Uuid, variable: &str| {
+            SealedValue {
+                sealed: sealed.clone(),
+                scope: SealedScope::Service(service),
+                key: variable.into(),
+            }
+            .associated_data(&SealedIdentity {
+                organization: organization.into(),
+                environment,
+                service,
+            })
+        };
+        let own = aad("org_2xVq8LmN4rTb", environment, service, "SIGNING_KEY");
+        assert_eq!(
+            hex::encode(&own),
+            "0000000f706c6f797a2d7365616c65642d7631000000106f72675f32785671384c6d4e34725462000000100e7c2f3a5b1d4c8e9f601a2b3c4d5e6f0000000773657276696365000000107d4e9a123c5b4f6e8a90b1c2d3e4f5a60000000b5349474e494e475f4b4559"
+        );
+        assert_eq!(
+            key.open_value(&own, &sealed).unwrap().as_slice(),
+            "línea uno 🔐\nzweite Zeile ✓\n".as_bytes()
+        );
+
+        for other in [
+            aad("org_other", environment, service, "SIGNING_KEY"),
+            aad("org_2xVq8LmN4rTb", service, service, "SIGNING_KEY"),
+            aad("org_2xVq8LmN4rTb", environment, environment, "SIGNING_KEY"),
+            aad("org_2xVq8LmN4rTb", environment, service, "OTHER_KEY"),
+        ] {
+            assert!(key.open_value(&other, &sealed).is_none());
+        }
+        assert!(SealingKey::generate().open_value(&own, &sealed).is_none());
+        let bytes = sealed.as_bytes();
+        let truncated = Ciphertext::from_bytes(bytes[..bytes.len() - 1].to_vec());
+        assert!(key.open_value(&own, &truncated).is_none());
+        let mut flipped = bytes.to_vec();
+        *flipped.last_mut().unwrap() ^= 0x01;
+        assert!(key.open_value(&own, &Ciphertext::from_bytes(flipped)).is_none());
+    }
 }
