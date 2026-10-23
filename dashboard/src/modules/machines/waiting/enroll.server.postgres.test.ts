@@ -735,6 +735,19 @@ it("cancels an attempt whose Machine was assigned only under a pairing Cloud sin
   expect(await tokenLive(attemptId)).toBe(false);
 });
 
+it("cancels a later attempt of a Machine assigned before, while that attempt has not claimed its token", async () => {
+  await paired();
+  await harness.pool.query(
+    "insert into enrollment_allocation (organization_id, cluster_key, assignments) values ($1, $2, $3)",
+    [adaOrg, hashEnrollmentToken("ployz1:founded"), JSON.stringify([{ machine: { id: "a".repeat(32) } }])],
+  );
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  expect(await run(cancelServerEnrollment(ada, { organizationSlug: "ada", id: attemptId }))).toEqual({ id: attemptId, cancelling: true });
+});
+
 it("expires a bound attempt's token as soon as Cancel is accepted, so no join can follow it", async () => {
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
