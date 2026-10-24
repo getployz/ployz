@@ -27,7 +27,8 @@ use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT};
 
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
-pub const IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
+/// Built from the `ployz` branch of getployz/corrosion: upstream plus the patches its README lists.
+pub const IMAGE: &str = "ghcr.io/getployz/corrosion:20261024-b46434825343@sha256:281efeb3ca82eac25e4ebb8a2cb6c61100a9db2948dcf507627aaa48e22e7dff";
 pub const DEFAULT_CONTAINER_NAME: &str = "ployz-corrosion";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
