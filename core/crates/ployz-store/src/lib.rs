@@ -29,6 +29,7 @@ mod query;
 mod registry;
 mod removal;
 mod replay;
+mod reseal;
 mod review;
 mod rules;
 mod scope;
@@ -101,6 +102,7 @@ pub use removal::{
     RemovalCancelled, Remove, RemovedQuery, RemovedView, RemovedVolume, Residual, VolumeLoss,
     Waiting, docker_volume,
 };
+pub use reseal::{LegacyCount, Resealed};
 pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{
     DataEffect, DestructiveEffect, DestructiveKind, DiffView, LostAfter, NodeChange,
@@ -294,6 +296,53 @@ impl ConfigStore {
     pub fn sealed_names(&self, environment: &EnvironmentId) -> Result<BTreeSet<String>, RpcError> {
         self.storage
             .read(|tx| review::sealed::names(tx, environment.as_str()))
+    }
+
+    /// Organizations with a secret the Store sealed itself in some Working State or
+    /// Saved head: those a reseal has work in. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn legacy_organizations(&self) -> Result<Vec<OrganizationId>, RpcError> {
+        self.storage.read(reseal::legacy_organizations)
+    }
+
+    /// How many secrets the Store sealed itself `organization` holds, by whether a
+    /// reseal converts them. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn legacy_count(&self, organization: &OrganizationId) -> Result<LegacyCount, RpcError> {
+        self.storage
+            .read(|tx| reseal::legacy_count(tx, organization))
+    }
+
+    /// The Environments of `organization` whose Working State or Saved head holds a
+    /// secret the Store sealed itself. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn reseal_environments(
+        &self,
+        organization: &OrganizationId,
+    ) -> Result<Vec<EnvironmentId>, RpcError> {
+        self.storage
+            .read(|tx| reseal::reseal_environments(tx, organization))
+    }
+
+    /// Seal every secret of `environment` the Store sealed itself for `recipient`,
+    /// the Cluster's key, in its Working State and Saved head, in one transaction.
+    /// Running it again changes nothing. In-process only.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Environment, or a storage error.
+    pub fn reseal(
+        &self,
+        environment: &EnvironmentId,
+        recipient: &SealingRecipient,
+    ) -> Result<Resealed, RpcError> {
+        self.storage
+            .write(|tx| reseal::reseal(tx, environment, recipient, &self.sealing))
     }
 
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with

@@ -64,16 +64,30 @@ impl Sealer<'_> {
         key: &VariableKey,
         plaintext: &str,
     ) -> Result<SealedSecret, RpcError> {
-        let recipient = self.recipient.ok_or_else(|| {
-            crate::error::conflict(NO_SERVER, json!({ "variable": key.as_str() }))
-        })?;
+        self.seal_bound(environment, &service.id, key.as_str(), plaintext)
+    }
+
+    /// [`seal`](Self::seal) for a Service known by its `service` ID alone.
+    ///
+    /// # Errors
+    /// As [`seal`](Self::seal).
+    pub(crate) fn seal_bound(
+        self,
+        environment: &EnvironmentId,
+        service: &str,
+        key: &str,
+        plaintext: &str,
+    ) -> Result<SealedSecret, RpcError> {
+        let recipient = self
+            .recipient
+            .ok_or_else(|| crate::error::conflict(NO_SERVER, json!({ "variable": key })))?;
         let (Ok(environment), Ok(service)) = (
             Uuid::parse_str(environment.as_str()),
-            Uuid::parse_str(&service.id),
+            Uuid::parse_str(service),
         ) else {
             return Err(crate::error::invalid(
                 format!("{key}: this Service has no ID a sealed value binds to"),
-                json!({ "variable": key.as_str() }),
+                json!({ "variable": key }),
             ));
         };
         let identity = SealedIdentity {
@@ -81,11 +95,8 @@ impl Sealer<'_> {
             environment,
             service,
         };
-        let value =
-            ployz_core::seal_value(&recipient.public_key, &identity, key.as_str(), plaintext)
-                .map_err(|_| {
-                    crate::error::internal("A secret could not be sealed to the Cluster")
-                })?;
+        let value = ployz_core::seal_value(&recipient.public_key, &identity, key, plaintext)
+            .map_err(|_| crate::error::internal("A secret could not be sealed to the Cluster"))?;
         Ok(SealedSecret {
             fingerprint: fingerprint(&value),
             value: SecretCiphertext::ClientSealed(value),
