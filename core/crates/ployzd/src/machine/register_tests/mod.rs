@@ -7,6 +7,7 @@ use crate::sealing_key::SealingKey;
 mod backfill;
 mod harness;
 mod policy;
+mod recovery;
 use harness::*;
 
 #[tokio::test]

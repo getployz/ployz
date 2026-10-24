@@ -378,6 +378,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         memory_total_bytes: None,
         running_builds: 0,
         pool_committable_bytes: None,
+        sealing: None,
         store_filesystem: None,
         capabilities: Default::default(),
         management_identity: None,
@@ -804,6 +805,7 @@ fn legal_bodies_round_trip() {
                     origin: ParticipationOrigin::Founder {
                         cluster: ployzd::machine::FoundingCluster {
                             network: "10.210.0.0/16".parse().unwrap(),
+                            recovery: None,
                         },
                     },
                 },

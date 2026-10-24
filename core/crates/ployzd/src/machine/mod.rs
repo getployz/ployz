@@ -14,7 +14,7 @@ use std::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
-    ManagementClientLabel, PinnedAddresses, SelectedEndpoint,
+    ManagementClientLabel, PinnedAddresses, RecoverySeed, SelectedEndpoint,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ pub(crate) use store::{InterruptedReset, Opened};
 
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
-pub(crate) use local_machine::{CutRefusal, RuntimeWatchTelemetry, SealingError};
+pub(crate) use local_machine::{CutRefusal, RecoveryError, RuntimeWatchTelemetry, SealingError};
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
@@ -53,10 +53,13 @@ const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Founder-only seed for immutable replicated Cluster values.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FoundingCluster {
     /// Cluster IPv4 pool selected by the founder.
     pub network: Ipv4Net,
+    /// The Organization's Sealing Key this founder recovers rather than generates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoverySeed>,
 }
 
 /// Whether a participating Machine founded the Cluster or joined known peers.
@@ -79,6 +82,13 @@ impl ParticipationOrigin {
     fn cluster_network(&self) -> Option<Ipv4Net> {
         match self {
             Self::Founder { cluster } => Some(cluster.network),
+            Self::Join { .. } => None,
+        }
+    }
+
+    fn recovery_seed(&self) -> Option<&RecoverySeed> {
+        match self {
+            Self::Founder { cluster } => cluster.recovery.as_ref(),
             Self::Join { .. } => None,
         }
     }
@@ -395,6 +405,13 @@ impl LocalMachineBody {
         }
     }
 
+    fn recovery_seed(&self) -> Option<&RecoverySeed> {
+        match self {
+            Self::Participating { origin, .. } => origin.recovery_seed(),
+            Self::Uninitialized { .. } | Self::Joining { .. } | Self::Resetting { .. } => None,
+        }
+    }
+
     fn bootstrap(&self) -> &[Machine] {
         match self {
             Self::Uninitialized { .. } => &[],
@@ -533,6 +550,12 @@ impl LocalMachineRecord {
         self.body.cluster_network()
     }
 
+    /// The Sealing Key this founder waits to recover, when it founded without one.
+    #[must_use]
+    pub fn recovery_seed(&self) -> Option<&RecoverySeed> {
+        self.body.recovery_seed()
+    }
+
     /// Bootstrap Machines persisted for join and catch-up.
     #[must_use]
     pub fn bootstrap(&self) -> &[Machine] {
@@ -587,6 +610,7 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
             .map(|(total, _)| total),
         running_builds: 0,
         pool_committable_bytes: None,
+        sealing: None,
         store_filesystem: store_filesystem(data_dir),
         capabilities: ployz_core::served_capabilities(),
         management_identity: None,

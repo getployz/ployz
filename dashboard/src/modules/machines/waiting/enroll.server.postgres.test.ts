@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, type KeyObject, sign } from "node:crypto";
-import { Cause, Effect, Exit, Schema } from "effect";
+import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -29,9 +29,11 @@ import { type EnrollInput, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/s
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, type Ployz } from "#/modules/runtime/ployz.server";
+import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { makeSecretEncryption, type SecretEncryption } from "#/utils/encrypted-secret.server";
+import { testConfigEnvironment } from "#/test/config-environment";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
@@ -44,10 +46,12 @@ const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 const unreachable = makePloyzLayer({ connect: async () => { throw new Error("Endpoint unavailable"); } });
 const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void });
-type Needs = Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz;
+const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused@localhost/unused" } }))));
+type Needs = Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz | AppConfig;
 
 const run = <A, E>(operation: Effect.Effect<A, E, Needs>) =>
   harness.runEffect(operation.pipe(
+    Effect.provide(config),
     Effect.provideService(InngestClient, inngest),
     Effect.provideService(OrganizationRuntime, runtime),
     Effect.provide(unreachable),
@@ -304,7 +308,7 @@ it("spares a join the host reported committed before its run recorded it, and ke
   expect(await outbox()).not.toContain("server/enrollment.cancel");
   expect(await checkin(a, { attempt: { attemptId, stage: "joining" } })).toMatchObject({ kind: "enroll", attemptId });
   expect(await statusRows()).toEqual([["web-a", "running", "storage"]]);
-  await harness.pool.query("update server_enrollment set state = 'joined', ended_at = now()");
+  await harness.pool.query("update server_enrollment set state = 'joined', ended_at = $1", [new Date()]);
   expect(await statusRows()).toEqual([["web-a", "joined", "storage"]]);
 });
 

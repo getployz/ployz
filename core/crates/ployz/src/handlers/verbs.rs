@@ -10,8 +10,8 @@ use serde::Serialize;
 use super::debug;
 use super::{
     Handler, account, build, catalog, cloud, completion, config, config_item, context, deploy,
-    docs, domain, env, github, link, login, mcp, metrics, operator, project, review, server,
-    service, up, volume,
+    docs, domain, env, github, link, login, mcp, metrics, operator, project, recovery, review,
+    server, service, up, volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -481,6 +481,19 @@ pub(crate) const PROJECT_RM: Verb =
         .needs(Permission::ProjectDelete);
 pub(crate) const PS: Verb = Verb::cloud("ps", Never, operator::ps_command, service::processes)
     .docs("troubleshooting/deployments.md");
+pub(crate) const RECOVER: Verb = Verb::local(
+    "recover",
+    Never,
+    recovery::recover_command,
+    recovery::recover,
+)
+.stdin(&[("--code-stdin", Stdin::Only)]);
+pub(crate) const RECOVERY_ROTATE: Verb = Verb::cloud(
+    "recovery rotate",
+    Always,
+    recovery::rotate_command,
+    recovery::rotate,
+);
 pub(crate) const SCHEMA: Verb =
     Verb::cloud("schema", Never, catalog::schema_command, catalog::schema).docs("cli/overview.md");
 pub(crate) const SERVER_ADD: Verb = Verb::cloud(
@@ -857,6 +870,8 @@ pub(crate) const VERBS: &[Verb] = &[
     PROJECT_RENAME,
     PROJECT_RM,
     PS,
+    RECOVER,
+    RECOVERY_ROTATE,
     SCHEMA,
     SERVER_ADD,
     SERVER_BUILD_CACHE_CLEAR,
@@ -943,6 +958,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "project",
         command: project::group,
+    },
+    Group {
+        path: "recovery",
+        command: recovery::group,
     },
     Group {
         path: "server",

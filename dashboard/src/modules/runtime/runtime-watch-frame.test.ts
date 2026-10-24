@@ -143,6 +143,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           runningBuilds: 1,
           capabilities: ["ployz.logs.tail.v1"],
           poolCommittableBytes: 12_884_901_888,
+          sealing: null,
           daemonVersion: "0.1.2",
           membership: "suspect",
           observedContainerCount: 1,
@@ -276,6 +277,31 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     });
     if (Option.isNone(older)) throw new Error("Expected Runtime Watch frame.");
     expect(runtimeSnapshotFromWatchFrame(older.value).machines[0]?.poolCommittableBytes).toBeNull();
+  });
+
+  it("reads whether a Server holds its Cluster's Sealing Key or awaits its recovery, and as unknown from a daemon that doesn't report it", () => {
+    const base = runtimeWatchMachineFixture("machine-a", "edge-a");
+    const needsAccess = { ...base.runtime, sealing: { kind: "needs_access" } as const };
+    const awaitsRecovery = { kind: "awaits_recovery", public_key: `${"A".repeat(43)}=` } as const;
+    const awaiting = runtimeWatchMachineFixture("machine-c", "edge-c");
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      machines: [
+        runtimeWatchMachineObservationFixture({ machine: { ...base, runtime: needsAccess } }),
+        runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("machine-b", "edge-b") }),
+        runtimeWatchMachineObservationFixture({ machine: { ...awaiting, runtime: { ...awaiting.runtime, sealing: awaitsRecovery } } }),
+      ],
+    }));
+    expect(runtimeSnapshotFromWatchFrame(frame).machines.map((machine) => machine.sealing)).toEqual([{ kind: "needs_access" }, null, awaitsRecovery]);
+
+    const [machine] = frame.machines;
+    if (!machine) throw new Error("Expected a machine.");
+    const { sealing: _, ...olderRuntime } = machine.machine.runtime;
+    const older = Schema.decodeUnknownOption(runtimeWatchFrameSchema)({
+      ...frame,
+      machines: [{ ...machine, machine: { ...machine.machine, runtime: olderRuntime } }],
+    });
+    if (Option.isNone(older)) throw new Error("Expected Runtime Watch frame.");
+    expect(runtimeSnapshotFromWatchFrame(older.value).machines[0]?.sealing).toBeNull();
   });
 
   it("accepts additive SDK fields while requiring the retained evidence", () => {

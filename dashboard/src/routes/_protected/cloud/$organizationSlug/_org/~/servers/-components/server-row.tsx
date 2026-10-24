@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { cn } from "#/lib/utils";
+import { useSealedVariables } from "#/modules/machines/sealed-variables.queries";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { Server } from "#/modules/machines/use-servers";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
@@ -41,6 +42,12 @@ const STORAGE = {
   unknown: <Badge variant="outline">Volume support unknown</Badge>,
 };
 
+const SEALING = {
+  held: null,
+  needs_access: <Badge variant="warning">Needs access</Badge>,
+  awaits_recovery: <Badge variant="warning">Needs recovery</Badge>,
+};
+
 /** The list's column template, shared by its rows and its skeleton so both line up. */
 export const SERVER_ROW_GRID = cn(
   "grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-1 px-3 py-2.5 text-sm",
@@ -63,6 +70,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
 }) {
   const { word, dot, tone } = STATES[serverRowState(server.status, upgrade)];
   const names = serviceNames(server);
+  const sealing = useSealedVariables(organizationSlug) ? server.machine.sealing : null;
   return (
     <Link
       to="/cloud/$organizationSlug/~/servers/$serverId"
@@ -71,7 +79,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
     >
       <span aria-hidden="true" className={cn("size-2 rounded-full", stale ? "bg-muted-foreground" : dot)} />
       <span className="truncate font-medium">{server.name}</span>
-      <span className="col-2 row-2 flex min-w-0 items-center gap-1 @xl:col-auto @xl:row-auto">
+      <span className="col-2 row-2 flex min-w-0 flex-wrap items-center gap-1 @xl:col-auto @xl:row-auto">
         {names.length === 0 ? <span className="truncate text-muted-foreground">{runsHere(server)}</span> : (
           <>
             <span className="flex min-w-0 gap-1 overflow-hidden">
@@ -81,6 +89,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
           </>
         )}
         {STORAGE[server.machine.storage ?? "unknown"]}
+        {sealing ? SEALING[sealing.kind] : null}
       </span>
       <ServerMeters organizationSlug={organizationSlug} server={server} />
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>

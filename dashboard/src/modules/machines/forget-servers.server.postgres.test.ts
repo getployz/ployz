@@ -15,7 +15,7 @@ import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { CLUSTER_UNREACHABLE, enrollMachine, hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { checkForgetServers, FORGET_CLUSTER_BUDGET_MS, forgetServers } from "#/modules/machines/forget-servers.server";
 import {
-  clusterSealingKey, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine,
+  clusterSealingKey, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, organizationSealingKey,
 } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -119,6 +119,12 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
       organizationId: ORGANIZATION, clusterKey: hashEnrollmentToken(before ? encryption.decrypt(before.encryptedPairingSecret) : ""),
       publicKey: Buffer.alloc(32, 1).toString("base64"),
     });
+    const organizationKey = {
+      organizationId: ORGANIZATION,
+      publicKey: Buffer.alloc(32, 1).toString("base64"),
+      recoveryBlob: Buffer.concat([Buffer.from([1]), Buffer.alloc(76, 2)]).toString("base64"),
+    };
+    yield* drizzle.insert(organizationSealingKey).values(organizationKey);
     const [bob] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
     yield* drizzle.insert(member).values({ userId: bob?.id ?? "", organizationId: ORGANIZATION, role: "member" });
     expect(yield* checkForgetServers({ userId: bob?.id ?? "", organizationId: ORGANIZATION }))
@@ -138,6 +144,11 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
     for (const table of [organizationPairing, organizationMachine, clusterSealingKey, machineEnrollmentToken, enrollmentAllocation, machineRemoveAttempt]) {
       expect(yield* drizzle.select().from(table)).toEqual([]);
     }
+    expect(yield* drizzle.select({
+      organizationId: organizationSealingKey.organizationId,
+      publicKey: organizationSealingKey.publicKey,
+      recoveryBlob: organizationSealingKey.recoveryBlob,
+    }).from(organizationSealingKey)).toEqual([organizationKey]);
     expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: QUEUED }))).toMatchObject({ status: "cancelled" });
 
     // A new token's first Server founds a new Cluster, under a new pairing secret.

@@ -53,6 +53,7 @@ pub struct RecordOwnerStopped;
 pub struct RecordOwner {
     mailbox: mpsc::Sender<Message>,
     record: watch::Receiver<Arc<LocalMachineRecord>>,
+    sealing: watch::Receiver<Option<ployz_core::Sealing>>,
     restart: watch::Sender<bool>,
     shared: Arc<Shared>,
 }
@@ -77,6 +78,7 @@ impl RecordOwner {
     pub fn spawn(store: LocalMachineStore) -> std::io::Result<Self> {
         let (mailbox, messages) = mpsc::channel::<Message>();
         let (published, record) = watch::channel(Arc::new(store.record().clone()));
+        let sealing = store.sealing.subscribe();
         let (restart, _) = watch::channel(false);
         let data_dir = store.data_dir.clone();
         let run_dir = store.run_dir.clone();
@@ -112,6 +114,7 @@ impl RecordOwner {
         Ok(Self {
             mailbox,
             record,
+            sealing,
             restart,
             shared: Arc::new(Shared {
                 data_dir,
@@ -153,6 +156,14 @@ impl RecordOwner {
     #[must_use]
     pub fn watch(&self) -> watch::Receiver<Arc<LocalMachineRecord>> {
         self.record.clone()
+    }
+
+    /// What this Machine holds of the Sealing Key, as the store last wrote it.
+    ///
+    /// The receiver closes when the owner stops.
+    #[must_use]
+    pub(crate) fn sealing(&self) -> watch::Receiver<Option<ployz_core::Sealing>> {
+        self.sealing.clone()
     }
 
     /// Apply one mutation to the store and return what it produced.
@@ -253,6 +264,7 @@ impl Clone for RecordOwner {
         Self {
             mailbox: self.mailbox.clone(),
             record: self.record.clone(),
+            sealing: self.sealing.clone(),
             restart: self.restart.clone(),
             shared: Arc::clone(&self.shared),
         }

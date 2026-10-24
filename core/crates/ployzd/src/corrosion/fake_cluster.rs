@@ -23,6 +23,9 @@ use super::{ApiClient, ReplicatedStore};
 #[derive(Clone)]
 struct ClusterKv {
     network: Option<String>,
+    /// The awaited Sealing public key as it stood when the network was written,
+    /// so a test awaits the write instead of polling.
+    network_written: tokio::sync::watch::Sender<Option<Option<String>>>,
     sealing_public_key: tokio::sync::watch::Sender<Option<String>>,
     sealing_awaits_recovery: Option<String>,
     machines: BTreeMap<String, String>,
@@ -55,6 +58,7 @@ impl ClusterKv {
         let (certificate_changes, _) = broadcast::channel(16);
         Self {
             network: Some("10.210.0.0/16".into()),
+            network_written: tokio::sync::watch::Sender::new(None),
             sealing_public_key: tokio::sync::watch::Sender::new(None),
             sealing_awaits_recovery: None,
             machines: BTreeMap::new(),
@@ -228,6 +232,17 @@ impl FakeCluster {
 
     pub(crate) fn write_sealing_awaits_recovery(&self, key: &str) {
         self.kv.lock().unwrap().sealing_awaits_recovery = Some(key.to_owned());
+    }
+
+    /// The awaited Sealing public key as it stood when the Cluster network was written.
+    pub(crate) async fn awaited_key_at_network(&self) -> Option<String> {
+        let mut written = self.kv.lock().unwrap().network_written.subscribe();
+        let awaited = written.wait_for(Option::is_some).await.unwrap();
+        awaited.clone().unwrap()
+    }
+
+    pub(crate) fn clear_network(&self) {
+        self.kv.lock().unwrap().network = None;
     }
 
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
@@ -483,6 +498,8 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 if query.starts_with("INSERT INTO cluster (key, value) VALUES ('network', ?)") =>
             {
                 kv.network = Some(text_param(&statement.params, 0).to_owned());
+                let awaited = kv.sealing_awaits_recovery.clone();
+                kv.network_written.send_replace(Some(awaited));
             }
             query
                 if query.starts_with(
@@ -492,6 +509,15 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 if kv.sealing_public_key.borrow().is_none() {
                     kv.sealing_public_key
                         .send_replace(Some(text_param(&statement.params, 0).to_owned()));
+                }
+            }
+            query
+                if query.starts_with(
+                    "INSERT INTO cluster (key, value) VALUES ('sealing_awaits_recovery', ?)",
+                ) =>
+            {
+                if kv.sealing_awaits_recovery.is_none() {
+                    kv.sealing_awaits_recovery = Some(text_param(&statement.params, 0).to_owned());
                 }
             }
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {

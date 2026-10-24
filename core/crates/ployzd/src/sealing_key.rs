@@ -7,7 +7,7 @@ use hpke::{
     kdf::HkdfSha256, kem::X25519HkdfSha256,
 };
 use ployz_core::{
-    Ciphertext, SEALED_VALUE_INFO, SealedSealingKey, SealingPublicKey, WireGuardPublicKey,
+    Ciphertext, SEALED_VALUE_INFO, SealedSealingKey, Sealing, SealingPublicKey, WireGuardPublicKey,
 };
 use rand_core::{OsRng, TryRngCore as _};
 use thiserror::Error;
@@ -59,6 +59,25 @@ impl SealingKey {
                 }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
+        }
+    }
+
+    /// What the Machine at `data_dir` holds of the Sealing Key; `None` when the file
+    /// could not be read at all.
+    pub(crate) fn observe(data_dir: &Path) -> Option<Sealing> {
+        match Self::load(data_dir) {
+            Ok(Some(key)) => Some(Sealing::Held {
+                public_key: key.public_key(),
+            }),
+            Ok(None) => Some(Sealing::NeedsAccess),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                tracing::warn!(%error, "this Machine's Sealing Key is unusable");
+                Some(Sealing::NeedsAccess)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not read the Sealing Key");
+                None
+            }
         }
     }
 
@@ -217,6 +236,14 @@ impl SealingKey {
     fn private(&self) -> <Kem as hpke::Kem>::PrivateKey {
         <Kem as hpke::Kem>::PrivateKey::from_bytes(&self.0)
             .expect("an X25519 private key is any 32 bytes")
+    }
+
+    pub(crate) const fn from_secret(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) const fn secret(&self) -> &[u8; 32] {
+        &self.0
     }
 }
 

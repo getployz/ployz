@@ -161,6 +161,7 @@ export const getOrganizationState = Effect.fn(
     formerOrganization: organizationSlug === undefined || accessible ? null : yield* formerOrganizationName(actor.userId, organizationSlug),
     billingEnabled: polar.mode === "hosted",
     uptimeEnabled: config.uptimeEnabled,
+    sealedVariables: config.sealedVariables,
     /** Whether this Cloud has Ployz support at all, so the support switch means something. */
     supportAvailable: staff.available,
     activeOrganization:

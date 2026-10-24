@@ -270,6 +270,25 @@ where
     F: Fn(ployz_core::RpcRequestBody) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<ployz_core::RpcResponse, Status>> + Send + 'static,
 {
+    let contract = ployz_core::ContractDescription {
+        machine_id: ployz_core::MachineId::random(),
+        protocol_major: ployz_core::PROTOCOL_MAJOR,
+        daemon_version: "fixture".into(),
+        capabilities: Default::default(),
+    };
+    unix_daemon_describing(path, contract, rpc)
+}
+
+/// [`unix_daemon`] answering confirmation with `contract`.
+pub(crate) fn unix_daemon_describing<F, Fut>(
+    path: &std::path::Path,
+    contract: ployz_core::ContractDescription,
+    rpc: F,
+) -> tokio::runtime::Runtime
+where
+    F: Fn(ployz_core::RpcRequestBody) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<ployz_core::RpcResponse, Status>> + Send + 'static,
+{
     use ployz_core::{RpcRequestBody, RpcResponse};
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -282,20 +301,14 @@ where
     };
     let rpc = tower::service_fn(move |request: Request<OpaquePayload>| {
         let rpc = rpc.clone();
+        let contract = contract.clone();
         async move {
             #[expect(
                 clippy::wildcard_enum_match_arm,
                 reason = "the fixture answers confirmation and forwards every other request"
             )]
             let response = match request.into_inner().decode_request().unwrap().body {
-                RpcRequestBody::DescribeContract(_) => {
-                    RpcResponse::from(ployz_core::ContractDescription {
-                        machine_id: ployz_core::MachineId::random(),
-                        protocol_major: ployz_core::PROTOCOL_MAJOR,
-                        daemon_version: "fixture".into(),
-                        capabilities: Default::default(),
-                    })
-                }
+                RpcRequestBody::DescribeContract(_) => RpcResponse::from(contract),
                 body => rpc(body).await?,
             };
             Ok::<_, Status>(Response::new(response.encode().unwrap()))

@@ -37,6 +37,7 @@ pub struct ReplicatedStore {
 pub(crate) struct RuntimeOverlay {
     pub(crate) running_builds: u32,
     pub(crate) pool_committable_bytes: Option<u64>,
+    pub(crate) sealing: Option<ployz_core::Sealing>,
 }
 
 pub(crate) struct MachinePublicationGuard<'a> {
@@ -79,6 +80,7 @@ impl MachinePublicationGuard<'_> {
                 let mut machine = machine.clone();
                 machine.runtime.running_builds = overlay.running_builds;
                 machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
+                machine.runtime.sealing = overlay.sealing;
                 machine.runtime.management_identity = Some(local.management_secret().public_key());
                 Some(machine)
             }
@@ -315,6 +317,22 @@ impl ReplicatedStore {
         Ok(())
     }
 
+    /// Name the Sealing public key a keyless founder waits to recover. The
+    /// first write wins and nothing clears it; a published
+    /// `sealing_public_key` supersedes it.
+    pub async fn publish_sealing_awaits_recovery(
+        &self,
+        key: SealingPublicKey,
+    ) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO cluster (key, value) VALUES ('sealing_awaits_recovery', ?) ON CONFLICT (key) DO NOTHING",
+                [json!(key.to_string())],
+            )])
+            .await?;
+        Ok(())
+    }
+
     /// The Cluster's published Sealing public key, or `None` for a Cluster
     /// founded before Sealing Keys existed and not yet backfilled.
     ///
@@ -338,6 +356,18 @@ impl ReplicatedStore {
             "Sealing public key awaiting recovery",
         )
         .await
+    }
+
+    /// The Sealing public key the Cluster awaits from recovery, unless a
+    /// published key superseded the marker.
+    ///
+    /// # Errors
+    /// Returns an error when either read fails.
+    pub async fn awaited_sealing_key(&self) -> Result<Option<SealingPublicKey>, Error> {
+        match self.sealing_public_key().await? {
+            Some(_) => Ok(None),
+            None => self.sealing_awaits_recovery().await,
+        }
     }
 
     async fn sealing_cluster_key(

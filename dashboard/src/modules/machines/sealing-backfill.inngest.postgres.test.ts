@@ -30,13 +30,14 @@ describe("ensure-cluster-sealing-key", () => {
   let harness: PostgresTestHarness;
   let reports: BackfillSealingKeyReport[] | null;
   let unreachable: boolean;
+  let sealedVariables: boolean;
   const requests: BackfillSealingKeyRequest[] = [];
 
   const runEffect = makeInngestEffectRunner(<A, E>(
     operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | OrganizationRuntime | InngestClient>,
   ) => {
     const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
-      env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl },
+      env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl, SEALED_VARIABLES: String(sealedVariables) },
     }))));
     return harness.runEffect(operation.pipe(
       Effect.provideService(SecretEncryption, encryption),
@@ -92,6 +93,7 @@ describe("ensure-cluster-sealing-key", () => {
   beforeEach(async () => {
     reports = [];
     unreachable = false;
+    sealedVariables = false;
     requests.length = 0;
     send.mockClear();
     await harness.pool.query(`
@@ -258,6 +260,33 @@ describe("ensure-cluster-sealing-key", () => {
       expect(output.result).toEqual({ organizationId, result: "no_holder", awaitsOperator: true });
       expect(requests).toEqual([{ expected: sealingKey("A"), generator: null }]);
       expect(sentEvents(output)).toBe(0);
+    });
+
+    it("expects the Organization's Sealing Key for a Cluster that reported none, so no Server generates another", async () => {
+      sealedVariables = true;
+      await harness.pool.query(
+        "insert into organization_sealing_key (organization_id, public_key) values ($1, $2)",
+        [organizationId, sealingKey("A")],
+      );
+      reports = [{ result: "no_holder", expected: sealingKey("A") }];
+
+      const output = await ensure();
+
+      expect(output.result).toEqual({ organizationId, result: "no_holder", awaitsOperator: true });
+      expect(requests).toEqual([{ expected: sealingKey("A"), generator: null }]);
+      expect(await generators()).toEqual([]);
+    });
+
+    it("expects nothing from the Organization's Sealing Key without sealed variables", async () => {
+      await harness.pool.query(
+        "insert into organization_sealing_key (organization_id, public_key) values ($1, $2)",
+        [organizationId, sealingKey("A")],
+      );
+      reports = [{ result: "distributed", public_key: sealingKey("A"), machines: [] }];
+
+      await ensure();
+
+      expect(requests).toEqual([{ expected: null, generator: null }]);
     });
   });
 

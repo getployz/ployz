@@ -1,11 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Effect } from "effect";
-import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
+import { cliReply } from "#/routes/api/cli/-cli.handler";
 import { serveCli } from "#/routes/api/cli/-handlers";
 import { methodNotAllowed } from "#/server/public-error";
 
 function handle(request: Request) {
-  return serveCli(request, Effect.map(handleCliRequest(request), (body) => body instanceof Response ? body : Response.json(body)));
+  return serveCli(request, cliReply(request));
 }
 
 export const Route = createFileRoute("/api/cli/$")({

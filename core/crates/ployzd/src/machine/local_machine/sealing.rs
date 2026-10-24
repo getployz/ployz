@@ -85,7 +85,10 @@ impl LocalMachine {
         }
         let key = SealingKey::generate();
         let public_key = key.public_key();
-        SealingKey::set(data_dir, Some(&key)).map_err(Error::Unwritable)?;
+        self.owner
+            .mutate(move |store| store.set_sealing_key(Some(&key)))
+            .await?
+            .map_err(Error::Unwritable)?;
         replicated.publish_sealing_public_key(public_key).await?;
         tracing::info!(
             machine = %record.id(),
@@ -192,7 +195,10 @@ impl LocalMachine {
                 }
             }
         }
-        SealingKey::set(data_dir, Some(&key)).map_err(Error::Unwritable)?;
+        self.owner
+            .mutate(move |store| store.set_sealing_key(Some(&key)))
+            .await?
+            .map_err(Error::Unwritable)?;
         replicated.publish_sealing_public_key(public_key).await?;
         tracing::info!(
             machine = %record.id(),

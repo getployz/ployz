@@ -239,6 +239,7 @@ async fn publication_guard_rechecks_the_local_phase() {
             RuntimeOverlay {
                 running_builds: 2,
                 pool_committable_bytes: Some(7 << 30),
+                sealing: None,
             }
         ),
         Some(observed)
@@ -377,6 +378,123 @@ async fn publisher_publishes_the_founders_sealing_public_key() {
     shutdown.cancel();
     publisher.await.unwrap().unwrap();
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn a_founder_awaiting_recovery_names_its_key_before_the_network_and_holds_none() {
+    use std::time::Duration;
+
+    let cluster = crate::corrosion::fake_cluster::FakeCluster::start();
+    cluster.clear_network();
+    let replicated = cluster.store();
+    let data_dir = std::env::temp_dir().join(format!("ployzd-awaits-{}", MachineId::random()));
+    let expected = ployz_core::SealingPublicKey::from_bytes([4; 32]);
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .enroll_for_recovery(
+            ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: ployz_core::MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
+                wireguard_mtu: None,
+                pinned: Default::default(),
+            },
+            ployz_core::RecoverySeed {
+                expected_public_key: expected,
+                backup: None,
+            },
+        )
+        .unwrap();
+    assert!(
+        crate::sealing_key::SealingKey::load(&data_dir)
+            .unwrap()
+            .is_none()
+    );
+    let owner = RecordOwner::spawn(store).unwrap();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = crate::corrosion::MachineView::start(replicated.clone(), shutdown.clone());
+    let publisher = tokio::spawn(crate::corrosion::run_machine_publisher(
+        Some((replicated.clone(), view)),
+        owner,
+        crate::corrosion::LiveRuntime::unobserved(),
+        shutdown.clone(),
+    ));
+
+    let awaited = tokio::time::timeout(Duration::from_secs(5), cluster.awaited_key_at_network())
+        .await
+        .expect("the founder never published its Cluster network");
+
+    assert_eq!(awaited, Some(expected.to_string()));
+    assert_eq!(
+        replicated.sealing_awaits_recovery().await.unwrap(),
+        Some(expected)
+    );
+    assert_eq!(replicated.sealing_public_key().await.unwrap(), None);
+    shutdown.cancel();
+    publisher.await.unwrap().unwrap();
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[test]
+fn only_a_founder_recovers_a_sealing_key() {
+    let data_dir = std::env::temp_dir().join(format!("ployzd-member-seed-{}", MachineId::random()));
+    let mut local = LocalMachineStore::open(&data_dir).unwrap();
+    let machine: Machine = serde_json::from_value(json!({
+        "id": local.record().id(),
+        "name": "joining",
+        "subnet": "10.210.1.0/24",
+        "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+        "public_key": local.record().private_key().public_key().0,
+        "advertised_endpoints": ["192.0.2.1:51820"],
+    }))
+    .unwrap();
+
+    let refused = local.enroll_for_recovery(
+        ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Member {
+                registration: ployz_core::Registered {
+                    assigned_machine: machine.clone(),
+                    visible_peers: vec![machine],
+                    target_versions: BTreeMap::new(),
+                    sealing_key: None,
+                },
+            },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        },
+        ployz_core::RecoverySeed {
+            expected_public_key: ployz_core::SealingPublicKey::from_bytes([4; 32]),
+            backup: None,
+        },
+    );
+
+    assert!(matches!(
+        refused,
+        Err(crate::machine::StoreError::RecoveryWithoutFounding)
+    ));
+    assert_eq!(local.record().recovery_seed(), None);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn the_first_sealing_key_awaiting_recovery_stays() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(store.sealing_awaits_recovery().await.unwrap(), None);
+    let first = ployz_core::SealingPublicKey::from_bytes([1; 32]);
+    store.publish_sealing_awaits_recovery(first).await.unwrap();
+    store
+        .publish_sealing_awaits_recovery(ployz_core::SealingPublicKey::from_bytes([2; 32]))
+        .await
+        .unwrap();
+
+    assert_eq!(store.sealing_awaits_recovery().await.unwrap(), Some(first));
+    task.abort();
 }
 
 #[tokio::test]

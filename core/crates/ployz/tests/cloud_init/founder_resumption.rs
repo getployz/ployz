@@ -1,6 +1,7 @@
 //! Founder completion loss, resumption, and convergent-tail regressions.
 
 use super::*;
+use harness::CallbackReply;
 
 #[tokio::test]
 async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
@@ -52,7 +53,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
         vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING }); 1]
     );
 
-    enroll.set_callback_status(200);
+    enroll.set_callback_reply(CallbackReply::Echo);
     let output = init_cloud(
         &format!("ssh://root@{machine_addr}"),
         &enroll.url,

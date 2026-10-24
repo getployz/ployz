@@ -14,8 +14,9 @@ use ployz_core::{
     InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
     MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
     MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
-    PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation,
-    RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
+    PublicIpDiscovery, RecoverySeed, RegisterRequest, Registered, RpcError, RpcErrorCode,
+    RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
+    synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -74,6 +75,8 @@ mod management_client;
 mod push_target;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
+mod sealing_recovery;
+pub(crate) use sealing_recovery::Error as RecoveryError;
 mod upgrade;
 
 #[derive(Clone)]
@@ -180,6 +183,8 @@ pub enum Error {
     Seal(#[from] crate::sealing_key::SealError),
     #[error(transparent)]
     Sealing(#[from] SealingError),
+    #[error(transparent)]
+    Recovery(#[from] RecoveryError),
 }
 
 impl LocalMachine {
@@ -522,19 +527,9 @@ impl LocalMachine {
         ) {
             return None;
         }
-        match SealingKey::load(self.owner.data_dir()) {
-            Ok(Some(key)) => Some(ployz_core::Sealing::Held {
-                public_key: key.public_key(),
-            }),
-            Ok(None) => self.lacking_key().await,
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                tracing::warn!(%error, "this Machine's Sealing Key is unusable");
-                self.lacking_key().await
-            }
-            Err(error) => {
-                tracing::warn!(%error, "could not read the Sealing Key");
-                None
-            }
+        match SealingKey::observe(self.owner.data_dir()) {
+            Some(ployz_core::Sealing::NeedsAccess) => self.lacking_key().await,
+            observed => observed,
         }
     }
 
@@ -543,12 +538,7 @@ impl LocalMachine {
         let Ok(replicated) = self.replicated() else {
             return Some(ployz_core::Sealing::NeedsAccess);
         };
-        let awaited = match replicated.sealing_public_key().await {
-            Ok(Some(_)) => Ok(None),
-            Ok(None) => replicated.sealing_awaits_recovery().await,
-            Err(error) => Err(error),
-        };
-        match awaited {
+        match replicated.awaited_sealing_key().await {
             Ok(Some(public_key)) => Some(ployz_core::Sealing::AwaitsRecovery { public_key }),
             Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
             Err(error) => {
@@ -655,14 +645,18 @@ impl LocalMachine {
     /// request is invalid, or storage departure fails.
     pub async fn enroll(&self, request: EnrollRequest) -> Result<Enrolled, Error> {
         let local = self.clone();
-        self.finish_mutation(async move { local.enroll_admitted(request).await })
+        self.finish_mutation(async move { local.enroll_admitted(request, None).await })
             .await
     }
 
-    async fn enroll_admitted(&self, request: EnrollRequest) -> Result<Enrolled, Error> {
+    async fn enroll_admitted(
+        &self,
+        request: EnrollRequest,
+        recovery: Option<RecoverySeed>,
+    ) -> Result<Enrolled, Error> {
         let (plan, installation) = self
             .owner
-            .mutate(move |store| store.plan_enrollment(request))
+            .mutate(move |store| store.plan_enrollment(request, recovery))
             .await??;
         let machine = match plan {
             EnrollPlan::Fresh => {

@@ -39,6 +39,12 @@ export const runtimeContainerRecordSchema = Schema.Struct({
 
 export type RuntimeContainerRecord = typeof runtimeContainerRecordSchema.Type;
 
+export const runtimeSealingSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("held"), public_key: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("needs_access") }),
+  Schema.Struct({ kind: Schema.Literal("awaits_recovery"), public_key: Schema.String }),
+]);
+
 /** A Machine as the watched entry Machine reported it. `membership` is an open
  * Runtime value; Cloud shows it as evidence, and `serverStatus` is the one place
  * it becomes a status word. */
@@ -65,6 +71,8 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   capabilities: Schema.Array(Schema.String),
   /** Bytes of Volume bounds the Server's Pool could still take on, a hint below the edge; null when unobserved or from an older daemon. */
   poolCommittableBytes: Schema.NullOr(Schema.Number),
+  /** Whether the Server holds its Cluster's Sealing Key; null when unobserved or from an older daemon. */
+  sealing: Schema.NullOr(runtimeSealingSchema),
   membership: Schema.String,
   observedContainerCount: NonnegativeInt,
   observedAt: Schema.String,

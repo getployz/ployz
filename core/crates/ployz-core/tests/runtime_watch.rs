@@ -8,8 +8,8 @@ use ployz_core::{
     MachineObservation, MachineRuntime, MembershipObservation, Namespace, OpaquePayload,
     PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError, RuntimeWatchRequest,
-    SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
-    encode_runtime_watch_frame, op,
+    Sealing, SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey,
+    decode_runtime_watch_frame, encode_runtime_watch_frame, op,
 };
 use serde_json::{Value, json};
 
@@ -144,6 +144,24 @@ fn runtime_watch_frame_accepts_unknown_fields_and_honest_defaults() {
 }
 
 #[test]
+fn runtime_watch_frames_from_older_daemons_leave_sealing_unknown() {
+    let sealing =
+        |frame: &RuntimeWatchFrame| frame.machines.first().unwrap().machine.runtime.sealing;
+    let older: RuntimeWatchFrame = serde_json::from_str(FROZEN_FRAME).unwrap();
+    assert_eq!(sealing(&older), None);
+
+    let mut current: Value = serde_json::from_str(FROZEN_FRAME).unwrap();
+    insert_json_field(
+        &mut current,
+        "/machines/0/machine/runtime",
+        "sealing",
+        json!({ "kind": "needs_access" }),
+    );
+    let decoded = serde_json::from_value::<RuntimeWatchFrame>(current).unwrap();
+    assert_eq!(sealing(&decoded), Some(Sealing::NeedsAccess));
+}
+
+#[test]
 fn observation_enums_keep_an_unknown_case() {
     let status: CertificateAvailability = serde_json::from_str("\"renewing\"").unwrap();
     assert_eq!(
@@ -229,6 +247,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                     memory_total_bytes: None,
                     running_builds: 0,
                     pool_committable_bytes: None,
+                    sealing: None,
                     store_filesystem: None,
                     capabilities: BTreeSet::new(),
                     management_identity: None,

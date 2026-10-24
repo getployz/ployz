@@ -262,6 +262,7 @@ pub(super) async fn server_add(
         &instruction.token,
         &system.cloud,
         &install,
+        crate::handlers::cloud::Reader::Fleet,
         progress,
     )
     .await;

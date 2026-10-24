@@ -152,6 +152,15 @@ pub(crate) fn fields<T: Serialize + ?Sized>(value: &T, record: &Fields) -> Resul
     })
 }
 
+/// One record on stdout, for a value a person must copy before the command ends.
+///
+/// # Errors
+///
+/// Returns the stdout write error.
+pub(crate) fn write_fields(record: &Fields) -> io::Result<()> {
+    record.write(&mut super::stdout(), aligned())
+}
+
 /// Finish with what the command did: `value` under `--json`, else `sentence`
 /// on stdout.
 ///

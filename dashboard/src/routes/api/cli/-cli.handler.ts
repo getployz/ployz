@@ -488,6 +488,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
   }
 });
 
+export const cliReply = (request: Request) =>
+  Effect.map(handleCliRequest(request), (body) => body instanceof Response ? body : Response.json(body));
+
 function cliWaitingServer(server: WaitingServerView) {
   return {
     id: server.id,

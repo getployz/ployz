@@ -12,9 +12,11 @@ use ts_rs::TS;
 
 mod build_grant;
 mod sealing;
+mod sealing_recovery;
 mod upgrade;
 pub use build_grant::*;
 pub use sealing::*;
+pub use sealing_recovery::*;
 pub use upgrade::*;
 
 use ipnet::Ipv4Net;
@@ -1552,6 +1554,8 @@ define_responses! {
     SetVolumeSizeReply(SetVolumeSizeReply) => "set_volume_size_reply";
     MachineDetails(MachineDetails) => "machine_details";
     Enrolled(Enrolled) => "enrolled";
+    SealingKeyWrapped(SealingKeyWrapped) => "sealing_key_wrapped";
+    SealingKeyRecovered(SealingKeyRecovered) => "sealing_key_recovered";
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     PushTargetSet(PushTargetSet) => "push_target_set";
@@ -2471,8 +2475,11 @@ mod streaming_routing_tests {
     }
 
     #[test]
-    fn only_exec_needs_full_scope() {
-        assert_eq!(crate::rpc_catalog!(full_scope_routes), ["Exec"]);
+    fn only_exec_and_the_recovery_code_routes_need_full_scope() {
+        assert_eq!(
+            crate::rpc_catalog!(full_scope_routes),
+            ["WrapSealingKey", "RecoverSealingKey", "Exec"]
+        );
         assert_eq!(super::scope_of("/ployz.rpc.v1.MachineRpc/Nope"), None);
     }
 

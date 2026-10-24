@@ -2,6 +2,7 @@ import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
 import { Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { Uuid } from "#/lib/schema";
+import { RecoveryBackup, SealingPublicKey } from "#/modules/machines/sealing-key";
 
 export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -138,6 +139,7 @@ export const enrollmentIdentitySchema = Schema.Struct({
   memoryTotalBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
   diskTotalBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
   diskAvailableBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
+  recoverySupport: Schema.optionalKey(Schema.Literal(1)),
 });
 
 export type EnrollmentIdentity = typeof enrollmentIdentitySchema.Type;
@@ -174,12 +176,18 @@ const enrollmentCallbackIdentity = {
 
 /** Whether the enrolled Machine holds its Cluster's Sealing Key, and its public half if so. */
 const Sealing = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("held"), publicKey: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9+/]{43}=$/)) }),
+  Schema.Struct({ kind: Schema.Literal("held"), publicKey: SealingPublicKey }),
   Schema.Struct({ kind: Schema.Literal("needs_access") }),
 ]);
 
+const FounderRecoveryBackup = Schema.Struct({ publicKey: SealingPublicKey, backup: RecoveryBackup });
+
 export const enrollmentCallbackBodySchema = Schema.Union([
-  Schema.Struct({ ...enrollmentCallbackIdentity, sealing: Schema.optionalKey(Sealing) }),
+  Schema.Struct({
+    ...enrollmentCallbackIdentity,
+    sealing: Schema.optionalKey(Sealing),
+    recoveryBackup: Schema.optionalKey(FounderRecoveryBackup),
+  }),
   Schema.Struct({
     ...enrollmentCallbackIdentity,
     stage: Schema.Literal("publish"),
@@ -292,11 +300,17 @@ export type CloudPairing = {
   secret: string;
 };
 
+/** A founding Server backs up the Sealing Key it makes, or waits for its Organization's key to be recovered. */
+export type FoundingRecovery =
+  | { kind: "back_up" }
+  | { kind: "seed"; expectedPublicKey: string; backup: string | null };
+
 export type InitializeJoinMaterial = {
   kind: "initialize";
   resumed: boolean;
   pairing: CloudPairing;
   storage: RegisterRequest["storage"];
+  recovery?: FoundingRecovery | undefined;
 };
 
 export type JoinEnrollMaterial = {

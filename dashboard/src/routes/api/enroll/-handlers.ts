@@ -22,7 +22,7 @@ import {
 type EnrollmentResponseBody =
   | EnrollResponse
   | { error: string }
-  | { machineId: string };
+  | { machineId: string; recoveryBackupDigest?: string | undefined };
 
 function response(body: EnrollmentResponseBody, status: number) {
   return Response.json(body, {
@@ -169,7 +169,7 @@ export function handleMachineEnrollmentCallback<R>(
       ? yield* Effect.result(completeOperation(input))
       : yield* Effect.result(completeMachineEnrollment(input));
     if (Result.isFailure(stored)) return errorResponse(stored.failure);
-    return response({ machineId: stored.success.machineId }, 200);
+    return response(stored.success, 200);
   });
 }
 

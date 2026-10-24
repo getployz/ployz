@@ -78,6 +78,10 @@ pub(crate) fn command(command: Command) -> Command {
     )
     .arg(switch("reset", None).help("Reset an initialized Server before enrollment"))
     .arg(
+        switch("show-recovery-code", None)
+            .help("Print the recovery code under --json when founding a Cluster"),
+    )
+    .arg(
         switch("standalone", None)
             .hide(true)
             .help("Found or join a Cluster without Cloud"),

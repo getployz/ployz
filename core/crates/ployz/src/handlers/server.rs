@@ -51,8 +51,8 @@ mod waiting;
 use add::add;
 pub(super) use enroll::{enroll_token, requested_storage};
 pub(super) use helpers::{
-    check_listed, confirm, connect_direct, enroll, inspect_token, leave, machine_name,
-    readiness_timeout_message, requested_name,
+    check_listed, confirm, connect_direct, enroll, enroll_for_recovery, inspect_token, leave,
+    machine_name, readiness_timeout_message, requested_name,
 };
 use init::init;
 pub(super) use remove::remove;
@@ -717,11 +717,14 @@ pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str,
 }
 
 /// A Machine as every `server` command prints it: its WireGuard public key in base64,
-/// as `wg` prints it.
+/// as `wg` prints it, and without its Sealing state.
 pub(super) fn machine_json(machine: &Machine) -> Value {
     let mut value = serde_json::to_value(machine).expect("a Machine serializes");
     if let Value::Object(fields) = &mut value {
         fields.insert("public_key".into(), json!(machine.public_key.to_string()));
+        if let Some(Value::Object(runtime)) = fields.get_mut("runtime") {
+            runtime.remove("sealing");
+        }
     }
     value
 }
@@ -1839,6 +1842,29 @@ mod tests {
             ]
         );
         assert!(parse_endpoints(&["not-an-address".into()]).is_err());
+    }
+
+    #[test]
+    fn server_json_never_carries_the_sealing_state() {
+        let mut machine = crate::global_fixtures::machine('a', "node-a");
+        machine.runtime.sealing = Some(ployz_core::Sealing::Held {
+            public_key: ployz_core::SealingPublicKey::from_bytes([7; 32]),
+        });
+        let runtime = |json: &Value| json.get("runtime").cloned().unwrap();
+        assert!(
+            runtime(&serde_json::to_value(&machine).unwrap())
+                .get("sealing")
+                .is_some()
+        );
+        let server = server_json(&machine).get("machine").cloned().unwrap();
+        for json in [machine_json(&machine), server] {
+            let runtime = runtime(&json);
+            assert!(runtime.get("sealing").is_none(), "{json}");
+            assert_eq!(
+                runtime.get("hostname").and_then(Value::as_str),
+                Some(machine.runtime.hostname.as_str())
+            );
+        }
     }
 
     #[test]

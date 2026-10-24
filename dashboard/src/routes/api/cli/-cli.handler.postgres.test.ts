@@ -16,7 +16,7 @@ import { member, organizationToken, session } from "#/modules/identity/tables";
 import { asTestDouble } from "#/lib/test-double";
 import type { JsonObject } from "#/db/tables";
 import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
-import { enrollmentAllocation, machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
+import { enrollmentAllocation, machineRemoveAttempt, organizationMachine, organizationSealingKey, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz, RpcError } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -43,6 +43,9 @@ import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
 import { handleCliRequest as handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
 import { CliMintMachineEnrollmentInput } from "#/modules/machines/enrollment";
 import { mintCliMachineEnrollment } from "#/modules/machines/enrollment.server";
+import { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
+import { readCliSealingRecovery, recoveryDigest, rotateCliSealingRecovery } from "#/modules/machines/sealing-key.server";
+import { handleSealingRequest } from "#/routes/api/cli/sealing/-sealing.handler";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
@@ -1920,6 +1923,90 @@ it.live(
         assert.strictEqual(yield* enroll(alice, { organizationId: "not-a-uuid" }), 422);
         // The slug no longer names an Organization to the CLI surface.
         assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug }), 422);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+const sealingKey = (letter: string) => `${letter.repeat(43)}=`;
+const recoveryBackup = (fill: number) => Buffer.concat([Buffer.from([1]), Buffer.alloc(76, fill)]).toString("base64");
+
+const sealing = Effect.fn(function* (path: "recovery" | "rotate", as: As, body: CliBody) {
+  const headers = new Headers();
+  const bearer = as.session ?? as.bearer;
+  if (bearer !== undefined) headers.set("authorization", `Bearer ${bearer}`);
+  const request = new Request(`${origin}/api/cli/sealing/${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+  const handled = path === "recovery"
+    ? handleSealingRequest(request, CliReadSealingRecoveryInput, readCliSealingRecovery)
+    : handleSealingRequest(request, CliRotateSealingRecoveryInput, rotateCliSealingRecovery);
+  return yield* handled.pipe(
+    Effect.flatMap((response) => Effect.promise(async (): Promise<{ status: number; json?: unknown }> => ({
+      status: response.status,
+      json: await response.json(),
+    }))),
+    Effect.catch((error) => Effect.succeed({ status: statusForPublicError(encodePublicError(error)) })),
+  );
+});
+
+it.live(
+  "the CLI reads and rotates its own Organization's recovery backup, and refuses a stale digest or another key",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer(undefined, { env: { SEALED_VARIABLES: "true" } });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const organizationId = alice.organization.id;
+        const read = () => sealing("recovery", alice, { organizationId });
+        const rotate = (publicKey: string, currentDigest: string | null, backup: string) =>
+          sealing("rotate", alice, { organizationId, publicKey, currentDigest, backup });
+        const rotated = (backup: string) => ({ status: 200, json: { digest: recoveryDigest(backup) } });
+
+        assert.strictEqual((yield* read()).status, 404);
+        yield* drizzle.insert(organizationSealingKey).values({ organizationId, publicKey: sealingKey("A") });
+        assert.deepStrictEqual(yield* read(), { status: 200, json: { publicKey: sealingKey("A"), backup: null, digest: null } });
+
+        assert.deepStrictEqual(yield* rotate(sealingKey("A"), null, recoveryBackup(2)), rotated(recoveryBackup(2)));
+        assert.deepStrictEqual(yield* rotate(sealingKey("A"), null, recoveryBackup(2)), rotated(recoveryBackup(2)));
+        assert.strictEqual((yield* rotate(sealingKey("A"), null, recoveryBackup(3))).status, 409);
+        assert.strictEqual((yield* rotate(sealingKey("B"), recoveryDigest(recoveryBackup(2)), recoveryBackup(3))).status, 409);
+        assert.strictEqual((yield* rotate(sealingKey("A"), recoveryDigest(recoveryBackup(2)), "AAAA")).status, 422);
+        assert.deepStrictEqual(yield* read(), {
+          status: 200,
+          json: { publicKey: sealingKey("A"), backup: recoveryBackup(2), digest: recoveryDigest(recoveryBackup(2)) },
+        });
+
+        assert.strictEqual((yield* sealing("recovery", bob, { organizationId })).status, 404);
+        assert.strictEqual((yield* sealing("rotate", bob, {
+          organizationId, publicKey: sealingKey("A"), currentDigest: recoveryDigest(recoveryBackup(2)), backup: recoveryBackup(4),
+        })).status, 404);
+        assert.strictEqual((yield* sealing("recovery", {}, { organizationId })).status, 401);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "without sealed variables the recovery routes answer as any unknown CLI path",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const organizationId = alice.organization.id;
+        yield* drizzle.insert(organizationSealingKey).values({ organizationId, publicKey: sealingKey("A"), recoveryBlob: recoveryBackup(2) });
+        const rotation = { organizationId, publicKey: sealingKey("A"), currentDigest: recoveryDigest(recoveryBackup(2)), backup: recoveryBackup(3) };
+
+        assert.strictEqual((yield* cli("POST", "sealing/elsewhere", alice, { organizationId })).status, 404);
+        assert.strictEqual((yield* sealing("recovery", alice, { organizationId })).status, 404);
+        assert.strictEqual((yield* sealing("rotate", alice, rotation)).status, 404);
+        assert.strictEqual((yield* cli("POST", "sealing/elsewhere", {}, { organizationId })).status, 401);
+        assert.strictEqual((yield* sealing("recovery", {}, { organizationId })).status, 401);
+        assert.strictEqual((yield* sealing("rotate", {}, rotation)).status, 401);
+        const [stored] = yield* drizzle.select({ recoveryBlob: organizationSealingKey.recoveryBlob }).from(organizationSealingKey);
+        assert.strictEqual(stored?.recoveryBlob, recoveryBackup(2));
       }).pipe(Effect.provide(layer));
     }),
   60_000,

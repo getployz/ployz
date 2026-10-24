@@ -2,9 +2,9 @@ use std::{net::IpAddr, sync::Arc};
 
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left, LocalMachinePhase,
-    MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken, PinnedAddresses,
-    PublicIpDiscovery, RpcErrorCode, TokenRequest, op,
+    EnrollForRecoveryRequest, EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left,
+    LocalMachinePhase, MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken,
+    PinnedAddresses, PublicIpDiscovery, RecoverySeed, Rpc, RpcErrorCode, TokenRequest, op,
 };
 
 use super::parse_endpoints;
@@ -228,8 +228,26 @@ pub(in crate::handlers) async fn enroll(
     client: &mut Client,
     request: EnrollRequest,
 ) -> Result<Machine, Error> {
+    enroll_with::<op::Enroll>(client, request).await
+}
+
+/// Enroll as the founder that recovers the Organization's Sealing Key instead of
+/// generating one; resends replay the stored enrollment like [`enroll`].
+pub(in crate::handlers) async fn enroll_for_recovery(
+    client: &mut Client,
+    enroll: EnrollRequest,
+    recovery: RecoverySeed,
+) -> Result<Machine, Error> {
+    enroll_with::<op::EnrollForRecovery>(client, EnrollForRecoveryRequest { enroll, recovery })
+        .await
+}
+
+async fn enroll_with<T: Rpc<Response = Enrolled>>(
+    client: &mut Client,
+    request: T::Request,
+) -> Result<Machine, Error> {
     let enrolled = client
-        .call_repeatable_for::<op::Enroll>(request, None, None, None, MACHINE_START_WAIT)
+        .call_repeatable_for::<T>(request, None, None, None, MACHINE_START_WAIT)
         .await
         .map_err(|error| match error {
             crate::setup_retry::Error::Permanent(error) => error,

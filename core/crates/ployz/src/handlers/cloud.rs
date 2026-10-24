@@ -9,19 +9,21 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, DescribeContractRequest, EnrollAs, EnrollRequest, InspectRequest,
     LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, ManagementCapability,
-    ManagementClientLabel, SetManagementClientRequest, StorageChoice, TokenRequest, op,
+    ManagementClientLabel, RecoveryCode, SetManagementClientRequest, StorageChoice, TokenRequest,
+    op,
 };
 
+use super::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cloud_enroll::{
     self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, InitializeMode,
-    Join, Outcome,
+    Join, Outcome, Recovery,
 };
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::provisioning::Installation;
 use crate::setup_report::{SetupReport, Step};
-use crate::ui::{self, Hint};
+use crate::ui::{self, Fields, Hint};
 
 /// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
 pub(super) fn enroll(
@@ -77,6 +79,13 @@ where
 /// committed result returned.
 pub(crate) type Setup = Result<Result<(), Error>, Error>;
 
+/// Who reads this enrollment's output. Only a person can keep a recovery code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Reader {
+    Person,
+    Fleet,
+}
+
 /// Enroll, then send Cloud the best-effort setup report for the outcome.
 fn enroll_token<Install, InstallFuture>(
     root: &ArgMatches,
@@ -95,6 +104,7 @@ where
             &token,
             cloud_url,
             install,
+            Reader::Person,
             &|stage| {
                 if stage == EnrollStage::Enrolling && !ui::json() {
                     ui::note("Asking Cloud to enroll this Server…");
@@ -112,6 +122,7 @@ pub(crate) async fn run_enrollment<Install, InstallFuture>(
     token: &CloudEnrollToken,
     cloud_url: &str,
     install: &Install,
+    reader: Reader,
     progress: &dyn Fn(EnrollStage),
 ) -> Setup
 where
@@ -125,6 +136,7 @@ where
         token,
         cloud_url,
         install,
+        reader,
         &mut report,
         progress,
     )
@@ -139,12 +151,17 @@ where
     setup
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the enrollment carries its originating command and who reads its recovery code"
+)]
 async fn enroll_steps<Install, InstallFuture>(
     command: EnrollCommand,
     root: &ArgMatches,
     token: &CloudEnrollToken,
     cloud_url: &str,
     install: &Install,
+    reader: Reader,
     report: &mut SetupReport,
     progress: &dyn Fn(EnrollStage),
 ) -> Setup
@@ -212,6 +229,7 @@ where
             mode,
             pairing,
             storage,
+            recovery,
         } => {
             report.enrolled(storage.choice(), true);
             enroll_founder(
@@ -226,6 +244,8 @@ where
                 mode,
                 pairing,
                 storage,
+                recovery,
+                reader,
                 cloud_url,
                 token,
                 install,
@@ -294,11 +314,13 @@ async fn enroll_current_identity(
     )
     .await?;
     let name = crate::handlers::server::machine_name(requested_name, &machine_token);
+    let recovery_supported = cloud_enroll::recovery_compat::supported(client).await?;
     let identity = EnrollIdentity::from_machine_token(
         name.clone(),
         &machine_token,
         requested_storage,
         initial_policy.clone(),
+        recovery_supported,
     );
     progress(EnrollStage::Enrolling);
     let outcome = cloud_enroll::enroll(command, url, token, &identity, progress).await?;
@@ -400,6 +422,7 @@ where
         assigned.id,
         &pairing.secret,
         sealing,
+        None,
     )
     .await?;
     ui::stream(format_args!("Joined Server {}.", assigned.name));
@@ -438,6 +461,8 @@ async fn enroll_founder<Install, InstallFuture>(
     mode: InitializeMode,
     pairing: CloudPairing,
     storage: ployz_core::StoragePreparation,
+    recovery: Option<Recovery>,
+    reader: Reader,
     cloud_url: &str,
     token: &CloudEnrollToken,
     install: &Install,
@@ -507,21 +532,26 @@ where
             progress(EnrollStage::Storage);
             client = provision_storage(matches, client, &storage, install).await?;
             report.step(Step::Join);
-            let machine = crate::handlers::server::enroll(
-                &mut client,
-                EnrollRequest {
-                    role: EnrollAs::Founder {
-                        initial_policy,
-                        name,
-                        cluster_network,
-                        public_ip: machine_token.public_ip,
-                        advertised_endpoints: machine_token.advertised_endpoints,
-                    },
-                    wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-                    pinned: Default::default(),
+            let request = EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy,
+                    name,
+                    cluster_network,
+                    public_ip: machine_token.public_ip,
+                    advertised_endpoints: machine_token.advertised_endpoints,
                 },
-            )
-            .await?;
+                wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+                pinned: Default::default(),
+            };
+            let machine = match &recovery {
+                Some(Recovery::Seed(seed)) => {
+                    crate::handlers::server::enroll_for_recovery(&mut client, request, seed.clone())
+                        .await?
+                }
+                Some(Recovery::BackUp) | None => {
+                    crate::handlers::server::enroll(&mut client, request).await?
+                }
+            };
             progress(EnrollStage::Joining);
             machine
         }
@@ -559,6 +589,23 @@ where
         }
     }
     let sealing = sealing(&mut ready).await?;
+    let shown = shows_code(matches, reader, ui::json(), ui::stdout_is_terminal());
+    let code = match recovery {
+        Some(Recovery::BackUp) if shown => Some(RecoveryCode::generate()),
+        Some(Recovery::BackUp) => {
+            ui::note("Run ployz recovery rotate to get a recovery code.");
+            None
+        }
+        Some(Recovery::Seed(_)) => {
+            ui::note("This Server needs access to the Sealing Key; ployz recover restores it.");
+            None
+        }
+        None => None,
+    };
+    let backup = match &code {
+        Some(code) => Some(wrap_sealing_key(&mut ready, code).await?),
+        None => None,
+    };
     progress(EnrollStage::Publishing);
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready)
@@ -578,19 +625,32 @@ where
         &capability,
     )
     .await?;
-    cloud_enroll::callback(
+    let reply = cloud_enroll::callback(
         command,
         &cloud_enroll::callback_url(cloud_url),
         token,
         machine.id,
         &pairing.secret,
         sealing,
+        backup.as_ref(),
     )
-    .await?;
-    Ok(ui::emit_committed(
-        founder_result(&machine, founding),
-        partial.map_or(Ok(()), Err),
-    ))
+    .await
+    .map_err(Error::from)
+    .map_err(|error| match &backup {
+        Some(_) => error.context(RECOVERY_CODE_NOT_SAVED),
+        None => error,
+    })?;
+    if let Some(backup) = &backup
+        && reply.recovery_backup_digest != Some(backup.digest())
+    {
+        return Err(Error::unavailable(RECOVERY_CODE_NOT_SAVED));
+    }
+    Ok(founder_result(&machine, founding, code)
+        .and_then(|result| ui::emit_committed(result, partial.map_or(Ok(()), Err))))
+}
+
+fn shows_code(matches: &ArgMatches, reader: Reader, json: bool, stdout_is_terminal: bool) -> bool {
+    reader == Reader::Person && super::recovery::shows_code(matches, json, stdout_is_terminal)
 }
 
 /// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.
@@ -610,7 +670,11 @@ pub(crate) fn ingress_incomplete(command: EnrollCommand, error: Error) -> Error 
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved
 /// Environments to it, as Deployments admitted after this returns.
-fn founder_result(machine: &Machine, founding: bool) -> serde_json::Value {
+fn founder_result(
+    machine: &Machine,
+    founding: bool,
+    code: Option<RecoveryCode>,
+) -> Result<serde_json::Value, Error> {
     let next = founding.then_some("ployz deployment ls");
     if founding {
         ui::stream(format_args!(
@@ -620,15 +684,38 @@ fn founder_result(machine: &Machine, founding: bool) -> serde_json::Value {
     } else {
         ui::stream(format_args!("Enrolled Server {}.", machine.name));
     }
-    if let Some(next) = next {
-        ui::hint(&ui::Hint::Inspect(next.to_owned()));
-    }
-    serde_json::json!({
+    let mut result = serde_json::json!({
         "server": super::server::server_json(machine),
         "founded": founding,
         "deploys_saved_environments": founding,
         "next": next,
-    })
+    });
+    if let Some(code) = code {
+        let code = code.reveal();
+        if ui::json() {
+            if let Some(object) = result.as_object_mut() {
+                object.insert(
+                    "recoveryCode".to_owned(),
+                    serde_json::Value::String(code.to_string()),
+                );
+            }
+        } else {
+            ui::write_fields(&Fields::new().field("Recovery code", code.as_str())).map_err(
+                |error| {
+                    Error::caused(
+                        ployz_core::RpcErrorCode::Unavailable,
+                        RECOVERY_CODE_NOT_SAVED,
+                        error,
+                    )
+                },
+            )?;
+            ui::note(KEEP_THE_CODE);
+        }
+    }
+    if let Some(next) = next {
+        ui::hint(&ui::Hint::Inspect(next.to_owned()));
+    }
+    Ok(result)
 }
 
 /// Take a fresh Management Capability for Cloud's `cloud` Management Client slot.
@@ -1268,6 +1355,8 @@ mod tests {
                     InitializeMode::Resume,
                     pairing,
                     StorageChoice::None.into(),
+                    None,
+                    Reader::Person,
                     "http://unused.invalid",
                     &token,
                     &install,
@@ -1409,6 +1498,8 @@ mod tests {
                         InitializeMode::New,
                         pairing,
                         StorageChoice::None.into(),
+                        None,
+                        Reader::Person,
                         "http://unused.invalid",
                         &token,
                         &install,
@@ -1553,5 +1644,26 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn only_a_person_sees_the_recovery_code() {
+        for show in [false, true] {
+            let mut arguments = vec!["ployz", "server", "add", "--yes"];
+            if show {
+                arguments.push("--show-recovery-code");
+            }
+            let root = crate::cli::command()
+                .try_get_matches_from(arguments)
+                .unwrap();
+            let matches = leaf_matches(&root);
+            for json in [false, true] {
+                for terminal in [false, true] {
+                    assert!(!shows_code(matches, Reader::Fleet, json, terminal));
+                    let shown = if json { show } else { terminal };
+                    assert_eq!(shows_code(matches, Reader::Person, json, terminal), shown);
+                }
+            }
+        }
     }
 }

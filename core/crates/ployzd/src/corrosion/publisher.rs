@@ -3,10 +3,7 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay};
-use crate::{
-    machine::{LocalMachineBody, LocalMachineRecord, RecordOwner},
-    sealing_key::SealingKey,
-};
+use crate::machine::{LocalMachineBody, LocalMachineRecord, RecordOwner};
 
 /// What this Machine observes of itself live: published on its row, never held in
 /// its record.
@@ -35,17 +32,19 @@ impl LiveRuntime {
         )
     }
 
-    fn mark_seen(&mut self) -> RuntimeOverlay {
+    fn mark_seen(&mut self, sealing: Option<ployz_core::Sealing>) -> RuntimeOverlay {
         RuntimeOverlay {
             running_builds: *self.running_builds.borrow_and_update(),
             pool_committable_bytes: *self.pool_committable_bytes.borrow_and_update(),
+            sealing,
         }
     }
 
-    fn current(&self) -> RuntimeOverlay {
+    fn current(&self, sealing: Option<ployz_core::Sealing>) -> RuntimeOverlay {
         RuntimeOverlay {
             running_builds: *self.running_builds.borrow(),
             pool_committable_bytes: *self.pool_committable_bytes.borrow(),
+            sealing,
         }
     }
 
@@ -98,12 +97,14 @@ pub async fn run_machine_publisher(
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let mut records = local.watch();
+    let mut sealing = local.sealing();
     // A closed channel (no Cluster store) never changes again.
     let mut machines = cluster.as_ref().map_or_else(
         || tokio::sync::watch::channel(None).1,
         |(_, view)| view.watch(),
     );
     let replicated = cluster.map(|(replicated, _)| replicated);
+    let mut published_sealing = None;
     if let Some(replicated) = &replicated {
         let target = match local.record().body() {
             LocalMachineBody::Joining {
@@ -136,7 +137,9 @@ pub async fn run_machine_publisher(
         }
     }
     loop {
-        if let Some(replicated) = &replicated {
+        if let Some(replicated) = &replicated
+            && awaited_sealing_key_published(replicated, &local.record()).await
+        {
             let record = local.record();
             if let Some(network) = record.cluster_network()
                 && let Err(error) = replicated.publish_cluster_network(network).await
@@ -146,26 +149,18 @@ pub async fn run_machine_publisher(
                     error = ployz_core::error_chain::inline(&error),
                 );
             }
-            match SealingKey::load(local.data_dir()) {
-                Ok(Some(key)) => {
-                    if let Err(error) = replicated
-                        .publish_sealing_public_key(key.public_key())
-                        .await
-                    {
-                        eprintln!(
-                            "failed to publish Sealing public key: {error}",
-                            error = ployz_core::error_chain::inline(&error),
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => eprintln!(
-                    "failed to read this Machine's Sealing Key: {error}",
+            let observed = *sealing.borrow_and_update();
+            published_sealing = awaiting_recovery(replicated, observed).await;
+            let overlay = live.mark_seen(published_sealing);
+            if let Some(ployz_core::Sealing::Held { public_key }) = overlay.sealing
+                && let Err(error) = replicated.publish_sealing_public_key(public_key).await
+            {
+                eprintln!(
+                    "failed to publish Sealing public key: {error}",
                     error = ployz_core::error_chain::inline(&error),
-                ),
+                );
             }
             let publication = replicated.machine_publication().await;
-            let overlay = live.mark_seen();
             let record = Arc::clone(&records.borrow_and_update());
             let machine = publication.publishable_machine(&record, overlay);
             if let Some(machine) = machine
@@ -182,11 +177,13 @@ pub async fn run_machine_publisher(
             tokio::select! {
                 () = tokio::time::sleep_until(tick) => break,
                 () = live.changed() => break,
+                Ok(()) = sealing.changed() => break,
                 Ok(()) = records.changed() => break,
                 Ok(()) = machines.changed() => {
                     let snapshot = machines.borrow_and_update().clone();
+                    let overlay = live.current(published_sealing);
                     if let Some(replicated) = &replicated
-                        && row_is_stale(replicated, &snapshot, &records, &live).await
+                        && row_is_stale(replicated, &snapshot, &records, overlay).await
                     {
                         break;
                     }
@@ -199,13 +196,59 @@ pub async fn run_machine_publisher(
     }
 }
 
+/// A Machine without the Sealing Key reports the key its Cluster awaits from
+/// recovery, so Cloud can tell a lost key from a missing grant.
+async fn awaiting_recovery(
+    replicated: &ReplicatedStore,
+    observed: Option<ployz_core::Sealing>,
+) -> Option<ployz_core::Sealing> {
+    if !matches!(observed, Some(ployz_core::Sealing::NeedsAccess)) {
+        return observed;
+    }
+    match replicated.awaited_sealing_key().await {
+        Ok(Some(public_key)) => Some(ployz_core::Sealing::AwaitsRecovery { public_key }),
+        Ok(None) => observed,
+        Err(error) => {
+            eprintln!(
+                "failed to read whether the Cluster awaits recovery: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
+            None
+        }
+    }
+}
+
+/// A founder awaiting recovery names the Sealing public key before it publishes
+/// anything else, so no Machine that sees its Cluster misses it.
+async fn awaited_sealing_key_published(
+    replicated: &ReplicatedStore,
+    record: &LocalMachineRecord,
+) -> bool {
+    let Some(seed) = record.recovery_seed() else {
+        return true;
+    };
+    match replicated
+        .publish_sealing_awaits_recovery(seed.expected_public_key)
+        .await
+    {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "failed to publish the Sealing public key awaiting recovery: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
+            false
+        }
+    }
+}
+
 /// Whether the snapshot holds this Machine's row unlike what it would publish.
 /// Other Machines' rows changing leaves the publisher waiting.
 async fn row_is_stale(
     replicated: &ReplicatedStore,
     snapshot: &MachinesSnapshot,
     records: &tokio::sync::watch::Receiver<Arc<LocalMachineRecord>>,
-    live: &LiveRuntime,
+    overlay: RuntimeOverlay,
 ) -> bool {
     let Some(snapshot) = snapshot else {
         return false;
@@ -214,7 +257,7 @@ async fn row_is_stale(
     let Some(machine) = replicated
         .machine_publication()
         .await
-        .publishable_machine(&record, live.current())
+        .publishable_machine(&record, overlay)
     else {
         return false;
     };

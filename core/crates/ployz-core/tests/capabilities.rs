@@ -1,21 +1,23 @@
 use ployz_core::{
     BRIDGE_IPV6_CAPABILITY, CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName,
-    DESCRIBE_CONTRACT_CAPABILITY, ENROLL_MACHINE_CAPABILITY, ENSURE_CONTAINER_CAPABILITY,
-    ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
-    FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY, INSPECT_BUILD_GRANT_CAPABILITY,
-    INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY, INSPECT_STORAGE_CAPABILITY,
-    INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY, LEAVE_MACHINE_CAPABILITY,
-    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
-    LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    MANAGEMENT_SCOPE_CAPABILITY, METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY,
-    PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
-    PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTED_ADDRESSES_CAPABILITY,
-    READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
+    ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY,
+    EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY,
+    INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
+    INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY,
+    LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
+    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY,
+    MACHINE_STORAGE_OBSERVATION_CAPABILITY, MANAGEMENT_SCOPE_CAPABILITY, METRIC_HISTORY_CAPABILITY,
+    MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
+    PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY,
+    RECOVER_SEALING_KEY_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
     SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
     SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
     SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, op,
+    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -29,6 +31,12 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (INSPECT_MACHINE_CAPABILITY, "ployz.machine.inspect.v1"),
         (ENROLL_MACHINE_CAPABILITY, "ployz.machine.enroll.v1"),
+        (
+            ENROLL_FOR_RECOVERY_CAPABILITY,
+            "ployz.machine.enroll-for-recovery.v1",
+        ),
+        (WRAP_SEALING_KEY_CAPABILITY, "ployz.sealing.wrap.v1"),
+        (RECOVER_SEALING_KEY_CAPABILITY, "ployz.sealing.recover.v1"),
         (REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1"),
         (
             SET_MANAGEMENT_CLIENT_CAPABILITY,
@@ -130,6 +138,9 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.rpc.describe-contract.v1",
             "ployz.machine.inspect.v1",
             "ployz.machine.enroll.v1",
+            "ployz.machine.enroll-for-recovery.v1",
+            "ployz.sealing.wrap.v1",
+            "ployz.sealing.recover.v1",
             "ployz.machine.register.v1",
             "ployz.machine.set-management-client.v1",
             "ployz.machine.set-push-target.v1",
@@ -206,6 +217,18 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         "/ployz.rpc.v1.MachineRpc/DescribeContract"
     );
     assert_eq!(op::Leave::PATH, "/ployz.rpc.v1.MachineRpc/Leave");
+    assert_eq!(
+        op::EnrollForRecovery::PATH,
+        "/ployz.rpc.v1.MachineRpc/EnrollForRecovery"
+    );
+    assert_eq!(
+        op::WrapSealingKey::PATH,
+        "/ployz.rpc.v1.MachineRpc/WrapSealingKey"
+    );
+    assert_eq!(
+        op::RecoverSealingKey::PATH,
+        "/ployz.rpc.v1.MachineRpc/RecoverSealingKey"
+    );
     assert_eq!(
         op::EnsureImageIngest::PATH,
         "/ployz.rpc.v1.MachineRpc/EnsureImageIngest"
@@ -348,6 +371,18 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.sealing.install.v1",
         "gated: the backfill skips a Machine that lacks it and reports it as skipped",
+    ),
+    (
+        "ployz.machine.enroll-for-recovery.v1",
+        "gated: founding for recovery reads the new daemon's contract first and refuses one that lacks it",
+    ),
+    (
+        "ployz.sealing.wrap.v1",
+        "gated: `ployz recovery rotate` reads the contract first and names a Server that lacks it",
+    ),
+    (
+        "ployz.sealing.recover.v1",
+        "gated: `ployz recover` reads the contract first and names a Server that lacks it",
     ),
 ];
 

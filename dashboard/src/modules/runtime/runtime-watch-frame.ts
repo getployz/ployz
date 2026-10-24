@@ -1,6 +1,6 @@
-import type { RuntimeWatchView } from "@ployz/sdk";
+import type { MachineRuntime, RuntimeWatchView, Sealing } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
-import { runtimeContainerStateSchema, type RuntimeSnapshot } from "#/modules/runtime/runtime.collection";
+import { runtimeContainerStateSchema, runtimeSealingSchema, type RuntimeSnapshot } from "#/modules/runtime/runtime.collection";
 
 /**
  * The browser needs only enough of the Engine's additive SDK payload to retain
@@ -33,6 +33,7 @@ const runtimeWatchMachineSchema = Schema.Struct({
       running_builds: Schema.Number,
       pool_committable_bytes: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
       capabilities: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+      sealing: Schema.NullOr(runtimeSealingSchema).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
     }),
   }),
   membership: Schema.String,
@@ -146,6 +147,7 @@ export function runtimeWatchFrameForTransport(
           running_builds: machine.machine.runtime.running_builds,
           pool_committable_bytes: machine.machine.runtime.pool_committable_bytes ?? null,
           capabilities: [...(machine.machine.runtime.capabilities ?? [])],
+          sealing: runtimeSealing(machine.machine.runtime),
         },
       },
       membership: machine.membership,
@@ -197,6 +199,10 @@ export function runtimeWatchFrameForTransport(
   });
 }
 
+function runtimeSealing(runtime: MachineRuntime & { sealing?: Sealing | null }) {
+  return runtime.sealing ?? null;
+}
+
 /**
  * Map only field spelling and collection keys. The input may be the SDK's
  * typed Runtime Watch frame or the structural browser decode above; neither
@@ -232,6 +238,7 @@ export function runtimeSnapshotFromWatchFrame(
       daemonVersion: machine.machine.runtime.daemon_version,
       capabilities: machine.machine.runtime.capabilities,
       poolCommittableBytes: machine.machine.runtime.pool_committable_bytes,
+      sealing: machine.machine.runtime.sealing,
       membership: machine.membership,
       observedContainerCount: containerCounts.get(machine.machine.id) ?? 0,
       observedAt,
