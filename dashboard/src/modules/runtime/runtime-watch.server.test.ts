@@ -1,4 +1,4 @@
-import type { RuntimeWatchView, ServiceId } from "@ployz/sdk";
+import type { RuntimeWatchView, Sealing, ServiceId } from "@ployz/sdk";
 import { Effect, Result } from "effect";
 import { Inngest } from "inngest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -183,12 +183,16 @@ describe("openRuntimeWatchForOrganization", () => {
   });
 
   it("asks to ensure the Sealing Key once when a recovered Server holds it and another still lacks it", async () => {
+    const publicKey = `${"A".repeat(43)}=`;
+    const server = (id: string, sealing: Sealing) => {
+      const machine = runtimeWatchMachineFixture(id, id);
+      return runtimeWatchMachineObservationFixture({ machine: { ...machine, runtime: { ...machine.runtime, sealing } } });
+    };
     const sealing = (m7: "awaits_recovery" | "held", m5: "needs_access" | "held") => runtimeWatchFrameFixture({
-      machines: [["m5", m5], ["m7", m7]].map(([id, kind]) => {
-        const machine = runtimeWatchMachineFixture(id!, id!);
-        const state = kind === "needs_access" ? { kind } as const : { kind: kind as "held", public_key: `${"A".repeat(43)}=` };
-        return runtimeWatchMachineObservationFixture({ machine: { ...machine, runtime: { ...machine.runtime, sealing: state } } });
-      }),
+      machines: [
+        server("m5", m5 === "held" ? { kind: m5, public_key: publicKey } : { kind: m5 }),
+        server("m7", { kind: m7, public_key: publicKey }),
+      ],
     });
     const watch = await Effect.runPromise(
       openRuntimeWatchForOrganization({
