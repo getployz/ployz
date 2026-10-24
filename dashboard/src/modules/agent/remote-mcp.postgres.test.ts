@@ -850,3 +850,27 @@ it.live("an agent that asks only for the challenged ployz scope still gets a ref
     expect(renewed.status).toBe(200);
     yield* raw(shop, Schema.decodeUnknownSync(Issued)(renewed.body).access_token).pipe(Effect.map((response) => expect(response.status).toBe(200)));
   }).pipe(Effect.scoped), 30_000);
+
+it.live("an agent that authorizes by POST with only ployz consents once and gets a refresh token", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const verifier = randomBytes(32).toString("base64url");
+    const asked = yield* Effect.promise(() => shop.run(serveAuth(new Request(`${origin}/api/auth/oauth2/authorize`, {
+      method: "POST",
+      headers: { cookie: shop.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: form({
+        response_type: "code", client_id: clientId, redirect_uri: REDIRECT, scope: "ployz", state: "state-1",
+        code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource: MCP,
+      }).toString(),
+    }))));
+    const location = asked.headers.get("location") ?? Schema.decodeUnknownSync(Schema.Struct({ url: Schema.String }))(yield* Effect.promise(() => asked.json())).url;
+    const toConnect = new URL(location, origin);
+    expect(toConnect.pathname).toBe("/connect");
+    const decided = yield* shop.provided(connectAgent(new Headers({ cookie: shop.cookie }), {
+      organizationId: ORGANIZATION, accept: true, oauthQuery: toConnect.search.slice(1),
+    }));
+    const code = new URL(decided.url).searchParams.get("code") ?? expect.fail(`consent answered ${decided.url}`);
+    const issued = Schema.decodeUnknownSync(Issued)((yield* redeem(shop, { clientId, code, verifier })).body);
+    expect(issued.refresh_token).toBeDefined();
+  }).pipe(Effect.scoped), 30_000);

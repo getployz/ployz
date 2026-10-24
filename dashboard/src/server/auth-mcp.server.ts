@@ -106,24 +106,28 @@ const ClientScopes = Schema.Struct({ scopes: Schema.NullOr(Schema.Array(Schema.S
 /**
  * The MCP spec keeps `offline_access` out of the resource's challenge and metadata and leaves refresh tokens to the
  * authorization server, so a client that requests exactly the challenged scope (Glama does) never asks for one. A
- * connection lasts until it's disconnected, so every client allowed `offline_access` is asked for it and gets a
- * refresh token rather than an hour of access.
+ * connection lasts until it's disconnected or its sign-in ends, so every client allowed `offline_access` is asked for
+ * it and gets a refresh token rather than an hour of access.
+ *
+ * Only the client's own authorize request is widened. Consent and sign-in re-run authorize with the query `/connect`
+ * signed, and widening that would ask for more than the consent just given and send the person back to `/connect`.
  */
 const askForRefresh: BetterAuthPlugin = {
   id: "ployz-ask-for-refresh",
   hooks: {
     before: [
       {
-        matcher: (ctx) => ctx.path === "/oauth2/authorize",
+        matcher: (ctx) => ctx.path === "/oauth2/authorize" && ctx.request !== undefined && new URL(ctx.request.url).pathname.endsWith("/oauth2/authorize"),
         handler: createAuthMiddleware(async (ctx) => {
-          const asked = Schema.decodeUnknownOption(ScopedAuthorize)(ctx.query);
+          const [source, params] = ctx.method === "POST" ? ["body", ctx.body] as const : ["query", ctx.query] as const;
+          const asked = Schema.decodeUnknownOption(ScopedAuthorize)(params);
           if (Option.isNone(asked)) return;
           const scopes = asked.value.scope.split(" ").filter((scope) => scope !== "");
           if (scopes.includes(OFFLINE_ACCESS)) return;
           const row = await ctx.context.adapter.findOne({ model: "oauthClient", where: [{ field: "clientId", value: asked.value.client_id }] });
           const client = Schema.decodeUnknownOption(ClientScopes)(row);
           if (!Option.exists(client, ({ scopes: allowed }) => (allowed ?? MCP_SCOPES).includes(OFFLINE_ACCESS))) return;
-          return { context: { query: { ...ctx.query, scope: [...scopes, OFFLINE_ACCESS].join(" ") } } };
+          return { context: { [source]: { ...params, scope: [...scopes, OFFLINE_ACCESS].join(" ") } } };
         }),
       },
     ],
