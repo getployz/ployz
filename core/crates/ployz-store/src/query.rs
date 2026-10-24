@@ -17,6 +17,9 @@ pub use crate::deployment::uploads::{HeldUpload, UploadsQuery, UploadsView};
 pub use crate::review::diff::DiffQuery;
 pub use crate::review::history::{HistoryPreview, HistoryPreviewQuery, HistoryQuery, HistoryView};
 pub use crate::review::sealed::{SealedNamesQuery, SealedNamesView};
+pub use crate::sealing_targets::{
+    SealingService, SealingTargetsQuery, SealingTargetsView, SyncSealingTarget,
+};
 pub use crate::service::query::{
     ServiceListing, ServiceQuery, ServiceView, ServicesQuery, ServicesView, SourceKind,
 };
@@ -173,6 +176,9 @@ queries! {
     HistoryPreview(HistoryPreviewQuery) -> HistoryPreview => crate::review::history::preview(tx, who, q);
     /// The variable names under which an Environment's Containers may hold Sealed values.
     SealedNames(SealedNamesQuery) -> SealedNamesView => crate::review::sealed::names_view(tx, who, q);
+    /// Where a write's secrets land, for a CLI that seals them itself.
+    SealingTargets(SealingTargetsQuery) -> SealingTargetsView
+        => crate::sealing_targets::targets(tx, who, q);
     /// What a Deploy would ship, from authored state alone.
     Plan(PlanQuery) -> PlanView => crate::deployment::query::plan(tx, who, trusted, q);
     /// One page of an Environment's Deployments.

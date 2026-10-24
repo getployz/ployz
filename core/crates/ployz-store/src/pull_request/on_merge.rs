@@ -406,6 +406,7 @@ pub(crate) fn set_merge_value(
     who: &Actor,
     sealing: &SealingKey,
     request: &SetMergeValue,
+    trusted: &Trusted,
 ) -> Result<OnMerge, RpcError> {
     let from = scope::lock(tx, who, &request.environment)?;
     let (_, landings) = landings(tx, who, &from)?;
@@ -494,7 +495,7 @@ pub(crate) fn set_merge_value(
         let secret = planned.from.is_secret() || planned.into.is_secret();
         let cell = match (value, secret) {
             (value, true) => {
-                let enabled = value.is_client_sealed()
+                let enabled = (trusted.from_cli || value.is_client_sealed())
                     && crate::client_sealed::enabled(tx, &who.organization)?;
                 SealedCell::Secret(crate::branch::seal_secret(
                     sealing,
@@ -502,7 +503,7 @@ pub(crate) fn set_merge_value(
                     &label,
                     value,
                     &landing.into,
-                    enabled,
+                    (crate::old_cli::Guard::from(trusted), enabled),
                 )?)
             }
             (SecretValue::ClientSealed(_), false) => {

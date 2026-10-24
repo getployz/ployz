@@ -1,4 +1,4 @@
-import type { Change, ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, EnvironmentRef as StoreEnvironmentRef, JsonValue } from "@ployz/sdk";
+import type { Change, ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, EnvironmentRef as StoreEnvironmentRef, JsonValue, SealingTargetsQuery } from "@ployz/sdk";
 import { Data, Schema } from "effect";
 
 /** A Store refusal as the Store words it: the RPC error vocabulary, never the rejected value. */
@@ -96,6 +96,8 @@ export const StoreQuery = envelope<ConfigQuery>("query");
 export const StoreCommand = envelope<ConfigCommand>("command");
 export const StoreView = envelope<ConfigView>("view");
 export const StoreChange = envelope<Change>("op");
+/** Where a write's secrets land, asked by a CLI that seals them itself. */
+export const StoreSealingTargets = envelope<SealingTargetsQuery>("target");
 
 /** An Environment as calls name it: either part left out means the default. */
 export const EnvironmentRef = Schema.Struct({
