@@ -257,7 +257,11 @@ before it stops.
 
 - **No root, no cloud lookups.** `web` and `worker` run as the unprivileged `node` user, and by
   default don't contact a cloud provider's metadata address such as `169.254.169.254` at startup.
-  Setting `OTEL_NODE_RESOURCE_DETECTORS=all` turns those lookups back on.
+  When telemetry is on, setting `OTEL_NODE_RESOURCE_DETECTORS=all` turns those lookups back on.
+- **No telemetry by default.** `web` starts the OpenTelemetry SDK only when you set an `OTEL_*`
+  variable, such as `OTEL_EXPORTER_OTLP_ENDPOINT`, even to an empty value.
+  `OTEL_NODE_RESOURCE_DETECTORS`, which the image sets, doesn't count. Without one, web starts no
+  tracing and sends nothing.
 - **Back up one volume.** Everything Ployz Cloud stores, your organizations, projects and
   settings included, is in `ployz-cloud-self-host_postgres-data`.
 - **Restarting Postgres.** While it's down, pages say **This page couldn't load** and try again

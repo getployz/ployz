@@ -13,7 +13,7 @@
   "scripts": {
     "dev": "pnpm sdk && portless ployz-cloud vite dev",
     "build": "pnpm sdk && pnpm build:app",
-    "start": "node --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import @opentelemetry/auto-instrumentations-node/register --import ./scripts/check-schema.ts .output/server/index.mjs",
+    "start": "node --import ./scripts/telemetry.ts --import ./scripts/check-schema.ts .output/server/index.mjs",
     "preview": "vite preview",
     "intents:sync": "node scripts/sync-intent-descriptions.mjs",
     "db:generate": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs generate && node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs generate --config drizzle.analytics.config.ts",

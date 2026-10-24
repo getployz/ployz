@@ -160,12 +160,19 @@ jobs:
             const { parseServiceSetting } = require("@ployz/sdk/config");
             assert.equal(parseServiceSetting("source", { version: 1, type: "empty", rootDir: "/" }).type, "empty");
             assert.equal(typeof require("@ployz/sdk").openConfigStore, "function");
-            for (const file of [".output/server/index.mjs", ".output/worker/index.mjs", "node_modules/drizzle-kit/bin.cjs"]) assert.ok(fs.existsSync(file), file);
+            for (const file of [".output/server/index.mjs", ".output/worker/index.mjs", "node_modules/drizzle-kit/bin.cjs", "scripts/telemetry.ts"]) assert.ok(fs.existsSync(file), file);
             require.resolve("inngest/connect");
             assert.equal(process.getuid(), 1000, "runs as node, uid 1000");
             const detectors = require("@opentelemetry/auto-instrumentations-node").getResourceDetectors().map(d => d.constructor.name);
             assert.deepEqual(detectors, ["EnvDetector", "HostDetector", "OSDetector", "ProcessDetector", "ServiceInstanceIdDetector", "ContainerDetector"], "probes no cloud metadata server");
           '
+          # web starts the OpenTelemetry SDK only when an OTEL_* variable configures it, and its loader hook
+          # resolves in the pruned image. Each run is its own assignment, so a failed docker run fails the step.
+          sdk='process.stdout.write(String(Symbol.for("opentelemetry.js.api.1") in globalThis)); process.exit(0)'
+          off=$(docker run --rm --entrypoint node ployz-cloud:ci --import ./scripts/telemetry.ts -e "$sdk")
+          on=$(docker run --rm -e OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9 --entrypoint node ployz-cloud:ci --import ./scripts/telemetry.ts -e "$sdk")
+          test "$off" = false
+          test "$on" = true
       # The publish job pushes this exact image once every leg has passed.
       - name: Save the image for publishing
         if: matrix.part == 'build' && (inputs.release-tag != '' || github.event_name == 'merge_group')
