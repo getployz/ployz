@@ -128,6 +128,8 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_store::Committed>();
     declarations.add::<ployz_store::Converted>();
     declarations.add::<ployz_store::Trusted>();
+    declarations.add::<ployz_store::LegacyCount>();
+    declarations.add::<ployz_store::Resealed>();
     declarations.add::<ployz_store::GitSource>();
     declarations.add::<ployz_store::SystemEvent>();
     declarations.add::<ployz_store::GithubBuild>();

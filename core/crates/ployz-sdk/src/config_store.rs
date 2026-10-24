@@ -370,6 +370,62 @@ impl ConfigStore {
         self.run(move |store| store.unclaimed(before)).await
     }
 
+    /// Organizations still holding a secret the Store sealed itself in some Working
+    /// State or Saved head: those the reseal has work in. Only Cloud's reseal job
+    /// calls this.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi(ts_return_type = "Promise<string[]>")]
+    pub async fn legacy_organizations(&self) -> Result<serde_json::Value> {
+        self.run(|store| store.legacy_organizations()).await
+    }
+
+    /// How many secrets the Store sealed itself the Organization holds
+    /// (`LegacyCount`): `current` ones a reseal converts, `history` ones it leaves.
+    /// Only Cloud's reseal job calls this.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi(ts_return_type = "Promise<LegacyCount>")]
+    pub async fn legacy_count(&self, organization: String) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        self.run(move |store| store.legacy_count(&who.organization))
+            .await
+    }
+
+    /// The Organization's Environments with a secret the Store sealed itself in
+    /// Working State or the Saved head: one reseal step each. Only Cloud's reseal
+    /// job calls this.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi(ts_return_type = "Promise<string[]>")]
+    pub async fn reseal_environments(&self, organization: String) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        self.run(move |store| store.reseal_environments(&who.organization))
+            .await
+    }
+
+    /// Seal the Environment's secrets the Store sealed itself for the Cluster's key
+    /// instead (`Resealed`), in one transaction. Running it again changes nothing.
+    /// Only Cloud's reseal job calls this.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Environment, or a storage error.
+    #[napi(ts_return_type = "Promise<Resealed>")]
+    pub async fn reseal(
+        &self,
+        environment: String,
+        #[napi(ts_arg_type = "SealingRecipient")] recipient: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let environment = ployz_store::EnvironmentId::parse(environment).map_err(rpc_to_napi)?;
+        let recipient: ployz_store::SealingRecipient =
+            decode(recipient, "Expected a Sealing recipient")?;
+        self.run(move |store| store.reseal(&environment, &recipient))
+            .await
+    }
+
     /// The head of a GitHub branch the Store last saw for the Organization, or null:
     /// what Cloud compares a new head from. Only Cloud's GitHub workers call this.
     ///
