@@ -8,7 +8,6 @@ import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
 import { invitation, member, user } from "#/modules/identity/tables";
 import { operationApprovals } from "#/modules/approvals/tables";
-import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { acceptInvite, readInvite, revokeInvite } from "#/modules/organization/invitation.server";
 import { orgInviteLs, orgInviteRevoke, orgLeave, orgMemberInvite, orgMemberRm, orgMemberRole } from "#/modules/organization/members.commands.server";
@@ -314,16 +313,8 @@ describe("org leave", () => {
 });
 
 describe("a former member", () => {
-  let store: CloudStore["Service"];
-  beforeAll(async () => {
-    const opened = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
-    store = { open: Effect.succeed(opened) };
-  });
   const stateOf = (who: keyof typeof ids, slug: string) =>
-    run(getOrganizationState({ userId: ids[who] }, slug).pipe(
-      Effect.provideService(Polar, { mode: "self_hosted" }),
-      Effect.provideService(CloudStore, store),
-    ));
+    run(getOrganizationState({ userId: ids[who] }, slug).pipe(Effect.provideService(Polar, { mode: "self_hosted" })));
 
   it("learns they are no longer a member of an Organization they joined, while anyone else learns nothing", async () => {
     expect(await roleOf(ids.eve)).toBeNull();

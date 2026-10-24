@@ -5,7 +5,7 @@ import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
+import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { createEnsureClusterSealingKey } from "#/modules/machines/sealing-backfill.inngest";
@@ -31,11 +31,10 @@ describe("ensure-cluster-sealing-key", () => {
   let harness: PostgresTestHarness;
   let reports: BackfillSealingKeyReport[] | null;
   let unreachable: boolean;
-  let store: CloudStore["Service"];
   const requests: BackfillSealingKeyRequest[] = [];
 
   const runEffect = makeInngestEffectRunner(<A, E>(
-    operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | OrganizationRuntime | InngestClient | CloudStore>,
+    operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | OrganizationRuntime | InngestClient>,
   ) => {
     const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
       env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl },
@@ -43,7 +42,6 @@ describe("ensure-cluster-sealing-key", () => {
     return harness.runEffect(operation.pipe(
       Effect.provideService(SecretEncryption, encryption),
       Effect.provideService(InngestClient, inngest),
-      Effect.provideService(CloudStore, store),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,
         open: () => Effect.succeed(unreachable
@@ -85,8 +83,8 @@ describe("ensure-cluster-sealing-key", () => {
 
   beforeAll(async () => {
     harness = await startPostgresTestHarness();
-    const opened = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
-    store = { open: Effect.succeed(opened) };
+    // The Store makes config_sealed_variables when it opens.
+    await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
   }, 60_000);
 
   afterAll(async () => {

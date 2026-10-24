@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
-import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
+import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { member, session, user } from "#/modules/identity/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
@@ -121,10 +121,9 @@ describe("renameOrganization", () => {
 });
 
 describe("getOrganizationState", () => {
-  let store: CloudStore["Service"];
   beforeAll(async () => {
-    const opened = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
-    store = { open: Effect.succeed(opened) };
+    // The Store makes config_sealed_variables when it opens.
+    await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
   });
   const stateOf = (organizationSlug: string) => {
     const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
@@ -133,7 +132,6 @@ describe("getOrganizationState", () => {
     return harness.runEffect(getOrganizationState({ userId: actor }, organizationSlug).pipe(
       Effect.provideService(Polar, { mode: "self_hosted" }),
       Effect.provideService(SupportStaff, supportStaffOf([])),
-      Effect.provideService(CloudStore, store),
       Effect.provide(config),
     ));
   };
