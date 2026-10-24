@@ -3688,4 +3688,21 @@ fn server_reject_reports_an_attempt_cloud_spared_as_joining_not_rejected() {
         json.get("joining").unwrap(),
         &serde_json::json!([{ "id": "a", "enrollment_id": "attempt-a", "name": "web-a" }])
     );
+
+    // d was waiting when listed, then began enrolling, and Cloud sent its join before the reject.
+    let raced = waiting_cloud(
+        routes.clone(),
+        WaitingCloud {
+            spared: vec!["d"],
+            ..WaitingCloud::of(vec![waiting_row("d", "web-d", "waiting")])
+        },
+    );
+    let (code, stdout, _) =
+        run_token_cloud(&raced, &["server", "reject", "web-d", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/details/joining").unwrap(),
+        &serde_json::json!([{ "id": "d", "enrollment_id": null, "name": "web-d" }])
+    );
 }

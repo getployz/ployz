@@ -55,6 +55,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     } = matching(&waiting, &attempts, pattern)?;
     let (joining, enrolling): (Vec<_>, Vec<_>) =
         open.into_iter().partition(|attempt| attempt.joining());
+    let joining: Vec<Left<'_>> = joining.into_iter().map(Left::from).collect();
     if matched.is_empty() && enrolling.is_empty() {
         if !joining.is_empty() {
             return Err(left_joining(&joining, "Nothing rejected"));
@@ -78,7 +79,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         })
         .collect();
     let listed_enrolling = attempts_json(&enrolling);
-    let listed_joining = attempts_json(&joining);
+    let listed_joining = lefts_json(&joining);
     if !ui::json() {
         let mut table = Table::new(["ID", "NAME", "IP", "TOKEN"], "");
         for host in &matched {
@@ -137,13 +138,24 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         spared,
         stopped,
     } = runtime.block_on(waiting::reject(&credential, &ids))?;
-    // Cloud is the judge of a sent join: it may have sent one the stage above doesn't show yet.
-    let (kept, enrolling): (Vec<_>, Vec<_>) = enrolling
+    // Cloud is the judge of a sent join: it may have sent one the stage above doesn't show yet,
+    // even for a host that was still waiting when listed.
+    let (kept_enrolling, enrolling): (Vec<_>, Vec<_>) = enrolling
         .into_iter()
         .partition(|attempt| spared.contains(&attempt.waiting_server_id));
+    let kept: Vec<Left<'_>> = matched
+        .iter()
+        .filter(|host| spared.contains(&host.row.id))
+        .map(|host| Left {
+            id: &host.row.id,
+            enrollment_id: None,
+            name: &host.row.name,
+        })
+        .chain(kept_enrolling.iter().map(|attempt| Left::from(*attempt)))
+        .collect();
     let joining: Vec<_> = joining.into_iter().chain(kept.iter().copied()).collect();
     let listed_enrolling = attempts_json(&enrolling);
-    let listed_joining = attempts_json(&joining);
+    let listed_joining = lefts_json(&joining);
     let rejected = rejected.saturating_sub(kept.len() as u64);
     let matched = ids.len() - kept.len();
     if matched == 0 && stopped.is_none() {
@@ -318,17 +330,44 @@ fn glob(pattern: &str) -> Result<globset::GlobMatcher, Error> {
         .compile_matcher())
 }
 
+/// A server whose attempt runs on because Cloud may have sent its join.
+#[derive(Clone, Copy)]
+struct Left<'a> {
+    id: &'a str,
+    enrollment_id: Option<&'a str>,
+    name: &'a str,
+}
+
+impl<'a> From<&'a Enrolling> for Left<'a> {
+    fn from(attempt: &'a Enrolling) -> Self {
+        Self {
+            id: &attempt.waiting_server_id,
+            enrollment_id: Some(&attempt.id),
+            name: &attempt.name,
+        }
+    }
+}
+
+fn lefts_json(joining: &[Left<'_>]) -> Vec<serde_json::Value> {
+    joining
+        .iter()
+        .map(
+            |left| json!({ "id": left.id, "enrollment_id": left.enrollment_id, "name": left.name }),
+        )
+        .collect()
+}
+
 /// The refusal for attempts left running because Cloud may have sent their join.
-fn left_joining(joining: &[&Enrolling], outcome: &str) -> Error {
+fn left_joining(joining: &[Left<'_>], outcome: &str) -> Error {
     let refusal = Error::detailed(
         RpcErrorCode::Conflict,
         format!("{}. {outcome}. {}", sent(joining), remove_hint(joining)),
-        json!({ "joining": attempts_json(joining) }),
+        json!({ "joining": lefts_json(joining) }),
     );
     match joining {
         [one] => refusal.hint(Hint::Next(format!(
             "ployz server rm {}",
-            printable(&one.name)
+            printable(one.name)
         ))),
         _ => refusal,
     }
@@ -347,19 +386,19 @@ fn attempts_json(attempts: &[&Enrolling]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn names(attempts: &[&Enrolling]) -> String {
-    attempts
+fn names(joining: &[Left<'_>]) -> String {
+    joining
         .iter()
-        .map(|attempt| printable(&attempt.name).to_string())
+        .map(|left| printable(left.name).to_string())
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn sent(joining: &[&Enrolling]) -> String {
+fn sent(joining: &[Left<'_>]) -> String {
     match joining {
         [one] => format!(
             "{} may already be in the Cluster: Cloud sent its join",
-            printable(&one.name)
+            printable(one.name)
         ),
         many => format!(
             "{} may already be in the Cluster: Cloud sent their joins",
@@ -368,11 +407,11 @@ fn sent(joining: &[&Enrolling]) -> String {
     }
 }
 
-fn remove_hint(joining: &[&Enrolling]) -> String {
+fn remove_hint(joining: &[Left<'_>]) -> String {
     match joining {
         [one] => format!(
             "Once it has joined, remove it with ployz server rm {}.",
-            printable(&one.name)
+            printable(one.name)
         ),
         _ => "Once they have joined, remove them with ployz server rm.".to_owned(),
     }
