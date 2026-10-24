@@ -36,7 +36,9 @@ pub(crate) struct OutputScrub {
 }
 
 /// One stream scrubber for the unattributed output and one per step, since a
-/// value never continues from one step's output into another's.
+/// value never continues from one step's output into another's. A step's lives
+/// until the Build ends, since BuildKit can report a step complete before its
+/// last log.
 #[derive(Default)]
 struct Frames {
     output: FrameScrub,
@@ -60,8 +62,7 @@ impl OutputScrub {
     }
 
     /// What of `progress` can be reported now, in order. Output is held back
-    /// where it could begin a value, so one event may become none, and a step
-    /// completing releases what its output still held before the step itself.
+    /// where it could begin a value, so one event may become none.
     pub(crate) fn progress(&self, progress: Progress) -> Vec<Progress> {
         let mut redacted = 0;
         match progress {
@@ -83,20 +84,7 @@ impl OutputScrub {
                 step.error = step
                     .error
                     .map(|error| self.forms.scrub(&error, &mut redacted));
-                let mut events = Vec::new();
-                if step.completed.is_some() {
-                    let frames = self
-                        .frames
-                        .lock()
-                        .expect("Build output scrub lock")
-                        .steps
-                        .remove(&step.id);
-                    if let Some(frames) = frames {
-                        events.extend(self.step_tails(&step.id, frames));
-                    }
-                }
-                events.push(Progress::Step(step));
-                events
+                vec![Progress::Step(step)]
             }
             Progress::StepOutput { step, stderr, text } => {
                 let shown = self
@@ -123,15 +111,25 @@ impl OutputScrub {
         }
     }
 
-    /// What every stream still held when the Build ended, with any trailing
-    /// start of a value hidden. A Build that ends early, cancelled or failed,
-    /// reaches this the same way as one that completes.
+    /// What every stream still held when the Build ended, step by step and
+    /// then the unattributed output, with any trailing start of a value
+    /// hidden. A Build that ends early, cancelled or failed, reaches this the
+    /// same way as one that completes.
     pub(crate) fn finish(&self) -> Vec<Progress> {
         let frames = std::mem::take(&mut *self.frames.lock().expect("Build output scrub lock"));
         let mut events: Vec<Progress> = frames
             .steps
             .into_iter()
-            .flat_map(|(step, frames)| self.step_tails(&step, frames))
+            .flat_map(|(step, frames)| {
+                frames
+                    .finish(&self.forms)
+                    .into_iter()
+                    .map(move |(channel, bytes)| Progress::StepOutput {
+                        step: step.clone(),
+                        stderr: matches!(channel, Channel::Stderr),
+                        text: String::from_utf8_lossy(&bytes).into_owned(),
+                    })
+            })
             .collect();
         let tail: Vec<u8> = frames
             .output
@@ -143,18 +141,6 @@ impl OutputScrub {
             events.push(Progress::Output(tail));
         }
         events
-    }
-
-    fn step_tails(&self, step: &str, frames: FrameScrub) -> Vec<Progress> {
-        frames
-            .finish(&self.forms)
-            .into_iter()
-            .map(|(channel, bytes)| Progress::StepOutput {
-                step: step.to_owned(),
-                stderr: matches!(channel, Channel::Stderr),
-                text: String::from_utf8_lossy(&bytes).into_owned(),
-            })
-            .collect()
     }
 
     pub(crate) fn outcome(&self, outcome: Outcome) -> Outcome {
@@ -304,6 +290,51 @@ mod tests {
                 ("sha256:step-two", true)
             ]
         );
+    }
+
+    /// A step's last log can arrive after BuildKit reports it complete, so a
+    /// value cut by the completion is still one value.
+    #[test]
+    fn a_value_cut_by_its_steps_completion_never_shows() {
+        for (value, before, after, expected) in [
+            (
+                "opened-token-0123456789",
+                "token is opened-",
+                "token-0123456789 and more\n",
+                "token is [secret NPM_TOKEN] and more\n",
+            ),
+            (
+                "s3cr",
+                "NPM_TOKEN=",
+                "s3cr\n",
+                "NPM_TOKEN=[secret NPM_TOKEN]\n",
+            ),
+        ] {
+            let scrub = scrub(value);
+            let (text, shown) = report(
+                &scrub,
+                vec![step_output(before), completed(), step_output(after)],
+            );
+            assert!(!text.contains(value), "{text}");
+            assert_eq!(text, expected);
+            assert!(
+                shown
+                    .iter()
+                    .any(|event| matches!(event, Progress::Step(step) if step.completed.is_some()))
+            );
+        }
+    }
+
+    #[test]
+    fn plain_text_held_across_a_steps_completion_shows_whole() {
+        // The value starts with the byte `Done` ends with, so a stream ended at
+        // the completion would have hidden it as the start of the value.
+        let scrub = scrub("e-opened-token-0123456789");
+        let (text, _) = report(
+            &scrub,
+            vec![step_output("Done"), completed(), step_output(" in 1.2s\n")],
+        );
+        assert_eq!(text, "Done in 1.2s\n");
     }
 
     #[test]
