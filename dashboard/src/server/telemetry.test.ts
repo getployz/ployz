@@ -57,13 +57,16 @@ async function start(env: Record<string, string>) {
 describe("web's telemetry bootstrap", () => {
   it("loads no OpenTelemetry SDK when nothing configures it, as on self-host", { timeout: 30_000 }, async () => {
     expect(await start({})).toEqual({ sdk: false });
-    expect(await start({ OTEL_EXPORTER_OTLP_ENDPOINT: "" })).toEqual({ sdk: false });
   });
 
   // Hosted web names only the logs and metrics exporters. Even set to none, they start the SDK as before,
   // so traces still go to OTLP's default endpoint. That export to a closed port takes a few seconds.
   it("starts the SDK when any OpenTelemetry setting is given, as on hosted Cloud", { timeout: 30_000 }, async () => {
     expect(await start({ OTEL_LOGS_EXPORTER: "none", OTEL_METRICS_EXPORTER: "none" })).toEqual({ sdk: true });
+  });
+
+  it("starts the SDK for an OpenTelemetry setting given empty, as the old flags did", { timeout: 30_000 }, async () => {
+    expect(await start({ OTEL_LOGS_EXPORTER: "", OTEL_METRICS_EXPORTER: "" })).toEqual({ sdk: true });
   });
 
   it("exports the app's spans when an OTLP endpoint is set", { timeout: 30_000 }, async () => {
