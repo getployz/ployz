@@ -2107,6 +2107,41 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
 }
 
 #[tokio::test]
+async fn an_install_that_retries_a_failed_docker_install_drops_that_failure_from_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    let too_old = "Docker 29.1.3 is too old: Ployz needs Docker 29.2 or newer.";
+    fs::write(
+        &paths.prepare_state,
+        format!(
+            r#"{{"docker":{{"state":"failed","message":"{too_old}","finished_at":"2026-10-16T00:00:00Z"}},"zfs":{{"state":"off"}}}}"#
+        ),
+    )
+    .unwrap();
+    let (url, _server) = cloud("200 OK", WAIT).await;
+    let host = FakeHost::default();
+    install_pass(&host, &mut client(&url), &key(), &paths, Utc::now())
+        .await
+        .record(&paths);
+    let codes = |status: &LocalCheckin| {
+        status
+            .blockers
+            .iter()
+            .map(|blocker| blocker.code.clone())
+            .collect::<Vec<_>>()
+    };
+    let seen = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(codes(&seen), ["kernel_too_old", "docker_install_failed"]);
+
+    restart_preparation(&host, &paths, Utc::now()).await;
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    // The run just started installs Docker again; the host's own blocker still stands.
+    assert_eq!(codes(&status), ["kernel_too_old"]);
+}
+
+#[tokio::test]
 async fn an_install_starts_no_preparation_before_cloud_answers_the_token() {
     for (status, body) in [
         ("200 OK", r#"{"kind":"wait","retryAfter":30}"#),
