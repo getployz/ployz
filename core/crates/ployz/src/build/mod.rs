@@ -209,6 +209,7 @@ fn capture_target(
         Recipe::Dockerfile(dockerfile) => {
             let context = inputs.context(&spec.context, &dockerfile)?;
             let file = inputs.dockerfile(&dockerfile)?;
+            sealed::refuse_declared_args(&file, &sealed.names)?;
             // Both context and recipe live directly beneath source/.
             let dockerfile = Path::new("..").join(file.file_name().expect("captured recipe"));
             (
