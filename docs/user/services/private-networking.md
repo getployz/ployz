@@ -70,7 +70,9 @@ can close.
 
 A container keeps its private address when Docker or the server restarts, so traffic for one
 service never reaches another that came back at its address. A new container takes an address
-no other container has used recently.
+no other container has used recently. This holds for the IPv4 address that `NAME.internal`
+answers with. A container's IPv6 address can change when Docker or the server restarts, so don't
+connect to one by it.
 
 ## Connect to another service
 
