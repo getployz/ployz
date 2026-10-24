@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::client_sealed::Sealer;
+use crate::client_sealed;
 use crate::id::Revision;
 use crate::sealing::SealingKey;
 use crate::storage::Tx;
@@ -35,7 +35,8 @@ pub struct LegacyCount {
 pub struct Resealed {
     /// Values sealed for the Cluster.
     pub resealed: u32,
-    /// Values the Store's key doesn't open, left in place.
+    /// Values left in place: those the Store's key doesn't open, PORT, and those
+    /// of a Service without an ID.
     pub remaining: u32,
 }
 
@@ -131,7 +132,7 @@ fn current_by_environment(
 /// Seal every secret of `environment` the Store sealed itself for `recipient`
 /// instead, in its Working State and Saved head. Values already sealed for the
 /// Cluster are left alone, so running it again changes nothing. A value `sealing`
-/// doesn't open stays as it is and is counted.
+/// doesn't open, PORT, and a Service without an ID stay as they are and are counted.
 pub(crate) fn reseal(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -151,11 +152,9 @@ pub(crate) fn reseal(
     };
     let organization = OrganizationId::parse(row.text(0)?)?;
     let mut resealing = Resealing {
+        organization: &organization,
         environment,
-        sealer: Sealer {
-            organization: &organization,
-            recipient: Some(recipient),
-        },
+        recipient,
         sealing,
         sealed: Vec::new(),
         tally: Resealed::default(),
@@ -200,8 +199,9 @@ pub(crate) fn reseal(
 
 /// One Environment's reseal across its Working State and Saved head.
 struct Resealing<'a> {
+    organization: &'a OrganizationId,
     environment: &'a EnvironmentId,
-    sealer: Sealer<'a>,
+    recipient: &'a SealingRecipient,
     sealing: &'a SealingKey,
     /// Each value sealed so far, by Service ID, key and the value it replaced: the
     /// same value in Working State and the Saved head gets the same sealed value, so
@@ -215,11 +215,19 @@ impl Resealing<'_> {
     fn intent(&mut self, intent: &mut SavedEnvironmentIntent) -> Result<bool, RpcError> {
         let mut changed = false;
         for service in &mut intent.services {
+            let identity =
+                client_sealed::identity(self.organization, self.environment, &service.id);
             for variable in &mut service.variables {
                 let SavedVariableValue::Secret {
                     encrypted_value: Some(SecretCiphertext::Legacy(legacy)),
                 } = &variable.value
                 else {
+                    continue;
+                };
+                // Ployz reads PORT to route traffic, and a sealed value binds to its
+                // Service's UUID: neither can hold one.
+                let Some(identity) = identity.as_ref().filter(|_| variable.key != "PORT") else {
+                    self.tally.remaining += 1;
                     continue;
                 };
                 let earlier = self.sealed.iter().find(|(id, key, was, _)| {
@@ -232,9 +240,9 @@ impl Resealing<'_> {
                             self.tally.remaining += 1;
                             continue;
                         };
-                        let sealed = self.sealer.seal(
-                            self.environment,
-                            &service.id,
+                        let sealed = client_sealed::seal_to(
+                            self.recipient,
+                            identity,
                             &variable.key,
                             &plaintext,
                         )?;
@@ -848,5 +856,33 @@ mod tests {
             .map(|row| row.path)
             .collect();
         assert_eq!(unsaved, ["web.env.OTHER"]);
+    }
+
+    #[test]
+    fn a_legacy_port_stays_and_is_counted_as_remaining() {
+        let (store, who) = shop();
+        plant_working(
+            &store,
+            &who,
+            vec![
+                secret("PORT", legacy(&store.sealing, "8080")),
+                secret("TOKEN", legacy(&store.sealing, "hunter2")),
+            ],
+        );
+        let port = variable(&working(&store), "PORT").clone();
+
+        let keypair = ployz_core::Keypair::generate();
+        let done = store.reseal(&environment(), &recipient(&keypair)).unwrap();
+        assert_eq!(
+            done,
+            Resealed {
+                resealed: 1,
+                remaining: 1
+            }
+        );
+        let after = working(&store);
+        assert_eq!(variable(&after, "PORT"), &port);
+        client_sealed(variable(&after, "TOKEN"));
+        set_mode(&store, &who);
     }
 }

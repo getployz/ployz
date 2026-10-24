@@ -67,27 +67,46 @@ impl Sealer<'_> {
         let recipient = self
             .recipient
             .ok_or_else(|| crate::error::conflict(NO_SERVER, json!({ "variable": key })))?;
-        let (Ok(environment), Ok(service)) = (
-            Uuid::parse_str(environment.as_str()),
-            Uuid::parse_str(service),
-        ) else {
+        let Some(identity) = identity(self.organization, environment, service) else {
             return Err(crate::error::invalid(
                 format!("{key}: this Service has no ID a sealed value binds to"),
                 json!({ "variable": key }),
             ));
         };
-        let identity = SealedIdentity {
-            organization: self.organization.as_str().to_owned(),
-            environment,
-            service,
-        };
-        let value = ployz_core::seal_value(&recipient.public_key, &identity, key, plaintext)
-            .map_err(|_| crate::error::internal("A secret could not be sealed to the Cluster"))?;
-        Ok(SealedSecret {
-            fingerprint: fingerprint(&value),
-            value: SecretCiphertext::ClientSealed(value),
-        })
+        seal_to(recipient, &identity, key, plaintext)
     }
+}
+
+/// What a value sealed for the Service with ID `service` in `environment` binds to;
+/// None when either has no UUID.
+pub(crate) fn identity(
+    organization: &OrganizationId,
+    environment: &EnvironmentId,
+    service: &str,
+) -> Option<SealedIdentity> {
+    Some(SealedIdentity {
+        organization: organization.as_str().to_owned(),
+        environment: Uuid::parse_str(environment.as_str()).ok()?,
+        service: Uuid::parse_str(service).ok()?,
+    })
+}
+
+/// `plaintext` sealed to `recipient` as variable `key` of `identity`.
+///
+/// # Errors
+/// Returns `internal` when sealing fails.
+pub(crate) fn seal_to(
+    recipient: &SealingRecipient,
+    identity: &SealedIdentity,
+    key: &str,
+    plaintext: &str,
+) -> Result<SealedSecret, RpcError> {
+    let value = ployz_core::seal_value(&recipient.public_key, identity, key, plaintext)
+        .map_err(|_| crate::error::internal("A secret could not be sealed to the Cluster"))?;
+    Ok(SealedSecret {
+        fingerprint: fingerprint(&value),
+        value: SecretCiphertext::ClientSealed(value),
+    })
 }
 
 /// Prefix of a client-sealed value's fingerprint. Two seals of one plaintext differ,
