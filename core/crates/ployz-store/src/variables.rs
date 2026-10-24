@@ -152,28 +152,7 @@ pub(crate) fn set(
     guard: old_cli::Guard,
     client_sealed: impl FnOnce() -> Result<bool, RpcError>,
 ) -> Result<(bool, Option<Typed>), RpcError> {
-    refuse_reserved(key)?;
-    let (input, exported) = match value {
-        Value::Object(mut fields) if !fields.contains_key("secret") => {
-            if fields
-                .keys()
-                .any(|field| field != "value" && field != "exported")
-            {
-                return Err(invalid(key, "expected only value and exported"));
-            }
-            let exported = fields
-                .remove("exported")
-                .map(|flag| exported_flag(key, flag));
-            let input = fields.remove("value").map(|value| input(key, value));
-            (input.transpose()?, exported.transpose()?)
-        }
-        value @ (Value::Null
-        | Value::Bool(_)
-        | Value::Number(_)
-        | Value::String(_)
-        | Value::Array(_)
-        | Value::Object(_)) => (Some(input(key, value)?), None),
-    };
+    let (input, exported) = parse(key, value)?;
     let names = environment.names();
     let others: Vec<_> = environment
         .working
@@ -288,6 +267,33 @@ pub(crate) fn set(
         None => variables.push(next),
     }
     Ok((true, typed))
+}
+
+/// What `value` asks [`set`] for `key`, read before Working State: a new value, an
+/// exported flag, or both.
+fn parse(key: &VariableKey, value: Value) -> Result<(Option<Input>, Option<bool>), RpcError> {
+    refuse_reserved(key)?;
+    match value {
+        Value::Object(mut fields) if !fields.contains_key("secret") => {
+            if fields
+                .keys()
+                .any(|field| field != "value" && field != "exported")
+            {
+                return Err(invalid(key, "expected only value and exported"));
+            }
+            let exported = fields
+                .remove("exported")
+                .map(|flag| exported_flag(key, flag));
+            let input = fields.remove("value").map(|value| input(key, value));
+            Ok((input.transpose()?, exported.transpose()?))
+        }
+        value @ (Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_)) => Ok((Some(input(key, value)?), None)),
+    }
 }
 
 /// Ployz provides these; a Service's own value would lie about its name and address.
@@ -727,8 +733,49 @@ pub(crate) fn unset(
     Ok(*variables != before)
 }
 
+/// Whether `value` holds a secret's plain text: an object with text under `secret`,
+/// whatever its other fields and however deep, whether or not [`set`] takes it.
+pub(crate) fn holds_secret_text(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields.get("secret").is_some_and(Value::is_string)
+                || fields.values().any(holds_secret_text)
+        }
+        Value::Array(items) => items.iter().any(holds_secret_text),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
+}
+
+/// The plain text `value` asks [`set`] to seal as a new secret of `key`, read as
+/// [`set`] reads it, when `value` [holds](holds_secret_text) any.
+///
+/// # Errors
+/// What [`set`] refuses in `value` before it reads Working State, such as a secret's
+/// text beside other fields.
+pub(crate) fn secret_text<'value>(
+    key: &VariableKey,
+    value: &'value Value,
+) -> Result<Option<&'value str>, RpcError> {
+    if !holds_secret_text(value) {
+        return Ok(None);
+    }
+    parse(key, value.clone())?;
+    // What `parse` takes with text in a secret is only a secret to seal, there or
+    // under `value`.
+    let slot = match value {
+        Value::Object(fields) if !fields.contains_key("secret") => fields.get("value"),
+        Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_) => Some(value),
+    };
+    Ok(slot.and_then(plaintext_secret))
+}
+
 /// The plain text `value` asks [`set`] to seal: `{"secret": "…"}` with text in it.
-pub(crate) fn plaintext_secret(value: &Value) -> Option<&str> {
+fn plaintext_secret(value: &Value) -> Option<&str> {
     match value {
         Value::Object(fields) if fields.len() == 1 => match fields.get("secret") {
             Some(Value::String(plaintext)) if !plaintext.is_empty() => Some(plaintext),
