@@ -2631,6 +2631,25 @@ async fn a_pass_asks_ployzd_about_its_machine_once_even_when_it_checks_for_a_joi
 }
 
 #[tokio::test]
+async fn joined_asks_ployzd_nothing_without_an_attempt_that_succeeded() {
+    let host = FakeHost {
+        member_of_cluster_as: Some("box-1".to_owned()),
+        ..FakeHost::default()
+    };
+    let failed = wire::Attempt {
+        attempt_id: "att_1".to_owned(),
+        stage: crate::cloud_enroll::EnrollStage::Publishing,
+        failure: Some(wire::AttemptFailure {
+            stage: crate::cloud_enroll::EnrollStage::Publishing,
+            message: "Install failed".to_owned(),
+        }),
+    };
+    assert!(!joined(&host, None).await);
+    assert!(!joined(&host, Some(&failed)).await);
+    assert_eq!(host.looks.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn a_program_on_the_wireguard_port_blocks_the_server_by_name() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);

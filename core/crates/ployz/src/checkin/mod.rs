@@ -780,11 +780,7 @@ impl InstallPass {
 
 /// Whether this host joined through `attempt`: it didn't fail, and the daemon now participates.
 pub(crate) async fn joined<H: Host>(host: &H, attempt: Option<&Attempt>) -> bool {
-    joined_as(attempt, host.participating().await.as_deref())
-}
-
-fn joined_as(attempt: Option<&Attempt>, participating: Option<&str>) -> bool {
-    attempt.is_some_and(|attempt| attempt.failure.is_none()) && participating.is_some()
+    attempt.is_some_and(|attempt| attempt.failure.is_none()) && host.participating().await.is_some()
 }
 
 /// The pass an explicit `--install` makes. It leaves preparation alone, since the token may yet be
@@ -978,7 +974,9 @@ async fn check_in<H: Host>(
     let next = match reply {
         client::Reply::Answer(Answer::Wait(_))
             if !installing
-                && joined_as(status.attempt.as_ref(), local.participating.as_deref()) =>
+                && local.participating.is_some()
+                // Asked again only once it looks joined, so a reset since then doesn't stop the loop.
+                && joined(host, status.attempt.as_ref()).await =>
         {
             status.answer = Seen::Joined;
             Next::Enrolled
