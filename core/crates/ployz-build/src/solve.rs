@@ -220,13 +220,10 @@ impl SolveParser {
     }
 }
 
-/// Length of the longest prefix that ends on a UTF-8 character boundary.
+/// Length of the longest prefix that ends on a UTF-8 character boundary. An
+/// invalid byte earlier on is already broken; only the trailing sequence matters.
 fn char_boundary(bytes: &[u8]) -> usize {
-    match std::str::from_utf8(bytes) {
-        Ok(_) => bytes.len(),
-        Err(error) if error.error_len().is_none() => error.valid_up_to(),
-        Err(_) => bytes.len(),
-    }
+    bytes.len() - ployz_core::scrub::incomplete_tail(bytes)
 }
 
 fn emit_output(key: StreamKey, bytes: &[u8], progress: &dyn Fn(Progress)) {
@@ -504,6 +501,20 @@ mod tests {
         parser.feed(record(half.as_bytes()).as_bytes(), &progress);
         // Passed on before the build ends, in one piece.
         assert_eq!(texts(&events.lock().unwrap()), [half.repeat(2)]);
+    }
+
+    #[test]
+    fn the_bounded_cut_never_splits_a_character_after_an_invalid_byte() {
+        let mut bytes = vec![0xFF];
+        bytes.extend(std::iter::repeat_n(b'x', MAX_PARTIAL));
+        let (head, tail) = "🐴\n".as_bytes().split_at(2);
+        bytes.extend_from_slice(head);
+        let events = collect(|parser, progress| {
+            parser.feed(record(&bytes).as_bytes(), progress);
+            parser.feed(record(tail).as_bytes(), progress);
+        });
+        let text = texts(&events).concat();
+        assert_eq!(text, format!("\u{FFFD}{}🐴\n", "x".repeat(MAX_PARTIAL)));
     }
 
     #[test]
