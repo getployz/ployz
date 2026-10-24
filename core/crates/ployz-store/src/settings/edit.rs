@@ -40,119 +40,113 @@ pub struct Edit {
 }
 
 impl Edit {
-    /// Whether this edit carries a secret's plain text, `{"secret": "…"}` among any
-    /// fields, in a variable's `set` or a patch's `env`, whether or not the Store
-    /// would take it.
+    /// Whether this edit carries a new secret's plain text, as the Store reads the
+    /// edit, or holds `{"secret": "…"}` in an edit the Store refuses.
     #[must_use]
     pub fn carries_plaintext_secret(&self) -> bool {
-        self.changes.iter().any(|change| match change {
-            Change::Set { path, value } => {
-                matches!(path.target(), Some(Target::Variable(_)))
-                    && variables::holds_secret_text(value)
-            }
-            Change::Patch { path, value } => patch_holds_secret_text(path, value),
-            Change::Unset { .. } | Change::Rename { .. } => false,
-        })
+        !matches!(self.plaintext_secrets(), Ok(found) if found.is_empty())
     }
 
     /// Each new secret's plain text this edit carries, as
-    /// [`Self::carries_plaintext_secret`] finds it, replaced by what `seal` makes of
-    /// it; `None` leaves the text for the Store to seal. Anything else, such as a
-    /// Service the Store won't find, is left for the Store to judge.
+    /// [`Self::carries_plaintext_secret`] finds it, replaced where the edit holds it
+    /// by what `seal` makes of it; `None` leaves the text for the Store to seal.
     ///
     /// # Errors
-    /// What `seal` refuses, and, through `refuse`, the Store's refusal of a patch
-    /// path, variable name or value that holds plain text, so the text is never sent.
+    /// What `seal` refuses, and, through `refuse`, the Store's refusal of an edit or
+    /// value that holds a secret's plain text, so the text is never sent.
     pub fn map_plaintext_secrets<E>(
         &mut self,
         refuse: impl Fn(RpcError) -> E,
         mut seal: impl FnMut(PlaintextSecret<'_>) -> Result<Option<ClientSealedValue>, E>,
     ) -> Result<(), E> {
-        for change in &mut self.changes {
-            match change {
-                Change::Set { path, value } => {
-                    let Some(Target::Variable(key)) = path.target() else {
-                        continue;
-                    };
-                    let service = path.settings_of().map_err(&refuse)?;
-                    seal_in(value, service, key, &refuse, &mut seal)?;
-                }
-                Change::Patch { path, value } => {
-                    if !patch_holds_secret_text(path, value) {
-                        continue;
-                    }
-                    let Some(env) = patch_env(path, value).map_err(&refuse)? else {
-                        continue;
-                    };
-                    let service = path.settings_of().map_err(&refuse)?;
-                    for (key, value) in env {
-                        if !variables::holds_secret_text(value) {
-                            continue;
-                        }
-                        let key = VariableKey::parse(key).map_err(&refuse)?;
-                        seal_in(value, service, &key, &refuse, &mut seal)?;
-                    }
-                }
-                Change::Unset { .. } | Change::Rename { .. } => {}
-            }
+        for found in self.plaintext_secrets().map_err(&refuse)? {
+            let secret = PlaintextSecret {
+                service: &found.service,
+                key: &found.key,
+                text: found.secret.text(),
+            };
+            let Some(sealed) = seal(secret)? else {
+                continue;
+            };
+            let Some(slot) = found.origin.slot(&mut self.changes) else {
+                return Err(refuse(error::internal(
+                    "A secret's place in the edit moved",
+                )));
+            };
+            *slot = found.secret.sealed(&sealed);
         }
         Ok(())
     }
-}
 
-/// Whether a patch's `env` holds a secret's plain text, or a patch the Store refuses
-/// for its path or shape holds one anywhere.
-fn patch_holds_secret_text(path: &SettingPath, patch: &Value) -> bool {
-    let addresses_a_service = path.settings_of().is_ok() && path.target().is_none();
-    match patch.as_object() {
-        Some(settings) if addresses_a_service => match settings.get("env") {
-            Some(Value::Object(env)) => env.values().any(variables::holds_secret_text),
-            Some(env) => variables::holds_secret_text(env),
-            None => false,
-        },
-        Some(_) | None => variables::holds_secret_text(patch),
+    /// The new secrets' plain text the Store reads from this edit: each variable a
+    /// step of [`expand`] sets, read as [`variables::set`] reads it.
+    ///
+    /// # Errors
+    /// What the Store refuses in an edit that holds `{"secret": "…"}`, or in a
+    /// variable's value that holds one.
+    fn plaintext_secrets(&self) -> Result<Vec<Found>, RpcError> {
+        let holds = self.changes.iter().any(|change| match change {
+            Change::Set { value, .. } | Change::Patch { value, .. } => {
+                variables::holds_secret_text(value)
+            }
+            Change::Unset { .. } | Change::Rename { .. } => false,
+        });
+        if !holds {
+            return Ok(Vec::new());
+        }
+        let mut found = Vec::new();
+        for (path, step, origin) in expand_from(&self.changes)? {
+            let (Some(Target::Variable(key)), Step::Set(value), Some(origin)) =
+                (path.target(), &step, origin)
+            else {
+                continue;
+            };
+            if !variables::holds_secret_text(value) {
+                continue;
+            }
+            let Some(secret) = variables::new_secret(key, value)? else {
+                continue;
+            };
+            found.push(Found {
+                service: path.settings_of()?.clone(),
+                key: key.clone(),
+                secret,
+                origin,
+            });
+        }
+        Ok(found)
     }
 }
 
-/// A patch's `env`, if any, refused as [`expand`] refuses a patch that isn't a
-/// Service's object of Settings or whose `env` isn't an object of variables.
-fn patch_env<'patch>(
-    path: &SettingPath,
-    patch: &'patch mut Value,
-) -> Result<Option<&'patch mut serde_json::Map<String, Value>>, RpcError> {
-    let service = path.settings_of()?;
-    if path.target().is_some() {
-        return Err(not_a_service(service));
+/// A new secret's plain text the Store reads from an edit, and where the edit holds it.
+struct Found {
+    service: ServiceName,
+    key: VariableKey,
+    secret: variables::NewSecret,
+    origin: Origin,
+}
+
+/// Where an edit holds the value one of its variable steps sets.
+enum Origin {
+    /// Change `n`, a `set`.
+    Set(usize),
+    /// Variable `key`, as change `n`, a patch, names it under `env`.
+    Env(usize, String),
+}
+
+impl Origin {
+    fn slot<'changes>(&self, changes: &'changes mut [Change]) -> Option<&'changes mut Value> {
+        match self {
+            Self::Set(change) => match changes.get_mut(*change)? {
+                Change::Set { value, .. } => Some(value),
+                Change::Patch { .. } | Change::Unset { .. } | Change::Rename { .. } => None,
+            },
+            Self::Env(change, key) => match changes.get_mut(*change)? {
+                Change::Patch { value, .. } => value.get_mut("env")?.get_mut(key),
+                Change::Set { .. } | Change::Unset { .. } | Change::Rename { .. } => None,
+            },
+        }
     }
-    let Some(settings) = patch.as_object_mut() else {
-        return Err(not_settings());
-    };
-    match settings.get_mut("env") {
-        Some(Value::Object(env)) => Ok(Some(env)),
-        Some(_) => Err(not_variables()),
-        None => Ok(None),
-    }
-}
-
-fn not_a_service(service: &ServiceName) -> RpcError {
-    error::invalid(
-        "A patch addresses a Service, not one of its Settings",
-        json!({ "example": service }),
-    )
-}
-
-fn not_settings() -> RpcError {
-    error::invalid(
-        "A patch is a JSON object of Settings",
-        json!({ "example": { "replicas": 3 } }),
-    )
-}
-
-fn not_variables() -> RpcError {
-    error::invalid(
-        "env is a JSON object of variables",
-        json!({ "example": { "env": { "LOG_LEVEL": "info" } } }),
-    )
 }
 
 /// A new secret's plain text in an [`Edit`], for the Service and variable it lands
@@ -183,36 +177,6 @@ impl PlaintextSecret<'_> {
         variables::admit_secret(self.key, self.text)?;
         Ok(self.text)
     }
-}
-
-/// `value`'s `{"secret": "…"}`, direct or under `value`, replaced by what `seal` makes
-/// of it. Plain text the Store wouldn't take is refused, through `refuse`, as the
-/// Store refuses it.
-fn seal_in<E>(
-    value: &mut Value,
-    service: &ServiceName,
-    key: &VariableKey,
-    refuse: &impl Fn(RpcError) -> E,
-    seal: &mut impl FnMut(PlaintextSecret<'_>) -> Result<Option<ClientSealedValue>, E>,
-) -> Result<(), E> {
-    let Some(text) = variables::secret_text(key, value).map_err(refuse)? else {
-        return Ok(());
-    };
-    let Some(sealed) = seal(PlaintextSecret { service, key, text })? else {
-        return Ok(());
-    };
-    let slot = if wrapped(value) {
-        &mut value["value"]
-    } else {
-        value
-    };
-    *slot = json!({ "secret": sealed });
-    Ok(())
-}
-
-/// Whether `value` is `{"value": …, "exported": …}`, which holds the value under `value`.
-fn wrapped(value: &Value) -> bool {
-    matches!(value, Value::Object(fields) if !fields.contains_key("secret"))
 }
 
 /// One change, addressed as `SERVICE.SETTING`, or as `SERVICE` for a patch.
@@ -723,11 +687,24 @@ impl Editing<'_> {
 
 /// Every change as one path to set (with its value), unset, or rename.
 fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Step)>, RpcError> {
+    let expanded = expand_from(changes)?;
+    Ok(expanded
+        .into_iter()
+        .map(|(path, step, _)| (path, step))
+        .collect())
+}
+
+/// [`expand`], with where the edit holds each value a `set` or a patch's `env` sets.
+fn expand_from(changes: &[Change]) -> Result<Vec<(SettingPath, Step, Option<Origin>)>, RpcError> {
     let mut expanded = Vec::new();
-    for change in changes {
+    for (index, change) in changes.iter().enumerate() {
         match change {
-            Change::Set { path, value } => expanded.push((path.clone(), Step::Set(value.clone()))),
-            Change::Unset { path } => expanded.push((path.clone(), Step::Unset)),
+            Change::Set { path, value } => expanded.push((
+                path.clone(),
+                Step::Set(value.clone()),
+                Some(Origin::Set(index)),
+            )),
+            Change::Unset { path } => expanded.push((path.clone(), Step::Unset, None)),
             Change::Rename {
                 path,
                 to,
@@ -737,25 +714,35 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Step)>, RpcError> {
                     to: VariableKey::parse(to)?,
                     update_references: *update_references,
                 };
-                expanded.push((path.clone(), step));
+                expanded.push((path.clone(), step, None));
             }
             Change::Patch { path, value } => {
                 let service = path.settings_of()?;
                 if path.target().is_some() {
-                    return Err(not_a_service(service));
+                    return Err(error::invalid(
+                        "A patch addresses a Service, not one of its Settings",
+                        json!({ "example": service }),
+                    ));
                 }
                 let Some(object) = value.as_object() else {
-                    return Err(not_settings());
+                    return Err(error::invalid(
+                        "A patch is a JSON object of Settings",
+                        json!({ "example": { "replicas": 3 } }),
+                    ));
                 };
                 for (name, value) in object {
                     if name == "env" {
                         let Some(variables) = value.as_object() else {
-                            return Err(not_variables());
+                            return Err(error::invalid(
+                                "env is a JSON object of variables",
+                                json!({ "example": { "env": { "LOG_LEVEL": "info" } } }),
+                            ));
                         };
                         for (key, value) in variables {
+                            let origin = Origin::Env(index, key.clone());
                             let key = VariableKey::parse(key)?;
                             let path = SettingPath::at(service, Target::Variable(key));
-                            expanded.push((path, Step::Set(value.clone())));
+                            expanded.push((path, Step::Set(value.clone()), Some(origin)));
                         }
                         continue;
                     }
@@ -769,7 +756,7 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Step)>, RpcError> {
                         for (volume, value) in mounts {
                             let volume = VolumeName::parse(volume.as_str())?;
                             let path = SettingPath::at(service, Target::Mount(volume));
-                            expanded.push((path, Step::Set(value.clone())));
+                            expanded.push((path, Step::Set(value.clone()), None));
                         }
                         continue;
                     }
@@ -783,13 +770,13 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Step)>, RpcError> {
                         for (config, value) in mounts {
                             let config = crate::settings::config_name(config)?;
                             let path = SettingPath::at(service, Target::ConfigMount(config.into()));
-                            expanded.push((path, Step::Set(value.clone())));
+                            expanded.push((path, Step::Set(value.clone()), None));
                         }
                         continue;
                     }
                     let setting = ServiceSetting::parse(name)?;
                     let path = SettingPath::of(service, setting);
-                    expanded.push((path, Step::Set(value.clone())));
+                    expanded.push((path, Step::Set(value.clone()), None));
                 }
             }
         }
