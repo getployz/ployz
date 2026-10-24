@@ -95,9 +95,9 @@ service still gets the real value when it deploys.
 - Asking for a new random value for a variable that's already sealed keeps the sealed value, so
   a retried change never swaps the password a database already uses. To get a new value, delete
   the variable first. A plain variable gets a new sealed value.
-- Rotate a secret you sealed before Ployz sealed values on your device. Older backups of Ployz
-  Cloud's database still hold it. Change the secret where it comes from, then delete the
-  variable and add it again with the new value.
+- Rotate a secret you saved before this change. Older backups of Ployz Cloud's database still
+  hold it. Change the secret where it comes from, then delete the variable and add it again
+  with the new value.
 
 ## Reference another service's variable
 
