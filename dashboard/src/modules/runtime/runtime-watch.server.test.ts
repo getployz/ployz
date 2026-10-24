@@ -17,7 +17,12 @@ import {
   openRuntimeWatch,
   openRuntimeWatchForOrganization,
 } from "#/modules/runtime/runtime-watch.server";
-import { runtimeWatchContainerFixture, runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import {
+  runtimeWatchContainerFixture,
+  runtimeWatchFrameFixture,
+  runtimeWatchMachineFixture,
+  runtimeWatchMachineObservationFixture,
+} from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import {
   Auth,
   type AuthService,
@@ -175,6 +180,48 @@ describe("openRuntimeWatchForOrganization", () => {
     expect(frames).toBe(5);
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
     expect(send).toHaveBeenCalledWith({ name: "cluster-domain/sync.requested", data: { organizationId: "org-1" } });
+  });
+
+  it("asks to ensure the Sealing Key once when a recovered Server holds it and another still lacks it", async () => {
+    const sealing = (m7: "awaits_recovery" | "held", m5: "needs_access" | "held") => runtimeWatchFrameFixture({
+      machines: [["m5", m5], ["m7", m7]].map(([id, kind]) => {
+        const machine = runtimeWatchMachineFixture(id!, id!);
+        const state = kind === "needs_access" ? { kind } as const : { kind: kind as "held", public_key: `${"A".repeat(43)}=` };
+        return runtimeWatchMachineObservationFixture({ machine: { ...machine, runtime: { ...machine.runtime, sealing: state } } });
+      }),
+    });
+    const watch = await Effect.runPromise(
+      openRuntimeWatchForOrganization({
+        request: new Request("http://localhost/api/runtime/events"),
+        organizationId: "org-1",
+      }).pipe(
+        Effect.provideService(InngestClient, inngest),
+        Effect.provideService(
+          OrganizationRuntime,
+          asTestDouble<OrganizationRuntimeService>()({
+            open: () => Effect.succeed({
+              status: "connected" as const,
+              connected: asTestDouble<PloyzSession>()({
+                watch: () => Effect.succeed((async function* () {
+                  yield sealing("awaits_recovery", "needs_access");
+                  yield sealing("held", "needs_access");
+                  yield sealing("held", "needs_access");
+                  yield sealing("held", "held");
+                })()),
+              }),
+            }),
+          }),
+        ),
+      ),
+    );
+    if (watch.status !== "connected") throw new Error("expected a connected watch");
+
+    let frames = 0;
+    for await (const _ of watch.frames) frames += 1;
+
+    expect(frames).toBe(4);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send).toHaveBeenCalledWith({ name: "sealing-key/ensure.requested", data: { organizationId: "org-1" } });
   });
 
   it("surfaces runtime establishment failures", async () => {
