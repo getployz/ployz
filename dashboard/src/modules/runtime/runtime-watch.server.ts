@@ -4,7 +4,12 @@ import { Effect, Exit, Logger, Scope } from "effect";
 import { redactedLoggers } from "#/server/log-redaction";
 import { onIngressChange } from "#/modules/cluster-domain/ingress-running";
 import { InngestClient, sendInngestEvent } from "#/modules/inngest/client";
-import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
+import {
+  createClusterDomainSyncRequestedEvent,
+  createSealingKeyEnsureRequestedEvent,
+  type InngestSendableEvent,
+} from "#/modules/inngest/events";
+import { onSealingGap } from "#/modules/machines/sealing-gap";
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzProviderError } from "#/modules/runtime/ployz.server";
@@ -57,16 +62,25 @@ export const openRuntimeWatchForOrganization = Effect.fn(
     .watch({ signal: input.request.signal })
     .pipe(Effect.onError(() => close));
   const inngest = yield* InngestClient;
-  const requestDomainSync = () => Effect.runFork(
-    sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: input.organizationId })).pipe(
+  const sendOnChange = (event: InngestSendableEvent, failed: string) => () => Effect.runFork(
+    sendInngestEvent(event).pipe(
       Effect.provideService(InngestClient, inngest),
-      Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; the hourly sync covers it.", error)),
+      Effect.catch((error) => Effect.logWarning(failed, error)),
       Effect.provideService(Logger.CurrentLoggers, redactedLoggers),
     ),
   );
+  const { organizationId } = input;
+  const requestDomainSync = sendOnChange(
+    createClusterDomainSyncRequestedEvent({ organizationId }),
+    "Cluster Domain sync request failed; the hourly sync covers it.",
+  );
+  const requestSealingKey = sendOnChange(
+    createSealingKeyEnsureRequestedEvent({ organizationId }),
+    "Sealing Key ensure request failed; the next change of Servers holding it asks again.",
+  );
   return {
     status: "connected" as const,
-    frames: onIngressChange(frames, requestDomainSync),
+    frames: onSealingGap(onIngressChange(frames, requestDomainSync), requestSealingKey),
     close,
   } satisfies OpenedRuntimeWatch;
 });
