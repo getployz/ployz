@@ -33,10 +33,13 @@ export const readSealingPublicKey = Effect.fn("SealingKey.readPublicKey")(functi
 export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(function* (
   organizationId: string, clusterKey: string, publicKey: SealingPublicKey,
 ) {
-  const { drizzle } = yield* Database;
-  const inserted = yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey }).onConflictDoNothing()
-    .returning({ clusterKey: clusterSealingKey.clusterKey });
-  if (inserted.length > 0) yield* enqueueEvent(createClusterResealRequestedEvent({ organizationId, clusterKey }));
+  const database = yield* Database;
+  yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const inserted = yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey }).onConflictDoNothing()
+      .returning({ clusterKey: clusterSealingKey.clusterKey });
+    if (inserted.length > 0) yield* enqueueEvent(createClusterResealRequestedEvent({ organizationId, clusterKey }));
+  }));
   const recorded = yield* readSealingPublicKey(organizationId, clusterKey);
   if (recorded !== undefined && recorded !== publicKey) {
     yield* Effect.logError("A Server reported a Sealing Key unlike the one its Cluster first reported.").pipe(

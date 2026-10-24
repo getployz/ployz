@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Effect } from "effect";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { Inngest } from "inngest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   readSealingRecovery,
   recordFirstRecoveryBackup,
@@ -44,7 +45,7 @@ describe("the Organization's Sealing Key", () => {
 
   beforeEach(async () => {
     await harness.pool.query(`
-      truncate table organization cascade;
+      truncate table organization, operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
     `);
   });
@@ -55,6 +56,28 @@ describe("the Organization's Sealing Key", () => {
       await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("B")));
 
       expect(await stored()).toEqual([{ public_key: sealingKey("A"), recovery_blob: null }]);
+    });
+
+    it("keeps no Cluster key whose reseal request failed to record, so the next report sends it", async () => {
+      const inngest = new Inngest({ id: "sealing-key-sends" });
+      const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const report = () => harness.runEffect(
+        recordSealingPublicKey(organizationId, clusterA, sealingKey("A")).pipe(Effect.provideService(InngestClient, inngest)),
+      );
+      await harness.pool.query(`
+        create function refuse_outbox() returns trigger language plpgsql as $$ begin raise exception 'outbox refused'; end $$;
+        create trigger refuse_outbox before insert on operation_outbox execute function refuse_outbox();
+      `);
+      try {
+        await expect(report()).rejects.toThrow();
+      } finally {
+        await harness.pool.query("drop trigger refuse_outbox on operation_outbox; drop function refuse_outbox();");
+      }
+      expect((await harness.pool.query("select 1 from cluster_sealing_key")).rowCount).toBe(0);
+
+      await report();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "variables/reseal.requested", data: { organizationId } }));
     });
   });
 
