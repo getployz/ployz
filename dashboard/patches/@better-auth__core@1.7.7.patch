@@ -1,0 +1,12 @@
+diff --git a/dist/db/adapter/factory.mjs b/dist/db/adapter/factory.mjs
+index 95fe7adec7ae1404ee6d6c9e2e883da21d4aa6ee..408abe0f7ce9d10cc2cd39156cc2fbfaa614eaaf 100644
+--- a/dist/db/adapter/factory.mjs
++++ b/dist/db/adapter/factory.mjs
+@@ -389,7 +389,6 @@ const createAdapterFactory = ({ adapter: customAdapter, config: cfg }) => (optio
+ 				where,
+ 				limit: joinConfig.limit
+ 			});
+-			console.error(error);
+ 			throw error;
+ 		}
+ 		return result;

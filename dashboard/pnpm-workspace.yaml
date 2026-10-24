@@ -26,3 +26,7 @@ ignoredBuiltDependencies:
 
 overrides:
   nf3: 0.3.17
+
+patchedDependencies:
+  '@better-auth/core@1.7.7': patches/@better-auth__core@1.7.7.patch
+  nitro@3.0.260610-beta: patches/nitro@3.0.260610-beta.patch

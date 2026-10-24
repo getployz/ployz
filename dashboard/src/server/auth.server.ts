@@ -314,9 +314,15 @@ const BETTER_AUTH_LOGS = {
   error: Effect.logError,
 } as const;
 
-// Some Better Auth callers pass an error as the message; kept a value, redaction can name it by its kind.
-export function logBetterAuth(level: keyof typeof BETTER_AUTH_LOGS, ...message: unknown[]) {
-  runRedactedLog(BETTER_AUTH_LOGS[level]("[Better Auth]", ...message));
+/**
+ * Better Auth's message, then its values. Some callers pass an error as the message; kept a value, redaction can name
+ * it by its kind. A value is a query's where clause, an error's message or stack as a string, or an error: only an
+ * error is kept, for redaction to name.
+ */
+export function logBetterAuth(level: keyof typeof BETTER_AUTH_LOGS, ...log: unknown[]) {
+  const [message, ...values] = log;
+  const logged = values.map((value) => value instanceof Error ? value : "[redacted]");
+  runRedactedLog(BETTER_AUTH_LOGS[level]("[Better Auth]", message, ...logged));
 }
 
 const makeAuth = Effect.gen(function* () {
