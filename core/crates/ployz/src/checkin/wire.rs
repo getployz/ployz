@@ -512,8 +512,10 @@ impl Probe {
             },
         };
         if let Some(prep) = prep {
+            // Once the unit stops, the state file is final: an older failure the run never
+            // rewrote still stands.
             if let DockerStep::Failed { message } = &prep.docker.step
-                && !prep.docker_retried(prepare_started)
+                && !(preparing && prep.docker_retried(prepare_started))
             {
                 blockers.push(Issue {
                     code: DOCKER_INSTALL_FAILED.to_owned(),
