@@ -96,6 +96,7 @@ pub(super) fn org_build_order_command(command: Command) -> Command {
                     "servers-then-github",
                     "github-only",
                 ]).help("The Build Order to set; without it, shows the current one"))
+                .arg(crate::cli::approval())
 }
 
 pub(super) fn org_leave_command(command: Command) -> Command {
@@ -327,8 +328,8 @@ pub(super) fn org_list(root: &ArgMatches) -> Result<(), Error> {
 }
 
 pub(super) fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
-    let store = super::store::store(root)?;
     let order = leaf_matches(root).get_one::<String>("order");
+    let store = super::store::store(root)?.args(order.map(String::as_str));
     let view = match order {
         None => store.read(&ployz_store::BuildOrderQuery {})?,
         Some(order) => {
