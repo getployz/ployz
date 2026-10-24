@@ -125,7 +125,7 @@ it("says what a Sync into the Parent carries, and opens the dialog into the Pare
     "Sourceshop/api:1.81.9",
     "LOG_LEVELChanged in productionwarndebug",
     "APP_ENVproductionstaging",
-    "STRIPE_WEBHOOK_SECRETSecret",
+    "STRIPE_WEBHOOK_SECRETSealed",
   ]);
   // A secret arrives by name only: the row takes production's own value.
   expect(sync.getByLabelText("Set production's value of STRIPE_WEBHOOK_SECRET").getAttribute("placeholder")).toBe("Set production's value");
