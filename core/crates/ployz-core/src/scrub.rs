@@ -476,7 +476,8 @@ fn release_point(text: &[u8], forms: &SealedForms) -> usize {
 }
 
 /// Bytes at the end of `text` that begin a UTF-8 sequence the text does not finish.
-fn incomplete_tail(text: &[u8]) -> usize {
+#[must_use]
+pub fn incomplete_tail(text: &[u8]) -> usize {
     let lead = text
         .iter()
         .rev()
