@@ -17,12 +17,6 @@ const OFFLINE_AFTER_MS = 3 * CHECKIN_WAIT_SECONDS * 1000;
 export const stillWaiting = sql`not exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id}
   and (${serverEnrollment.endedAt} is null or ${serverEnrollment.state} = 'joined'))`;
 
-/**
- * A joined host's check-in loop stops on its next answer, so a check-in this long after its join ended comes from a host
- * that was reset or installed again while it kept its check-in key.
- */
-const REJOINED_AFTER = sql`interval '5 minutes'`;
-
 /** What blocks a host that checks in again while the Server it joined as is still listed. */
 export function formerServerBlocker(name: string) {
   return {
@@ -79,10 +73,8 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
     .orderBy(desc(serverEnrollment.requestedAt), desc(serverEnrollment.id)).limit(1).as("latest_return");
   // The Server the host joined as, while Cloud still lists it.
   const former = drizzle.select({
-    attemptId: sql<string>`${serverEnrollment.id}`.as("former_attempt_id"),
     machineId: sql<string>`${serverEnrollment.machineId}`.as("former_machine_id"),
     machineName: organizationMachine.machineName,
-    endedAt: sql<Date>`${serverEnrollment.endedAt}`.as("former_ended_at"),
   })
     .from(serverEnrollment)
     .innerJoin(organizationMachine, and(
@@ -107,7 +99,6 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
       returnState: latest.state,
       returnStage: latest.stage,
       returnFailure: latest.failure,
-      formerAttemptId: former.attemptId,
       formerMachineId: former.machineId,
       formerName: former.machineName,
     })
@@ -121,21 +112,19 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
       or(stillWaiting, and(
         isNotNull(former.machineId),
         noOpenEnrollment,
-        sql`${waitingServer.lastCheckInAt} > ${former.endedAt} + ${REJOINED_AFTER}`,
-        // That Server itself, still checking in because it missed Cloud's answer to its join.
-        sql`not (coalesce(${waitingServer.report}->'attempt'->>'id', '') = ${former.attemptId}::text
-          and coalesce((${waitingServer.report}->'attempt'->>'failed')::boolean, false))`,
+        // Its ployzd says it holds no Machine, so it is no longer that Server. A Server whose ployzd is down, or whose
+        // older CLI doesn't say, stays hidden.
+        sql`${waitingServer.report}->>'machinePhase' = 'uninitialized'`,
       )),
       id === null ? undefined : eq(waitingServer.id, id),
     ))
     .orderBy(asc(arrival), asc(waitingServer.firstSeenAt), asc(waitingServer.id));
   const now = new Date();
-  return rows.map(({ arrivalAt, returnState, returnStage, returnFailure, formerAttemptId: _attempt, formerMachineId, formerName, ...listedRow }) => {
-    const { attempt: _reported, ...reported } = listedRow.report;
-    // Listed only once the host checked in long after it joined, so a Server still listed is one it no longer is.
-    const row = {
+  return rows.map(({ arrivalAt, returnState, returnStage, returnFailure, formerMachineId, formerName, ...listedRow }) => {
+    // Listed only once the host's ployzd holds no Machine, so a Server still listed is one it no longer is.
+    const row = formerMachineId === null ? listedRow : {
       ...listedRow,
-      report: formerMachineId === null ? reported : { ...reported, blockers: [formerServerBlocker(formerName ?? formerMachineId), ...reported.blockers] },
+      report: { ...listedRow.report, blockers: [formerServerBlocker(formerName ?? formerMachineId), ...listedRow.report.blockers] },
     };
     return {
       ...row,

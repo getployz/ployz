@@ -192,6 +192,7 @@ async fn heartbeat(
         prep: Some(report.prep),
         attempt: Some(attempt),
         probe: None,
+        machine_phase: None,
     };
     match client.post(key, &request).await {
         client::Reply::Answer(Answer::Stop(StopReason::Rejected, message))

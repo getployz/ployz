@@ -179,6 +179,10 @@ pub(crate) trait Host {
     async fn discard_zfs_build(&self) -> Result<(), String>;
     /// The name this Server holds in the cluster it already participates in.
     async fn participating(&self) -> Option<String>;
+    /// The Local Machine Phase this host's ployzd reports, or none when it doesn't answer.
+    async fn machine_phase(&self) -> Option<ployz_core::LocalMachinePhase> {
+        None
+    }
     /// The program holding UDP [`ployz_core::WIREGUARD_PORT`], which ployzd needs for WireGuard.
     fn wireguard_port_holder(&self) -> Option<String> {
         None
@@ -287,6 +291,12 @@ impl Host for System {
                 .machine
                 .map_or_else(|| self.hostname(), |machine| machine.name.to_string())
         })
+    }
+
+    async fn machine_phase(&self) -> Option<ployz_core::LocalMachinePhase> {
+        local_machine(PROBE_TIMEOUT)
+            .await
+            .map(|details| details.phase)
     }
 }
 
@@ -934,6 +944,7 @@ async fn check_in<H: Host>(
         prep: Some(prep),
         attempt: status.attempt.as_ref(),
         probe: probes.report().await,
+        machine_phase: host.machine_phase().await,
     };
     let sent = tokio::time::Instant::now();
     let reply = client.post(key, &request).await;

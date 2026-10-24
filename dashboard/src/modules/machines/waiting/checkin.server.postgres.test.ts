@@ -100,6 +100,7 @@ type Send = {
   readonly prep?: Prep;
   readonly probe?: CheckinRequest["probe"];
   readonly attempt?: CheckinRequest["attempt"];
+  readonly machinePhase?: string;
   readonly skew?: number;
   readonly badSignature?: boolean;
   readonly ip?: string;
@@ -114,7 +115,8 @@ const request = (token: string, host: Host, options: Send = {}) => {
   } as const;
   const withPrep: CheckinRequest = options.prep === undefined ? base : { ...base, prep: options.prep };
   const withProbe: CheckinRequest = options.probe === undefined ? withPrep : { ...withPrep, probe: options.probe };
-  const checkin: CheckinRequest = options.attempt === undefined ? withProbe : { ...withProbe, attempt: options.attempt };
+  const withAttempt: CheckinRequest = options.attempt === undefined ? withProbe : { ...withProbe, attempt: options.attempt };
+  const checkin: CheckinRequest = options.machinePhase === undefined ? withAttempt : { ...withAttempt, machinePhase: options.machinePhase };
   const body = Buffer.from(JSON.stringify(checkin));
   const timestamp = BigInt(Math.floor(Date.now() / 1000) + (options.skew ?? 0));
   const signature = sign(null, checkinMessage(host.key, timestamp, body), host.privateKey);
@@ -1091,7 +1093,7 @@ it("brings a joined host back to Waiting once its Server is gone, without a seco
   expect(await send(token, host, reset)).toMatchObject({ kind: "enroll", role: "joiner" });
 });
 
-it("shows a host that checks in long after joining as Blocked while its old Server is listed, naming that Server", async () => {
+it("shows a host whose ployzd holds no Machine, checking in with a joined Server's key, as Blocked while that Server is listed", async () => {
   await foundOrganization();
   const { token } = await autoToken(5);
   const host = newHost();
@@ -1100,9 +1102,8 @@ it("shows a host that checks in long after joining as Blocked while its old Serv
   await endAuto(attempt, "joined");
   await harness.pool.query(`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name)
     values ($1, repeat('a', 32), repeat('c', 64), '{}', 'web-old')`, [adaOrg]);
-  // Uninstalled by a ployz-uninstall that kept its check-in key, and installed again an hour after it joined.
-  await harness.pool.query("update server_enrollment set ended_at = now() - interval '1 hour'");
-  const reset = { ...readyAuto, attempt: { attemptId: attempt, stage: "publishing" } };
+  // Uninstalled by a ployz-uninstall that kept its check-in key, and installed again.
+  const reset = { ...readyAuto, attempt: { attemptId: attempt, stage: "publishing" }, machinePhase: "uninitialized" };
   const listed = () => run(listWaitingServers(ada, { organizationSlug: "ada" }));
 
   expect(await send(token, host, reset)).toEqual(wait);
@@ -1121,7 +1122,11 @@ it("shows a host that checks in long after joining as Blocked while its old Serv
   expect(await listed()).toMatchObject([{ status: "waiting", report: { hostname: "web-1", blockers: [] } }]);
 });
 
-it("keeps a joined Server hidden while it still checks in because it missed Cloud's answer to its join", async () => {
+it.each([
+  ["re-runs its install", "participating", undefined],
+  ["missed Cloud's answer to its join", "participating", { stage: "publishing", message: "Cloud did not answer" }],
+  ["has a ployzd that doesn't answer, or an older CLI", undefined, undefined],
+] as const)("keeps a joined Server hidden when it checks in again because it %s", async (_case, machinePhase, failure) => {
   await foundOrganization();
   const { token } = await autoToken(5);
   const host = newHost();
@@ -1131,9 +1136,11 @@ it("keeps a joined Server hidden while it still checks in because it missed Clou
   await harness.pool.query(`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name)
     values ($1, repeat('a', 32), repeat('c', 64), '{}', 'web-old')`, [adaOrg]);
   await harness.pool.query("update server_enrollment set ended_at = now() - interval '1 hour'");
-  const missed = { ...readyAuto, attempt: { attemptId: attempt, stage: "publishing", failure: { stage: "publishing", message: "Cloud did not answer" } } };
+  const joined = { attemptId: attempt, stage: "joined" };
+  const named = { ...readyAuto, attempt: failure === undefined ? joined : { ...joined, failure } };
+  const again = machinePhase === undefined ? named : { ...named, machinePhase };
 
-  expect(await send(token, host, missed)).toEqual(wait);
+  expect(await send(token, host, again)).toEqual(wait);
   expect(await run(listWaitingServers(ada, { organizationSlug: "ada" }))).toEqual([]);
   expect(await autoAttempts()).toHaveLength(1);
 });

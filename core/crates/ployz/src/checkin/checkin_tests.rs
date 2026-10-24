@@ -73,6 +73,7 @@ struct FakeHost {
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
     member_of_cluster_as: Option<String>,
+    phase: Option<ployz_core::LocalMachinePhase>,
     wireguard_port_holder: Option<String>,
 }
 
@@ -131,6 +132,10 @@ impl Host for FakeHost {
 
     async fn participating(&self) -> Option<String> {
         self.member_of_cluster_as.clone()
+    }
+
+    async fn machine_phase(&self) -> Option<ployz_core::LocalMachinePhase> {
+        self.phase.clone()
     }
 
     fn wireguard_port_holder(&self) -> Option<String> {
@@ -2538,6 +2543,35 @@ async fn a_server_in_another_cluster_is_blocked_before_enroll() {
     assert!(request.contains("ployz server rm box-1"), "{request}");
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Blocked");
+}
+
+#[tokio::test]
+async fn a_check_in_names_its_daemons_phase_so_cloud_can_tell_a_fresh_install_from_a_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    let host = FakeHost {
+        phase: Some(ployz_core::LocalMachinePhase::Uninitialized),
+        ..FakeHost::default()
+    };
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(
+        request.contains(r#""machinePhase":"uninitialized""#),
+        "{request}"
+    );
+
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    let request = server.await.unwrap();
+    assert!(!request.contains("machinePhase"), "{request}");
 }
 
 #[tokio::test]
