@@ -134,9 +134,10 @@ export function parseJson(
     try {
       parsed = JSON.parse(trimmed);
     } catch (cause) {
-      throw new RawEditorParseError(
-        cause instanceof Error ? cause.message : "Invalid JSON.",
-      );
+      // The parser's message quotes the text, which may hold a secret: keep only where it stopped, from V8's
+      // closing "(line L column C)", which follows any quote.
+      const at = cause instanceof Error ? /\(line (\d+) column (\d+)\)$/.exec(cause.message) : null;
+      throw new RawEditorParseError(at ? `Invalid JSON at line ${at[1]}, column ${at[2]}.` : "Invalid JSON.");
     }
     const data = asRecord(parsed);
     if (data === null) {
@@ -218,14 +219,17 @@ export function findDuplicateJsonKeys(text: string): string[] {
 }
 
 export type RawEditorDiff = {
-  creates: { key: string; value: string }[];
-  updates: { variableId: string; key: string; value: string }[];
+  /** With `sealed`, the raw editor ticked it Sealed. */
+  creates: { key: string; value: string; sealed?: boolean }[];
+  updates: { variableId: string; key: string; value: string; sealed?: boolean }[];
   deletes: string[];
 };
 
 export function diffVariables(
   parsed: ParsedEntry[],
   current: VariableRecord[],
+  /** Keys ticked Sealed: each line goes Sealed, as a create or an update, even when its value is unchanged. */
+  sealed: ReadonlySet<string> = new Set(),
 ): RawEditorDiff {
   const editableCurrent = current.filter(isPlainVariable);
   const currentByKey = new Map(editableCurrent.map((v) => [v.key, v]));
@@ -236,15 +240,17 @@ export function diffVariables(
 
   for (const entry of parsed) {
     const existing = currentByKey.get(entry.key);
+    const seal = sealed.has(entry.key) ? { sealed: true } : {};
     if (!existing) {
-      creates.push({ key: entry.key, value: entry.value });
+      creates.push({ key: entry.key, value: entry.value, ...seal });
       continue;
     }
-    if (existing.value.value === entry.value) continue;
+    if (existing.value.value === entry.value && !sealed.has(entry.key)) continue;
     updates.push({
       variableId: existing.id,
       key: entry.key,
       value: entry.value,
+      ...seal,
     });
   }
 

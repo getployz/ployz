@@ -181,6 +181,15 @@ describe("parseJson", () => {
     expect(expectErr(parseJson('{"1BAD":"x"}')).message).toMatch(/variable key/i);
   });
 
+  it.each([
+    ['{"E":rvw1234}', "Invalid JSON."],
+    ["line 7 column 8", "Invalid JSON."],
+    ['{"E":"rvw1234" "F":"x"}', "Invalid JSON at line 1, column 16."],
+    ['{"E":"rvw\n1234"}', "Invalid JSON at line 1, column 10."],
+  ])("never puts the text of malformed JSON %j in its error", (text, message) => {
+    expect(expectErr(parseJson(text)).message).toBe(message);
+  });
+
   it("treats blank input as no entries", () => {
     expect(expectOk(parseJson(""))).toEqual([]);
     expect(expectOk(parseJson("   \n  "))).toEqual([]);

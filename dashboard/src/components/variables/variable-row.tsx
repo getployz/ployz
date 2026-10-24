@@ -9,6 +9,7 @@ import { VariableRowDialogs } from "#/components/variables/variable-row-dialogs"
 import { VariableRowHeading } from "#/components/variables/variable-row-heading";
 import { VariableRowValue } from "#/components/variables/variable-row-value";
 import { VariableRenameDialog } from "#/components/variables/variable-rename-dialog";
+import type { Persistable } from "#/collections/query-collection";
 export type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
@@ -31,7 +32,8 @@ export function VariableRow({
   collection: VariableWriter;
   /** Reference targets offered by the value editor's `${{ }}` autocomplete. */
   valueTargets?: ReferenceTarget[];
-  onSealVariable: (variable: PlainVariableRecord) => void;
+  /** Seals a plain variable's value, or sets a sealed one's, in the background. */
+  onSealVariable: (variable: PlainVariableRecord) => Persistable;
   /**
    * When provided, the row exposes export controls and badges. Owners that don't
    * model exports (e.g. plain service variables) omit this.
@@ -60,8 +62,11 @@ export function VariableRow({
   function handleSave() {
     // A secret's edit seals the typed value: it never becomes plain text.
     if (isSealed) {
-      if (!state.editValue) return;
-      onSealVariable({ ...variable, value: { type: "plain", value: state.editValue } });
+      const typed = state.editValue;
+      if (!typed) return;
+      // A refusal reopens the edit with what was typed.
+      onSealVariable({ ...variable, value: { type: "plain", value: typed } }).isPersisted.promise
+        .catch(() => dispatch({ type: "editOpened", value: typed }));
       dispatch({ type: "saveSucceeded" });
       return;
     }

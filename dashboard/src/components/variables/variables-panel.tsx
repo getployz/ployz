@@ -25,6 +25,12 @@ import type { VariableWriter } from "#/modules/variables/variables";
 import type { PlainVariableRecord } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
 
+/** How Sealed shows: off and ready offer it, no server disables it beside `addServer`, a link to add one. */
+export type SealedControls = {
+  state: "off" | "no_server" | "ready";
+  addServer: ReactNode;
+};
+
 export type VariableAddInput = {
   key: string;
   value: string;
@@ -42,7 +48,7 @@ export function VariablesPanel({
   onNeverSync,
   onRename,
   referrersOf,
-  allowSealOnCreate = false,
+  sealing,
   defaultExported = false,
   headerActions,
   renderAfterList,
@@ -60,7 +66,8 @@ export function VariablesPanel({
   countNoun: string;
   /** Saves in the background; a refusal reopens the form with what was typed. */
   onCreateVariable: (input: VariableAddInput) => Persistable;
-  onSealVariable: (variable: PlainVariableRecord) => void;
+  /** Seals a plain variable's value, or sets a sealed one's, in the background. */
+  onSealVariable: (variable: PlainVariableRecord) => Persistable;
   /** When provided, each row's menu marks it Never sync, or syncs it again. */
   onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
   /** When provided, each row's menu renames it; with `updateReferences`, the variables using it switch too. */
@@ -68,8 +75,8 @@ export function VariablesPanel({
   /** The variables that reference one, as `SERVICE.KEY`, which its rename switches to the new name. */
   referrersOf?: (variable: VariableRecord) => readonly string[];
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
-  /** Show the "Sealed" toggle in the add form (owners that support sealed-on-create). */
-  allowSealOnCreate?: boolean;
+  /** Offers Sealed in the add form; none: plain variables only. */
+  sealing?: SealedControls;
   /** Whether the "Exported" toggle starts checked. */
   defaultExported?: boolean;
   /** Extra buttons rendered next to "New Variable" (e.g. a raw editor). */
@@ -118,7 +125,7 @@ export function VariablesPanel({
             }}
             initial={draft}
             onCancel={() => setIsAdding(false)}
-            allowSealOnCreate={allowSealOnCreate}
+            sealing={sealing}
             defaultExported={defaultExported}
             supportsExport={supportsExport}
             valueTargets={valueTargets}

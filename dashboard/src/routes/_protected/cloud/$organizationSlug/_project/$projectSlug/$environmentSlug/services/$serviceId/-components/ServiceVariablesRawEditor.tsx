@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "#/components/ui/dialog";
+import { sealedValueProblem } from "#/modules/variables/seal-value";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { VariableRecord } from "#/modules/variables/variables";
 import {
@@ -27,6 +28,7 @@ import {
   type ParsedEntry,
 } from "#/modules/variables/variable-raw-editor";
 import { ServiceVariablesRawEditorAlerts } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorAlerts";
+import { ServiceVariablesRawEditorSealed } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorSealed";
 import { ServiceVariablesRawEditorFooter } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorFooter";
 import { ServiceVariablesRawEditorTabs } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTabs";
 import type { RawEditorMode } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTypes";
@@ -40,6 +42,8 @@ type RawEditorState = {
   jsonText: string;
   parseError: string | null;
   submitError: string | null;
+  /** The new keys ticked Sealed, kept across ENV and JSON. */
+  sealing: string[];
 };
 
 type RawEditorAction =
@@ -52,6 +56,7 @@ const initialRawEditorState: RawEditorState = {
   jsonText: "",
   parseError: null,
   submitError: null,
+  sealing: [],
 };
 
 function rawEditorReducer(
@@ -83,6 +88,7 @@ export function ServiceVariablesRawEditor({
   onApply,
   variables,
   valueTargets = EMPTY_REFERENCE_TARGETS,
+  sealing = "off",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -90,6 +96,8 @@ export function ServiceVariablesRawEditor({
   onApply: (diff: RawEditorDiff) => Persistable;
   variables: VariableRecord[];
   valueTargets?: ReferenceTarget[];
+  /** Whether the Organization seals (`useSealing`'s cached state): ready offers Sealed for new keys. Display only. */
+  sealing?: "off" | "no_server" | "ready";
 }) {
   const sealedVariables = variables.filter(
     (variable) => variable.value.type === "sealed",
@@ -106,7 +114,7 @@ export function ServiceVariablesRawEditor({
   const prevOpenRef = useRef(open);
   const isEditorInitializedRef = useRef(false);
   /** What was typed when the Store refused it, with its reason: the editor reopens on it. */
-  const refusedRef = useRef<Pick<RawEditorState, "mode" | "envText" | "jsonText" | "submitError"> | null>(null);
+  const refusedRef = useRef<Pick<RawEditorState, "mode" | "envText" | "jsonText" | "submitError" | "sealing"> | null>(null);
 
   function resetEditorFromVariables() {
     dispatchEditor({
@@ -205,7 +213,10 @@ export function ServiceVariablesRawEditor({
       return;
     }
 
-    const diff = diffVariables(entries, editableVariables);
+    if (entries.some((entry) => editor.sealing.includes(entry.key) && sealedValueProblem(entry.key, entry.value) !== null)) return;
+    // A ticked line goes Sealed whatever the cached state says, and whether another tab made its key meanwhile: the
+    // write's fresh read seals it, sends it legacy, or refuses.
+    const diff = diffVariables(entries, editableVariables, new Set(editor.sealing));
     if (
       diff.creates.length === 0 &&
       diff.updates.length === 0 &&
@@ -215,7 +226,7 @@ export function ServiceVariablesRawEditor({
       return;
     }
 
-    const typed = { mode: editor.mode, envText: editor.envText, jsonText: editor.jsonText };
+    const typed = { mode: editor.mode, envText: editor.envText, jsonText: editor.jsonText, sealing: editor.sealing };
     onApply(diff).isPersisted.promise.catch((error) => {
       refusedRef.current = { ...typed, submitError: toErrorMessage(error, "The variables couldn’t be saved.") };
       onOpenChange(true);
@@ -233,6 +244,18 @@ export function ServiceVariablesRawEditor({
     onOpenChange(nextOpen);
   }
 
+  const ready = sealing === "ready";
+  // Ticks outlive a cached state that leaves ready, so they stay in view until untick or submit.
+  const offered = ready || editor.sealing.length > 0;
+  const parsed = offered ? parseForMode(editor.mode === "env" ? editor.envText : editor.jsonText, editor.mode) : null;
+  const taken = new Set(variables.map((variable) => variable.key));
+  const newKeys = parsed && Result.isSuccess(parsed)
+    ? [...new Set(parsed.success.flatMap((entry) => taken.has(entry.key) && !editor.sealing.includes(entry.key) ? [] : [entry.key]))] : [];
+  const problems = new Map(parsed && Result.isSuccess(parsed) ? parsed.success.flatMap((entry) => {
+    const problem = editor.sealing.includes(entry.key) ? sealedValueProblem(entry.key, entry.value) : null;
+    return problem === null ? [] : [[entry.key, problem] as const];
+  }) : []);
+
   const duplicateKeys =
     editor.mode === "env"
       ? findDuplicateEnvKeys(editor.envText)
@@ -249,7 +272,7 @@ export function ServiceVariablesRawEditor({
         </DialogHeader>
 
         <ServiceVariablesRawEditorAlerts
-          sealedCount={sealedCount}
+          sealedCount={offered ? 0 : sealedCount}
           parseError={editor.parseError}
           submitError={editor.submitError}
           duplicateKeys={duplicateKeys}
@@ -282,6 +305,19 @@ export function ServiceVariablesRawEditor({
             });
           }}
         />
+
+        {offered ? (
+          <ServiceVariablesRawEditorSealed
+            sealedKeys={sealedVariables.map((variable) => variable.key)}
+            newKeys={newKeys}
+            sealing={editor.sealing}
+            problems={problems}
+            onSealingChange={(key, sealed) => dispatchEditor({
+              type: "patch",
+              patch: { sealing: sealed ? [...editor.sealing, key] : editor.sealing.filter((one) => one !== key) },
+            })}
+          />
+        ) : null}
 
         <ServiceVariablesRawEditorFooter
           text={editor.mode === "env" ? editor.envText : editor.jsonText}

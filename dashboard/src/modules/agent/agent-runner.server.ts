@@ -11,6 +11,7 @@ import { type Called, type Command, inputSchema } from "#/modules/commands/comma
 import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
+import { agentSecretRefusal } from "#/modules/agent/agent-secrets";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { JsonObject } from "#/db/tables";
@@ -155,7 +156,11 @@ type Gated =
   | { denied: StoreRefusal }
   | { result: StoreResult<ConfigWritten>; nothingDestroyed: boolean };
 
-const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand, approvalId: string | null) {
+/** A gated Store write as `caller`: refused if it carries a secret, else redeemed or asked for, then sent to the Store. */
+export const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand, approvalId: string | null) {
+  // Before any approval is redeemed or asked for: no human approves a secret through an agent.
+  const secret = agentSecretRefusal(asked);
+  if (secret !== null) return { result: { ok: false, refusal: secret }, nothingDestroyed: false } satisfies Gated;
   const trusted = yield* redeemApproval(caller, approvalId, yield* redeeming(caller.organization.id, asked, approvalId));
   if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "save" : approvalCommand(asked) === "retry" ? "retry" : "deploy", trusted.refusal) } satisfies Gated;
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
@@ -208,8 +213,10 @@ const placeOf = (caller: AgentCaller, page: PagePlace, tool: string, input: Json
 const answered = (result: StoreResult<unknown>): Answer =>
   result.ok ? { value: projectJsonValue(result.value) ?? null } : { error: result.refusal };
 
-const storeAnswer = <C extends StoreCall>(caller: AgentCaller, call: C, source?: StoreSource) =>
-  callStore(caller.organization.id, caller.userId, call, source, { approval: "not_required", permissions: callerPermissions(caller), environments: callerEnvironments(caller) }).pipe(Effect.map((result) => answered(shownTo(caller, call, result))));
+const storeAnswer = <C extends StoreCall>(caller: AgentCaller, call: C, source?: StoreSource) => {
+  const secret = source === AGENT && call.operation === "write" ? agentSecretRefusal(call.command) : null;
+  return secret !== null ? Effect.succeed(answered({ ok: false, refusal: secret })) : callStore(caller.organization.id, caller.userId, call, source, { approval: "not_required", permissions: callerPermissions(caller), environments: callerEnvironments(caller) }).pipe(Effect.map((result) => answered(shownTo(caller, call, result))));
+};
 
 const agentRead = (caller: AgentCaller) => (ask: Ask) =>
   ask.at === "store"

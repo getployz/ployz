@@ -4,14 +4,15 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
-import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import { sealedValueProblem, warmSealing } from "#/modules/variables/seal-value";
 import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
 import { parseDisplayToParts } from "#/modules/variables/variable-template";
 import { variableKeyError, type VariableRecord } from "#/modules/variables/variables";
-import type { VariableAddInput } from "#/components/variables/variables-panel";
+import type { SealedControls, VariableAddInput } from "#/components/variables/variables-panel";
 
 type VariableAddFormDefaults = {
   defaultExported: boolean;
@@ -80,7 +81,7 @@ export function VariableAddForm({
   variables,
   onCreateVariable,
   onCancel,
-  allowSealOnCreate,
+  sealing,
   defaultExported,
   supportsExport,
   valueTargets,
@@ -93,7 +94,8 @@ export function VariableAddForm({
   onCancel: () => void;
   /** What was typed before a refusal. */
   initial?: VariableAddInput;
-  allowSealOnCreate: boolean;
+  /** Offers Sealed; none: the form adds plain variables only. */
+  sealing?: SealedControls;
   defaultExported: boolean;
   supportsExport: boolean;
   valueTargets?: ReferenceTarget[];
@@ -114,14 +116,18 @@ export function VariableAddForm({
 
   const typedKey = state.key.trim().toUpperCase();
   const keyError = typedKey ? variableKeyError(typedKey) : null;
-  const valueError = state.sealed
-    ? state.value.includes("${{") ? "A sealed value is stored as-is. Untick Sealed to use a reference." : null
-    : referenceError(state.value, serviceNames);
+  // A secret sealed here needs a value: Add waits for one rather than saying so before anything is typed.
+  const awaitsSecret = sealing?.state === "ready" && state.sealed && state.value === "";
+  const valueError = !state.sealed
+    ? referenceError(state.value, serviceNames)
+    : sealing?.state === "ready" && !awaitsSecret
+      ? sealedValueProblem(typedKey, state.value)
+      : state.value.includes("${{") ? "A sealed value is stored as-is. Untick Sealed to use a reference." : null;
 
   function handleAdd() {
     const key = typedKey;
     // Invalid input stays in the form, as typed, with the reason under it.
-    if (!key || keyError || valueError) return;
+    if (!key || keyError || valueError || awaitsSecret) return;
 
     const existing = variables.find((variable) => variable.key === key);
     if (existing) {
@@ -198,23 +204,31 @@ export function VariableAddForm({
           )}
           {valueError ? <FieldError>{valueError}</FieldError> : null}
         </Field>
-        {allowSealOnCreate || supportsExport ? (
+        {sealing || supportsExport ? (
           <FieldGroup>
-            {allowSealOnCreate ? (
-              <Field orientation="horizontal">
+            {sealing ? (
+              <Field orientation="horizontal" data-disabled={sealing.state === "no_server" && !state.sealed ? true : undefined}>
                 <Checkbox
                   id="new-variable-sealed"
                   checked={state.sealed}
-                  onCheckedChange={(checked) =>
+                  // A Sealed draft back from a refusal can still be unticked.
+                  disabled={sealing.state === "no_server" && !state.sealed}
+                  onCheckedChange={(checked) => {
+                    warmSealing();
                     dispatch({
                       type: "sealedChanged",
                       checked: Boolean(checked),
-                    })
-                  }
+                    });
+                  }}
                 />
-                <FieldLabel htmlFor="new-variable-sealed">
-                  Sealed
-                </FieldLabel>
+                <FieldContent>
+                  <FieldLabel htmlFor="new-variable-sealed">
+                    Sealed
+                  </FieldLabel>
+                  {sealing.state === "no_server" ? (
+                    <FieldDescription>Needs a server. {sealing.addServer}</FieldDescription>
+                  ) : null}
+                </FieldContent>
               </Field>
             ) : null}
             {supportsExport ? (
@@ -241,7 +255,7 @@ export function VariableAddForm({
         <div className="flex items-center gap-2">
           <Button
             type="submit"
-            disabled={!typedKey || keyError !== null || valueError !== null}
+            disabled={!typedKey || keyError !== null || valueError !== null || awaitsSecret}
           >
             <CheckIcon data-icon="inline-start" />
             Add

@@ -1,18 +1,24 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { RowId, SyncRow, SyncView } from "@ployz/sdk";
+import type { RowId, ServiceListing, SyncRow, SyncView } from "@ployz/sdk";
+import { CipherSuite } from "@hpke/core";
+import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 import { Suspense } from "react";
 import { toast } from "sonner";
 import { afterEach, assert, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
+import * as sealingFunctions from "#/modules/sealing/sealing.functions";
 import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import { storeViewPrefix, syncQuery } from "#/modules/config-store/store-view.queries";
+import { asTestDouble } from "#/lib/test-double";
+import { anyOrderShows } from "#/test/store-write-body";
 import { SyncDialog } from "./SyncDialog";
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "off" } });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
@@ -187,4 +193,90 @@ it("drops a flip once its change moves under the review, and says so", async () 
   expect(sync.getByRole("checkbox", { name: /^LOG_LEVEL/u }).getAttribute("aria-checked")).toBe("true");
   expect(sync.getByRole("checkbox", { name: /^MODE/u }).getAttribute("aria-checked")).toBe("false");
   expect(sync.getByRole("button", { name: "Sync 4 changes" })).toBeTruthy();
+});
+
+/** What a Sync with typed secrets, and its retry, handed the server function at 686f82827. */
+const TRUNK_SYNC = [
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"},\"picks\":[\"a:variables.LOG_LEVEL\",\"a:variables.TOKEN\",\"w:node\",\"w:variables.MODE\",\"w:variables.KEY\"],\"values\":{\"a:variables.TOKEN\":\"token-value\",\"w:variables.KEY\":\"key-value\"},\"version\":\"4:abc\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"close_after\":true},\"shows\":[{\"query\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"}},{\"query\":\"environments\",\"project\":\"shop\"}]}",
+  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"},\"picks\":[\"a:variables.LOG_LEVEL\",\"a:variables.TOKEN\",\"w:node\",\"w:variables.MODE\",\"w:variables.KEY\"],\"values\":{\"a:variables.TOKEN\":\"token-value\",\"w:variables.KEY\":\"key-value\"},\"version\":\"4:abc\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"close_after\":true},\"shows\":[{\"query\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"}},{\"query\":\"environments\",\"project\":\"shop\"}]}",
+];
+
+it("sends trunk's exact Sync, and its retry, while sealing is off, sealing nothing", async () => {
+  let n = 0;
+  vi.spyOn(crypto, "randomUUID").mockImplementation(() => `00000000-0000-4000-8000-00000000000${++n}`);
+  const hpke = vi.spyOn(CipherSuite.prototype, "seal");
+  const { write } = open();
+  write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "stale" } } as never);
+  const sync = await dialog();
+  fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "token-value" } });
+  fireEvent.change(sync.getByLabelText("Set production's value of KEY"), { target: { value: "key-value" } });
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await sync.findByText("These changed since you opened them. Here they are now.");
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+  expect(write.mock.calls.map(([call]) => anyOrderShows(JSON.stringify(call.data)))).toEqual(TRUNK_SYNC.map(anyOrderShows));
+  expect(hpke).not.toHaveBeenCalled();
+});
+
+const PRODUCTION_ID = "0e7c2f3a-5b1d-4c8e-9f60-1a2b3c4d5e6f";
+const API_ID = "7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6";
+
+it("seals a typed value for the Service it lands in, afresh after a refusal and the same after a lost response, and holds a new Service's value", async () => {
+  const kem = new DhkemX25519HkdfSha256();
+  const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
+  const publicKey = btoa(String.fromCharCode(...raw));
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey } });
+  const { write } = open();
+  // production has api, a different id there than in fix-api; worker is new to it.
+  const services = [asTestDouble<ServiceListing>()({ row: "a:node", id: API_ID, name: "api", change: null })];
+  vi.mocked(functions.readStoreViewServerFn).mockImplementation(async ({ data }) => (data.query.query === "services"
+    ? { ok: true, value: { view: "services", environment: { ...summary("production"), id: PRODUCTION_ID }, services } }
+    : { ok: true, value: { view: "sync", ...syncView() } }) as never);
+  write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "stale" } } as never);
+  write.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  const sync = await dialog();
+  await sync.findByText("Set this value after syncing.");
+  expect(sync.queryByLabelText("Set production's value of KEY")).toBeNull();
+  fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "token-value" } });
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await sync.findByText("These changed since you opened them. Here they are now.");
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(sync.getByRole("button", { name: "Sync 5 changes" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
+
+  const [first, afterRefusal, afterLoss] = write.mock.calls.map(([call]) => call.data.command);
+  expect(JSON.stringify(write.mock.calls)).not.toContain("token-value");
+  const values = first?.command === "sync" && first.values ? first.values : assert.fail("not a Sync");
+  expect(Object.keys(values)).toEqual(["a:variables.TOKEN"]);
+  expect(values["a:variables.TOKEN"]).toMatchObject({ sealedFor: PRODUCTION_ID, value: { scope: { service: API_ID }, key: "TOKEN" } });
+  expect(afterRefusal).toMatchObject({ ...first, values: { "a:variables.TOKEN": { sealedFor: PRODUCTION_ID, value: { scope: { service: API_ID }, key: "TOKEN" } } } });
+  expect(afterRefusal).not.toEqual(first);
+  expect(afterLoss).toEqual(afterRefusal);
+});
+
+it("reads sealing afresh on a retry after a lost response, and seals what it sent plain once sealing is on, under the same Sync", async () => {
+  const { write } = open();
+  const services = [asTestDouble<ServiceListing>()({ row: "a:node", id: API_ID, name: "api", change: null })];
+  vi.mocked(functions.readStoreViewServerFn).mockImplementation(async ({ data }) => (data.query.query === "services"
+    ? { ok: true, value: { view: "services", environment: { ...summary("production"), id: PRODUCTION_ID }, services } }
+    : { ok: true, value: { view: "sync", ...syncView() } }) as never);
+  write.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  const sync = await dialog();
+  fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "token-value" } });
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(sync.getByRole("button", { name: "Sync 5 changes" }).hasAttribute("disabled")).toBe(false));
+  const kem = new DhkemX25519HkdfSha256();
+  const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
+  vi.mocked(sealingFunctions.readSealingFn).mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)) } });
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+
+  const [lost, retry] = write.mock.calls.map(([call]) => call.data.command);
+  expect(JSON.stringify(lost)).toContain("token-value");
+  expect(JSON.stringify(retry)).not.toContain("token-value");
+  expect(retry).toMatchObject({ id: lost?.command === "sync" ? lost.id : assert.fail("not a Sync"),
+    values: { "a:variables.TOKEN": { sealedFor: PRODUCTION_ID, value: { scope: { service: API_ID }, key: "TOKEN" } } } });
 });

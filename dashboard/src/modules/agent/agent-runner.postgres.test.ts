@@ -99,6 +99,18 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
     ],
   },
   {
+    name: "a value sealed in a browser never passes through an agent, and stages nothing",
+    steps: [
+      { tool: "service_add", input: { name: "web", image: "nginx" }, hears: { ok: true } },
+      {
+        tool: "service_update",
+        input: { service: "web", set: { env: { TOKEN: { secret: { sealedFor: "00000000-0000-4000-8000-00000000a704", value: { sealed: "AAAA", scope: { service: "00000000-0000-4000-8000-00000000a705" }, key: "TOKEN" } } } } } },
+        hears: { ok: false, refusal: { code: "invalid_argument", message: "A secret's value never passes through an agent. The member sets it in the dashboard under Variables." } },
+      },
+      { tool: "service_inspect", input: { service: "web" }, hears: { ok: true, value: { settings: expect.not.objectContaining({ env: expect.anything() }) } } },
+    ],
+  },
+  {
     name: "a write with no Project to land in is refused",
     seed: false,
     steps: [{ tool: "service_add", input: { name: "cache", image: "redis:7" }, hears: refused("not_found") }],

@@ -45,5 +45,6 @@ export const dataSources = {
   "modules/marketing/marketing-site.queries.ts": { kind: "remote", freshness: "never stale: MARKETING_ORIGIN is fixed for the life of the server" },
   "modules/web-analytics/ui/analytics.queries.ts": { kind: "remote", freshness: "one Environment's analytics for the shown range and page filter, prefetched by the Analytics page loader; stale after a minute because pageviews land without a Cloud write to invalidate on; a goal or turn-on write shows at once and refetches" },
   "modules/config-store/retire-old.queries.ts": { kind: "remote", freshness: "polled every 5 seconds while the cleanup waits or may still arrive" },
+  "modules/sealing/sealing.queries.ts": { kind: "remote", freshness: "whether the Organization seals in the browser, streamed by the Environment loader and cached a minute for display only; every Sealed write reads it afresh before it seals" },
   "modules/config-store/store-pr-grants.queries.ts": { kind: "remote", freshness: "installation permissions cached a minute: an owner approves them in GitHub, not here" },
 } satisfies Record<string, { kind: DataSourceKind; freshness: string }>;
