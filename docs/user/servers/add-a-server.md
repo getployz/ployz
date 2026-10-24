@@ -254,8 +254,8 @@ When Cloud already has an enrollment ready for the server, as Enroll on arrival 
 install ends with `Cloud is ready to enroll this server. The check-in loop runs it.` instead. On a
 server that already joined with that token, it ends `Already joined`. On a server that can't join
 yet, it ends with a `Blocked.` line for each reason `ployz status` lists, such as `Blocked. Already
-in another cluster. Remove it there first: ployz server rm web-1`. An earlier failed Docker
-install is not one of them, since the install starts Docker's install again.
+in another cluster. Remove it there first: ployz server rm web-1`. When the install starts
+Docker's install again, an earlier failed Docker install is not one of them.
 
 - **Without ZFS.** Put `PLOYZ_SKIP_ZFS=1` after `sudo`, as
   `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- VERSION --enroll`. It does what

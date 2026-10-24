@@ -2106,39 +2106,98 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
     assert_eq!(fs::read_to_string(&paths.prepare_state).unwrap(), state);
 }
 
+fn blocker_codes(paths: &Paths) -> Vec<String> {
+    LocalCheckin::read(&paths.status())
+        .unwrap()
+        .unwrap()
+        .blockers
+        .into_iter()
+        .map(|blocker| blocker.code)
+        .collect()
+}
+
+fn docker_failed_at(paths: &Paths, finished_at: &str) {
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        format!(
+            r#"{{"docker":{{"state":"failed","message":"Docker 29.1.3 is too old.","finished_at":"{finished_at}"}},"zfs":{{"state":"off"}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn an_install_that_retries_a_failed_docker_install_drops_that_failure_from_status() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
-    let too_old = "Docker 29.1.3 is too old: Ployz needs Docker 29.2 or newer.";
-    fs::write(
-        &paths.prepare_state,
-        format!(
-            r#"{{"docker":{{"state":"failed","message":"{too_old}","finished_at":"2026-10-16T00:00:00Z"}},"zfs":{{"state":"off"}}}}"#
-        ),
-    )
-    .unwrap();
+    docker_failed_at(&paths, "2026-10-16T00:00:00Z");
     let (url, _server) = cloud("200 OK", WAIT).await;
     let host = FakeHost::default();
     install_pass(&host, &mut client(&url), &key(), &paths, Utc::now())
         .await
         .record(&paths);
-    let codes = |status: &LocalCheckin| {
-        status
-            .blockers
-            .iter()
-            .map(|blocker| blocker.code.clone())
-            .collect::<Vec<_>>()
-    };
-    let seen = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(codes(&seen), ["kernel_too_old", "docker_install_failed"]);
+    assert_eq!(
+        blocker_codes(&paths),
+        ["kernel_too_old", "docker_install_failed"]
+    );
 
     restart_preparation(&host, &paths, Utc::now()).await;
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
-    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    // The run just started installs Docker again; the host's own blocker still stands.
-    assert_eq!(codes(&status), ["kernel_too_old"]);
+    // The host's own blocker still stands.
+    assert_eq!(blocker_codes(&paths), ["kernel_too_old"]);
+
+    // The loop's next pass can run before the new preparation rewrites the state file.
+    let (url, _server) = cloud("200 OK", WAIT).await;
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    assert_eq!(blocker_codes(&paths), ["kernel_too_old"]);
+}
+
+#[tokio::test]
+async fn a_docker_install_that_failed_after_its_preparation_started_still_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let started = at("2026-10-16T00:00:00Z");
+    docker_failed_at(&paths, "2026-10-16T00:05:00Z");
+    record(
+        &LocalCheckin {
+            token_fingerprint: None,
+            answer: Seen::Wait,
+            reason: None,
+            message: None,
+            at: started,
+            prep: None,
+            blockers: Vec::new(),
+            prepare_retries: 0,
+            prepare_started: Some(started),
+            refused: None,
+            attempt: None,
+            no_cluster: false,
+        },
+        &paths,
+    );
+    let host = FakeHost::default();
+    host.preparing.store(true, Ordering::SeqCst);
+    let (url, _server) = cloud("200 OK", WAIT).await;
+    pass(
+        &host,
+        &mut client(&url),
+        &key(),
+        &paths,
+        started + TimeDelta::minutes(6),
+    )
+    .await;
+    assert_eq!(
+        blocker_codes(&paths),
+        ["kernel_too_old", "docker_install_failed"]
+    );
+    // A preparation that is already running is not restarted, so its failure stands.
+    restart_preparation(&host, &paths, Utc::now()).await;
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        blocker_codes(&paths),
+        ["kernel_too_old", "docker_install_failed"]
+    );
 }
 
 #[tokio::test]
