@@ -27,7 +27,8 @@ pub(super) struct Sealed {
 }
 
 /// Keep the Sealed values `service` reads in private upload material and shape
-/// them for `recipe`.
+/// them for `recipe`. A Dockerfile is checked once captured, by
+/// [`refuse_declared_args`].
 ///
 /// # Errors
 /// Fails without the Deploy's Environment to seal for, when the private file
@@ -64,8 +65,7 @@ pub(super) fn capture(
                 .map(|(name, value)| (name.clone(), fingerprint(value)))
                 .collect();
         }
-        Recipe::Dockerfile(dockerfile) => {
-            refuse_declared_args(dockerfile, values.keys())?;
+        Recipe::Dockerfile(_) => {
             sealed
                 .args
                 .insert(SEALED_HASH_ARG.into(), sealed_hash(&values));
@@ -84,14 +84,19 @@ pub(super) fn capture(
 
 /// A Sealed value a Dockerfile declares as `ARG` would reach BuildKit as a
 /// build arg, which records it in the image. Only a secret mount may read it.
-fn refuse_declared_args<'name>(
-    dockerfile: &Path,
-    mut sealed: impl Iterator<Item = &'name String>,
-) -> Result<(), Error> {
+/// `dockerfile` is the captured copy, the bytes BuildKit reads.
+///
+/// # Errors
+/// Fails when the captured Dockerfile cannot be read or declares one of the
+/// `sealed` names as `ARG`.
+pub(super) fn refuse_declared_args(dockerfile: &Path, sealed: &[String]) -> Result<(), Error> {
+    if sealed.is_empty() {
+        return Ok(());
+    }
     let contents = std::fs::read_to_string(dockerfile)
-        .map_err(|error| Error::Io(format!("read Dockerfile: {error}")))?;
+        .map_err(|error| Error::Io(format!("read captured Dockerfile: {error}")))?;
     let declared = DockerfileFacts::parse(&contents).args;
-    match sealed.find(|name| declared.contains(*name)) {
+    match sealed.iter().find(|name| declared.contains(*name)) {
         Some(name) => Err(Error::Sealed(format!(
             "{name} is sealed. Read it with RUN --mount=type=secret,id={name},env={name}."
         ))),
@@ -398,6 +403,39 @@ mod tests {
         for dockerfile in [MOUNTING_DOCKERFILE, "FROM scratch\nARG PLAIN\n"] {
             capture_one(&intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
         }
+    }
+
+    #[test]
+    fn the_arg_check_reads_the_captured_dockerfile_after_the_source_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let (intent, _) = sealed_intent(7);
+        let service = intent.target.first().unwrap();
+        for (captured, later, refused) in [
+            ("FROM scratch\nARG NPM_TOKEN\n", MOUNTING_DOCKERFILE, true),
+            (MOUNTING_DOCKERFILE, "FROM scratch\nARG NPM_TOKEN\n", false),
+        ] {
+            let spec = dockerfile_spec(root.path(), MOUNTING_DOCKERFILE);
+            let Recipe::Dockerfile(source) = &spec.recipe else {
+                unreachable!()
+            };
+            let mut inputs = BuildInputs::new().unwrap();
+            let sealed = capture(service, &spec.recipe, &inputs).unwrap();
+            fs::write(source, captured).unwrap();
+            let file = inputs.dockerfile(source).unwrap();
+            fs::write(source, later).unwrap();
+            assert_eq!(refuse_declared_args(&file, &sealed.names).is_err(), refused);
+        }
+    }
+
+    #[test]
+    fn only_a_sealed_build_needs_to_read_the_captured_dockerfile() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("missing");
+        refuse_declared_args(&missing, &[]).unwrap();
+        assert!(matches!(
+            refuse_declared_args(&missing, &["NPM_TOKEN".into()]),
+            Err(Error::Io(_))
+        ));
     }
 
     #[test]
