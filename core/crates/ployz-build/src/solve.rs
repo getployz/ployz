@@ -55,7 +55,7 @@ struct StreamKey {
 
 /// Splits Buildx output into lines and turns each solve status into progress.
 /// Lines that are not solve statuses (warnings, plugin errors) stay `Output`.
-/// Sealed Builds hide unreadable JSON objects and oversized lines.
+/// Sealed Builds hide unreadable JSON fragments and oversized lines.
 /// Step output is emitted in whole lines: BuildKit splits log records at
 /// arbitrary byte offsets, even inside a multibyte character.
 #[derive(Default)]
@@ -128,7 +128,11 @@ impl SolveParser {
             return;
         }
         let Ok(status) = serde_json::from_slice::<SolveStatus>(line) else {
-            if self.sealed && line.trim_ascii_start().starts_with(b"{") {
+            if self.sealed
+                && line
+                    .iter()
+                    .any(|byte| matches!(byte, b'{' | b'}' | b'[' | b']' | b'"'))
+            {
                 Self::hidden_line(progress);
             } else {
                 progress(Progress::Output(line.to_vec()));
@@ -395,6 +399,36 @@ mod tests {
                         };
                         assert_eq!(output(&events), expected);
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unreadable_status_fragments_are_hidden_only_for_sealed_builds() {
+        for ending in ["", "\n"] {
+            for (fragment, hidden) in [
+                (r#"b3BlbmVkLXRva2VuLTAxMjM0NTY3ODk=","stream":1}]}"#, true),
+                (r#"stray fragment {"logs":[{"data":"private""#, true),
+                ("fragment {", true),
+                ("fragment }", true),
+                ("fragment [", true),
+                ("fragment ]", true),
+                ("fragment \"", true),
+                ("WARNING: plain warning", false),
+            ] {
+                let line = format!("{fragment}{ending}");
+                for sealed in [false, true] {
+                    let events = collect(|parser, progress| {
+                        parser.sealed = sealed;
+                        parser.feed(line.as_bytes(), progress);
+                    });
+                    let expected = if sealed && hidden {
+                        "[build progress line hidden]\n"
+                    } else {
+                        &line
+                    };
+                    assert_eq!(output(&events), expected.as_bytes());
                 }
             }
         }
