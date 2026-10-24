@@ -341,18 +341,23 @@ impl CompletedUpload {
     ) -> Result<crate::RetainedImages, BuildError> {
         let mut upload = self.0;
         // Declared after `upload` so the files go before the root does.
-        let _opened = crate::sealed::OpenedFiles::write(&upload.root, opened)?;
+        let mut opened_files = crate::sealed::OpenedFiles::write(&upload.root, opened)?;
         let railpack = crate::received_recipe::validate_capture(
             &upload.root,
             definition,
             crate::received_recipe::SealedFiles::Opened,
         )
         .map_err(|error| BuildError::Request(error.to_string()))?;
+        let sealed_override = opened_files.args(&upload.root, definition, opened)?;
         for (path, mode) in upload.directories.iter().rev() {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))
                 .map_err(|error| BuildError::Request(io_error(error).to_string()))?;
         }
-        let environment = environment(&upload.root);
+        let mut environment = environment(&upload.root);
+        if sealed_override.is_some() {
+            // Buildx provenance metadata records build argument values.
+            environment.insert("BUILDX_METADATA_PROVENANCE".into(), "disabled".into());
+        }
         let retention = crate::ImageRetention::new(
             definition.retained_tags.clone(),
             docker,
@@ -363,6 +368,7 @@ impl CompletedUpload {
                 image_contexts: &definition.image_contexts,
                 railpack: &railpack,
                 compose_file: Path::new("compose.yaml"),
+                sealed_override: sealed_override.as_deref(),
                 working_dir: &upload.root,
                 environment: &environment,
                 docker,

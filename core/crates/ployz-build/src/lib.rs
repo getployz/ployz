@@ -108,6 +108,8 @@ pub struct Request<'a> {
     pub image_contexts: &'a BTreeMap<String, ImageContext>,
     /// Captured Compose file describing every target of this Build.
     pub compose_file: &'a Path,
+    /// Private Server-only Compose override holding opened Sealed arguments.
+    pub sealed_override: Option<&'a Path>,
     /// Private directory the build runs in, so no stray file can join it.
     pub working_dir: &'a Path,
     /// Values captured for this command. Later shell state is never consulted.
@@ -600,7 +602,7 @@ fn bake_arguments(
         "--file".to_owned(),
         request.compose_file.to_string_lossy().into_owned(),
     ];
-    if let Some(overrides) = overrides {
+    for overrides in request.sealed_override.into_iter().chain(overrides) {
         arguments.extend([
             "--file".to_owned(),
             overrides.to_string_lossy().into_owned(),

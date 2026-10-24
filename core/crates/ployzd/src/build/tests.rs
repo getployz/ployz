@@ -155,7 +155,11 @@ impl Fixture {
         fs::create_dir_all(&project_root).unwrap();
         fs::write(
             project_root.join("Dockerfile"),
-            "FROM scratch\nCOPY payload /payload\n",
+            if sealed.is_some() {
+                "FROM scratch\nARG NPM_TOKEN\nCOPY payload /payload\n"
+            } else {
+                "FROM scratch\nCOPY payload /payload\n"
+            },
         )
         .unwrap();
         fs::write(project_root.join("payload"), "captured-before-edit").unwrap();
@@ -630,12 +634,16 @@ case "$1 $2" in
   'buildx ls') printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     : > "$root/executed"
+    printf '%s\n' "$@" > "$root/bake-args"
+    printf '%s' "$BUILDX_METADATA_PROVENANCE" > "$root/metadata-provenance"
     while [ -f "$root/hold-build" ]; do sleep 0.01; done
     find source -type f > "$root/source-list"
     find source -name payload -exec cp '{{}}' "$root/received-payload" \;
     if [ -f private/sealed/NPM_TOKEN ]; then
       stat -c '%a' private/sealed/NPM_TOKEN > "$root/seen-mode"
       cp private/sealed/NPM_TOKEN "$root/seen-secret"
+      python3 -c 'import json; print(json.load(open("private/sealed/args.compose.yaml"))["services"]["api"]["build"]["args"]["NPM_TOKEN"], end="")' > "$root/seen-arg"
+      stat -c '%a' private/sealed/args.compose.yaml > "$root/seen-arg-mode"
       printf 'token is %s here\n' "$(cat private/sealed/NPM_TOKEN)"
     fi
     if [ -f "$root/slow" ]; then printf 'building\n'; exec sleep 30; fi
@@ -1066,6 +1074,23 @@ async fn a_sealed_value_opens_into_a_private_file_and_never_into_the_output() {
         .unwrap();
     assert_eq!(built.len(), 1);
     assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-arg")).unwrap(),
+        OPENED_TOKEN
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-arg-mode"))
+            .unwrap()
+            .trim(),
+        "600"
+    );
+    let args = fs::read_to_string(fixture.root.join("bake-args")).unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("metadata-provenance")).unwrap(),
+        "disabled"
+    );
+    assert!(args.contains("args.compose.yaml"));
+    assert!(!args.contains(OPENED_TOKEN));
+    assert_eq!(
         fs::read_to_string(fixture.root.join("seen-secret")).unwrap(),
         OPENED_TOKEN
     );
@@ -1083,6 +1108,48 @@ async fn a_sealed_value_opens_into_a_private_file_and_never_into_the_output() {
     assert!(!output.contains(OPENED_TOKEN), "{output}");
     let mut leftovers = Vec::new();
     files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
+    files_named(&fixture.root, "args.compose.yaml", &mut leftovers);
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[tokio::test]
+async fn a_failed_sealed_arg_build_removes_its_private_override() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    fs::write(fixture.root.join("fail-after-output"), "").unwrap();
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    let result = failure(
+        capture
+            .execute_remote_images(
+                &client,
+                fixture.machine.id,
+                None,
+                tokio_util::sync::CancellationToken::new(),
+                |_| {},
+            )
+            .await,
+    );
+    assert!(matches!(
+        result,
+        ployz::build::RemoteBuildFailure::Failed {
+            stage: Stage::Building,
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-arg")).unwrap(),
+        OPENED_TOKEN
+    );
+    let mut leftovers = Vec::new();
+    files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
+    files_named(&fixture.root, "args.compose.yaml", &mut leftovers);
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
@@ -1146,6 +1213,7 @@ async fn a_cancelled_sealed_build_leaves_no_opened_file_even_in_a_retained_root(
         }
         let mut leftovers = Vec::new();
         files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
+        files_named(&fixture.root, "args.compose.yaml", &mut leftovers);
         assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 }

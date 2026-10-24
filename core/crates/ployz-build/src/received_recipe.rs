@@ -503,6 +503,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn null_or_uncaptured_args_are_refused() {
+        let root = std::env::temp_dir().join(format!("ployz-null-arg-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("private/docker")).unwrap();
+        fs::create_dir(root.join("source")).unwrap();
+        fs::write(root.join("private/docker/config.json"), "{}").unwrap();
+        let definition = Definition {
+            targets: vec![crate::Target {
+                name: "api".into(),
+                platforms: Vec::new(),
+            }],
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
+            output: crate::Output::Load,
+            no_cache: false,
+            pull: false,
+        };
+        for (arg, refusal) in [
+            ("null", "Build arguments must have captured values"),
+            (
+                "'${HOST_TOKEN}'",
+                "Build recipe contains uncaptured interpolation",
+            ),
+        ] {
+            fs::write(root.join("compose.yaml"), format!("services:\n  api:\n    build: {{context: source, args: {{NPM_TOKEN: {arg}}}}}\n")).unwrap();
+            for state in [SealedFiles::Pending, SealedFiles::Opened] {
+                assert_eq!(
+                    validate_capture(&root, &definition, state)
+                        .err()
+                        .unwrap()
+                        .to_string(),
+                    refusal
+                );
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn remote_railpack_metadata_cannot_escape_admitted_source_or_override_policy() {
         let root =
             std::env::temp_dir().join(format!("ployz-railpack-policy-{}", uuid::Uuid::new_v4()));

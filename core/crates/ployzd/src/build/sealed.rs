@@ -409,6 +409,7 @@ exit 0
             let request = Request {
                 image_contexts: &BTreeMap::new(),
                 compose_file: &root.path().join("compose.yaml"),
+                sealed_override: None,
                 working_dir: root.path(),
                 environment: &BTreeMap::new(),
                 docker: Some(&docker),

@@ -1,5 +1,5 @@
 //! Opened Sealed values live as 0600 files for one solve and reach BuildKit
-//! only as secret mounts. The recipe names the files; the Builder writes them.
+//! as secret mounts and declared Dockerfile ARGs. The Builder writes the files.
 
 use crate::BuildError;
 use std::{
@@ -34,6 +34,59 @@ pub(crate) struct OpenedFiles {
 }
 
 impl OpenedFiles {
+    pub(crate) fn args(
+        &mut self,
+        root: &Path,
+        definition: &crate::remote::Definition,
+        opened: &BTreeMap<String, String>,
+    ) -> Result<Option<PathBuf>, BuildError> {
+        let bytes = match fs::read(root.join("private/sealed-args.json")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error(error)),
+        };
+        let declared: BTreeMap<String, Vec<String>> = serde_json::from_slice(&bytes)
+            .map_err(|_| BuildError::Request("invalid Sealed Build argument names".into()))?;
+        let mut services = BTreeMap::new();
+        for (target, names) in declared {
+            if !definition
+                .targets
+                .iter()
+                .any(|admitted| admitted.name == target)
+            {
+                return Err(BuildError::Request(
+                    "Sealed arguments name an unadmitted target".into(),
+                ));
+            }
+            let mut args = BTreeMap::new();
+            for name in names {
+                let value = opened.get(&name).ok_or_else(|| {
+                    BuildError::Request("Sealed Build argument was not opened".into())
+                })?;
+                args.insert(name, value);
+            }
+            if !args.is_empty() {
+                services.insert(target, serde_json::json!({"build": {"args": args}}));
+            }
+        }
+        if services.is_empty() {
+            return Ok(None);
+        }
+        let path = root.join(DIRECTORY).join("args.compose.yaml");
+        let contents = serde_json::to_string(&serde_json::json!({"services": services}))
+            .expect("Compose arguments encode")
+            .replace('$', "$$");
+        self.files.push(path.clone());
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut file| io::Write::write_all(&mut file, contents.as_bytes()))
+            .map_err(io_error)?;
+        Ok(Some(path))
+    }
+
     pub(crate) fn write(
         root: &Path,
         opened: &BTreeMap<String, String>,
@@ -143,6 +196,77 @@ mod tests {
             fs::read_dir(root.path().join("private")).unwrap().count(),
             0
         );
+    }
+
+    fn definition() -> crate::remote::Definition {
+        crate::remote::Definition {
+            targets: vec![crate::Target {
+                name: "api".into(),
+                platforms: Vec::new(),
+            }],
+            retained_tags: Vec::new(),
+            image_contexts: BTreeMap::new(),
+            output: crate::Output::Load,
+            no_cache: false,
+            pull: false,
+        }
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "fixed Compose fixture")]
+    fn declared_args_get_private_values_and_share_secret_cleanup() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = Root::new();
+        fs::write(
+            root.path().join("private/sealed-args.json"),
+            r#"{"api":["NPM_TOKEN"]}"#,
+        )
+        .unwrap();
+        let value = "literal $TOKEN ${HOME} $$ \\\"\nsecond line";
+        let opened = BTreeMap::from([
+            ("NPM_TOKEN".into(), value.into()),
+            ("MOUNT_ONLY".into(), "mount-only-value".into()),
+        ]);
+        let mut guard = OpenedFiles::write(root.path(), &opened).unwrap();
+        let file = guard
+            .args(root.path(), &definition(), &opened)
+            .unwrap()
+            .unwrap();
+        let encoded = fs::read_to_string(&file).unwrap();
+        let compose: serde_json::Value = serde_json::from_str(&encoded.replace("$$", "$")).unwrap();
+        assert_eq!(
+            compose["services"]["api"]["build"]["args"]["NPM_TOKEN"],
+            value
+        );
+        assert!(!encoded.contains("mount-only-value"));
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join(sealed_file("MOUNT_ONLY"))).unwrap(),
+            "mount-only-value"
+        );
+        drop(guard);
+        assert!(!file.exists());
+        assert!(!root.path().join(DIRECTORY).exists());
+    }
+
+    #[test]
+    fn invalid_arg_material_fails_without_leaving_opened_files() {
+        let root = Root::new();
+        let opened = BTreeMap::from([("NPM_TOKEN".into(), "dummy".into())]);
+        for contents in [
+            "bad json",
+            r#"{"other":["NPM_TOKEN"]}"#,
+            r#"{"api":["MISSING"]}"#,
+        ] {
+            fs::write(root.path().join("private/sealed-args.json"), contents).unwrap();
+            let mut guard = OpenedFiles::write(root.path(), &opened).unwrap();
+            assert!(guard.args(root.path(), &definition(), &opened).is_err());
+            drop(guard);
+            assert!(!root.path().join(DIRECTORY).exists());
+        }
     }
 
     #[test]

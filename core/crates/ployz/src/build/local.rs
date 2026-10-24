@@ -119,6 +119,7 @@ impl CapturedBuild {
         let images = execute(&ployz_build::Request {
             image_contexts: &definition.image_contexts,
             compose_file: Path::new("compose.yaml"),
+            sealed_override: None,
             working_dir: root,
             environment: &environment,
             docker: None,
