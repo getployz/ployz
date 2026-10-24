@@ -968,6 +968,7 @@ mod tests {
         let keypair = ployz_core::Keypair::generate();
         std::thread::scope(|scope| {
             let reseal = scope.spawn(|| store.reseal(&environment(), &recipient(&keypair)));
+            // real-wait: the reseal blocks inside Postgres on the Save's row lock; nothing in-process signals that it is waiting.
             std::thread::sleep(std::time::Duration::from_millis(300));
             assert!(
                 !reseal.is_finished(),
