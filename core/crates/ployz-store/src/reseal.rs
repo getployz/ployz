@@ -4,8 +4,8 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    LegacyCiphertext, SavedEnvironmentIntent, SavedVariableValue, SealedCell, SealedSecret,
-    SecretCiphertext,
+    EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue,
+    SealedCell, SealedSecret, SecretCiphertext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -21,8 +21,8 @@ use crate::{EnvironmentId, OrganizationId, SealingRecipient, error};
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyCount {
-    /// In Working State and the Saved head of every Environment: what a reseal
-    /// converts.
+    /// In Working State, the Saved head, Applied State and Node Introductions of
+    /// every Environment: what a reseal converts.
     pub current: u32,
     /// In older Saved revisions, pending arrivals and merge values: kept as they
     /// are, and Not set should one of them ever apply.
@@ -40,8 +40,7 @@ pub struct Resealed {
     pub remaining: u32,
 }
 
-/// Organizations with a secret the Store sealed itself in some Working State or
-/// Saved head.
+/// Organizations with a secret the Store sealed itself where a reseal converts it.
 pub(crate) fn legacy_organizations(tx: &mut dyn Tx) -> Result<Vec<OrganizationId>, RpcError> {
     let mut organizations = Vec::new();
     for row in tx.query(
@@ -108,7 +107,7 @@ pub(crate) fn reseal_environments(
 }
 
 /// Each Environment of `organization` with how many secrets the Store sealed
-/// itself its Working State and Saved head hold.
+/// itself its Working State, Saved head, Applied State and Node Introductions hold.
 fn current_by_environment(
     tx: &mut dyn Tx,
     organization: &OrganizationId,
@@ -120,19 +119,56 @@ fn current_by_environment(
          FROM config_environment e WHERE e.organization_id = ?1 ORDER BY e.id",
         &[organization.as_str().into()],
     )? {
+        let environment = EnvironmentId::parse(row.text(0)?)?;
         let mut current = legacy_in(&row.intent(1, "Working State")?);
         if row.optional_text(2)?.is_some() {
             current += legacy_in(&row.intent(2, "Saved revision")?);
         }
-        environments.push((EnvironmentId::parse(row.text(0)?)?, current));
+        for (table, what) in SERVICE_NODES {
+            for (_, service) in service_nodes(tx, table, what, &environment)? {
+                current += legacy_in_service(&service);
+            }
+        }
+        environments.push((environment, current));
     }
     Ok(environments)
 }
 
+/// The tables beside Working State and the Saved head that hold a Service as a
+/// node document, with what one of their rows is.
+const SERVICE_NODES: [(&str, &str); 2] = [
+    ("config_applied", "Applied State"),
+    ("config_node_introduction", "Node Introduction"),
+];
+
+/// Each Service row of `table` in `environment`, by node ID.
+fn service_nodes(
+    tx: &mut dyn Tx,
+    table: &str,
+    what: &str,
+    environment: &EnvironmentId,
+) -> Result<Vec<(String, SavedServiceIntent)>, RpcError> {
+    tx.query(
+        &format!(
+            "SELECT node_id, node FROM {table} WHERE environment_id = ?1 AND node_type = ?2 ORDER BY node_id"
+        ),
+        &[
+            environment.as_str().into(),
+            crate::storage::name_of(EnvironmentNodeType::Service)
+                .as_str()
+                .into(),
+        ],
+    )?
+    .iter()
+    .map(|row| Ok((row.text(0)?.to_owned(), row.json(1, what)?)))
+    .collect()
+}
+
 /// Seal every secret of `environment` the Store sealed itself for `recipient`
-/// instead, in its Working State and Saved head. Values already sealed for the
-/// Cluster are left alone, so running it again changes nothing. A value `sealing`
-/// doesn't open, PORT, and a Service without an ID stay as they are and are counted.
+/// instead, in its Working State, Saved head, Applied State and Node Introductions.
+/// Values already sealed for the Cluster are left alone, so running it again
+/// changes nothing. A value `sealing` doesn't open, PORT, and a Service without an
+/// ID stay as they are and are counted.
 pub(crate) fn reseal(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -194,19 +230,39 @@ pub(crate) fn reseal(
             )?;
         }
     }
+    for (table, what) in SERVICE_NODES {
+        for (node, mut service) in service_nodes(tx, table, what, environment)? {
+            if resealing.service(&mut service)? {
+                tx.execute(
+                    &format!(
+                        "UPDATE {table} SET node = ?3 WHERE environment_id = ?1 AND node_id = ?2"
+                    ),
+                    &[
+                        environment.as_str().into(),
+                        node.as_str().into(),
+                        crate::scope::Node::Service(&service)
+                            .document()
+                            .as_str()
+                            .into(),
+                    ],
+                )?;
+            }
+        }
+    }
     Ok(resealing.tally)
 }
 
-/// One Environment's reseal across its Working State and Saved head.
+/// One Environment's reseal across its Working State, Saved head, Applied State
+/// and Node Introductions.
 struct Resealing<'a> {
     organization: &'a OrganizationId,
     environment: &'a EnvironmentId,
     recipient: &'a SealingRecipient,
     sealing: &'a SealingKey,
-    /// Each value sealed so far, by Service ID, key and the value it replaced: the
-    /// same value in Working State and the Saved head gets the same sealed value, so
-    /// Review shows nothing staged.
-    sealed: Vec<(String, String, LegacyCiphertext, SealedSecret)>,
+    /// Each value sealed so far, by Service ID, key and plaintext. Review read two
+    /// Legacy values with one plaintext as equal, so they get one sealed value and
+    /// Review still shows nothing staged.
+    sealed: Vec<(String, String, String, SealedSecret)>,
     tally: Resealed,
 }
 
@@ -215,63 +271,72 @@ impl Resealing<'_> {
     fn intent(&mut self, intent: &mut SavedEnvironmentIntent) -> Result<bool, RpcError> {
         let mut changed = false;
         for service in &mut intent.services {
-            let identity =
-                client_sealed::identity(self.organization, self.environment, &service.id);
-            for variable in &mut service.variables {
-                let SavedVariableValue::Secret {
-                    encrypted_value: Some(SecretCiphertext::Legacy(legacy)),
-                } = &variable.value
-                else {
-                    continue;
-                };
-                // Ployz reads PORT to route traffic, and a sealed value binds to its
-                // Service's UUID: neither can hold one.
-                let Some(identity) = identity.as_ref().filter(|_| variable.key != "PORT") else {
-                    self.tally.remaining += 1;
-                    continue;
-                };
-                let earlier = self.sealed.iter().find(|(id, key, was, _)| {
-                    *id == service.id && *key == variable.key && was == legacy
-                });
-                let sealed = match earlier {
-                    Some((.., sealed)) => sealed.clone(),
-                    None => {
-                        let Ok(plaintext) = self.sealing.open(legacy) else {
-                            self.tally.remaining += 1;
-                            continue;
-                        };
-                        let sealed = client_sealed::seal_to(
-                            self.recipient,
-                            identity,
-                            &variable.key,
-                            &plaintext,
-                        )?;
-                        self.sealed.push((
-                            service.id.clone(),
-                            variable.key.clone(),
-                            legacy.clone(),
-                            sealed.clone(),
-                        ));
-                        sealed
-                    }
-                };
-                variable.value_fingerprint = sealed.fingerprint;
-                variable.value = SavedVariableValue::Secret {
-                    encrypted_value: Some(sealed.value),
-                };
-                self.tally.resealed += 1;
-                changed = true;
-            }
+            changed |= self.service(service)?;
+        }
+        Ok(changed)
+    }
+
+    /// Reseal `service` in place; whether anything in it changed.
+    fn service(&mut self, service: &mut SavedServiceIntent) -> Result<bool, RpcError> {
+        let identity = client_sealed::identity(self.organization, self.environment, &service.id);
+        let mut changed = false;
+        for variable in &mut service.variables {
+            let SavedVariableValue::Secret {
+                encrypted_value: Some(SecretCiphertext::Legacy(legacy)),
+            } = &variable.value
+            else {
+                continue;
+            };
+            // Ployz reads PORT to route traffic, and a sealed value binds to its
+            // Service's UUID: neither can hold one.
+            let Some(identity) = identity.as_ref().filter(|_| variable.key != "PORT") else {
+                self.tally.remaining += 1;
+                continue;
+            };
+            let Ok(plaintext) = self.sealing.open(legacy) else {
+                self.tally.remaining += 1;
+                continue;
+            };
+            let earlier = self.sealed.iter().find(|(id, key, was, _)| {
+                *id == service.id && *key == variable.key && *was == plaintext
+            });
+            let sealed = match earlier {
+                Some((.., sealed)) => sealed.clone(),
+                None => {
+                    let sealed = client_sealed::seal_to(
+                        self.recipient,
+                        identity,
+                        &variable.key,
+                        &plaintext,
+                    )?;
+                    self.sealed.push((
+                        service.id.clone(),
+                        variable.key.clone(),
+                        plaintext,
+                        sealed.clone(),
+                    ));
+                    sealed
+                }
+            };
+            variable.value_fingerprint = sealed.fingerprint;
+            variable.value = SavedVariableValue::Secret {
+                encrypted_value: Some(sealed.value),
+            };
+            self.tally.resealed += 1;
+            changed = true;
         }
         Ok(changed)
     }
 }
 
 fn legacy_in(intent: &SavedEnvironmentIntent) -> u32 {
-    let count = intent
-        .services
+    intent.services.iter().map(legacy_in_service).sum()
+}
+
+fn legacy_in_service(service: &SavedServiceIntent) -> u32 {
+    let count = service
+        .variables
         .iter()
-        .flat_map(|service| &service.variables)
         .filter(|variable| {
             matches!(
                 &variable.value,
@@ -279,7 +344,7 @@ fn legacy_in(intent: &SavedEnvironmentIntent) -> u32 {
             )
         })
         .count();
-    u32::try_from(count).expect("an Environment holds fewer than u32::MAX variables")
+    u32::try_from(count).expect("a Service holds fewer than u32::MAX variables")
 }
 
 const fn is_legacy(value: &SecretCiphertext) -> bool {
@@ -402,6 +467,90 @@ mod tests {
             .unwrap();
     }
 
+    /// Plant Working State's `web`, changed by `change`, as Applied State.
+    fn plant_applied(store: &ConfigStore, change: impl FnOnce(&mut SavedServiceIntent)) {
+        let mut web = web(&working(store)).clone();
+        change(&mut web);
+        store
+            .storage
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO config_deployment \
+                     (id, organization_id, environment_id, number, status, saved_revision, services, \
+                      nodes, namespace, run, credentials, admitted, listed) \
+                     VALUES (?1, ?2, ?3, 1, 'applied', 1, '[]', '[]', 'shop', '{}', '[]', 0, 0)",
+                    &[
+                        uuid(4).as_str().into(),
+                        ORGANIZATION.into(),
+                        environment().as_str().into(),
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO config_applied \
+                     (environment_id, node_id, organization_id, deployment_id, node, node_type) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    &[
+                        environment().as_str().into(),
+                        web.id.as_str().into(),
+                        ORGANIZATION.into(),
+                        uuid(4).as_str().into(),
+                        crate::scope::Node::Service(&web).document().as_str().into(),
+                        crate::storage::name_of(EnvironmentNodeType::Service)
+                            .as_str()
+                            .into(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// Plant Working State's `web`, changed by `change`, as its Node Introduction.
+    fn plant_introduction(store: &ConfigStore, change: impl FnOnce(&mut SavedServiceIntent)) {
+        let mut web = web(&working(store)).clone();
+        change(&mut web);
+        store
+            .storage
+            .write(|tx| {
+                tx.execute(
+                    "UPDATE config_node_introduction SET node = ?3 \
+                     WHERE environment_id = ?1 AND node_id = ?2",
+                    &[
+                        environment().as_str().into(),
+                        web.id.as_str().into(),
+                        crate::scope::Node::Service(&web).document().as_str().into(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// The Service rows of `table`, as one document.
+    fn nodes(store: &ConfigStore, table: &str) -> SavedEnvironmentIntent {
+        let like = working(store);
+        store
+            .storage
+            .read(|tx| {
+                let rows = tx.query(
+                    &format!(
+                        "SELECT node, node_type FROM {table} WHERE environment_id = ?1 ORDER BY node_id"
+                    ),
+                    &[environment().as_str().into()],
+                )?;
+                crate::scope::nodes(&rows, &like, table)
+            })
+            .unwrap()
+    }
+
+    fn applied(store: &ConfigStore) -> SavedEnvironmentIntent {
+        nodes(store, "config_applied")
+    }
+
+    fn introduction(store: &ConfigStore) -> SavedEnvironmentIntent {
+        nodes(store, "config_node_introduction")
+    }
+
     fn working(store: &ConfigStore) -> SavedEnvironmentIntent {
         store
             .storage
@@ -507,6 +656,8 @@ mod tests {
             ],
         );
         plant_saved(&store, 1, |_| {});
+        plant_applied(&store, |_| {});
+        plant_introduction(&store, |_| {});
         let organization = who.organization.clone();
         assert_eq!(
             store.legacy_organizations().unwrap(),
@@ -515,7 +666,7 @@ mod tests {
         assert_eq!(
             store.legacy_count(&organization).unwrap(),
             LegacyCount {
-                current: 4,
+                current: 8,
                 history: 0
             }
         );
@@ -528,7 +679,7 @@ mod tests {
         assert_eq!(
             first,
             Resealed {
-                resealed: 4,
+                resealed: 8,
                 remaining: 0
             }
         );
@@ -537,7 +688,12 @@ mod tests {
             environment: Uuid::parse_str(&uuid(2)).unwrap(),
             service: Uuid::parse_str(&web(&working(&store)).id).unwrap(),
         };
-        for intent in [working(&store), saved(&store, 1)] {
+        for intent in [
+            working(&store),
+            saved(&store, 1),
+            applied(&store),
+            introduction(&store),
+        ] {
             for (key, plaintext) in [("TOKEN", "hunter2"), ("OTHER", "swordfish")] {
                 let variable = variable(&intent, key);
                 let sealed = client_sealed(variable);
@@ -555,10 +711,18 @@ mod tests {
         );
         assert!(store.reseal_environments(&organization).unwrap().is_empty());
 
-        let before = (working(&store), saved(&store, 1));
+        let everywhere = |store: &ConfigStore| {
+            [
+                working(store),
+                saved(store, 1),
+                applied(store),
+                introduction(store),
+            ]
+        };
+        let before = everywhere(&store);
         let second = store.reseal(&environment(), &recipient(&keypair)).unwrap();
         assert_eq!(second, Resealed::default());
-        assert_eq!((working(&store), saved(&store, 1)), before);
+        assert_eq!(everywhere(&store), before);
     }
 
     #[test]
@@ -833,7 +997,7 @@ mod tests {
             for variable in &mut intent.services.first_mut().unwrap().variables {
                 if variable.key == "OTHER" {
                     variable.value = SavedVariableValue::Secret {
-                        encrypted_value: Some(legacy(&store.sealing, "swordfish")),
+                        encrypted_value: Some(legacy(&store.sealing, "marlin")),
                     };
                 }
             }
@@ -860,6 +1024,100 @@ mod tests {
             .map(|row| row.path)
             .collect();
         assert_eq!(unsaved, ["web.env.OTHER"]);
+    }
+
+    /// `web`'s TOKEN, sealed again: the same plaintext, another ciphertext.
+    fn token_sealed_again(store: &ConfigStore) -> impl Fn(&mut SavedServiceIntent) + '_ {
+        |web| {
+            for variable in &mut web.variables {
+                if variable.key == "TOKEN" {
+                    variable.value = SavedVariableValue::Secret {
+                        encrypted_value: Some(legacy(&store.sealing, "hunter2")),
+                    };
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_plaintext_in_all_four_places_gets_one_sealed_value() {
+        let (store, who) = shop();
+        plant_working(
+            &store,
+            &who,
+            vec![secret("TOKEN", legacy(&store.sealing, "hunter2"))],
+        );
+        let again = token_sealed_again(&store);
+        plant_saved(&store, 1, |intent| {
+            again(intent.services.first_mut().unwrap())
+        });
+        plant_applied(&store, &again);
+        plant_introduction(&store, &again);
+
+        let keypair = ployz_core::Keypair::generate();
+        let done = store.reseal(&environment(), &recipient(&keypair)).unwrap();
+        assert_eq!(
+            done,
+            Resealed {
+                resealed: 4,
+                remaining: 0
+            }
+        );
+        let working = working(&store);
+        let token = variable(&working, "TOKEN");
+        client_sealed(token);
+        for place in [saved(&store, 1), applied(&store), introduction(&store)] {
+            assert_eq!(variable(&place, "TOKEN"), token);
+        }
+        assert_eq!(
+            store.legacy_count(&who.organization).unwrap(),
+            LegacyCount::default()
+        );
+        let review = store.read(&who, &crate::DiffQuery::default()).unwrap();
+        assert_eq!((review.total_count, review.draft_count), (0, 0));
+    }
+
+    #[test]
+    fn a_legacy_value_in_applied_state_or_an_introduction_is_counted_as_current() {
+        let (store, who) = shop();
+        let token = |web: &mut SavedServiceIntent| {
+            web.variables
+                .push(secret("TOKEN", legacy(&store.sealing, "hunter2")));
+        };
+        plant_applied(&store, token);
+        plant_introduction(&store, token);
+        let organization = who.organization.clone();
+        assert_eq!(
+            store.legacy_count(&organization).unwrap(),
+            LegacyCount {
+                current: 2,
+                history: 0
+            }
+        );
+        assert_eq!(
+            store.legacy_organizations().unwrap(),
+            vec![organization.clone()]
+        );
+        assert_eq!(
+            store.reseal_environments(&organization).unwrap(),
+            vec![environment()]
+        );
+
+        let keypair = ployz_core::Keypair::generate();
+        let done = store.reseal(&environment(), &recipient(&keypair)).unwrap();
+        assert_eq!(
+            done,
+            Resealed {
+                resealed: 2,
+                remaining: 0
+            }
+        );
+        client_sealed(variable(&applied(&store), "TOKEN"));
+        client_sealed(variable(&introduction(&store), "TOKEN"));
+        assert_eq!(
+            store.legacy_count(&organization).unwrap(),
+            LegacyCount::default()
+        );
     }
 
     #[test]
