@@ -83,12 +83,12 @@ const dialog = async () => within(await screen.findByRole("dialog", { name: "Mak
 const section = (sync: Awaited<ReturnType<typeof dialog>>, name: string) =>
   within(sync.getByRole("region", { name })).getAllByRole("listitem").map((item) => item.textContent);
 
-it("shows each change with at most one badge, Secret ahead of Changed, and a value field only on a secret", async () => {
+it("shows each change with at most one badge, Sealed ahead of Changed, and a value field only on a secret", async () => {
   open();
   const sync = await dialog();
   expect(sync.getByText("These become production's changes to deploy.")).toBeTruthy();
-  expect(section(sync, "api")).toEqual(["LOG_LEVELChanged in productionwarndebug", "TOKENSecret"]);
-  expect(section(sync, "worker")).toEqual(["ServiceNew", "MODENewfast", "KEYSecret"]);
+  expect(section(sync, "api")).toEqual(["LOG_LEVELChanged in productionwarndebug", "TOKENSealed"]);
+  expect(section(sync, "worker")).toEqual(["ServiceNew", "MODENewfast", "KEYSealed"]);
   expect(sync.getAllByLabelText(/^Set production's value of/u).map((field) => field.getAttribute("aria-label"))).toEqual([
     "Set production's value of TOKEN", "Set production's value of KEY",
   ]);
@@ -124,7 +124,7 @@ it("moves a row to never synced at once, and back, while the Store answers", asy
   const sync = await dialog();
   fireEvent.click(sync.getByRole("checkbox", { name: /^MODE/u }));
   fireEvent.click(sync.getByRole("button", { name: "Never sync" }));
-  await waitFor(() => expect(section(sync, "worker")).toEqual(["ServiceNew", "KEYSecret"]));
+  await waitFor(() => expect(section(sync, "worker")).toEqual(["ServiceNew", "KEYSealed"]));
   fireEvent.click(sync.getByRole("button", { name: "2 never synced" }));
   const list = within(sync.getByRole("list", { name: "Never synced" }));
   expect(list.getByText("MODE")).toBeTruthy();

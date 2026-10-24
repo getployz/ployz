@@ -26,7 +26,7 @@ describe("the Sync dialog over the Store", () => {
     expect(lines).toEqual([
       { name: "Source", variable: false, badge: null, before: "shop/api:1.8", after: "1.9" },
       { name: "LOG_LEVEL", variable: true, badge: "Changed in production", before: "warn", after: "debug" },
-      { name: "STRIPE_WEBHOOK_SECRET", variable: true, badge: "Secret", before: "", after: "" },
+      { name: "STRIPE_WEBHOOK_SECRET", variable: true, badge: "Sealed", before: "", after: "" },
       { name: "Service", variable: false, badge: "New", before: "", after: "" },
       { name: "MODE", variable: true, badge: "New", before: "", after: "lru" },
       { name: "Name", variable: false, badge: null, before: "data", after: "pg" },

@@ -19,9 +19,7 @@ export function VariableRowDialogs({
       title="Seal Variable"
       description={
         <>
-          Sealing <strong>{variableKey}</strong> makes its value unavailable
-          for reveal, copy, and edit in this UI. This change cannot be undone
-          here.
+          Seal <strong>{variableKey}</strong>? You can't reveal or edit its value here afterwards.
         </>
       }
       actionLabel="Seal variable"
