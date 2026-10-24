@@ -38,8 +38,17 @@ export function handleCliRequest<I extends { readonly organizationId: string }, 
   input: Schema.Decoder<I>,
   operation: (caller: Caller, input: I) => Effect.Effect<A, E, R>,
 ) {
+  return Effect.flatMap(resolveCaller(request.headers), (caller) => handleCliRequestAs(caller, request, input, operation));
+}
+
+/** {@link handleCliRequest} for a Caller already resolved from this request. */
+export function handleCliRequestAs<I extends { readonly organizationId: string }, A, E, R>(
+  caller: Caller,
+  request: Request,
+  input: Schema.Decoder<I>,
+  operation: (caller: Caller, input: I) => Effect.Effect<A, E, R>,
+) {
   return Effect.gen(function* () {
-    const caller = yield* resolveCaller(request.headers);
     const body = yield* Effect.tryPromise({
       try: () => request.json(),
       catch: () => new Validation({ message: "Invalid JSON body." }),

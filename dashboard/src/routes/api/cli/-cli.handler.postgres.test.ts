@@ -2016,6 +2016,14 @@ it.live(
         assert.strictEqual((yield* cli("POST", "sealing/elsewhere", {}, { organizationId })).status, 401);
         assert.strictEqual((yield* sealing("recovery", {}, { organizationId })).status, 401);
         assert.strictEqual((yield* sealing("rotate", {}, rotation)).status, 401);
+        const unfinished = new Request(`${origin}/api/cli/sealing/recovery`, {
+          method: "POST", body: new ReadableStream(), duplex: "half",
+        } as RequestInit);
+        const refused = yield* handleSealingRequest(unfinished, CliReadSealingRecoveryInput, readCliSealingRecovery).pipe(
+          Effect.flip,
+          Effect.timeout("5 seconds"),
+        );
+        assert.strictEqual(statusForPublicError(encodePublicError(refused)), 401);
         const [stored] = yield* drizzle.select({ recoveryBlob: organizationSealingKey.recoveryBlob }).from(organizationSealingKey);
         assert.strictEqual(stored?.recoveryBlob, recoveryBackup(2));
       }).pipe(Effect.provide(layer));
