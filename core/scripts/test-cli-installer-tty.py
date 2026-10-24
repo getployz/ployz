@@ -75,7 +75,6 @@ def exec_like_sudo_rs(shell, env):
     if child == 0:
         os.setpgid(0, 0)
         os.execve(shell, [shell, *ARGS], env)
-    os.setpgid(child, child)
     signal.signal(signal.SIGTTOU, signal.SIG_IGN)
     while True:
         _, status = os.waitpid(child, os.WUNTRACED)
