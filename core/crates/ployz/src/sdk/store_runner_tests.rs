@@ -803,7 +803,7 @@ fn separately_uploaded() -> Claimed {
 }
 
 #[test]
-fn a_sealed_build_with_no_server_in_its_walk_fails_saying_it_runs_on_a_server() {
+fn a_build_with_no_server_in_its_walk_fails_with_the_reason_github_gave() {
     let mut claimed = separately_uploaded();
     claimed.sources.push(
         serde_json::from_value(serde_json::json!({
@@ -817,7 +817,6 @@ fn a_sealed_build_with_no_server_in_its_walk_fails_saying_it_runs_on_a_server() 
             "commit": "a".repeat(40),
             "builders": [],
             "preferred_machine": null,
-            "sealed": "NPM_TOKEN",
             "status": "pending",
             "message": "GitHub has no ployz-build.yml workflow",
         }))
@@ -830,11 +829,11 @@ fn a_sealed_build_with_no_server_in_its_walk_fails_saying_it_runs_on_a_server() 
             upload: Some(PathBuf::from("/extracted")),
         },
     ) else {
-        panic!("a sealed build no Server takes fails");
+        panic!("a build no Server takes fails");
     };
     assert_eq!(
         message,
-        "Build failed. api: Builds that read a sealed value run on your server. \
+        "Build failed. api: GitHub has no ployz-build.yml workflow. \
          No other Builder in your Build Order can take it"
     );
 }

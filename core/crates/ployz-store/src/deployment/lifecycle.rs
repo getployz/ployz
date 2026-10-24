@@ -1215,7 +1215,6 @@ pub(crate) fn claim(
         input,
         mut intent,
         warnings,
-        sealed,
         ..
     } = match lowered(tx, &stored, &saved, sealing) {
         Ok(lowered) => lowered,
@@ -1238,7 +1237,7 @@ pub(crate) fn claim(
         }
         Err(error) => return Err(error),
     };
-    let sources = build::routed(tx, &stored, &saved, sealed)?;
+    let sources = build::routed(tx, &stored, &saved)?;
     if starting {
         let taken_over = tx.execute(
             "UPDATE config_deployment SET status = 'unknown' \
@@ -1374,24 +1373,6 @@ pub(crate) fn lowered(
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some((sealing, &organization)),
-    )
-}
-
-/// The first variable of each Service of `saved`, by Service ID, whose value reads a
-/// value sealed in the browser, as `stored` lowers it.
-pub(crate) fn sealed_reads(
-    tx: &mut dyn Tx,
-    stored: &Stored,
-    saved: &SavedEnvironmentIntent,
-    sealing: &SealingKey,
-) -> Result<BTreeMap<String, String>, RpcError> {
-    let branch = crate::branch::lowering(tx, &stored.summary.environment_id, saved)?;
-    super::lowering::first_sealed(
-        &stored.summary.environment_id,
-        saved,
-        stored.cluster_domain.as_ref(),
-        &branch,
-        sealing,
     )
 }
 

@@ -64,7 +64,7 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRun, RunEnd, SEALED_BUILDS_RUN_ON_SERVER,
+    GithubRun, RunEnd,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -356,8 +356,7 @@ impl ConfigStore {
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, or a storage error.
     pub fn sources(&self, deployment: &DeploymentId) -> Result<Vec<GitSource>, RpcError> {
-        self.storage
-            .read(|tx| build::sources(tx, deployment, &self.sealing))
+        self.storage.read(|tx| build::sources(tx, deployment))
     }
 
     /// Pin the commit each Git Service of Deployment `deployment` builds, by runtime
@@ -376,7 +375,7 @@ impl ConfigStore {
     ) -> Result<Vec<GitSource>, RpcError> {
         self.storage.write(|tx| {
             build::pin(tx, deployment, commits)?;
-            build::sources(tx, deployment, &self.sealing)
+            build::sources(tx, deployment)
         })
     }
 

@@ -233,8 +233,8 @@ it.live(
       expect(first.result).toMatchObject({ ran: { id: DEPLOYED, status: "failed" } });
       expect(yield* view(DEPLOYED)).toMatchObject({
         outcome: { type: "not_executed", reason: "No Server is enrolled in this Organization" },
-        // Auto tries GitHub first; a public repository has no GitHub App to run it, so the servers take it.
-        builds: [{ service: "web", commit: HEAD, status: "pending", message: "GitHub builds need the Ployz GitHub App on acme/web" }],
+        // Auto tries GitHub first; with no Server to read, GitHub passes it on, and that first reason stays.
+        builds: [{ service: "web", commit: HEAD, status: "pending", message: "Cloud couldn't read your Servers: No Server is enrolled in this Organization" }],
       });
       expect(state).toMatchObject({ heads: 1, archives: [HEAD] });
 

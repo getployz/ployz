@@ -31,8 +31,6 @@ mod reuse;
 pub(crate) use reuse::{holder, image_stores, runs_everywhere};
 mod sealed;
 
-pub(crate) use ployz_store::SEALED_BUILDS_RUN_ON_SERVER;
-
 /// How one Service's checked-out source becomes an image.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuildSpec {
@@ -79,7 +77,6 @@ pub enum Error {
     RemoteBuild { outcome: Box<RemoteBuildFailure> },
     #[error("invalid Build: {0}")]
     Invalid(String),
-    /// The Build reads Sealed values, which only a Server Builder opens.
     #[error("{0}")]
     Sealed(String),
     #[error("Could not build {service}.")]
