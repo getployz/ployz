@@ -184,8 +184,13 @@ fn seal(
     key: &str,
     plaintext: &str,
 ) -> Result<ployz_core::config::ClientSealedValue, Error> {
-    seal_value(recipient, identity, key, plaintext)
-        .map_err(|error| Error::coded(RpcErrorCode::Internal, format!("{key}: {error}")))
+    seal_value(recipient, identity, key, plaintext).map_err(|error| {
+        Error::caused(
+            RpcErrorCode::Internal,
+            format!("{key}: could not seal the value"),
+            error,
+        )
+    })
 }
 
 /// The Environment's ID as a sealed value binds to it.
