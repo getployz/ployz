@@ -2172,6 +2172,46 @@ fn a_docker_failure_in_the_second_its_preparation_started_belongs_to_it() {
 }
 
 #[tokio::test]
+async fn a_preparation_that_stopped_without_retrying_docker_leaves_its_failure_standing() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    docker_failed_at(&paths, "2026-10-16T00:00:00Z");
+    let started = at("2026-10-16T01:00:00Z");
+    record(
+        &LocalCheckin {
+            token_fingerprint: None,
+            answer: Seen::Wait,
+            reason: None,
+            message: None,
+            at: started,
+            prep: None,
+            blockers: Vec::new(),
+            prepare_retries: PREPARE_TRIES,
+            prepare_started: Some(started),
+            refused: None,
+            attempt: None,
+            no_cluster: false,
+        },
+        &paths,
+    );
+    // The unit started then died before ployzd rewrote the Docker step.
+    let host = FakeHost::default();
+    let (url, _server) = cloud("200 OK", WAIT).await;
+    pass(
+        &host,
+        &mut client(&url),
+        &key(),
+        &paths,
+        started + TimeDelta::minutes(1),
+    )
+    .await;
+    assert_eq!(
+        blocker_codes(&paths),
+        ["kernel_too_old", "docker_install_failed"]
+    );
+}
+
+#[tokio::test]
 async fn a_docker_install_that_failed_after_its_preparation_started_still_blocks() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
