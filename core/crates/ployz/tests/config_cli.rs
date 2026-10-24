@@ -6722,25 +6722,56 @@ fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
     let retry = refused["error"]["details"]["retry"].as_str().unwrap();
     assert_eq!(
         retry,
-        "ployz env sync --to --value web.env.API_KEY --approval apr_1 --env fix-web"
+        "ployz env sync --to --value web.env.API_KEY --env fix-web"
+    );
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(
+        message.ends_with(
+            ". The retry reads each --value from stdin again and asks for a new approval: \
+             --approval can't go with --value."
+        ),
+        "{message}"
     );
 
-    // Approved, the retry runs once its value comes on stdin again.
+    // Even approved, an approval never rides along with secrets.
     approve_in_cloud(&target, "apr_1");
-    let words = shell_words::split(retry).unwrap();
-    let words: Vec<&str> = words[1..].iter().map(String::as_str).collect();
-    let (code, stdout, stderr) = ployz_fed(&target, &[&["--json"][..], &words].concat(), &fed);
-    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    let approved = [&sync[..], &["--approval", "apr_1"]].concat();
+    let (code, stdout, stderr) = ployz_fed(&target, &[&["--json"][..], &approved].concat(), &fed);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
     assert!(
         !stdout.contains(SECRET) && !stderr.contains(SECRET),
         "{stdout}{stderr}"
     );
-    let synced = ok(&target, &["get", "web.env.API_KEY"]);
+    let refused: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(
-        synced["settings"][0]["value"],
-        json!({ "secret": true }),
-        "{synced}"
+        refused["error"]["code"],
+        json!("invalid_argument"),
+        "{refused}"
     );
+    assert_eq!(
+        refused["error"]["message"],
+        json!(
+            "Expected --approval without --value: an approval can't carry secrets given again \
+             on stdin. Run the sync without --approval; it asks for a new approval."
+        )
+    );
+
+    // The retry, its value on stdin again, asks again and names itself again.
+    let words = shell_words::split(retry).unwrap();
+    let words: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+    let (code, stdout, stderr) = ployz_fed(&target, &[&["--json"][..], &words].concat(), &fed);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(
+        !stdout.contains(SECRET) && !stderr.contains(SECRET),
+        "{stdout}{stderr}"
+    );
+    let again: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        again["error"]["code"],
+        json!("approval_required"),
+        "{again}"
+    );
+    assert_eq!(again["error"]["details"]["retry"], json!(retry));
 
     // A person without a terminal waits for the approval, and sees no secret either.
     let (target, approvals) = approving(&[("apr_1", "approved")]);
