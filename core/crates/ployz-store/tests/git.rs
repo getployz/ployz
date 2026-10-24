@@ -904,6 +904,21 @@ fn a_github_check_in_must_come_from_the_dispatched_repository_workflow_and_run()
 }
 
 #[test]
+fn a_github_input_without_sealed_values_does_not_look_up_the_built_service() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+    let id = dispatched(&store, &who);
+    let expected = store.github_input(&id).unwrap();
+    backend::execute(
+        &url,
+        "UPDATE config_build SET service = 'missing' WHERE service = 'web'",
+    );
+    let id = GithubBuildId::parse(&format!("{}.missing", id.deployment)).unwrap();
+    assert_eq!(store.github_input(&id).unwrap(), expected);
+}
+
+#[test]
 fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_reports() {
     let (store, who) = shop();
     let id = dispatched(&store, &who);

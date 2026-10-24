@@ -847,16 +847,18 @@ pub(crate) fn github_input(
     let deployment::Lowered {
         mut input, sealed, ..
     } = deployment::lowered(tx, &stored, &saved, sealing)?;
-    let built = saved
-        .services
-        .iter()
-        .find(|service| service.config.private_dns == id.service)
-        .ok_or_else(|| error::corrupt("GitHub build Service"))?;
-    if let Some(sealed) = sealed.get(&built.id) {
-        return Err(error::conflict(
-            format!("{sealed} is sealed. {SEALED_BUILDS_RUN_ON_SERVER}"),
-            json!({ "service": id.service, "variable": sealed }),
-        ));
+    if !sealed.is_empty() {
+        let built = saved
+            .services
+            .iter()
+            .find(|service| service.config.private_dns == id.service)
+            .ok_or_else(|| error::corrupt("GitHub build Service"))?;
+        if let Some(sealed) = sealed.get(&built.id) {
+            return Err(error::conflict(
+                format!("{sealed} is sealed. {SEALED_BUILDS_RUN_ON_SERVER}"),
+                json!({ "service": id.service, "variable": sealed }),
+            ));
+        }
     }
     for snapshot in &mut input.snapshots {
         snapshot.resolved_env.retain(|_, value| !value.is_sealed());
