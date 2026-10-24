@@ -8602,6 +8602,26 @@ fn a_patch_s_secret_under_a_bad_variable_name_is_refused_as_the_store_does_and_n
 }
 
 #[test]
+fn a_patch_s_secret_in_an_env_that_is_not_an_object_is_refused_as_the_store_does_and_never_sent() {
+    let patch = r#"{"env":[{"TOKEN":{"secret":"array-s3cr3t"}}]}"#;
+    let args = ["set", "web", "--patch", "-"];
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let (code, refused_locally) = ployz_with_stdin(&local, &args, patch);
+    assert_eq!(code, Some(2), "{refused_locally}");
+    let refused_locally: Value = serde_json::from_str(&refused_locally).unwrap();
+    assert_eq!(
+        refused_locally["error"]["message"],
+        json!("env is a JSON object of variables")
+    );
+
+    let (code, refused, written) = refused_by(sealing_ready(), one_service, &args, patch);
+    assert_eq!((code, &refused), (Some(2), &refused_locally));
+    assert_eq!(written, 0);
+    cloud_never_saw("array-s3cr3t");
+}
+
+#[test]
 fn a_local_store_seals_every_secret_itself_and_asks_nothing_even_with_the_flag_on() {
     let local = Target::Local(tempfile::tempdir().unwrap());
     one_service(&local);
