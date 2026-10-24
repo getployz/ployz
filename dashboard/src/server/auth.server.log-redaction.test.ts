@@ -1,4 +1,5 @@
 import { testConfigEnvironment } from "#/test/config-environment";
+import { createAdapterFactory } from "@better-auth/core/db/adapter";
 import { INVALID_SPAN_CONTEXT, type Span, trace, type Tracer } from "@opentelemetry/api";
 import { DrizzleQueryError } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
@@ -15,6 +16,8 @@ import { publicErrorResponse } from "#/server/public-error";
 
 const FAKE_SESSION_TOKEN = "fake-session-token-0123456789abc";
 const FAKE_EMAIL = "fake-user@example.test";
+const FAKE_TOKEN_HASH = "fake-refresh-token-hash-0123456789";
+const FAKE_USER_ID = "00000000-0000-4000-8000-00000fa4e1d0";
 
 // A closed port: every query fails as it would while Postgres is down.
 const unreachableAuth = (() => {
@@ -117,4 +120,45 @@ it("names an error Better Auth passes as the message by its kind", async () => {
 
   expect(output).not.toContain(FAKE_SESSION_TOKEN);
   expect(output).toContain("DrizzleQueryError in select session");
+});
+
+it("keeps a hashed token out of the log when OAuth introspection's query fails", async () => {
+  const failure = new DrizzleQueryError('select "id" from "oauth_refresh_token" where "token" = $1', [FAKE_TOKEN_HASH]);
+  // As @better-auth/oauth-provider logs an introspection failure: its message and stack, as strings.
+  const output = await captureOutput(Effect.sync(() => {
+    logBetterAuth("error", "Introspection error:", failure.message, failure.stack);
+  }));
+
+  expect(output).not.toContain(FAKE_TOKEN_HASH);
+  expect(output).toContain("Introspection error:");
+});
+
+it("keeps a user id out of every log when a session's joined user query fails", async () => {
+  const failure = new DrizzleQueryError('select "id" from "user" where "id" = $1', [FAKE_USER_ID]);
+  const adapter = createAdapterFactory({
+    config: { adapterId: "failing-user-join" },
+    adapter: () => ({
+      findOne: async <T>({ model }: { model: string }) => {
+        if (model === "user") throw failure;
+        // The session the join starts from; only its user id matters.
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+        return { id: "fake-session-id", userId: FAKE_USER_ID } as T;
+      },
+      findMany: async () => [],
+      create: async ({ data }) => data,
+      update: async () => null,
+      updateMany: async () => 0,
+      delete: async () => undefined,
+      deleteMany: async () => 0,
+      count: async () => 0,
+    }),
+  })({ logger: { log: logBetterAuth } });
+
+  const output = await captureOutput(Effect.promise(async () => {
+    const lookup = adapter.findOne({ model: "session", where: [{ field: "id", value: "fake-session-id" }], join: { user: true } });
+    await expect(lookup).rejects.toBe(failure);
+  }));
+
+  expect(output).not.toContain(FAKE_USER_ID);
+  expect(output).toContain("Failed to query fallback join for model user");
 });
