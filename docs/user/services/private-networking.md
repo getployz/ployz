@@ -24,8 +24,8 @@ them as the server's private gateway, such as `10.210.0.1`, and the service can'
 addresses.
 
 A service that was running before the server's upgrade to 0.3.5 gets its IPv6 address the next
-time Ployz replaces its container, such as at your next deploy. The upgrade itself restarts
-nothing.
+time Ployz replaces its container, such as at a deploy that changes the service. The upgrade
+itself restarts nothing.
 
 ```mermaid
 flowchart LR
