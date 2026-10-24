@@ -1,9 +1,11 @@
-import { Effect } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
+import { AppConfig } from "#/server/config.server";
+import { testConfigEnvironment } from "#/test/config-environment";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 
@@ -17,6 +19,10 @@ describe("readClusterSealing", () => {
   let harness: PostgresTestHarness;
   const read = () => harness.runEffect(readClusterSealing(organizationId).pipe(Effect.provideService(SecretEncryption, encryption)));
   const flagOn = () => harness.pool.query("insert into config_sealed_variables (organization_id) values ($1)", [organizationId]);
+  // A Server reporting its key reads Cloud's config, which keeps its shipped default here.
+  const report = () => harness.runEffect(recordSealingPublicKey(organizationId, clusterKey, publicKey).pipe(Effect.provide(
+    AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl } })))),
+  )));
   const pair = () => harness.pool.query(
     `insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
      values ($1, $2, $3, $3)`,
@@ -43,7 +49,7 @@ describe("readClusterSealing", () => {
 
   it("is off without the flag, even with a key", async () => {
     await pair();
-    await harness.runEffect(recordSealingPublicKey(organizationId, clusterKey, publicKey));
+    await report();
     expect(await read()).toEqual({ state: "off" });
   });
 
@@ -57,7 +63,7 @@ describe("readClusterSealing", () => {
   it("is ready with the current pairing's key", async () => {
     await flagOn();
     await pair();
-    await harness.runEffect(recordSealingPublicKey(organizationId, clusterKey, publicKey));
+    await report();
     expect(await read()).toEqual({ state: "ready", publicKey });
   });
 });
