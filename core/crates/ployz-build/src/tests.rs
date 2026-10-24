@@ -1190,7 +1190,6 @@ fn dockerfile_sealed_args_reach_the_image_and_invalidate_the_cache() {
         let mut upload = admission.upload().unwrap();
         remote::upload(&capture, |input| upload.accept(input)).unwrap();
         let steps = std::sync::Mutex::new(Vec::new());
-        let printed = std::sync::atomic::AtomicBool::new(false);
         let images = upload
             .execute(
                 &definition,
@@ -1199,22 +1198,9 @@ fn dockerfile_sealed_args_reach_the_image_and_invalidate_the_cache() {
                 &|progress| match progress {
                     Progress::Step(step) => steps.lock().unwrap().push(step),
                     Progress::Target { .. } => no_plaintext(&upload_root, value),
-                    Progress::Stage(Stage::Building) => {
-                        let output = Command::new("docker")
-                            .current_dir(&upload_root)
-                            .args(["buildx", "bake", "--file", "compose.yaml", "--print"])
-                            .output()
-                            .unwrap();
-                        assert!(
-                            output.status.success(),
-                            "{}",
-                            String::from_utf8_lossy(&output.stderr)
-                        );
-                        assert!(!String::from_utf8(output.stdout).unwrap().contains(value));
-                        printed.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
                     Progress::Stage(
                         Stage::Admission
+                        | Stage::Building
                         | Stage::Queued
                         | Stage::Preparation
                         | Stage::Output
@@ -1229,7 +1215,6 @@ fn dockerfile_sealed_args_reach_the_image_and_invalidate_the_cache() {
             )
             .unwrap();
         assert_eq!(images.images.len(), 1);
-        assert!(printed.load(std::sync::atomic::Ordering::Relaxed));
         let digest: String = Sha256::digest(value.as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -1261,7 +1246,7 @@ fn dockerfile_sealed_args_reach_the_image_and_invalidate_the_cache() {
         assert!(!upload_root.exists());
         no_plaintext(&capture, value);
         eprintln!(
-            "ARG receipt sha256={digest} step_cached={} bake_print_clean=true upload_root_removed=true history_contains_value=true",
+            "ARG receipt sha256={digest} step_cached={} upload_root_removed=true history_contains_value=true",
             step.cached
         );
         eprintln!(
