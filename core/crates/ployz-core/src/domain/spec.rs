@@ -520,11 +520,6 @@ pub struct ServiceContainerSpec {
     pub sysctls: BTreeMap<String, String>,
     #[serde(default)]
     pub restart: RestartPolicy,
-    /// Takes an IPv6 address on the ployz bridge, so published ports see IPv6
-    /// visitors as themselves and egress may use IPv6. The app must listen on `::`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    #[ts(optional, as = "Option<bool>")]
-    pub ipv6: bool,
 }
 
 /// One Service's placement constraints and scoped mounted storage requirements.

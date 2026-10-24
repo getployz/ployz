@@ -1187,7 +1187,6 @@ fn container_on(
                 stop_timeout_secs: None,
                 sysctls: Default::default(),
                 restart: RestartPolicy::default(),
-                ipv6: false,
             },
             placement: Default::default(),
             ports: vec![],

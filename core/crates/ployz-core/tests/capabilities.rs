@@ -1,5 +1,5 @@
 use ployz_core::{
-    BRIDGE_IPV6_CAPABILITY, CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName,
+    CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName,
     DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
     ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY,
     EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY,
@@ -122,7 +122,6 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
         (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
-        (BRIDGE_IPV6_CAPABILITY, "ployz.container.bridge-ipv6.v1"),
     ];
     for (capability, spelling) in frozen {
         assert_eq!(capability, spelling);
@@ -189,7 +188,6 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.v1",
             "ployz.volume.copy.floor.v1",
             "ployz.volume.size.shrink.v1",
-            "ployz.container.bridge-ipv6.v1",
         ]
     );
     assert_eq!(
@@ -351,10 +349,6 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.management.scope.v1",
         "gated: an older daemon serves an Operator caller as Full, so a path that sends a Sealed value first checks every Machine in the Cluster advertises it, and refuses otherwise",
-    ),
-    (
-        "ployz.container.bridge-ipv6.v1",
-        "gated: a path that sends a spec taking IPv6 first checks the target Machine advertises it, and refuses naming the Machine that lacks it",
     ),
     (
         "ployz.env.sealed.v1",
