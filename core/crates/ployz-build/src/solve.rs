@@ -123,7 +123,7 @@ impl SolveParser {
     }
 
     fn emit_line(&mut self, line: &[u8], progress: &dyn Fn(Progress)) {
-        if self.sealed && line.len() > MAX_LINE {
+        if self.sealed && line.strip_suffix(b"\n").unwrap_or(line).len() > MAX_LINE {
             Self::hidden_line(progress);
             return;
         }
@@ -471,6 +471,26 @@ mod tests {
                     };
                     assert_eq!(output(&events), expected.as_bytes());
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_at_the_limit_keeps_its_newline_in_one_or_many_chunks() {
+        let line = format!("{}\n", "x".repeat(MAX_LINE));
+        for sealed in [false, true] {
+            for chunked in [false, true] {
+                let events = collect(|parser, progress| {
+                    parser.sealed = sealed;
+                    if chunked {
+                        let (head, tail) = line.as_bytes().split_at(MAX_LINE);
+                        parser.feed(head, progress);
+                        parser.feed(tail, progress);
+                    } else {
+                        parser.feed(line.as_bytes(), progress);
+                    }
+                });
+                assert_eq!(output(&events), line.as_bytes());
             }
         }
     }

@@ -42,7 +42,7 @@ pub(crate) struct OutputScrub {
 #[derive(Default)]
 struct Frames {
     output: FrameScrub,
-    steps: BTreeMap<String, FrameScrub>,
+    steps: Vec<(String, FrameScrub)>,
 }
 
 const fn channel(stderr: bool) -> Channel {
@@ -87,13 +87,18 @@ impl OutputScrub {
                 vec![Progress::Step(step)]
             }
             Progress::StepOutput { step, stderr, text } => {
-                let shown = self
-                    .frames
-                    .lock()
-                    .expect("Build output scrub lock")
-                    .steps
-                    .entry(step.clone())
-                    .or_default()
+                let steps = &mut self.frames.lock().expect("Build output scrub lock").steps;
+                let index = steps
+                    .iter()
+                    .position(|(id, _)| id == &step)
+                    .unwrap_or_else(|| {
+                        steps.push((step.clone(), FrameScrub::default()));
+                        steps.len() - 1
+                    });
+                let shown = steps
+                    .get_mut(index)
+                    .expect("step was found or inserted")
+                    .1
                     .push(channel(stderr), text.as_bytes(), &self.forms);
                 if shown.is_empty() {
                     Vec::new()
@@ -290,6 +295,32 @@ mod tests {
                 ("sha256:step-two", true)
             ]
         );
+    }
+
+    #[test]
+    fn held_step_tails_follow_first_output_order_instead_of_digest_order() {
+        let output = |step: &str, text: &str| Progress::StepOutput {
+            step: step.into(),
+            stderr: false,
+            text: text.into(),
+        };
+        let (text, shown) = report(
+            &scrub("opened-token-0123456789"),
+            vec![
+                output("sha256:z-first", "first "),
+                output("sha256:a-second", "second"),
+                output("sha256:z-first", "tail"),
+            ],
+        );
+        assert_eq!(text, "first tailsecond");
+        let steps: Vec<_> = shown
+            .iter()
+            .filter_map(|event| match event {
+                Progress::StepOutput { step, .. } => Some(step.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(steps, ["sha256:z-first", "sha256:a-second"]);
     }
 
     /// A step's last log can arrive after BuildKit reports it complete, so a
