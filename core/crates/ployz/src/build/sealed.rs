@@ -1,5 +1,5 @@
 //! Sealed values a Build reads: kept sealed in private material, shaped for its
-//! recipe, and refused where a recipe would record one.
+//! recipe, and opened only by the Server Builder.
 
 use std::{
     collections::BTreeMap,
@@ -28,7 +28,7 @@ pub(super) struct Sealed {
 
 /// Keep the Sealed values `service` reads in private upload material and shape
 /// them for `recipe`. A Dockerfile is checked once captured, by
-/// [`refuse_declared_args`].
+/// [`declared_args`].
 ///
 /// # Errors
 /// Fails without the Deploy's Environment to seal for, when the private file
@@ -82,26 +82,23 @@ pub(super) fn capture(
     Ok(sealed)
 }
 
-/// A Sealed value a Dockerfile declares as `ARG` would reach BuildKit as a
-/// build arg, which records it in the image. Only a secret mount may read it.
-/// `dockerfile` is the captured copy, the bytes BuildKit reads.
+/// Return the Sealed names declared as `ARG` in the captured Dockerfile,
+/// the same bytes BuildKit reads. Read nothing when no value is Sealed.
 ///
 /// # Errors
-/// Fails when the captured Dockerfile cannot be read or declares one of the
-/// `sealed` names as `ARG`.
-pub(super) fn refuse_declared_args(dockerfile: &Path, sealed: &[String]) -> Result<(), Error> {
+/// Fails when the captured Dockerfile cannot be read.
+pub(super) fn declared_args(dockerfile: &Path, sealed: &[String]) -> Result<Vec<String>, Error> {
     if sealed.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let contents = std::fs::read_to_string(dockerfile)
         .map_err(|error| Error::Io(format!("read captured Dockerfile: {error}")))?;
     let declared = DockerfileFacts::parse(&contents).args;
-    match sealed.iter().find(|name| declared.contains(*name)) {
-        Some(name) => Err(Error::Sealed(format!(
-            "{name} is sealed. Read it with RUN --mount=type=secret,id={name},env={name}."
-        ))),
-        None => Ok(()),
-    }
+    Ok(sealed
+        .iter()
+        .filter(|name| declared.contains(*name))
+        .cloned()
+        .collect())
 }
 
 /// Railpack reads its `RAILPACK_*` settings while it plans, where a Sealed
@@ -376,32 +373,50 @@ mod tests {
         );
         assert_eq!(compose, expected);
         assert!(!captured.inputs.root().join("private/sealed.json").exists());
+        assert!(
+            !captured
+                .inputs
+                .root()
+                .join("private/sealed-args.json")
+                .exists()
+        );
     }
 
     #[test]
-    fn a_dockerfile_declaring_a_sealed_value_as_arg_is_refused_by_name() {
+    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
+    fn a_dockerfile_declaring_a_sealed_value_as_arg_captures_only_its_name() {
         let root = tempfile::tempdir().unwrap();
-        let (intent, sealed) = sealed_intent(7);
-        let ciphertext = serde_json::to_string(&sealed).unwrap();
+        let (intent, _) = sealed_intent(7);
         for dockerfile in [
             "FROM scratch\nARG NPM_TOKEN\n",
             "FROM scratch\nARG NPM_TOKEN=default\n",
             "FROM scratch AS base\narg PLAIN NPM_TOKEN\nFROM scratch\n",
         ] {
-            let error = capture_one(&intent, dockerfile_spec(root.path(), dockerfile))
-                .err()
-                .unwrap()
-                .to_string();
+            let captured = capture_one(&intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
+            let names: BTreeMap<String, Vec<String>> = serde_json::from_slice(
+                &fs::read(captured.inputs.root().join("private/sealed-args.json")).unwrap(),
+            )
+            .unwrap();
             assert_eq!(
-                error,
-                "NPM_TOKEN is sealed. Read it with RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN.",
-                "{dockerfile}"
+                names,
+                BTreeMap::from([("api".into(), vec!["NPM_TOKEN".into()])])
             );
-            assert!(!error.contains(&ciphertext));
-            assert!(!error.contains("visible"));
+            let recipe = recipe(&captured);
+            assert!(
+                recipe["services"]["api"]["build"]["args"]
+                    .get("NPM_TOKEN")
+                    .is_none()
+            );
         }
         for dockerfile in [MOUNTING_DOCKERFILE, "FROM scratch\nARG PLAIN\n"] {
-            capture_one(&intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
+            let captured = capture_one(&intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
+            assert!(
+                !captured
+                    .inputs
+                    .root()
+                    .join("private/sealed-args.json")
+                    .exists()
+            );
         }
     }
 
@@ -410,7 +425,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (intent, _) = sealed_intent(7);
         let service = intent.target.first().unwrap();
-        for (captured, later, refused) in [
+        for (captured, later, expected) in [
             ("FROM scratch\nARG NPM_TOKEN\n", MOUNTING_DOCKERFILE, true),
             (MOUNTING_DOCKERFILE, "FROM scratch\nARG NPM_TOKEN\n", false),
         ] {
@@ -423,7 +438,10 @@ mod tests {
             fs::write(source, captured).unwrap();
             let file = inputs.dockerfile(source).unwrap();
             fs::write(source, later).unwrap();
-            assert_eq!(refuse_declared_args(&file, &sealed.names).is_err(), refused);
+            assert_eq!(
+                !declared_args(&file, &sealed.names).unwrap().is_empty(),
+                expected
+            );
         }
     }
 
@@ -431,9 +449,9 @@ mod tests {
     fn only_a_sealed_build_needs_to_read_the_captured_dockerfile() {
         let root = tempfile::tempdir().unwrap();
         let missing = root.path().join("missing");
-        refuse_declared_args(&missing, &[]).unwrap();
+        assert!(declared_args(&missing, &[]).unwrap().is_empty());
         assert!(matches!(
-            refuse_declared_args(&missing, &["NPM_TOKEN".into()]),
+            declared_args(&missing, &["NPM_TOKEN".into()]),
             Err(Error::Io(_))
         ));
     }

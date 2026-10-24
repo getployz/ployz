@@ -218,6 +218,16 @@ impl BuildInputs {
         self.private(&self.root.join("private/sealed.json"), &bytes)
     }
 
+    /// Keep only the Sealed ARG names for the Server Builder.
+    ///
+    /// # Errors
+    /// Fails if the private file cannot be written.
+    pub(super) fn sealed_args(&self, target: &str, names: &[String]) -> Result<(), Error> {
+        let bytes = serde_json::to_vec(&BTreeMap::from([(target, names)]))
+            .map_err(|error| input_error(io::Error::other(error)))?;
+        self.private(&self.root.join("private/sealed-args.json"), &bytes)
+    }
+
     /// Write the captured Buildx file beside its sources.
     ///
     /// # Errors
