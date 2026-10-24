@@ -97,7 +97,8 @@ service still gets the real value when it deploys.
   the variable first. A plain variable gets a new sealed value.
 - Rotate a secret you saved before this change. Older backups of Ployz Cloud's database still
   hold it. Change the secret where it comes from, then delete the variable and add it again
-  with the new value.
+  with the new value. A version saved before this change deploys without its sealed values, so
+  deploy the current version instead.
 
 ## Reference another service's variable
 
