@@ -18,10 +18,11 @@
 //   #146        open: its On merge list lands API_URL and CACHE_TTL (over production's own change since), excludes
 //               LOG_LEVEL, and lands TOKEN Not set
 // A fake Server is paired so the Store admits Deploys; nothing answers it, so production's Deploy stays queued and the
-// seed writes its nodes into Applied State, as a finished one would. VERIFY_REAL_SERVERS=1 leaves pairing to the real
-// Servers that enroll next, so the queued Deploy and blog's pull requests are skipped: the Store admits none, and opens
-// no PR Environment, before a Server joins.
-import { createHash, createHmac, randomUUID } from "node:crypto";
+// seed writes its nodes into Applied State, as a finished one would. Its Sealing Key is a throwaway one no Server holds.
+// VERIFY_REAL_SERVERS=1 leaves pairing to the real Servers that enroll next, so the queued Deploy and blog's pull
+// requests are skipped: the Store admits none, and opens no PR Environment, before a Server joins. SECRET_KEY waits for
+// their Sealing Key: up.sh writes it with seed-sealed.ts once they enroll.
+import { createHash, createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { eq, sql } from "drizzle-orm";
 import { hashPassword } from "better-auth/crypto";
@@ -33,7 +34,7 @@ import { linkGithubInstallation, upsertCachedGithubRepositories, upsertGithubIns
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
 import { account, member, session, user } from "#/modules/identity/tables";
-import { organizationMachine } from "#/modules/machines/tables";
+import { clusterSealingKey, organizationMachine } from "#/modules/machines/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
 import { permissionsOf } from "#/modules/organization/permissions";
 import { organization } from "#/modules/organization/tables";
@@ -41,6 +42,7 @@ import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { AppRuntime } from "#/server/runtime.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { sealed, secretKey } from "./seed-sealed";
 
 const BOB_PASSWORD = "verify-bob-password";
 const ADA_GITHUB_ID = 9001;
@@ -147,6 +149,22 @@ const seed = Effect.gen(function* () {
   const edit = (label: string, environment: string, changes: Change[]) =>
     write(label, { command: "edit", environment: at(environment), expect: null, changes });
 
+  if (process.env["VERIFY_REAL_SERVERS"] !== "1") {
+    // The fake Server: a pairing, one Machine row and its Cluster's Sealing Key, so the Store admits Deploys.
+    const encryption = yield* SecretEncryption;
+    const pairingSecret = "ppair_verify";
+    const clusterKey = createHash("sha256").update(pairingSecret).digest("hex");
+    yield* drizzle.insert(organizationPairing).values({
+      organizationId, encryptedPairingSecret: encryption.encrypt(pairingSecret),
+      founderClaimMachineId: MACHINE_ID as never, founderMachineId: MACHINE_ID as never,
+    });
+    yield* drizzle.insert(organizationMachine).values({
+      organizationId, machineId: MACHINE_ID as never, clusterKey, encryptedCapability: encryption.encrypt("cap"),
+    });
+    const publicKey = Buffer.from(generateKeyPairSync("x25519").publicKey.export({ format: "jwk" }).x ?? "", "base64url").toString("base64");
+    yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey });
+  }
+
   yield* write("project shop", { command: "create_project", id: randomUUID(), name: "shop", default_environment: randomUUID() });
   for (const [name, image] of [["web", "nginx:1.27-alpine"], ["api", "traefik/whoami:v1.10.3"], ["postgres", "postgres:16"], ["worker", "traefik/whoami:v1.10.3"], ["redis", "redis:7-alpine"]] as const) {
     yield* write(`service ${name}`, { command: "create_service", id: randomUUID(), environment: at(null), name, image });
@@ -166,15 +184,15 @@ const seed = Effect.gen(function* () {
     // whoami answers every path on 80, so the path passes on a Server while seed-uptime's 404 shows the Monitoring tab's field.
     { op: "set", path: "worker.env.PORT", value: "80" },
     { op: "set", path: "worker.healthcheck", value: { path: "/health", timeoutSeconds: 30 } },
-    { op: "set", path: "api.env.SECRET_KEY", value: { secret: "verify-secret-key" } },
-    { op: "set", path: "api.env.SECRET_KEY.exported", value: true },
+    ...(yield* secretKey(organizationId, ada.id)) ?? [],
   ]);
+  if (process.env["VERIFY_REAL_SERVERS"] === "1") skipped.push("api.env.SECRET_KEY: sealed once the Servers enroll (seed-sealed.ts)");
   yield* write("config sentry", {
     command: "create_config", id: randomUUID(), environment: at("production"), name: "sentry",
     mounts: [{ service: "web", dir: "/etc/sentry" }, { service: "worker", dir: "/etc/sentry" }],
   });
   for (const [file, content] of [
-    ["config.yml", "redis:\n  host: ${{ redis.PLOYZ_PRIVATE_DOMAIN }}\n  port: ${{ redis.PORT }}\nsecret_key: ${{ api.SECRET_KEY }}\n"],
+    ["config.yml", "redis:\n  host: ${{ redis.PLOYZ_PRIVATE_DOMAIN }}\n  port: ${{ redis.PORT }}\n"],
     ["sentry.conf.py", "SENTRY_OPTIONS = {\n    \"system.url-prefix\": \"https://sentry.acme.com\",\n}\n"],
   ] as const) {
     yield* write(`config sentry ${file}`, { command: "put_config_file", environment: at("production"), config: "sentry", file, content });
@@ -183,17 +201,6 @@ const seed = Effect.gen(function* () {
   if (process.env["VERIFY_REAL_SERVERS"] === "1") {
     skipped.push("deploy production: no Server has enrolled yet");
   } else {
-    // The fake Server: a pairing and one Machine row, so the Store admits Deploys.
-    const encryption = yield* SecretEncryption;
-    const pairingSecret = "ppair_verify";
-    yield* drizzle.insert(organizationPairing).values({
-      organizationId, encryptedPairingSecret: encryption.encrypt(pairingSecret),
-      founderClaimMachineId: MACHINE_ID as never, founderMachineId: MACHINE_ID as never,
-    });
-    yield* drizzle.insert(organizationMachine).values({
-      organizationId, machineId: MACHINE_ID as never, clusterKey: createHash("sha256").update(pairingSecret).digest("hex"),
-      encryptedCapability: encryption.encrypt("cap"),
-    });
     const deployment = randomUUID();
     yield* write("deploy production", {
       command: "admit", admit: "deploy", id: deployment, environment: at("production"),
@@ -287,11 +294,14 @@ const seed = Effect.gen(function* () {
   if (process.env["VERIFY_REAL_SERVERS"] === "1") {
     skipped.push("blog pull requests: no Server has enrolled yet, so no PR Environment opens");
   } else {
+    const token = (environment: string) => sealed(organizationId, ada.id, blog(environment), "web", "TOKEN", "preview-token").pipe(
+      Effect.flatMap((value) => value === null ? Effect.die("the fake Server's Cluster has no Sealing Key") : Effect.succeed(value)),
+    );
     const numbers = [140, 141, 142, 143, 144] as const;
     for (const number of numbers) {
       yield* observe(`blog #${number} opens`, pullRequest(number, 0));
       const changes: Change[] = [{ op: "set", path: `web.env.CHANGE_${number}`, value: "on" }];
-      if (number === 140) changes.push({ op: "set", path: "web.env.TOKEN", value: { secret: "preview-token" } });
+      if (number === 140) changes.push({ op: "set", path: "web.env.TOKEN", value: yield* token("pr-140") });
       yield* write(`blog pr-${number} edits`, { command: "edit", environment: blog(`pr-${number}`), expect: null, changes });
     }
     yield* observe("blog #142 merges", pullRequest(142, 1, { open: false, merge_commit: "4".repeat(40) }));
@@ -315,7 +325,7 @@ const seed = Effect.gen(function* () {
       { op: "set", path: "web.env.API_URL", value: "http://b" },
       { op: "set", path: "web.env.CACHE_TTL", value: "60" },
       { op: "set", path: "web.env.LOG_LEVEL", value: "debug" },
-      { op: "set", path: "web.env.TOKEN", value: { secret: "preview-token" } },
+      { op: "set", path: "web.env.TOKEN", value: yield* token("pr-146") },
     ] });
     yield* write("blog pr-146 excludes LOG_LEVEL", { command: "never_sync", environment: blog("pr-146"), rows: ["web.env.LOG_LEVEL"] });
 
