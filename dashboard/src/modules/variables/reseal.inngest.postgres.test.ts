@@ -4,7 +4,7 @@ import { CipherSuite } from "@hpke/core";
 import { Chacha20Poly1305 } from "@hpke/chacha20poly1305";
 import { DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/dhkem-x25519";
 import { InngestTestEngine } from "@inngest/test";
-import type { ConfigCommand } from "@ployz/sdk";
+import type { ConfigCommand, SecretCiphertext } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { type Context, Effect } from "effect";
 import { Inngest } from "inngest";
@@ -24,12 +24,12 @@ const SHOP = { project: "00000000-0000-4000-8000-0000000e5010", environment: "00
 const BLOG = { project: "00000000-0000-4000-8000-0000000e5020", environment: "00000000-0000-4000-8000-0000000e5021", service: "00000000-0000-4000-8000-0000000e5022" };
 const PAIRING_SECRET = "ppair_fixture_store";
 const STORE_SECRET = testConfigEnvironment().APP_ENCRYPTION_SECRET;
-const PLAINTEXT: Record<string, string> = { DATABASE_URL: "postgres://shop:hunter2@db/shop", STRIPE_KEY: "sk_test_resealed" };
+const PLAINTEXT = { DATABASE_URL: "postgres://shop:hunter2@db/shop", STRIPE_KEY: "sk_test_resealed" };
 
 const suite = new CipherSuite({ kem: new DhkemX25519HkdfSha256(), kdf: new HkdfSha256(), aead: new Chacha20Poly1305() });
 const encoder = new TextEncoder();
 
-interface StoredVariable { readonly key: string; readonly valueFingerprint: string; readonly value: { readonly kind: string; readonly encryptedValue: Record<string, unknown> } }
+interface StoredVariable { readonly key: string; readonly valueFingerprint: string; readonly value: { readonly kind: string; readonly encryptedValue: SecretCiphertext } }
 
 /** A throwaway Cluster key pair: the public half as Cloud records it. */
 const clusterKeyPair = Effect.promise(async () => {
@@ -82,9 +82,10 @@ const associatedData = (environment: string, service: string, key: string) => {
 const openedIn = Effect.fn(function* (environment: string, privateKey: CryptoKey) {
   const opened: Record<string, string> = {};
   for (const variable of yield* secretsIn(environment)) {
-    const { sealedFor, value } = variable.value.encryptedValue as { sealedFor?: string; value?: { sealed: string } };
-    expect(sealedFor).toBe(environment);
-    const bytes = Buffer.from(value?.sealed ?? "", "base64");
+    const sealed = variable.value.encryptedValue;
+    if (!("sealedFor" in sealed)) throw new Error(`${variable.key} is still Legacy`);
+    expect(sealed.sealedFor).toBe(environment);
+    const bytes = Buffer.from(sealed.value.sealed, "base64");
     const plaintext = yield* Effect.promise(() => suite.open(
       { recipientKey: privateKey, enc: bytes.subarray(0, 32), info: encoder.encode("ployz-sealed-v1") },
       bytes.subarray(32),
