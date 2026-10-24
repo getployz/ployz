@@ -459,6 +459,8 @@ struct Approvals {
     calls: std::sync::Mutex<Vec<(String, String, Value)>>,
     runs: std::sync::Mutex<Vec<String>>,
     bodies: std::sync::Mutex<Vec<Value>>,
+    /// Each Store command the gate weighed, as Cloud received it.
+    gated: std::sync::Mutex<Vec<Value>>,
     ran: std::sync::Condvar,
 }
 
@@ -492,9 +494,13 @@ impl Approvals {
     fn gate(&self, body: &mut Vec<u8>, approval: Option<&str>) -> Option<(u16, Value)> {
         let command: Value = serde_json::from_slice(body).unwrap();
         let deploy = command["command"] == "admit" && command["admit"] == "deploy";
-        if self.rows.is_empty() || !(deploy || command["command"] == "publish") {
+        let asks = ["publish", "sync", "take", "set_pr_plan", "set_build_order"]
+            .iter()
+            .any(|asking| command["command"] == *asking);
+        if self.rows.is_empty() || !(deploy || asks) {
             return None;
         }
+        self.gated.lock().unwrap().push(command.clone());
         if let (Some(volume), true) = (self.deletes_volume, deploy) {
             if command["accept_volume_loss"] != json!([volume]) || command["version"] != REVIEWED {
                 let error = json!({
@@ -6582,6 +6588,223 @@ fn a_bare_discard_names_every_change_it_drops() {
         .collect();
     dropped.sort_unstable();
     assert_eq!(dropped, ["api", "web.env.MINE"], "{discarded}");
+}
+
+/// `ployz ARGS` fed `input` on stdin: its exit code, stdout and stderr.
+fn ployz_fed(target: &Target, args: &[&str], input: &str) -> (Option<i32>, String, String) {
+    let home = tempfile::tempdir().unwrap();
+    let mut child = target
+        .command(home.path())
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(input.as_bytes()).unwrap();
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_approval() {
+    let (target, approvals) = approving(&[("apr_1", "pending")]);
+    ok(&target, &["env", "branch", "fix-web", "--copy", "web"]);
+    for (args, retry) in [
+        (
+            &[
+                "env",
+                "sync",
+                "--to",
+                "--env",
+                "fix-web",
+                "--only",
+                "web",
+                "--skip",
+                "web.env.DEBUG",
+                "--close",
+            ][..],
+            "ployz env sync --to --only web --skip web.env.DEBUG --close --approval apr_1 --env fix-web",
+        ),
+        (
+            &["env", "sync", "--from", "fix-web", "--version", REVIEWED],
+            "ployz env sync --from fix-web --version 3:1:0.1 --approval apr_1",
+        ),
+        (
+            &[
+                "env",
+                "sync",
+                "--take",
+                "production",
+                "--only",
+                "web",
+                "--env",
+                "fix-web",
+            ],
+            "ployz env sync --take production --only web --approval apr_1 --env fix-web",
+        ),
+        (
+            &[
+                "env",
+                "pr",
+                "acme/web",
+                "--on",
+                "--from",
+                "production",
+                "--copy",
+                "web",
+                "--setup",
+                "web=make seed",
+                "--remove-on-close",
+                "false",
+                "--bots",
+                "true",
+                "--project",
+                "shop",
+            ],
+            "ployz env pr acme/web --on --from production --copy web --setup 'web=make seed' \
+             --remove-on-close false --bots true --approval apr_1 --project shop",
+        ),
+        (
+            &["env", "pr", "acme/web", "--off"],
+            "ployz env pr acme/web --off --approval apr_1",
+        ),
+        (
+            &["org", "build-order", "servers-only"],
+            "ployz org build-order servers-only --approval apr_1",
+        ),
+    ] {
+        let refused = error(&target, args);
+        assert_eq!(refused["code"], json!("approval_required"), "{refused}");
+        assert_eq!(refused["details"]["retry"], json!(retry), "{args:?}");
+        // The retry parses and asks again while the approval is pending.
+        let words = shell_words::split(retry).unwrap();
+        let words: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+        let again = error(&target, &words);
+        assert_eq!(again["code"], json!("approval_required"), "{again}");
+        assert_eq!(again["details"]["retry"], json!(retry), "{words:?}");
+        // The retry sends the same request, but for a Sync's receipt, new each run.
+        let gated = approvals.gated.lock().unwrap();
+        let [.., first, retried] = gated.as_slice() else {
+            panic!("{args:?} didn't reach Cloud twice")
+        };
+        let receipt = |command: &Value| {
+            let mut command = command.clone();
+            command.as_object_mut().unwrap().remove("id");
+            command
+        };
+        assert_eq!(receipt(retried), receipt(first), "{args:?}");
+    }
+    assert!(
+        approvals.calls().is_empty(),
+        "--json never waits or decides"
+    );
+}
+
+#[test]
+fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
+    const SECRET: &str = "s3cret-sync-value";
+    let (target, _) = approving(&[("apr_1", "approved")]);
+    ok(&target, &["env", "branch", "fix-web", "--copy", "web"]);
+    let secret = ["set", "web.env.API_KEY", "--secret", "--env", "fix-web"];
+    let (code, set) = ployz_with_stdin(&target, &secret, "branch-key\n");
+    assert_eq!(code, Some(0), "{set}");
+    let sync = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-web",
+        "--value",
+        "web.env.API_KEY",
+    ];
+    let fed = format!("{SECRET}\n");
+
+    let (code, stdout, stderr) = ployz_fed(&target, &[&["--json"][..], &sync].concat(), &fed);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(
+        !stdout.contains(SECRET) && !stderr.contains(SECRET),
+        "{stdout}{stderr}"
+    );
+    let refused: Value = serde_json::from_str(&stdout).unwrap();
+    let retry = refused["error"]["details"]["retry"].as_str().unwrap();
+    assert_eq!(
+        retry,
+        "ployz env sync --to --value web.env.API_KEY --env fix-web"
+    );
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(
+        message.ends_with(
+            ". --approval can't go with --value, so the retry reads each --value from stdin \
+             again and asks for a new approval. To finish in one run, run it without --json: \
+             it waits for the approval."
+        ),
+        "{message}"
+    );
+
+    // Even approved, an approval never rides along with secrets.
+    approve_in_cloud(&target, "apr_1");
+    let approved = [&sync[..], &["--approval", "apr_1"]].concat();
+    let (code, stdout, stderr) = ployz_fed(&target, &[&["--json"][..], &approved].concat(), &fed);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        !stdout.contains(SECRET) && !stderr.contains(SECRET),
+        "{stdout}{stderr}"
+    );
+    let refused: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        refused["error"]["code"],
+        json!("invalid_argument"),
+        "{refused}"
+    );
+    assert_eq!(
+        refused["error"]["message"],
+        json!(
+            "Expected --approval without --value: an approval can't carry secrets given again \
+             on stdin. Run the sync without --approval and without --json: it waits for a new \
+             approval."
+        )
+    );
+
+    // The retry, its value on stdin again, asks again and names itself again.
+    let words = shell_words::split(retry).unwrap();
+    let words: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+    let (code, stdout, stderr) = ployz_fed(&target, &[&["--json"][..], &words].concat(), &fed);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(
+        !stdout.contains(SECRET) && !stderr.contains(SECRET),
+        "{stdout}{stderr}"
+    );
+    let again: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        again["error"]["code"],
+        json!("approval_required"),
+        "{again}"
+    );
+    assert_eq!(again["error"]["details"]["retry"], json!(retry));
+
+    // A person without a terminal waits for the approval, and sees no secret either.
+    let (target, approvals) = approving(&[("apr_1", "approved")]);
+    ok(&target, &["env", "branch", "fix-web", "--copy", "web"]);
+    let (code, set) = ployz_with_stdin(&target, &secret, "branch-key\n");
+    assert_eq!(code, Some(0), "{set}");
+    let (code, stdout, stderr) = ployz_fed(&target, &sync, &fed);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("Waiting for approval in Ployz Cloud"),
+        "{stderr}"
+    );
+    assert!(
+        !stdout.contains(SECRET) && !stderr.contains(SECRET),
+        "{stdout}{stderr}"
+    );
+    assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
 }
 
 #[test]

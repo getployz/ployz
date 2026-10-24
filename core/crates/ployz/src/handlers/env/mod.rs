@@ -213,6 +213,7 @@ pub(super) fn sync_command(command: Command) -> Command {
                     .help("Stage the hints `ployz diff` lists from the Parent PARENT in --env; --only picks them")
                     .conflicts_with_all(["to", "from", "skip", "value", "plan", "close", "undo"]),
             )
+            .arg(crate::cli::approval())
 }
 
 pub(super) fn copy_command(command: Command) -> Command {
@@ -334,6 +335,7 @@ pub(super) fn pr_command(command: Command) -> Command {
                 .value_parser(clap::value_parser!(bool))
                 .help("Make PR Environments for bots' pull requests too"),
         )
+        .arg(crate::cli::approval())
 }
 
 pub(super) fn pr_approve_command(command: Command) -> Command {

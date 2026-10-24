@@ -63,7 +63,8 @@ pub(crate) fn pr(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     let remove_on_close = matches.get_one::<bool>("remove-on-close").copied();
     let include_bots = matches.get_one::<bool>("bots").copied();
-    let store = store(root)?;
+    let retried = pr_args(matches);
+    let store = store(root)?.args(retried.iter().map(String::as_str));
     let query = PrPlansQuery {
         project: project.clone(),
     };
@@ -151,6 +152,31 @@ pub(crate) fn pr(root: &ArgMatches) -> Result<(), Error> {
         ]);
     }
     crate::ui::list(&json, &table)
+}
+
+/// The repository and plan flags as typed, which an approval's retry repeats.
+fn pr_args(matches: &ArgMatches) -> Vec<String> {
+    let mut args: Vec<String> = matches
+        .get_one::<String>("repository")
+        .cloned()
+        .into_iter()
+        .collect();
+    for flag in ["on", "off"] {
+        if matches.get_flag(flag) {
+            args.push(format!("--{flag}"));
+        }
+    }
+    for flag in ["from", "copy", "setup"] {
+        for value in matches.get_many::<String>(flag).into_iter().flatten() {
+            args.extend([format!("--{flag}"), value.clone()]);
+        }
+    }
+    for flag in ["remove-on-close", "bots"] {
+        if let Some(value) = matches.get_one::<bool>(flag) {
+            args.extend([format!("--{flag}"), value.to_string()]);
+        }
+    }
+    args
 }
 
 /// Let a pull request's current head deploy: only that head, so a push waits again.

@@ -132,7 +132,8 @@ How you answer depends on where the command runs:
   `PLOYZ_TOKEN`, when Cloud doesn't name the organization, the link is Ployz Cloud itself. It
   waits until someone approves or denies it in Ployz Cloud, then carries on, or fails naming what
   was denied and the reason given. Ctrl-C, or losing Ployz Cloud, stops waiting and leaves the
-  approval pending, and the error names the command to run again with `--approval ID`. If Ployz
+  approval pending, and the error names the command to run again with `--approval ID`, except
+  for `ployz env sync --value ROW` (see `--json` below), whose rerun asks again. If Ployz
   Cloud answers with an error instead, the command fails saying it couldn't check the approval,
   and names the command to run again only when the error is on Cloud's side. If Cloud refuses
   your sign-in or token, or you've left the organization, it names no command to run again;
@@ -140,7 +141,11 @@ How you answer depends on where the command runs:
   left, `ployz logout` forgets the sign-in here though Cloud refuses to sign it out, and warns
   that Cloud didn't revoke it.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
-  is the same command with `--approval ID`. Run that once the approval is approved.
+  is the same command with `--approval ID`. Run that once the approval is approved. The one
+  exception is `ployz env sync --value ROW`, which refuses `--approval`, since an approval can't
+  carry secrets given again on stdin. Its retry names each `--value ROW` but never the secret and
+  no approval, so pipe the values on stdin again and it asks for a new approval. To finish such a
+  sync, run it without `--json` so it waits for the approval.
 - In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the
   call fails with a link, as for a connected agent below. See
   [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).

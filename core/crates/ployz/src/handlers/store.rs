@@ -162,6 +162,8 @@ pub(crate) struct Store<'m> {
     matches: &'m ArgMatches,
     /// The command's words, then the arguments its retry repeats: never raw input.
     words: Vec<String>,
+    /// This run reads secrets from stdin, so its approval retry asks for a new approval.
+    secrets: bool,
 }
 
 impl<'m> Store<'m> {
@@ -171,7 +173,15 @@ impl<'m> Store<'m> {
             backend,
             matches,
             words: vec!["deploy".into()],
+            secrets: false,
         }
+    }
+
+    /// Mark this run as reading secrets from stdin (`env sync --value`): a retry can't
+    /// repeat them, so its approval retry names no approval and asks for a new one.
+    pub(crate) const fn reads_secrets(mut self, secrets: bool) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     /// Name the arguments this command's retry repeats.
@@ -510,16 +520,27 @@ impl<'m> Store<'m> {
     /// This command's failure for a Store error: an ambiguous Project is fixed by
     /// linking this directory to one, after which the same command runs as typed.
     pub(crate) fn fail(&self, error: impl Into<Refusal>) -> Error {
-        let Refusal { error, mut hint } = with_next(
+        let Refusal {
+            mut error,
+            mut hint,
+        } = with_next(
             error,
             |refusal| {
                 refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
             },
             || next(self.matches, &["link", "--project", "PROJECT"]),
         );
-        if let (None, StoreCallError::Refused(refused)) = (&hint, &error)
+        if let (None, StoreCallError::Refused(refused)) = (&hint, &mut error)
             && let Some(asked) = Asked::of(refused)
         {
+            if self.secrets {
+                refused.message = format!(
+                    "{}. --approval can't go with --value, so the retry reads each --value \
+                     from stdin again and asks for a new approval. To finish in one run, run \
+                     it without --json: it waits for the approval.",
+                    refused.message.trim_end_matches('.')
+                );
+            }
             hint = Some(Hint::Retry(self.approving(&asked.id)));
         }
         Error::from(error).hint(hint)
@@ -654,7 +675,12 @@ impl<'m> Store<'m> {
         }
     }
 
+    /// This command again with approval `id`; a run that gives secrets on stdin asks
+    /// for a new approval instead, so its retry names each `--value` row and no approval.
     fn approving(&self, id: &str) -> String {
+        if self.secrets {
+            return self.retry(self.carried());
+        }
         self.retry(Carried {
             approval: Some(id.to_owned()),
             ..self.carried()
@@ -761,6 +787,7 @@ pub(crate) fn reachable(root: &ArgMatches) -> Result<Option<Store<'_>>, Error> {
         backend,
         matches,
         words,
+        secrets: false,
     }))
 }
 
@@ -860,6 +887,7 @@ pub(crate) fn store_with_edits(matches: &ArgMatches) -> (Store<'_>, impl Fn()) {
         backend: Backend::Local(local, who),
         matches,
         words: vec!["get".to_owned()],
+        secrets: false,
     };
     (store, edit)
 }
@@ -1572,6 +1600,7 @@ mod tests {
             ),
             matches: leaf_matches(&root),
             words: vec!["deploy".to_owned()],
+            secrets: false,
         };
         let refused = ployz_core::RpcError {
             code: RpcErrorCode::ConfirmationRequired,
@@ -1603,6 +1632,7 @@ mod tests {
                 ),
                 matches: leaf_matches(&root),
                 words: vec!["env".to_owned(), "rm".to_owned(), "staging".to_owned()],
+                secrets: false,
             }
             .again(&["--confirm", "shop/staging"])
         };
@@ -1657,6 +1687,7 @@ mod tests {
             ),
             matches: leaf_matches(&root),
             words: vec!["deploy".to_owned(), "--skip-deploy".to_owned()],
+            secrets: false,
         };
         let refused = ployz_core::RpcError {
             code: RpcErrorCode::ConfirmationRequired,
@@ -1729,6 +1760,7 @@ mod tests {
                 ),
                 matches: leaf_matches(&root),
                 words: words.iter().map(|word| (*word).to_owned()).collect(),
+                secrets: false,
             };
             let refused = ployz_core::RpcError {
                 code: RpcErrorCode::ConfirmationRequired,
@@ -1772,6 +1804,7 @@ mod tests {
             ),
             matches: leaf_matches(&root),
             words: vec!["deploy".to_owned()],
+            secrets: false,
         };
         let refused = ployz_core::RpcError {
             code: RpcErrorCode::ConfirmationRequired,
@@ -1820,6 +1853,7 @@ mod tests {
             ),
             matches: leaf_matches(&root),
             words: vec!["deploy".to_owned()],
+            secrets: false,
         };
         let next_of = |details| {
             let refusal = store.at_review(
@@ -1872,6 +1906,7 @@ mod tests {
             ),
             matches: leaf_matches(&root),
             words: vec!["deploy".to_owned()],
+            secrets: false,
         };
         let next = |accept: serde_json::Value| {
             let refusal = store.at_review(
@@ -1941,6 +1976,7 @@ mod tests {
             ),
             matches: leaf_matches(&root),
             words: vec!["deploy".to_owned()],
+            secrets: false,
         };
         let refusal = store.at_review(
             StoreCallError::Refused(ployz_core::RpcError {
@@ -1975,6 +2011,7 @@ mod tests {
                 ),
                 matches: leaf_matches(&root),
                 words: vec!["deploy".to_owned()],
+                secrets: false,
             };
             let refused = StoreCallError::Refused(ployz_core::RpcError {
                 code: RpcErrorCode::ConfirmationRequired,
