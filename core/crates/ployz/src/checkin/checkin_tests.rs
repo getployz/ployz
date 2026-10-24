@@ -2153,6 +2153,19 @@ async fn an_install_that_retries_a_failed_docker_install_drops_that_failure_from
     assert_eq!(blocker_codes(&paths), ["kernel_too_old"]);
 }
 
+#[test]
+fn a_docker_failure_in_the_second_its_preparation_started_belongs_to_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    docker_failed_at(&paths, "2026-10-16T00:00:00Z");
+    let state: PrepState =
+        serde_json::from_slice(&fs::read(&paths.prepare_state).unwrap()).unwrap();
+    let started = at("2026-10-16T00:00:00.400Z");
+    assert!(!state.docker_retried(Some(started)));
+    assert!(state.docker_retried(Some(started + TimeDelta::seconds(1))));
+    assert!(!state.docker_retried(None));
+}
+
 #[tokio::test]
 async fn a_docker_install_that_failed_after_its_preparation_started_still_blocks() {
     let dir = tempfile::tempdir().unwrap();

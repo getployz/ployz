@@ -6,7 +6,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use ployz_core::CloudEnrollToken;
 use serde::{Deserialize, Serialize};
 
@@ -428,9 +428,10 @@ impl PrepState {
             .then_some(self.docker.finished_at.as_deref())
             .flatten()
             .and_then(|at| DateTime::parse_from_rfc3339(at).ok());
+        // ployzd dates the failure to the second, so one in the start's own second is this run's.
         failed
             .zip(started)
-            .is_some_and(|(failed, started)| failed < started)
+            .is_some_and(|(failed, started)| failed < started.trunc_subsecs(0))
     }
 
     pub(super) const fn fresh() -> Self {
