@@ -42,7 +42,7 @@ use crate::machine::{LocalMachine, LocalMachineRecord};
 pub mod build_grant;
 pub mod forgotten;
 mod tunnel;
-pub use build_grant::BuildGrants;
+pub use build_grant::{BuildGrants, Mint};
 pub use forgotten::Roster;
 
 /// Application close code sent when the remote key is not admitted and no tombstone holds it.

@@ -131,6 +131,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_store::GitSource>();
     declarations.add::<ployz_store::SystemEvent>();
     declarations.add::<ployz_store::GithubBuild>();
+    declarations.add::<ployz_store::GithubHandOff>();
     declarations.add::<ployz_store::GithubTreeQuery>();
     declarations.add::<ployz_store::GithubTreeView>();
     declarations.add::<ployz_store::GithubFileQuery>();

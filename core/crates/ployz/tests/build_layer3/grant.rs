@@ -59,9 +59,13 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
     let minted = session
         .mint_build_grant(MintBuildGrantRequest {
             repository: ployz_core::BuildGrantRepository::parse("ployz-build/app").unwrap(),
+            holder: None,
         })
         .await
         .unwrap();
+    let ployz_core::MintedKey::Grant { grant } = minted.key else {
+        panic!("a holderless mint returns its grant");
+    };
     let output = cluster
         .machine_shell(
             0,
@@ -70,7 +74,7 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
                  PLOYZ_BUILD_GRANT={} ployz build --deployment /tmp/deployment.json \
                  --commit {commit} --fingerprint {fingerprint} --source /tmp/app",
                 shell_words::quote(&deployment.to_string()),
-                shell_words::quote(&minted.grant.to_secret_string()),
+                shell_words::quote(&grant.to_secret_string()),
             ),
         )
         .unwrap();

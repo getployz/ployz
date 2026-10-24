@@ -78,7 +78,7 @@ for (const { stop, failed } of cases) {
 
       const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
       expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, target, { ended: true, startLimit: false }))).toEqual({ failed });
-      expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toMatchObject({ status: "failed" });
+      expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toMatchObject({ held: { status: "failed" } });
       expect(cancels()).toEqual([
         { path: CANCEL, access: { type: "installation", installationId: 7 } },
         { path: CANCEL, access: { type: "installation", installationId: 7 } },

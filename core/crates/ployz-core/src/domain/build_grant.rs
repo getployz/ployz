@@ -113,4 +113,17 @@ mod tests {
         let error = BuildGrant::parse(format!("{text} ")).unwrap_err();
         assert!(!format!("{error}").contains(&text[PREFIX.len()..]));
     }
+
+    /// The fixture the `getployz/build` Action assembles its grant against.
+    #[test]
+    fn a_holder_assembles_the_contract_grant_string() {
+        let hex = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+        let seed: [u8; 32] = std::array::from_fn(|index| {
+            u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).unwrap()
+        });
+        assert_eq!(
+            BuildGrant::new(ManagementIdentity::from_bytes([1; 32]), seed).to_secret_string(),
+            "ployzgrant1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGdYbGd7_1aYLqESvSS7CzEREnFaXsyaRlwO6wDHK5_YA"
+        );
+    }
 }

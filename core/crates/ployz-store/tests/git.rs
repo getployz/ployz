@@ -15,8 +15,8 @@ use ployz_store::{
     SettingPath, SourceKind, Trusted, View, Written,
 };
 use ployz_store::{
-    BuildOrder, BuildOrderQuery, Builder, GithubBuildId, GithubClaims, GithubEnd, GithubGrant,
-    GithubReport, GithubRun, SetBuildOrder,
+    BuildOrder, BuildOrderQuery, Builder, GithubBuild, GithubBuildId, GithubClaims, GithubEnd,
+    GithubGrant, GithubHandOff, GithubReport, GithubRun, SetBuildOrder,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -821,6 +821,13 @@ fn lines(from: u64, lines: &[&str], platforms: Option<&[&str]>) -> GithubReport 
     }
 }
 
+fn held(store: &ConfigStore, id: &GithubBuildId) -> GithubBuild {
+    match store.github_build(id).unwrap() {
+        GithubHandOff::Held(build) => *build,
+        GithubHandOff::PassedOn { why } => panic!("GitHub passed it on: {why}"),
+    }
+}
+
 /// A pinned Git build of a fresh Deployment, handed to GitHub run `RUN`.
 fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
     store
@@ -897,10 +904,11 @@ fn a_github_check_in_must_come_from_the_dispatched_repository_workflow_and_run()
     );
 
     // Only the runner gets the inputs: the lowering input and the pinned commit.
-    let (input, commit, receipt) = store.github_input(&id).unwrap();
-    assert_eq!(commit.as_str(), "a".repeat(40));
-    assert!(input.get("snapshots").is_some());
-    assert_eq!(receipt, None);
+    let built = store.github_input(&id).unwrap();
+    assert_eq!(built.commit.as_str(), "a".repeat(40));
+    assert!(built.input.get("snapshots").is_some());
+    assert_eq!(built.receipt, None);
+    assert_eq!(built.sealed, None);
 }
 
 #[test]
@@ -936,7 +944,7 @@ fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_repor
         RpcErrorCode::Conflict,
         "a second check-in is refused"
     );
-    let build = store.github_build(&id).unwrap();
+    let build = held(&store, &id);
     assert_eq!(build.grant, Some(grant()));
     assert!(build.checked_in_at.is_some());
 
@@ -969,7 +977,7 @@ fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_repor
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
-        store.github_build(&id).unwrap().ended,
+        held(&store, &id).ended,
         Some(ployz_store::RunEnd::Built {
             platforms: vec!["linux/amd64".to_owned()]
         })
@@ -1062,6 +1070,151 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
             .code,
         RpcErrorCode::Conflict
     );
+}
+
+#[test]
+fn a_build_github_passed_on_at_check_in_reads_as_no_longer_on_github() {
+    let (store, who) = shop();
+    let id = dispatched(&store, &who);
+    let skip = GithubEnd::Unstarted {
+        message: "GitHub builds a sealed value only with an up-to-date Ployz".into(),
+    };
+    assert_eq!(
+        store.github_end(&id, Some(RUN), &skip).unwrap(),
+        BuildStatus::Pending
+    );
+    assert_eq!(
+        store.github_build(&id).unwrap(),
+        GithubHandOff::PassedOn {
+            why: "GitHub builds a sealed value only with an up-to-date Ployz".into()
+        }
+    );
+    assert_eq!(
+        store.github_end(&id, Some(RUN), &skip).unwrap_err().code,
+        RpcErrorCode::Conflict,
+        "the walk's later look finds it already ended"
+    );
+    let source = &store.sources(&id.deployment).unwrap()[0];
+    assert_eq!(
+        (source.status, source.message.as_deref()),
+        (
+            Some(BuildStatus::Pending),
+            Some("GitHub builds a sealed value only with an up-to-date Ployz")
+        ),
+        "the next Builder takes it, with why"
+    );
+}
+
+#[test]
+fn a_run_github_passed_on_holds_nothing_once_the_next_builder_starts() {
+    for checked_in in [false, true] {
+        let (store, who) = shop();
+        let id = dispatched(&store, &who);
+        let skip = if checked_in {
+            store.github_check_in(&id, RUN, &grant()).unwrap();
+            GithubEnd::Skipped {
+                message: "the run ran out of time".into(),
+            }
+        } else {
+            GithubEnd::Unstarted {
+                message: "GitHub builds a sealed value only with an up-to-date Ployz".into(),
+            }
+        };
+        store.github_end(&id, Some(RUN), &skip).unwrap();
+
+        let runner = RunnerId::parse("cloud-1").unwrap();
+        store.claim(&id.deployment, &runner).unwrap();
+        store
+            .record(
+                &id.deployment,
+                &runner,
+                report(BuildStatus::Building, None, ""),
+            )
+            .unwrap();
+
+        let refused = |result: Result<(), ployz_core::RpcError>, what: &str| {
+            assert_eq!(
+                result.unwrap_err().code,
+                RpcErrorCode::Conflict,
+                "{what} (checked in: {checked_in})"
+            );
+        };
+        refused(store.github_check_in(&id, RUN, &grant()), "a late check-in");
+        refused(
+            store
+                .github_report(&id, RUN, &lines(0, &["late\n"], None))
+                .map(drop),
+            "a late report",
+        );
+        refused(
+            store
+                .github_end(
+                    &id,
+                    Some(RUN),
+                    &GithubEnd::Built {
+                        receipt: json!({ "fingerprint": "f".repeat(64) }),
+                    },
+                )
+                .map(drop),
+            "a late Built",
+        );
+        refused(
+            store
+                .github_end(
+                    &id,
+                    Some(RUN),
+                    &GithubEnd::Unstarted {
+                        message: "no runner started the build in time".into(),
+                    },
+                )
+                .map(drop),
+            "a late Unstarted",
+        );
+        refused(
+            store
+                .github_end(
+                    &id,
+                    Some(RUN),
+                    &GithubEnd::Failed {
+                        message: "cancelled".into(),
+                    },
+                )
+                .map(drop),
+            "a late cancel",
+        );
+        assert!(store.github_outstanding(&id.deployment).unwrap().is_empty());
+        assert!(
+            matches!(
+                store.github_build(&id).unwrap(),
+                GithubHandOff::PassedOn { .. }
+            ),
+            "GitHub no longer reads as building it"
+        );
+        let source = &store.sources(&id.deployment).unwrap()[0];
+        assert_eq!(
+            source.status,
+            Some(BuildStatus::Building),
+            "the Server builds it"
+        );
+    }
+}
+
+#[test]
+fn a_late_old_mint_skip_leaves_a_run_that_checked_in_building() {
+    let (store, who) = shop();
+    let id = dispatched(&store, &who);
+    store.github_check_in(&id, RUN, &grant()).unwrap();
+    let late = GithubEnd::Unstarted {
+        message: "GitHub builds a sealed value only with an up-to-date Ployz".into(),
+    };
+    assert_eq!(
+        store.github_end(&id, Some(RUN), &late).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    let build = store.github_authorize(&id, &claims()).unwrap();
+    assert_eq!(build.status, BuildStatus::Building);
+    assert_eq!(build.grant, Some(grant()));
+    assert_eq!(store.github_outstanding(&id.deployment).unwrap().len(), 1);
 }
 
 #[test]
@@ -1191,15 +1344,72 @@ fn a_build_names_the_server_that_built_it_and_why_github_passed_it_on() {
 }
 
 #[test]
-fn a_build_github_takes_after_skipping_it_no_longer_says_github_skipped_it() {
-    let (store, who) = shop();
-    let id = dispatched(&store, &who);
-    let skip = GithubEnd::Skipped {
-        message: "the run ran out of time".into(),
-    };
-    store.github_end(&id, Some(RUN), &skip).unwrap();
-    let skipped = || {
-        store
+fn a_build_github_passed_on_stays_passed_on_for_its_deployment() {
+    for (checked_in, why) in [
+        (
+            false,
+            "GitHub builds a sealed value only with an up-to-date Ployz",
+        ),
+        (false, "no runner started the build in time"),
+        (true, "the run ran out of time"),
+    ] {
+        let (store, who) = shop();
+        let id = dispatched(&store, &who);
+        let message = why.to_owned();
+        let skip = if checked_in {
+            store.github_check_in(&id, RUN, &grant()).unwrap();
+            GithubEnd::Skipped { message }
+        } else {
+            GithubEnd::Unstarted { message }
+        };
+        store.github_end(&id, Some(RUN), &skip).unwrap();
+
+        let refused = |result: Result<(), ployz_core::RpcError>, what: &str| {
+            assert_eq!(
+                result.unwrap_err().code,
+                RpcErrorCode::Conflict,
+                "{what} ({why})"
+            );
+        };
+        refused(
+            store.github_dispatched(&id, &github_run(RUN + 1)),
+            "a retried start's new run",
+        );
+        refused(
+            store.github_dispatched(&id, &github_run(RUN)),
+            "the run it passed on",
+        );
+        refused(
+            store
+                .github_end(
+                    &id,
+                    None,
+                    &GithubEnd::Skipped {
+                        message: "GitHub couldn't take the build: rate limited".into(),
+                    },
+                )
+                .map(drop),
+            "a retried start's skip",
+        );
+        refused(
+            store
+                .github_end(
+                    &id,
+                    None,
+                    &GithubEnd::Built {
+                        receipt: json!({ "fingerprint": "f".repeat(64) }),
+                    },
+                )
+                .map(drop),
+            "a retried start's reuse",
+        );
+
+        assert!(store.github_outstanding(&id.deployment).unwrap().is_empty());
+        assert_eq!(
+            store.github_build(&id).unwrap(),
+            GithubHandOff::PassedOn { why: why.into() }
+        );
+        let log = store
             .read(
                 &who,
                 &BuildLogQuery {
@@ -1207,23 +1417,14 @@ fn a_build_github_takes_after_skipping_it_no_longer_says_github_skipped_it() {
                     service: ServiceName::parse("web").unwrap(),
                 },
             )
-            .unwrap()
-            .build
-            .github_skipped
-    };
-    assert_eq!(skipped().as_deref(), Some("the run ran out of time"));
-
-    store.github_dispatched(&id, &github_run(RUN + 1)).unwrap();
-    assert_eq!(skipped(), None, "a new GitHub run takes the build back");
-    store.github_check_in(&id, RUN + 1, &grant()).unwrap();
-    let receipt = json!({ "fingerprint": "f".repeat(64), "machine_id": grant().machine });
-    assert_eq!(
-        store
-            .github_end(&id, Some(RUN + 1), &GithubEnd::Built { receipt })
-            .unwrap(),
-        BuildStatus::Built
-    );
-    assert_eq!(skipped(), None, "GitHub built it");
+            .unwrap();
+        assert_eq!(
+            (log.build.status, log.build.github_skipped.as_deref()),
+            (BuildStatus::Pending, Some(why)),
+            "the next Builder takes it, with why"
+        );
+        assert_eq!(log.log.matches("GitHub skipped").count(), 1, "{}", log.log);
+    }
 }
 
 fn source(store: &ConfigStore, who: &Actor) -> SourceKind {
@@ -1708,7 +1909,7 @@ fn a_build_that_reads_a_sealed_value_skips_github_whatever_it_prefers() {
 }
 
 #[test]
-fn github_gets_no_sealed_value_and_never_a_build_that_reads_one() {
+fn github_gets_no_sealed_value_and_learns_which_one_its_build_reads() {
     let dir = tempfile::tempdir().unwrap();
     let (store, who) = sealed_shop(&dir);
     let db = "00000000-0000-4000-8000-000000000004";
@@ -1742,7 +1943,9 @@ fn github_gets_no_sealed_value_and_never_a_build_that_reads_one() {
             .unwrap();
         GithubBuildId::parse(&format!("{deployment}.web")).unwrap()
     };
-    let (input, _, _) = store.github_input(&id).unwrap();
+    let built = store.github_input(&id).unwrap();
+    assert_eq!(built.sealed, None);
+    let input = built.input;
     let snapshots = input["snapshots"].as_array().unwrap();
     assert_eq!(snapshots.len(), 2);
     for snapshot in snapshots {
@@ -1789,12 +1992,13 @@ fn github_gets_no_sealed_value_and_never_a_build_that_reads_one() {
     assert_eq!(sources[0].sealed.as_deref(), Some("DB_URL"));
     assert_eq!(sources[0].builders, [Builder::Servers]);
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
-    let error = store.github_input(&id).unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
-    assert_eq!(
-        error.message,
-        "DB_URL is sealed. Builds that read a sealed value run on your server."
-    );
+    let built = store.github_input(&id).unwrap();
+    assert_eq!(built.sealed.as_deref(), Some("DB_URL"));
+    for snapshot in built.input["snapshots"].as_array().unwrap() {
+        for (name, value) in snapshot["resolvedEnv"].as_object().unwrap() {
+            assert!(value.is_string(), "{name} is {value}");
+        }
+    }
 }
 
 #[test]
