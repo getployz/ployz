@@ -128,6 +128,7 @@ impl CapturedBuild {
             output: definition.output,
             no_cache: false,
             pull: false,
+            sealed: false,
         })
         .map_err(|source| Error::Build {
             service: captured.name.clone(),

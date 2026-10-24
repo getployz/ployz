@@ -126,6 +126,8 @@ pub struct Request<'a> {
     pub no_cache: bool,
     /// Always attempt to pull a newer version of a referenced image.
     pub pull: bool,
+    /// Hide unreadable progress lines when this Build reads Sealed values.
+    pub sealed: bool,
 }
 
 /// One image to produce, named by the caller.
@@ -489,7 +491,7 @@ fn execute_produce(
                     .map_or(native.as_str(), String::as_str)
             ));
             progress(Progress::Stage(Stage::Building));
-            if let Err(error) = builder.run(&arguments, || {
+            if let Err(error) = builder.run(&arguments, request.sealed, || {
                 progress(Progress::Target {
                     name: target.target.name.clone(),
                     outcome: TargetEvidence::Unknown,

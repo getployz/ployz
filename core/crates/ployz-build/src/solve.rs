@@ -30,6 +30,7 @@ struct SolveStatus {
 #[derive(Deserialize)]
 struct Vertex {
     digest: String,
+    #[serde(default)]
     name: String,
     started: Option<String>,
     completed: Option<String>,
@@ -54,10 +55,13 @@ struct StreamKey {
 
 /// Splits Buildx output into lines and turns each solve status into progress.
 /// Lines that are not solve statuses (warnings, plugin errors) stay `Output`.
+/// Sealed Builds hide unreadable JSON objects and oversized lines.
 /// Step output is emitted in whole lines: BuildKit splits log records at
 /// arbitrary byte offsets, even inside a multibyte character.
 #[derive(Default)]
 pub(crate) struct SolveParser {
+    sealed: bool,
+    discarding_line: bool,
     pending: Vec<u8>,
     partial: HashMap<StreamKey, Vec<u8>>,
     started: HashSet<String>,
@@ -65,14 +69,36 @@ pub(crate) struct SolveParser {
 }
 
 impl SolveParser {
+    pub(crate) fn new(sealed: bool) -> Self {
+        Self {
+            sealed,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn feed(&mut self, bytes: &[u8], progress: &dyn Fn(Progress)) {
+        let bytes = if self.discarding_line {
+            let Some(end) = bytes.iter().position(|byte| *byte == b'\n') else {
+                return;
+            };
+            self.discarding_line = false;
+            bytes.split_at(end + 1).1
+        } else {
+            bytes
+        };
         self.pending.extend_from_slice(bytes);
         while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
             let line = self.pending.drain(..=end).collect::<Vec<u8>>();
             self.emit_line(&line, progress);
         }
         if self.pending.len() > MAX_LINE {
-            progress(Progress::Output(std::mem::take(&mut self.pending)));
+            if self.sealed {
+                self.pending.clear();
+                self.discarding_line = true;
+                Self::hidden_line(progress);
+            } else {
+                progress(Progress::Output(std::mem::take(&mut self.pending)));
+            }
         }
     }
 
@@ -84,7 +110,12 @@ impl SolveParser {
 
     pub(crate) fn finish(&mut self, progress: &dyn Fn(Progress)) {
         if !self.pending.is_empty() {
-            progress(Progress::Output(std::mem::take(&mut self.pending)));
+            let line = std::mem::take(&mut self.pending);
+            if self.sealed {
+                self.emit_line(&line, progress);
+            } else {
+                progress(Progress::Output(line));
+            }
         }
         for (key, bytes) in std::mem::take(&mut self.partial) {
             emit_output(key, &bytes, progress);
@@ -92,8 +123,16 @@ impl SolveParser {
     }
 
     fn emit_line(&mut self, line: &[u8], progress: &dyn Fn(Progress)) {
+        if self.sealed && line.len() > MAX_LINE {
+            Self::hidden_line(progress);
+            return;
+        }
         let Ok(status) = serde_json::from_slice::<SolveStatus>(line) else {
-            progress(Progress::Output(line.to_vec()));
+            if self.sealed && line.trim_ascii_start().starts_with(b"{") {
+                Self::hidden_line(progress);
+            } else {
+                progress(Progress::Output(line.to_vec()));
+            }
             return;
         };
         // Register steps before their first output, but publish completion only
@@ -174,6 +213,10 @@ impl SolveParser {
             }
             progress(Progress::Step(step));
         }
+    }
+
+    fn hidden_line(progress: &dyn Fn(Progress)) {
+        progress(Progress::Output(b"[build progress line hidden]\n".to_vec()));
     }
 }
 
@@ -304,6 +347,102 @@ mod tests {
                 | Progress::Target { .. } => None,
             })
             .collect()
+    }
+
+    fn output(events: &[Progress]) -> Vec<u8> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Progress::Output(bytes) => Some(bytes.as_slice()),
+                Progress::Stage(_)
+                | Progress::Step(_)
+                | Progress::StepOutput { .. }
+                | Progress::Timing { .. }
+                | Progress::Target { .. } => None,
+            })
+            .flatten()
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn a_vertex_without_a_name_still_decodes_its_logs() {
+        let line = b"{\"vertexes\":[{\"digest\":\"sha256:a\"}],\"logs\":[{\"vertex\":\"sha256:a\",\"stream\":1,\"data\":\"aGVsbG8K\"}]}\n";
+        for sealed in [false, true] {
+            let events = collect(|parser, progress| {
+                parser.sealed = sealed;
+                parser.feed(line, progress);
+            });
+            assert_eq!(texts(&events), ["hello\n"]);
+            assert!(output(&events).is_empty());
+        }
+    }
+
+    #[test]
+    fn unreadable_status_objects_are_hidden_only_for_sealed_builds() {
+        for key in ["vertexes", "logs", "statuses", "warnings"] {
+            for ending in ["", "\n"] {
+                for line in [
+                    format!(r#" {{"{key}":false,"logs":false,"message":"private"}}{ending}"#),
+                    format!(r#" {{"{key}": ["private"{ending}"#),
+                ] {
+                    for sealed in [false, true] {
+                        let events = collect(|parser, progress| {
+                            parser.sealed = sealed;
+                            parser.feed(line.as_bytes(), progress);
+                        });
+                        let expected = if sealed {
+                            b"[build progress line hidden]\n".as_slice()
+                        } else {
+                            line.as_bytes()
+                        };
+                        assert_eq!(output(&events), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_lines_and_their_later_chunks_are_hidden_only_for_sealed_builds() {
+        let oversized = "x".repeat(MAX_LINE + 1);
+        for sealed in [false, true] {
+            for chunked in [false, true] {
+                for ending in ["", "\nwarning: plain\n"] {
+                    let line = format!("{oversized}private{ending}");
+                    let events = collect(|parser, progress| {
+                        parser.sealed = sealed;
+                        if chunked {
+                            parser.feed(oversized.as_bytes(), progress);
+                            parser.feed(b"priv", progress);
+                            parser.feed(format!("ate{ending}").as_bytes(), progress);
+                        } else {
+                            parser.feed(line.as_bytes(), progress);
+                        }
+                    });
+                    let expected = if sealed {
+                        format!(
+                            "[build progress line hidden]\n{}",
+                            ending.trim_start_matches('\n')
+                        )
+                    } else {
+                        line
+                    };
+                    assert_eq!(output(&events), expected.as_bytes());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sealed_builds_decode_unterminated_statuses_and_keep_plain_warnings() {
+        let events = collect(|parser, progress| {
+            parser.sealed = true;
+            parser.feed(b"WARNING: not json\n", progress);
+            parser.feed(record(b"hello\n").trim_end().as_bytes(), progress);
+        });
+        assert_eq!(texts(&events), ["hello\n"]);
+        assert_eq!(output(&events), b"WARNING: not json\n");
     }
 
     #[test]

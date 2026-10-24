@@ -212,6 +212,7 @@ exit 0
         output: Output::Registry,
         no_cache: false,
         pull: false,
+        sealed: false,
     };
     let admission = Admission::try_acquire_with(&HostPolicy {
         docker: program.clone(),
@@ -296,6 +297,7 @@ exit 0
         output: Output::Load,
         no_cache: false,
         pull: false,
+        sealed: false,
     };
     let admission = Admission::try_acquire_with(&HostPolicy {
         docker: program.clone(),
@@ -385,6 +387,7 @@ fn requested_output_selects_exclusive_bake_behavior() {
         output,
         no_cache: true,
         pull: false,
+        sealed: false,
     };
 
     let validate = bake_arguments(
@@ -533,6 +536,7 @@ esac
             output: Output::Validate,
             no_cache: false,
             pull: false,
+            sealed: false,
         };
         execute(&request, &Cancellation::new(), &|_| ()).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
@@ -590,6 +594,7 @@ fn docker_preflight_holds_quarantine_and_clears_confirmed_failures() {
         output: Output::Load,
         no_cache: false,
         pull: false,
+        sealed: false,
     };
     for stop_at in ["context show", "buildx version"] {
         executable(
@@ -683,6 +688,7 @@ exit 0
         output: Output::Validate,
         no_cache: false,
         pull: false,
+        sealed: false,
     };
     let admission = Admission::try_acquire_with(&HostPolicy {
         state_directory: directory.clone(),
@@ -744,6 +750,7 @@ exit 0
         output: Output::Validate,
         no_cache: false,
         pull: false,
+        sealed: false,
     };
     let admission = Admission::try_acquire_with(&HostPolicy {
         state_directory: directory.clone(),
@@ -787,6 +794,7 @@ fn a_cache_export_without_a_runner_cache_runs_nothing() {
         output: Output::Load,
         no_cache: false,
         pull: false,
+        sealed: false,
     };
     // Any Docker call would fail: this Docker does not exist.
     assert_eq!(export_cache(&request, &Cancellation::new()), Ok(()));
@@ -822,6 +830,7 @@ fn railpack_prepares_a_python_requirements_app() {
         output: Output::Load,
         no_cache: false,
         pull: false,
+        sealed: false,
     };
     let docker = Docker {
         program: Path::new("docker"),
@@ -905,6 +914,7 @@ fn railpack_delivers_a_sealed_value_to_a_build_step_and_keeps_it_out_of_the_imag
         output: Output::Load,
         no_cache: false,
         pull: false,
+        sealed: true,
     };
     let reported = std::sync::Mutex::new(String::new());
     let progress = |progress: Progress| {
