@@ -61,6 +61,7 @@ import { asString } from "#/lib/json";
 import { type ConsentChoice, hostedMcpPlugins, MCP_SCOPES, mcpEndpoints, withConsentChoice } from "#/server/auth-mcp.server";
 import { AppConfig } from "#/server/config.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
+import { runRedactedLog } from "#/server/log-redaction";
 import { Unauthorized } from "#/server/public-error";
 
 export { Unauthorized };
@@ -306,6 +307,17 @@ function hostedPolarPlugin(
   });
 }
 
+const BETTER_AUTH_LOGS = {
+  debug: Effect.logDebug,
+  info: Effect.logInfo,
+  warn: Effect.logWarning,
+  error: Effect.logError,
+} as const;
+
+function logBetterAuth(level: keyof typeof BETTER_AUTH_LOGS, message: string, ...args: unknown[]) {
+  runRedactedLog(BETTER_AUTH_LOGS[level](`[Better Auth] ${message}`, ...args));
+}
+
 const makeAuth = Effect.gen(function* () {
   const config = yield* AppConfig;
   const database = yield* BetterAuthDatabase;
@@ -352,7 +364,10 @@ const makeAuth = Effect.gen(function* () {
     }),
     trustedOrigins: url.trustedOrigins,
     // Every OAuth failure, a bad state included, lands on the sign-in page; a per-request errorCallbackURL misses those.
-    onAPIError: { errorURL: "/auth" },
+    // Better Auth would log an unexpected failure with its message, and a failed query's message holds its params.
+    // Thrown, it reaches Cloud's boundary, which reports it redacted.
+    onAPIError: { errorURL: "/auth", throw: true },
+    logger: { log: logBetterAuth },
     emailAndPassword: { enabled: config.nodeEnv !== "production" },
     socialProviders: {
       github: {
