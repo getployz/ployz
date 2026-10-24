@@ -1798,6 +1798,25 @@ fn github_gets_no_sealed_value_and_never_a_build_that_reads_one() {
 }
 
 #[test]
+fn a_revision_claim_will_refuse_still_lists_its_builds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who) = sealed_shop(&dir);
+    // PORT reads PASSWORD while it is plain text, and still once it is sealed.
+    for change in [
+        set("web.preferredBuilder", json!("github")),
+        set("web.env.PASSWORD", json!("8080")),
+        set("web.env.PORT", json!("${{ PASSWORD }}")),
+        set("web.env.PASSWORD", sealed(SERVICE, "PASSWORD")),
+    ] {
+        store.write(&who, &edit(vec![change])).unwrap();
+    }
+    let deployment = admit(&store, &who, 1, &[]);
+    let source = &store.sources(&deployment).unwrap()[0];
+    assert_eq!(source.sealed.as_deref(), Some("PASSWORD"));
+    assert_eq!(source.builders, [Builder::Servers]);
+}
+
+#[test]
 fn an_environment_with_no_sealed_value_routes_without_opening_a_secret() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
