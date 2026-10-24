@@ -18,7 +18,6 @@ const publicKey = `${"A".repeat(43)}=`;
 describe("readClusterSealing", () => {
   let harness: PostgresTestHarness;
   const read = () => harness.runEffect(readClusterSealing(organizationId).pipe(Effect.provideService(SecretEncryption, encryption)));
-  const flagOn = () => harness.pool.query("insert into config_sealed_variables (organization_id) values ($1)", [organizationId]);
   // A Server reporting its key reads Cloud's config, which keeps its shipped default here.
   const report = () => harness.runEffect(recordSealingPublicKey(organizationId, clusterKey, publicKey).pipe(Effect.provide(
     AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl } })))),
@@ -42,26 +41,17 @@ describe("readClusterSealing", () => {
   beforeEach(async () => {
     await harness.pool.query(`
       truncate table organization cascade;
-      delete from config_sealed_variables;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
     `);
   });
 
-  it("is off without the flag, even with a key", async () => {
-    await pair();
-    await report();
-    expect(await read()).toEqual({ state: "off" });
-  });
-
   it("has no server while unpaired or before a Server reports a key", async () => {
-    await flagOn();
     expect(await read()).toEqual({ state: "no_server" });
     await pair();
     expect(await read()).toEqual({ state: "no_server" });
   });
 
   it("is ready with the current pairing's key", async () => {
-    await flagOn();
     await pair();
     await report();
     expect(await read()).toEqual({ state: "ready", publicKey });

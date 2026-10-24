@@ -139,7 +139,7 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
     const command = (sent: Extract<ConfigCommand, { command: "set_merge_value" }>["value"]): ConfigCommand =>
       ({ command: "set_merge_value", environment: store, into: destination, row: row.row, value: sent });
     if (!secret || value === undefined) return writer.commit(command(value));
-    // A secret's Edit shows with no value and goes sealed, or as typed while sealing is off, in its turn in the queue.
+    // A secret's Edit shows with no value and goes sealed in its turn in the queue.
     return writer.commit(command(undefined), [], async () => {
       const [sent] = await receivingValues(sealing, [{ row: row.row, value }], async () => {
         const services = await fetchStoreView(organizationSlug, scope, servicesQuery(destination));

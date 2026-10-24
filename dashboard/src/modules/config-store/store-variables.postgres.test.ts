@@ -22,7 +22,7 @@ const production = { project: "shop", environment: "production" };
 const PLAINTEXT = "tok_live_5ea515325cb640df";
 const suite = new CipherSuite({ kem: new DhkemX25519HkdfSha256(), kdf: new HkdfSha256(), aead: new Chacha20Poly1305() });
 
-it.live("the Store takes a value the browser sealed as its exact ciphertext, and the legacy value while sealing is off", () =>
+it.live("the Store takes a value the browser sealed as its exact ciphertext", () =>
   Effect.gen(function* () {
     const cloud = yield* storeTestCloud();
     yield* Effect.gen(function* () {
@@ -42,9 +42,8 @@ it.live("the Store takes a value the browser sealed as its exact ciphertext, and
 
       const pair = yield* Effect.promise(() => suite.kem.generateKeyPair());
       const publicKey = Buffer.from(yield* Effect.promise(() => suite.kem.serializePublicKey(pair.publicKey))).toString("base64");
-      // What `useSealing`'s `prepare` makes of a fresh read: sealed to its key while on, the plaintext while off.
-      let sealing: "ready" | "off" = "ready";
-      const prepare = (items: readonly SealItem[]) => Promise.all(items.map(async (item): Promise<SecretValue> => sealing === "off" ? item.value : ({
+      // What `useSealing`'s `prepare` makes of a fresh read: each value sealed to its key.
+      const prepare = (items: readonly SealItem[]) => Promise.all(items.map(async (item): Promise<SecretValue> => ({
         sealedFor: item.target.environment,
         value: { sealed: await sealValue({ organizationId: ORGANIZATION, publicKey }, item.target, item.key, item.value), scope: { service: item.target.service }, key: item.key },
       })));
@@ -64,7 +63,6 @@ it.live("the Store takes a value the browser sealed as its exact ciphertext, and
         (rows) => rows[0]?.working ?? assert.fail("no Working State"),
       );
 
-      yield* drizzle.execute(sql`insert into config_sealed_variables (organization_id) values (${ORGANIZATION})`);
       yield* Effect.promise(() => variables.create("TOKEN", PLAINTEXT, true, false).isPersisted.promise);
       const ciphertext = (sent[0] as { value: { sealed: string } }).value.sealed;
       const fingerprint = `c1:${createHash("sha256").update(Buffer.from(ciphertext, "base64")).digest("hex")}`;
@@ -72,14 +70,5 @@ it.live("the Store takes a value the browser sealed as its exact ciphertext, and
       expect(sealed).toContain(ciphertext);
       expect(sealed).toContain(fingerprint);
       expect(sealed).not.toContain(PLAINTEXT);
-
-      yield* drizzle.execute(sql`delete from config_sealed_variables where organization_id = ${ORGANIZATION}`);
-      sealing = "off";
-      yield* Effect.promise(() => variables.create("TOKEN", PLAINTEXT, true, false).isPersisted.promise);
-      expect(sent[1]).toBe(PLAINTEXT);
-      const legacy = yield* working;
-      expect(legacy).not.toContain(ciphertext);
-      expect(legacy).not.toContain("c1:");
-      expect(legacy).not.toContain(PLAINTEXT);
     }).pipe(Effect.provide(cloud));
   }), 60_000);

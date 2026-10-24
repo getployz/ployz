@@ -88,7 +88,7 @@ export function ServiceVariablesRawEditor({
   onApply,
   variables,
   valueTargets = EMPTY_REFERENCE_TARGETS,
-  sealing = "off",
+  sealing,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -96,8 +96,8 @@ export function ServiceVariablesRawEditor({
   onApply: (diff: RawEditorDiff) => Persistable;
   variables: VariableRecord[];
   valueTargets?: ReferenceTarget[];
-  /** Whether the Organization seals (`useSealing`'s cached state): ready offers Sealed for new keys. Display only. */
-  sealing?: "off" | "no_server" | "ready";
+  /** `useSealing`'s cached state: ready offers Sealed for new keys. Display only. */
+  sealing?: "no_server" | "ready";
 }) {
   const sealedVariables = variables.filter(
     (variable) => variable.value.type === "sealed",
@@ -215,7 +215,7 @@ export function ServiceVariablesRawEditor({
 
     if (entries.some((entry) => editor.sealing.includes(entry.key) && sealedValueProblem(entry.key, entry.value) !== null)) return;
     // A ticked line goes Sealed whatever the cached state says, and whether another tab made its key meanwhile: the
-    // write's fresh read seals it, sends it legacy, or refuses.
+    // write's fresh read seals it or refuses.
     const diff = diffVariables(entries, editableVariables, new Set(editor.sealing));
     if (
       diff.creates.length === 0 &&

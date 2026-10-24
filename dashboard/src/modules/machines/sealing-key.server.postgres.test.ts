@@ -47,7 +47,7 @@ describe("the Organization's Sealing Key", () => {
   });
 
   describe("recorded from a Cluster's report", () => {
-    it("keeps the first key an Organization reported, with its sealedVariables flag off", async () => {
+    it("keeps the first key an Organization reported", async () => {
       await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
       await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("B")));
 

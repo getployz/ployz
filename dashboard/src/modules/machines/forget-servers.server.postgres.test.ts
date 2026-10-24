@@ -151,12 +151,15 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
     }).from(organizationSealingKey)).toEqual([organizationKey]);
     expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: QUEUED }))).toMatchObject({ status: "cancelled" });
 
-    // A new token's first Server founds a new Cluster, under a new pairing secret.
+    // A new token's first Server founds a new Cluster, under a new pairing secret, seeded with the Organization's key.
     yield* drizzle.insert(machineEnrollmentToken).values({
       organizationId: ORGANIZATION, createdByUserId: userId, tokenHash: hashEnrollmentToken(`${TOKEN}_2`), expiresAt: new Date(Date.now() + 3_600_000),
     });
-    const enrolled = yield* enrollMachine({ token: `${TOKEN}_2`, identity: identity("1".repeat(32)) });
-    expect(enrolled).toMatchObject({ kind: "initialize", resumed: false });
+    const enrolled = yield* enrollMachine({ token: `${TOKEN}_2`, identity: { ...identity("1".repeat(32)), recoverySupport: 1 } });
+    expect(enrolled).toMatchObject({
+      kind: "initialize", resumed: false,
+      recovery: { kind: "seed", expectedPublicKey: organizationKey.publicKey, backup: organizationKey.recoveryBlob },
+    });
     const secret = "pairing" in enrolled ? enrolled.pairing.secret : "";
     expect(secret).not.toBe(before && encryption.decrypt(before.encryptedPairingSecret));
     // It publishes its connection under the new pairing, as enrollment's callback does.

@@ -25,9 +25,9 @@ import type { VariableWriter } from "#/modules/variables/variables";
 import type { PlainVariableRecord } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
 
-/** How Sealed shows: off and ready offer it, no server disables it beside `addServer`, a link to add one. */
+/** How Sealed shows: offered unless no server disables it beside `addServer`, a link to add one. */
 export type SealedControls = {
-  state: "off" | "no_server" | "ready";
+  state: "no_server" | "ready" | undefined;
   addServer: ReactNode;
 };
 

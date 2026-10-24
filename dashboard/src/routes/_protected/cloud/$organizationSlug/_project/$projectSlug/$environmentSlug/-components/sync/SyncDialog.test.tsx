@@ -2,7 +2,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { RowId, ServiceListing, SyncRow, SyncView } from "@ployz/sdk";
-import { CipherSuite } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 import { Suspense } from "react";
 import { toast } from "sonner";
@@ -13,12 +12,11 @@ import * as sealingFunctions from "#/modules/sealing/sealing.functions";
 import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import { storeViewPrefix, syncQuery } from "#/modules/config-store/store-view.queries";
 import { asTestDouble } from "#/lib/test-double";
-import { anyOrderShows } from "#/test/store-write-body";
 import { SyncDialog } from "./SyncDialog";
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
-  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "off" } });
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "no_server" } });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
@@ -59,6 +57,26 @@ function open({ view = syncView(), closable = true } = {}) {
     </QueryClientProvider>,
   );
   return { write, queryClient };
+}
+
+const PRODUCTION_ID = "0e7c2f3a-5b1d-4c8e-9f60-1a2b3c4d5e6f";
+const API_ID = "7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6";
+
+/** A Cluster key in a ready sealing read, returned so a test can tell two keys apart. */
+async function sealingReady() {
+  const kem = new DhkemX25519HkdfSha256();
+  const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
+  const publicKey = btoa(String.fromCharCode(...raw));
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey } });
+  return publicKey;
+}
+
+/** production holds api, under a different id than in fix-api; worker is new to it. */
+function receives() {
+  const services = [asTestDouble<ServiceListing>()({ row: "a:node", id: API_ID, name: "api", change: null })];
+  vi.mocked(functions.readStoreViewServerFn).mockImplementation(async ({ data }) => (data.query.query === "services"
+    ? { ok: true, value: { view: "services", environment: { ...summary("production"), id: PRODUCTION_ID }, services } }
+    : { ok: true, value: { view: "sync", ...syncView() } }) as never);
 }
 
 const dialog = async () => within(await screen.findByRole("dialog", { name: "Make production match fix-api" }));
@@ -118,15 +136,19 @@ it("moves a row to never synced at once, and back, while the Store answers", asy
 });
 
 it("syncs a PR Environment into production now, with production's value for a secret and no Close", async () => {
+  await sealingReady();
   const { write } = open({ closable: false, view: syncView({ rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: {} })] }) });
+  receives();
   const sync = await dialog();
   expect(sync.getByText("These become production's changes to deploy.")).toBeTruthy();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
   fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "s3cret" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 1 change" }));
   await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  expect(JSON.stringify(write.mock.calls)).not.toContain("s3cret");
   expect(write.mock.calls[0]?.[0].data.command).toMatchObject({
-    command: "sync", into: { environment: "production" }, values: { "a:variables.TOKEN": "s3cret" }, close_after: false,
+    command: "sync", into: { environment: "production" }, close_after: false,
+    values: { "a:variables.TOKEN": { sealedFor: PRODUCTION_ID, value: { scope: { service: API_ID }, key: "TOKEN" } } },
   });
 });
 
@@ -195,43 +217,10 @@ it("drops a flip once its change moves under the review, and says so", async () 
   expect(sync.getByRole("button", { name: "Sync 4 changes" })).toBeTruthy();
 });
 
-/** What a Sync with typed secrets, and its retry, handed the server function at 686f82827. */
-const TRUNK_SYNC = [
-  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"},\"picks\":[\"a:variables.LOG_LEVEL\",\"a:variables.TOKEN\",\"w:node\",\"w:variables.MODE\",\"w:variables.KEY\"],\"values\":{\"a:variables.TOKEN\":\"token-value\",\"w:variables.KEY\":\"key-value\"},\"version\":\"4:abc\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"close_after\":true},\"shows\":[{\"query\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"}},{\"query\":\"environments\",\"project\":\"shop\"}]}",
-  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"},\"picks\":[\"a:variables.LOG_LEVEL\",\"a:variables.TOKEN\",\"w:node\",\"w:variables.MODE\",\"w:variables.KEY\"],\"values\":{\"a:variables.TOKEN\":\"token-value\",\"w:variables.KEY\":\"key-value\"},\"version\":\"4:abc\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"close_after\":true},\"shows\":[{\"query\":\"sync\",\"from\":{\"project\":\"shop\",\"environment\":\"fix-api\"},\"into\":{\"project\":\"shop\",\"environment\":\"production\"}},{\"query\":\"environments\",\"project\":\"shop\"}]}",
-];
-
-it("sends trunk's exact Sync, and its retry, while sealing is off, sealing nothing", async () => {
-  let n = 0;
-  vi.spyOn(crypto, "randomUUID").mockImplementation(() => `00000000-0000-4000-8000-00000000000${++n}`);
-  const hpke = vi.spyOn(CipherSuite.prototype, "seal");
-  const { write } = open();
-  write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "stale" } } as never);
-  const sync = await dialog();
-  fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "token-value" } });
-  fireEvent.change(sync.getByLabelText("Set production's value of KEY"), { target: { value: "key-value" } });
-  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
-  await sync.findByText("These changed since you opened them. Here they are now.");
-  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
-  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
-  expect(write.mock.calls.map(([call]) => anyOrderShows(JSON.stringify(call.data)))).toEqual(TRUNK_SYNC.map(anyOrderShows));
-  expect(hpke).not.toHaveBeenCalled();
-});
-
-const PRODUCTION_ID = "0e7c2f3a-5b1d-4c8e-9f60-1a2b3c4d5e6f";
-const API_ID = "7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6";
-
 it("seals a typed value for the Service it lands in, afresh after a refusal and the same after a lost response, and holds a new Service's value", async () => {
-  const kem = new DhkemX25519HkdfSha256();
-  const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
-  const publicKey = btoa(String.fromCharCode(...raw));
-  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey } });
+  await sealingReady();
   const { write } = open();
-  // production has api, a different id there than in fix-api; worker is new to it.
-  const services = [asTestDouble<ServiceListing>()({ row: "a:node", id: API_ID, name: "api", change: null })];
-  vi.mocked(functions.readStoreViewServerFn).mockImplementation(async ({ data }) => (data.query.query === "services"
-    ? { ok: true, value: { view: "services", environment: { ...summary("production"), id: PRODUCTION_ID }, services } }
-    : { ok: true, value: { view: "sync", ...syncView() } }) as never);
+  receives();
   write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "stale" } } as never);
   write.mockRejectedValueOnce(new TypeError("Failed to fetch"));
   const sync = await dialog();
@@ -256,27 +245,24 @@ it("seals a typed value for the Service it lands in, afresh after a refusal and 
   expect(afterLoss).toEqual(afterRefusal);
 });
 
-it("reads sealing afresh on a retry after a lost response, and seals what it sent plain once sealing is on, under the same Sync", async () => {
+it("reads sealing afresh on a retry after a lost response, and seals again under a new key, under the same Sync", async () => {
+  const before = await sealingReady();
   const { write } = open();
-  const services = [asTestDouble<ServiceListing>()({ row: "a:node", id: API_ID, name: "api", change: null })];
-  vi.mocked(functions.readStoreViewServerFn).mockImplementation(async ({ data }) => (data.query.query === "services"
-    ? { ok: true, value: { view: "services", environment: { ...summary("production"), id: PRODUCTION_ID }, services } }
-    : { ok: true, value: { view: "sync", ...syncView() } }) as never);
+  receives();
   write.mockRejectedValueOnce(new TypeError("Failed to fetch"));
   const sync = await dialog();
   fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "token-value" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
   await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
   await vi.waitFor(() => expect(sync.getByRole("button", { name: "Sync 5 changes" }).hasAttribute("disabled")).toBe(false));
-  const kem = new DhkemX25519HkdfSha256();
-  const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
-  vi.mocked(sealingFunctions.readSealingFn).mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)) } });
+  const after = await sealingReady();
+  expect(after).not.toBe(before);
   fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
   await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
 
   const [lost, retry] = write.mock.calls.map(([call]) => call.data.command);
-  expect(JSON.stringify(lost)).toContain("token-value");
-  expect(JSON.stringify(retry)).not.toContain("token-value");
+  expect(JSON.stringify(write.mock.calls)).not.toContain("token-value");
   expect(retry).toMatchObject({ id: lost?.command === "sync" ? lost.id : assert.fail("not a Sync"),
     values: { "a:variables.TOKEN": { sealedFor: PRODUCTION_ID, value: { scope: { service: API_ID }, key: "TOKEN" } } } });
+  expect(retry).not.toEqual(lost);
 });

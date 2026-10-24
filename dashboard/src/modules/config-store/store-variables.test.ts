@@ -198,6 +198,5 @@ it("seals a Sync row for the Service its lineage lands in, keyed by the row's va
   await expect(receivingValues(sealing, typed, receiver, "refuse")).rejects.toBeInstanceOf(SealError);
   await expect(receivingValues(sealing, [{ row: "a:variables." as RowId, value: "x" }], receiver, "drop")).rejects.toThrow("is not a variable");
   await expect(receivingValues(sealing, [{ row: "a:configs.app" as RowId, value: "x" }], receiver, "drop")).rejects.toThrow("is not a variable");
-  expect(await receivingValues({ sealer: async () => null }, typed, receiver, "refuse")).toEqual(typed);
 });
 

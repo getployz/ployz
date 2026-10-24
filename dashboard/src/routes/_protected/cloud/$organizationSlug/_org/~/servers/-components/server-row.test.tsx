@@ -4,7 +4,6 @@ import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } fr
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { serverStatus } from "#/modules/machines/server-status";
-import { organizationKeys } from "#/modules/organization/organization-state.queries";
 import type { Server } from "#/modules/machines/use-servers";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
@@ -36,11 +35,10 @@ function server(input: { membership?: RuntimeMachineRecord["membership"]; servic
   return { machine, name: machine.name, status: serverStatus(machine), services };
 }
 
-async function row(shown: Server, upgrade: ServerUpgradeLine = null, sealedVariables = false) {
+async function row(shown: Server, upgrade: ServerUpgradeLine = null) {
   const root = createRootRoute({ component: () => <ServerRow organizationSlug="acme" server={shown} upgrade={upgrade} stale={false} /> });
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
   const queryClient = new QueryClient();
-  queryClient.setQueryData(organizationKeys.state("acme"), { sealedVariables });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
   return screen.findByRole("link");
 }
@@ -75,22 +73,17 @@ it("names the state that needs someone", async () => {
   expect((await row(server({ services: ["api"] }), { kind: "behind", release: "0.3.0", canUpgrade: true })).textContent).toBe("fsn-1apiOnline");
 });
 
-it("says a Server needs access only where this Cloud seals variables and the Server lacks its Cluster's Sealing Key", async () => {
-  const lacking = server({ services: ["api"], sealing: { kind: "needs_access" } });
-  expect((await row(lacking, null, true)).textContent).toBe("fsn-1apiNeeds accessOnline");
+it("says a Server needs access only where it lacks its Cluster's Sealing Key", async () => {
+  expect((await row(server({ services: ["api"], sealing: { kind: "needs_access" } }))).textContent).toBe("fsn-1apiNeeds accessOnline");
   cleanup();
-  expect((await row(lacking)).textContent).toBe("fsn-1apiOnline");
+  expect((await row(server({ services: ["api"], sealing: { kind: "held", public_key: `${"A".repeat(43)}=` } }))).textContent).toBe("fsn-1apiOnline");
   cleanup();
-  expect((await row(server({ services: ["api"], sealing: { kind: "held", public_key: `${"A".repeat(43)}=` } }), null, true)).textContent).toBe("fsn-1apiOnline");
-  cleanup();
-  expect((await row(server({ services: ["api"] }), null, true)).textContent).toBe("fsn-1apiOnline");
+  expect((await row(server({ services: ["api"] }))).textContent).toBe("fsn-1apiOnline");
 });
 
 it("says a Server needs recovery where its Cluster's Sealing Key awaits a recovery code", async () => {
   const awaiting = server({ services: ["api"], sealing: { kind: "awaits_recovery", public_key: `${"A".repeat(43)}=` } });
-  expect((await row(awaiting, null, true)).textContent).toBe("fsn-1apiNeeds recoveryOnline");
-  cleanup();
-  expect((await row(awaiting)).textContent).toBe("fsn-1apiOnline");
+  expect((await row(awaiting)).textContent).toBe("fsn-1apiNeeds recoveryOnline");
 });
 
 it("lets a running upgrade explain the Server, and offline outrank a failed one", () => {

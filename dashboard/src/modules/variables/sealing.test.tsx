@@ -73,29 +73,22 @@ it("seals with the key a fresh read returns, never the cached one", async () => 
   expect(await opensWith(value, a.privateKey)).toBe(false);
 });
 
-it("sends the legacy plaintext when a fresh read finds sealing off, even with ready cached", async () => {
-  const { publicKey } = await keyPair();
-  const test = setup({ organizationId: "org", sealing: { state: "ready", publicKey } }, async () => ({ organizationId: "org", sealing: { state: "off" } }));
-
-  expect(await test.sealing.prepare([item, { ...item, key: "OTHER", value: "other-value" }])).toEqual(["tok_live_123456", "other-value"]);
-  expect(test.read).toHaveBeenCalledTimes(1);
-});
-
-it("reads afresh even with off cached, and shows off before any read lands", async () => {
+it("reads afresh before any read lands, and shows no state until one does", async () => {
   const { publicKey } = await keyPair();
   const test = setup(undefined, async () => ({ organizationId: "org_fresh", sealing: { state: "ready", publicKey } }));
 
-  expect(test.sealing.state).toBe("off");
+  expect(test.sealing.state).toBeUndefined();
   expect(await test.sealing.prepare([item])).toMatchObject([{ sealedFor: target.environment }]);
 });
 
 it("rejects without the value when there is no server or the read fails", async () => {
-  const noServer = setup({ organizationId: "org", sealing: { state: "off" } }, async () => ({ organizationId: "org", sealing: { state: "no_server" } }));
+  const { publicKey } = await keyPair();
+  const noServer = setup({ organizationId: "org", sealing: { state: "ready", publicKey } }, async () => ({ organizationId: "org", sealing: { state: "no_server" } }));
   await expect(noServer.sealing.prepare([item])).rejects.toEqual(new SealError("Add a server to set sealed values."));
 
   cleanup();
   vi.restoreAllMocks();
-  const failed = setup({ organizationId: "org", sealing: { state: "off" } }, async () => { throw new Error(`boom ${item.value}`); });
+  const failed = setup({ organizationId: "org", sealing: { state: "no_server" } }, async () => { throw new Error(`boom ${item.value}`); });
   await expect(failed.sealing.prepare([item])).rejects.toEqual(new SealError("Couldn't save this sealed value, so nothing was saved. Try again."));
 });
 

@@ -57,9 +57,9 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
   const [stale, setStale] = useState(false);
   // The id of the last Sync sent and what it asked: an identical retry reuses it, so a lost response never syncs twice,
   // and changed picks, values or version mint a new one, so the Store never answers them with the old Sync.
-  // What it sent is kept with the key it sealed to (null while sealing was off): a retry resends it only while a fresh
-  // read finds that key still, and else prepares afresh under the same id, so a Sync that landed is answered, not rerun.
-  const lastSync = useRef<{ intent: string; id: string; sent?: { under: string | null; command: Promise<ConfigCommand> } } | null>(null);
+  // What it sent is kept with the key it sealed to: a retry resends it only while a fresh read finds that key still, and
+  // else prepares afresh under the same id, so a Sync that landed is answered, not rerun.
+  const lastSync = useRef<{ intent: string; id: string; sent?: { under: string; command: Promise<ConfigCommand> } } | null>(null);
   const [neverSyncedOpen, setNeverSyncedOpen] = useState(false);
   const name = from.environment ?? "";
   const rows = view.ok ? view.value.rows : [];
@@ -90,10 +90,10 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
       values: sent, version: view.value.version, id: last.id, close_after: closeAfterSync,
     });
     const entries = picked.flatMap((row) => typed[row.row] === undefined ? [] : [{ row: row.row, value: typed[row.row] ?? "" }]);
-    // Sent as made in its turn in the queue: a typed value goes sealed, or as typed while sealing is off.
+    // Sealed in its turn in the queue.
     const prepare = async () => {
       const seal = await sealing.sealer();
-      const under = seal?.publicKey ?? null;
+      const under = seal.publicKey;
       if (last.sent?.under !== under) {
         last.sent = { under, command: receivingValues({ sealer: async () => seal }, entries, async () => {
           const services = await fetchStoreView(organizationSlug, scope, servicesQuery(receiving));
