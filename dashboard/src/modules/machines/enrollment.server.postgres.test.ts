@@ -50,7 +50,7 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import { connectionAborts } from "#/test/connection-aborts";
-import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
+import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
@@ -60,7 +60,10 @@ import {
 } from "#/utils/encrypted-secret.server";
 
 const disposeClients: Array<() => Promise<void>> = [];
+/** The harness's Config Store, opened once so its tables exist. */
+let store: CloudStore["Service"];
 const organizationId = "00000000-0000-4000-8000-000000000401";
+const otherOrganizationId = "00000000-0000-4000-8000-000000000404";
 const userId = "00000000-0000-4000-8000-000000000402";
 const tokens = ["pmet_founding_cas_a", "pmet_founding_cas_b"];
 const founderMachineId = Schema.decodeUnknownSync(rustMachineIdSchema)("00000000000000000000000000000001");
@@ -88,7 +91,7 @@ function identity(index: number) {
   };
 }
 
-function fakeSession(database: PostgresTestHarness["database"], { sealedVariables = false } = {}) {
+function fakeSession(database: PostgresTestHarness["database"]) {
   let registerCalls = 0;
   let observations = 0;
   const fail = { publish: false };
@@ -104,7 +107,7 @@ function fakeSession(database: PostgresTestHarness["database"], { sealedVariable
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
   const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot };
-  const coordinator = enrollmentTestClient(database, sealedVariables, async (options) => {
+  const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
     await connection.beforeConnect(options);
@@ -141,7 +144,6 @@ function fakeSession(database: PostgresTestHarness["database"], { sealedVariable
 
 function enrollmentTestClient(
   database: PostgresTestHarness["database"],
-  sealedVariables: boolean,
   connect: (options: ConnectOptions) => Promise<Client>,
 ) {
   const provider = ConfigProvider.fromEnv({
@@ -150,7 +152,6 @@ function enrollmentTestClient(
       NODE_ENV: "test",
       DATABASE_URL: "postgres://unused",
       APP_URL: "https://cloud.example.test",
-      SEALED_VARIABLES: String(sealedVariables),
     },
   });
   const config = AppConfig.layer.pipe(
@@ -169,7 +170,7 @@ function enrollmentTestClient(
     Layer.succeed(GithubApi, fakeGithubApi().service),
     Layer.succeed(Polar, { mode: "self_hosted" }),
   );
-  const layer = Layer.mergeAll(OrganizationRuntimeLive, CloudStoreLive).pipe(Layer.provideMerge(dependencies));
+  const layer = Layer.mergeAll(OrganizationRuntimeLive, Layer.succeed(CloudStore, store)).pipe(Layer.provideMerge(dependencies));
   const runtime = ManagedRuntime.make(layer);
   disposeClients.push(() => runtime.dispose());
   return {
@@ -239,6 +240,8 @@ describe("organization enrollment coordinator", () => {
 
   beforeAll(async () => {
     harness = await startPostgresTestHarness();
+    const opened = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+    store = { open: Effect.succeed(opened) };
   }, 60_000);
 
   afterEach(async () => {
@@ -262,10 +265,16 @@ describe("organization enrollment coordinator", () => {
     return token;
   }
 
+  /** Turns on the Organization's sealedVariables flag in the harness database only. */
+  const sealedVariablesOn = (id = organizationId) => harness.pool.query(
+    "insert into config_sealed_variables (organization_id) values ($1) on conflict do nothing",
+    [id],
+  );
+
   beforeEach(async () => {
     await harness.pool.query(`
       truncate table organization_machine, organization_pairing,
-        machine_enrollment_token, "user", organization cascade;
+        machine_enrollment_token, "user", organization, config_sealed_variables cascade;
       insert into organization (id, name, slug)
       values ('${organizationId}', 'Enroll', 'enroll');
       insert into "user" (id, email, name)
@@ -367,14 +376,16 @@ describe("organization enrollment coordinator", () => {
       [organizationId, sealingKey, recoveryBlob],
     );
     const found = async (sealedVariables: boolean, recoverySupport?: 1) => {
-      const { coordinator } = fakeSession(harness.database, { sealedVariables });
+      if (sealedVariables) await sealedVariablesOn();
+      const { coordinator } = fakeSession(harness.database);
       return coordinator.enroll({ token: tokens[0] ?? "", identity: recoverySupport === undefined ? identity(0) : { ...identity(0), recoverySupport } });
     };
     const recoveryOf = (outcome: Awaited<ReturnType<typeof found>>) =>
       Result.isSuccess(outcome) && outcome.success.kind === "initialize" ? outcome.success.recovery : "not initialized";
 
-    it("is never offered with sealed variables off", async () => {
+    it("is never offered without the Organization's sealedVariables row, even with another Organization's", async () => {
       await storeOrganizationKey(backup);
+      await sealedVariablesOn(otherOrganizationId);
 
       expect(recoveryOf(await found(false, 1))).toBeUndefined();
     });
@@ -1252,7 +1263,8 @@ describe("organization enrollment coordinator", () => {
     const founderMachine = () => harness.pool.query<{ founder_machine_id: string | null }>("select founder_machine_id from organization_pairing")
       .then((result) => result.rows);
     const completeWithBackup = async (sealedVariables: boolean, recoveryBackup: { publicKey: string; backup: string }) => {
-      const fake = fakeSession(harness.database, { sealedVariables });
+      if (sealedVariables) await sealedVariablesOn();
+      const fake = fakeSession(harness.database);
       const founder = await pendingFounder(fake);
       await fake.coordinator.publish({ ...founder, capability });
       const complete = () => fake.coordinator.completeFounding({ ...founder, sealing: held("A"), recoveryBackup });
@@ -1296,12 +1308,22 @@ describe("organization enrollment coordinator", () => {
       expect(await organizationKey()).toEqual([]);
     });
 
-    it("is refused with sealed variables off", async () => {
+    it("is refused without the Organization's sealedVariables row", async () => {
+      await sealedVariablesOn(otherOrganizationId);
       const { complete } = await completeWithBackup(false, { publicKey: held("A").publicKey, backup: backup(2) });
 
       expect(await complete()).toMatchObject({ failure: { _tag: "Validation", message: "Invalid enrollment callback." } });
       expect(await organizationKey()).toEqual([]);
       expect(await founderMachine()).toEqual([{ founder_machine_id: null }]);
+    });
+
+    it("is refused as an invalid callback for a token Cloud doesn't know", async () => {
+      const { founder } = await completeWithBackup(true, { publicKey: held("A").publicKey, backup: backup(2) });
+      const fake = fakeSession(harness.database);
+      const recoveryBackup = { publicKey: held("A").publicKey, backup: backup(2) };
+
+      expect(await fake.coordinator.completeFounding({ ...founder, token: "pmet_unknown", sealing: held("A"), recoveryBackup }))
+        .toMatchObject({ failure: { _tag: "Validation", message: "Invalid enrollment callback." } });
     });
   });
 
