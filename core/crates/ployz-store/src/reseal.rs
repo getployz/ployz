@@ -46,7 +46,10 @@ pub(crate) fn legacy_organizations(tx: &mut dyn Tx) -> Result<Vec<OrganizationId
         &[],
     )? {
         let organization = OrganizationId::parse(row.text(0)?)?;
-        if legacy_count(tx, &organization)?.current > 0 {
+        if current_by_environment(tx, &organization)?
+            .iter()
+            .any(|(_, current)| *current > 0)
+        {
             organizations.push(organization);
         }
     }
