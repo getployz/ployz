@@ -367,7 +367,11 @@ mod tests {
             key.open_value(&sealed.associated_data(&other), &sealed.sealed)
                 .is_none()
         );
-        assert!(SealingKey::generate().open_value(&aad, &sealed.sealed).is_none());
+        assert!(
+            SealingKey::generate()
+                .open_value(&aad, &sealed.sealed)
+                .is_none()
+        );
     }
 
     #[test]

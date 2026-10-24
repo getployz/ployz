@@ -11,6 +11,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::client_sealed::Sealer;
+use crate::id::Revision;
 use crate::sealing::SealingKey;
 use crate::storage::Tx;
 use crate::{EnvironmentId, OrganizationId, SealingRecipient, error};
@@ -136,8 +137,9 @@ pub(crate) fn reseal(
     recipient: &SealingRecipient,
     sealing: &SealingKey,
 ) -> Result<Resealed, RpcError> {
+    crate::scope::lock_all(tx, [environment.clone()])?;
     let rows = tx.query(
-        "SELECT organization_id, working FROM config_environment WHERE id = ?1",
+        "SELECT organization_id, working, working_revision FROM config_environment WHERE id = ?1",
         &[environment.as_str().into()],
     )?;
     let Some(row) = rows.first() else {
@@ -154,9 +156,11 @@ pub(crate) fn reseal(
     let mut tally = Resealed::default();
     let mut working = row.intent(1, "Working State")?;
     if reseal_intent(&mut working, environment, sealer, sealing, &mut tally)? {
+        let revision = Revision(row.number(2, "revision")?).next();
         tx.execute(
-            "UPDATE config_environment SET working = ?1 WHERE id = ?2",
+            "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
             &[
+                crate::scope::revision_param(revision)?.into(),
                 serde_json::to_string(&working)
                     .map_err(|_| error::internal("Working State did not serialize"))?
                     .as_str()
@@ -252,8 +256,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        Actor, ConfigStore, CreateProject, CreateService, EnvironmentRef, ProjectId, ProjectName,
-        ServiceLineageId,
+        Actor, Change, ConfigStore, CreateProject, CreateService, Edit, EnvironmentRef, ProjectId,
+        ProjectName, ServiceLineageId, SettingPath,
     };
 
     const ORGANIZATION: &str = "org_reseal";
@@ -268,8 +272,11 @@ mod tests {
 
     /// `org_reseal` with Service `web` in its one Environment.
     fn shop() -> (ConfigStore, Actor) {
-        let store =
-            ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap();
+        shop_at("sqlite::memory:")
+    }
+
+    fn shop_at(url: &str) -> (ConfigStore, Actor) {
+        let store = ConfigStore::open(url, SealingKey::new(b"test").unwrap()).unwrap();
         let who = Actor::system(OrganizationId::parse(ORGANIZATION).unwrap());
         store
             .write(
@@ -382,6 +389,37 @@ mod tests {
                 .intent(0, "Saved revision")
             })
             .unwrap()
+    }
+
+    fn revision(store: &ConfigStore) -> i64 {
+        store
+            .storage
+            .read(|tx| {
+                tx.query(
+                    "SELECT working_revision FROM config_environment WHERE id = ?1",
+                    &[environment().as_str().into()],
+                )?
+                .first()
+                .unwrap()
+                .int(0)
+            })
+            .unwrap()
+    }
+
+    fn set_mode(store: &ConfigStore, who: &Actor) {
+        store
+            .write(
+                who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Set {
+                        path: SettingPath::parse("web.env.MODE").unwrap(),
+                        value: json!("fast"),
+                    }],
+                },
+            )
+            .unwrap();
     }
 
     fn web(intent: &SavedEnvironmentIntent) -> &ployz_core::config::SavedServiceIntent {
@@ -651,5 +689,87 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.code, ployz_core::RpcErrorCode::NotFound);
+    }
+
+    #[test]
+    fn a_reseal_moves_the_revision_once_and_a_later_save_keeps_both_changes() {
+        let (store, who) = shop();
+        let keypair = ployz_core::Keypair::generate();
+        plant_working(
+            &store,
+            &who,
+            vec![secret("TOKEN", legacy(&store.sealing, "hunter2"))],
+        );
+        let before = revision(&store);
+
+        store.reseal(&environment(), &recipient(&keypair)).unwrap();
+        assert_eq!(revision(&store), before + 1);
+        store.reseal(&environment(), &recipient(&keypair)).unwrap();
+        assert_eq!(revision(&store), before + 1);
+
+        set_mode(&store, &who);
+        let after = working(&store);
+        client_sealed(variable(&after, "TOKEN"));
+        assert_eq!(
+            variable(&after, "MODE").value,
+            SavedVariableValue::Literal {
+                value: "fast".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_save_committed_while_a_reseal_waits_is_kept() {
+        // SQLite runs one write at a time, so only Postgres can interleave them.
+        let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {
+            return;
+        };
+        let database = format!("reseal_{}", Uuid::new_v4().simple());
+        postgres::Client::connect(&server, postgres::NoTls)
+            .unwrap()
+            .batch_execute(&format!("CREATE DATABASE {database}"))
+            .unwrap();
+        let url = format!("{server}/{database}");
+        let (store, who) = shop_at(&url);
+        plant_working(
+            &store,
+            &who,
+            vec![secret("TOKEN", legacy(&store.sealing, "hunter2"))],
+        );
+        let mut saved = working(&store);
+        saved
+            .services
+            .first_mut()
+            .unwrap()
+            .variables
+            .push(SavedVariableIntent {
+                id: Uuid::new_v4().to_string(),
+                key: "MODE".into(),
+                description: None,
+                exported: false,
+                value_fingerprint: "p1:fast".into(),
+                value: SavedVariableValue::Literal {
+                    value: "fast".into(),
+                },
+            });
+        let mut save = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        let mut save = save.transaction().unwrap();
+        save.execute(
+            "UPDATE config_environment SET working = $1, working_revision = working_revision + 1 WHERE id = $2",
+            &[&serde_json::to_string(&saved).unwrap(), &environment().as_str()],
+        )
+        .unwrap();
+
+        let keypair = ployz_core::Keypair::generate();
+        std::thread::scope(|scope| {
+            let reseal = scope.spawn(|| store.reseal(&environment(), &recipient(&keypair)));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            save.commit().unwrap();
+            reseal.join().unwrap().unwrap();
+        });
+
+        let after = working(&store);
+        client_sealed(variable(&after, "TOKEN"));
+        assert_eq!(variable(&after, "MODE").value_fingerprint, "p1:fast");
     }
 }
