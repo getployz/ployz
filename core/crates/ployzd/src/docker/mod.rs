@@ -70,19 +70,20 @@ pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
 pub const LABEL_NAMESPACE: &str = "ployz.namespace";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
-/// Set at create on a container whose spec publishes no host port.
+/// `true` on a container whose spec publishes no host port, else `false`. Written
+/// either way so a label the image carries can't decide it.
 pub const LABEL_BRIDGE_IPV6: &str = "ployz.network.ipv6";
 
 /// The Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6 visitors
 /// reach it by DNAT with their own address (#2837). So does a container created
-/// with [`LABEL_BRIDGE_IPV6`], for IPv6 egress (#3372). A container that publishes
-/// a host port stays IPv4-only, so its ports keep reaching an app that listens on
-/// IPv4 alone through docker-proxy. One created before the label keeps the family
-/// it was created with until it is replaced.
+/// with [`LABEL_BRIDGE_IPV6`] `true`, for IPv6 egress (#3372). A container that
+/// publishes a host port stays IPv4-only, so its ports keep reaching an app that
+/// listens on IPv4 alone through docker-proxy. One created before the label keeps
+/// the family it was created with until it is replaced.
 #[must_use]
 pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
     let ingress = QualifiedService::system_ingress();
-    labels.contains_key(LABEL_BRIDGE_IPV6)
+    labels.get(LABEL_BRIDGE_IPV6).map(String::as_str) == Some("true")
         || labels.get(LABEL_NAMESPACE) == Some(&ingress.namespace.to_string())
             && labels.get(LABEL_SERVICE_NAME) == Some(&ingress.name.to_string())
             && !labels.contains_key(LABEL_HOOK)
@@ -2140,6 +2141,11 @@ mod tests {
                     ipv6,
                     "{kind:?} publishing {ports}"
                 );
+                assert_eq!(
+                    body.labels.as_ref().unwrap().get(LABEL_BRIDGE_IPV6),
+                    Some(&ipv6.to_string()),
+                    "an explicit value overrides one the image carries"
+                );
             }
         }
     }
@@ -2153,6 +2159,9 @@ mod tests {
             (LABEL_SERVICE_NAME.to_owned(), "web".to_owned()),
         ]);
         assert!(!takes_bridge_ipv6(&labels));
+        let mut opted_out = labels;
+        opted_out.insert(LABEL_BRIDGE_IPV6.to_owned(), "false".to_owned());
+        assert!(!takes_bridge_ipv6(&opted_out));
     }
 
     #[test]

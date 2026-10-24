@@ -507,8 +507,9 @@ Run it from your computer with Ployz Cloud, or on one of the other servers itsel
 
 Through a domain, your app's `X-Forwarded-For` should show each visitor's own address, and a
 service that publishes no port on the server should reach IPv6 addresses. If `X-Forwarded-For`
-shows your server's private gateway, such as `10.210.0.1`, for visitors over IPv6, or no service
-on the server can reach IPv6 addresses, the server's container network has no IPv6.
+shows your server's private gateway, such as `10.210.0.1`, for visitors over IPv6, or a service
+deployed since 0.3.5 that publishes no port has no IPv6 address, the server's container network
+has no IPv6.
 `journalctl -u ployz` says why:
 
 - `learn IPv6 from router advertisements`: the server takes its IPv6 route or address from router
@@ -526,10 +527,16 @@ A port a service publishes on the server always shows IPv6 visitors as the gatew
 that publishes one has no IPv6 address. Give the service a domain instead to see visitors'
 addresses and reach IPv6 addresses.
 
+When the services have an IPv6 address but can't reach IPv6 addresses, check the server itself:
+`curl -6 https://example.com` on it fails when the server has no IPv6 route out. Its container
+network can still take IPv6, but nothing carries it further. Ask your provider for IPv6. Until
+then your services keep reaching IPv4 addresses.
+
 When only some services can't reach IPv6 addresses, check whether each has an IPv6 address:
 `ployz exec SERVICE -- cat /proc/net/if_inet6` lists one starting `fdcd` when it does. A container
-keeps the network it was created with, so one created before 0.3.5 has none until you redeploy
-the service.
+keeps the network it was created with, so one created before 0.3.5 has none until Ployz replaces
+it. A deploy that changes the service, such as a new image or a changed variable, replaces it. A
+deploy that changes nothing keeps it.
 
 ## Services can't resolve each other's names
 
