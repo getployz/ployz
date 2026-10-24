@@ -326,6 +326,100 @@ mod tests {
     }
 
     #[test]
+    fn a_character_split_by_parser_completion_still_scrubs_the_whole_value() {
+        use base64::Engine as _;
+        use ployz_build::{Admission, HostPolicy, Output, Request, Target, execute_admitted};
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+
+        let value = "🐴opened-token-0123456789";
+        let (head, tail) = value.as_bytes().split_at(2);
+        let record = |bytes: &[u8]| {
+            format!(
+                "{{\"logs\":[{{\"vertex\":\"{STEP}\",\"stream\":1,\"data\":\"{}\"}}]}}\n",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            )
+        };
+        for sealed in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let docker = root.path().join("docker");
+            fs::write(
+                &docker,
+                format!(
+                    r#"#!/bin/sh
+case "$1 $2" in
+  'context show') echo default ;;
+  'info --format') echo '{{"OSType":"linux","CgroupVersion":"2","Architecture":"amd64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
+  'buildx bake') cat solve-events ;;
+esac
+exit 0
+"#,
+                    ployz_build::builder_name()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(
+                root.path().join("solve-events"),
+                format!(
+                    "{}{{\"vertexes\":[{{\"digest\":\"{STEP}\",\"completed\":\"t1\"}}]}}\n{}",
+                    record(head),
+                    record(&[tail, b"\n"].concat())
+                ),
+            )
+            .unwrap();
+            let admission = Admission::try_acquire_with(&HostPolicy {
+                state_directory: root.path().to_owned(),
+                configuration_file: root.path().join("build.yaml"),
+                docker: docker.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+            let request = Request {
+                image_contexts: &BTreeMap::new(),
+                compose_file: &root.path().join("compose.yaml"),
+                working_dir: root.path(),
+                environment: &BTreeMap::new(),
+                docker: Some(&docker),
+                targets: &[Target {
+                    name: "app".into(),
+                    platforms: Vec::new(),
+                }],
+                railpack: &[],
+                build_args: &[],
+                output: Output::Validate,
+                no_cache: false,
+                pull: false,
+                sealed,
+            };
+            let events = Mutex::new(Vec::new());
+            execute_admitted(&request, admission, &|event| {
+                events.lock().unwrap().push(event);
+            })
+            .unwrap();
+            let events = events.into_inner().unwrap();
+            if !sealed {
+                let text: Vec<&str> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        Progress::StepOutput { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    text,
+                    ["\u{FFFD}", "\u{FFFD}\u{FFFD}opened-token-0123456789\n"]
+                );
+                continue;
+            }
+            let (text, _) = report(&scrub(value), events);
+            assert!(!text.contains(value), "{text}");
+            assert!(!text.contains("opened-token-0123456789"), "{text}");
+            assert_eq!(text, "[secret NPM_TOKEN]\n");
+        }
+    }
+
+    #[test]
     fn plain_text_held_across_a_steps_completion_shows_whole() {
         // The value starts with the byte `Done` ends with, so a stream ended at
         // the completion would have hidden it as the start of the value.

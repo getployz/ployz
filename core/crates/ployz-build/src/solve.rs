@@ -211,8 +211,18 @@ impl SolveParser {
                     step: step.id.clone(),
                     stderr,
                 };
-                if let Some(bytes) = self.partial.remove(&key) {
-                    emit_output(key, &bytes, progress);
+                if let Some(mut bytes) = self.partial.remove(&key) {
+                    if self.sealed {
+                        let rest = bytes.split_off(char_boundary(&bytes));
+                        if !bytes.is_empty() {
+                            emit_output(key.clone(), &bytes, progress);
+                        }
+                        if !rest.is_empty() {
+                            self.partial.insert(key, rest);
+                        }
+                    } else {
+                        emit_output(key, &bytes, progress);
+                    }
                 }
             }
             progress(Progress::Step(step));
