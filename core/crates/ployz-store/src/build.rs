@@ -408,11 +408,37 @@ pub(crate) fn sources_of(
     // Environment, and such a value is one of its own variables: a Branch reads a
     // parent's as Not set. So an Environment without one resolves nothing here.
     let sealed = if reads_sealed(&saved) {
-        deployment::sealed_reads(tx, stored, &saved, sealing)?
+        match deployment::sealed_reads(tx, stored, &saved, sealing) {
+            Ok(sealed) => sealed,
+            // Claim refuses this revision and records why. Until then its builds
+            // still list, each reading its own sealed values.
+            Err(refused) if refused.code == ployz_core::RpcErrorCode::InvalidArgument => {
+                own_sealed(&saved)
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         BTreeMap::new()
     };
     routed(tx, stored, &saved, sealed)
+}
+
+/// The first variable of each Service of `saved`, by key and by Service ID, that
+/// holds a value the browser sealed.
+fn own_sealed(saved: &ployz_core::config::SavedEnvironmentIntent) -> BTreeMap<String, String> {
+    saved
+        .services
+        .iter()
+        .filter_map(|service| {
+            let key = service
+                .variables
+                .iter()
+                .filter(|variable| crate::client_sealed::browser_sealed(variable))
+                .map(|variable| &variable.key)
+                .min()?;
+            Some((service.id.clone(), key.clone()))
+        })
+        .collect()
 }
 
 /// Whether any variable of `saved` holds a value the browser sealed: the fact the
