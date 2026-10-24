@@ -72,7 +72,7 @@ pub(crate) fn build(
                 if let Some(progress) = docker.progress {
                     progress(Progress::Stage(Stage::Building));
                 }
-                builder.run(&args, || {
+                builder.run(&args, request.sealed, || {
                     if let Some(progress) = docker.progress {
                         progress(Progress::Target {
                             name: target.target.name.clone(),

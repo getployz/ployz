@@ -461,7 +461,9 @@ fn freeze(
 }
 
 /// sha256 of a build's identity (source, recipe, ployz version) and the values of
-/// the variables it reads: its build inputs.
+/// the variables it reads: its build inputs. A Sealed value always counts: a
+/// Dockerfile reads it through a secret mount, which declares no `ARG`, and
+/// its ciphertext is what a re-sealed value changes.
 fn fingerprint(
     identity: &Value,
     service: &ployz_core::RequestedServiceSpec,
@@ -471,7 +473,7 @@ fn fingerprint(
         .container
         .environment
         .iter()
-        .filter(|(name, _)| variables.reads(name))
+        .filter(|(name, value)| variables.reads(name) || value.is_sealed())
         .collect();
     digest(&(identity, read))
 }
@@ -604,6 +606,49 @@ mod tests {
                 .selected
                 .iter()
                 .any(|attempt| attempt.name == old)
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Fixed fixtures; a missing entry must fail the test."
+    )]
+    fn a_sealed_value_is_a_build_input_whatever_the_dockerfile_declares() {
+        use base64::Engine as _;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        let digest = crate::build::content_digest(root.path()).unwrap();
+        let web = ServiceName::parse("web").unwrap();
+        let fingerprint = |env: Value| {
+            let deployment = json!({"namespace": "app",
+                "sealedFor": {"organization": "org_test", "environment": uuid::Uuid::from_u128(1)},
+                "snapshots": [{"serviceId": uuid::Uuid::from_u128(2), "config": {
+                    "version": 2, "privateDns": "web", "healthcheck": {"type":"none"},
+                    "restartPolicy":"on-failure",
+                    "source": {"type":"empty", "version":1, "rootDir":"/"},
+                    "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
+                }, "resolvedEnv": env}]});
+            let captured = capture(
+                serde_json::from_value(json!({"deployment": deployment,
+                    "sources": {"web": root.path()}, "source_commits": {}, "uploads": {"web": digest}}))
+                .unwrap(),
+            )
+            .unwrap();
+            captured.fingerprints[&web].0.clone()
+        };
+        let sealed = |byte: u8| {
+            json!({"sealed": base64::engine::general_purpose::STANDARD.encode([byte; 48]),
+                "scope": "shared", "key": "NPM_TOKEN"})
+        };
+        let plain = fingerprint(json!({}));
+        assert_eq!(plain, fingerprint(json!({"TOKEN": "runtime"})));
+        let first = fingerprint(json!({"NPM_TOKEN": sealed(7)}));
+        assert_ne!(first, plain);
+        assert_ne!(first, fingerprint(json!({"NPM_TOKEN": sealed(8)})));
+        assert_eq!(
+            first,
+            fingerprint(json!({"NPM_TOKEN": sealed(7), "TOKEN": "runtime"}))
         );
     }
 

@@ -114,6 +114,7 @@ pub async fn select_build_machine(
     client: &mut crate::connect::Client,
     targets: &[ployz_build::Target],
     visible: &[MachineObservation],
+    sealed: bool,
     preference: BuildPreference,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<SelectedBuilder, ConnectError> {
@@ -207,16 +208,23 @@ pub async fn select_build_machine(
         reasons.push("no Machines observed".into());
         shown.push("no Servers observed".into());
     }
+    let lead = sealed.then_some(SEALED_BUILDS_RUN_ON_SERVER);
+    let message = format!("no eligible Build Machine: {}", reasons.join("; "));
+    let message = match lead {
+        Some(lead) => format!("{lead} {message}"),
+        None => message,
+    };
+    let details = serde_json::json!({"rejections": rejected, "reasons": shown, "lead": lead});
     Err(ConnectError::Remote(RpcError {
         code: RpcErrorCode::Unsupported,
-        message: format!("no eligible Build Machine: {}", reasons.join("; ")),
-        details: serde_json::json!({"rejections": rejected, "reasons": shown}),
+        message,
+        details,
         cause: Vec::new(),
     }))
 }
 
 use crate::{
-    build::{BuiltService, CapturedBuild},
+    build::{BuiltService, CapturedBuild, SEALED_BUILDS_RUN_ON_SERVER},
     connect::Client,
     deploy::{DeployError, DeployPlan},
 };
@@ -404,10 +412,20 @@ pub(super) async fn build_images(
     if targets.is_empty() {
         return Ok(builds);
     }
+    let sealed = build.reads_sealed();
+    let builders =
+        crate::sealed_compat::builders(&machines, sealed).map_err(PreparationError::Selection)?;
     let selected = read(cancellation, async {
-        select_build_machine(client, &targets, &machines, preference, cancellation)
-            .await
-            .map_err(PreparationError::Selection)
+        select_build_machine(
+            client,
+            &targets,
+            &builders,
+            sealed,
+            preference,
+            cancellation,
+        )
+        .await
+        .map_err(PreparationError::Selection)
     })
     .await?;
     let id = selected.machine.id;

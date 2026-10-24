@@ -75,6 +75,25 @@ services filled in. Changing one [rebuilds the service](overview.md#good-to-know
 
 Builds on [GitHub Actions](where-builds-run.md#build-on-github-actions) get your variables too.
 
+### Read a sealed value
+
+A build that reads a sealed value [runs on your server](where-builds-run.md).
+Railpack builds see it as they see any other variable. A Dockerfile reads it with `ARG`:
+
+```dockerfile
+ARG NPM_TOKEN
+RUN npm ci
+```
+
+A secret mount keeps the value out of the image's history:
+
+```dockerfile
+RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci
+```
+
+A changed sealed value doesn't rerun a cached secret mount step. To rerun it, add
+`ARG PLOYZ_SEALED_HASH` right above it.
+
 ### Install private packages
 
 Builds have no SSH keys or registry logins of their own. Give the build a token through a

@@ -29,6 +29,8 @@ pub use execution::{
 };
 mod railpack;
 pub use railpack::Railpack;
+mod sealed;
+pub use sealed::{sealed_file, valid_name};
 mod solve;
 pub use solve::PlainRenderer;
 
@@ -106,6 +108,8 @@ pub struct Request<'a> {
     pub image_contexts: &'a BTreeMap<String, ImageContext>,
     /// Captured Compose file describing every target of this Build.
     pub compose_file: &'a Path,
+    /// Private Server-only Compose override holding opened Sealed arguments.
+    pub sealed_override: Option<&'a Path>,
     /// Private directory the build runs in, so no stray file can join it.
     pub working_dir: &'a Path,
     /// Values captured for this command. Later shell state is never consulted.
@@ -124,6 +128,8 @@ pub struct Request<'a> {
     pub no_cache: bool,
     /// Always attempt to pull a newer version of a referenced image.
     pub pull: bool,
+    /// Hide unreadable progress lines when this Build reads Sealed values.
+    pub sealed: bool,
 }
 
 /// One image to produce, named by the caller.
@@ -487,7 +493,7 @@ fn execute_produce(
                     .map_or(native.as_str(), String::as_str)
             ));
             progress(Progress::Stage(Stage::Building));
-            if let Err(error) = builder.run(&arguments, || {
+            if let Err(error) = builder.run(&arguments, request.sealed, || {
                 progress(Progress::Target {
                     name: target.target.name.clone(),
                     outcome: TargetEvidence::Unknown,
@@ -596,7 +602,7 @@ fn bake_arguments(
         "--file".to_owned(),
         request.compose_file.to_string_lossy().into_owned(),
     ];
-    if let Some(overrides) = overrides {
+    for overrides in request.sealed_override.into_iter().chain(overrides) {
         arguments.extend([
             "--file".to_owned(),
             overrides.to_string_lossy().into_owned(),

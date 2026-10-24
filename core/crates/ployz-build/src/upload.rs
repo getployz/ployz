@@ -114,20 +114,34 @@ impl AdmittedUpload {
         self.upload.accept(frame)
     }
 
+    /// Read one file of the received private material, if the capture sent it.
+    /// # Errors
+    /// Reports a file that exists but cannot be read.
+    pub fn private_file(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+        match fs::read(self.upload.root.join("private").join(name)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Finish receiving and execute while retaining ownership through cleanup.
+    /// `opened` holds the Sealed values this host opened, by name; they become
+    /// secret files for the solve and are removed with it.
     /// # Errors
     /// Rejects incomplete captures or host execution failure.
     pub fn execute(
         self,
         definition: &Definition,
         docker: Option<&Path>,
+        opened: &BTreeMap<String, String>,
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<crate::RetainedImages, BuildError> {
         let _ownership = self.admission.lock.clone();
         self.upload
             .complete()
             .map_err(|error| BuildError::Request(error.to_string()).at(crate::Stage::Upload))?
-            .execute(definition, self.admission, docker, progress)
+            .execute(definition, self.admission, docker, opened, progress)
     }
 }
 
@@ -322,16 +336,28 @@ impl CompletedUpload {
         definition: &Definition,
         admission: Admission,
         docker: Option<&Path>,
+        opened: &BTreeMap<String, String>,
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<crate::RetainedImages, BuildError> {
         let mut upload = self.0;
-        let railpack = crate::received_recipe::validate_capture(&upload.root, definition)
-            .map_err(|error| BuildError::Request(error.to_string()))?;
+        // Declared after `upload` so the files go before the root does.
+        let mut opened_files = crate::sealed::OpenedFiles::write(&upload.root, opened)?;
+        let railpack = crate::received_recipe::validate_capture(
+            &upload.root,
+            definition,
+            crate::received_recipe::SealedFiles::Opened,
+        )
+        .map_err(|error| BuildError::Request(error.to_string()))?;
+        let sealed_override = opened_files.args(&upload.root, definition, opened)?;
         for (path, mode) in upload.directories.iter().rev() {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))
                 .map_err(|error| BuildError::Request(io_error(error).to_string()))?;
         }
-        let environment = environment(&upload.root);
+        let mut environment = environment(&upload.root);
+        if sealed_override.is_some() {
+            // Buildx provenance metadata records build argument values.
+            environment.insert("BUILDX_METADATA_PROVENANCE".into(), "disabled".into());
+        }
         let retention = crate::ImageRetention::new(
             definition.retained_tags.clone(),
             docker,
@@ -342,6 +368,7 @@ impl CompletedUpload {
                 image_contexts: &definition.image_contexts,
                 railpack: &railpack,
                 compose_file: Path::new("compose.yaml"),
+                sealed_override: sealed_override.as_deref(),
                 working_dir: &upload.root,
                 environment: &environment,
                 docker,
@@ -350,6 +377,7 @@ impl CompletedUpload {
                 output: definition.output,
                 no_cache: definition.no_cache,
                 pull: definition.pull,
+                sealed: !opened.is_empty(),
             },
             admission,
             progress,

@@ -1342,13 +1342,14 @@ fn targets(
             _ => {}
         }
         if !source.builders.contains(&Builder::Servers) {
+            let why = match source.sealed {
+                Some(_) => crate::build::SEALED_BUILDS_RUN_ON_SERVER,
+                None => source.message.as_deref().unwrap_or_default(),
+            };
             failed.push(format!(
                 "{}: {}",
                 source.service,
-                crate::ui::then_sentence(
-                    source.message.as_deref().unwrap_or_default(),
-                    "No other Builder in your Build Order can take it",
-                )
+                crate::ui::then_sentence(why, "No other Builder in your Build Order can take it")
             ));
             continue;
         }

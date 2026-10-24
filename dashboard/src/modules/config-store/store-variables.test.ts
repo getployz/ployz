@@ -3,6 +3,7 @@ import { asTestDouble } from "#/lib/test-double";
 import type { ClientSealedValue, EnvironmentRef, EnvironmentView, RowId, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
 import {
+  firstBrowserSealed,
   notSetVariables,
   receivingService,
   receivingValues,
@@ -199,4 +200,20 @@ it("seals a Sync row for the Service its lineage lands in, keyed by the row's va
   await expect(receivingValues(sealing, [{ row: "a:variables." as RowId, value: "x" }], receiver, "drop")).rejects.toThrow("is not a variable");
   await expect(receivingValues(sealing, [{ row: "a:configs.app" as RowId, value: "x" }], receiver, "drop")).rejects.toThrow("is not a variable");
   expect(await receivingValues({ sealer: async () => null }, typed, receiver, "refuse")).toEqual(typed);
+});
+
+it("names a Service's first variable the browser sealed, never a secret sealed another way", () => {
+  const rows = serviceSettingRows({
+    ...view,
+    settings: [
+      { path: "web.env.API_KEY", value: { secret: true }, default: null, apply: "staged", row: "w:variables.API_KEY" as RowId },
+      { path: "web.env.NPM_TOKEN", value: { secret: true }, default: null, apply: "staged", row: "w:variables.NPM_TOKEN" as RowId },
+      { path: "web.env.AUTH", value: { secret: true }, default: null, apply: "staged", row: "w:variables.AUTH" as RowId },
+      { path: "api.env.AAA", value: { secret: true }, default: null, apply: "staged", row: "a:variables.AAA" as RowId },
+    ],
+  }, "web");
+  const sealed = (...marked: string[]) => firstBrowserSealed(rows, marked.map((row) => row as RowId));
+  expect(sealed()).toBeNull();
+  expect(sealed("a:variables.AAA")).toBeNull();
+  expect(sealed("w:variables.NPM_TOKEN", "w:variables.AUTH")).toBe("AUTH");
 });

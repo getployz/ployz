@@ -47,6 +47,10 @@ pub struct EnvironmentView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<RowId>>", optional)]
     pub never_synced: Vec<RowId>,
+    /// Every variable row of the Services read whose value the browser sealed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<RowId>>", optional)]
+    pub sealed: Vec<RowId>,
 }
 
 /// One Setting's current Working State value.
@@ -100,7 +104,16 @@ pub(crate) fn environment(
         _ => crate::branch::Own::of(tx, &environment)?,
     };
     let mut settings = Vec::new();
+    let mut sealed = Vec::new();
     for service in services {
+        for variable in &service.variables {
+            if crate::client_sealed::browser_sealed(variable) {
+                sealed.push(crate::branch::row_id(
+                    &service.lineage_id,
+                    &format!("variables.{}", variable.key),
+                )?);
+            }
+        }
         let name = ServiceName::parse(service.slug.as_str())
             .map_err(|_| crate::error::corrupt("Service name"))?;
         let mut row = |target: Target, value: Value, default: Value, apply: Apply| {
@@ -217,6 +230,7 @@ pub(crate) fn environment(
         environment: environment.summary,
         settings,
         values,
+        sealed,
     })
 }
 

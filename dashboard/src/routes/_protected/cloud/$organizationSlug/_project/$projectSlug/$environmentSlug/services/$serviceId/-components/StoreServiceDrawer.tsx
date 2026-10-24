@@ -25,6 +25,7 @@ import { changedProps, deployedVcpuLimit, serviceChanges, serviceSettingRows, se
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { firstBrowserSealed } from "#/modules/config-store/store-variables";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { SettingsAddButton, SettingsDanger, SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
@@ -192,6 +193,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       {field("buildMethod")}
       {buildMethod === "dockerfile" ? <StoreDockerfile state={state} /> : field("buildCommand")}
       <StorePreferredBuilderField organizationSlug={organizationSlug} value={policyText(state.rows.get("preferredBuilder")?.value)}
+        sealed={firstBrowserSealed(state.rows, settings.sealed)}
         onSet={(builder) => state.set("preferredBuilder", builder)} />
     </> : null,
     deploy: <>
