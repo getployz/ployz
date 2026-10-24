@@ -78,8 +78,9 @@ pub const LABEL_BRIDGE_IPV6: &str = "ployz.network.ipv6";
 /// reach it by DNAT with their own address (#2837). So does a container created
 /// with [`LABEL_BRIDGE_IPV6`] `true`, for IPv6 egress (#3372). A container that
 /// publishes a host port stays IPv4-only, so its ports keep reaching an app that
-/// listens on IPv4 alone through docker-proxy. One created before the label keeps
-/// the family it was created with until it is replaced.
+/// listens on IPv4 alone through docker-proxy. One created before the label stays
+/// IPv4-only until it is replaced. A labelled one follows the bridge, so it gains or
+/// loses IPv6 when the bridge does.
 #[must_use]
 pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
     let ingress = QualifiedService::system_ingress();
@@ -2151,7 +2152,7 @@ mod tests {
     }
 
     #[test]
-    fn a_container_created_before_the_rule_keeps_its_bridge_family_when_it_rejoins() {
+    fn a_container_without_the_label_set_to_true_does_not_take_ipv6() {
         let labels = HashMap::from([
             (LABEL_MANAGED.to_owned(), String::new()),
             (LABEL_NAMESPACE.to_owned(), "app".to_owned()),

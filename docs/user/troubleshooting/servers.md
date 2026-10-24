@@ -533,9 +533,8 @@ network can still take IPv6, but nothing carries it further. Ask your provider f
 then your services keep reaching IPv4 addresses.
 
 When only some services can't reach IPv6 addresses, check whether each has an IPv6 address:
-`ployz exec SERVICE -- cat /proc/net/if_inet6` lists one starting `fdcd` when it does. A container
-keeps the network it was created with, so one created before 0.3.5 has none until Ployz replaces
-it. A deploy that changes the service, such as a new image or a changed variable, replaces it. A
+`ployz exec SERVICE -- cat /proc/net/if_inet6` lists one starting `fdcd` when it does, if the
+image has `cat`. A container created before 0.3.5 has none until Ployz replaces it. A deploy that changes the service, such as a new image or a changed variable, replaces it. A
 deploy that changes nothing keeps it.
 
 ## Services can't resolve each other's names
