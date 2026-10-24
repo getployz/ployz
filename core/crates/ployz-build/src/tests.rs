@@ -204,6 +204,7 @@ exit 0
         image_contexts: &BTreeMap::new(),
         railpack: &[],
         compose_file: &directory.join("compose.json"),
+        sealed_override: None,
         working_dir: &directory,
         environment: &environment,
         docker: Some(&program),
@@ -289,6 +290,7 @@ exit 0
         image_contexts: &BTreeMap::new(),
         railpack: &[],
         compose_file: &directory.join("compose.json"),
+        sealed_override: None,
         working_dir: &directory,
         environment: &environment,
         docker: Some(&program),
@@ -379,6 +381,7 @@ fn requested_output_selects_exclusive_bake_behavior() {
         image_contexts: &image_contexts,
         railpack: &[],
         compose_file: Path::new("/private/compose.yaml"),
+        sealed_override: None,
         working_dir: Path::new("/private"),
         environment: &environment,
         docker: None,
@@ -464,6 +467,31 @@ fn requested_output_selects_exclusive_bake_behavior() {
     assert!(export.contains(&"api.output=type=cacheonly".to_owned()));
     assert!(!export.contains(&"--load".to_owned()));
     assert!(!export.contains(&"--metadata-file".to_owned()));
+
+    let merged = bake_arguments(
+        &Request {
+            sealed_override: Some(Path::new("private/sealed/args.compose.yaml")),
+            ..request(Output::Load)
+        },
+        Produce::Output(Output::Load),
+        &builder_name(),
+        planned,
+        metadata,
+        Some(Path::new("private/railpack.compose.yaml")),
+    );
+    let files: Vec<_> = merged
+        .windows(2)
+        .filter(|pair| pair.first().is_some_and(|arg| arg == "--file"))
+        .filter_map(|pair| pair.get(1).map(String::as_str))
+        .collect();
+    assert_eq!(
+        files,
+        [
+            "/private/compose.yaml",
+            "private/sealed/args.compose.yaml",
+            "private/railpack.compose.yaml"
+        ]
+    );
 }
 
 #[test]
@@ -527,6 +555,7 @@ esac
         let request = Request {
             image_contexts: &BTreeMap::new(),
             compose_file: Path::new("compose.yaml"),
+            sealed_override: None,
             working_dir: &directory,
             environment: &environment,
             docker: Some(&program),
@@ -586,6 +615,7 @@ fn docker_preflight_holds_quarantine_and_clears_confirmed_failures() {
         image_contexts: &BTreeMap::new(),
         railpack: &[],
         compose_file: &directory.join("compose.json"),
+        sealed_override: None,
         working_dir: &directory,
         environment: &environment,
         docker: Some(&program),
@@ -679,6 +709,7 @@ exit 0
     let request = Request {
         image_contexts: &contexts,
         compose_file: Path::new("compose.yaml"),
+        sealed_override: None,
         working_dir: &directory,
         environment: &environment,
         docker: Some(&program),
@@ -741,6 +772,7 @@ exit 0
     let request = Request {
         image_contexts: &BTreeMap::new(),
         compose_file: Path::new("compose.yaml"),
+        sealed_override: None,
         working_dir: &directory,
         environment: &environment,
         docker: Some(&program),
@@ -785,6 +817,7 @@ fn a_cache_export_without_a_runner_cache_runs_nothing() {
     let request = Request {
         image_contexts: &BTreeMap::new(),
         compose_file: Path::new("compose.yaml"),
+        sealed_override: None,
         working_dir: Path::new("/nonexistent"),
         environment: &environment,
         docker: Some(Path::new("/nonexistent/docker")),
@@ -822,6 +855,7 @@ fn railpack_prepares_a_python_requirements_app() {
         image_contexts: &BTreeMap::new(),
         railpack: &railpack,
         compose_file: &directory.join("compose.json"),
+        sealed_override: None,
         working_dir: &directory,
         environment: &environment,
         docker: None,
@@ -906,6 +940,7 @@ fn railpack_delivers_a_sealed_value_to_a_build_step_and_keeps_it_out_of_the_imag
         image_contexts: &BTreeMap::new(),
         railpack: &railpack,
         compose_file: &compose_file,
+        sealed_override: None,
         working_dir: &directory,
         environment: &environment,
         docker: None,
@@ -1083,4 +1118,166 @@ fn the_builder_cache_is_not_user_data() {
     ] {
         assert!(!super::is_builder_cache(data), "{data}");
     }
+}
+
+#[test]
+#[ignore = "requires local Docker with the containerd image store and network access"]
+fn dockerfile_sealed_args_reach_the_image_and_invalidate_the_cache() {
+    fn docker(args: &[&str]) -> String {
+        let output = Command::new("docker").args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+    fn no_plaintext(root: &Path, value: &str) {
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.ends_with("private/sealed") {
+                continue;
+            }
+            if path.is_dir() {
+                no_plaintext(&path, value);
+            } else {
+                assert!(
+                    !std::fs::read(&path)
+                        .unwrap()
+                        .windows(value.len())
+                        .any(|bytes| bytes == value.as_bytes()),
+                    "{}",
+                    path.display()
+                );
+            }
+        }
+    }
+    let directory =
+        std::env::temp_dir().join(format!("ployz-sealed-arg-receipt-{}", uuid::Uuid::new_v4()));
+    let capture = directory.join("capture");
+    std::fs::create_dir_all(capture.join("source/app")).unwrap();
+    std::fs::create_dir_all(capture.join("private/docker")).unwrap();
+    std::fs::write(capture.join("private/docker/config.json"), "{}").unwrap();
+    std::fs::write(
+        capture.join("private/sealed-args.json"),
+        r#"{"api":["NPM_TOKEN"]}"#,
+    )
+    .unwrap();
+    std::fs::write(capture.join("source/app/Dockerfile"), "FROM alpine:latest\nARG NPM_TOKEN\nRUN printf %s \"$NPM_TOKEN\" | sha256sum > /token.sha\nRUN --mount=type=secret,id=NPM_TOKEN cat /run/secrets/NPM_TOKEN | sha256sum > /mount.sha\n").unwrap();
+    let image = format!("ployz-test-sealed-arg:{}", uuid::Uuid::new_v4().simple());
+    std::fs::write(capture.join("compose.yaml"), format!("services:\n  api:\n    image: {image}\n    build:\n      context: source/app\n      args: {{PLAIN: captured}}\n      secrets: [NPM_TOKEN]\nsecrets:\n  NPM_TOKEN:\n    file: private/sealed/NPM_TOKEN\n")).unwrap();
+    let definition = remote::Definition {
+        targets: vec![target("api", None)],
+        retained_tags: Vec::new(),
+        image_contexts: BTreeMap::new(),
+        output: Output::Load,
+        no_cache: false,
+        pull: false,
+    };
+    let policy = HostPolicy {
+        state_directory: directory.join("state"),
+        configuration_file: directory.join("build.yaml"),
+        ..Default::default()
+    };
+    let values = [
+        "dummy-ruling40-first",
+        "dummy-ruling40-$NEXT-${HOME}-$$-second",
+    ];
+    let mut previous = None;
+    for value in values {
+        let admission = Admission::try_acquire_slot(&policy, 40).unwrap();
+        let upload_root = admission.lock.upload_directory();
+        let mut upload = admission.upload().unwrap();
+        remote::upload(&capture, |input| upload.accept(input)).unwrap();
+        let steps = std::sync::Mutex::new(Vec::new());
+        let printed = std::sync::atomic::AtomicBool::new(false);
+        let images = upload
+            .execute(
+                &definition,
+                None,
+                &BTreeMap::from([("NPM_TOKEN".into(), value.into())]),
+                &|progress| match progress {
+                    Progress::Step(step) => steps.lock().unwrap().push(step),
+                    Progress::Target { .. } => no_plaintext(&upload_root, value),
+                    Progress::Stage(Stage::Building) => {
+                        let output = Command::new("docker")
+                            .current_dir(&upload_root)
+                            .args(["buildx", "bake", "--file", "compose.yaml", "--print"])
+                            .output()
+                            .unwrap();
+                        assert!(
+                            output.status.success(),
+                            "{}",
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                        assert!(!String::from_utf8(output.stdout).unwrap().contains(value));
+                        printed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Progress::Stage(
+                        Stage::Admission
+                        | Stage::Queued
+                        | Stage::Preparation
+                        | Stage::Output
+                        | Stage::Cleanup
+                        | Stage::Upload
+                        | Stage::Push,
+                    )
+                    | Progress::Output(_)
+                    | Progress::StepOutput { .. }
+                    | Progress::Timing { .. } => {}
+                },
+            )
+            .unwrap();
+        assert_eq!(images.images.len(), 1);
+        assert!(printed.load(std::sync::atomic::Ordering::Relaxed));
+        let digest: String = Sha256::digest(value.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let result = docker(&["run", "--rm", &image, "cat", "/token.sha", "/mount.sha"]);
+        assert!(
+            result.lines().all(|line| line.starts_with(&digest)),
+            "{result}"
+        );
+        assert_eq!(result.lines().count(), 2);
+        assert_ne!(previous.as_ref(), Some(&digest));
+        let steps = steps.into_inner().unwrap();
+        let step = steps
+            .iter()
+            .find(|step| step.name.contains("/token.sha") && step.completed.is_some())
+            .unwrap();
+        if previous.is_some() {
+            assert!(!step.cached, "changed ARG reused the cached step");
+        }
+        previous = Some(digest.clone());
+        let history = docker(&[
+            "history",
+            "--no-trunc",
+            "--format",
+            "{{.CreatedBy}}",
+            &image,
+        ]);
+        assert!(history.contains(value), "{history}");
+        assert!(!upload_root.exists());
+        no_plaintext(&capture, value);
+        eprintln!(
+            "ARG receipt sha256={digest} step_cached={} bake_print_clean=true upload_root_removed=true history_contains_value=true",
+            step.cached
+        );
+        eprintln!(
+            "{}",
+            history
+                .lines()
+                .find(|line| line.contains("/token.sha"))
+                .unwrap()
+        );
+        drop(images);
+    }
+    docker(&["rmi", "--force", &image]);
+    docker(&[
+        "volume",
+        "rm",
+        &format!("buildx_buildkit_{}-400_state", builder_name()),
+    ]);
+    std::fs::remove_dir_all(directory).unwrap();
 }

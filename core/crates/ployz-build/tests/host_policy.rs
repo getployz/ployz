@@ -166,6 +166,7 @@ exit 0
     let request = Request {
         image_contexts: &BTreeMap::new(),
         compose_file: &host.file("compose.yaml"),
+        sealed_override: None,
         working_dir: &host.policy.state_directory,
         environment: &BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
         docker: Some(&host.policy.docker),
@@ -201,6 +202,7 @@ fn resource_launch_failure_reports_preparation_and_releases_confirmed_ownership(
         &Request {
             image_contexts: &BTreeMap::new(),
             compose_file: &host.file("compose.yaml"),
+            sealed_override: None,
             working_dir: &host.policy.state_directory,
             environment: &BTreeMap::new(),
             docker: Some(&host.policy.docker),
@@ -333,6 +335,7 @@ echo "$*" >> "$root/mutations"
             &Request {
                 image_contexts: &BTreeMap::new(),
                 compose_file: &host.file("compose.yaml"),
+                sealed_override: None,
                 working_dir: &host.policy.state_directory,
                 environment: &environment,
                 docker: Some(&host.policy.docker),
