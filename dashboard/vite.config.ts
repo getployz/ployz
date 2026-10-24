@@ -65,7 +65,7 @@ const config = defineConfig({
     tailwindcss(),
     tanstackStart({ client: { entry: './client.tsx' } }),
     nitro({
-      plugins: ['./src/server/config-check.nitro.ts'],
+      plugins: ['./src/server/config-check.nitro.ts', './src/server/unhandled-errors.nitro.ts'],
       rollupConfig: { external: [/^@ployz\/sdk(?:\/|$)/] },
       routeRules: { '/**': { headers: { ...SECURITY_HEADERS } } },
     }),

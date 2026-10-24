@@ -1,0 +1,11 @@
+diff --git a/dist/runtime/internal/error/hooks.mjs b/dist/runtime/internal/error/hooks.mjs
+index cb8ac534cfaa958ceaab2886063437b2aff2194f..90c6ec50e2fb2c229c62bbbbeb69c6444bec60ca 100644
+--- a/dist/runtime/internal/error/hooks.mjs
++++ b/dist/runtime/internal/error/hooks.mjs
+@@ -1,6 +1,5 @@
+ import { useNitroApp } from "../app.mjs";
+ function _captureError(error, type) {
+-	console.error(`[${type}]`, error);
+ 	useNitroApp().captureError?.(error, { tags: [type] });
+ }
+ export function trapUnhandledErrors() {
