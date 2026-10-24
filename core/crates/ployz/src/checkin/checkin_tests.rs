@@ -2134,17 +2134,22 @@ async fn an_install_that_retries_a_failed_docker_install_drops_that_failure_from
     docker_failed_at(&paths, "2026-10-16T00:00:00Z");
     let (url, _server) = cloud("200 OK", WAIT).await;
     let host = FakeHost::default();
-    install_pass(&host, &mut client(&url), &key(), &paths, Utc::now())
-        .await
-        .record(&paths);
+    let installed = install_pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    // What the install line prints from, whether or not status.json could be written.
+    let mut seen = installed.seen.clone().unwrap();
+    installed.record(&paths);
     assert_eq!(
         blocker_codes(&paths),
         ["kernel_too_old", "docker_install_failed"]
     );
 
-    restart_preparation(&host, &paths, Utc::now()).await;
+    let now = Utc::now();
+    assert!(restart_preparation(&host, &paths, now).await);
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
+    seen.restarted_preparation(now);
+    let codes: Vec<_> = seen.blockers.iter().map(|blocker| &blocker.code).collect();
     // The host's own blocker still stands.
+    assert_eq!(codes, ["kernel_too_old"]);
     assert_eq!(blocker_codes(&paths), ["kernel_too_old"]);
 
     // The loop's next pass can run before the new preparation rewrites the state file.
@@ -2205,7 +2210,7 @@ async fn a_docker_install_that_failed_after_its_preparation_started_still_blocks
         ["kernel_too_old", "docker_install_failed"]
     );
     // A preparation that is already running is not restarted, so its failure stands.
-    restart_preparation(&host, &paths, Utc::now()).await;
+    assert!(!restart_preparation(&host, &paths, Utc::now()).await);
     assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
     assert_eq!(
         blocker_codes(&paths),
