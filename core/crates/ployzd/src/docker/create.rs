@@ -17,8 +17,8 @@ use ployz_core::{
 };
 
 use super::{
-    Error, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID,
-    LABEL_SERVICE_NAME,
+    Error, LABEL_BRIDGE_IPV6, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_NAMESPACE,
+    LABEL_SERVICE_ID, LABEL_SERVICE_NAME,
 };
 use crate::sealed_env;
 
@@ -122,6 +122,11 @@ pub(super) fn container_create_body(
     if hook.is_some() {
         labels.insert(LABEL_HOOK.into(), LABEL_HOOK_PRE_DEPLOY.into());
     }
+    let publishes_host_port = spec
+        .ports
+        .iter()
+        .any(|port| matches!(port, PortPublication::Host { .. }));
+    labels.insert(LABEL_BRIDGE_IPV6.into(), (!publishes_host_port).to_string());
     if let Some(record) = &opened.record {
         labels.insert(
             sealed_env::LABEL_SEALED.into(),
