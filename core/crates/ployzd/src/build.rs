@@ -330,6 +330,10 @@ async fn pump(
     "Build client disconnected".into()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one admitted Build's parts, moved into its blocking task"
+)]
 fn receive_and_execute(
     machine_id: MachineId,
     mut definition: Definition,

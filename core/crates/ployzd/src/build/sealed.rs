@@ -220,9 +220,12 @@ mod tests {
         shown.extend(scrub.finish());
         let text = shown
             .iter()
-            .filter_map(|event| match event {
-                Progress::StepOutput { text, .. } => Some(text.as_str()),
-                _ => None,
+            .filter_map(|event| {
+                if let Progress::StepOutput { text, .. } = event {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
             })
             .collect();
         (text, shown)
@@ -279,9 +282,12 @@ mod tests {
         assert_eq!(text, "one\ntwo three\nfourwarning: slow");
         let order: Vec<(&str, bool)> = shown
             .iter()
-            .filter_map(|event| match event {
-                Progress::StepOutput { step, stderr, .. } => Some((step.as_str(), *stderr)),
-                _ => None,
+            .filter_map(|event| {
+                if let Progress::StepOutput { step, stderr, .. } = event {
+                    Some((step.as_str(), *stderr))
+                } else {
+                    None
+                }
             })
             .collect();
         // Held text leaves as late as it must: "two " waits for its line end, and
@@ -315,9 +321,12 @@ mod tests {
         assert_eq!(text, "first tailsecond");
         let steps: Vec<_> = shown
             .iter()
-            .filter_map(|event| match event {
-                Progress::StepOutput { step, .. } => Some(step.as_str()),
-                _ => None,
+            .filter_map(|event| {
+                if let Progress::StepOutput { step, .. } = event {
+                    Some(step.as_str())
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(steps, ["sha256:z-first", "sha256:a-second"]);
@@ -433,9 +442,12 @@ exit 0
             if !sealed {
                 let text: Vec<&str> = events
                     .iter()
-                    .filter_map(|event| match event {
-                        Progress::StepOutput { text, .. } => Some(text.as_str()),
-                        _ => None,
+                    .filter_map(|event| {
+                        if let Progress::StepOutput { text, .. } = event {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
                     })
                     .collect();
                 assert_eq!(
