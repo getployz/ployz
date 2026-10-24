@@ -115,7 +115,8 @@ const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where
     machineId: ending.state === "joined" ? ending.machineId : null,
     failure: ending.state === "failed" ? ending.failure : null,
     encryptedToken: null,
-    endedAt: now,
+    // The database's clock, as check-ins stamp theirs, so a listing can tell a report from before the join.
+    endedAt: sql`now()`,
   }).where(and(inArray(serverEnrollment.id, locked.map((row) => row.id)), where)).returning({ id: serverEnrollment.id, enrollTokenId: serverEnrollment.enrollTokenId, fleetTokenId: serverEnrollment.fleetTokenId });
   if (ending.state === "joined" && ended.length > 0) {
     yield* drizzle.insert(fleetTokenJoin).values(ended.map((row) => ({ attemptId: row.id, fleetTokenId: row.fleetTokenId })));

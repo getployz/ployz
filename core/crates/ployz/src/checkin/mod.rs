@@ -32,6 +32,8 @@ pub(crate) use wire::{
 const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
 const PREPARE_TRIES: u32 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Every check-in waits on this, and Cloud shows a host Offline 30 s after its last one.
+const PHASE_TIMEOUT: Duration = Duration::from_secs(3);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN_SETTLE: Duration = Duration::from_secs(2);
 /// The widest gap, on Cloud's clock, one refused pass to the next can explain. A wider one, or a
@@ -294,7 +296,7 @@ impl Host for System {
     }
 
     async fn machine_phase(&self) -> Option<ployz_core::LocalMachinePhase> {
-        local_machine(PROBE_TIMEOUT)
+        local_machine(PHASE_TIMEOUT)
             .await
             .map(|details| details.phase)
     }

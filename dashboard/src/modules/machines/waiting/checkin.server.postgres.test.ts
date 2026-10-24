@@ -1122,6 +1122,18 @@ it("shows a host whose ployzd holds no Machine, checking in with a joined Server
   expect(await listed()).toMatchObject([{ status: "waiting", report: { hostname: "web-1", blockers: [] } }]);
 });
 
+it("keeps a joined Server hidden when its last check-in was the one before it joined", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  // Its ployzd held no Machine yet, and no check-in got through after the join.
+  expect(await send(token, newHost(), { ...readyAuto, machinePhase: "uninitialized" })).toEqual(arrivalWait);
+  await endAuto((await autoAttempts())[0]?.id ?? "", "joined");
+  await harness.pool.query(`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name)
+    values ($1, repeat('a', 32), repeat('c', 64), '{}', 'web-old')`, [adaOrg]);
+
+  expect(await run(listWaitingServers(ada, { organizationSlug: "ada" }))).toEqual([]);
+});
+
 it.each([
   ["re-runs its install", "participating", undefined],
   ["missed Cloud's answer to its join", "participating", { stage: "publishing", message: "Cloud did not answer" }],

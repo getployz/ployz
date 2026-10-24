@@ -75,6 +75,7 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
   const former = drizzle.select({
     machineId: sql<string>`${serverEnrollment.machineId}`.as("former_machine_id"),
     machineName: organizationMachine.machineName,
+    endedAt: sql<Date>`${serverEnrollment.endedAt}`.as("former_ended_at"),
   })
     .from(serverEnrollment)
     .innerJoin(organizationMachine, and(
@@ -112,8 +113,9 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
       or(stillWaiting, and(
         isNotNull(former.machineId),
         noOpenEnrollment,
-        // Its ployzd says it holds no Machine, so it is no longer that Server. A Server whose ployzd is down, or whose
-        // older CLI doesn't say, stays hidden.
+        // Since that join, its ployzd says it holds no Machine, so it is no longer that Server. A Server whose ployzd is
+        // down, or whose older CLI doesn't say, stays hidden, as does the report it sent before it joined.
+        sql`${waitingServer.lastCheckInAt} > ${former.endedAt}`,
         sql`${waitingServer.report}->>'machinePhase' = 'uninitialized'`,
       )),
       id === null ? undefined : eq(waitingServer.id, id),
