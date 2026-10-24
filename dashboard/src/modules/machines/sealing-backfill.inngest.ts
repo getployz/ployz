@@ -46,6 +46,7 @@ export const createEnsureClusterSealingKey = (inngest: PloyzInngest, runEffect: 
       retries: 3,
       triggers: [{ event: sealingKeyEnsureRequestedEventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
+      debounce: { key: "event.data.organizationId", period: "5s", timeout: "30s" },
     },
     async ({ event, step }) => executeEnsureClusterSealingKey({ event, step }, runEffect),
   );
