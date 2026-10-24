@@ -1,7 +1,8 @@
 """Runs the Shell install line's `sh -s -- VERSION --enroll` with the script on a pipe, as `curl | sh` does,
 on a real terminal that types the Fleet Token the instant the prompt shows, and with no terminal at all.
 It also cancels once at each syscall the shell makes between showing the prompt and blocking on the terminal, and
-between the Enter that ends the token and the terminal getting its echo back."""
+between the Enter that ends the token and the terminal getting its echo back. And it runs the shell as sudo-rs does
+for `curl | sudo sh`: in the background of the terminal, resuming only the shell when the terminal stops it."""
 
 import ctypes
 import hashlib
@@ -67,13 +68,31 @@ def stub(path, text):
     path.chmod(0o755)
 
 
-def run(shell, env, mode):
+def exec_like_sudo_rs(shell, env):
+    """Starts the shell in its own process group in the background of this terminal. When the terminal stops it, this
+    hands it the terminal and resumes the shell alone, never the children the stop also caught, as sudo-rs 0.2 does."""
+    child = os.fork()
+    if child == 0:
+        os.setpgid(0, 0)
+        os.execve(shell, [shell, *ARGS], env)
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    while True:
+        _, status = os.waitpid(child, os.WUNTRACED)
+        if not os.WIFSTOPPED(status):
+            os._exit(os.waitstatus_to_exitcode(status))
+        os.tcsetpgrp(1, child)
+        os.kill(child, signal.SIGCONT)
+
+
+def run(shell, env, mode, sudo_rs=False):
     script_read, script_write = os.pipe()
     pid, master = pty.fork()
     if pid == 0:
         os.close(script_write)
         os.dup2(script_read, 0)
         os.close(script_read)
+        if sudo_rs:
+            exec_like_sudo_rs(shell, env)
         os.execve(shell, [shell, *ARGS], env)
     os.close(script_read)
     os.write(script_write, SOURCE)
@@ -267,6 +286,8 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
             assert (root / 'stdin').read_text() == TOKEN + '\n', shell
             assert TOKEN not in (root / 'env').read_text(), shell
             assert TOKEN not in (root / 'argv').read_text(), shell
+        assert run(shell, env, 'type', sudo_rs=True) == 0, shell
+        assert (root / 'stdin').read_text() == TOKEN + '\n', shell
         assert run(shell, env, 'ctrl-c') == 130, shell
         assert run(shell, env, 'term') == 130, shell
         for after, mode in itertools.product(['prompt', 'enter'], ['ctrl-c', 'term']):
