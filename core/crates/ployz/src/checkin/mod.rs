@@ -179,9 +179,12 @@ pub(crate) trait Host {
     async fn discard_zfs_build(&self) -> Result<(), String>;
     /// The name this Server holds in the cluster it already participates in.
     async fn participating(&self) -> Option<String>;
-    /// The Local Machine Phase this host's ployzd reports, or none when it doesn't answer.
-    async fn machine_phase(&self) -> Option<ployz_core::LocalMachinePhase> {
-        None
+    /// What ployzd says of this host's Machine, asked once per pass.
+    async fn local_machine(&self) -> LocalMachine {
+        LocalMachine {
+            phase: None,
+            participating: self.participating().await,
+        }
     }
     /// The program holding UDP [`ployz_core::WIREGUARD_PORT`], which ployzd needs for WireGuard.
     fn wireguard_port_holder(&self) -> Option<String> {
@@ -285,19 +288,34 @@ impl Host for System {
     }
 
     async fn participating(&self) -> Option<String> {
-        let details = local_machine(PROBE_TIMEOUT).await?;
+        self.participating_as(local_machine(PROBE_TIMEOUT).await?)
+    }
+
+    async fn local_machine(&self) -> LocalMachine {
+        let details = local_machine(PROBE_TIMEOUT).await;
+        LocalMachine {
+            phase: details.as_ref().map(|details| details.phase.clone()),
+            participating: details.and_then(|details| self.participating_as(details)),
+        }
+    }
+}
+
+impl System {
+    fn participating_as(&self, details: ployz_core::MachineDetails) -> Option<String> {
         (details.phase == ployz_core::LocalMachinePhase::Participating).then(|| {
             details
                 .machine
                 .map_or_else(|| self.hostname(), |machine| machine.name.to_string())
         })
     }
+}
 
-    async fn machine_phase(&self) -> Option<ployz_core::LocalMachinePhase> {
-        local_machine(PROBE_TIMEOUT)
-            .await
-            .map(|details| details.phase)
-    }
+/// What ployzd said of this host's Machine.
+pub(crate) struct LocalMachine {
+    /// Its Local Machine Phase, or none when ployzd didn't answer.
+    pub(crate) phase: Option<ployz_core::LocalMachinePhase>,
+    /// The name this Server holds in the cluster it participates in.
+    pub(crate) participating: Option<String>,
 }
 
 /// What this host's daemon says of its Machine over the local socket, or none when it doesn't
@@ -762,7 +780,11 @@ impl InstallPass {
 
 /// Whether this host joined through `attempt`: it didn't fail, and the daemon now participates.
 pub(crate) async fn joined<H: Host>(host: &H, attempt: Option<&Attempt>) -> bool {
-    attempt.is_some_and(|attempt| attempt.failure.is_none()) && host.participating().await.is_some()
+    joined_as(attempt, host.participating().await.as_deref())
+}
+
+fn joined_as(attempt: Option<&Attempt>, participating: Option<&str>) -> bool {
+    attempt.is_some_and(|attempt| attempt.failure.is_none()) && participating.is_some()
 }
 
 /// The pass an explicit `--install` makes. It leaves preparation alone, since the token may yet be
@@ -891,8 +913,9 @@ async fn check_in<H: Host>(
         no_cluster: false,
     };
     status.blockers.extend(stale.clone());
+    let local = host.local_machine().await;
     let member = if status.attempt.is_none() {
-        host.participating().await.map(|name| Issue {
+        local.participating.clone().map(|name| Issue {
             code: IN_ANOTHER_CLUSTER.to_owned(),
             message: format!(
                 "Already in another cluster. Remove it there first: ployz server rm {name}"
@@ -944,12 +967,7 @@ async fn check_in<H: Host>(
         prep: Some(prep),
         attempt: status.attempt.as_ref(),
         probe: probes.report().await,
-        // Cloud reads it only for a host carrying a joined Server's history. An uninitialized ployzd's
-        // Inspect waits on public-IP discovery, so a host new to Cloud skips it.
-        machine_phase: match status.attempt {
-            Some(_) => host.machine_phase().await,
-            None => None,
-        },
+        machine_phase: local.phase.clone(),
     };
     let sent = tokio::time::Instant::now();
     let reply = client.post(key, &request).await;
@@ -959,7 +977,8 @@ async fn check_in<H: Host>(
     let throttled = matches!(reply, client::Reply::Throttled(..));
     let next = match reply {
         client::Reply::Answer(Answer::Wait(_))
-            if !installing && joined(host, status.attempt.as_ref()).await =>
+            if !installing
+                && joined_as(status.attempt.as_ref(), local.participating.as_deref()) =>
         {
             status.answer = Seen::Joined;
             Next::Enrolled
