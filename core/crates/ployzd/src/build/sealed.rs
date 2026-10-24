@@ -381,6 +381,7 @@ mod tests {
         };
         for sealed in [false, true] {
             let root = tempfile::tempdir().unwrap();
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
             let docker = root.path().join("docker");
             fs::write(
                 &docker,
