@@ -1091,6 +1091,36 @@ it("brings a joined host back to Waiting once its Server is gone, without a seco
   expect(await send(token, host, reset)).toMatchObject({ kind: "enroll", role: "joiner" });
 });
 
+it("shows a host that checks in long after joining as Blocked while its old Server is listed, naming that Server", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  const attempt = (await autoAttempts())[0]?.id ?? "";
+  await endAuto(attempt, "joined");
+  await harness.pool.query(`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name)
+    values ($1, repeat('a', 32), repeat('c', 64), '{}', 'web-old')`, [adaOrg]);
+  // Uninstalled by a ployz-uninstall that kept its check-in key, and installed again an hour after it joined.
+  await harness.pool.query("update server_enrollment set ended_at = now() - interval '1 hour'");
+  const reset = { ...readyAuto, attempt: { attemptId: attempt, stage: "publishing" } };
+  const listed = () => run(listWaitingServers(ada, { organizationSlug: "ada" }));
+
+  expect(await send(token, host, reset)).toEqual(wait);
+  expect(await listed()).toMatchObject([{
+    status: "blocked",
+    report: {
+      hostname: "web-1",
+      blockers: [{ code: "former_server", message: "This server was web-old, which is still listed. Forget web-old to add it again: ployz server forget web-old" }],
+    },
+  }]);
+  expect(await autoAttempts()).toHaveLength(1);
+
+  await harness.pool.query("delete from organization_machine");
+  expect(await send(token, host, reset)).toEqual(wait);
+  expect(await send(token, host, reset)).toEqual(wait);
+  expect(await listed()).toMatchObject([{ status: "waiting", report: { hostname: "web-1", blockers: [] } }]);
+});
+
 it.each(["revoked", "expired", "swept"] as const)("refuses a second arrival after an attempt an older app inserted, once the host's row is %s", async (end) => {
   await foundOrganization();
   const { token, id } = await autoToken(5);
