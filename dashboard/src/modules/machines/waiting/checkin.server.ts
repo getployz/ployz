@@ -193,7 +193,8 @@ const admit = Effect.fn("Checkin.admit")(function* (
     });
   }
   const prepared = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
-  const report: StoredReport = { ...prepared, cliVersion: request.cliVersion };
+  const reported: StoredReport = { ...prepared, cliVersion: request.cliVersion };
+  const report: StoredReport = request.machinePhase === undefined ? reported : { ...reported, machinePhase: request.machinePhase };
   const fresh = { report, observedIp, probe: probeAfterCheckIn(observedIp, request.probe), lastCheckInAt: sql`now()` };
   // The capacity decision above holds only while the row is as it was read, so a changed row goes back through it.
   const [row] = newToToken
