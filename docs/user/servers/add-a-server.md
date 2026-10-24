@@ -346,9 +346,10 @@ of these first:
   `docker run` on Docker's default network has only IPv4, so it reaches neither its resolvers
   nor anything else. Run it with `--network host`, or on a Docker network with IPv6 turned on.
 
-With NAT64 and DNS64, your services reach the internet over IPv6. A name with no IPv6 address
-still has its IPv4 one, which the server can't reach, so your app's client must try each address,
-as curl and Python do. One that tries only the first, such as BusyBox `wget`, fails for that name.
+With NAT64 and DNS64, your services reach the internet over IPv6. A container's IPv6 address is
+private, so it lists a name's IPv4 addresses first, and the server can't reach those. Your app's
+client must try each address, as curl and Python do. One that tries only the first, such as
+BusyBox `wget`, fails.
 A service that publishes a port on the server has only IPv4, so it can't reach the internet at
 all. Give it a domain instead.
 
