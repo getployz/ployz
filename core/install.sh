@@ -230,10 +230,28 @@ is_fleet_token() {
     esac
 }
 
+# Whether this shell has a controlling terminal whose foreground process group is another one. Without /proc, no.
+in_background() {
+    stat=$(cat "/proc/$$/stat" 2>/dev/null) || return 1
+    # The fields after the command name: state, ppid, pgrp, session, tty_nr, tpgid; tpgid is -1 with no terminal
+    # and 0 when the terminal has no foreground process group.
+    # shellcheck disable=SC2086
+    set -- ${stat##*) }
+    [ "$6" -gt 0 ] && [ "$3" != "$6" ]
+}
+
 # The script itself arrives on stdin, so the token is read from the terminal, never echoed.
 read_fleet_token() {
     tty_mode=$(stty -g 2>/dev/null < "$TTY") ||
         error "No terminal to read the Fleet Token from. Set PLOYZ_FLEET_TOKEN in the root environment instead, as cloud-init does."
+    # `curl | sudo sh` starts this shell in the background of sudo's own terminal, where the terminal stops whatever
+    # changes or reads it. sudo then hands the terminal over and resumes the stopped shell, but sudo-rs resumes only
+    # the shell, never its children, so the shell stops itself before it starts any.
+    if in_background; then
+        kill -TTOU "$$"
+        ! in_background ||
+            error "Another process holds the terminal, so the Fleet Token can't be read from it. Set PLOYZ_FLEET_TOKEN in the root environment instead, as cloud-init does."
+    fi
     # A signal that lands just before a read of the terminal waits for Enter, but one during `wait` ends it.
     # So a child reads the token and hands it back on a pipe whose name is gone before the prompt shows.
     pipe_dir=$(mktemp -d)
