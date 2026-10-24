@@ -5,6 +5,7 @@ import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { createEnsureClusterSealingKey } from "#/modules/machines/sealing-backfill.inngest";
@@ -30,18 +31,19 @@ describe("ensure-cluster-sealing-key", () => {
   let harness: PostgresTestHarness;
   let reports: BackfillSealingKeyReport[] | null;
   let unreachable: boolean;
-  let sealedVariables: boolean;
+  let store: CloudStore["Service"];
   const requests: BackfillSealingKeyRequest[] = [];
 
   const runEffect = makeInngestEffectRunner(<A, E>(
-    operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | OrganizationRuntime | InngestClient>,
+    operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | OrganizationRuntime | InngestClient | CloudStore>,
   ) => {
     const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
-      env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl, SEALED_VARIABLES: String(sealedVariables) },
+      env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl },
     }))));
     return harness.runEffect(operation.pipe(
       Effect.provideService(SecretEncryption, encryption),
       Effect.provideService(InngestClient, inngest),
+      Effect.provideService(CloudStore, store),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,
         open: () => Effect.succeed(unreachable
@@ -83,6 +85,8 @@ describe("ensure-cluster-sealing-key", () => {
 
   beforeAll(async () => {
     harness = await startPostgresTestHarness();
+    const opened = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+    store = { open: Effect.succeed(opened) };
   }, 60_000);
 
   afterAll(async () => {
@@ -93,11 +97,10 @@ describe("ensure-cluster-sealing-key", () => {
   beforeEach(async () => {
     reports = [];
     unreachable = false;
-    sealedVariables = false;
     requests.length = 0;
     send.mockClear();
     await harness.pool.query(`
-      truncate table organization cascade;
+      truncate table organization, config_sealed_variables cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
     `);
     await pair();
@@ -263,7 +266,7 @@ describe("ensure-cluster-sealing-key", () => {
     });
 
     it("expects the Organization's Sealing Key for a Cluster that reported none, so no Server generates another", async () => {
-      sealedVariables = true;
+      await harness.pool.query("insert into config_sealed_variables (organization_id) values ($1)", [organizationId]);
       await harness.pool.query(
         "insert into organization_sealing_key (organization_id, public_key) values ($1, $2)",
         [organizationId, sealingKey("A")],
@@ -277,7 +280,7 @@ describe("ensure-cluster-sealing-key", () => {
       expect(await generators()).toEqual([]);
     });
 
-    it("expects nothing from the Organization's Sealing Key without sealed variables", async () => {
+    it("expects nothing from the Organization's Sealing Key without its sealedVariables row", async () => {
       await harness.pool.query(
         "insert into organization_sealing_key (organization_id, public_key) values ($1, $2)",
         [organizationId, sealingKey("A")],

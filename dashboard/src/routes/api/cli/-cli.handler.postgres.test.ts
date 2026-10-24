@@ -31,7 +31,7 @@ import { operationsOn } from "#/modules/operations/operation-history.server";
 import { removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { permissionsOf } from "#/modules/organization/permissions";
-import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { syncOrganizationSlug } from "#/modules/organization/organization-state.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
@@ -1948,16 +1948,24 @@ const sealing = Effect.fn(function* (path: "recovery" | "rotate", as: As, body: 
   );
 });
 
+/** Turns on an Organization's sealedVariables flag in this test's database only. */
+const sealedVariablesOn = Effect.fn(function* (organizationId: string) {
+  yield* cloudStore;
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`insert into config_sealed_variables (organization_id) values (${organizationId})`);
+});
+
 it.live(
   "the CLI reads and rotates its own Organization's recovery backup, and refuses a stale digest or another key",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer(undefined, { env: { SEALED_VARIABLES: "true" } });
+      const layer = yield* cliLayer();
       yield* Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const alice = yield* signUp("alice");
         const bob = yield* signUp("bob");
         const organizationId = alice.organization.id;
+        yield* sealedVariablesOn(organizationId);
         const read = () => sealing("recovery", alice, { organizationId });
         const rotate = (publicKey: string, currentDigest: string | null, backup: string) =>
           sealing("rotate", alice, { organizationId, publicKey, currentDigest, backup });
@@ -1988,20 +1996,23 @@ it.live(
 );
 
 it.live(
-  "without sealed variables the recovery routes answer as any unknown CLI path",
+  "without its Organization's sealedVariables row the recovery routes answer as any unknown CLI path",
   () =>
     Effect.gen(function* () {
       const layer = yield* cliLayer();
       yield* Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
         const organizationId = alice.organization.id;
+        yield* sealedVariablesOn(bob.organization.id);
         yield* drizzle.insert(organizationSealingKey).values({ organizationId, publicKey: sealingKey("A"), recoveryBlob: recoveryBackup(2) });
         const rotation = { organizationId, publicKey: sealingKey("A"), currentDigest: recoveryDigest(recoveryBackup(2)), backup: recoveryBackup(3) };
 
         assert.strictEqual((yield* cli("POST", "sealing/elsewhere", alice, { organizationId })).status, 404);
         assert.strictEqual((yield* sealing("recovery", alice, { organizationId })).status, 404);
         assert.strictEqual((yield* sealing("rotate", alice, rotation)).status, 404);
+        assert.strictEqual((yield* sealing("recovery", alice, {})).status, 404);
         assert.strictEqual((yield* cli("POST", "sealing/elsewhere", {}, { organizationId })).status, 401);
         assert.strictEqual((yield* sealing("recovery", {}, { organizationId })).status, 401);
         assert.strictEqual((yield* sealing("rotate", {}, rotation)).status, 401);

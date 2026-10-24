@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   readSealingRecovery,
@@ -8,9 +8,7 @@ import {
   recoveryDigest,
   rotateRecoveryBackup,
 } from "#/modules/machines/sealing-key.server";
-import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
-import { testConfigEnvironment } from "#/test/config-environment";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000d01";
@@ -22,17 +20,8 @@ const backup = (fill: number) => Buffer.concat([Buffer.from([1]), Buffer.alloc(7
 describe("the Organization's Sealing Key", () => {
   let harness: PostgresTestHarness;
 
-  const run = <A, E>(operation: Effect.Effect<A, E, Database | AppConfig>, { sealedVariables = true } = {}) => {
-    const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
-      env: {
-        ...testConfigEnvironment(),
-        DATABASE_URL: harness.databaseUrl,
-        SEALED_VARIABLES: String(sealedVariables),
-      },
-    }))));
-    return harness.runEffect(operation.pipe(Effect.provide(config)));
-  };
-  const failure = <A, E>(operation: Effect.Effect<A, E, Database | AppConfig>) => run(Effect.flip(operation));
+  const run = <A, E>(operation: Effect.Effect<A, E, Database>) => harness.runEffect(operation);
+  const failure = <A, E>(operation: Effect.Effect<A, E, Database>) => run(Effect.flip(operation));
   const stored = async () => (await harness.pool.query(
     "select public_key, recovery_blob from organization_sealing_key where organization_id = $1",
     [organizationId],
@@ -58,17 +47,11 @@ describe("the Organization's Sealing Key", () => {
   });
 
   describe("recorded from a Cluster's report", () => {
-    it("keeps the first key an Organization reported", async () => {
+    it("keeps the first key an Organization reported, with its sealedVariables flag off", async () => {
       await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
       await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("B")));
 
       expect(await stored()).toEqual([{ public_key: sealingKey("A"), recovery_blob: null }]);
-    });
-
-    it("is never written with sealed variables off", async () => {
-      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")), { sealedVariables: false });
-
-      expect(await stored()).toEqual([]);
     });
   });
 

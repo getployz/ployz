@@ -7,7 +7,6 @@ import type { Actor } from "#/modules/identity/actor";
 import type { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
 import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey } from "#/modules/machines/tables";
 import { requireAccessById } from "#/modules/organization/access.server";
-import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
@@ -39,7 +38,7 @@ export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(fu
       Effect.annotateLogs({ organizationId, recorded, reported: publicKey }),
     );
   }
-  if ((yield* AppConfig).sealedVariables) yield* recordOrganizationSealingKey(organizationId, publicKey);
+  yield* recordOrganizationSealingKey(organizationId, publicKey);
 });
 
 export const recoveryDigest = (backup: string) => createHash("sha256").update(Buffer.from(backup, "base64")).digest("hex");

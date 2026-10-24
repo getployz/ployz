@@ -47,13 +47,16 @@ const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 const unreachable = makePloyzLayer({ connect: async () => { throw new Error("Endpoint unavailable"); } });
 const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void });
 const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused@localhost/unused" } }))));
-type Needs = Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz | AppConfig;
+type Needs = Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz | AppConfig | CloudStore;
+/** The harness's Config Store, opened once so its tables exist. */
+let cloudStore: CloudStore["Service"];
 
 const run = <A, E>(operation: Effect.Effect<A, E, Needs>) =>
   harness.runEffect(operation.pipe(
     Effect.provide(config),
     Effect.provideService(InngestClient, inngest),
     Effect.provideService(OrganizationRuntime, runtime),
+    Effect.provideService(CloudStore, cloudStore),
     Effect.provide(unreachable),
   ));
 
@@ -64,6 +67,8 @@ const failure = async <A, E>(operation: Effect.Effect<A, E, Needs>) => {
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
+  const opened = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+  cloudStore = { open: Effect.succeed(opened) };
 }, 60_000);
 
 afterAll(async () => {
