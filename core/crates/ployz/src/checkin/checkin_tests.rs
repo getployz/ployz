@@ -2546,14 +2546,29 @@ async fn a_server_in_another_cluster_is_blocked_before_enroll() {
 }
 
 #[tokio::test]
-async fn a_check_in_names_its_daemons_phase_so_cloud_can_tell_a_fresh_install_from_a_server() {
+async fn a_host_with_an_enroll_attempt_names_its_daemons_phase_so_cloud_can_tell_a_fresh_install_from_a_server()
+ {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
     let host = FakeHost {
         phase: Some(ployz_core::LocalMachinePhase::Uninitialized),
         ..FakeHost::default()
     };
+    // A host new to Cloud carries no Server's history, so it doesn't wait on ployzd for its phase.
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(!request.contains("machinePhase"), "{request}");
+
+    // Installed again with the check-in state of a Server that joined.
+    let mut status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    status.attempt = Some(wire::Attempt {
+        attempt_id: "att_1".to_owned(),
+        stage: crate::cloud_enroll::EnrollStage::Publishing,
+        failure: None,
+    });
+    record(&status, &paths);
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
     pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
     let request = server.await.unwrap();
     assert!(

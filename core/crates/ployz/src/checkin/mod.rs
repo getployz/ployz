@@ -32,8 +32,6 @@ pub(crate) use wire::{
 const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
 const PREPARE_TRIES: u32 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
-/// Every check-in waits on this, and Cloud shows a host Offline 30 s after its last one.
-const PHASE_TIMEOUT: Duration = Duration::from_secs(3);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN_SETTLE: Duration = Duration::from_secs(2);
 /// The widest gap, on Cloud's clock, one refused pass to the next can explain. A wider one, or a
@@ -296,7 +294,7 @@ impl Host for System {
     }
 
     async fn machine_phase(&self) -> Option<ployz_core::LocalMachinePhase> {
-        local_machine(PHASE_TIMEOUT)
+        local_machine(PROBE_TIMEOUT)
             .await
             .map(|details| details.phase)
     }
@@ -946,7 +944,12 @@ async fn check_in<H: Host>(
         prep: Some(prep),
         attempt: status.attempt.as_ref(),
         probe: probes.report().await,
-        machine_phase: host.machine_phase().await,
+        // Cloud reads it only for a host carrying a joined Server's history. An uninitialized ployzd's
+        // Inspect waits on public-IP discovery, so a host new to Cloud skips it.
+        machine_phase: match status.attempt {
+            Some(_) => host.machine_phase().await,
+            None => None,
+        },
     };
     let sent = tokio::time::Instant::now();
     let reply = client.post(key, &request).await;
