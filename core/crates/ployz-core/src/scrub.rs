@@ -120,6 +120,11 @@ impl SealedForms {
         Self::compile(&SealedValues::none())
     }
 
+    /// Each form matched on its own, without a label.
+    pub fn long_forms(&self) -> impl Iterator<Item = &[u8]> {
+        self.names.keys().map(Vec::as_slice)
+    }
+
     /// Replace every form in `text` with `[secret NAME]`, counting each into `redacted`.
     #[must_use]
     pub fn scrub(&self, text: &str, redacted: &mut u32) -> String {

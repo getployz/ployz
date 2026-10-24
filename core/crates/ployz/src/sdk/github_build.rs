@@ -8,16 +8,17 @@
 //! A run that never checked in, or that GitHub failed for its own reasons, is
 //! skipped: the next Builder of the build's walk takes it. A failed build step fails it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use ployz_core::{
-    BuildGrantId, BuildGrantRepository, InspectBuildGrantRequest, MintBuildGrantRequest,
-    RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
+    BUILD_GRANT_HOLDER_CAPABILITY, BuildGrantId, BuildGrantRepository, InspectBuildGrantRequest,
+    MintBuildGrantRequest, MintedKey, RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
+    SealedRecord, ServiceName,
 };
 use ployz_store::{
-    BuildStatus, ConfigStore, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubReport,
-    RunEnd,
+    BuildStatus, ConfigStore, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
+    GithubReport, RunEnd,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,13 +55,16 @@ pub async fn github_start(
     id: GithubBuildId,
     connections: Vec<Connection>,
 ) -> Result<GithubStart, RpcError> {
-    let (input, commit, receipt) = store_call(&store, {
+    let built = store_call(&store, {
         let id = id.clone();
         move |store| store.github_input(&id)
     })
     .await?;
-    let deployment = only(&input, &id.service);
-    let receipt = receipt.and_then(|receipt| serde_json::from_value(receipt).ok());
+    let deployment = only(&built.input, &id.service);
+    let commit = built.commit;
+    let receipt = built
+        .receipt
+        .and_then(|receipt| serde_json::from_value(receipt).ok());
     let outside = match session(connections).await {
         Ok(session) => {
             let outside = outside(&session, deployment, commit.to_string(), receipt).await;
@@ -128,13 +132,12 @@ async fn outside(
     }
 }
 
-/// What a runner receives at check-in. Holds the grant and the build secrets.
+/// What a runner receives at check-in. Holds the build secrets.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubCheckIn {
-    /// The Build Grant's secret: it lets the runner push into this Service's one
-    /// repository, and nothing else.
-    pub grant: String,
+    #[serde(flatten)]
+    pub key: GithubKey,
     /// The pinned commit the runner checks out and builds.
     pub commit: String,
     /// The build's fingerprint; the runner's `ployz build` refuses to build any other.
@@ -145,17 +148,36 @@ pub struct GithubCheckIn {
     pub deployment: Value,
 }
 
+/// How a checked-in runner pushes into this Service's one repository.
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum GithubKey {
+    /// The Build Grant's secret, minted by the Machine.
+    Grant {
+        /// `ployzgrant1:` and the Machine and secret key, unpadded base64url.
+        grant: String,
+    },
+    /// The runner's own key holds the grant.
+    Machine {
+        /// The Management Identity of the Machine to dial, as lowercase hex.
+        machine: String,
+    },
+}
+
 /// A runner's one check-in, with the OIDC `claims` Cloud verified: the build
-/// starts. Mints a Build Grant on a Machine and returns it with the Service's build
-/// inputs. Accepted once, while GitHub still holds the build.
+/// starts. Mints a Build Grant on a Machine, for the runner's `holder` key when it
+/// sent one, and returns it with the Service's build inputs. Accepted once, while
+/// GitHub still holds the build.
 ///
 /// # Errors
 /// Returns `unauthenticated` for a token of another repository, workflow or run,
-/// `conflict` once it checked in or is no longer wanted, or the Machine's refusal.
+/// `conflict` once it checked in or is no longer wanted or when only the next
+/// Builder can build it, or the Machine's refusal.
 pub async fn github_check_in(
     store: Arc<ConfigStore>,
     id: GithubBuildId,
     claims: GithubClaims,
+    holder: Option<BuildGrantId>,
     connections: Vec<Connection>,
 ) -> Result<GithubCheckIn, RpcError> {
     let build = store_call(&store, {
@@ -168,22 +190,37 @@ pub async fn github_check_in(
             "This build already checked in or is no longer wanted",
         ));
     }
-    let (input, commit, _) = store_call(&store, {
+    let run_id = build.run.run_id;
+    let built = store_call(&store, {
         let id = id.clone();
         move |store| store.github_input(&id)
     })
     .await?;
-    let deployment = only(&input, &id.service);
+    let deployment = only(&built.input, &id.service);
+    let commit = built.commit;
     let fingerprint = super::expected_fingerprints(
         deployment.clone(),
         BTreeMap::from([(id.service.clone(), commit.to_string())]),
     )?
     .remove(&id.service)
     .ok_or_else(|| internal("The build has no fingerprint"))?;
+    let sealed = sealed_record(&deployment, &id.service)?;
     let session = session(connections).await?;
-    let minted = mint(&session, &id).await;
+    let minted = mint(&session, &id, holder, sealed).await;
     let (machine, minted) = match minted {
-        Ok(minted) => minted,
+        Ok(Some(minted)) => minted,
+        Ok(None) => {
+            session.close().await;
+            let end = GithubEnd::Unstarted {
+                message: OLD_MINT_SKIPS.to_owned(),
+            };
+            store_call(&store, {
+                let id = id.clone();
+                move |store| store.github_end(&id, Some(run_id), &end)
+            })
+            .await?;
+            return Err(conflict(OLD_MINT_SKIPS));
+        }
         Err(error) => {
             session.close().await;
             return Err(error);
@@ -194,7 +231,6 @@ pub async fn github_check_in(
         machine,
         fingerprint: fingerprint.clone(),
     };
-    let run_id = build.run.run_id;
     let checked_in = store_call(&store, {
         let id = id.clone();
         move |store| store.github_check_in(&id, run_id, &grant)
@@ -204,8 +240,16 @@ pub async fn github_check_in(
     // Lost to another check-in or the walk moving on: the secret never left, and the
     // grant expires by itself.
     checked_in?;
+    let key = match minted.key {
+        MintedKey::Grant { grant } => GithubKey::Grant {
+            grant: grant.to_secret_string(),
+        },
+        MintedKey::Holder { machine } => GithubKey::Machine {
+            machine: machine.to_hex(),
+        },
+    };
     Ok(GithubCheckIn {
-        grant: minted.grant.to_secret_string(),
+        key,
         commit: commit.to_string(),
         fingerprint,
         ployz_version: super::preparation::VERSION.to_owned(),
@@ -213,18 +257,71 @@ pub async fn github_check_in(
     })
 }
 
+const OLD_MINT_SKIPS: &str =
+    "GitHub builds a sealed value only with an up-to-date Ployz on the runner and your server";
+
+/// The Sealed values the built Service reads, still sealed, for its Machine to open.
+fn sealed_record(
+    deployment: &Value,
+    service: &ServiceName,
+) -> Result<Option<SealedRecord>, RpcError> {
+    let intent = super::preparation::frozen_intent(deployment.clone())?;
+    intent
+        .target
+        .iter()
+        .find(|spec| spec.name == *service)
+        .map(SealedRecord::of)
+        .transpose()
+        .map(Option::flatten)
+        .map_err(|error| internal(&error.to_string()))
+}
+
+/// Mint on the session's Machine, or `None` when GitHub can't take this build.
 async fn mint(
     session: &Session,
     id: &GithubBuildId,
-) -> Result<(ployz_core::MachineId, ployz_core::BuildGrantMinted), RpcError> {
+    holder: Option<BuildGrantId>,
+    sealed: Option<SealedRecord>,
+) -> Result<Option<(ployz_core::MachineId, ployz_core::BuildGrantMinted)>, RpcError> {
     // Inspect first: a failure after the mint would leave an unclaimed grant.
-    let machine = session.inspect().await?.id;
+    let details = session.inspect().await?;
+    let capabilities = details
+        .machine
+        .map(|machine| machine.runtime.capabilities)
+        .unwrap_or_default();
+    let holder = match minting(holder, &capabilities, sealed.is_some()) {
+        Minting::Holder(holder) => Some(holder),
+        Minting::Legacy => None,
+        Minting::Skip => return Ok(None),
+    };
     let minted = session
         .mint_build_grant(MintBuildGrantRequest {
             repository: repository(id)?,
+            holder,
+            sealed,
         })
         .await?;
-    Ok((machine, minted))
+    Ok(Some((details.id, minted)))
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Minting {
+    Holder(BuildGrantId),
+    Legacy,
+    Skip,
+}
+
+// The one place an old Action or an old Machine is told apart. Delete it, with
+// `Minting::Legacy` and `Skip`, once every Machine advertises the capability and
+// every Action sends a holder.
+fn minting(holder: Option<BuildGrantId>, capabilities: &BTreeSet<String>, sealed: bool) -> Minting {
+    match holder {
+        Some(holder) if capabilities.contains(BUILD_GRANT_HOLDER_CAPABILITY) => {
+            Minting::Holder(holder)
+        }
+        _ if sealed => Minting::Skip,
+        _ => Minting::Legacy,
+    }
 }
 
 /// The one repository a runner's Build Grant may push into.
@@ -341,11 +438,15 @@ pub async fn github_finish(
     timed_out: bool,
     connections: Vec<Connection>,
 ) -> Result<GithubFinish, RpcError> {
-    let build = store_call(&store, {
+    let build = match store_call(&store, {
         let id = id.clone();
         move |store| store.github_build(&id)
     })
-    .await?;
+    .await?
+    {
+        GithubHandOff::Held(build) => *build,
+        GithubHandOff::PassedOn { .. } => return Ok(GithubFinish::Ended(BuildStatus::Pending)),
+    };
     if build.status != BuildStatus::Building {
         return Ok(GithubFinish::Ended(build.status));
     }
@@ -529,6 +630,44 @@ fn conflict(message: &str) -> RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_sealed_build_without_a_holder_mint_skips_github() {
+        let holder = BuildGrantId::parse("d".repeat(64)).unwrap();
+        let new = BTreeSet::from([BUILD_GRANT_HOLDER_CAPABILITY.to_owned()]);
+        let old = BTreeSet::new();
+        for sealed in [false, true] {
+            assert_eq!(minting(Some(holder), &new, sealed), Minting::Holder(holder));
+        }
+        for (holder, capabilities) in [(Some(holder), &old), (None, &new), (None, &old)] {
+            assert_eq!(minting(holder, capabilities, false), Minting::Legacy);
+            assert_eq!(minting(holder, capabilities, true), Minting::Skip);
+        }
+    }
+
+    #[test]
+    fn a_check_in_reads_as_the_grant_or_the_machine_to_dial() {
+        let check_in = |key| GithubCheckIn {
+            key,
+            commit: "a".repeat(40),
+            fingerprint: "f".into(),
+            ployz_version: "1".into(),
+            deployment: Value::Null,
+        };
+        let legacy = serde_json::to_value(check_in(GithubKey::Grant {
+            grant: "ployzgrant1:x".into(),
+        }))
+        .unwrap();
+        assert_eq!(legacy.get("grant"), Some(&Value::from("ployzgrant1:x")));
+        assert!(legacy.get("machine").is_none());
+        assert_eq!(legacy.get("ployzVersion"), Some(&Value::from("1")));
+        let holder = serde_json::to_value(check_in(GithubKey::Machine {
+            machine: "0".repeat(64),
+        }))
+        .unwrap();
+        assert_eq!(holder.get("machine"), Some(&Value::from("0".repeat(64))));
+        assert!(holder.get("grant").is_none());
+    }
 
     #[test]
     fn a_machine_that_cannot_read_grants_fails_the_build_by_name() {

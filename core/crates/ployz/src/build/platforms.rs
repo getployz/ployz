@@ -232,7 +232,7 @@ mod tests {
             ),
         ]
         .map(|(name, spec)| (ployz_core::ServiceName::parse(name).unwrap(), spec));
-        let mut captured = super::super::capture(&intent, specs.into()).unwrap();
+        let mut captured = super::super::capture(&intent, specs.into(), None).unwrap();
         let platforms = |captured: &CapturedBuild, name: &str| {
             captured
                 .targets()

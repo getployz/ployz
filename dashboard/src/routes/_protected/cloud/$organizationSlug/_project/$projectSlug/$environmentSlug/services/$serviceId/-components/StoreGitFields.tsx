@@ -104,17 +104,15 @@ export function StoreDockerfileField({ organizationSlug, gitRef, branch, value, 
 }
 
 /** Who builds a Git Service first; part of its Deployment Policy, so it applies at once and Discard leaves it. */
-export function StorePreferredBuilderField({ organizationSlug, value, sealed, onSet }: {
+export function StorePreferredBuilderField({ organizationSlug, value, onSet }: {
   organizationSlug: string; value: string | null;
-  /** The first of the Service's variables the browser sealed: GitHub never builds it. */
-  sealed: string | null;
   onSet: (builder: string | null) => PersistableTransaction;
 }) {
   const setting = serviceSetting("preferredBuilder");
   const { machines, status } = useRuntimeLens(organizationSlug);
   const builders = [
-    { id: "github", label: "GitHub Actions", refusal: sealed === null ? null : `Uses sealed ${sealed}` },
-    ...machines.filter((machine) => machine.acceptsBuilds).map((machine) => ({ id: machine.id, label: machine.name, refusal: null })),
+    { id: "github", label: "GitHub Actions" },
+    ...machines.filter((machine) => machine.acceptsBuilds).map((machine) => ({ id: machine.id, label: machine.name })),
   ];
   const [current, hold] = useCommitHold(value ?? "auto");
   const label = current === "auto" ? "Auto"
@@ -130,12 +128,7 @@ export function StorePreferredBuilderField({ organizationSlug, value, sealed, on
           <SelectSeparator />
           <SelectGroup>
             {builders.map((builder) => (
-              <SelectItem key={builder.id} value={builder.id} label={builder.label} disabled={builder.refusal !== null}>
-                <span className="flex flex-col">
-                  <span>{builder.label}</span>
-                  {builder.refusal === null ? null : <span className="text-xs text-muted-foreground">{builder.refusal}</span>}
-                </span>
-              </SelectItem>
+              <SelectItem key={builder.id} value={builder.id} label={builder.label}>{builder.label}</SelectItem>
             ))}
           </SelectGroup>
         </SelectContent>

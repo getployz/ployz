@@ -64,7 +64,7 @@ use std::{
 use ployz_core::ContainerId;
 use serde::{Deserialize, Serialize};
 
-use crate::sealed_env::SealedRecord;
+use crate::sealed_env::{self, SealedRecord};
 
 const STORE_DIR: &str = "ployz-observe";
 pub const VERSION_DIR: &str = "v1";
@@ -352,7 +352,7 @@ impl RetainedEnv {
     /// or the Sealed label does not parse.
     #[must_use]
     pub fn from_inspected(entries: &[String], sealed_label: Option<&str>) -> Option<Self> {
-        let sealed = SealedRecord::from_label(sealed_label).ok()?;
+        let sealed = sealed_env::record_from_label(sealed_label).ok()?;
         let mut values = crate::docker::parse_environment(entries)?;
         for key in sealed.iter().flat_map(SealedRecord::keys) {
             values.remove(key);

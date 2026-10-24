@@ -104,11 +104,10 @@ impl BuildInputs {
     pub(super) fn railpack_context(
         &mut self,
         path: &Path,
-        variables: &BTreeMap<String, String>,
+        config: Option<&str>,
     ) -> Result<PathBuf, Error> {
-        let config = variables
-            .get("RAILPACK_CONFIG_FILE")
-            .map(|value| value.trim())
+        let config = config
+            .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
         self.capture_input(Input::Context {
@@ -212,13 +211,13 @@ impl BuildInputs {
     ///
     /// # Errors
     /// Fails if the private file cannot be written.
-    pub(super) fn sealed(&self, capture: &super::sealed::SealedCapture<'_>) -> Result<(), Error> {
+    pub(super) fn sealed(&self, record: &ployz_core::SealedRecord) -> Result<(), Error> {
         let bytes =
-            serde_json::to_vec(capture).map_err(|error| input_error(io::Error::other(error)))?;
+            serde_json::to_vec(record).map_err(|error| input_error(io::Error::other(error)))?;
         self.private(&self.root.join("private/sealed.json"), &bytes)
     }
 
-    /// Keep only the Sealed ARG names for the Server Builder.
+    /// Keep only the Sealed ARG names, for the Builder that opens them.
     ///
     /// # Errors
     /// Fails if the private file cannot be written.

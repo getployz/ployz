@@ -9,9 +9,10 @@ export const Route = createFileRoute("/api/builds/$build/check-in")({
   server: {
     handlers: {
       POST: async ({ request, params }) => {
+        const text = await request.text();
         const options = { signal: request.signal };
         // A build's id is DEPLOYMENT.SERVICE.
-        return runAppEffect(checkInStoreGithubBuild(request, params.build).pipe(Effect.map((body) => Response.json(body))), options)
+        return runAppEffect(checkInStoreGithubBuild(request, params.build, text).pipe(Effect.map((body) => Response.json(body))), options)
           .catch(publicErrorResponse);
       },
       ANY: (): Response => methodNotAllowed(Route),

@@ -442,11 +442,11 @@ impl ConfigStore {
             .await
     }
 
-    /// A build handed to GitHub (`GithubBuild`).
+    /// Where a build handed to GitHub is (`GithubHandOff`).
     ///
     /// # Errors
-    /// Returns `not_found` unless GitHub holds or held it.
-    #[napi(ts_return_type = "Promise<GithubBuild>")]
+    /// Returns `not_found` unless GitHub holds it, held it, or passed it on.
+    #[napi(ts_return_type = "Promise<GithubHandOff>")]
     pub async fn github_build(&self, build: String) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
         self.run(move |store| store.github_build(&build)).await
@@ -465,23 +465,39 @@ impl ConfigStore {
         .await
     }
 
-    /// A runner's check-in with its verified OIDC `claims` (`GithubClaims`): its Build
-    /// Grant and build inputs, secrets included. Only the runner may receive them.
+    /// A runner's check-in with its verified OIDC `claims` (`GithubClaims`) and the
+    /// public key it holds its Build Grant with, if any: how it pushes and its build
+    /// inputs, secrets included. Only the runner may receive them.
     ///
     /// # Errors
-    /// Returns `unauthenticated` for another repository, workflow or run, `conflict`
-    /// once it checked in or is no longer wanted, or the Machine's refusal.
+    /// Returns `invalid_argument` for a holder that is not 64 lowercase hex,
+    /// `unauthenticated` for another repository, workflow or run, `conflict` once it
+    /// checked in, is no longer wanted or GitHub skipped it, or the Machine's refusal.
     #[napi(ts_return_type = "Promise<GithubCheckIn>")]
     pub async fn github_check_in(
         &self,
         build: String,
         #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
+        #[napi(ts_arg_type = "string | null")] holder: Option<String>,
         #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let (build, claims) = (github_id(&build)?, claims_of(claims)?);
+        let holder = holder
+            .map(|holder| {
+                ployz_core::BuildGrantId::parse(holder)
+                    .map_err(|_| invalid_argument("Expected a holder of 64 lowercase hex"))
+            })
+            .transpose()?;
         let connections = crate::parse_connections(connections)?;
         to_json(
-            ployz::sdk::github_check_in(Arc::clone(&self.store), build, claims, connections).await,
+            ployz::sdk::github_check_in(
+                Arc::clone(&self.store),
+                build,
+                claims,
+                holder,
+                connections,
+            )
+            .await,
         )
     }
 

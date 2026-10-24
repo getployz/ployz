@@ -9,7 +9,7 @@ use ployz_core::{
     RunTarget, machine_matches_target,
 };
 
-use crate::{build::SEALED_BUILDS_RUN_ON_SERVER, cluster::Client, connect::ConnectError};
+use crate::{cluster::Client, connect::ConnectError};
 
 const SEALED_READY: [&str; 2] = [MANAGEMENT_SCOPE_CAPABILITY, ENV_SEALED_CAPABILITY];
 
@@ -98,11 +98,10 @@ pub(crate) fn builders(
             names.join(", ")
         )
     };
-    let mut error = unsupported(format!("{SEALED_BUILDS_RUN_ON_SERVER} {reason}"));
+    let mut error = unsupported(reason.clone());
     error.details = serde_json::json!({
         "rejections": {"cannot open sealed values": behind.len()},
         "reasons": [reason],
-        "lead": SEALED_BUILDS_RUN_ON_SERVER,
     });
     Err(ConnectError::Remote(error))
 }

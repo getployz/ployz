@@ -50,6 +50,13 @@ export const cancelDispatchedGithubRun = (run: GithubBuild["run"]) =>
     Effect.catch((error) => Effect.logWarning("Could not cancel a GitHub run Cloud dispatched.", { runId: run.run_id, error })),
   );
 
+/** The build GitHub holds, or held until it ended; `null` once GitHub passed it to the next Builder. */
+export const heldGithubBuild = Effect.fn("ConfigStore.heldGithubBuild")(function* (buildId: string) {
+  const store = yield* cloudStore;
+  const handOff = yield* storeTry(() => store.githubBuild(buildId));
+  return "held" in handOff ? handOff.held : null;
+});
+
 /**
  * Stop a Deployment's builds still on GitHub: fail them and cancel their runs. Their Build Grants expire by
  * themselves. Idempotent. Its cancellation, and a worker that gave up on it, call it.
@@ -81,7 +88,7 @@ export const stopGithubInstallationBuilds = Effect.fn("ConfigStore.stopGithubIns
         Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
       for (const build of view?.builds ?? []) {
         if (build.status !== "building") continue;
-        const github = yield* storeTry(() => store.githubBuild(`${deploymentId}.${build.service}`)).pipe(
+        const github = yield* heldGithubBuild(`${deploymentId}.${build.service}`).pipe(
           Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
         if (github === null || github.status !== "building" || github.run.installation_id !== installationId) continue;
         yield* cancelDispatchedGithubRun(github.run);

@@ -166,6 +166,12 @@ struct FrontendInputs {
     hash: String,
 }
 
+/// A Railpack setting steers the plan, so it is planned with its value; any
+/// other Sealed value reaches only the steps that mount it.
+pub(crate) fn planned(name: &str) -> bool {
+    name.starts_with("RAILPACK_")
+}
+
 /// Text values ride in the script's environment and as secret files written
 /// here. Sealed names ride only as mounts of the files the host opened, with
 /// an empty placeholder so the plan still lists them.
@@ -194,9 +200,19 @@ fn frontend_inputs(
                 "Railpack sealed variables require distinct valid names".into(),
             ));
         }
-        command.push(' ');
-        command.push_str(&quote(&format!("{name}=")));
         let file = working_dir.join(crate::sealed_file(name));
+        let planned = if planned(name) {
+            fs::read_to_string(&file)
+                .ok()
+                .filter(|value| !value.contains('\0'))
+                .ok_or_else(|| {
+                    BuildError::Request(format!("sealed Railpack setting {name} was not opened"))
+                })?
+        } else {
+            String::new()
+        };
+        command.push(' ');
+        command.push_str(&quote(&format!("{name}={planned}")));
         secrets.push(format!("id={name},src={}", file.display()));
     }
     command.push_str(" /railpack prepare /app --plan-out /plan.json");
@@ -426,6 +442,37 @@ mod tests {
             assert!(frontend_inputs(&recipe, &directory, Path::new("/capture")).is_err());
         }
         fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_sealed_railpack_setting_is_planned_with_its_opened_value() {
+        let capture =
+            std::env::temp_dir().join(format!("ployz-railpack-capture-{}", uuid::Uuid::new_v4()));
+        let staged = capture.join(crate::sealed_file("RAILPACK_BUILD_CMD"));
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        fs::write(&staged, "npm run build -- --token marker").unwrap();
+        let directory = capture.join("private/frontend");
+        fs::create_dir_all(&directory).unwrap();
+        let recipe = recipe(
+            &[],
+            &[("RAILPACK_BUILD_CMD", "fp-1"), ("NPM_TOKEN", "fp-2")],
+        );
+        let planned = frontend_inputs(&recipe, &directory, &capture).unwrap();
+        let prefix = planned.script.split(" /railpack ").next().unwrap();
+        assert!(
+            prefix.contains("'RAILPACK_BUILD_CMD=npm run build -- --token marker'"),
+            "{prefix}"
+        );
+        assert!(prefix.contains("'NPM_TOKEN='"), "{prefix}");
+        fs::write(&staged, "npm run build").unwrap();
+        assert_eq!(
+            planned.hash,
+            frontend_inputs(&recipe, &directory, &capture).unwrap().hash,
+            "the cache key follows the ciphertext, not the opened setting"
+        );
+        fs::remove_file(&staged).unwrap();
+        assert!(frontend_inputs(&recipe, &directory, &capture).is_err());
+        fs::remove_dir_all(&capture).unwrap();
     }
 
     #[test]

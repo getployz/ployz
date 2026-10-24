@@ -119,6 +119,8 @@ macro_rules! rpc_catalog {
                 BRIDGE_IPV6_CAPABILITY: ("ployz.container.bridge-ipv6.v1", Container),
                 /// The daemon opens a Build's Sealed values as secret files and keeps them out of its output.
                 BUILD_SEALED_CAPABILITY: ("ployz.build.sealed.v1", Always),
+                /// The daemon mints a Build Grant for a holder's own key and returns no grant secret.
+                BUILD_GRANT_HOLDER_CAPABILITY: ("ployz.build.grant.holder.v1", Always),
             }
         }
     };
