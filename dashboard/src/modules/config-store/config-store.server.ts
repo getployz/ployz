@@ -31,6 +31,7 @@ import { PostHog } from "#/modules/analytics/posthog.server";
 import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import type { CommandRefusal, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult, ViewAnswer } from "./store.contract";
 
@@ -258,7 +259,8 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
 /**
  * The trusted evidence `call` needs, as Cloud observes it itself: GitHub's for repository Services, what Cloud observes
  * of domains, for a Save or Deploy that removes deployed Volumes what the Servers hold of them, for a removal which Servers
- * didn't answer, and for an admission or start how many Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
+ * didn't answer, for an admission or start how many Servers could run it, and for a write the Cluster's Sealing key a
+ * generated secret is sealed to. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
  * can't answer.
  */
 export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
@@ -279,7 +281,9 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "start"
     || call.command.command === "remove" || call.command.command === "approve_pull_request");
   const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
+  const sealing = call.operation === "write" ? yield* readClusterSealing(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
+  if (sealing?.state === "ready") trusted.sealing = { publicKey: sealing.publicKey };
   if (volumes !== undefined) trusted.volumes = volumes;
   if (unanswered !== undefined) trusted.unanswered = unanswered;
   if (servers !== undefined) trusted.servers = servers;

@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue, SealingTargetsQuery } from "@ployz/sdk";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { Effect, Schema } from "effect";
 import { viewOf } from "#/modules/config-store/store.contract";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
@@ -63,9 +63,9 @@ const shop = Effect.fn(function* () {
     const text = yield* Effect.promise(() => response.text());
     return { status: response.status, cache: response.headers.get("cache-control"), json: decodeAnswer(text) };
   });
-  const serverReported = Effect.gen(function* () {
+  const serverReported = (publicKey = PUBLIC_KEY) => Effect.gen(function* () {
     yield* enrollStoreServer(ORGANIZATION);
-    yield* recordSealingPublicKey(ORGANIZATION, createHash("sha256").update(PAIRING_SECRET).digest("hex"), PUBLIC_KEY);
+    yield* recordSealingPublicKey(ORGANIZATION, createHash("sha256").update(PAIRING_SECRET).digest("hex"), publicKey);
   });
   /** The default Environment's settings, by path, as the Store shows them. */
   const settings = Effect.promise(async () => {
@@ -85,7 +85,7 @@ it.live("tells the CLI whether to seal: no server, then ready with where each se
       const { send, serverReported } = yield* shop();
       const waiting = yield* send("sealing", edit);
       assert.deepStrictEqual([waiting.status, waiting.cache, waiting.json], [200, "no-store", { state: "no_server" }]);
-      yield* serverReported;
+      yield* serverReported();
       const ready = yield* send("sealing", edit);
       assert.strictEqual(ready.status, 200);
       if (!("state" in ready.json) || ready.json.state !== "ready") assert.fail(`not ready: ${JSON.stringify(ready.json)}`);
@@ -103,7 +103,7 @@ it.live("a value the CLI sealed is saved and its plain text is refused unread, w
   Effect.gen(function* () {
     yield* Effect.gen(function* () {
       const { send, serverReported, settings } = yield* shop();
-      yield* serverReported;
+      yield* serverReported();
       const saved = yield* send("write", set("TOKEN", sealed("TOKEN")));
       assert.deepStrictEqual([saved.status, "staged" in saved.json && saved.json.staged], [200, ["web.env.TOKEN"]]);
       const refused = yield* send("write", set("OTHER", { secret: "plain-s3cr3t" }));
@@ -114,5 +114,24 @@ it.live("a value the CLI sealed is saved and its plain text is refused unread, w
       assert.deepStrictEqual(after["web.env.TOKEN"], { secret: true });
       assert.notProperty(after, "web.env.OTHER");
       assert.notInclude(JSON.stringify(after), "plain-s3cr3t");
+    }).pipe(Effect.provide(yield* cloud));
+  }), 60_000);
+
+it.live("a generated secret waits for a Server, then is sealed to the Cluster's key", () =>
+  Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      const { send, serverReported, settings } = yield* shop();
+      const generate = set("PASSWORD", { secret: { generate: true } });
+      const waiting = yield* send("write", generate);
+      assert.deepStrictEqual([waiting.status, waiting.json], [409, {
+        error: { code: "conflict", message: "Add a server to set sealed values.", details: { variable: "PASSWORD" } },
+      }]);
+      assert.notProperty(yield* settings, "web.env.PASSWORD");
+
+      const jwk = generateKeyPairSync("x25519").publicKey.export({ format: "jwk" });
+      yield* serverReported(Buffer.from(jwk.x ?? "", "base64url").toString("base64"));
+      const saved = yield* send("write", generate);
+      assert.deepStrictEqual([saved.status, "staged" in saved.json && saved.json.staged], [200, ["web.env.PASSWORD"]]);
+      assert.deepStrictEqual((yield* settings)["web.env.PASSWORD"], { secret: true });
     }).pipe(Effect.provide(yield* cloud));
   }), 60_000);
