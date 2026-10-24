@@ -491,7 +491,7 @@ fn with_secrets(store: &ConfigStore, who: &Actor) {
         who,
         "production",
         "web.env.TOKEN",
-        json!({ "secret": "s3cret" }),
+        backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
     );
     image_service(store, who, "production", 9, "worker");
     set(
@@ -567,8 +567,9 @@ fn an_approval_deploys_exactly_the_approved_head_pinned() {
         "{sources:?}"
     );
     assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
+    // The secret was sealed for production, so pr-5 holds it Not set.
     let web = web_values(&store, &who, "pr-5").unwrap();
-    assert_eq!(web["env"]["TOKEN"], json!({ "secret": true }));
+    assert_eq!(web["env"]["TOKEN"], json!({ "secret": false }));
     assert_eq!(
         standings(&store, &who),
         [(

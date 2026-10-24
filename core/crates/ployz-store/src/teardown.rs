@@ -390,7 +390,6 @@ pub(crate) fn remove_organization(
         "config_pull_request",
         "config_sync_receipt",
         "config_removal_mark",
-        "config_sealed_variables",
     ] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),

@@ -143,6 +143,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0026_saved_value_changes",
         Step::Sql(include_str!("migrations/0026_saved_value_changes.sql")),
     ),
+    (
+        "0027_drop_sealed_variables",
+        Step::Sql(include_str!("migrations/0027_drop_sealed_variables.sql")),
+    ),
 ];
 
 enum Step {

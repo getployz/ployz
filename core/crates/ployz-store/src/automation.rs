@@ -1013,6 +1013,7 @@ pub(crate) fn auto_admit(
     };
     let mut frozen = deployment::freeze(
         id,
+        &who.organization,
         &saved.intent,
         &landing,
         if full {

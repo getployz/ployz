@@ -272,6 +272,7 @@ pub(crate) enum Ships {
 /// under `cluster_domain`; a plan, which has none, checks the rest.
 pub(crate) fn freeze(
     environment: &EnvironmentId,
+    organization: &OrganizationId,
     saved: &SavedEnvironmentIntent,
     landing: &Landing<'_>,
     scope: Scope<'_>,
@@ -442,7 +443,7 @@ pub(crate) fn freeze(
         &ships,
         (namespace.clone(), cluster_domain),
         &crate::branch::Lowering::default(),
-        None,
+        organization,
     )?;
     if !full {
         // The planner also ships, at its Saved snapshot, each Service the named ones reference.
@@ -600,8 +601,7 @@ pub(crate) struct Lowered {
     pub(crate) shipped: BTreeSet<ServiceName>,
     /// Service variables a secret without a value or a broken reference left out,
     /// then Config file references whose resolved value may break the file or is
-    /// left empty. Only lowering with the sealing key sees every value, so only it
-    /// warns of those.
+    /// left empty.
     pub(crate) warnings: Vec<DeploymentWarning>,
 }
 
@@ -613,7 +613,6 @@ fn resolve(
     saved: &SavedEnvironmentIntent,
     cluster_domain: Option<&Hostname>,
     branch: &crate::branch::Lowering,
-    unseal: Option<&SealingKey>,
 ) -> Result<
     (
         ployz_core::config::CompiledEnvironmentIntent,
@@ -629,7 +628,7 @@ fn resolve(
     compiled
         .variable_producers
         .extend(branch.live.iter().cloned());
-    let resolved = variables::resolve(&compiled, environment.as_str(), unseal)?;
+    let resolved = variables::resolve(&compiled, environment.as_str())?;
     compiled.variable_producers.truncate(own);
     Ok((compiled, resolved))
 }
@@ -637,11 +636,9 @@ fn resolve(
 /// Lower Saved revision `saved` to the Deploy Intent of a Deployment that
 /// `ships` into its Namespace, with generated domains under the
 /// Cluster Domain. Variables and Config files resolve here, a Branch's Live Node
-/// references against `branch.live`; secrets, and values that reference one, only
-/// with `unseal`. Without it such a variable is left out and such a file is empty.
-/// `deployed` names the Volumes Applied State holds. With `unseal`, a value sealed
-/// in the browser for `environment` reaches its Service unopened, with the identity
-/// the Machine opens it under, from the Organization given with the key.
+/// references against `branch.live`. A value sealed in the browser for `environment`
+/// reaches its Service unopened, with the identity the Machine opens it under from
+/// `organization`. `deployed` names the Volumes Applied State holds.
 pub(super) fn lower(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
@@ -649,10 +646,9 @@ pub(super) fn lower(
     ships: &Ships,
     (namespace, cluster_domain): (Namespace, Option<&Hostname>),
     branch: &crate::branch::Lowering,
-    unseal: Option<(&SealingKey, &OrganizationId)>,
+    organization: &OrganizationId,
 ) -> Result<Lowered, RpcError> {
-    let (unseal, organization) = unseal.unzip();
-    let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch, unseal)?;
+    let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch)?;
     let (narrowed, services, removals, prune): (bool, &[ServiceName], _, _) = match ships {
         Ships::All { removals, prune } => (
             false,
@@ -794,41 +790,36 @@ pub(super) fn lower(
         let mut lowered = BTreeMap::new();
         for (name, file) in &config.files {
             let resolved = files.remove(name).ok_or_else(|| error::corrupt("Config"))?;
-            if unseal.is_some() {
-                let shown =
-                    |reference: &ployz_core::config::FragileReference| match &reference.owner {
-                        ValuePartOwner::Service { lineage_id } => {
-                            match slugs.get(lineage_id.as_str()) {
-                                Some(slug) => format!("{slug}.{}", reference.key),
-                                None => reference.key.clone(),
-                            }
-                        }
-                        ValuePartOwner::Self_ => reference.key.clone(),
-                    };
-                warnings.extend(resolved.fragile.iter().map(|reference| {
-                    (
-                        mounts.clone(),
-                        DeploymentWarning::Fragile {
-                            config: config.name.clone(),
-                            file: name.clone(),
-                            variable: shown(reference),
-                        },
-                    )
-                }));
-                let not_set = resolved.not_set.iter().map(|reference| (reference, false));
-                let broken = resolved.broken.iter().map(|reference| (reference, true));
-                warnings.extend(not_set.chain(broken).map(|(reference, broken)| {
-                    (
-                        mounts.clone(),
-                        DeploymentWarning::NotSetInFile {
-                            config: config.name.clone(),
-                            file: name.clone(),
-                            secret: shown(reference),
-                            broken,
-                        },
-                    )
-                }));
-            }
+            let shown = |reference: &ployz_core::config::FragileReference| match &reference.owner {
+                ValuePartOwner::Service { lineage_id } => match slugs.get(lineage_id.as_str()) {
+                    Some(slug) => format!("{slug}.{}", reference.key),
+                    None => reference.key.clone(),
+                },
+                ValuePartOwner::Self_ => reference.key.clone(),
+            };
+            warnings.extend(resolved.fragile.iter().map(|reference| {
+                (
+                    mounts.clone(),
+                    DeploymentWarning::Fragile {
+                        config: config.name.clone(),
+                        file: name.clone(),
+                        variable: shown(reference),
+                    },
+                )
+            }));
+            let not_set = resolved.not_set.iter().map(|reference| (reference, false));
+            let broken = resolved.broken.iter().map(|reference| (reference, true));
+            warnings.extend(not_set.chain(broken).map(|(reference, broken)| {
+                (
+                    mounts.clone(),
+                    DeploymentWarning::NotSetInFile {
+                        config: config.name.clone(),
+                        file: name.clone(),
+                        secret: shown(reference),
+                        broken,
+                    },
+                )
+            }));
             lowered.insert(
                 name.clone(),
                 LowerDeploymentConfigFile {
@@ -895,9 +886,9 @@ pub(super) fn lower(
         prune,
         cluster_domain: cluster_domain
             .and_then(|cluster| ployz_core::IngressHost::parse(cluster.as_str()).ok()),
-        sealed_for: organization
-            .zip(uuid::Uuid::parse_str(environment.as_str()).ok())
-            .map(|(organization, environment)| SealedFor {
+        sealed_for: uuid::Uuid::parse_str(environment.as_str())
+            .ok()
+            .map(|environment| SealedFor {
                 organization: organization.as_str().to_owned(),
                 environment,
             }),

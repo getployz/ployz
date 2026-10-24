@@ -3,7 +3,7 @@ use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, ConfigStore, CreateGitService,
     Edit, EnvironmentRef, OnMergeConclusion, PullRequest, PullRequestQuery, Ride, ServiceLineageId,
-    SetPrPlan, SettingPath, SystemEvent, Trusted,
+    ServiceQuery, SetPrPlan, SettingPath, SystemEvent, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -12,6 +12,25 @@ use crate::support::{
     HEAD, LATER, MERGE, at, check, deployed, exclude, merge_value, merged, passed, preview_listed,
     pull, push, row, save, set, shop, shop_with, system, unset, uuid, value, vouched, watching,
 };
+
+/// `service.env.key` as the browser sealed it for pr-5's own copy of `service`.
+fn sealed_in_preview(store: &ConfigStore, who: &Actor, service: &str, key: &str) -> Value {
+    let copy = store
+        .read(
+            who,
+            &ServiceQuery {
+                environment: at("pr-5"),
+                service: ServiceName::parse(service).unwrap(),
+            },
+        )
+        .unwrap();
+    backend::sealed_secret(
+        copy.environment.id.as_str(),
+        copy.service.service.id.as_str(),
+        key,
+        1,
+    )
+}
 
 /// Pull request `number` from `head_branch` onto `target`, as GitHub said at `updated`.
 fn pull_request(
@@ -257,12 +276,8 @@ fn a_deploy_warns_only_about_the_services_it_ships() {
     // Production runs what it saved, so only what lands is a Saved change.
     backend::deploy(&store, &who, "production", 1);
     watching(&store, &who);
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("db.env.TOKEN", json!({ "secret": "test-token" }))],
-    );
+    let token = sealed_in_preview(&store, &who, "db", "TOKEN");
+    set(&store, &who, "pr-5", &[("db.env.TOKEN", token)]);
     system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
     let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
     assert_eq!(deployed_services(&landed), ["db"]);
@@ -509,12 +524,8 @@ fn a_removal_takes_no_edit_and_lands_as_a_removal() {
 fn a_config_file_reading_a_secret_the_merge_left_not_set_warns() {
     let (store, who) = shop();
     watching(&store, &who);
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("web.env.TOKEN", json!({ "secret": "test-token" }))],
-    );
+    let token = sealed_in_preview(&store, &who, "web", "TOKEN");
+    set(&store, &who, "pr-5", &[("web.env.TOKEN", token)]);
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
     let config = || ployz_core::ConfigName::parse("sentry").unwrap();
     store

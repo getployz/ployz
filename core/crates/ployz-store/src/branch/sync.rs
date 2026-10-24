@@ -2,13 +2,12 @@
 //! Project as the receiver's changes to deploy. It never deletes and never deploys; a secret the receiver lacks arrives with the
 //! value the person syncing gives it, or without one.
 
-use ployz_core::config::SecretCiphertext;
 use uuid::Uuid;
 
 use super::proposal;
 use super::*;
 use crate::variables::{VariableKey, validate_text};
-use crate::{SealingKey, SecretValue, Trusted, client_sealed, old_cli};
+use crate::{SecretValue, Trusted, client_sealed, old_cli};
 
 /// Sync one Environment's changes into another of its Project, staged in the
 /// receiver's Working State. Nothing is deleted, published or deployed.
@@ -180,7 +179,6 @@ pub(crate) struct Target {
 pub(crate) fn sync(
     tx: &mut dyn Tx,
     who: &Actor,
-    sealing: &SealingKey,
     request: &SyncChanges,
     trusted: &Trusted,
 ) -> Result<Synced, RpcError> {
@@ -225,13 +223,10 @@ pub(crate) fn sync(
     let sides = [&from.working, &into.working];
     let (picks, values) = picks(checked.rows(), &sides, request)?;
     proposal::refuse_held(checked.rows(), &sides, &picks, &owners)?;
-    let enabled = (trusted.from_cli || values.values().any(SecretValue::is_client_sealed))
-        && client_sealed::enabled(tx, &who.organization)?;
     let values = sealed(
-        sealing,
         checked.rows(),
         [&from, &into],
-        (old_cli::Guard::from(trusted), enabled),
+        old_cli::Guard::from(trusted),
         &picks,
         &values,
     )?;
@@ -259,10 +254,12 @@ pub(crate) fn sync(
         let because = crate::removal::mark::Closed::Synced;
         crate::removal::close(tx, who, &from.summary.id, because, &mut Default::default())?;
     }
-    let fingerprints = request
-        .values
+    let fingerprints = values
         .iter()
-        .map(|(row, value)| (row, value.fingerprint(sealing)))
+        .filter_map(|(row, cell)| match cell {
+            SealedCell::Secret(sealed) => Some((row, &sealed.fingerprint)),
+            SealedCell::Cell(_) => None,
+        })
         .collect::<BTreeMap<_, _>>();
     let asked = json!({
         "version": request.version,
@@ -545,14 +542,12 @@ fn receiving<'receiver>(
 /// Why a client-sealed value for a row can't land: its Service isn't in the receiver.
 const NOT_THERE: &str = "its Service isn't there yet, so nothing can be sealed for it";
 
-/// `values` sealed, each for a picked secret the receiver `into` lacks; plain text
-/// passes the guard in `client_sealed`, and a value the browser sealed is taken only
-/// with its flag on.
+/// `values` sealed, each for a picked secret the receiver `into` lacks. Plain text
+/// is refused, through `guard` for the CLI.
 pub(crate) fn sealed(
-    sealing: &SealingKey,
     rows: &[PlannedRow],
     [from, into]: [&Environment; 2],
-    client_sealed: (old_cli::Guard, bool),
+    guard: old_cli::Guard,
     picks: &BTreeSet<RowId>,
     values: &BTreeMap<RowId, SecretValue>,
 ) -> Result<BTreeMap<RowId, SealedCell>, RpcError> {
@@ -577,23 +572,21 @@ pub(crate) fn sealed(
                     json!({ "row": row }),
                 ));
             }
-            let sealed = seal_secret(sealing, row, &label, value, into, client_sealed)?;
+            let sealed = seal_secret(row, &label, value, into, guard)?;
             Ok((row.clone(), SealedCell::Secret(sealed)))
         })
         .collect()
 }
 
-/// `value`, sealed for secret `row` (labelled `label`) of `receiver`, once it is one
-/// the row takes. Plain text passes the guard in `client_sealed`, whose flag says
-/// whether the Organization seals on the client. A client-sealed value binds to the
-/// receiver's own Service, so it needs that Service there already.
+/// `value` for secret `row` (labelled `label`) of `receiver`, once it is one the row
+/// takes. Plain text is refused, through `guard` for the CLI. A client-sealed value
+/// binds to the receiver's own Service, so it needs that Service there already.
 pub(crate) fn seal_secret(
-    sealing: &SealingKey,
     row: &RowId,
     label: &str,
     value: &SecretValue,
     receiver: &Environment,
-    (guard, client_sealed): (old_cli::Guard, bool),
+    guard: old_cli::Guard,
 ) -> Result<SealedSecret, RpcError> {
     let At::Variable(key) = row.at() else {
         return Err(error::invalid(
@@ -602,24 +595,18 @@ pub(crate) fn seal_secret(
         ));
     };
     let key = VariableKey::parse(key)?;
+    let refuse =
+        |message: &str| error::invalid(format!("{label}: {message}"), json!({ "row": row }));
     match value {
-        SecretValue::Text(value) => {
-            admit_secret_text(row, label, &key, value)?;
-            guard.admit(key.as_str(), || Ok(client_sealed))?;
-            Ok(SealedSecret {
-                fingerprint: sealing.fingerprint(value),
-                value: SecretCiphertext::Store(sealing.seal(value)),
-            })
+        SecretValue::Text(_) => {
+            guard.admit(key.as_str())?;
+            Err(refuse(client_sealed::PLAINTEXT_REFUSED))
         }
         SecretValue::ClientSealed(value) => {
-            let refuse = |message: &str| {
-                error::invalid(format!("{label}: {message}"), json!({ "row": row }))
-            };
             let service = receiving(receiver, row).ok_or_else(|| refuse(NOT_THERE))?;
             let receiver = client_sealed::Receiver {
                 environment: &receiver.summary.id,
                 service,
-                enabled: client_sealed,
             };
             client_sealed::accept(value.clone(), &key, &receiver, refuse)
         }

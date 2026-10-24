@@ -96,7 +96,10 @@ fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
         &who,
         "production",
         &[
-            ("web.env.TOKEN", json!({ "secret": "s3cret" })),
+            (
+                "web.env.TOKEN",
+                backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+            ),
             ("web.env.DB_URL", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")),
             (
                 "web.registryCredential",
@@ -311,7 +314,7 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
     assert_eq!(web.lineage.to_string(), uuid(3));
     assert_eq!(
         web.values["env"],
-        json!({ "DB_URL": "${{ db.PLOYZ_PRIVATE_DOMAIN }}", "TOKEN": { "secret": true } })
+        json!({ "DB_URL": "${{ db.PLOYZ_PRIVATE_DOMAIN }}", "TOKEN": { "secret": false } })
     );
     assert_eq!(web.values["registryCredential"], json!({ "secret": true }));
     assert_eq!(
@@ -338,11 +341,12 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
         .unwrap();
     assert_eq!(diff.changes.len(), 3);
 
-    // Deploying it carries the sealed secret, the credential and web's Setup Command.
+    // Deploying it carries the credential and web's Setup Command. The secret was
+    // sealed for production, so it arrives Not set here and never reaches the env.
     let input = deploy(&store, &who, "fix-web", 1, false);
     let web_id = id_of(&store, &who, "fix-web", "web");
     let db_id = id_of(&store, &who, "fix-web", "db");
-    assert_eq!(snapshot(&input, &web_id)["resolvedEnv"]["TOKEN"], "s3cret");
+    assert_eq!(snapshot(&input, &web_id)["resolvedEnv"].get("TOKEN"), None);
     assert_eq!(
         snapshot(&input, &web_id)["resolvedEnv"]["DB_URL"],
         "db.internal"

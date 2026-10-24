@@ -118,7 +118,8 @@ pub use teardown::{
     RemovedBecause, SeenProtection, SetDefaultEnvironment, SetEnvironmentProtected,
 };
 pub use trusted::{
-    Approval, Asks, ObservationFailure, ObservationStage, Trusted, VolumeObservation,
+    Approval, Asks, ObservationFailure, ObservationStage, SealingRecipient, Trusted,
+    VolumeObservation,
 };
 pub use volume::size::VolumeResized;
 
@@ -295,27 +296,17 @@ impl ConfigStore {
             .read(|tx| review::sealed::names(tx, environment.as_str()))
     }
 
-    /// Whether `organization` takes values sealed in the browser: on only once its
-    /// `config_sealed_variables` row exists, which nothing in the Store inserts.
-    /// In-process only.
-    ///
-    /// # Errors
-    /// Returns a storage error.
-    pub fn sealed_variables(&self, organization: &OrganizationId) -> Result<bool, RpcError> {
-        self.storage
-            .read(|tx| client_sealed::enabled(tx, organization))
-    }
-
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with
-    /// its secrets unsealed: the only way plaintext leaves the Store. In-process only:
-    /// never exposed over HTTPS. The same runner may claim again until it records a
-    /// Deploy Preview; after that its claim leaves the outcome unknown.
+    /// its registry credentials opened and its secrets still sealed for the Machine.
+    /// In-process only: never exposed over HTTPS. The same runner may claim again
+    /// until it records a Deploy Preview; after that its claim leaves the outcome
+    /// unknown.
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, `conflict` when another runner
     /// owns it, a newer one replaced it, it was cancelled or ended, this runner
-    /// already prepared it, or its unsealed values can't deploy, which fails it with
-    /// why; or a storage error.
+    /// already prepared it, or its values can't deploy, which fails it with why; or
+    /// a storage error.
     pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
         self.storage
             .write(|tx| deployment::claim(tx, deployment, runner, &self.sealing))
@@ -494,8 +485,7 @@ impl ConfigStore {
     /// # Errors
     /// Returns `not_found` for an unknown build, or a storage error.
     pub fn github_input(&self, id: &GithubBuildId) -> Result<GithubInput, RpcError> {
-        self.storage
-            .read(|tx| build::github_input(tx, id, &self.sealing))
+        self.storage.read(|tx| build::github_input(tx, id))
     }
 
     /// Run `run_id` of GitHub build `id` checked in with `grant`. In-process only.

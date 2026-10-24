@@ -955,6 +955,7 @@ fn retried(
     fresh: Option<(SavedEnvironmentIntent, Vec<VolumeLoss>)>,
 ) -> Result<(Vec<ServiceName>, Vec<TargetNode>), RpcError> {
     let environment = &stored.summary.environment_id;
+    let organization = crate::build::organization(tx, &stored.summary.id)?;
     let latest = crate::review::latest_saved(tx, environment)?.map(|latest| latest.intent);
     let source = saved_at(tx, environment, stored.summary.saved)?;
     let holds = |intent: &SavedEnvironmentIntent, id: &str| {
@@ -1012,6 +1013,7 @@ fn retried(
                 let retire = dropped(tx, environment, &source, &landing)?;
                 freeze(
                     environment,
+                    &organization,
                     &source,
                     &landing,
                     Scope::All {
@@ -1216,7 +1218,7 @@ pub(crate) fn claim(
         mut intent,
         warnings,
         ..
-    } = match lowered(tx, &stored, &saved, sealing) {
+    } = match lowered(tx, &stored, &saved) {
         Ok(lowered) => lowered,
         // Every claim lowers it the same way: it fails rather than waits queued,
         // and takes nothing over. A new Deploy may still get past it, since a Branch
@@ -1353,13 +1355,12 @@ pub(crate) fn held_revision(
     Ok(saved)
 }
 
-/// `stored` lowered from `saved`, its held revision, with secrets unsealed: what a
-/// build of it takes. In-process only.
+/// `stored` lowered from `saved`, its held revision: what a build of it takes.
+/// In-process only.
 pub(crate) fn lowered(
     tx: &mut dyn Tx,
     stored: &Stored,
     saved: &SavedEnvironmentIntent,
-    sealing: &SealingKey,
 ) -> Result<Lowered, RpcError> {
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, saved)?;
     let ships = stored.lowering(saved);
@@ -1372,7 +1373,7 @@ pub(crate) fn lowered(
         &ships,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
-        Some((sealing, &organization)),
+        &organization,
     )
 }
 

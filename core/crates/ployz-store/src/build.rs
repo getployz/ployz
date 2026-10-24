@@ -805,8 +805,8 @@ pub(crate) fn github_authorize(
 /// What a GitHub build builds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GithubInput {
-    /// The Deployment's lowering input with secrets unsealed, and every value sealed
-    /// in the browser left out but the built Service's.
+    /// The Deployment's lowering input, with every value sealed in the browser left
+    /// out but the built Service's.
     pub input: serde_json::Value,
     pub commit: CommitSha,
     /// The Service's latest receipt.
@@ -814,18 +814,14 @@ pub struct GithubInput {
 }
 
 /// What GitHub build `id` builds. In-process only.
-pub(crate) fn github_input(
-    tx: &mut dyn Tx,
-    id: &GithubBuildId,
-    sealing: &crate::SealingKey,
-) -> Result<GithubInput, RpcError> {
+pub(crate) fn github_input(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<GithubInput, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
     let commit = row
         .commit
         .ok_or_else(|| error::corrupt("GitHub build commit"))?;
     let saved = deployment::held_revision(tx, &stored)?;
-    let deployment::Lowered { mut input, .. } = deployment::lowered(tx, &stored, &saved, sealing)?;
+    let deployment::Lowered { mut input, .. } = deployment::lowered(tx, &stored, &saved)?;
     let sealed = input
         .snapshots
         .iter()

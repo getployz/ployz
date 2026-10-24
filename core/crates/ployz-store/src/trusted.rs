@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
-use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, RpcError};
+use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, RpcError, SealingPublicKey};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -81,12 +81,25 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(as = "Option<Asks>", optional)]
     pub asks: Asks,
-    /// Whether the write came over HTTPS from the CLI, which seals its own secrets
-    /// once the Organization seals on the client: a plain-text secret from one that
-    /// doesn't is refused with the update to run.
+    /// Whether the write came over HTTPS from the CLI, which seals its own secrets:
+    /// a plain-text secret from one that doesn't is refused with the update to run.
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
     pub from_cli: bool,
+    /// The Cluster's Sealing public key, as Cloud read it: what the Store seals a
+    /// generated secret to. None when the Cluster has no Server yet, which refuses a
+    /// generated secret.
+    #[serde(default)]
+    #[ts(optional)]
+    pub sealing: Option<SealingRecipient>,
+}
+
+/// The public key a value sealed in the Store is sealed to, which only the Cluster's
+/// Machines open.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SealingRecipient {
+    pub public_key: SealingPublicKey,
 }
 
 /// Whether Cloud asks a human before a publication destroys something, and which

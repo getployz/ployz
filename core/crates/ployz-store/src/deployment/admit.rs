@@ -399,6 +399,7 @@ fn deploy(
     };
     let mut frozen = deployment::freeze(
         id,
+        &who.organization,
         &saved_intent,
         &landing,
         scope,

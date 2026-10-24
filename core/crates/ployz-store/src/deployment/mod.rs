@@ -1,6 +1,6 @@
 //! Deployments. Admission freezes what a Deployment ships: a Saved revision and its
 //! target nodes, checked to lower. A runner `claim`s it and receives the Deploy
-//! Intent lowered from them, secrets unsealed; it `record`s its evidence, and each
+//! Intent lowered from them, secrets still sealed; it `record`s its evidence, and each
 //! confirmed Node Outcome advances Applied State.
 //! The Head that reviews compare against comes from here too.
 

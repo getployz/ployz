@@ -182,6 +182,23 @@ impl Db {
             .unwrap();
     }
 
+    /// The ID of Service `service` in `environment`: its own, not its lineage.
+    fn service_id(&self, environment: &str, service: &str) -> String {
+        self.store
+            .read(
+                &self.who,
+                &ServiceQuery {
+                    environment: at(environment),
+                    service: ServiceName::parse(service).unwrap(),
+                },
+            )
+            .unwrap()
+            .service
+            .service
+            .id
+            .to_string()
+    }
+
     /// `service`'s variables in `environment`'s Working State.
     fn env(&self, environment: &str, service: &str) -> Value {
         self.store
@@ -868,7 +885,14 @@ fn remove_ignores_a_service_an_earlier_saved_proposal_introduced() {
 #[test]
 fn a_secret_resolved_on_an_existing_service_survives_remove() {
     let db = Db::new();
-    db.put("dev", &[("api.env.KEY", json!({"secret": "dev-key"}))]);
+    let dev_api = db.service_id("dev", "api");
+    db.put(
+        "dev",
+        &[(
+            "api.env.KEY",
+            backend::sealed_secret(&uuid(9), &dev_api, "KEY", 1),
+        )],
+    );
     let a = proposal(
         &db.include(("dev", "production"), &sync_id(1), None)
             .unwrap(),
@@ -880,7 +904,10 @@ fn a_secret_resolved_on_an_existing_service_survives_remove() {
     );
     db.put(
         "production",
-        &[("api.env.KEY", json!({"secret": "prod-key"}))],
+        &[(
+            "api.env.KEY",
+            backend::sealed_secret(&uuid(2), &uuid(3), "KEY", 2),
+        )],
     );
     assert_eq!(
         db.change("production", "api.env.KEY"),
@@ -898,14 +925,24 @@ fn a_secret_resolved_on_an_existing_service_survives_remove() {
 fn an_introduced_service_with_a_resolved_secret_refuses_remove() {
     let db = Db::new();
     db.service("dev", 11, "cache");
-    db.put("dev", &[("cache.env.KEY", json!({"secret": "dev-key"}))]);
+    db.put(
+        "dev",
+        &[(
+            "cache.env.KEY",
+            backend::sealed_secret(&uuid(9), &uuid(11), "KEY", 1),
+        )],
+    );
     let a = proposal(
         &db.include(("dev", "production"), &sync_id(1), None)
             .unwrap(),
     );
+    let cache = db.service_id("production", "cache");
     db.put(
         "production",
-        &[("cache.env.KEY", json!({"secret": "prod-key"}))],
+        &[(
+            "cache.env.KEY",
+            backend::sealed_secret(&uuid(2), &cache, "KEY", 2),
+        )],
     );
     let (code, message) = db.remove("production", &a).unwrap_err();
     assert_eq!(code, RpcErrorCode::Conflict, "{message}");

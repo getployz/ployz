@@ -84,7 +84,10 @@ fn production_nodes(store: &ConfigStore, who: &Actor) {
         "production",
         &[
             ("web.env.DB_URL", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")),
-            ("db.env.PASSWORD", json!({ "secret": "hunter2" })),
+            (
+                "db.env.PASSWORD",
+                backend::sealed_secret(&uuid(2), &uuid(20), "PASSWORD", 1),
+            ),
             ("db.env.USER", json!("app")),
             (
                 "db.registryCredential",
