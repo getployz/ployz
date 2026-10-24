@@ -159,7 +159,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     let rejected = rejected.saturating_sub(kept.len() as u64);
     let matched = ids.len() - kept.len();
     if matched == 0 && stopped.is_none() {
-        return Err(left_joining(&kept, "Not cancelled"));
+        return Err(left_joining(&joining, "Not cancelled"));
     }
     if !kept.is_empty() && !ui::json() {
         ui::warn(format!(
