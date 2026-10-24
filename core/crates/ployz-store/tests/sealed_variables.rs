@@ -731,7 +731,7 @@ fn a_secret_binds_to_its_service_s_id_and_is_refused_as_the_store_refuses_it_wit
 }
 
 #[test]
-fn a_secret_s_text_beside_other_fields_is_found_and_refused_as_the_store_refuses_it() {
+fn a_secret_s_text_in_a_shape_the_store_refuses_is_found_and_refused_as_the_store_refuses_it() {
     let store = backend::open();
     shop(&store);
     let changes = [
@@ -751,6 +751,22 @@ fn a_secret_s_text_beside_other_fields_is_found_and_refused_as_the_store_refuses
         Change::Patch {
             path: SettingPath::parse("web").unwrap(),
             value: json!({ "env": { "TOKEN": { "secret": SECRET, "exported": true } } }),
+        },
+        Change::Patch {
+            path: SettingPath::parse("web").unwrap(),
+            value: json!({ "env": [{ "TOKEN": { "secret": SECRET } }] }),
+        },
+        Change::Patch {
+            path: SettingPath::parse("web").unwrap(),
+            value: json!([{ "env": { "TOKEN": { "secret": SECRET } } }]),
+        },
+        Change::Patch {
+            path: SettingPath::parse("web.env.TOKEN").unwrap(),
+            value: json!({ "env": { "TOKEN": { "secret": SECRET } } }),
+        },
+        Change::Patch {
+            path: SettingPath::parse("web.env.TOKEN").unwrap(),
+            value: json!({ "secret": SECRET }),
         },
     ];
     for change in changes {

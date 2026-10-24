@@ -50,10 +50,7 @@ impl Edit {
                 matches!(path.target(), Some(Target::Variable(_)))
                     && variables::holds_secret_text(value)
             }
-            Change::Patch { value, .. } => value
-                .get("env")
-                .and_then(Value::as_object)
-                .is_some_and(|env| env.values().any(variables::holds_secret_text)),
+            Change::Patch { path, value } => patch_holds_secret_text(path, value),
             Change::Unset { .. } | Change::Rename { .. } => false,
         })
     }
@@ -81,14 +78,17 @@ impl Edit {
                     seal_in(value, service, key, &refuse, &mut seal)?;
                 }
                 Change::Patch { path, value } => {
-                    let Some(env) = value.get_mut("env").and_then(Value::as_object_mut) else {
+                    if !patch_holds_secret_text(path, value) {
+                        continue;
+                    }
+                    let Some(env) = patch_env(path, value).map_err(&refuse)? else {
                         continue;
                     };
+                    let service = path.settings_of().map_err(&refuse)?;
                     for (key, value) in env {
                         if !variables::holds_secret_text(value) {
                             continue;
                         }
-                        let service = path.settings_of().map_err(&refuse)?;
                         let key = VariableKey::parse(key).map_err(&refuse)?;
                         seal_in(value, service, &key, &refuse, &mut seal)?;
                     }
@@ -98,6 +98,61 @@ impl Edit {
         }
         Ok(())
     }
+}
+
+/// Whether a patch's `env` holds a secret's plain text, or a patch the Store refuses
+/// for its path or shape holds one anywhere.
+fn patch_holds_secret_text(path: &SettingPath, patch: &Value) -> bool {
+    let addresses_a_service = path.settings_of().is_ok() && path.target().is_none();
+    match patch.as_object() {
+        Some(settings) if addresses_a_service => match settings.get("env") {
+            Some(Value::Object(env)) => env.values().any(variables::holds_secret_text),
+            Some(env) => variables::holds_secret_text(env),
+            None => false,
+        },
+        Some(_) | None => variables::holds_secret_text(patch),
+    }
+}
+
+/// A patch's `env`, if any, refused as [`expand`] refuses a patch that isn't a
+/// Service's object of Settings or whose `env` isn't an object of variables.
+fn patch_env<'patch>(
+    path: &SettingPath,
+    patch: &'patch mut Value,
+) -> Result<Option<&'patch mut serde_json::Map<String, Value>>, RpcError> {
+    let service = path.settings_of()?;
+    if path.target().is_some() {
+        return Err(not_a_service(service));
+    }
+    let Some(settings) = patch.as_object_mut() else {
+        return Err(not_settings());
+    };
+    match settings.get_mut("env") {
+        Some(Value::Object(env)) => Ok(Some(env)),
+        Some(_) => Err(not_variables()),
+        None => Ok(None),
+    }
+}
+
+fn not_a_service(service: &ServiceName) -> RpcError {
+    error::invalid(
+        "A patch addresses a Service, not one of its Settings",
+        json!({ "example": service }),
+    )
+}
+
+fn not_settings() -> RpcError {
+    error::invalid(
+        "A patch is a JSON object of Settings",
+        json!({ "example": { "replicas": 3 } }),
+    )
+}
+
+fn not_variables() -> RpcError {
+    error::invalid(
+        "env is a JSON object of variables",
+        json!({ "example": { "env": { "LOG_LEVEL": "info" } } }),
+    )
 }
 
 /// A new secret's plain text in an [`Edit`], for the Service and variable it lands
@@ -687,24 +742,15 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Step)>, RpcError> {
             Change::Patch { path, value } => {
                 let service = path.settings_of()?;
                 if path.target().is_some() {
-                    return Err(error::invalid(
-                        "A patch addresses a Service, not one of its Settings",
-                        json!({ "example": service }),
-                    ));
+                    return Err(not_a_service(service));
                 }
                 let Some(object) = value.as_object() else {
-                    return Err(error::invalid(
-                        "A patch is a JSON object of Settings",
-                        json!({ "example": { "replicas": 3 } }),
-                    ));
+                    return Err(not_settings());
                 };
                 for (name, value) in object {
                     if name == "env" {
                         let Some(variables) = value.as_object() else {
-                            return Err(error::invalid(
-                                "env is a JSON object of variables",
-                                json!({ "example": { "env": { "LOG_LEVEL": "info" } } }),
-                            ));
+                            return Err(not_variables());
                         };
                         for (key, value) in variables {
                             let key = VariableKey::parse(key)?;
