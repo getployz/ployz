@@ -31,8 +31,7 @@ Paste or edit them, then click **Update variables**.
 
 - Deleting a line deletes that variable.
 - Sealed variables stay as they are. To delete one, use its menu.
-- Values you save here are plain text, except a new variable you tick **Sealed** beside. You
-  can also seal a variable afterwards from its menu.
+- Values you save here are plain text. Seal secrets afterwards from their menu.
 
 ## Rename a variable
 
