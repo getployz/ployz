@@ -502,6 +502,12 @@ impl LocalCheckin {
         }
     }
 
+    /// A preparation started again installs Docker again, so its last failure no longer blocks.
+    pub(crate) fn retry_docker(&mut self) {
+        self.blockers
+            .retain(|blocker| blocker.code != wire::DOCKER_INSTALL_FAILED);
+    }
+
     fn enroll_failed(&self) -> bool {
         self.answer == Seen::Wait
             && self
@@ -1077,8 +1083,12 @@ async fn check_in<H: Host>(
 
 /// After Cloud answers an explicit `--install`: a failed or unfinished preparation starts over at
 /// once, with its automatic retries restored. Its state file stays, since ployzd records there what
-/// it added.
-pub(crate) async fn restart_preparation<H: Host>(host: &H, paths: &Paths, now: DateTime<Utc>) {
+/// it added. Returns whether it started one.
+pub(crate) async fn restart_preparation<H: Host>(
+    host: &H,
+    paths: &Paths,
+    now: DateTime<Utc>,
+) -> bool {
     let running = host.prepare_running().await.unwrap_or_else(|why| {
         crate::ui::note(format!("Could not read {}: {why}", unit::PREPARE));
         true
@@ -1088,17 +1098,19 @@ pub(crate) async fn restart_preparation<H: Host>(host: &H, paths: &Paths, now: D
         .as_ref()
         .is_some_and(|state| !state.installing() && state.failed_at().is_none());
     if running || finished || host.stale_ployzd().is_some() {
-        return;
+        return false;
     }
     if let Err(why) = host.start_prepare().await {
         crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE));
-        return;
+        return false;
     }
     if let Some(mut status) = LocalCheckin::read(&paths.status()).ok().flatten() {
         status.prepare_started = Some(now);
         status.prepare_retries = 0;
+        status.retry_docker();
         record(&status, paths);
     }
+    true
 }
 
 /// Says in status.json why the loop can't start, keeping what the last pass saw of the host.

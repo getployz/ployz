@@ -16,6 +16,7 @@ use super::probe;
 pub(super) const PROTOCOL_VERSION: u8 = 1;
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
 pub(super) const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
+pub(super) const DOCKER_INSTALL_FAILED: &str = "docker_install_failed";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -497,7 +498,7 @@ impl Probe {
         if let Some(prep) = prep {
             if let DockerStep::Failed { message } = &prep.docker.step {
                 blockers.push(Issue {
-                    code: "docker_install_failed".to_owned(),
+                    code: DOCKER_INSTALL_FAILED.to_owned(),
                     message: message.clone(),
                 });
             }
