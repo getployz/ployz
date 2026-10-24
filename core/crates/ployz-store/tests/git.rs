@@ -1909,7 +1909,7 @@ fn a_build_that_reads_a_sealed_value_skips_github_whatever_it_prefers() {
 }
 
 #[test]
-fn github_gets_no_sealed_value_and_learns_which_one_its_build_reads() {
+fn github_gets_only_its_own_sealed_values_and_learns_which_one_its_build_reads() {
     let dir = tempfile::tempdir().unwrap();
     let (store, who) = sealed_shop(&dir);
     let db = "00000000-0000-4000-8000-000000000004";
@@ -1994,10 +1994,9 @@ fn github_gets_no_sealed_value_and_learns_which_one_its_build_reads() {
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     let built = store.github_input(&id).unwrap();
     assert_eq!(built.sealed.as_deref(), Some("DB_URL"));
-    for snapshot in built.input["snapshots"].as_array().unwrap() {
-        for (name, value) in snapshot["resolvedEnv"].as_object().unwrap() {
-            assert!(value.is_string(), "{name} is {value}");
-        }
+    assert!(of(&built.input, SERVICE)["resolvedEnv"]["DB_URL"].is_object());
+    for (name, value) in of(&built.input, db)["resolvedEnv"].as_object().unwrap() {
+        assert!(value.is_string(), "{name} is {value}");
     }
 }
 

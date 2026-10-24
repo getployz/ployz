@@ -1193,22 +1193,32 @@ async fn holder_contract() {
         panic!("a holder mint returns the Machine to dial, never a secret");
     };
     let http = reqwest::Client::new();
-    let blob = async |secret: [u8; 32]| {
+    let blob = format!("/v2/ployz-build/web/blobs/sha256:{}", "a".repeat(64));
+    let status = async |secret: [u8; 32], method: reqwest::Method, path: &str| {
         let registry = open_grant_registry(&BuildGrant::new(dial, secret), &machine.relay)
             .await
             .unwrap();
-        http.head(format!(
-            "http://{}/v2/ployz-build/web/blobs/sha256:{}",
-            registry.address(),
-            "a".repeat(64)
-        ))
-        .send()
-        .await
-        .map(|response| response.status())
-        .ok()
+        http.request(method, format!("http://{}{path}", registry.address()))
+            .send()
+            .await
+            .map(|response| response.status())
+            .ok()
     };
-    assert_eq!(blob(iroh::SecretKey::generate().to_bytes()).await, None);
-    assert_eq!(blob(holder.to_bytes()).await, Some(reqwest::StatusCode::OK));
+    let stranger = iroh::SecretKey::generate().to_bytes();
+    assert_eq!(status(stranger, reqwest::Method::HEAD, &blob).await, None);
+    assert_eq!(
+        status(stranger, reqwest::Method::GET, "/ployz/sealed").await,
+        None
+    );
+    assert_eq!(
+        status(holder.to_bytes(), reqwest::Method::HEAD, &blob).await,
+        Some(reqwest::StatusCode::OK)
+    );
+    // This grant carries no Sealed values.
+    assert_eq!(
+        status(holder.to_bytes(), reqwest::Method::GET, "/ployz/sealed").await,
+        Some(reqwest::StatusCode::NOT_FOUND)
+    );
     machine.stop().await;
 }
 
@@ -1326,12 +1336,15 @@ impl GrantMachine {
         let request = ployz_core::MintBuildGrantRequest {
             repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder,
+            sealed: None,
         };
-        self.grants.mint(
-            self.local.record().management_secret().public_key(),
-            ployzd::management::Mint::check(request).unwrap(),
-            self.ingest,
-        )
+        self.grants
+            .mint(
+                self.local.record().management_secret().public_key(),
+                ployzd::management::Mint::check(request, None).unwrap(),
+                self.ingest,
+            )
+            .unwrap()
     }
 
     /// A grant for one push into `ployz-build/web`.

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use ployz_core::{
     BUILD_GRANT_HOLDER_CAPABILITY, BuildGrantId, BuildGrantRepository, InspectBuildGrantRequest,
     MintBuildGrantRequest, MintedKey, RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
+    SealedRecord, ServiceName,
 };
 use ployz_store::{
     BuildStatus, ConfigStore, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
@@ -203,8 +204,9 @@ pub async fn github_check_in(
     )?
     .remove(&id.service)
     .ok_or_else(|| internal("The build has no fingerprint"))?;
+    let sealed = sealed_record(&deployment, &id.service)?;
     let session = session(connections).await?;
-    let minted = mint(&session, &id, holder, built.sealed.as_deref()).await;
+    let minted = mint(&session, &id, holder, sealed).await;
     let (machine, minted) = match minted {
         Ok(Some(minted)) => minted,
         Ok(None) => {
@@ -258,12 +260,28 @@ pub async fn github_check_in(
 const OLD_MINT_SKIPS: &str =
     "GitHub builds a sealed value only with an up-to-date Ployz on the runner and your server";
 
+/// The Sealed values the built Service reads, still sealed, for its Machine to open.
+fn sealed_record(
+    deployment: &Value,
+    service: &ServiceName,
+) -> Result<Option<SealedRecord>, RpcError> {
+    let intent = super::preparation::frozen_intent(deployment.clone())?;
+    intent
+        .target
+        .iter()
+        .find(|spec| spec.name == *service)
+        .map(SealedRecord::of)
+        .transpose()
+        .map(Option::flatten)
+        .map_err(|error| internal(&error.to_string()))
+}
+
 /// Mint on the session's Machine, or `None` when GitHub can't take this build.
 async fn mint(
     session: &Session,
     id: &GithubBuildId,
     holder: Option<BuildGrantId>,
-    sealed: Option<&str>,
+    sealed: Option<SealedRecord>,
 ) -> Result<Option<(ployz_core::MachineId, ployz_core::BuildGrantMinted)>, RpcError> {
     // Inspect first: a failure after the mint would leave an unclaimed grant.
     let details = session.inspect().await?;
@@ -271,10 +289,7 @@ async fn mint(
         .machine
         .map(|machine| machine.runtime.capabilities)
         .unwrap_or_default();
-    let holder = match minting(holder, &capabilities, sealed) {
-        Minting::Holder(_) if sealed.is_some() => {
-            return Err(conflict(ployz_store::SEALED_BUILDS_RUN_ON_SERVER));
-        }
+    let holder = match minting(holder, &capabilities, sealed.is_some()) {
         Minting::Holder(holder) => Some(holder),
         Minting::Legacy => None,
         Minting::Skip => return Ok(None),
@@ -283,6 +298,7 @@ async fn mint(
         .mint_build_grant(MintBuildGrantRequest {
             repository: repository(id)?,
             holder,
+            sealed,
         })
         .await?;
     Ok(Some((details.id, minted)))
@@ -298,16 +314,12 @@ enum Minting {
 // The one place an old Action or an old Machine is told apart. Delete it, with
 // `Minting::Legacy` and `Skip`, once every Machine advertises the capability and
 // every Action sends a holder.
-fn minting(
-    holder: Option<BuildGrantId>,
-    capabilities: &BTreeSet<String>,
-    sealed: Option<&str>,
-) -> Minting {
+fn minting(holder: Option<BuildGrantId>, capabilities: &BTreeSet<String>, sealed: bool) -> Minting {
     match holder {
         Some(holder) if capabilities.contains(BUILD_GRANT_HOLDER_CAPABILITY) => {
             Minting::Holder(holder)
         }
-        _ if sealed.is_some() => Minting::Skip,
+        _ if sealed => Minting::Skip,
         _ => Minting::Legacy,
     }
 }
@@ -624,12 +636,12 @@ mod tests {
         let holder = BuildGrantId::parse("d".repeat(64)).unwrap();
         let new = BTreeSet::from([BUILD_GRANT_HOLDER_CAPABILITY.to_owned()]);
         let old = BTreeSet::new();
-        for sealed in [None, Some("TOKEN")] {
+        for sealed in [false, true] {
             assert_eq!(minting(Some(holder), &new, sealed), Minting::Holder(holder));
         }
         for (holder, capabilities) in [(Some(holder), &old), (None, &new), (None, &old)] {
-            assert_eq!(minting(holder, capabilities, None), Minting::Legacy);
-            assert_eq!(minting(holder, capabilities, Some("TOKEN")), Minting::Skip);
+            assert_eq!(minting(holder, capabilities, false), Minting::Legacy);
+            assert_eq!(minting(holder, capabilities, true), Minting::Skip);
         }
     }
 

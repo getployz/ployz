@@ -29,8 +29,10 @@ pub use execution::{
 };
 mod railpack;
 pub use railpack::Railpack;
+mod scrub;
+pub use scrub::OutputScrub;
 mod sealed;
-pub use sealed::{sealed_file, valid_name};
+pub use sealed::{Staged, sealed_file, valid_name};
 mod solve;
 pub use solve::PlainRenderer;
 
@@ -170,6 +172,16 @@ pub enum Output {
 enum Produce {
     Output(Output),
     Cache,
+}
+
+/// Whether a Build solves with opened values that its cache or provenance would
+/// record: a staged Sealed ARG override, or a Railpack setting planned with its value.
+#[must_use]
+pub fn reads_plaintext(sealed_override: Option<&Path>, railpack: &[Railpack]) -> bool {
+    sealed_override.is_some()
+        || railpack
+            .iter()
+            .any(|recipe| recipe.sealed.keys().any(|name| railpack::planned(name)))
 }
 
 /// Whether the captured environment exposes a GitHub Actions runner's cache
@@ -329,44 +341,105 @@ impl BuildError {
 pub fn execute(
     request: &Request<'_>,
     cancellation: &Cancellation,
+    scrub: Option<&OutputScrub>,
     observe: &(dyn Fn(&Progress) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
     execute_rendered(
         request,
         Produce::Output(request.output),
         cancellation,
-        observe,
+        Sinks::stderr(scrub, observe),
     )
 }
 
 /// Upload a captured Build's cache to the GitHub Actions cache service by
 /// running it again, producing no image; `request.output` is not consulted.
-/// Without that service in the captured environment it does nothing. Progress
-/// renders to stderr only.
+/// Without that service in the captured environment, or when the Build
+/// [reads plaintext](reads_plaintext), it does nothing: other workflows read that
+/// cache. Progress renders to stderr only.
 ///
 /// # Errors
 /// Returns the same failures as [`execute`].
-pub fn export_cache(request: &Request<'_>, cancellation: &Cancellation) -> Result<(), BuildError> {
-    if !github_cache(request) {
+pub fn export_cache(
+    request: &Request<'_>,
+    cancellation: &Cancellation,
+    scrub: Option<&OutputScrub>,
+) -> Result<(), BuildError> {
+    if !github_cache(request) || reads_plaintext(request.sealed_override, request.railpack) {
         return Ok(());
     }
-    execute_rendered(request, Produce::Cache, cancellation, &|_| {}).map(drop)
+    execute_rendered(
+        request,
+        Produce::Cache,
+        cancellation,
+        Sinks::stderr(scrub, &|_| {}),
+    )
+    .map(drop)
 }
 
 fn execute_rendered(
     request: &Request<'_>,
     produce: Produce,
     cancellation: &Cancellation,
-    observe: &(dyn Fn(&Progress) + Sync),
+    sinks: Sinks<'_>,
 ) -> Result<Vec<BuiltImage>, BuildError> {
-    let renderer = PlainRenderer::default();
-    execute_produce(request, produce, Admission::wait(cancellation)?, &|event| {
-        if let Some(text) = renderer.render(&event) {
-            use std::io::Write as _;
-            let _ = std::io::stderr().write_all(text.as_bytes());
+    let built = Admission::wait(cancellation).and_then(|admission| {
+        execute_produce(request, produce, admission, &|event| sinks.emit(event))
+    });
+    sinks.finish();
+    built.map_err(|error| sinks.error(error))
+}
+
+/// Where a local Build's progress goes, after the scrub.
+struct Sinks<'a> {
+    renderer: PlainRenderer,
+    write: &'a (dyn Fn(&[u8]) + Sync),
+    observe: &'a (dyn Fn(&Progress) + Sync),
+    scrub: Option<&'a OutputScrub>,
+}
+
+impl<'a> Sinks<'a> {
+    fn stderr(scrub: Option<&'a OutputScrub>, observe: &'a (dyn Fn(&Progress) + Sync)) -> Self {
+        Self {
+            renderer: PlainRenderer::default(),
+            write: &|text| {
+                use std::io::Write as _;
+                let _ = std::io::stderr().write_all(text);
+            },
+            observe,
+            scrub,
         }
-        observe(&event);
-    })
+    }
+
+    fn emit(&self, event: Progress) {
+        match self.scrub {
+            Some(scrub) => scrub
+                .progress(event)
+                .iter()
+                .for_each(|event| self.show(event)),
+            None => self.show(&event),
+        }
+    }
+
+    fn show(&self, event: &Progress) {
+        if let Some(text) = self.renderer.render(event) {
+            (self.write)(text.as_bytes());
+        }
+        (self.observe)(event);
+    }
+
+    fn finish(&self) {
+        if let Some(scrub) = self.scrub {
+            scrub.finish().iter().for_each(|event| self.show(event));
+        }
+    }
+
+    fn error(&self, error: BuildError) -> BuildError {
+        match self.scrub {
+            Some(scrub) => scrub.error(error),
+            None => error,
+        }
+    }
 }
 
 /// Execute using admission acquired before source upload. The same deadline

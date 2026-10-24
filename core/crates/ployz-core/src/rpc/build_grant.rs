@@ -14,6 +14,11 @@ pub struct MintBuildGrantRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub holder: Option<crate::BuildGrantId>,
+    /// The built Service's Sealed values, still sealed. The Machine opens them at mint
+    /// and serves them only to `holder`, which must be set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sealed: Option<crate::SealedRecord>,
 }
 
 /// A minted grant. The Machine keeps it in memory only; a restart ends it.
@@ -128,7 +133,8 @@ mod tests {
             request,
             MintBuildGrantRequest {
                 repository,
-                holder: None
+                holder: None,
+                sealed: None,
             }
         );
         assert_eq!(

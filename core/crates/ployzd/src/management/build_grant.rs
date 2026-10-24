@@ -8,11 +8,15 @@
 //! already holds that tag at its digest), after [`GRANT_LIFETIME`], or when the daemon
 //! stops. The Machine RPC handlers only forward to [`mint_for`] and
 //! [`BuildGrants::inspect`].
+//!
+//! A grant minted for a holder can carry the built Service's Sealed values, still
+//! sealed. Its holder reads them opened from `GET /ployz/sealed` once, before the push.
 
 use std::{
     collections::HashMap,
     convert::Infallible,
     net::SocketAddr,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -30,11 +34,13 @@ use iroh::{
 use ployz_core::{
     BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, BuildGrantId, BuildGrantInspected,
     BuildGrantMinted, BuildGrantRepository, ImageDigest, ManagementIdentity, MintBuildGrantRequest,
-    MintedKey, RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
+    MintedKey, RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode, SealedRecord,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+
+use crate::sealed_env::Unseal as _;
 
 /// How long a grant lives. Ployz Cloud mints it at
 /// check-in and gives the run 2h from there (`GITHUB_RUN_BUDGET_MS` in the dashboard's
@@ -56,6 +62,21 @@ struct Grant {
     ingest: SocketAddr,
     expires: Instant,
     push: Mutex<Push>,
+    /// Locked only under `push`.
+    sealed: Mutex<Sealing>,
+}
+
+enum Sealing {
+    None,
+    Sealed(Sealed),
+    /// Its holder read them; nothing more is served.
+    Served,
+}
+
+/// A record this Machine opened at mint, kept sealed until its holder reads it.
+struct Sealed {
+    record: SealedRecord,
+    key_dir: PathBuf,
 }
 
 enum Push {
@@ -70,6 +91,7 @@ enum Push {
 pub struct Mint {
     repository: BuildGrantRepository,
     key: Key,
+    sealed: Option<Sealed>,
 }
 
 enum Key {
@@ -80,11 +102,13 @@ enum Key {
 }
 
 impl Mint {
-    /// Check `request` before anything is opened for it.
+    /// Check `request` before anything is opened for it, and that its Sealed values
+    /// open with the Sealing Key in `key_dir`.
     ///
     /// # Errors
-    /// `InvalidArgument` when the holder is not a public key.
-    pub fn check(request: MintBuildGrantRequest) -> Result<Mint, RpcError> {
+    /// `InvalidArgument` when the holder is not a public key or Sealed values have no
+    /// holder; `Conflict` when this Machine has no Sealing Key or they don't open here.
+    pub fn check(request: MintBuildGrantRequest, key_dir: Option<&Path>) -> Result<Mint, RpcError> {
         let key = match request.holder {
             None => Key::Made(SecretKey::generate()),
             Some(holder) => Key::Holder(
@@ -92,17 +116,42 @@ impl Mint {
                     .ok()
                     .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
                     .and_then(|bytes| PublicKey::from_bytes(&bytes).ok())
-                    .ok_or_else(|| RpcError {
-                        code: RpcErrorCode::InvalidArgument,
-                        message: "the Build Grant holder is not a public key".into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
+                    .ok_or_else(|| {
+                        refused(
+                            RpcErrorCode::InvalidArgument,
+                            "the Build Grant holder is not a public key".into(),
+                        )
                     })?,
             ),
+        };
+        let sealed = match request.sealed {
+            None => None,
+            Some(_) if matches!(key, Key::Made(_)) => {
+                return Err(refused(
+                    RpcErrorCode::InvalidArgument,
+                    "a Build Grant carrying Sealed values needs a holder".into(),
+                ));
+            }
+            Some(record) => {
+                let key_dir = key_dir.ok_or_else(|| {
+                    refused(
+                        RpcErrorCode::Conflict,
+                        "this Machine has no Sealing Key to open the Build's Sealed values".into(),
+                    )
+                })?;
+                record
+                    .open_for_build(Some(key_dir))
+                    .map_err(|error| refused(RpcErrorCode::Conflict, error.to_string()))?;
+                Some(Sealed {
+                    record,
+                    key_dir: key_dir.to_owned(),
+                })
+            }
         };
         Ok(Mint {
             repository: request.repository,
             key,
+            sealed,
         })
     }
 }
@@ -110,12 +159,15 @@ impl Mint {
 impl BuildGrants {
     /// Mint a grant for one push into `mint`'s repository through the ingest at
     /// `ingest`, dialed at `machine`.
+    ///
+    /// # Errors
+    /// `Conflict` when the holder already holds a live grant.
     pub fn mint(
         &self,
         machine: ManagementIdentity,
         mint: Mint,
         ingest: SocketAddr,
-    ) -> BuildGrantMinted {
+    ) -> Result<BuildGrantMinted, RpcError> {
         let (id, key) = match mint.key {
             Key::Made(secret) => (
                 grant_id(secret.public().as_bytes()),
@@ -130,15 +182,22 @@ impl BuildGrants {
             ingest,
             expires: Instant::now() + GRANT_LIFETIME,
             push: Mutex::new(Push::Open),
+            sealed: Mutex::new(mint.sealed.map_or(Sealing::None, Sealing::Sealed)),
         });
         let mut grants = self.grants.lock().expect("grant registry lock");
         grants.retain(|_, grant| grant.expires > Instant::now());
+        if grants.contains_key(&id) {
+            return Err(refused(
+                RpcErrorCode::Conflict,
+                "this holder already holds a live Build Grant".into(),
+            ));
+        }
         grants.insert(id, grant);
-        BuildGrantMinted {
+        Ok(BuildGrantMinted {
             id,
             key,
             expires_in_seconds: GRANT_LIFETIME.as_secs(),
-        }
+        })
     }
 
     /// Report what a live grant pushed. Reading does not spend or end it.
@@ -193,13 +252,22 @@ pub(crate) async fn mint_for(
     local: &crate::machine::LocalMachine,
     ingest: Arc<crate::docker::ImageIngest>,
     mint: Mint,
-) -> Result<BuildGrantMinted, crate::machine::LocalMachineError> {
+) -> Result<Result<BuildGrantMinted, RpcError>, crate::machine::LocalMachineError> {
     let opened = local.ensure_image_ingest(ingest).await?.destination;
     Ok(grants.mint(
         local.record().management_secret().public_key(),
         mint,
         SocketAddr::from((opened.management_address.0, opened.port)),
     ))
+}
+
+const fn refused(code: RpcErrorCode, message: String) -> RpcError {
+    RpcError {
+        code,
+        message,
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
 }
 
 fn grant_id(key: &[u8; 32]) -> BuildGrantId {
@@ -259,9 +327,10 @@ pub(super) async fn serve(
     connection.close(VarInt::from_u32(BUILD_GRANT_ENDED), b"build grant ended");
 }
 
-/// One registry call a grant allows, in its one repository.
+/// One call a grant allows.
 #[derive(Debug, Eq, PartialEq)]
 enum Route {
+    Sealed,
     Ping,
     Blob,
     Upload,
@@ -282,6 +351,9 @@ impl Route {
         query: Option<&str>,
         repository: &BuildGrantRepository,
     ) -> Option<Self> {
+        if path == "/ployz/sealed" {
+            return (*method == Method::GET).then_some(Self::Sealed);
+        }
         if path == "/v2/" {
             return matches!(*method, Method::GET | Method::HEAD).then_some(Self::Ping);
         }
@@ -346,6 +418,7 @@ async fn handle(
     }
     let (parts, body) = request.into_parts();
     let (digest, tagged) = match route {
+        Route::Sealed => return sealed(grant),
         Route::Ping | Route::Blob | Route::Upload | Route::ManifestHead => {
             let body = reqwest::Body::wrap_stream(Body::new(body).into_data_stream());
             return forward(client, grant.ingest, &parts, body).await;
@@ -402,6 +475,45 @@ async fn handle(
         Push::Open
     };
     response
+}
+
+/// The grant's Sealed values, opened, for its holder once, while the grant is live and
+/// nothing is pushing or pushed.
+fn sealed(grant: &Grant) -> Response<Body> {
+    let sealed = {
+        let push = grant.push.lock().expect("grant push lock");
+        if !matches!(*push, Push::Open) || grant.expires <= Instant::now() {
+            return denied(StatusCode::FORBIDDEN, "the Build Grant has ended");
+        }
+        let mut sealing = grant.sealed.lock().expect("grant sealed lock");
+        match std::mem::replace(&mut *sealing, Sealing::Served) {
+            Sealing::Sealed(sealed) => sealed,
+            Sealing::Served => {
+                return denied(
+                    StatusCode::FORBIDDEN,
+                    "the Build Grant's Sealed values were already read",
+                );
+            }
+            Sealing::None => {
+                *sealing = Sealing::None;
+                return denied(
+                    StatusCode::NOT_FOUND,
+                    "the Build Grant carries no Sealed values",
+                );
+            }
+        }
+    };
+    match sealed.record.open_for_build(Some(&sealed.key_dir)) {
+        Ok(opened) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from(
+                serde_json::to_vec(&opened).expect("opened values encode"),
+            ))
+            .expect("static response"),
+        Err(error) => denied(StatusCode::PRECONDITION_FAILED, &error.to_string()),
+    }
 }
 
 async fn forward(
@@ -474,19 +586,171 @@ fn denied(status: StatusCode, message: &str) -> Response<Body> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use ployz_core::{EnvValue, OpenedSealed, SealedScope};
+
     use super::*;
+    use crate::sealed_env::test_support::Cluster;
 
     fn request(holder: Option<&str>) -> MintBuildGrantRequest {
         MintBuildGrantRequest {
             repository: BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder: holder.map(|holder| BuildGrantId::parse(holder).unwrap()),
+            sealed: None,
         }
     }
 
     fn mint(grants: &BuildGrants, request: MintBuildGrantRequest) -> BuildGrantMinted {
         let machine = ManagementIdentity::from_bytes([7; 32]);
         let ingest = SocketAddr::from(([127, 0, 0, 1], 5000));
-        grants.mint(machine, Mint::check(request).unwrap(), ingest)
+        grants
+            .mint(machine, Mint::check(request, None).unwrap(), ingest)
+            .unwrap()
+    }
+
+    const MARKER: &str = "marker-sealed-0123456789";
+
+    fn holder() -> PublicKey {
+        SecretKey::from_bytes(&[3; 32]).public()
+    }
+
+    fn sealed_request(cluster: &Cluster) -> MintBuildGrantRequest {
+        let env = BTreeMap::from([(
+            "NPM_TOKEN".to_owned(),
+            EnvValue::Sealed(cluster.seal("NPM_TOKEN", SealedScope::Shared, MARKER)),
+        )]);
+        MintBuildGrantRequest {
+            sealed: Some(cluster.open(env).unwrap().record.unwrap()),
+            ..request(Some(&hex::encode(holder().as_bytes())))
+        }
+    }
+
+    fn sealed_grant(cluster: &Cluster) -> Arc<Grant> {
+        let grants = BuildGrants::default();
+        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0)).unwrap();
+        grants
+            .mint(
+                ManagementIdentity::from_bytes([7; 32]),
+                mint,
+                SocketAddr::from(([127, 0, 0, 1], 5000)),
+            )
+            .unwrap();
+        grants.admit(holder().as_bytes()).unwrap()
+    }
+
+    async fn read(response: Response<Body>) -> (StatusCode, String) {
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_holder_reads_its_grants_sealed_values_opened() {
+        let cluster = Cluster::new();
+        let (status, body) = read(sealed(&sealed_grant(&cluster))).await;
+        assert_eq!(status, StatusCode::OK);
+        let opened: OpenedSealed = serde_json::from_str(&body).unwrap();
+        assert_eq!(opened.get("NPM_TOKEN"), Some(MARKER));
+    }
+
+    #[tokio::test]
+    async fn sealed_values_end_with_the_push_or_the_grant() {
+        let cluster = Cluster::new();
+        let pushing = sealed_grant(&cluster);
+        *pushing.push.lock().unwrap() = Push::Pushing;
+        let pushed = sealed_grant(&cluster);
+        *pushed.push.lock().unwrap() =
+            Push::Pushed(ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap());
+        let live = sealed_grant(&cluster);
+        let expired = Grant {
+            repository: live.repository.clone(),
+            ingest: live.ingest,
+            expires: Instant::now(),
+            push: Mutex::new(Push::Open),
+            sealed: Mutex::new(Sealing::Sealed(Sealed {
+                record: sealed_request(&cluster).sealed.unwrap(),
+                key_dir: cluster.dir.0.clone(),
+            })),
+        };
+        for grant in [&*pushing, &*pushed, &expired] {
+            let (status, body) = read(sealed(grant)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+            assert!(!body.contains(MARKER));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_holder_reads_sealed_values_once() {
+        let cluster = Cluster::new();
+        let grant = sealed_grant(&cluster);
+        assert_eq!(read(sealed(&grant)).await.0, StatusCode::OK);
+        let (status, body) = read(sealed(&grant)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(!body.contains(MARKER));
+    }
+
+    #[tokio::test]
+    async fn sealed_values_that_fail_to_open_are_not_served_later() {
+        let cluster = Cluster::new();
+        let elsewhere = Cluster::new();
+        let grant = sealed_grant(&cluster);
+        *grant.sealed.lock().unwrap() = Sealing::Sealed(Sealed {
+            record: sealed_request(&cluster).sealed.unwrap(),
+            key_dir: elsewhere.dir.0.clone(),
+        });
+        assert_eq!(
+            read(sealed(&grant)).await.0,
+            StatusCode::PRECONDITION_FAILED
+        );
+        let (status, body) = read(sealed(&grant)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    #[test]
+    fn a_holder_with_a_live_grant_mints_no_second() {
+        let grants = BuildGrants::default();
+        let holder = hex::encode(holder().as_bytes());
+        let first = mint(&grants, request(Some(&holder)));
+        let Err(refused) = grants.mint(
+            ManagementIdentity::from_bytes([7; 32]),
+            Mint::check(request(Some(&holder)), None).unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], 5000)),
+        ) else {
+            panic!("a second mint would replace the live grant");
+        };
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert!(grants.inspect(&first.id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_grant_without_sealed_values_has_none_to_read() {
+        let grants = BuildGrants::default();
+        mint(&grants, request(Some(&hex::encode(holder().as_bytes()))));
+        let grant = grants.admit(holder().as_bytes()).unwrap();
+        assert_eq!(read(sealed(&grant)).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn sealed_values_need_a_holder_and_must_open_here() {
+        let cluster = Cluster::new();
+        let holderless = MintBuildGrantRequest {
+            holder: None,
+            ..sealed_request(&cluster)
+        };
+        let Err(refused) = Mint::check(holderless, Some(&cluster.dir.0)) else {
+            panic!("a holderless grant would return its key to Cloud");
+        };
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+
+        let elsewhere = Cluster::new();
+        for key_dir in [Some(elsewhere.dir.0.as_path()), None] {
+            let Err(refused) = Mint::check(sealed_request(&cluster), key_dir) else {
+                panic!("another Cluster's key opens nothing");
+            };
+            assert_eq!(refused.code, RpcErrorCode::Conflict);
+            assert!(!refused.message.contains(MARKER), "{}", refused.message);
+        }
     }
 
     #[test]
@@ -521,10 +785,29 @@ mod tests {
     fn a_holder_that_is_not_a_public_key_is_refused() {
         let mut point = [0; 32];
         point[0] = 2;
-        let Err(refused) = Mint::check(request(Some(&hex::encode(point)))) else {
+        let Err(refused) = Mint::check(request(Some(&hex::encode(point))), None) else {
             panic!("y = 2 is not on the curve");
         };
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn a_grant_serves_sealed_values_only_to_a_get() {
+        let repository = BuildGrantRepository::parse("ployz-build/web").unwrap();
+        assert_eq!(
+            Route::parse(&Method::GET, "/ployz/sealed", None, &repository),
+            Some(Route::Sealed)
+        );
+        for method in [Method::HEAD, Method::POST, Method::PUT] {
+            assert_eq!(
+                Route::parse(&method, "/ployz/sealed", None, &repository),
+                None
+            );
+        }
+        assert_eq!(
+            Route::parse(&Method::GET, "/ployz/sealed/x", None, &repository),
+            None
+        );
     }
 
     #[test]

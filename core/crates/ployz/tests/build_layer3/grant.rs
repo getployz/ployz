@@ -60,6 +60,7 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
         .mint_build_grant(MintBuildGrantRequest {
             repository: ployz_core::BuildGrantRepository::parse("ployz-build/app").unwrap(),
             holder: None,
+            sealed: None,
         })
         .await
         .unwrap();

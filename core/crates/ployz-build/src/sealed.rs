@@ -1,7 +1,8 @@
 //! Opened Sealed values live as 0600 files for one solve and reach BuildKit
 //! as secret mounts and declared Dockerfile ARGs. The Builder writes the files.
 
-use crate::BuildError;
+use crate::{BuildError, Target};
+use ployz_core::OpenedSealed;
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -28,17 +29,39 @@ pub fn valid_name(name: &str) -> bool {
 
 /// Opened values written for one solve. Dropping removes them on every
 /// outcome, including a retained Unknown root and a dropped cancelled Build.
-pub(crate) struct OpenedFiles {
+pub struct Staged {
     directory: Option<PathBuf>,
     files: Vec<PathBuf>,
+    compose_override: Option<PathBuf>,
 }
 
-impl OpenedFiles {
-    pub(crate) fn args(
+impl Staged {
+    /// Write `opened` under the capture at `root`: a file per value, and the Compose
+    /// override that passes the declared Dockerfile ARGs of `targets`.
+    ///
+    /// # Errors
+    /// Fails on a name that can't be a secret id, an ARG nothing opened, or a write.
+    pub fn stage(
+        root: &Path,
+        opened: &OpenedSealed,
+        targets: &[Target],
+    ) -> Result<Self, BuildError> {
+        let mut staged = Self::write(root, opened)?;
+        staged.compose_override = staged.args(root, targets, opened)?;
+        Ok(staged)
+    }
+
+    /// The Compose file that passes opened values as ARGs.
+    #[must_use]
+    pub fn compose_override(&self) -> Option<&Path> {
+        self.compose_override.as_deref()
+    }
+
+    fn args(
         &mut self,
         root: &Path,
-        definition: &crate::remote::Definition,
-        opened: &BTreeMap<String, String>,
+        targets: &[Target],
+        opened: &OpenedSealed,
     ) -> Result<Option<PathBuf>, BuildError> {
         let bytes = match fs::read(root.join("private/sealed-args.json")) {
             Ok(bytes) => bytes,
@@ -49,11 +72,7 @@ impl OpenedFiles {
             .map_err(|_| BuildError::Request("invalid Sealed Build argument names".into()))?;
         let mut services = BTreeMap::new();
         for (target, names) in declared {
-            if !definition
-                .targets
-                .iter()
-                .any(|admitted| admitted.name == target)
-            {
+            if !targets.iter().any(|admitted| admitted.name == target) {
                 return Err(BuildError::Request(
                     "Sealed arguments name an unadmitted target".into(),
                 ));
@@ -87,13 +106,11 @@ impl OpenedFiles {
         Ok(Some(path))
     }
 
-    pub(crate) fn write(
-        root: &Path,
-        opened: &BTreeMap<String, String>,
-    ) -> Result<Self, BuildError> {
+    fn write(root: &Path, opened: &OpenedSealed) -> Result<Self, BuildError> {
         let mut files = Self {
             directory: None,
             files: Vec::new(),
+            compose_override: None,
         };
         if opened.is_empty() {
             return Ok(files);
@@ -104,7 +121,7 @@ impl OpenedFiles {
             .create(&directory)
             .map_err(io_error)?;
         files.directory = Some(directory);
-        for (name, value) in opened {
+        for (name, value) in opened.values() {
             if !valid_name(name) {
                 return Err(BuildError::Request(format!(
                     "{name:?} cannot be a Build secret name"
@@ -124,7 +141,7 @@ impl OpenedFiles {
     }
 }
 
-impl Drop for OpenedFiles {
+impl Drop for Staged {
     fn drop(&mut self) {
         for file in &self.files {
             let _ = fs::remove_file(file);
@@ -142,6 +159,10 @@ fn io_error(error: io::Error) -> BuildError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opened(values: BTreeMap<String, String>) -> OpenedSealed {
+        OpenedSealed::new(values, Vec::new())
+    }
 
     struct Root(PathBuf);
     impl Root {
@@ -164,11 +185,11 @@ mod tests {
     fn opened_files_are_private_and_vanish_when_the_guard_drops() {
         use std::os::unix::fs::PermissionsExt as _;
         let root = Root::new();
-        let opened = BTreeMap::from([
+        let values = BTreeMap::from([
             ("NPM_TOKEN".to_owned(), "opened-token".to_owned()),
             ("OTHER".to_owned(), "two".to_owned()),
         ]);
-        let guard = OpenedFiles::write(root.path(), &opened).unwrap();
+        let guard = Staged::write(root.path(), &opened(values)).unwrap();
         let token = root.path().join(sealed_file("NPM_TOKEN"));
         assert_eq!(fs::read_to_string(&token).unwrap(), "opened-token");
         assert_eq!(
@@ -191,25 +212,18 @@ mod tests {
     #[test]
     fn no_opened_values_leave_private_material_untouched() {
         let root = Root::new();
-        let _guard = OpenedFiles::write(root.path(), &BTreeMap::new()).unwrap();
+        let _guard = Staged::write(root.path(), &opened(BTreeMap::new())).unwrap();
         assert_eq!(
             fs::read_dir(root.path().join("private")).unwrap().count(),
             0
         );
     }
 
-    fn definition() -> crate::remote::Definition {
-        crate::remote::Definition {
-            targets: vec![crate::Target {
-                name: "api".into(),
-                platforms: Vec::new(),
-            }],
-            retained_tags: Vec::new(),
-            image_contexts: BTreeMap::new(),
-            output: crate::Output::Load,
-            no_cache: false,
-            pull: false,
-        }
+    fn targets() -> Vec<Target> {
+        vec![Target {
+            name: "api".into(),
+            platforms: Vec::new(),
+        }]
     }
 
     #[test]
@@ -223,15 +237,12 @@ mod tests {
         )
         .unwrap();
         let value = "literal $TOKEN ${HOME} $$ \\\"\nsecond line";
-        let opened = BTreeMap::from([
+        let opened = opened(BTreeMap::from([
             ("NPM_TOKEN".into(), value.into()),
             ("MOUNT_ONLY".into(), "mount-only-value".into()),
-        ]);
-        let mut guard = OpenedFiles::write(root.path(), &opened).unwrap();
-        let file = guard
-            .args(root.path(), &definition(), &opened)
-            .unwrap()
-            .unwrap();
+        ]));
+        let guard = Staged::stage(root.path(), &opened, &targets()).unwrap();
+        let file = guard.compose_override().unwrap().to_owned();
         let encoded = fs::read_to_string(&file).unwrap();
         let compose: serde_json::Value = serde_json::from_str(&encoded.replace("$$", "$")).unwrap();
         assert_eq!(
@@ -255,16 +266,14 @@ mod tests {
     #[test]
     fn invalid_arg_material_fails_without_leaving_opened_files() {
         let root = Root::new();
-        let opened = BTreeMap::from([("NPM_TOKEN".into(), "dummy".into())]);
+        let opened = opened(BTreeMap::from([("NPM_TOKEN".into(), "dummy".into())]));
         for contents in [
             "bad json",
             r#"{"other":["NPM_TOKEN"]}"#,
             r#"{"api":["MISSING"]}"#,
         ] {
             fs::write(root.path().join("private/sealed-args.json"), contents).unwrap();
-            let mut guard = OpenedFiles::write(root.path(), &opened).unwrap();
-            assert!(guard.args(root.path(), &definition(), &opened).is_err());
-            drop(guard);
+            assert!(Staged::stage(root.path(), &opened, &targets()).is_err());
             assert!(!root.path().join(DIRECTORY).exists());
         }
     }
@@ -273,11 +282,8 @@ mod tests {
     fn names_that_cannot_be_files_or_secret_ids_are_refused() {
         let root = Root::new();
         for name in ["", "../escape", "a/b", "with space", "a=b"] {
-            let opened = BTreeMap::from([(name.to_owned(), "x".to_owned())]);
-            assert!(
-                OpenedFiles::write(root.path(), &opened).is_err(),
-                "{name:?}"
-            );
+            let opened = opened(BTreeMap::from([(name.to_owned(), "x".to_owned())]));
+            assert!(Staged::write(root.path(), &opened).is_err(), "{name:?}");
         }
         assert!(!root.path().join(DIRECTORY).exists());
     }

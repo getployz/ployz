@@ -11,7 +11,6 @@ use ployz_build::{
 };
 use ployz_core::{BuildConcurrency, MachineId, OpaquePayload};
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -376,7 +375,10 @@ fn receive_and_execute(
     let sealed = match upload.private_file(sealed::RECORD) {
         Ok(None) => None,
         Ok(Some(record)) => match sealed::open(&record, sealing_key_dir) {
-            Ok(opened) => Some(opened),
+            Ok(opened) => {
+                let scrub = ployz_build::OutputScrub::new(&opened);
+                Some((opened, scrub))
+            }
             Err(message) => return failed(Stage::Preparation, message),
         },
         Err(error) => return failed(Stage::Upload, ployz_core::error_chain::inline(&error)),
@@ -406,7 +408,7 @@ fn receive_and_execute(
         }
     };
     let progress = |progress| match &sealed {
-        Some(opened) => opened.scrub.progress(progress).into_iter().for_each(&send),
+        Some((_, scrub)) => scrub.progress(progress).into_iter().for_each(&send),
         None => send(progress),
     };
     progress(Progress::Stage(Stage::Upload));
@@ -427,16 +429,15 @@ fn receive_and_execute(
         context.source.port = proxy.port;
         proxies.push(proxy);
     }
-    let none = BTreeMap::new();
     let result = upload.execute(
         &definition,
         Some(&policy.docker),
-        sealed.as_ref().map_or(&none, |opened| &opened.values),
+        sealed.as_ref().map(|(opened, _)| opened),
         &progress,
     );
     // Reached however the Build ended, so a cancelled one releases no held text.
-    if let Some(opened) = &sealed {
-        opened.scrub.finish().into_iter().for_each(&send);
+    if let Some((_, scrub)) = &sealed {
+        scrub.finish().into_iter().for_each(&send);
     }
     let outcome = match result {
         Ok(completed) => {
@@ -458,7 +459,7 @@ fn receive_and_execute(
         Err(error) => failure(error.stage(), error),
     };
     match &sealed {
-        Some(opened) => opened.scrub.outcome(outcome),
+        Some((_, scrub)) => scrub.outcome(outcome),
         None => outcome,
     }
 }

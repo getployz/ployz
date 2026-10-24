@@ -827,7 +827,11 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::MintBuildGrant>(request)?;
-        let mint = match crate::management::build_grant::Mint::check(request) {
+        let key_dir = self
+            .containers()
+            .ok()
+            .and_then(|containers| containers.sealing_key_dir());
+        let mint = match crate::management::build_grant::Mint::check(request, key_dir) {
             Ok(mint) => mint,
             Err(refused) => return respond(refused),
         };
@@ -839,7 +843,8 @@ impl MachineRpc for MachineService {
         )
         .await
         {
-            Ok(minted) => respond(minted),
+            Ok(Ok(minted)) => respond(minted),
+            Ok(Err(refused)) => respond(refused),
             Err(error) => local_error(error),
         }
     }
