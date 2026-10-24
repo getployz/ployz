@@ -1,14 +1,10 @@
-//! How long lowering an Environment with 50 secret variables takes, on trunk and
-//! on a branch that carries values sealed in the browser. Both cases are ignored;
-//! run one with `--ignored` and compare the median it prints.
-//!
-//! `store_sealed` uses only Store APIs trunk has, so the file runs unchanged there:
+//! How long lowering an Environment with 50 secret variables sealed on the client
+//! takes. Ignored; run it with `--ignored` at trunk and at head and compare the
+//! median it prints. Trunk's copy also times Store-sealed values, which head refuses.
 //!
 //! ```text
 //! cargo nextest run -p ployz-store -E 'binary(lowering_perf)' --run-ignored all --no-capture
 //! ```
-//!
-//! `browser_sealed` needs the `sealedVariables` flag table and runs on this branch only.
 
 use ployz_core::ServiceName;
 use ployz_store::{
@@ -100,24 +96,10 @@ fn median(mut times: Vec<std::time::Duration>) -> std::time::Duration {
 
 #[test]
 #[ignore = "timing: run with --run-ignored all --no-capture"]
-fn store_sealed() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = shop(&backend::fresh_url(&dir), |n| json!(format!("value-{n}")));
-    measure(&store);
-}
-
-#[test]
-#[ignore = "timing, this branch only: run with --run-ignored all --no-capture"]
-fn browser_sealed() {
+fn client_sealed() {
     use base64::Engine as _;
     let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    ConfigStore::open(&url, backend::key()).unwrap();
-    backend::execute(
-        &url,
-        "INSERT INTO config_sealed_variables (organization_id) VALUES ('org')",
-    );
-    let store = shop(&url, |n| {
+    let store = shop(&backend::fresh_url(&dir), |n| {
         let sealed = base64::engine::general_purpose::STANDARD.encode([n as u8; 48]);
         json!({
             "sealedFor": ENVIRONMENT,
