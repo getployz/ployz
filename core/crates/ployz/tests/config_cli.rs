@@ -6692,7 +6692,7 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_approva
         // The retry sends the same request, but for a Sync's receipt, new each run.
         let gated = approvals.gated.lock().unwrap();
         let [.., first, retried] = gated.as_slice() else {
-            panic!("{args:?} reached Cloud twice")
+            panic!("{args:?} didn't reach Cloud twice")
         };
         let receipt = |command: &Value| {
             let mut command = command.clone();
