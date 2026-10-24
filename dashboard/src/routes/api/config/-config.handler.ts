@@ -5,11 +5,12 @@ import { gateOperation, hasApprover, redeemApproval, redeeming, requestApproval 
 import { callStore, refusal } from "#/modules/config-store/config-store.server";
 import { protector, protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { StoreCommand, StoreQuery, type StoreCall } from "#/modules/config-store/store.contract";
+import { StoreCommand, StoreQuery, StoreSealingTargets, type StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
 import { callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { lacks } from "#/modules/organization/access.server";
+import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { readCappedBody } from "#/server/capped-body";
 import { NotFound, Validation } from "#/server/public-error";
 
@@ -18,13 +19,14 @@ const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
 /**
  * `POST /api/config/read` and `/api/config/write`: the Config Store's two public operations, as the calling
- * Organization. `POST /api/config/upload/<Deployment ID>` keeps a gzipped tar of the source a Deployment the CLI
- * admits next builds from. Nothing else of the Store is reachable over HTTPS.
+ * Organization. `POST /api/config/sealing` tells a CLI whether its Organization seals secrets on the client, and
+ * where a write's secrets land once it does. `POST /api/config/upload/<Deployment ID>` keeps a gzipped tar of the
+ * source a Deployment the CLI admits next builds from. Nothing else of the Store is reachable over HTTPS.
  */
 export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (request: Request) {
   const operation = new URL(request.url).pathname.replace(/^\/api\/config\//, "");
   const upload = /^upload\/([^/]+)$/.exec(operation)?.[1];
-  if (request.method !== "POST" || (operation !== "read" && operation !== "write" && upload === undefined)) {
+  if (request.method !== "POST" || (operation !== "read" && operation !== "write" && operation !== "sealing" && upload === undefined)) {
     return yield* new NotFound({ message: "Not found." });
   }
   // Telemetry only: the CLI names a detected coding agent; nothing else reads it.
@@ -50,11 +52,17 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   });
   const query = operation === "read" ? Option.getOrUndefined(Schema.decodeUnknownOption(StoreQuery)(input)) : undefined;
   const command = operation === "write" ? Option.getOrUndefined(Schema.decodeUnknownOption(StoreCommand)(input)) : undefined;
+  const targets = operation === "sealing" ? Option.getOrUndefined(Schema.decodeUnknownOption(StoreSealingTargets)(input)) : undefined;
   const call: StoreCall | undefined = query !== undefined ? { operation: "read", query }
-    : command !== undefined ? { operation: "write", command } : undefined;
+    : command !== undefined ? { operation: "write", command }
+    : targets !== undefined ? { operation: "read", query: { query: "sealing_targets", ...targets } } : undefined;
   if (call === undefined) {
-    return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
+    const expected = operation === "read" ? "query" : operation === "sealing" ? "sealing target" : "command";
+    return refusal({ code: "invalid_argument", message: `Expected a ${expected}.`, details: null });
   }
+  // Off or without a server, the CLI hears so before the Store reads anything.
+  const sealing = operation === "sealing" ? yield* readClusterSealing(caller.organization.id) : undefined;
+  if (sealing !== undefined && sealing.state !== "ready") return Response.json({ state: sealing.state }, { headers: { "cache-control": "no-store" } });
   // An approval the write names must be this Caller's, for this command, even where nobody is asked.
   const named = request.headers.get("x-ployz-approval");
   const asks = call.operation === "write" && asksApproval(caller.via, call.command);
@@ -77,10 +85,17 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     if (!gated.ok) return refusal(gated.refusal);
   }
   const approval = asks && (yield* hasApprover(caller.organization.id)) ? trusted.approval : "not_required";
-  const gate = { approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller), protector: protector(caller), environments: callerEnvironments(caller) } as const;
+  // Every write here is a CLI's: once its Organization seals on the client, a plain-text secret from one that predates sealing is refused with the update to run.
+  const gate = {
+    approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller),
+    protector: protector(caller), environments: callerEnvironments(caller), from_cli: true,
+  } as const;
   const sent: StoreCall = unprotect === null ? call : { operation: "write", command: unprotect.command };
   const result = yield* callStore(caller.organization.id, caller.userId, sent, { source: "cli", agent }, gate);
-  if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });
+  if (result.ok) {
+    const answer = sealing === undefined ? result.value : { state: "ready", publicKey: sealing.publicKey, targets: result.value };
+    return Response.json(answer, { headers: { "cache-control": "no-store" } });
+  }
   if (call.operation === "write" && result.refusal.code === "approval_required") {
     return refusal(yield* requestApproval(caller, call.command, result.refusal, named));
   }

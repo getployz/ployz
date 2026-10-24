@@ -13,8 +13,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
-use ployz_core::RpcError;
-use ployz_core::config::ServiceGitAccess;
+use ployz_core::config::{ClientSealedValue, ServiceGitAccess};
+use ployz_core::{RpcError, RpcErrorCode, SealedIdentity};
 use ployz_store::{
     Actor, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, Command as StoreCommand,
     ConfigStore, DomainEvidence, Hostname, OrganizationId, Permission, Principal, Removal,
@@ -25,6 +25,10 @@ use serde_json::{Value, json};
 #[allow(dead_code, reason = "This file's Engine answers only the Server list.")]
 #[path = "connect/support.rs"]
 mod engine;
+#[path = "support/keypair.rs"]
+mod keypair;
+
+use keypair::Keypair;
 
 /// Where the CLI's Config Store is.
 enum Target {
@@ -144,8 +148,13 @@ type Observe = fn(&StoreCommand) -> Trusted;
 fn cloud(worker: Worker, approvals: std::sync::Arc<Approvals>, observe: Observe) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
+    let database = SEALING.lock().unwrap().store.clone();
     let store = std::sync::Arc::new(
-        ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap(),
+        ConfigStore::open(
+            database.as_deref().unwrap_or("sqlite::memory:"),
+            SealingKey::new(b"cloud").unwrap(),
+        )
+        .unwrap(),
     );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -217,6 +226,10 @@ fn serve(
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
+    REQUESTS
+        .lock()
+        .unwrap()
+        .push((path.clone(), String::from_utf8_lossy(&body).into_owned()));
     let (status, reply) = match (organization, path.as_str()) {
         (None, _) => (401, json!({ "code": "UNAUTHORIZED" })),
         (Some(who), "/api/config/read") => answer(store.read_trusted(
@@ -250,6 +263,38 @@ fn serve(
             UPLOADS.lock().unwrap().insert(id.clone(), body);
             (200, json!({ "uploaded": id }))
         }
+        (Some(who), "/api/config/sealing")
+            if let Some(state) = SEALING.lock().unwrap().state.clone() =>
+        {
+            match state {
+                SealingState::Off => (200, json!({ "state": "off" })),
+                SealingState::NoServer => (200, json!({ "state": "no_server" })),
+                SealingState::Ready(public_key) => {
+                    let query: ployz_store::SealingTargetsQuery =
+                        serde_json::from_slice(&body).unwrap();
+                    match store.read_trusted(&who, &query, &evidence()) {
+                        Ok(targets) => (
+                            200,
+                            json!({
+                                "state": "ready",
+                                "publicKey": public_key,
+                                "targets": ployz_store::View::SealingTargets(targets),
+                            }),
+                        ),
+                        // Cloud answers a Store's not_found with 404, as it does any read.
+                        Err(error) if error.code == RpcErrorCode::NotFound => {
+                            (404, json!({ "error": error }))
+                        }
+                        Err(error) => (409, json!({ "error": error })),
+                    }
+                }
+            }
+        }
+        // A Cloud from before the CLI sealed answers the unknown route as it does any.
+        (Some(_), "/api/config/sealing") => (
+            404,
+            json!({ "_tag": "PublicError", "code": "NOT_FOUND", "message": "Not found." }),
+        ),
         (Some(who), "/api/cli/organizations") => {
             let id = who.organization.as_str();
             let organization = json!({ "id": id, "slug": id, "name": id, "current": true });
@@ -430,6 +475,8 @@ fn evidence() -> Trusted {
         servers: Some(1),
         // Cloud sends what the token's member holds: here, everything.
         permissions: Some(Permission::ALL.iter().copied().collect()),
+        // Every write over `/api/config/write` is a CLI's.
+        from_cli: true,
         ..github()
     }
 }
@@ -437,6 +484,114 @@ fn evidence() -> Trusted {
 /// Every upload the fake Cloud took, by Deployment ID.
 static UPLOADS: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Every request the fake Cloud took: its path and body.
+static REQUESTS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// How the fake Cloud answers `/api/config/sealing`, and where its Store is.
+static SEALING: std::sync::Mutex<Sealing> = std::sync::Mutex::new(Sealing {
+    state: None,
+    store: None,
+});
+
+struct Sealing {
+    /// `None`: a Cloud from before the CLI sealed, which has no such route.
+    state: Option<SealingState>,
+    /// A file-backed Store, so a test can turn `sealedVariables` on beside it.
+    store: Option<String>,
+}
+
+#[derive(Clone)]
+enum SealingState {
+    Off,
+    NoServer,
+    /// The Organization seals on the client, to this key.
+    Ready(String),
+}
+
+/// A Cloud answering `/api/config/sealing` with `state`, its throwaway Store with
+/// `sealedVariables` on for the token's Organization when `flag_on`.
+fn sealing_cloud(state: Option<SealingState>, flag_on: bool) -> (Target, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cloud.db");
+    *SEALING.lock().unwrap() = Sealing {
+        state,
+        store: Some(format!("sqlite:{}", path.display())),
+    };
+    let url = fake_cloud();
+    if flag_on {
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO config_sealed_variables (organization_id) VALUES ('alice')",
+                [],
+            )
+            .unwrap();
+    }
+    (
+        Target::Cloud {
+            url,
+            token: "ployz_alice",
+        },
+        dir,
+    )
+}
+
+/// The bodies of every request to `path` the fake Cloud took so far.
+fn requests_to(path: &str) -> Vec<Value> {
+    REQUESTS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(to, _)| to == path)
+        .map(|(_, body)| serde_json::from_str(body).unwrap())
+        .collect()
+}
+
+/// No request Cloud took carried `plaintext`.
+fn cloud_never_saw(plaintext: &str) {
+    for (path, body) in REQUESTS.lock().unwrap().iter() {
+        assert!(
+            !body.contains(plaintext),
+            "{path} carried {plaintext}: {body}"
+        );
+    }
+}
+
+/// Every value sealed in the CLI that Cloud's writes carried, by variable name.
+fn sealed_in_writes() -> std::collections::BTreeMap<String, ClientSealedValue> {
+    fn collect(value: &Value, into: &mut std::collections::BTreeMap<String, ClientSealedValue>) {
+        match value {
+            Value::Object(fields) => {
+                if fields.contains_key("sealedFor") {
+                    let sealed: ClientSealedValue = serde_json::from_value(value.clone()).unwrap();
+                    into.insert(sealed.value.key.clone(), sealed);
+                } else {
+                    fields.values().for_each(|field| collect(field, into));
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| collect(item, into)),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+    let mut sealed = std::collections::BTreeMap::new();
+    for body in requests_to("/api/config/write") {
+        collect(&body, &mut sealed);
+    }
+    sealed
+}
+
+/// What `sealed` was authored as, in the fake Cloud's Organization.
+fn authored(sealed: &ClientSealedValue) -> SealedIdentity {
+    let ployz_core::SealedScope::Service(service) = sealed.value.scope else {
+        panic!("the CLI seals for one Service");
+    };
+    SealedIdentity {
+        organization: "alice".into(),
+        environment: sealed.sealed_for,
+        service,
+    }
+}
 
 fn github() -> Trusted {
     Trusted {
@@ -7965,4 +8120,660 @@ fn a_local_volume_restore_reaches_for_the_servers_instead_of_needing_cloud() {
     assert!(matches!(code, Some(1..=3)), "{code:?}: {json}");
     let message = json["error"]["message"].as_str().unwrap();
     assert!(!message.contains("need Ployz Cloud"), "{message}");
+}
+
+#[test]
+fn set_seals_each_new_secret_in_the_cli_and_cloud_never_sees_its_plain_text() {
+    let keypair = Keypair::generate();
+    let state = SealingState::Ready(keypair.public().to_string());
+    let (cloud, _dir) = sealing_cloud(Some(state), true);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    // A write with no new secret asks Cloud nothing about sealing.
+    ok(&cloud, &["set", "web.env.LOG_LEVEL=info"]);
+    assert!(requests_to("/api/config/sealing").is_empty());
+
+    let (code, set) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret"],
+        "direct-s3cr3t\n",
+    );
+    assert_eq!(code, Some(0), "{set}");
+    let asked = requests_to("/api/config/sealing");
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0]["target"], json!("edit"));
+    assert_eq!(
+        asked[0]["environment"],
+        json!({ "project": null, "environment": null })
+    );
+
+    // An env file seals the variable that is already secret and keeps the rest plain;
+    // with --secret it seals every value.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_str().unwrap();
+    std::fs::write(file.path(), "TOKEN=rotated-s3cr3t\nLEVEL=info\n").unwrap();
+    let imported = ok(&cloud, &["set", "web", "--from-env-file", path]);
+    assert_eq!(
+        imported["staged"],
+        json!(["web.env.TOKEN", "web.env.LEVEL"])
+    );
+    std::fs::write(file.path(), "API_KEY=file-s3cr3t\nTOKEN=again-s3cr3t\n").unwrap();
+    let imported = ok(&cloud, &["set", "web", "--from-env-file", path, "--secret"]);
+    assert_eq!(
+        imported["staged"],
+        json!(["web.env.API_KEY", "web.env.TOKEN"])
+    );
+    let patch = r#"{"env":{"PATCHED":{"secret":"patch-s3cr3t"},"LEVEL":"debug"}}"#;
+    let (code, patched) = ployz_with_stdin(&cloud, &["set", "web", "--patch", "-"], patch);
+    assert_eq!(code, Some(0), "{patched}");
+    assert_eq!(requests_to("/api/config/sealing").len(), 4);
+
+    for plaintext in [
+        "direct-s3cr3t",
+        "rotated-s3cr3t",
+        "file-s3cr3t",
+        "again-s3cr3t",
+        "patch-s3cr3t",
+    ] {
+        cloud_never_saw(plaintext);
+    }
+    // Each ciphertext opens with the Cluster's key, as its variable, for the Store's
+    // own Service and Environment: the Store took every write with the flag on.
+    let sealed = sealed_in_writes();
+    assert_eq!(
+        sealed.keys().collect::<Vec<_>>(),
+        ["API_KEY", "PATCHED", "TOKEN"]
+    );
+    let last_token = &sealed["TOKEN"];
+    assert_eq!(
+        keypair.open(&authored(last_token), last_token).as_deref(),
+        Some("again-s3cr3t")
+    );
+    let patched = &sealed["PATCHED"];
+    assert_eq!(
+        keypair.open(&authored(patched), patched).as_deref(),
+        Some("patch-s3cr3t")
+    );
+    let api_key = &sealed["API_KEY"];
+    assert_eq!(
+        keypair.open(&authored(api_key), api_key).as_deref(),
+        Some("file-s3cr3t")
+    );
+    assert_eq!(authored(api_key), authored(patched));
+    assert_eq!(
+        ok(&cloud, &["get", "web"])["values"]["env"],
+        json!({
+            "API_KEY": { "secret": true },
+            "LEVEL": "debug",
+            "LOG_LEVEL": "info",
+            "PATCHED": { "secret": true },
+            "TOKEN": { "secret": true },
+        })
+    );
+}
+
+#[test]
+fn set_seals_a_secret_asked_with_its_exported_flag_and_keeps_the_flag() {
+    let keypair = Keypair::generate();
+    let state = SealingState::Ready(keypair.public().to_string());
+    let (cloud, _dir) = sealing_cloud(Some(state), true);
+    one_service(&cloud);
+    let patch = r#"{"env":{"HIDDEN":{"value":{"secret":"hidden-s3cr3t"},"exported":true}}}"#;
+    let (code, patched) = ployz_with_stdin(&cloud, &["set", "web", "--patch", "-"], patch);
+    assert_eq!(code, Some(0), "{patched}");
+
+    cloud_never_saw("hidden-s3cr3t");
+    let hidden = &sealed_in_writes()["HIDDEN"];
+    assert_eq!(
+        keypair.open(&authored(hidden), hidden).as_deref(),
+        Some("hidden-s3cr3t")
+    );
+    assert_eq!(
+        ok(&cloud, &["get", "web"])["values"]["env"]["HIDDEN"],
+        json!({ "value": { "secret": true }, "exported": true })
+    );
+}
+
+#[test]
+fn set_sends_a_secret_for_the_store_to_seal_when_the_organization_seals_there() {
+    let (cloud, _dir) = sealing_cloud(Some(SealingState::Off), false);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let (code, set) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret"],
+        "store-s3cr3t\n",
+    );
+    assert_eq!(code, Some(0), "{set}");
+    assert_eq!(requests_to("/api/config/sealing").len(), 1);
+    let writes = requests_to("/api/config/write");
+    assert_eq!(
+        writes.last().unwrap(),
+        &json!({
+            "command": "edit",
+            "environment": { "project": null, "environment": null },
+            "expect": null,
+            "changes": [{ "op": "set", "path": "web.env.TOKEN", "value": { "secret": "store-s3cr3t" } }],
+        })
+    );
+    assert!(sealed_in_writes().is_empty());
+    assert_eq!(
+        ok(&cloud, &["get", "web.env.TOKEN"])["settings"][0]["value"],
+        json!({ "secret": true })
+    );
+}
+
+#[test]
+fn set_seals_in_the_store_when_cloud_predates_sealing_in_the_cli() {
+    let (cloud, _dir) = sealing_cloud(None, false);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let (code, set) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret"],
+        "old-s3cr3t\n",
+    );
+    assert_eq!(code, Some(0), "{set}");
+    assert_eq!(requests_to("/api/config/sealing").len(), 1);
+    let writes = requests_to("/api/config/write");
+    assert_eq!(
+        writes.last().unwrap()["changes"][0]["value"],
+        json!({ "secret": "old-s3cr3t" })
+    );
+    assert_eq!(
+        ok(&cloud, &["get", "web.env.TOKEN"])["settings"][0]["value"],
+        json!({ "secret": true })
+    );
+}
+
+#[test]
+fn set_refuses_a_new_secret_until_a_server_holds_the_sealing_key_and_writes_nothing() {
+    let (cloud, _dir) = sealing_cloud(Some(SealingState::NoServer), true);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let writes = requests_to("/api/config/write").len();
+    let (code, refused) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret"],
+        "never-s3cr3t\n",
+    );
+    assert_eq!(code, Some(1), "{refused}");
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(refused["error"]["code"], json!("conflict"), "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        json!("Sealed values need a server.")
+    );
+    assert_eq!(
+        refused["error"]["details"]["next"],
+        json!("ployz server add")
+    );
+    assert_eq!(requests_to("/api/config/write").len(), writes);
+    cloud_never_saw("never-s3cr3t");
+    let missing = error(&cloud, &["get", "web.env.TOKEN"]);
+    assert_eq!(missing["code"], json!("not_found"), "{missing}");
+    // A plain variable still goes through: nothing to seal.
+    ok(&cloud, &["set", "web.env.LOG_LEVEL=info"]);
+}
+
+#[test]
+fn set_fails_on_the_stores_not_found_from_sealing_and_writes_nothing() {
+    let keypair = Keypair::generate();
+    let state = SealingState::Ready(keypair.public().to_string());
+    let (cloud, _dir) = sealing_cloud(Some(state), true);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let writes = requests_to("/api/config/write").len();
+    let (code, refused) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret", "--env", "nope"],
+        "lost-s3cr3t\n",
+    );
+    assert_eq!(code, Some(1), "{refused}");
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(refused["error"]["code"], json!("not_found"), "{refused}");
+    assert_eq!(requests_to("/api/config/sealing").len(), 1);
+    assert_eq!(requests_to("/api/config/write").len(), writes);
+    cloud_never_saw("lost-s3cr3t");
+}
+
+#[test]
+fn an_old_clis_plain_text_secret_is_refused_with_the_update_once_the_organization_seals() {
+    // An old CLI asks Cloud nothing and sends plain text, as this one does when Cloud
+    // answers off.
+    let (cloud, _dir) = sealing_cloud(Some(SealingState::Off), true);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let (code, refused) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret"],
+        "old-s3cr3t\n",
+    );
+    assert_eq!(code, Some(1), "{refused}");
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(
+        refused["error"],
+        json!({
+            "code": "unsupported",
+            "message": "TOKEN: update ployz to set a Sealed value.",
+            "details": { "variable": "TOKEN", "next": "curl -fsSL https://ployz.sh | sh" },
+            "cause": [],
+        }),
+        "{refused}"
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let mut command = cloud.command(home.path());
+    command
+        .args(["set", "web.env.TOKEN", "--secret"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"old-s3cr3t\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("TOKEN: update ployz to set a Sealed value.")
+            && stderr.contains("next: curl -fsSL https://ployz.sh | sh"),
+        "{stderr}"
+    );
+    let missing = error(&cloud, &["get", "web.env.TOKEN"]);
+    assert_eq!(missing["code"], json!("not_found"), "{missing}");
+}
+
+#[test]
+fn env_sync_sealed_values_are_sealed_in_the_cli_for_the_receiver() {
+    let keypair = Keypair::generate();
+    let state = SealingState::Ready(keypair.public().to_string());
+    let (cloud, _dir) = sealing_cloud(Some(state), true);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "web:1"]);
+    ok(&cloud, &["env", "branch", "fix-key", "--copy", "web"]);
+    let other = ["set", "web.env.OTHER_KEY", "--secret", "--env", "fix-key"];
+    let (code, set) = ployz_with_stdin(&cloud, &other, "branch-key\n");
+    assert_eq!(code, Some(0), "{set}");
+    let branch_sealed = sealed_in_writes()["OTHER_KEY"].clone();
+
+    let to = ["env", "sync", "--to", "--env", "fix-key"];
+    let (code, synced) = ployz_with_stdin(
+        &cloud,
+        &[&to[..], &["--value", "web.env.OTHER_KEY"]].concat(),
+        "given-key\n",
+    );
+    assert_eq!(code, Some(0), "{synced}");
+    let asked = requests_to("/api/config/sealing");
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1]["target"], json!("sync"));
+    assert_eq!(asked[1]["rows"], json!(["web.env.OTHER_KEY"]));
+    cloud_never_saw("given-key");
+    cloud_never_saw("branch-key");
+    // Sealed for production's own copy of web, not the Branch's.
+    let landed = sealed_in_writes()["OTHER_KEY"].clone();
+    assert_ne!(authored(&landed), authored(&branch_sealed));
+    assert_eq!(
+        keypair.open(&authored(&landed), &landed).as_deref(),
+        Some("given-key")
+    );
+    assert_eq!(
+        keypair
+            .open(&authored(&branch_sealed), &branch_sealed)
+            .as_deref(),
+        Some("branch-key")
+    );
+    assert_eq!(
+        ok(&cloud, &["get", "web.env.OTHER_KEY"])["settings"][0]["value"],
+        json!({ "secret": true })
+    );
+    // A sync without values asks nothing.
+    ok(&cloud, &["set", "web.env.LEVEL=info", "--env", "fix-key"]);
+    ok(&cloud, &to);
+    assert_eq!(requests_to("/api/config/sealing").len(), 2);
+}
+
+#[test]
+fn env_sync_sealed_values_go_as_plain_text_for_the_store_when_it_seals() {
+    let (cloud, _dir) = sealing_cloud(Some(SealingState::Off), false);
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "web:1"]);
+    ok(&cloud, &["env", "branch", "fix-key", "--copy", "web"]);
+    let other = ["set", "web.env.OTHER_KEY", "--secret", "--env", "fix-key"];
+    let (code, set) = ployz_with_stdin(&cloud, &other, "branch-key\n");
+    assert_eq!(code, Some(0), "{set}");
+    let to = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--value",
+        "web.env.OTHER_KEY",
+    ];
+    let (code, synced) = ployz_with_stdin(&cloud, &to, "given-key\n");
+    assert_eq!(code, Some(0), "{synced}");
+    let writes = requests_to("/api/config/write");
+    assert_eq!(
+        writes.last().unwrap()["values"],
+        json!({ "web.env.OTHER_KEY": "given-key" })
+    );
+    assert!(sealed_in_writes().is_empty());
+}
+
+/// What `args` with `stdin` printed and exited with against a fresh Cloud answering
+/// sealing `state`, its Store's flag on when `flag_on`, after `setup`; and how many
+/// writes Cloud took for it.
+fn refused_by(
+    (state, flag_on): (SealingState, bool),
+    setup: fn(&Target),
+    args: &[&str],
+    stdin: &str,
+) -> (Option<i32>, Value, usize) {
+    let (cloud, _dir) = sealing_cloud(Some(state), flag_on);
+    setup(&cloud);
+    let writes = requests_to("/api/config/write").len();
+    let (code, refused) = ployz_with_stdin(&cloud, args, stdin);
+    let refused = serde_json::from_str(&refused).unwrap();
+    (
+        code,
+        refused,
+        requests_to("/api/config/write").len() - writes,
+    )
+}
+
+fn sealing_ready() -> (SealingState, bool) {
+    (
+        SealingState::Ready(Keypair::generate().public().to_string()),
+        true,
+    )
+}
+
+fn one_service(cloud: &Target) {
+    ok(cloud, &["project", "new", "shop"]);
+    ok(cloud, &["service", "add", "web", "--image", "nginx:1"]);
+}
+
+/// A Branch `fix-key` holding a secret production lacks.
+fn branch_with_a_new_secret(cloud: &Target) {
+    one_service(cloud);
+    ok(cloud, &["env", "branch", "fix-key", "--copy", "web"]);
+    let other = ["set", "web.env.OTHER_KEY", "--secret", "--env", "fix-key"];
+    let (code, set) = ployz_with_stdin(cloud, &other, "branch-key\n");
+    assert_eq!(code, Some(0), "{set}");
+}
+
+#[test]
+fn set_refuses_a_secret_holding_a_nul_as_the_store_does_before_sealing_it() {
+    let args = ["set", "web.env.TOKEN", "--secret"];
+    let stdin = "nul\0s3cr3t\n";
+    let (code, legacy, _) = refused_by((SealingState::Off, false), one_service, &args, stdin);
+    assert_eq!(code, Some(2), "{legacy}");
+    assert_eq!(
+        legacy["error"]["message"],
+        json!("TOKEN: null characters are not allowed")
+    );
+    let (code, sealed, written) = refused_by(sealing_ready(), one_service, &args, stdin);
+    assert_eq!((code, &sealed), (Some(2), &legacy));
+    assert_eq!(written, 0);
+}
+
+#[test]
+fn env_sync_refuses_an_empty_value_as_the_store_does_before_sealing_it() {
+    let args = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--value",
+        "web.env.OTHER_KEY",
+    ];
+    let legacy_flag = (SealingState::Off, false);
+    let (code, mut legacy, _) = refused_by(legacy_flag, branch_with_a_new_secret, &args, "\n");
+    assert_eq!(code, Some(2), "{legacy}");
+    assert_eq!(
+        legacy["error"]["message"],
+        json!("web.env.OTHER_KEY: a secret needs a value")
+    );
+    let (code, mut sealed, written) =
+        refused_by(sealing_ready(), branch_with_a_new_secret, &args, "\n");
+    // Each Store gives its Services their own IDs, so the rows differ only there.
+    let row = |refused: &mut Value| {
+        let row = refused["error"]["details"]["row"].take();
+        row.as_str().unwrap().split_once(':').unwrap().1.to_owned()
+    };
+    assert_eq!(row(&mut sealed), row(&mut legacy));
+    assert_eq!((code, &sealed), (Some(2), &legacy));
+    assert_eq!(written, 0);
+}
+
+#[test]
+fn env_sync_with_a_value_at_a_stale_version_names_the_plan_as_it_does_unsealed() {
+    let args = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--version",
+        "0:0",
+        "--value",
+        "web.env.OTHER_KEY",
+    ];
+    let stdin = "given-key\n";
+    let legacy_flag = (SealingState::Off, false);
+    let (code, mut legacy, _) = refused_by(legacy_flag, branch_with_a_new_secret, &args, stdin);
+    assert_eq!(code, Some(1), "{legacy}");
+    assert_eq!(legacy["error"]["code"], json!("conflict"), "{legacy}");
+    assert_eq!(
+        legacy["error"]["details"]["next"],
+        json!("ployz env sync --to --plan --env fix-key")
+    );
+    let (code, mut sealed, written) =
+        refused_by(sealing_ready(), branch_with_a_new_secret, &args, stdin);
+    // Each Store's version is its own.
+    for refused in [&mut legacy, &mut sealed] {
+        assert!(refused["error"]["details"]["version"].take().is_string());
+    }
+    assert_eq!((code, &sealed), (Some(1), &legacy));
+    assert_eq!(written, 0);
+}
+
+#[test]
+fn a_patch_with_a_bad_variable_name_and_a_secret_reaches_the_store_and_fails_as_it_always_has() {
+    let patch = r#"{"env":{"1BAD":"x","TOKEN":{"secret":"patch-s3cr3t"}}}"#;
+    let args = ["set", "web", "--patch", "-"];
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let (code, refused_locally) = ployz_with_stdin(&local, &args, patch);
+    assert_eq!(code, Some(2), "{refused_locally}");
+    let refused_locally: Value = serde_json::from_str(&refused_locally).unwrap();
+
+    let (code, refused, written) =
+        refused_by((SealingState::Off, false), one_service, &args, patch);
+    assert_eq!(code, Some(2), "{refused}");
+    assert_eq!(refused, refused_locally);
+    assert_eq!(
+        refused["error"]["code"],
+        json!("invalid_argument"),
+        "{refused}"
+    );
+    // Cloud said the Store seals, and the Store refused the name.
+    assert_eq!(written, 1);
+}
+
+#[test]
+fn a_patch_s_secret_under_a_bad_variable_name_is_refused_as_the_store_does_and_never_sent() {
+    let patch = r#"{"env":{"1BAD":{"secret":"patch-s3cr3t"}}}"#;
+    let args = ["set", "web", "--patch", "-"];
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let (code, refused_locally) = ployz_with_stdin(&local, &args, patch);
+    assert_eq!(code, Some(2), "{refused_locally}");
+    let refused_locally: Value = serde_json::from_str(&refused_locally).unwrap();
+
+    let (code, refused, written) = refused_by(sealing_ready(), one_service, &args, patch);
+    assert_eq!((code, &refused), (Some(2), &refused_locally));
+    assert_eq!(written, 0);
+    cloud_never_saw("patch-s3cr3t");
+}
+
+#[test]
+fn a_patch_s_secret_in_an_env_that_is_not_an_object_is_refused_as_the_store_does_and_never_sent() {
+    let patch = r#"{"env":[{"TOKEN":{"secret":"array-s3cr3t"}}]}"#;
+    let args = ["set", "web", "--patch", "-"];
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let (code, refused_locally) = ployz_with_stdin(&local, &args, patch);
+    assert_eq!(code, Some(2), "{refused_locally}");
+    let refused_locally: Value = serde_json::from_str(&refused_locally).unwrap();
+    assert_eq!(
+        refused_locally["error"]["message"],
+        json!("env is a JSON object of variables")
+    );
+
+    let (code, refused, written) = refused_by(sealing_ready(), one_service, &args, patch);
+    assert_eq!((code, &refused), (Some(2), &refused_locally));
+    assert_eq!(written, 0);
+    cloud_never_saw("array-s3cr3t");
+}
+
+#[test]
+fn a_local_store_seals_every_secret_itself_and_asks_nothing_even_with_the_flag_on() {
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let Target::Local(dir) = &local else {
+        unreachable!()
+    };
+    rusqlite::Connection::open(dir.path().join("store.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO config_sealed_variables (organization_id) VALUES ('local')",
+            [],
+        )
+        .unwrap();
+    // A sealing question would go to the unreachable Cloud this process points at.
+    let (code, set) = ployz_with_stdin(
+        &local,
+        &["set", "web.env.TOKEN", "--secret"],
+        "local-s3cr3t\n",
+    );
+    assert_eq!(code, Some(0), "{set}");
+    assert_eq!(
+        ok(&local, &["get", "web.env.TOKEN"])["settings"][0]["value"],
+        json!({ "secret": true })
+    );
+}
+
+#[test]
+fn env_sync_with_a_value_for_a_service_the_sync_brings_names_the_set_after_it() {
+    fn branch_with_a_new_service(cloud: &Target) {
+        one_service(cloud);
+        ok(cloud, &["env", "branch", "fix-key", "--copy", "web"]);
+        let api = [
+            "service", "add", "api", "--image", "api:1", "--env", "fix-key",
+        ];
+        ok(cloud, &api);
+        let key = ["set", "api.env.KEY", "--secret", "--env", "fix-key"];
+        let (code, set) = ployz_with_stdin(cloud, &key, "branch-key\n");
+        assert_eq!(code, Some(0), "{set}");
+    }
+    let args = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--value",
+        "api.env.KEY",
+    ];
+    let (code, refused, written) = refused_by(
+        sealing_ready(),
+        branch_with_a_new_service,
+        &args,
+        "given-key\n",
+    );
+    assert_eq!(code, Some(2), "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        json!("api.env.KEY: its Service isn't there yet, so nothing can be sealed for it")
+    );
+    assert_eq!(
+        refused["error"]["details"]["next"],
+        json!(
+            "sync without --value first, then ployz set api.env.KEY --secret --env production --project shop"
+        )
+    );
+    assert_eq!(written, 0);
+    cloud_never_saw("given-key");
+}
+
+const MALFORMED_SECRET: &str = r#"{"env":{"TOKEN":{"secret":"malformed-s3cr3t","exported":true}}}"#;
+
+/// The Store's refusal of [`MALFORMED_SECRET`], from a Local Store with the flag on.
+fn malformed_secret_refused_locally() -> Value {
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let Target::Local(dir) = &local else {
+        unreachable!()
+    };
+    rusqlite::Connection::open(dir.path().join("store.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO config_sealed_variables (organization_id) VALUES ('local')",
+            [],
+        )
+        .unwrap();
+    let args = ["set", "web", "--patch", "-"];
+    let (code, refused) = ployz_with_stdin(&local, &args, MALFORMED_SECRET);
+    assert_eq!(code, Some(2), "{refused}");
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(
+        refused["error"]["message"],
+        json!(r#"TOKEN: expected text or {"secret": true}"#)
+    );
+    refused
+}
+
+#[test]
+fn a_patch_s_secret_beside_other_fields_is_refused_as_the_store_does_and_never_sent() {
+    let refused_locally = malformed_secret_refused_locally();
+    let args = ["set", "web", "--patch", "-"];
+    let (code, refused, written) =
+        refused_by(sealing_ready(), one_service, &args, MALFORMED_SECRET);
+    assert_eq!((code, &refused), (Some(2), &refused_locally));
+    assert_eq!(written, 0);
+    cloud_never_saw("malformed-s3cr3t");
+}
+
+#[test]
+fn a_patch_s_secret_beside_other_fields_goes_as_it_always_has_when_the_store_seals() {
+    let refused_locally = malformed_secret_refused_locally();
+    let args = ["set", "web", "--patch", "-"];
+    let (code, refused, written) = refused_by(
+        (SealingState::Off, false),
+        one_service,
+        &args,
+        MALFORMED_SECRET,
+    );
+    assert_eq!((code, &refused), (Some(2), &refused_locally));
+    assert_eq!(written, 1);
+    assert_eq!(
+        requests_to("/api/config/write").last().unwrap(),
+        &json!({
+            "command": "edit",
+            "environment": { "project": null, "environment": null },
+            "expect": null,
+            "changes": [{
+                "op": "patch",
+                "path": "web",
+                "value": serde_json::from_str::<Value>(MALFORMED_SECRET).unwrap(),
+            }],
+        })
+    );
 }

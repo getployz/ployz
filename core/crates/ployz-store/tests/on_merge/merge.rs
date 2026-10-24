@@ -2,7 +2,7 @@ use ployz_core::RpcErrorCode;
 use ployz_store::{
     Actor, CheckSuite, ConfigStore, EnvironmentName, EnvironmentRef, EnvironmentsQuery,
     HistoryAction, HistoryPreviewQuery, NeverSync, OnMergeCheck, OnMergeConclusion, ProjectName,
-    PullRequest, Ride, SetPrPlan, StageHistory, SyncChanges, SyncQuery, SystemEvent,
+    PullRequest, Ride, SetPrPlan, StageHistory, SyncChanges, SyncQuery, SystemEvent, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -191,6 +191,60 @@ fn a_new_secret_takes_a_value_sealed_in_the_browser_for_it_with_the_flag_on() {
     assert_eq!(
         value(&store, &who, "production", "web.env.TOKEN"),
         Some(json!({ "secret": true }))
+    );
+}
+
+#[test]
+fn an_old_clis_plain_text_for_a_secret_is_refused_once_the_flag_is_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ployz_store::ConfigStore::open(&url, backend::key()).unwrap();
+    let (store, who) = shop_in(store, |_, _| {}, None);
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("web.env.TOKEN", json!({ "secret": "test-token" })),
+            ("web.env.A", json!("2")),
+        ],
+    );
+    let cli = Trusted {
+        from_cli: true,
+        ..Trusted::default()
+    };
+    store
+        .write_trusted(
+            &who,
+            &merge_value("web.env.TOKEN", Some("before-flag")),
+            &cli,
+        )
+        .unwrap();
+
+    backend::sealed_variables_on(&url, "org");
+    let error = store
+        .write_trusted(
+            &who,
+            &merge_value("web.env.TOKEN", Some("prod-token")),
+            &cli,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unsupported, "{error:?}");
+    assert_eq!(error.message, "TOKEN: update ployz to set a Sealed value.");
+    assert_eq!(error.details["next"], "curl -fsSL https://ployz.sh | sh");
+    assert!(!format!("{error:?}").contains("prod-token"), "{error:?}");
+    // An ordinary variable still takes the CLI's text, and the Store still seals a
+    // secret's text from anyone else.
+    store
+        .write_trusted(&who, &merge_value("web.env.A", Some("prod")), &cli)
+        .unwrap();
+    store
+        .write(&who, &merge_value("web.env.TOKEN", Some("prod-token")))
+        .unwrap();
+    let token = row(&store, &who, "web.env.TOKEN");
+    assert_eq!(
+        (token.lands, token.ride),
+        (json!({ "secret": true }), Ride::Edited)
     );
 }
 
