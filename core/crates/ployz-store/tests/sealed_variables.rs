@@ -729,3 +729,43 @@ fn a_secret_binds_to_its_service_s_id_and_is_refused_as_the_store_refuses_it_wit
         "web.env.TOKEN: this Service has no ID a sealed value binds to"
     );
 }
+
+#[test]
+fn a_secret_s_text_beside_other_fields_is_found_and_refused_as_the_store_refuses_it() {
+    let store = backend::open();
+    shop(&store);
+    let changes = [
+        set_change(
+            "web.env.TOKEN",
+            json!({ "secret": SECRET, "exported": true }),
+        ),
+        set_change(
+            "web.env.TOKEN",
+            json!({ "value": { "secret": SECRET, "exported": true } }),
+        ),
+        set_change(
+            "web.env.TOKEN",
+            json!({ "value": { "value": { "secret": SECRET } } }),
+        ),
+        set_change("web.env.TOKEN", json!({ "secret": "" })),
+        Change::Patch {
+            path: SettingPath::parse("web").unwrap(),
+            value: json!({ "env": { "TOKEN": { "secret": SECRET, "exported": true } } }),
+        },
+    ];
+    for change in changes {
+        let asked = Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes: vec![change],
+        };
+        assert!(asked.carries_plaintext_secret(), "{asked:?}");
+        let written = store.write(&who(), &asked).unwrap_err();
+        let refused = asked
+            .clone()
+            .map_plaintext_secrets(|error| error, |_| panic!("never sealed"))
+            .unwrap_err();
+        assert_eq!(refused, written);
+        assert!(!format!("{refused:?}").contains(SECRET), "{refused:?}");
+    }
+}

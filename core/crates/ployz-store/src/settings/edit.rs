@@ -40,18 +40,20 @@ pub struct Edit {
 }
 
 impl Edit {
-    /// Whether this edit carries a new secret's plain text, `{"secret": "…"}` in a
-    /// variable's `set`, under `value`, or in a patch's `env`.
+    /// Whether this edit carries a secret's plain text, `{"secret": "…"}` among any
+    /// fields, in a variable's `set` or a patch's `env`, whether or not the Store
+    /// would take it.
     #[must_use]
     pub fn carries_plaintext_secret(&self) -> bool {
         self.changes.iter().any(|change| match change {
             Change::Set { path, value } => {
-                matches!(path.target(), Some(Target::Variable(_))) && plaintext_in(value).is_some()
+                matches!(path.target(), Some(Target::Variable(_)))
+                    && variables::holds_secret_text(value)
             }
             Change::Patch { value, .. } => value
                 .get("env")
                 .and_then(Value::as_object)
-                .is_some_and(|env| env.values().any(|value| plaintext_in(value).is_some())),
+                .is_some_and(|env| env.values().any(variables::holds_secret_text)),
             Change::Unset { .. } | Change::Rename { .. } => false,
         })
     }
@@ -63,7 +65,7 @@ impl Edit {
     ///
     /// # Errors
     /// What `seal` refuses, and, through `refuse`, the Store's refusal of a patch
-    /// path or variable name that holds plain text, so the text is never sent.
+    /// path, variable name or value that holds plain text, so the text is never sent.
     pub fn map_plaintext_secrets<E>(
         &mut self,
         refuse: impl Fn(RpcError) -> E,
@@ -76,19 +78,19 @@ impl Edit {
                         continue;
                     };
                     let service = path.settings_of().map_err(&refuse)?;
-                    seal_in(value, service, key, &mut seal)?;
+                    seal_in(value, service, key, &refuse, &mut seal)?;
                 }
                 Change::Patch { path, value } => {
                     let Some(env) = value.get_mut("env").and_then(Value::as_object_mut) else {
                         continue;
                     };
                     for (key, value) in env {
-                        if plaintext_in(value).is_none() {
+                        if !variables::holds_secret_text(value) {
                             continue;
                         }
                         let service = path.settings_of().map_err(&refuse)?;
                         let key = VariableKey::parse(key).map_err(&refuse)?;
-                        seal_in(value, service, &key, &mut seal)?;
+                        seal_in(value, service, &key, &refuse, &mut seal)?;
                     }
                 }
                 Change::Unset { .. } | Change::Rename { .. } => {}
@@ -129,14 +131,16 @@ impl PlaintextSecret<'_> {
 }
 
 /// `value`'s `{"secret": "…"}`, direct or under `value`, replaced by what `seal` makes
-/// of it.
+/// of it. Plain text the Store wouldn't take is refused, through `refuse`, as the
+/// Store refuses it.
 fn seal_in<E>(
     value: &mut Value,
     service: &ServiceName,
     key: &VariableKey,
+    refuse: &impl Fn(RpcError) -> E,
     seal: &mut impl FnMut(PlaintextSecret<'_>) -> Result<Option<ClientSealedValue>, E>,
 ) -> Result<(), E> {
-    let Some(text) = plaintext_in(value) else {
+    let Some(text) = variables::secret_text(key, value).map_err(refuse)? else {
         return Ok(());
     };
     let Some(sealed) = seal(PlaintextSecret { service, key, text })? else {
@@ -149,16 +153,6 @@ fn seal_in<E>(
     };
     *slot = json!({ "secret": sealed });
     Ok(())
-}
-
-/// The plain text of `value`'s `{"secret": "…"}`, direct or under `value`.
-fn plaintext_in(value: &Value) -> Option<&str> {
-    let slot = if wrapped(value) {
-        value.get("value")?
-    } else {
-        value
-    };
-    variables::plaintext_secret(slot)
 }
 
 /// Whether `value` is `{"value": …, "exported": …}`, which holds the value under `value`.

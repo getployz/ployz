@@ -8670,3 +8670,68 @@ fn env_sync_with_a_value_for_a_service_the_sync_brings_names_the_set_after_it() 
     assert_eq!(written, 0);
     cloud_never_saw("given-key");
 }
+
+const MALFORMED_SECRET: &str = r#"{"env":{"TOKEN":{"secret":"malformed-s3cr3t","exported":true}}}"#;
+
+/// The Store's refusal of [`MALFORMED_SECRET`], from a Local Store with the flag on.
+fn malformed_secret_refused_locally() -> Value {
+    let local = Target::Local(tempfile::tempdir().unwrap());
+    one_service(&local);
+    let Target::Local(dir) = &local else {
+        unreachable!()
+    };
+    rusqlite::Connection::open(dir.path().join("store.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO config_sealed_variables (organization_id) VALUES ('local')",
+            [],
+        )
+        .unwrap();
+    let args = ["set", "web", "--patch", "-"];
+    let (code, refused) = ployz_with_stdin(&local, &args, MALFORMED_SECRET);
+    assert_eq!(code, Some(2), "{refused}");
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(
+        refused["error"]["message"],
+        json!(r#"TOKEN: expected text or {"secret": true}"#)
+    );
+    refused
+}
+
+#[test]
+fn a_patch_s_secret_beside_other_fields_is_refused_as_the_store_does_and_never_sent() {
+    let refused_locally = malformed_secret_refused_locally();
+    let args = ["set", "web", "--patch", "-"];
+    let (code, refused, written) =
+        refused_by(sealing_ready(), one_service, &args, MALFORMED_SECRET);
+    assert_eq!((code, &refused), (Some(2), &refused_locally));
+    assert_eq!(written, 0);
+    cloud_never_saw("malformed-s3cr3t");
+}
+
+#[test]
+fn a_patch_s_secret_beside_other_fields_goes_as_it_always_has_when_the_store_seals() {
+    let refused_locally = malformed_secret_refused_locally();
+    let args = ["set", "web", "--patch", "-"];
+    let (code, refused, written) = refused_by(
+        (SealingState::Off, false),
+        one_service,
+        &args,
+        MALFORMED_SECRET,
+    );
+    assert_eq!((code, &refused), (Some(2), &refused_locally));
+    assert_eq!(written, 1);
+    assert_eq!(
+        requests_to("/api/config/write").last().unwrap(),
+        &json!({
+            "command": "edit",
+            "environment": { "project": null, "environment": null },
+            "expect": null,
+            "changes": [{
+                "op": "patch",
+                "path": "web",
+                "value": serde_json::from_str::<Value>(MALFORMED_SECRET).unwrap(),
+            }],
+        })
+    );
+}
