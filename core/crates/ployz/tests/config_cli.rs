@@ -459,6 +459,8 @@ struct Approvals {
     calls: std::sync::Mutex<Vec<(String, String, Value)>>,
     runs: std::sync::Mutex<Vec<String>>,
     bodies: std::sync::Mutex<Vec<Value>>,
+    /// Each Store command the gate weighed, as Cloud received it.
+    gated: std::sync::Mutex<Vec<Value>>,
     ran: std::sync::Condvar,
 }
 
@@ -498,6 +500,7 @@ impl Approvals {
         if self.rows.is_empty() || !(deploy || asks) {
             return None;
         }
+        self.gated.lock().unwrap().push(command.clone());
         if let (Some(volume), true) = (self.deletes_volume, deploy) {
             if command["accept_volume_loss"] != json!([volume]) || command["version"] != REVIEWED {
                 let error = json!({
@@ -6686,6 +6689,17 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_approva
         let again = error(&target, &words);
         assert_eq!(again["code"], json!("approval_required"), "{again}");
         assert_eq!(again["details"]["retry"], json!(retry), "{words:?}");
+        // The retry sends the same request, but for a Sync's receipt, new each run.
+        let gated = approvals.gated.lock().unwrap();
+        let [.., first, retried] = gated.as_slice() else {
+            panic!("{args:?} reached Cloud twice")
+        };
+        let receipt = |command: &Value| {
+            let mut command = command.clone();
+            command.as_object_mut().unwrap().remove("id");
+            command
+        };
+        assert_eq!(receipt(retried), receipt(first), "{args:?}");
     }
     assert!(
         approvals.calls().is_empty(),
@@ -6727,8 +6741,9 @@ fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
     let message = refused["error"]["message"].as_str().unwrap();
     assert!(
         message.ends_with(
-            ". The retry reads each --value from stdin again and asks for a new approval: \
-             --approval can't go with --value."
+            ". --approval can't go with --value, so the retry reads each --value from stdin \
+             again and asks for a new approval. To finish in one run, run it without --json: \
+             it waits for the approval."
         ),
         "{message}"
     );
@@ -6752,7 +6767,8 @@ fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
         refused["error"]["message"],
         json!(
             "Expected --approval without --value: an approval can't carry secrets given again \
-             on stdin. Run the sync without --approval; it asks for a new approval."
+             on stdin. Run the sync without --approval and without --json: it waits for a new \
+             approval."
         )
     );
 

@@ -94,12 +94,12 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
     if let Some(sync) = matches.get_one::<String>("undo") {
         return undo(root, sync);
     }
-    if matches.get_one::<String>("approval").is_some()
-        && !super::super::string_values(matches, "value").is_empty()
-    {
+    let secrets = !super::super::string_values(matches, "value").is_empty();
+    if secrets && matches.get_one::<String>("approval").is_some() {
         return Err(Error::usage(
             "Expected --approval without --value: an approval can't carry secrets given again \
-             on stdin. Run the sync without --approval; it asks for a new approval.",
+             on stdin. Run the sync without --approval and without --json: it waits for a new \
+             approval.",
         ));
     }
     let query = match named("from")? {
@@ -118,7 +118,7 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
     if matches.get_flag("close") {
         retried.push("--close");
     }
-    let store = store(root)?.args(retried);
+    let store = store(root)?.args(retried).reads_secrets(secrets);
     let view = store.read(&query)?;
     if matches.get_flag("plan") {
         return sync_plan(matches, &words, &view);
