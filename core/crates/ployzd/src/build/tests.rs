@@ -177,18 +177,33 @@ impl Fixture {
         }]});
         if let Some(cluster) = sealed {
             let identity = &cluster.identity;
-            deployment["sealedFor"] = serde_json::json!({
-                "organization": identity.organization,
-                "environment": identity.environment,
-            });
-            deployment["snapshots"][0]["serviceId"] = serde_json::json!(identity.service);
-            deployment["snapshots"][0]["resolvedEnv"]["NPM_TOKEN"] =
+            fn object<'a>(
+                value: &'a mut serde_json::Value,
+                pointer: &str,
+            ) -> &'a mut serde_json::Map<String, serde_json::Value> {
+                value
+                    .pointer_mut(pointer)
+                    .and_then(serde_json::Value::as_object_mut)
+                    .unwrap()
+            }
+            object(&mut deployment, "").insert(
+                "sealedFor".into(),
+                serde_json::json!({
+                    "organization": identity.organization,
+                    "environment": identity.environment,
+                }),
+            );
+            object(&mut deployment, "/snapshots/0")
+                .insert("serviceId".into(), serde_json::json!(identity.service));
+            object(&mut deployment, "/snapshots/0/resolvedEnv").insert(
+                "NPM_TOKEN".into(),
                 serde_json::to_value(ployz_core::EnvValue::Sealed(cluster.seal(
                     "NPM_TOKEN",
                     ployz_core::SealedScope::Service(identity.service),
                     OPENED_TOKEN,
                 )))
-                .unwrap();
+                .unwrap(),
+            );
         }
         let intent =
             ployz_core::config::lower_deployment(serde_json::from_value(deployment).unwrap())
