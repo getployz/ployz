@@ -342,7 +342,9 @@ of these first:
   serves its prefix. Use your provider's NAT64 and DNS64, or a public service that runs both.
   With both in place, the install line works and a single server sets up and runs. The server
   advertises only its own IPv6 addresses, never the gateway's IPv4 one, and your services
-  resolve names through Ployz as on any other server. A container you start yourself with
+  resolve names through Ployz as on any other server and reach the internet through NAT64. A
+  service that publishes a port on the server has only IPv4, so it can't reach the internet. Give
+  it a domain instead. A container you start yourself with
   `docker run` on Docker's default network has only IPv4, so it reaches neither its resolvers
   nor anything else. Run it with `--network host`, or on a Docker network with IPv6 turned on.
 

@@ -15,9 +15,17 @@ when they share one and over the internet when they don't. Every container gets 
 address on that network.
 
 On a server with IPv6, the server's web server also gets a private IPv6 address, so IPv6 visitors
-to your domains reach your app with their own address in `X-Forwarded-For`. Your services stay
-IPv4-only. A port a service publishes on the server still answers IPv6 visitors, but your app
-sees them as the server's private gateway, such as `10.210.0.1`.
+to your domains reach your app with their own address in `X-Forwarded-For`. Your services get one
+too, so they can reach the internet over IPv6. Your app doesn't need to listen on IPv6 for this.
+
+A service that publishes a port on the server is the exception. It stays IPv4-only, so the port
+reaches an app that listens only on IPv4. The port still answers IPv6 visitors, but your app sees
+them as the server's private gateway, such as `10.210.0.1`, and the service can't reach IPv6
+addresses.
+
+A service that was running before the server's upgrade to 0.3.5 gets its IPv6 address the next
+time Ployz replaces its container, such as at your next deploy. The upgrade itself restarts
+nothing.
 
 ```mermaid
 flowchart LR

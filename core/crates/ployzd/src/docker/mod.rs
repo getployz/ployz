@@ -70,17 +70,22 @@ pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
 pub const LABEL_NAMESPACE: &str = "ployz.namespace";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
+/// Set at create on a container whose spec publishes no host port.
+pub const LABEL_BRIDGE_IPV6: &str = "ployz.network.ipv6";
 
-/// Only the Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6
-/// visitors reach it by DNAT with their own address (#2837). Every other container
-/// stays IPv4-only, so its published ports keep reaching an app that listens on
-/// IPv4 alone through docker-proxy, as before.
+/// The Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6 visitors
+/// reach it by DNAT with their own address (#2837). So does a container created
+/// with [`LABEL_BRIDGE_IPV6`], for IPv6 egress (#3372). A container that publishes
+/// a host port stays IPv4-only, so its ports keep reaching an app that listens on
+/// IPv4 alone through docker-proxy. One created before the label keeps the family
+/// it was created with until it is replaced.
 #[must_use]
 pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
     let ingress = QualifiedService::system_ingress();
-    labels.get(LABEL_NAMESPACE) == Some(&ingress.namespace.to_string())
-        && labels.get(LABEL_SERVICE_NAME) == Some(&ingress.name.to_string())
-        && !labels.contains_key(LABEL_HOOK)
+    labels.contains_key(LABEL_BRIDGE_IPV6)
+        || labels.get(LABEL_NAMESPACE) == Some(&ingress.namespace.to_string())
+            && labels.get(LABEL_SERVICE_NAME) == Some(&ingress.name.to_string())
+            && !labels.contains_key(LABEL_HOOK)
 }
 
 /// The ployz bridge endpoint for a container that does or does not take IPv6.
@@ -2036,7 +2041,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_system_ingress_takes_ipv6_on_the_bridge() {
+    fn the_ingress_proxy_takes_ipv6_on_the_bridge_though_it_publishes_host_ports() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
         let ingress = ployz_core::QualifiedService::system_ingress();
@@ -2074,6 +2079,80 @@ mod tests {
                 "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
             )]))
         );
+    }
+
+    #[test]
+    fn a_service_takes_ipv6_on_the_bridge_unless_it_publishes_a_host_port() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+        let namespace = ployz_core::Namespace::parse("app").unwrap();
+        let host = serde_json::json!({
+            "mode": "host",
+            "bind": { "kind": "all" },
+            "published_port": 8080,
+            "container_port": 80,
+            "transport_protocol": "tcp"
+        });
+        let ingress = serde_json::json!({
+            "mode": "ingress",
+            "hostname": "api.example.com",
+            "load_balancer_port": 443,
+            "container_port": 8443,
+            "http_protocol": "https"
+        });
+        let spec = |ports: serde_json::Value| -> ResolvedServiceSpec {
+            serde_json::from_value(serde_json::json!({
+                "service_id": "a".repeat(32),
+                "name": "web",
+                "mode": { "mode": "global" },
+                "container": { "image": "nginx:1.29-alpine", "pull_policy": "missing" },
+                "ports": ports,
+                "pre_deploy": { "command": ["migrate"] }
+            }))
+            .unwrap()
+        };
+        for (ports, ipv6) in [
+            (serde_json::json!([]), true),
+            (serde_json::json!([ingress]), true),
+            (serde_json::json!([host]), false),
+            (serde_json::json!([ingress, host]), false),
+        ] {
+            for kind in [
+                ContainerKind::ServiceContainer,
+                ContainerKind::PreDeployHook,
+            ] {
+                let body = create::container_create_body(
+                    &machine_id,
+                    gateway,
+                    kind,
+                    &namespace,
+                    &spec(ports.clone()),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(
+                    takes_bridge_ipv6(body.labels.as_ref().unwrap()),
+                    ipv6,
+                    "{kind:?} publishing {ports}"
+                );
+                assert_eq!(
+                    body.networking_config.is_none(),
+                    ipv6,
+                    "{kind:?} publishing {ports}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_container_created_before_the_rule_keeps_its_bridge_family_when_it_rejoins() {
+        let labels = HashMap::from([
+            (LABEL_MANAGED.to_owned(), String::new()),
+            (LABEL_NAMESPACE.to_owned(), "app".to_owned()),
+            (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
+            (LABEL_SERVICE_NAME.to_owned(), "web".to_owned()),
+        ]);
+        assert!(!takes_bridge_ipv6(&labels));
     }
 
     #[test]
