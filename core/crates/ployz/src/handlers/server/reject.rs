@@ -57,22 +57,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         open.into_iter().partition(|attempt| attempt.joining());
     if matched.is_empty() && enrolling.is_empty() {
         if !joining.is_empty() {
-            let refusal = Error::detailed(
-                RpcErrorCode::Conflict,
-                format!(
-                    "{}. Nothing rejected. {}",
-                    sent(&joining),
-                    remove_hint(&joining)
-                ),
-                json!({ "joining": attempts_json(&joining) }),
-            );
-            return Err(match joining.as_slice() {
-                [one] => refusal.hint(Hint::Next(format!(
-                    "ployz server rm {}",
-                    printable(&one.name)
-                ))),
-                _ => refusal,
-            });
+            return Err(left_joining(&joining, "Nothing rejected"));
         }
         return Err(Error::not_found(format!(
             "No waiting server matches {}. Nothing rejected.",
@@ -147,8 +132,30 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
                 .map(|attempt| attempt.waiting_server_id.as_str()),
         )
         .collect();
-    let Rejection { rejected, stopped } = runtime.block_on(waiting::reject(&credential, &ids))?;
-    let matched = ids.len();
+    let Rejection {
+        rejected,
+        spared,
+        stopped,
+    } = runtime.block_on(waiting::reject(&credential, &ids))?;
+    // Cloud is the judge of a sent join: it may have sent one the stage above doesn't show yet.
+    let (kept, enrolling): (Vec<_>, Vec<_>) = enrolling
+        .into_iter()
+        .partition(|attempt| spared.contains(&attempt.waiting_server_id));
+    let joining: Vec<_> = joining.into_iter().chain(kept.iter().copied()).collect();
+    let listed_enrolling = attempts_json(&enrolling);
+    let listed_joining = attempts_json(&joining);
+    let rejected = rejected.saturating_sub(kept.len() as u64);
+    let matched = ids.len() - kept.len();
+    if matched == 0 && stopped.is_none() {
+        return Err(left_joining(&kept, "Not cancelled"));
+    }
+    if !kept.is_empty() && !ui::json() {
+        ui::warn(format!(
+            "{}. Not cancelled. {}",
+            sent(&kept),
+            remove_hint(&kept)
+        ));
+    }
     let Some(Stopped {
         error,
         uncertain,
@@ -309,6 +316,22 @@ fn glob(pattern: &str) -> Result<globset::GlobMatcher, Error> {
             ))
         })?
         .compile_matcher())
+}
+
+/// The refusal for attempts left running because Cloud may have sent their join.
+fn left_joining(joining: &[&Enrolling], outcome: &str) -> Error {
+    let refusal = Error::detailed(
+        RpcErrorCode::Conflict,
+        format!("{}. {outcome}. {}", sent(joining), remove_hint(joining)),
+        json!({ "joining": attempts_json(joining) }),
+    );
+    match joining {
+        [one] => refusal.hint(Hint::Next(format!(
+            "ployz server rm {}",
+            printable(&one.name)
+        ))),
+        _ => refusal,
+    }
 }
 
 fn attempts_json(attempts: &[&Enrolling]) -> Vec<serde_json::Value> {

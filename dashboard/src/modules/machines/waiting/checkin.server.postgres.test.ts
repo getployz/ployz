@@ -622,7 +622,7 @@ it("lets two Rejects finish when a check-in un-rejects one of their rows between
   await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.88'", [small]);
   await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.89'", [big]);
   const reject = () => run(Effect.exit(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [small, big] })));
-  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [small] }))).toEqual({ rejected: 1 });
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [small] }))).toEqual({ rejected: 1, spared: [] });
 
   const blocker = await harness.pool.connect();
   try {
@@ -636,7 +636,7 @@ it("lets two Rejects finish when a check-in un-rejects one of their rows between
     await blocker.query("commit");
     const outcomes = await Promise.all([earlier, later]);
     expect(outcomes.map((exit) => Exit.isSuccess(exit) ? exit.value : Cause.squash(exit.cause)))
-      .toEqual([{ rejected: 1 }, { rejected: 1 }]);
+      .toEqual([{ rejected: 1, spared: [] }, { rejected: 1, spared: [] }]);
   } finally {
     blocker.release();
   }
@@ -728,8 +728,8 @@ it("keeps a rejected host stopped under its token, and lets a new token admit it
   const host = newHost();
   await send(first.token, host);
   const row = await one();
-  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [row.id] }))).toEqual({ rejected: 1 });
-  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [row.id] }))).toEqual({ rejected: 0 });
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [row.id] }))).toEqual({ rejected: 1, spared: [] });
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [row.id] }))).toEqual({ rejected: 0, spared: [] });
   expect(await run(listWaitingServers(ada, { organizationSlug: "ada" }))).toEqual([]);
 
   expect(await send(first.token, host)).toEqual({ kind: "stop", reason: "rejected", message: "This server was rejected in Ployz Cloud." });
@@ -849,7 +849,7 @@ it("lists and shows waiting hosts only to their own Organization", async () => {
   expect(listed?.report).not.toHaveProperty("warnings");
   expect(await failure(showWaitingServer(bob, { organizationSlug: "bob", id })))
     .toMatchObject({ _tag: "NotFound", message: "No such waiting server." });
-  expect(await run(rejectWaitingServers(bob, { organizationSlug: "bob", ids: [id] }))).toEqual({ rejected: 0 });
+  expect(await run(rejectWaitingServers(bob, { organizationSlug: "bob", ids: [id] }))).toEqual({ rejected: 0, spared: [] });
 });
 
 it("drops a host from the list once it is enrolling or joined, and brings it back when an attempt fails", async () => {

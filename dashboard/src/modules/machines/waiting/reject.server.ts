@@ -27,6 +27,8 @@ export const rejectWaitingServers = Effect.fn("WaitingServer.reject")(function* 
       inArray(waitingServer.id, [...input.ids]),
       isNull(waitingServer.rejectedAt),
     )).orderBy(waitingServer.id).for("update");
+    // The rejected hosts whose open attempt runs on, because Cloud may have sent its join.
+    let spared: ReadonlyArray<string> = [];
     if (rejected.length > 0) {
       yield* drizzle.update(waitingServer).set({ rejectedAt: new Date() })
         .where(inArray(waitingServer.id, rejected.map((row) => row.id)));
@@ -43,8 +45,9 @@ export const rejectWaitingServers = Effect.fn("WaitingServer.reject")(function* 
         const row = reports.get(attempt.waitingServerId);
         return row === undefined || !joinCommitted(attempt, row);
       });
-      yield* cancelServerEnrollments(organization.id, cancelled.map((attempt) => attempt.id));
+      const kept = new Set(yield* cancelServerEnrollments(organization.id, cancelled.map((attempt) => attempt.id)));
+      spared = open.filter((attempt) => !cancelled.includes(attempt) || kept.has(attempt.id)).map((attempt) => attempt.waitingServerId);
     }
-    return { rejected: rejected.length };
+    return { rejected: rejected.length, spared };
   }));
 });

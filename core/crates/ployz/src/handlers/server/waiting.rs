@@ -210,6 +210,9 @@ const REJECT_BATCH: usize = 1000;
 /// What a reject did: Cloud's count over the batches it answered, and where it stopped.
 pub(super) struct Rejection<'a> {
     pub(super) rejected: u64,
+    /// The waiting server ids Cloud rejected but whose open attempt it left running,
+    /// because it may have sent the join.
+    pub(super) spared: Vec<String>,
     pub(super) stopped: Option<Stopped<'a>>,
 }
 
@@ -229,8 +232,11 @@ pub(super) async fn reject<'a>(
     #[derive(Deserialize)]
     struct Reply {
         rejected: u64,
+        #[serde(default)]
+        spared: Vec<String>,
     }
     let mut rejected = 0;
+    let mut spared = Vec::new();
     let mut rest = ids;
     while !rest.is_empty() {
         let (batch, after) = rest.split_at(rest.len().min(REJECT_BATCH));
@@ -243,7 +249,10 @@ pub(super) async fn reject<'a>(
         )
         .await
         {
-            Ok(reply) => rejected += reply.rejected,
+            Ok(reply) => {
+                rejected += reply.rejected;
+                spared.extend(reply.spared);
+            }
             Err(error) => {
                 let may_have_acted = may_have_acted(&error);
                 let error = Error::from(error).context("Could not reject the waiting servers.");
@@ -256,6 +265,7 @@ pub(super) async fn reject<'a>(
                 };
                 return Ok(Rejection {
                     rejected,
+                    spared,
                     stopped: Some(Stopped {
                         error,
                         uncertain,
@@ -268,6 +278,7 @@ pub(super) async fn reject<'a>(
     }
     Ok(Rejection {
         rejected,
+        spared,
         stopped: None,
     })
 }
