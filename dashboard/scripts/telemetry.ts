@@ -1,24 +1,13 @@
-// Start the OpenTelemetry SDK only when there is somewhere to send it. Hosted Cloud sets an OTLP
-// endpoint; self-host sets none, so it runs no telemetry SDK and makes no telemetry calls.
+// Start the OpenTelemetry SDK only when the environment configures OpenTelemetry, as hosted Cloud
+// does. Self-host sets nothing, so it runs no telemetry SDK and makes no telemetry calls. The images'
+// own OTEL_NODE_RESOURCE_DETECTORS only tunes the SDK, so it doesn't count.
 import { register } from "node:module";
 
-const endpoints = [
-  "OTEL_EXPORTER_OTLP_ENDPOINT",
-  "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-  "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-  "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-];
+const configured = Object.entries(process.env).some(
+  ([name, value]) => name.startsWith("OTEL_") && name !== "OTEL_NODE_RESOURCE_DETECTORS" && value,
+);
 
-// An exporter named outright, such as console, also sends somewhere; "none" doesn't.
-const exporters = ["OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER", "OTEL_LOGS_EXPORTER"];
-
-if (
-  endpoints.some((name) => process.env[name]) ||
-  exporters.some((name) => {
-    const value = process.env[name];
-    return value !== undefined && value !== "" && value !== "none";
-  })
-) {
+if (configured) {
   // The loader hook must be registered before the app loads, or its ESM imports go uninstrumented.
   register("@opentelemetry/instrumentation/hook.mjs", import.meta.url);
   await import("@opentelemetry/auto-instrumentations-node/register");

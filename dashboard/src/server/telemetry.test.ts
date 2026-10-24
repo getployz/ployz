@@ -45,8 +45,6 @@ async function start(env: Record<string, string>) {
     env: {
       PATH: process.env["PATH"] ?? "",
       OTEL_NODE_RESOURCE_DETECTORS: "env",
-      OTEL_METRICS_EXPORTER: "none",
-      OTEL_LOGS_EXPORTER: "none",
       ...env,
     },
     timeout: 20_000,
@@ -57,13 +55,15 @@ async function start(env: Record<string, string>) {
 }
 
 describe("web's telemetry bootstrap", () => {
-  it("loads no OpenTelemetry SDK when no OTLP endpoint is set", { timeout: 30_000 }, async () => {
+  it("loads no OpenTelemetry SDK when nothing configures it, as on self-host", { timeout: 30_000 }, async () => {
     expect(await start({})).toEqual({ sdk: false });
-    expect(await start({ OTEL_TRACES_EXPORTER: "none" })).toEqual({ sdk: false });
+    expect(await start({ OTEL_EXPORTER_OTLP_ENDPOINT: "" })).toEqual({ sdk: false });
   });
 
-  it("starts the SDK for an exporter named outright, such as console", { timeout: 30_000 }, async () => {
-    expect(await start({ OTEL_TRACES_EXPORTER: "console" })).toEqual({ sdk: true });
+  // Hosted web names only the logs and metrics exporters. Even set to none, they start the SDK as before,
+  // so traces still go to OTLP's default endpoint. That export to a closed port takes a few seconds.
+  it("starts the SDK when any OpenTelemetry setting is given, as on hosted Cloud", { timeout: 30_000 }, async () => {
+    expect(await start({ OTEL_LOGS_EXPORTER: "none", OTEL_METRICS_EXPORTER: "none" })).toEqual({ sdk: true });
   });
 
   it("exports the app's spans when an OTLP endpoint is set", { timeout: 30_000 }, async () => {
@@ -76,7 +76,13 @@ describe("web's telemetry bootstrap", () => {
     await new Promise<void>((resolve) => collector.listen(0, "127.0.0.1", resolve));
     const { port } = collector.address() as AddressInfo;
     try {
-      expect(await start({ OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${port}` })).toEqual({ sdk: true });
+      expect(
+        await start({
+          OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${port}`,
+          OTEL_METRICS_EXPORTER: "none",
+          OTEL_LOGS_EXPORTER: "none",
+        }),
+      ).toEqual({ sdk: true });
       expect(received).toContain("POST /v1/traces");
     } finally {
       collector.close();
