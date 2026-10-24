@@ -7,6 +7,7 @@ import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
+import { sealedSecret } from "#/test/sealed-secret";
 import { enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-000000005e01";
@@ -43,10 +44,6 @@ type Body = ConfigCommand | SealingTargetsQuery | { readonly query: "environment
 
 const set = (key: string, value: JsonValue): ConfigCommand => ({
   command: "edit", environment: here, expect: null, changes: [{ op: "set", path: `web.env.${key}`, value }],
-});
-/** `key` as the CLI seals it for `web` of the default Environment: Cloud never checks the ciphertext itself. */
-const sealed = (key: string): JsonValue => ({
-  secret: { sealedFor: ENVIRONMENT, value: { sealed: Buffer.alloc(48, 1).toString("base64"), scope: { service: SERVICE }, key } },
 });
 
 /** Shop with Git Service `web`, reached as a CLI token of its owner. */
@@ -104,7 +101,7 @@ it.live("a value the CLI sealed is saved and its plain text is refused unread, w
     yield* Effect.gen(function* () {
       const { send, serverReported, settings } = yield* shop();
       yield* serverReported();
-      const saved = yield* send("write", set("TOKEN", sealed("TOKEN")));
+      const saved = yield* send("write", set("TOKEN", sealedSecret({ environment: ENVIRONMENT, service: SERVICE }, "TOKEN")));
       assert.deepStrictEqual([saved.status, "staged" in saved.json && saved.json.staged], [200, ["web.env.TOKEN"]]);
       const refused = yield* send("write", set("OTHER", { secret: "plain-s3cr3t" }));
       assert.deepStrictEqual([refused.status, refused.json], [501, {

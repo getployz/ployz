@@ -29,6 +29,7 @@ import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { sealedSecret } from "#/test/sealed-secret";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c101";
@@ -39,6 +40,7 @@ const UPGRADE = "b".repeat(32);
 const PROJECT = "00000000-0000-4000-8000-00000000c104";
 const ENVIRONMENT = "00000000-0000-4000-8000-00000000c105";
 const SERVICE = "00000000-0000-4000-8000-00000000c106";
+const WEB = { environment: ENVIRONMENT, service: SERVICE };
 const DEPLOYMENT = "00000000-0000-4000-8000-00000000c107";
 const MACHINE = "a".repeat(32) as MachineId;
 const OTHER_MACHINE = "e".repeat(32) as MachineId;
@@ -493,8 +495,8 @@ describe("callCloud", () => {
         await store.write(ORGANIZATION, { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
         await store.write(ORGANIZATION, { command: "create_service", id: SERVICE, environment: production, name: "web", image: "whoami:1" });
         await store.write(ORGANIZATION, { command: "edit", environment: production, expect: null, changes: [
-          { op: "set", path: "web.env.TOKEN", value: { secret: "hunter2-long" } },
-          { op: "set", path: "web.env.OLD", value: { secret: "retired-value" } },
+          { op: "set", path: "web.env.TOKEN", value: sealedSecret(WEB, "TOKEN") },
+          { op: "set", path: "web.env.OLD", value: sealedSecret(WEB, "OLD") },
           { op: "set", path: "web.env.PLAIN", value: "hello-plain" },
         ] });
         await store.write(ORGANIZATION, { command: "edit", environment: production, expect: null, changes: [{ op: "unset", path: "web.env.OLD" }] });
@@ -522,7 +524,7 @@ describe("callCloud", () => {
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const production = { project: "shop", environment: null };
       const seal = (name: string) => store.write(ORGANIZATION, {
-        command: "edit", environment: production, expect: null, changes: [{ op: "set", path: `web.env.${name}`, value: { secret: `${name}-value-long` } }],
+        command: "edit", environment: production, expect: null, changes: [{ op: "set", path: `web.env.${name}`, value: sealedSecret(WEB, name) }],
       });
       yield* Effect.promise(async () => {
         await store.write(ORGANIZATION, { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
