@@ -20,7 +20,6 @@ flate2 = "1.1.9"
 futures-util = "0.3.32"
 globset = { version = "0.4.20", default-features = false }
 hex = "0.4.3"
-hpke = { version = "0.13.0", default-features = false, features = ["x25519", "alloc"] }
 hmac = "0.13.0"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
@@ -31,7 +30,6 @@ oci-client = "0.17.0"
 ployz-build.workspace = true
 ployz-core.workspace = true
 ployz-store.workspace = true
-rand_core = { version = "0.9.5", features = ["os_rng"] }
 regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 semver = "1.0.28"
@@ -68,6 +66,7 @@ bytes = "1.12.1"
 http-body-util = "0.1.5"
 hyper = { version = "1.11.0", features = ["http2", "server"] }
 indicatif = { version = "0.18.6", default-features = false, features = ["in_memory", "unicode-width"] }
+ployz-core = { workspace = true, features = ["test-keypair"] }
 ployz-testkit.workspace = true
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 syn = { version = "2.0.119", features = ["full", "visit"] }

@@ -14,7 +14,7 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
 use ployz_core::config::{ClientSealedValue, ServiceGitAccess};
-use ployz_core::{RpcError, RpcErrorCode, SealedIdentity};
+use ployz_core::{Keypair, RpcError, RpcErrorCode, SealedIdentity};
 use ployz_store::{
     Actor, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, Command as StoreCommand,
     ConfigStore, DomainEvidence, Hostname, OrganizationId, Permission, Principal, Removal,
@@ -25,10 +25,6 @@ use serde_json::{Value, json};
 #[allow(dead_code, reason = "This file's Engine answers only the Server list.")]
 #[path = "connect/support.rs"]
 mod engine;
-#[path = "support/keypair.rs"]
-mod keypair;
-
-use keypair::Keypair;
 
 /// Where the CLI's Config Store is.
 enum Target {

@@ -3,7 +3,7 @@
 //! a write that carries plain text; the Store says where each secret lands. Off, the
 //! write goes exactly as it always has. The in-process Store seals every secret itself.
 
-use ployz_core::{RpcErrorCode, SealedIdentity, SealingPublicKey};
+use ployz_core::{RpcErrorCode, SealedIdentity, SealingPublicKey, seal_value};
 use ployz_store::{
     Ask as _, Edit, EnvironmentSummary, SealingService, SealingTargetsQuery, SealingTargetsView,
     SecretValue, SyncChanges, View,
@@ -13,7 +13,6 @@ use uuid::Uuid;
 
 use super::{Backend, Error, Store};
 use crate::cloud_account::{self, StoreCallError};
-use crate::sealing::seal_value;
 use crate::ui::Hint;
 
 /// What Cloud answers about sealing one write's secrets.

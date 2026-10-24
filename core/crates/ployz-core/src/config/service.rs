@@ -336,14 +336,20 @@ pub struct ClientSealedValue {
     pub value: SealedValue,
 }
 
-/// A secret's ciphertext: sealed by the Store with its own key, or in the
-/// browser for one Environment. Untagged, so every stored Store-sealed value
-/// reads as it always did.
+/// A secret's value as the Store sealed it with its own key, before values were
+/// sealed on the client. The same envelope registry credentials still use.
+pub type LegacyCiphertext = EncryptedSecretValue;
+
+/// A secret's ciphertext. Untagged, so every stored value reads as it was written:
+/// older Saved revisions, arrivals and held secrets included.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(untagged)]
 pub enum SecretCiphertext {
-    Store(EncryptedSecretValue),
     ClientSealed(ClientSealedValue),
+    /// A value the Store sealed before values were sealed on the client. Opaque:
+    /// nothing on a Deploy, a claim, a Build or a pull request opens it, so it is
+    /// Not set there. Only the one-time reseal converts it.
+    Legacy(LegacyCiphertext),
 }
 
 impl SecretCiphertext {
@@ -352,7 +358,7 @@ impl SecretCiphertext {
     pub const fn client_sealed(&self) -> Option<&ClientSealedValue> {
         match self {
             Self::ClientSealed(value) => Some(value),
-            Self::Store(_) => None,
+            Self::Legacy(_) => None,
         }
     }
 }
@@ -411,7 +417,7 @@ mod tests {
         assert!(matches!(
             parsed.value,
             SavedVariableValue::Secret {
-                encrypted_value: Some(SecretCiphertext::Store(_))
+                encrypted_value: Some(SecretCiphertext::Legacy(_))
             }
         ));
         assert_eq!(serde_json::to_string(&parsed).unwrap(), row);

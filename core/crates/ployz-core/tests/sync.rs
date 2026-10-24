@@ -285,7 +285,7 @@ fn val(value: Value) -> Cell {
 fn sealed(ciphertext: &str, fingerprint: &str) -> SealedSecret {
     SealedSecret {
         fingerprint: fingerprint.to_owned(),
-        value: SecretCiphertext::Store(EncryptedSecretValue {
+        value: SecretCiphertext::Legacy(EncryptedSecretValue {
             version: 1,
             iv: "iv".to_owned(),
             tag: "tag".to_owned(),

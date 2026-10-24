@@ -603,7 +603,7 @@ fn validate_variables(variables: &[SavedVariableIntent]) -> Result<(), ConfigErr
             ));
         }
         if let SavedVariableValue::Secret {
-            encrypted_value: Some(SecretCiphertext::Store(value)),
+            encrypted_value: Some(SecretCiphertext::Legacy(value)),
         } = &variable.value
             && value.version != 1
         {
