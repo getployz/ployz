@@ -211,11 +211,11 @@ const registerAgent = Effect.fn(function* (shop: Shop) {
 });
 
 /** Authorize for Shop, landing on the /connect page the provider signed. */
-const authorize = Effect.fn(function* (shop: Shop, clientId: string, resource: string | null = MCP) {
+const authorize = Effect.fn(function* (shop: Shop, clientId: string, resource: string | null = MCP, scope = "ployz offline_access") {
   const verifier = randomBytes(32).toString("base64url");
   const url = new URL("/api/auth/oauth2/authorize", origin);
   url.search = form({
-    response_type: "code", client_id: clientId, redirect_uri: REDIRECT, scope: "ployz offline_access", state: "state-1",
+    response_type: "code", client_id: clientId, redirect_uri: REDIRECT, scope, state: "state-1",
     code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource,
   }).toString();
   const asked = yield* Effect.promise(() => shop.run(serveAuth(new Request(url, { headers: { cookie: shop.cookie } }))));
@@ -226,9 +226,9 @@ const authorize = Effect.fn(function* (shop: Shop, clientId: string, resource: s
 
 /** Authorize and consent on /connect for Shop, leaving the code unredeemed. */
 const issueCode = Effect.fn(function* (
-  shop: Shop, clientId: string, pageQuery: (signed: string) => string = (signed) => signed, resource: string | null = MCP,
+  shop: Shop, clientId: string, pageQuery: (signed: string) => string = (signed) => signed, resource: string | null = MCP, scope?: string,
 ) {
-  const { toConnect, verifier } = yield* authorize(shop, clientId, resource);
+  const { toConnect, verifier } = yield* authorize(shop, clientId, resource, scope);
   const decided = yield* shop.provided(connectAgent(new Headers({ cookie: shop.cookie }), {
     organizationId: ORGANIZATION, accept: true, oauthQuery: pageQuery(toConnect.search.slice(1)),
   }));
@@ -838,4 +838,15 @@ it.live("a hosted Cloud serves the MCP Registry its domain proof", () =>
     const response = yield* Effect.promise(() => run(serveRegistryProof(new Request(`${origin}/.well-known/mcp-registry-auth`))));
     expect(response.status).toBe(200);
     expect(yield* Effect.promise(() => response.text())).toMatch(/^v=MCPv1; k=ed25519; p=[A-Za-z0-9+/]{43}=$/);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("an agent that asks only for the challenged ployz scope still gets a refresh token that works", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const issued = yield* redeem(shop, yield* issueCode(shop, clientId, undefined, MCP, "ployz"));
+    const { refresh_token } = Schema.decodeUnknownSync(Issued)(issued.body);
+    const renewed = yield* refresh(shop, clientId, refresh_token ?? expect.fail("connect issued no refresh token"));
+    expect(renewed.status).toBe(200);
+    yield* raw(shop, Schema.decodeUnknownSync(Issued)(renewed.body).access_token).pipe(Effect.map((response) => expect(response.status).toBe(200)));
   }).pipe(Effect.scoped), 30_000);
