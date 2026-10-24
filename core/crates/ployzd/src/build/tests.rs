@@ -151,17 +151,21 @@ impl Fixture {
         &self,
         sealed: Option<&crate::sealed_env::test_support::Cluster>,
     ) -> ployz::build::CapturedBuild {
+        let dockerfile = if sealed.is_some() {
+            "FROM scratch\nARG NPM_TOKEN\nCOPY payload /payload\n"
+        } else {
+            "FROM scratch\nCOPY payload /payload\n"
+        };
+        self.capture_from(sealed, dockerfile)
+    }
+    fn capture_from(
+        &self,
+        sealed: Option<&crate::sealed_env::test_support::Cluster>,
+        dockerfile: &str,
+    ) -> ployz::build::CapturedBuild {
         let project_root = self.root.join("project");
         fs::create_dir_all(&project_root).unwrap();
-        fs::write(
-            project_root.join("Dockerfile"),
-            if sealed.is_some() {
-                "FROM scratch\nARG NPM_TOKEN\nCOPY payload /payload\n"
-            } else {
-                "FROM scratch\nCOPY payload /payload\n"
-            },
-        )
-        .unwrap();
+        fs::write(project_root.join("Dockerfile"), dockerfile).unwrap();
         fs::write(project_root.join("payload"), "captured-before-edit").unwrap();
         fs::write(project_root.join("ignored"), "excluded-private-value").unwrap();
         fs::write(project_root.join(".dockerignore"), "ignored\n").unwrap();
@@ -642,8 +646,10 @@ case "$1 $2" in
     if [ -f private/sealed/NPM_TOKEN ]; then
       stat -c '%a' private/sealed/NPM_TOKEN > "$root/seen-mode"
       cp private/sealed/NPM_TOKEN "$root/seen-secret"
-      python3 -c 'import json; print(json.load(open("private/sealed/args.compose.yaml"))["services"]["api"]["build"]["args"]["NPM_TOKEN"], end="")' > "$root/seen-arg"
-      stat -c '%a' private/sealed/args.compose.yaml > "$root/seen-arg-mode"
+      if [ -f private/sealed/args.compose.yaml ]; then
+        python3 -c 'import json; print(json.load(open("private/sealed/args.compose.yaml"))["services"]["api"]["build"]["args"]["NPM_TOKEN"], end="")' > "$root/seen-arg"
+        stat -c '%a' private/sealed/args.compose.yaml > "$root/seen-arg-mode"
+      fi
       printf 'token is %s here\n' "$(cat private/sealed/NPM_TOKEN)"
     fi
     if [ -f "$root/slow" ]; then printf 'building\n'; exec sleep 30; fi
@@ -1110,6 +1116,44 @@ async fn a_sealed_value_opens_into_a_private_file_and_never_into_the_output() {
     files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
     files_named(&fixture.root, "args.compose.yaml", &mut leftovers);
     assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[tokio::test]
+async fn a_sealed_value_read_only_by_mount_builds_with_no_arg_override() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let capture = fixture.capture_from(Some(&cluster), "FROM scratch\nCOPY payload /payload\n");
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    capture
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-secret")).unwrap(),
+        OPENED_TOKEN
+    );
+    assert!(!fixture.root.join("seen-arg").exists());
+    assert!(
+        !fs::read_to_string(fixture.root.join("bake-args"))
+            .unwrap()
+            .contains("args.compose.yaml")
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("metadata-provenance")).unwrap(),
+        ""
+    );
 }
 
 #[tokio::test]
