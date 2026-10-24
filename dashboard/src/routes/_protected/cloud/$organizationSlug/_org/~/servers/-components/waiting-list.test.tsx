@@ -16,7 +16,7 @@ import { IntakeTray, ROW_PX, VISIBLE_ROWS, WaitingList } from "./waiting-list";
 let probe: ReturnType<typeof stubProbe>;
 let reject: ReturnType<typeof stubReject>;
 const stubProbe = () => vi.spyOn(waitingFunctions, "openProbeSelectionServerFn").mockResolvedValue({ probing: 1 });
-const stubReject = () => vi.spyOn(waitingFunctions, "rejectWaitingServersServerFn").mockResolvedValue({ rejected: 0 });
+const stubReject = () => vi.spyOn(waitingFunctions, "rejectWaitingServersServerFn").mockResolvedValue({ rejected: 0, spared: [] });
 
 beforeEach(() => {
   vi.stubGlobal("matchMedia", (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} }));

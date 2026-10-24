@@ -299,7 +299,7 @@ it("spares a join the host reported committed before its run recorded it, and ke
   expect(await checkin(a, { attempt: { attemptId, stage: "joining" } })).toMatchObject({ kind: "enroll", attemptId });
   expect(sent).toHaveBeenCalledWith(expect.objectContaining({ name: serverEnrollmentReportedEvent, data: { attemptId, stage: "joining" } }));
   expect(await reports()).toEqual([{ reported_attempt_id: attemptId, reported_stage: "joining" }]);
-  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }))).toEqual({ rejected: 1 });
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }))).toEqual({ rejected: 1, spared: [a.id] });
   expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);
   expect(await outbox()).not.toContain("server/enrollment.cancel");
   expect(await checkin(a, { attempt: { attemptId, stage: "joining" } })).toMatchObject({ kind: "enroll", attemptId });
@@ -398,7 +398,7 @@ it("makes Reject wait for a check-in reporting joining, then spare the attempt",
     await waitFor("transactionid");
     await gate.query("select pg_advisory_unlock(934129)");
     expect(await checking).toMatchObject({ kind: "enroll", attemptId });
-    expect(await rejecting).toEqual({ rejected: 1 });
+    expect(await rejecting).toEqual({ rejected: 1, spared: [a.id] });
   } finally {
     await gate.query("select pg_advisory_unlock(934129)");
     gate.release();
@@ -718,7 +718,7 @@ it("refuses to cancel an attempt whose join Cloud may have sent, and Reject spar
     _tag: "Conflict",
     message: "web-a may already be in the Cluster: Cloud sent its join. Nothing cancelled. Once it has joined, remove it with ployz server rm web-a.",
   });
-  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }))).toEqual({ rejected: 1 });
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }))).toEqual({ rejected: 1, spared: [a.id] });
   expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);
   expect(await tokenLive(attemptId)).toBe(true);
   expect(await outbox()).not.toContain("server/enrollment.cancel");

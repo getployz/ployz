@@ -63,7 +63,7 @@ const gates: ReadonlyArray<readonly [string, Gated, string | RegExp, ReadonlyArr
   ["createFleetToken", (actor) => createFleetToken(actor, { organizationSlug: SLUG, name: null, expiresIn: "1d", autoEnroll: null }, () => "lab-token") as never, /^\{"token":"pflt_[\w-]+","id":"[0-9a-f-]{36}","name":"lab-token","expiresAt":"[^"]+"\}$/, []],
   ["revokeFleetToken", (actor) => revokeFleetToken(actor, { organizationSlug: SLUG, id: MISSING }) as never, "NotFound: No such Fleet Token.", []],
   ["openProbeSelection", (actor) => openProbeSelection(actor, { organizationSlug: SLUG, ids: [] }) as never, '{"probing":0}', []],
-  ["rejectWaitingServers", (actor) => rejectWaitingServers(actor, { organizationSlug: SLUG, ids: [] }) as never, '{"rejected":0}', []],
+  ["rejectWaitingServers", (actor) => rejectWaitingServers(actor, { organizationSlug: SLUG, ids: [] }) as never, '{"rejected":0,"spared":[]}', []],
   ["startServerEnrollment", (actor) =>
     startServerEnrollment(actor, { organizationSlug: SLUG, ids: [MISSING], storage: { kind: "none" } } as never) as never, "Validation: Pick the first server: it sets up the cluster the rest join.", []],
   ["cancelServerEnrollment", (actor) => cancelServerEnrollment(actor, { organizationSlug: SLUG, id: MISSING }) as never, "NotFound: No such enrollment.", []],

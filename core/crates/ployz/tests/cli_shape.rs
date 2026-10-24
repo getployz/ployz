@@ -728,6 +728,8 @@ struct WaitingCloud {
     enrollment_refusal: Option<serde_json::Value>,
     enrollments: Vec<serde_json::Value>,
     enrollment_transform: Option<fn(&mut Vec<serde_json::Value>)>,
+    /// The ids a reject answers as spared: rejected, but their attempt left running.
+    spared: Vec<&'static str>,
 }
 
 impl WaitingCloud {
@@ -760,6 +762,7 @@ impl WaitingCloud {
             enrollment_refusal: None,
             enrollments: Vec::new(),
             enrollment_transform: None,
+            spared: Vec::new(),
         }
     }
 }
@@ -783,6 +786,7 @@ fn waiting_cloud(
         enrollment_refusal,
         mut enrollments,
         enrollment_transform,
+        spared,
     } = cloud;
     let listed = serde_json::json!({ "waiting_servers": rows });
     let mut rejects = rejects.into_iter();
@@ -913,17 +917,21 @@ fn waiting_cloud(
                 }
                 "POST /api/cli/reject-servers" => {
                     let sent: serde_json::Value = serde_json::from_slice(&sent).unwrap();
-                    let ids = sent
+                    let sent_ids = sent
                         .get("ids")
                         .and_then(serde_json::Value::as_array)
-                        .unwrap()
-                        .len();
+                        .unwrap();
+                    let ids = sent_ids.len();
+                    let kept: Vec<_> = spared
+                        .iter()
+                        .filter(|id| sent_ids.iter().any(|sent| sent == **id))
+                        .collect();
                     let (status, short) = rejects.next().unwrap_or(("200 OK", None));
                     match &refusal {
                         Some(refusal) if !status.starts_with('2') => (status, refusal.clone()),
                         _ => (
                             status,
-                            serde_json::json!({ "rejected": short.unwrap_or(ids) }),
+                            serde_json::json!({ "rejected": short.unwrap_or(ids), "spared": kept }),
                         ),
                     }
                 }
@@ -3560,4 +3568,151 @@ fn server_rm_empty_name_uses_server_wording() {
         Some(&serde_json::json!("invalid_argument"))
     );
     assert!(message(&json).contains("Name a Server"), "{json}");
+}
+
+#[test]
+fn server_reject_cancels_an_open_enrollment_and_refuses_one_whose_join_was_sent() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    // The fake Cloud ends every attempt after its first enrollments read, so each run gets its own.
+    let cloud = || {
+        let mut joining = open_enrollment("b", "web-b");
+        joining
+            .as_object_mut()
+            .unwrap()
+            .insert("stage".into(), serde_json::json!("joining"));
+        let mut joined = open_enrollment("c", "web-c");
+        *joined.get_mut("state").unwrap() = serde_json::json!("joined");
+        waiting_cloud(
+            routes.clone(),
+            WaitingCloud {
+                enrollments: vec![open_enrollment("a", "web-a"), joining, joined],
+                ..WaitingCloud::of(vec![waiting_row("d", "web-d", "waiting")])
+            },
+        )
+    };
+    let posted = || -> Vec<String> {
+        routes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|route| route.starts_with("POST /api/cli/reject-servers"))
+            .cloned()
+            .collect()
+    };
+
+    let (code, stdout, _) = run_token_cloud(&cloud(), &["server", "reject", "web-a", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(2), "{json}");
+    assert_eq!(
+        json.pointer("/error/details/enrolling").unwrap(),
+        &serde_json::json!([{ "id": "a", "enrollment_id": "attempt-a", "name": "web-a" }])
+    );
+    assert!(posted().is_empty(), "{:?}", posted());
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-a", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(posted(), [r#"POST /api/cli/reject-servers {"ids":["a"]}"#]);
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-b", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "conflict");
+    assert_eq!(
+        message(&json),
+        "web-b may already be in the Cluster: Cloud sent its join. Nothing rejected. \
+         Once it has joined, remove it with ployz server rm web-b."
+    );
+    assert_eq!(posted().len(), 1);
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-*", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(
+        json.get("joining").unwrap(),
+        &serde_json::json!([{ "id": "b", "enrollment_id": "attempt-b", "name": "web-b" }])
+    );
+    assert_eq!(
+        posted().get(1).map(String::as_str),
+        Some(r#"POST /api/cli/reject-servers {"ids":["d","a"]}"#)
+    );
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-c", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "not_found");
+    assert_eq!(posted().len(), 2);
+}
+
+#[test]
+fn server_reject_reports_an_attempt_cloud_spared_as_joining_not_rejected() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = || {
+        waiting_cloud(
+            routes.clone(),
+            WaitingCloud {
+                enrollments: vec![open_enrollment("a", "web-a")],
+                spared: vec!["a"],
+                ..WaitingCloud::of(vec![waiting_row("d", "web-d", "waiting")])
+            },
+        )
+    };
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-a", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "conflict");
+    assert_eq!(
+        message(&json),
+        "web-a may already be in the Cluster: Cloud sent its join. Not cancelled. \
+         Once it has joined, remove it with ployz server rm web-a."
+    );
+
+    let (code, stdout, _) =
+        run_token_cloud(&cloud(), &["server", "reject", "web-*", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.get("rejected"), Some(&serde_json::json!(1)), "{json}");
+    assert_eq!(json.get("matched"), Some(&serde_json::json!(1)), "{json}");
+    assert_eq!(
+        json.get("enrolling"),
+        Some(&serde_json::json!([])),
+        "{json}"
+    );
+    assert_eq!(
+        json.get("joining").unwrap(),
+        &serde_json::json!([{ "id": "a", "enrollment_id": "attempt-a", "name": "web-a" }])
+    );
+
+    // d was waiting when listed, then began enrolling, and Cloud sent its join before the reject.
+    // b's join was already sent when listed, so the refusal names both.
+    let mut joining = open_enrollment("b", "web-b");
+    joining
+        .as_object_mut()
+        .unwrap()
+        .insert("stage".into(), serde_json::json!("joining"));
+    let raced = waiting_cloud(
+        routes.clone(),
+        WaitingCloud {
+            enrollments: vec![joining],
+            spared: vec!["d"],
+            ..WaitingCloud::of(vec![waiting_row("d", "web-d", "waiting")])
+        },
+    );
+    let (code, stdout, _) =
+        run_token_cloud(&raced, &["server", "reject", "web-*", "--yes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/details/joining").unwrap(),
+        &serde_json::json!([
+            { "id": "b", "enrollment_id": "attempt-b", "name": "web-b" },
+            { "id": "d", "enrollment_id": null, "name": "web-d" },
+        ])
+    );
 }

@@ -158,6 +158,37 @@ pub(super) async fn fetch(credential: &Credential) -> Result<Vec<Waiting>, Error
         .collect()
 }
 
+/// An open enroll attempt. Its host has left the waiting list, and rejecting the host by
+/// `waiting_server_id` cancels the attempt, unless Cloud sent its join.
+#[derive(Deserialize)]
+pub(super) struct Enrolling {
+    pub(super) id: String,
+    pub(super) waiting_server_id: String,
+    pub(super) name: String,
+    state: String,
+    stage: Option<String>,
+}
+
+impl Enrolling {
+    /// Whether Cloud sent the join, so the Server may already be in the Cluster.
+    pub(super) fn joining(&self) -> bool {
+        matches!(self.stage.as_deref(), Some("joining" | "publishing"))
+    }
+}
+
+pub(super) async fn enrolling(credential: &Credential) -> Result<Vec<Enrolling>, Error> {
+    #[derive(Deserialize)]
+    struct Reply {
+        enrollments: Vec<Enrolling>,
+    }
+    let Reply { enrollments } =
+        cloud_account::refusable(credential, Method::GET, "enrollments", None).await?;
+    Ok(enrollments
+        .into_iter()
+        .filter(|attempt| !matches!(attempt.state.as_str(), "joined" | "failed" | "cancelled"))
+        .collect())
+}
+
 pub(super) async fn detail(credential: &Credential, id: &str) -> Result<Detail, Error> {
     #[derive(Deserialize)]
     struct Reply {
@@ -179,6 +210,9 @@ const REJECT_BATCH: usize = 1000;
 /// What a reject did: Cloud's count over the batches it answered, and where it stopped.
 pub(super) struct Rejection<'a> {
     pub(super) rejected: u64,
+    /// The waiting server ids Cloud rejected but whose open attempt it left running,
+    /// because it may have sent the join.
+    pub(super) spared: Vec<String>,
     pub(super) stopped: Option<Stopped<'a>>,
 }
 
@@ -198,8 +232,11 @@ pub(super) async fn reject<'a>(
     #[derive(Deserialize)]
     struct Reply {
         rejected: u64,
+        #[serde(default)]
+        spared: Vec<String>,
     }
     let mut rejected = 0;
+    let mut spared = Vec::new();
     let mut rest = ids;
     while !rest.is_empty() {
         let (batch, after) = rest.split_at(rest.len().min(REJECT_BATCH));
@@ -212,7 +249,10 @@ pub(super) async fn reject<'a>(
         )
         .await
         {
-            Ok(reply) => rejected += reply.rejected,
+            Ok(reply) => {
+                rejected += reply.rejected;
+                spared.extend(reply.spared);
+            }
             Err(error) => {
                 let may_have_acted = may_have_acted(&error);
                 let error = Error::from(error).context("Could not reject the waiting servers.");
@@ -225,6 +265,7 @@ pub(super) async fn reject<'a>(
                 };
                 return Ok(Rejection {
                     rejected,
+                    spared,
                     stopped: Some(Stopped {
                         error,
                         uncertain,
@@ -237,6 +278,7 @@ pub(super) async fn reject<'a>(
     }
     Ok(Rejection {
         rejected,
+        spared,
         stopped: None,
     })
 }
@@ -278,7 +320,7 @@ pub(super) fn may_have_acted(error: &StoreCallError) -> bool {
     }
 }
 
-const ID_PREFIX_MIN: usize = 8;
+pub(super) const ID_PREFIX_MIN: usize = 8;
 
 /// The waiting server whose id `selector` is, else those named `selector` exactly, else the
 /// one whose id starts with it (eight characters or more), in the list's order.
