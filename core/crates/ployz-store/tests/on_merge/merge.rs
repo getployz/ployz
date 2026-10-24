@@ -1,9 +1,8 @@
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::RpcErrorCode;
 use ployz_store::{
     Actor, CheckSuite, ConfigStore, EnvironmentName, EnvironmentRef, EnvironmentsQuery,
     HistoryAction, HistoryPreviewQuery, NeverSync, OnMergeCheck, OnMergeConclusion, ProjectName,
-    PullRequest, Ride, ServiceQuery, SetPrPlan, StageHistory, SyncChanges, SyncQuery, SystemEvent,
-    Trusted,
+    PullRequest, Ride, SetPrPlan, StageHistory, SyncChanges, SyncQuery, SystemEvent, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -11,35 +10,8 @@ use crate::backend;
 use crate::support::{
     HEAD, LATER, MERGE, at, check, deployed, exclude, history, labels, merge_sealed, merge_value,
     merged, merged_within, on_merge, preview_listed, production_diff, pull, push, row, rows, save,
-    set, shop, shop_with, system, unset, uuid, value, watching,
+    sealed_in, set, shop, shop_with, system, unset, uuid, value, watching,
 };
-
-/// `service.env.key` as the browser sealed it for `environment`'s own copy of
-/// `service`, holding ciphertext `n`.
-fn sealed_in(
-    store: &ConfigStore,
-    who: &Actor,
-    environment: &str,
-    service: &str,
-    key: &str,
-    n: u8,
-) -> Value {
-    let copy = store
-        .read(
-            who,
-            &ServiceQuery {
-                environment: at(environment),
-                service: ServiceName::parse(service).unwrap(),
-            },
-        )
-        .unwrap();
-    backend::sealed_secret(
-        copy.environment.id.as_str(),
-        copy.service.service.id.as_str(),
-        key,
-        n,
-    )
-}
 
 /// `web.env.TOKEN` sealed in the browser for production's `web`, as a merge value.
 fn merge_token(n: u8) -> ployz_store::SetMergeValue {

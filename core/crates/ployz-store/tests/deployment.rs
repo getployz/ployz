@@ -551,8 +551,8 @@ fn put_sentry(store: &ConfigStore, who: &Actor, content: &str) {
         .unwrap();
 }
 
-// A replayed edit must not rotate a secret that referrers and an initialized
-// database already use, and generate seals over a plain value.
+/// A replayed edit must not rotate a secret that referrers and an initialized
+/// database already use, and generate seals over a plain value.
 #[test]
 fn a_replayed_generate_keeps_its_secret_and_seals_over_plain_text() {
     let (store, who) = shop();

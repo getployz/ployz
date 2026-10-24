@@ -17,11 +17,6 @@ fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
 }
 
-fn base64(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
 fn name(name: &str) -> ServiceName {
     ServiceName::parse(name).unwrap()
 }
@@ -600,11 +595,12 @@ fn a_narrowed_deploy_of_an_uploaded_service_records_a_service_it_references() {
 
 #[test]
 fn a_narrowed_deploy_of_an_uploaded_service_warns_of_its_secret_not_set() {
+    use base64::Engine as _;
     let (store, who) = store();
     create_from(&store, &who, 3, "client", None);
     let sealed = json!({ "secret": {
         "sealedFor": uuid(2),
-        "value": { "sealed": base64(&[1; 48]), "scope": { "service": uuid(3) }, "key": "KEY" },
+        "value": { "sealed": base64::engine::general_purpose::STANDARD.encode([1; 48]), "scope": { "service": uuid(3) }, "key": "KEY" },
     } });
     set(&store, &who, &[("client.env.KEY", sealed)]);
     publish(&store, &who);

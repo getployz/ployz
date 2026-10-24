@@ -1,8 +1,7 @@
-//! Sealing: registry credentials, and secrets sealed before values were sealed on
-//! the client, are stored only as AES-256-GCM ciphertext. Byte-compatible with
-//! Cloud's TypeScript sealing in both directions: the key is SHA-256 of the injected
-//! secret, the IV 12 random bytes, the tag 16 bytes, each base64. A plain value's
-//! fingerprint is `v1:` and hex.
+//! Sealing: registry credentials and Legacy secrets are stored only as AES-256-GCM
+//! ciphertext. Byte-compatible with Cloud's TypeScript sealing in both directions:
+//! the key is SHA-256 of the injected secret, the IV 12 random bytes, the tag 16
+//! bytes, each base64. A plain value's fingerprint is `v1:` and hex.
 
 use std::fmt;
 use std::io::{ErrorKind, Write as _};
@@ -23,7 +22,7 @@ const FINGERPRINT_VERSION: &str = "v1";
 
 /// The key the Store seals registry credentials with, derived from an injected
 /// secret: Cloud's encryption secret in Cloud, a local key file in the hidden test
-/// mode. It also opens the secrets it sealed before values were sealed on the client.
+/// mode. It also opens Legacy secrets for the reseal.
 #[derive(Clone)]
 pub struct SealingKey {
     cipher: [u8; 32],

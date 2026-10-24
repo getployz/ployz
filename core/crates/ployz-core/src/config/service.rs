@@ -336,8 +336,8 @@ pub struct ClientSealedValue {
     pub value: SealedValue,
 }
 
-/// A secret's value as the Store sealed it with its own key, before values were
-/// sealed on the client. The same envelope registry credentials still use.
+/// A secret's value sealed with the Store's own key: the envelope registry
+/// credentials use.
 pub type LegacyCiphertext = EncryptedSecretValue;
 
 /// A secret's ciphertext. Untagged, so every stored value reads as it was written:
@@ -346,9 +346,9 @@ pub type LegacyCiphertext = EncryptedSecretValue;
 #[serde(untagged)]
 pub enum SecretCiphertext {
     ClientSealed(ClientSealedValue),
-    /// A value the Store sealed before values were sealed on the client. Opaque:
-    /// nothing on a Deploy, a claim, a Build or a pull request opens it, so it is
-    /// Not set there. Only the one-time reseal converts it.
+    /// A value sealed with the Store's own key. Opaque: nothing on a Deploy, a
+    /// claim, a Build or a pull request opens it, so it is Not set there. Only the
+    /// one-time reseal converts it.
     Legacy(LegacyCiphertext),
 }
 

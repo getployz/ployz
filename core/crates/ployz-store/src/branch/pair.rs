@@ -875,7 +875,7 @@ pub(super) fn arrived(
                 _ => return Err(error::corrupt("Sync")),
             };
             let value: Cell = row.json(5, "Sync")?;
-            // A row recorded before the other side's cell was kept delivered what landed.
+            // A row no proposal owns has no source: what it offers is what landed.
             let from = match row.optional_text(10)? {
                 Some(from) => serde_json::from_str(from).map_err(|_| error::corrupt("Sync"))?,
                 None => value.clone(),

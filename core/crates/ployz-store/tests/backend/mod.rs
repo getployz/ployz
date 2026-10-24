@@ -56,22 +56,6 @@ pub fn sealed_secret(environment: &str, service: &str, key: &str, n: u8) -> serd
     serde_json::json!({ "secret": client_sealed(environment, service, key, n) })
 }
 
-/// [`client_sealed`] whose ciphertext opens to `opened` bytes: `n` repeated.
-pub fn client_sealed_opening_to(
-    environment: &str,
-    service: &str,
-    key: &str,
-    n: u8,
-    opened: usize,
-) -> serde_json::Value {
-    use base64::Engine as _;
-    let sealed = base64::engine::general_purpose::STANDARD.encode(vec![n; opened + 48]);
-    serde_json::json!({
-        "sealedFor": environment,
-        "value": { "sealed": sealed, "scope": { "service": service }, "key": key },
-    })
-}
-
 /// A new, empty Store.
 pub fn open() -> ConfigStore {
     let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {

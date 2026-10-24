@@ -1356,7 +1356,6 @@ pub(crate) fn held_revision(
 }
 
 /// `stored` lowered from `saved`, its held revision: what a build of it takes.
-/// In-process only.
 pub(crate) fn lowered(
     tx: &mut dyn Tx,
     stored: &Stored,

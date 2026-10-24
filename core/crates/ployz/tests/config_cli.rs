@@ -519,8 +519,7 @@ static UPLOADS: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>> =
 static REQUESTS: std::sync::Mutex<Vec<(String, String, String)>> =
     std::sync::Mutex::new(Vec::new());
 
-/// How a fake Cloud answers `/api/config/sealing`. `None`: a Cloud from before the
-/// CLI sealed, which has no such route.
+/// How a fake Cloud answers `/api/config/sealing`. `None`: a Cloud without the route.
 #[derive(Clone)]
 enum SealingState {
     NoServer,

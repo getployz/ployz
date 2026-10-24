@@ -31,9 +31,9 @@ pub struct LegacyCount {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Resealed {
-    /// Values now sealed for the Cluster.
+    /// Values sealed for the Cluster.
     pub resealed: u32,
-    /// Values the Store's key no longer opens, left in place.
+    /// Values the Store's key doesn't open, left in place.
     pub remaining: u32,
 }
 
@@ -126,7 +126,7 @@ fn current_by_environment(
 /// Seal every secret of `environment` the Store sealed itself for `recipient`
 /// instead, in its Working State and Saved head. Values already sealed for the
 /// Cluster are left alone, so running it again changes nothing. A value `sealing`
-/// no longer opens stays as it is and is counted.
+/// doesn't open stays as it is and is counted.
 pub(crate) fn reseal(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -207,7 +207,7 @@ fn reseal_intent(
                 tally.remaining += 1;
                 continue;
             };
-            let sealed = sealer.seal_bound(environment, &service_id, &variable.key, &plaintext)?;
+            let sealed = sealer.seal(environment, &service_id, &variable.key, &plaintext)?;
             variable.value_fingerprint = sealed.fingerprint;
             variable.value = SavedVariableValue::Secret {
                 encrypted_value: Some(sealed.value),
@@ -231,7 +231,7 @@ fn legacy_in(intent: &SavedEnvironmentIntent) -> u32 {
             )
         })
         .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
+    u32::try_from(count).expect("an Environment holds fewer than u32::MAX variables")
 }
 
 const fn is_legacy(value: &SecretCiphertext) -> bool {
@@ -544,8 +544,8 @@ mod tests {
             .storage
             .write(|tx| {
                 tx.execute(
-                    "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, organization_id, how, state, value, was) \
-                     VALUES (?1, 'other', 'lineage', 'env.A', ?2, 'sync', 'pending', ?3, ?4)",
+                    "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, organization_id, how, state, value, source, was) \
+                     VALUES (?1, 'other', 'lineage', 'env.A', ?2, 'sync', 'pending', ?3, ?3, ?4)",
                     &[
                         environment().as_str().into(),
                         ORGANIZATION.into(),

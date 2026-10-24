@@ -5,8 +5,8 @@ use ployz_store::{
     CreateGitService, CreateProject, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentName,
     EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, HistoryQuery, MergeRow, NeverSync,
     NodeName, OnMerge, OnMergeCheck, OnMergeQuery, OrganizationId, ProjectId, ProjectName, Publish,
-    PullRequest, PullRequestQuery, Ride, SavedRevision, ServiceLineageId, SetMergeValue, SetPrPlan,
-    SettingPath, SystemEvent, Trusted, Written,
+    PullRequest, PullRequestQuery, Ride, SavedRevision, ServiceLineageId, ServiceQuery,
+    SetMergeValue, SetPrPlan, SettingPath, SystemEvent, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -465,4 +465,31 @@ pub(crate) fn config(store: &ConfigStore, who: &Actor, n: u8, name: &str, on: &[
 
 pub(crate) fn runner() -> ployz_store::RunnerId {
     ployz_store::RunnerId::parse("runner").unwrap()
+}
+
+/// `service.env.key` as the browser sealed it for `environment`'s own copy of
+/// `service`, holding ciphertext `n`.
+pub(crate) fn sealed_in(
+    store: &ConfigStore,
+    who: &Actor,
+    environment: &str,
+    service: &str,
+    key: &str,
+    n: u8,
+) -> Value {
+    let copy = store
+        .read(
+            who,
+            &ServiceQuery {
+                environment: at(environment),
+                service: ServiceName::parse(service).unwrap(),
+            },
+        )
+        .unwrap();
+    backend::sealed_secret(
+        copy.environment.id.as_str(),
+        copy.service.service.id.as_str(),
+        key,
+        n,
+    )
 }
