@@ -510,16 +510,26 @@ impl<'m> Store<'m> {
     /// This command's failure for a Store error: an ambiguous Project is fixed by
     /// linking this directory to one, after which the same command runs as typed.
     pub(crate) fn fail(&self, error: impl Into<Refusal>) -> Error {
-        let Refusal { error, mut hint } = with_next(
+        let Refusal {
+            mut error,
+            mut hint,
+        } = with_next(
             error,
             |refusal| {
                 refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
             },
             || next(self.matches, &["link", "--project", "PROJECT"]),
         );
-        if let (None, StoreCallError::Refused(refused)) = (&hint, &error)
+        if let (None, StoreCallError::Refused(refused)) = (&hint, &mut error)
             && let Some(asked) = Asked::of(refused)
         {
+            if self.gives_secrets() {
+                refused.message = format!(
+                    "{}. The retry reads each --value from stdin again and asks for a new \
+                     approval: --approval can't go with --value.",
+                    refused.message.trim_end_matches('.')
+                );
+            }
             hint = Some(Hint::Retry(self.approving(&asked.id)));
         }
         Error::from(error).hint(hint)
@@ -654,11 +664,21 @@ impl<'m> Store<'m> {
         }
     }
 
+    /// This command again with approval `id`; a run that gives secrets on stdin asks
+    /// for a new approval instead, so its retry names each `--value` row and no approval.
     fn approving(&self, id: &str) -> String {
+        if self.gives_secrets() {
+            return self.retry(self.carried());
+        }
         self.retry(Carried {
             approval: Some(id.to_owned()),
             ..self.carried()
         })
+    }
+
+    /// Whether this run reads secrets from stdin: `env sync --value`.
+    fn gives_secrets(&self) -> bool {
+        !super::string_values(self.matches, "value").is_empty()
     }
 
     /// The flag this command passes a reviewed version with: `discard`'s and

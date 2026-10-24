@@ -140,9 +140,10 @@ How you answer depends on where the command runs:
   left, `ployz logout` forgets the sign-in here though Cloud refuses to sign it out, and warns
   that Cloud didn't revoke it.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
-  is the same command with `--approval ID`. Run that once the approval is approved. For
-  `ployz env sync --value ROW`, the retry names each `--value ROW` but never its secret, so pipe the
-  same values on stdin again. Different values are a different sync, so they ask again.
+  is the same command with `--approval ID`. Run that once the approval is approved. The one
+  exception is `ployz env sync --value ROW`, which refuses `--approval`, since an approval can't
+  carry secrets given again on stdin. Its retry names each `--value ROW` but never the secret and
+  no approval, so pipe the values on stdin again and it asks for a new approval.
 - In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the
   call fails with a link, as for a connected agent below. See
   [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).

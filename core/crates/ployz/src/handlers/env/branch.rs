@@ -94,6 +94,14 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
     if let Some(sync) = matches.get_one::<String>("undo") {
         return undo(root, sync);
     }
+    if matches.get_one::<String>("approval").is_some()
+        && !super::super::string_values(matches, "value").is_empty()
+    {
+        return Err(Error::usage(
+            "Expected --approval without --value: an approval can't carry secrets given again \
+             on stdin. Run the sync without --approval; it asks for a new approval.",
+        ));
+    }
     let query = match named("from")? {
         Some(from) => SyncQuery {
             from,
