@@ -217,7 +217,7 @@ impl BuildInputs {
         self.private(&self.root.join("private/sealed.json"), &bytes)
     }
 
-    /// Keep only the Sealed ARG names for the Server Builder.
+    /// Keep only the Sealed ARG names, for the Builder that opens them.
     ///
     /// # Errors
     /// Fails if the private file cannot be written.

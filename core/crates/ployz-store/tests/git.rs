@@ -740,8 +740,6 @@ fn the_build_order_and_preferred_builder_apply_at_once_and_shape_each_walk() {
     let source = &store.sources(&deployment).unwrap()[0];
     assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
     assert_eq!(source.preferred_machine, None);
-    assert_eq!(source.sealed, None);
-    assert!(json!(source).get("sealed").is_none(), "{source:?}");
 
     // A Preferred Server goes first; the walk is read as the build starts.
     let machine = "0123456789abcdef0123456789abcdef";
@@ -908,7 +906,6 @@ fn a_github_check_in_must_come_from_the_dispatched_repository_workflow_and_run()
     assert_eq!(built.commit.as_str(), "a".repeat(40));
     assert!(built.input.get("snapshots").is_some());
     assert_eq!(built.receipt, None);
-    assert_eq!(built.sealed, None);
 }
 
 #[test]
@@ -1868,7 +1865,7 @@ fn sealed(service: &str, key: &str) -> Value {
 }
 
 #[test]
-fn a_build_that_reads_a_sealed_value_skips_github_whatever_it_prefers() {
+fn a_build_that_reads_a_sealed_value_walks_its_builders_like_any_other() {
     let dir = tempfile::tempdir().unwrap();
     let (store, who) = sealed_shop(&dir);
     store
@@ -1883,16 +1880,13 @@ fn a_build_that_reads_a_sealed_value_skips_github_whatever_it_prefers() {
         .unwrap();
     let deployment = admit(&store, &who, 1, &[]);
     let source = &store.sources(&deployment).unwrap()[0];
-    assert_eq!(source.builders, [Builder::Servers]);
+    assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
     assert_eq!(source.preferred_machine, None);
-    assert_eq!(source.sealed.as_deref(), Some("NPM_TOKEN"));
-    assert_eq!(json!(source)["sealed"], "NPM_TOKEN");
 
     build_order(&store, &who, Some(BuildOrder::GithubOnly));
     let source = &store.sources(&deployment).unwrap()[0];
-    assert!(source.builders.is_empty(), "{source:?}");
+    assert_eq!(source.builders, [Builder::Github]);
 
-    // A preferred Server still leads.
     let machine = "0123456789abcdef0123456789abcdef";
     store
         .write(
@@ -1901,7 +1895,7 @@ fn a_build_that_reads_a_sealed_value_skips_github_whatever_it_prefers() {
         )
         .unwrap();
     let source = &store.sources(&deployment).unwrap()[0];
-    assert_eq!(source.builders, [Builder::Servers]);
+    assert_eq!(source.builders, [Builder::Servers, Builder::Github]);
     assert_eq!(
         source.preferred_machine.as_ref().unwrap().to_string(),
         machine
@@ -1909,7 +1903,7 @@ fn a_build_that_reads_a_sealed_value_skips_github_whatever_it_prefers() {
 }
 
 #[test]
-fn github_gets_only_its_own_sealed_values_and_learns_which_one_its_build_reads() {
+fn github_gets_only_its_own_sealed_values() {
     let dir = tempfile::tempdir().unwrap();
     let (store, who) = sealed_shop(&dir);
     let db = "00000000-0000-4000-8000-000000000004";
@@ -1943,9 +1937,7 @@ fn github_gets_only_its_own_sealed_values_and_learns_which_one_its_build_reads()
             .unwrap();
         GithubBuildId::parse(&format!("{deployment}.web")).unwrap()
     };
-    let built = store.github_input(&id).unwrap();
-    assert_eq!(built.sealed, None);
-    let input = built.input;
+    let input = store.github_input(&id).unwrap().input;
     let snapshots = input["snapshots"].as_array().unwrap();
     assert_eq!(snapshots.len(), 2);
     for snapshot in snapshots {
@@ -1989,34 +1981,13 @@ fn github_gets_only_its_own_sealed_values_and_learns_which_one_its_build_reads()
     let sources = store
         .pin(&deployment, &pins(&backend::sha(&"b".repeat(40))))
         .unwrap();
-    assert_eq!(sources[0].sealed.as_deref(), Some("DB_URL"));
-    assert_eq!(sources[0].builders, [Builder::Servers]);
+    assert_eq!(sources[0].builders, [Builder::Github, Builder::Servers]);
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     let built = store.github_input(&id).unwrap();
-    assert_eq!(built.sealed.as_deref(), Some("DB_URL"));
     assert!(of(&built.input, SERVICE)["resolvedEnv"]["DB_URL"].is_object());
     for (name, value) in of(&built.input, db)["resolvedEnv"].as_object().unwrap() {
         assert!(value.is_string(), "{name} is {value}");
     }
-}
-
-#[test]
-fn a_revision_claim_will_refuse_still_lists_its_builds() {
-    let dir = tempfile::tempdir().unwrap();
-    let (store, who) = sealed_shop(&dir);
-    // PORT reads PASSWORD while it is plain text, and still once it is sealed.
-    for change in [
-        set("web.preferredBuilder", json!("github")),
-        set("web.env.PASSWORD", json!("8080")),
-        set("web.env.PORT", json!("${{ PASSWORD }}")),
-        set("web.env.PASSWORD", sealed(SERVICE, "PASSWORD")),
-    ] {
-        store.write(&who, &edit(vec![change])).unwrap();
-    }
-    let deployment = admit(&store, &who, 1, &[]);
-    let source = &store.sources(&deployment).unwrap()[0];
-    assert_eq!(source.sealed.as_deref(), Some("PASSWORD"));
-    assert_eq!(source.builders, [Builder::Servers]);
 }
 
 #[test]
@@ -2042,13 +2013,10 @@ fn an_environment_with_no_sealed_value_routes_without_opening_a_secret() {
     let store = ConfigStore::open(&url, SealingKey::new(b"another-key").unwrap()).unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     assert!(store.github_input(&id).is_err());
-    // Routing it never did, so it still doesn't.
     let source = &store.sources(&deployment).unwrap()[0];
-    assert_eq!(source.sealed, None);
     assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
     let pinned = store
         .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
         .unwrap();
     assert_eq!(pinned[0].commit, Some(backend::sha(&"a".repeat(40))));
-    assert_eq!(pinned[0].sealed, None);
 }

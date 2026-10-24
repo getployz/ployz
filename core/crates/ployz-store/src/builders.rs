@@ -150,13 +150,12 @@ impl Preferred {
 }
 
 /// The Builders a Git build of `service_id` tries, in turn, and the Server the
-/// servers try first, if one is preferred. A `sealed` build never tries GitHub.
+/// servers try first, if one is preferred.
 pub(crate) fn walk(
     tx: &mut dyn Tx,
     organization: &str,
     environment: &EnvironmentId,
     service_id: &str,
-    sealed: bool,
 ) -> Result<(Vec<Builder>, Option<MachineId>), RpcError> {
     let order = chosen(tx, organization)?.unwrap_or(BuildOrder::AUTO);
     let preferred = crate::policy::load(tx, environment, service_id)?
@@ -173,12 +172,5 @@ pub(crate) fn walk(
         .iter()
         .copied()
         .filter(|builder| Some(*builder) != first);
-    Ok((
-        first
-            .into_iter()
-            .chain(rest)
-            .filter(|builder| !(sealed && *builder == Builder::Github))
-            .collect(),
-        machine,
-    ))
+    Ok((first.into_iter().chain(rest).collect(), machine))
 }

@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, path::Path};
 
 use ployz_build::{BuildError, BuiltImage, Output, OutputScrub, Staged, remote::Definition};
 
-use super::{CapturedBuild, CapturedTarget, Error, SEALED_BUILDS_RUN_ON_SERVER, invalid};
+use super::{CapturedBuild, CapturedTarget, Error, invalid};
 
 /// Variables through which a GitHub Actions runner exposes its build cache service.
 const ACTIONS_CACHE_VARIABLES: [&str; 4] = [
@@ -87,17 +87,6 @@ impl CapturedBuild {
                 "a local Build takes exactly one Git-sourced Service",
             ));
         };
-        if !captured.sealed.is_empty() && self.opened.is_none() {
-            let names = captured.sealed.join(", ");
-            let verb = if captured.sealed.len() == 1 {
-                "is"
-            } else {
-                "are"
-            };
-            return Err(Error::Sealed(format!(
-                "{names} {verb} sealed. {SEALED_BUILDS_RUN_ON_SERVER}"
-            )));
-        }
         let root = captured.inputs.root();
         let definition = Definition {
             retained_tags: Vec::new(),
@@ -318,23 +307,5 @@ mod tests {
             service: uuid::Uuid::from_u128(2),
         });
         intent
-    }
-
-    #[test]
-    fn a_build_reading_sealed_values_is_refused_here_by_name() {
-        let root = tempfile::tempdir().unwrap();
-        let spec = dockerfile(root.path(), "FROM scratch\n");
-        let intent = sealed_intent();
-        let name = intent.target.first().unwrap().name.clone();
-        let build = capture(&intent, BTreeMap::from([(name, spec)]), None).unwrap();
-        let error = build
-            .run_local(|_, _| panic!("a sealed Build must not reach Docker"))
-            .err()
-            .unwrap()
-            .to_string();
-        assert_eq!(
-            error,
-            "DATABASE_URL, NPM_TOKEN are sealed. Builds that read a sealed value run on your server."
-        );
     }
 }
