@@ -786,6 +786,37 @@ fn a_secret_s_text_in_a_shape_the_store_refuses_is_found_and_refused_as_the_stor
     }
 }
 
+#[test]
+fn a_secret_s_text_under_a_reserved_key_is_found_and_refused_as_the_store_refuses_it() {
+    let store = backend::open();
+    shop(&store);
+    for change in [
+        set_change("web.env.PLOYZ_SERVICE_ID", json!({ "secret": SECRET })),
+        patch_change(
+            "web",
+            json!({ "env": { "PLOYZ_SERVICE_ID": { "secret": SECRET } } }),
+        ),
+    ] {
+        let asked = Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes: vec![change],
+        };
+        assert!(asked.carries_plaintext_secret(), "{asked:?}");
+        let written = store.write(&who(), &asked).unwrap_err();
+        let refused = asked
+            .clone()
+            .map_plaintext_secrets(|error| error, |_| panic!("never sealed"))
+            .unwrap_err();
+        assert_eq!(refused, written);
+        assert_eq!(
+            refused.message,
+            "PLOYZ_SERVICE_ID is set by Ployz; pick another name"
+        );
+        assert!(!format!("{refused:?}").contains(SECRET), "{refused:?}");
+    }
+}
+
 fn patch_change(path: &str, value: Value) -> Change {
     Change::Patch {
         path: SettingPath::parse(path).unwrap(),
@@ -802,6 +833,8 @@ fn read_secret_text(error: &RpcError) -> bool {
 /// Every value shape a secret's text can take, in every place an edit can hold it:
 /// whatever the Store reads as a new secret's text from an edit, the CLI refuses or
 /// seals before it sends the edit, and what it sends the Store never reads as one.
+/// Text under a `secret` field in a variable's value is found the same way, even where
+/// the Store refuses the edit before it reads the text, as it does a reserved key.
 #[test]
 fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_sends_none() {
     let dir = tempfile::tempdir().unwrap();
@@ -830,78 +863,110 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
         json!([{ "secret": SECRET }]),
         json!("plain text"),
     ];
-    let containers: [fn(Value) -> Vec<Change>; 22] = [
-        |leaf| vec![set_change("web.env.TOKEN", leaf)],
-        |leaf| vec![set_change("web.env.PLOYZ_SERVICE_ID", leaf)],
-        |leaf| vec![set_change("web.image", leaf)],
-        |leaf| vec![set_change("web.registryCredential", leaf)],
-        |leaf| vec![set_change("api.env.TOKEN", leaf)],
-        |leaf| vec![patch_change("web", json!({ "env": { "TOKEN": leaf } }))],
-        |leaf| vec![patch_change("web", json!({ "env": { "token": leaf } }))],
-        |leaf| vec![patch_change("web", json!({ "env": { "1BAD": leaf } }))],
-        |leaf| vec![patch_change("web", json!({ "env": [{ "TOKEN": leaf }] }))],
-        |leaf| vec![patch_change("web", json!({ "env": leaf }))],
-        |leaf| vec![patch_change("web", json!([{ "env": { "TOKEN": leaf } }]))],
-        |leaf| vec![patch_change("web", json!({ "replicas": leaf }))],
-        |leaf| {
+    type Container = fn(Value) -> Vec<Change>;
+    // Whether each container puts the leaf in a variable's value, where the Store seals a
+    // secret's text. Elsewhere it never seals one, and the edit goes as it always has.
+    let containers: [(bool, Container); 22] = [
+        (true, |leaf| vec![set_change("web.env.TOKEN", leaf)]),
+        (true, |leaf| {
+            vec![set_change("web.env.PLOYZ_SERVICE_ID", leaf)]
+        }),
+        (false, |leaf| vec![set_change("web.image", leaf)]),
+        (false, |leaf| {
+            vec![set_change("web.registryCredential", leaf)]
+        }),
+        (true, |leaf| vec![set_change("api.env.TOKEN", leaf)]),
+        (true, |leaf| {
+            vec![patch_change("web", json!({ "env": { "TOKEN": leaf } }))]
+        }),
+        (true, |leaf| {
+            vec![patch_change("web", json!({ "env": { "token": leaf } }))]
+        }),
+        (true, |leaf| {
+            vec![patch_change("web", json!({ "env": { "1BAD": leaf } }))]
+        }),
+        (true, |leaf| {
+            vec![patch_change("web", json!({ "env": [{ "TOKEN": leaf }] }))]
+        }),
+        // The leaf is the env itself, so its `secret` field names a plain variable.
+        (false, |leaf| {
+            vec![patch_change("web", json!({ "env": leaf }))]
+        }),
+        (true, |leaf| {
+            vec![patch_change("web", json!([{ "env": { "TOKEN": leaf } }]))]
+        }),
+        (false, |leaf| {
+            vec![patch_change("web", json!({ "replicas": leaf }))]
+        }),
+        (true, |leaf| {
             vec![patch_change(
                 "web",
                 json!({ "env": { "TOKEN": leaf }, "bogus": 1 }),
             )]
-        },
-        |leaf| {
+        }),
+        (true, |leaf| {
             vec![patch_change(
                 "web",
                 json!({ "env": { "OTHER": "plain", "TOKEN": leaf }, "replicas": 2 }),
             )]
-        },
-        |leaf| {
+        }),
+        (true, |leaf| {
             vec![patch_change(
                 "web",
                 json!({ "env": { "TOKEN": { "TOKEN": leaf } } }),
             )]
-        },
-        |leaf| vec![patch_change("web.env.TOKEN", leaf)],
-        |leaf| {
+        }),
+        (true, |leaf| vec![patch_change("web.env.TOKEN", leaf)]),
+        (false, |leaf| {
             vec![patch_change(
                 "web.image",
                 json!({ "env": { "TOKEN": leaf } }),
             )]
-        },
-        |leaf| {
+        }),
+        (true, |leaf| {
             vec![patch_change(
                 "web.env.TOKEN",
                 json!({ "env": { "TOKEN": leaf } }),
             )]
-        },
-        |leaf| vec![patch_change("api", json!({ "env": { "TOKEN": leaf } }))],
-        |leaf| {
+        }),
+        (true, |leaf| {
+            vec![patch_change("api", json!({ "env": { "TOKEN": leaf } }))]
+        }),
+        (true, |leaf| {
             vec![
                 set_change("web.env.PLAIN", json!("plain")),
                 patch_change("web", json!({ "env": { "TOKEN": leaf } })),
             ]
-        },
-        |leaf| {
+        }),
+        (true, |leaf| {
             vec![
                 patch_change("web", json!({ "env": { "A": leaf.clone() } })),
                 set_change("web.env.B", leaf),
             ]
-        },
-        |leaf| {
+        }),
+        (true, |leaf| {
             vec![
                 set_change("web.env.A", json!({ "secret": SECRET })),
                 patch_change("web", json!({ "env": { "B": leaf } })),
             ]
-        },
+        }),
     ];
     let mut read = 0;
-    for container in containers {
+    let mut held = 0;
+    for (variable, container) in containers {
         for leaf in &leaves {
             let asked = Edit {
                 environment: EnvironmentRef::default(),
                 expect: None,
                 changes: container(leaf.clone()),
             };
+            // Every SECRET in these leaves sits under a `secret` field: the edit holds a
+            // secret's text in a variable's value, whatever the Store would answer.
+            let holds = variable
+                && serde_json::to_string(&asked.changes)
+                    .unwrap()
+                    .contains(SECRET);
+            held += usize::from(holds);
             // What the Store reads from the edit as it stands, were the CLI to send it.
             let raw = store.write_trusted(
                 &who(),
@@ -914,7 +979,7 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
             let reads_text = raw.as_ref().is_err_and(read_secret_text);
             read += usize::from(reads_text);
             if !asked.carries_plaintext_secret() {
-                assert!(!reads_text, "missed: {asked:?}");
+                assert!(!reads_text && !holds, "missed: {asked:?}");
                 continue;
             }
             let mut sent = asked.clone();
@@ -936,7 +1001,7 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
                         !written.as_ref().is_err_and(read_secret_text),
                         "sent in the clear: {asked:?} as {sent:?}: {written:?}"
                     );
-                    if reads_text {
+                    if reads_text || holds {
                         assert!(!format!("{sent:?}").contains(SECRET), "{sent:?}");
                     }
                 }
@@ -946,4 +1011,7 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
     // The Store read a secret's text from many of these shapes, so the CLI was tried on
     // each of them.
     assert!(read >= 20, "{read}");
+    // Most shapes put a secret's text in a variable's value, whether or not the Store
+    // reaches its old-CLI refusal before refusing the edit for something else.
+    assert!(held >= 240, "{held}");
 }
