@@ -4,8 +4,10 @@ import type { MachineId, SealingPublicKey } from "@ployz/sdk";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
+import { createClusterResealRequestedEvent } from "#/modules/inngest/events";
 import type { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
 import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey } from "#/modules/machines/tables";
+import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccessById } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -27,11 +29,14 @@ export const readSealingPublicKey = Effect.fn("SealingKey.readPublicKey")(functi
   return row?.publicKey;
 });
 
+/** Keeps the first Sealing Key a Cluster reports; the first one asks for its Organization's Legacy secrets to be resealed to it. */
 export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(function* (
   organizationId: string, clusterKey: string, publicKey: SealingPublicKey,
 ) {
   const { drizzle } = yield* Database;
-  yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey }).onConflictDoNothing();
+  const inserted = yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey }).onConflictDoNothing()
+    .returning({ clusterKey: clusterSealingKey.clusterKey });
+  if (inserted.length > 0) yield* enqueueEvent(createClusterResealRequestedEvent({ organizationId, clusterKey }));
   const recorded = yield* readSealingPublicKey(organizationId, clusterKey);
   if (recorded !== undefined && recorded !== publicKey) {
     yield* Effect.logError("A Server reported a Sealing Key unlike the one its Cluster first reported.").pipe(

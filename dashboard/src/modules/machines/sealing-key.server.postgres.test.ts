@@ -8,8 +8,10 @@ import {
   recoveryDigest,
   rotateRecoveryBackup,
 } from "#/modules/machines/sealing-key.server";
+import { InngestClient } from "#/modules/inngest/client";
 import type { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
 
 const organizationId = "00000000-0000-4000-8000-000000000d01";
 const sealingKey = (letter: string) => `${letter.repeat(43)}=`;
@@ -20,8 +22,9 @@ const backup = (fill: number) => Buffer.concat([Buffer.from([1]), Buffer.alloc(7
 describe("the Organization's Sealing Key", () => {
   let harness: PostgresTestHarness;
 
-  const run = <A, E>(operation: Effect.Effect<A, E, Database>) => harness.runEffect(operation);
-  const failure = <A, E>(operation: Effect.Effect<A, E, Database>) => run(Effect.flip(operation));
+  const run = <A, E>(operation: Effect.Effect<A, E, Database | InngestClient>) =>
+    harness.runEffect(operation.pipe(Effect.provideService(InngestClient, sendsNowhere())));
+  const failure = <A, E>(operation: Effect.Effect<A, E, Database | InngestClient>) => run(Effect.flip(operation));
   const stored = async () => (await harness.pool.query(
     "select public_key, recovery_blob from organization_sealing_key where organization_id = $1",
     [organizationId],

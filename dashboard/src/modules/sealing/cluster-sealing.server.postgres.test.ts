@@ -1,11 +1,13 @@
 import { ConfigProvider, Effect, Layer } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
+import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { AppConfig } from "#/server/config.server";
 import { testConfigEnvironment } from "#/test/config-environment";
+import { sendsNowhere } from "#/test/store-cloud";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 
@@ -19,9 +21,10 @@ describe("readClusterSealing", () => {
   let harness: PostgresTestHarness;
   const read = () => harness.runEffect(readClusterSealing(organizationId).pipe(Effect.provideService(SecretEncryption, encryption)));
   // A Server reporting its key reads Cloud's config, which keeps its shipped default here.
-  const report = () => harness.runEffect(recordSealingPublicKey(organizationId, clusterKey, publicKey).pipe(Effect.provide(
-    AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl } })))),
-  )));
+  const report = () => harness.runEffect(recordSealingPublicKey(organizationId, clusterKey, publicKey).pipe(
+    Effect.provideService(InngestClient, sendsNowhere()),
+    Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl } }))))),
+  ));
   const pair = () => harness.pool.query(
     `insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
      values ($1, $2, $3, $3)`,
