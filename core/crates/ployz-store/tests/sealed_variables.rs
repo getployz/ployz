@@ -785,3 +785,165 @@ fn a_secret_s_text_in_a_shape_the_store_refuses_is_found_and_refused_as_the_stor
         assert!(!format!("{refused:?}").contains(SECRET), "{refused:?}");
     }
 }
+
+fn patch_change(path: &str, value: Value) -> Change {
+    Change::Patch {
+        path: SettingPath::parse(path).unwrap(),
+        value,
+    }
+}
+
+/// Whether the Store, with the flag on, refuses `error` as plain text from an old CLI:
+/// it read a new secret's text from the edit.
+fn read_secret_text(error: &RpcError) -> bool {
+    error.code == RpcErrorCode::Unsupported && error.message.contains("update ployz")
+}
+
+/// Every value shape a secret's text can take, in every place an edit can hold it:
+/// whatever the Store reads as a new secret's text from an edit, the CLI refuses or
+/// seals before it sends the edit, and what it sends the Store never reads as one.
+#[test]
+fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_sends_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    backend::sealed_variables_on(&url, "org");
+
+    let leaves = [
+        json!({ "secret": SECRET }),
+        json!({ "secret": SECRET, "exported": true }),
+        json!({ "secret": SECRET, "exported": false }),
+        json!({ "value": { "secret": SECRET } }),
+        json!({ "value": { "secret": SECRET }, "exported": true }),
+        json!({ "value": { "secret": SECRET }, "exported": "yes" }),
+        json!({ "value": { "value": { "secret": SECRET } } }),
+        json!({ "value": { "secret": SECRET, "exported": true } }),
+        json!({ "value": { "secret": SECRET }, "bogus": 1 }),
+        json!({ "secret": SECRET, "value": "x" }),
+        json!({ "secret": { "secret": SECRET } }),
+        json!({ "secret": [SECRET] }),
+        json!({ "secret": { "generate": SECRET } }),
+        json!({ "secret": "" }),
+        json!({ "secret": true }),
+        json!({ "secret": { "generate": true } }),
+        json!([{ "secret": SECRET }]),
+        json!("plain text"),
+    ];
+    let containers: [fn(Value) -> Vec<Change>; 22] = [
+        |leaf| vec![set_change("web.env.TOKEN", leaf)],
+        |leaf| vec![set_change("web.env.PLOYZ_SERVICE_ID", leaf)],
+        |leaf| vec![set_change("web.image", leaf)],
+        |leaf| vec![set_change("web.registryCredential", leaf)],
+        |leaf| vec![set_change("api.env.TOKEN", leaf)],
+        |leaf| vec![patch_change("web", json!({ "env": { "TOKEN": leaf } }))],
+        |leaf| vec![patch_change("web", json!({ "env": { "token": leaf } }))],
+        |leaf| vec![patch_change("web", json!({ "env": { "1BAD": leaf } }))],
+        |leaf| vec![patch_change("web", json!({ "env": [{ "TOKEN": leaf }] }))],
+        |leaf| vec![patch_change("web", json!({ "env": leaf }))],
+        |leaf| vec![patch_change("web", json!([{ "env": { "TOKEN": leaf } }]))],
+        |leaf| vec![patch_change("web", json!({ "replicas": leaf }))],
+        |leaf| {
+            vec![patch_change(
+                "web",
+                json!({ "env": { "TOKEN": leaf }, "bogus": 1 }),
+            )]
+        },
+        |leaf| {
+            vec![patch_change(
+                "web",
+                json!({ "env": { "OTHER": "plain", "TOKEN": leaf }, "replicas": 2 }),
+            )]
+        },
+        |leaf| {
+            vec![patch_change(
+                "web",
+                json!({ "env": { "TOKEN": { "TOKEN": leaf } } }),
+            )]
+        },
+        |leaf| vec![patch_change("web.env.TOKEN", leaf)],
+        |leaf| {
+            vec![patch_change(
+                "web.image",
+                json!({ "env": { "TOKEN": leaf } }),
+            )]
+        },
+        |leaf| {
+            vec![patch_change(
+                "web.env.TOKEN",
+                json!({ "env": { "TOKEN": leaf } }),
+            )]
+        },
+        |leaf| vec![patch_change("api", json!({ "env": { "TOKEN": leaf } }))],
+        |leaf| {
+            vec![
+                set_change("web.env.PLAIN", json!("plain")),
+                patch_change("web", json!({ "env": { "TOKEN": leaf } })),
+            ]
+        },
+        |leaf| {
+            vec![
+                patch_change("web", json!({ "env": { "A": leaf.clone() } })),
+                set_change("web.env.B", leaf),
+            ]
+        },
+        |leaf| {
+            vec![
+                set_change("web.env.A", json!({ "secret": SECRET })),
+                patch_change("web", json!({ "env": { "B": leaf } })),
+            ]
+        },
+    ];
+    let mut read = 0;
+    for container in containers {
+        for leaf in &leaves {
+            let asked = Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: container(leaf.clone()),
+            };
+            // What the Store reads from the edit as it stands, were the CLI to send it.
+            let raw = store.write_trusted(
+                &who(),
+                &asked,
+                &Trusted {
+                    from_cli: true,
+                    ..Trusted::default()
+                },
+            );
+            let reads_text = raw.as_ref().is_err_and(read_secret_text);
+            read += usize::from(reads_text);
+            if !asked.carries_plaintext_secret() {
+                assert!(!reads_text, "missed: {asked:?}");
+                continue;
+            }
+            let mut sent = asked.clone();
+            let sealed = sent.map_plaintext_secrets(
+                |error| error,
+                |secret| {
+                    secret.admit()?;
+                    let sealed = backend::client_sealed(&uuid(2), &uuid(3), secret.key(), 1);
+                    Ok(Some(serde_json::from_value(sealed).unwrap()))
+                },
+            );
+            match sealed {
+                Err(refused) => {
+                    assert!(!format!("{refused:?}").contains(SECRET), "{refused:?}");
+                }
+                Ok(()) => {
+                    let written = cli(&store, sent.changes.clone());
+                    assert!(
+                        !written.as_ref().is_err_and(read_secret_text),
+                        "sent in the clear: {asked:?} as {sent:?}: {written:?}"
+                    );
+                    if reads_text {
+                        assert!(!format!("{sent:?}").contains(SECRET), "{sent:?}");
+                    }
+                }
+            }
+        }
+    }
+    // The Store read a secret's text from many of these shapes, so the CLI was tried on
+    // each of them.
+    assert!(read >= 20, "{read}");
+}

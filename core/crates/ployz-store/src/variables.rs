@@ -733,45 +733,63 @@ pub(crate) fn unset(
     Ok(*variables != before)
 }
 
-/// Whether `value` holds a secret's plain text: an object with text under `secret`,
-/// whatever its other fields and however deep, whether or not [`set`] takes it.
+/// Whether `value` holds a secret's plain text: text anywhere under a `secret`
+/// field, whatever its other fields and however deep, whether or not [`set`] takes
+/// it.
 pub(crate) fn holds_secret_text(value: &Value) -> bool {
     match value {
-        Value::Object(fields) => {
-            fields.get("secret").is_some_and(Value::is_string)
-                || fields.values().any(holds_secret_text)
-        }
+        Value::Object(fields) => fields.iter().any(|(field, value)| {
+            (field == "secret" && holds_text(value)) || holds_secret_text(value)
+        }),
         Value::Array(items) => items.iter().any(holds_secret_text),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
     }
 }
 
-/// The plain text `value` asks [`set`] to seal as a new secret of `key`, read as
-/// [`set`] reads it, when `value` [holds](holds_secret_text) any.
+fn holds_text(value: &Value) -> bool {
+    match value {
+        Value::String(_) => true,
+        Value::Object(fields) => fields.values().any(holds_text),
+        Value::Array(items) => items.iter().any(holds_text),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
+}
+
+/// A new secret's plain text, as [`set`] reads it from a value, and the exported
+/// flag asked beside it.
+pub(crate) struct NewSecret {
+    text: String,
+    exported: Option<bool>,
+}
+
+impl NewSecret {
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The value that asks [`set`] for `sealed` in place of this text, exported as
+    /// the text was.
+    pub(crate) fn sealed(&self, sealed: &ClientSealedValue) -> Value {
+        match self.exported {
+            Some(exported) => json!({ "value": { "secret": sealed }, "exported": exported }),
+            None => json!({ "secret": sealed }),
+        }
+    }
+}
+
+/// The new secret `value` asks [`set`] to seal as `key`, read as [`set`] reads it.
 ///
 /// # Errors
 /// What [`set`] refuses in `value` before it reads Working State, such as a secret's
 /// text beside other fields.
-pub(crate) fn secret_text<'value>(
-    key: &VariableKey,
-    value: &'value Value,
-) -> Result<Option<&'value str>, RpcError> {
-    if !holds_secret_text(value) {
-        return Ok(None);
+pub(crate) fn new_secret(key: &VariableKey, value: &Value) -> Result<Option<NewSecret>, RpcError> {
+    match parse(key, value.clone())? {
+        (Some(Input::Seal(text)), exported) => Ok(Some(NewSecret { text, exported })),
+        (
+            Some(Input::Text(_) | Input::Keep | Input::ClientSealed(_) | Input::Generate) | None,
+            _,
+        ) => Ok(None),
     }
-    parse(key, value.clone())?;
-    // What `parse` takes with text in a secret is only a secret to seal, there or
-    // under `value`.
-    let slot = match value {
-        Value::Object(fields) if !fields.contains_key("secret") => fields.get("value"),
-        Value::Null
-        | Value::Bool(_)
-        | Value::Number(_)
-        | Value::String(_)
-        | Value::Array(_)
-        | Value::Object(_) => Some(value),
-    };
-    Ok(slot.and_then(plaintext_secret))
 }
 
 /// The plain text `value` asks [`set`] to seal: `{"secret": "…"}` with text in it.
