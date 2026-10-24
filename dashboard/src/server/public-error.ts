@@ -130,7 +130,7 @@ const SQLSTATE = /^[0-9A-Z]{5}$/u;
  * A typed failure that answers 500, named by its tags and SQLSTATE alone: its fields, such as a failed query's params,
  * can hold secrets, and so can a tag or code that isn't shaped like one.
  */
-function typedFailureSummary(cause: unknown): string {
+function typedFailureSummary(cause: unknown, untagged = ""): string {
   const tags: string[] = [];
   let code: string | undefined;
   for (const at of causeChain(cause)) {
@@ -139,7 +139,8 @@ function typedFailureSummary(cause: unknown): string {
     const found = Option.getOrUndefined(decodeErrorCode(at))?.code;
     if (found !== undefined && SQLSTATE.test(found)) code ??= found;
   }
-  return code === undefined ? tags.join(" > ") : `${tags.join(" > ")} (${code})`;
+  const kind = tags.length > 0 ? tags.join(" > ") : untagged;
+  return code === undefined ? kind : `${kind} (${code})`;
 }
 
 /** `cause`, then each `cause` it wraps, a few deep. */
@@ -152,9 +153,11 @@ function* causeChain(cause: unknown) {
 }
 
 const QUERY_FAILURES = new Set(["EffectDrizzleQueryError", "SqlError"]);
-const decodeFailedQuery = Schema.decodeUnknownOption(
+/** A failed query from Effect's drizzle, or from node-postgres drizzle, which Better Auth reads through. */
+const decodeFailedQuery = Schema.decodeUnknownOption(Schema.Union([
   Schema.Struct({ _tag: Schema.Literal("EffectDrizzleQueryError"), query: Schema.String }),
-);
+  Schema.Struct({ name: Schema.Literal("DrizzleQueryError"), query: Schema.String }),
+]));
 const decodeErrorName = Schema.decodeUnknownOption(Schema.Struct({ name: Schema.String }));
 /** A quote, dollar quote, escape or comment: text past one may be a value, so no statement is named. */
 const UNREADABLE = /['\\`]|\$(?!\d)|\/\*|--|""/u;
@@ -206,7 +209,7 @@ export function mayCarryQuery(cause: unknown): boolean {
   const values = causeValues(cause);
   return values === undefined || values.some((at) => {
     const tagged = decodeTaggedFailure(at);
-    return Option.isSome(tagged) && QUERY_FAILURES.has(tagged.value._tag);
+    return Option.isSome(tagged) && QUERY_FAILURES.has(tagged.value._tag) || Option.isSome(decodeFailedQuery(at));
   });
 }
 
@@ -217,9 +220,8 @@ export function mayCarryQuery(cause: unknown): boolean {
  */
 export function safeSummary(cause: unknown): string {
   try {
-    const tags = typedFailureSummary(cause);
     const name = Option.getOrUndefined(decodeErrorName(cause))?.name;
-    const kind = tags.length > 0 ? tags : name !== undefined && IDENTIFIER.test(name) ? name : "defect";
+    const kind = typedFailureSummary(cause, name !== undefined && IDENTIFIER.test(name) ? name : "defect");
     const query = causeValues(cause)
       ?.map((at) => Option.getOrUndefined(decodeFailedQuery(at))?.query)
       .find((at) => at !== undefined);

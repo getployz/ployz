@@ -1,3 +1,4 @@
+import { DrizzleQueryError } from "drizzle-orm";
 import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import { Cause, Data, Effect, Exit, Layer, Logger, References, Tracer } from "effect";
 import { SqlError, UnknownError } from "effect/unstable/sql/SqlError";
@@ -39,6 +40,18 @@ describe("redacted logs", () => {
     const text = logged(Effect.logWarning("An outbox event waits for the sweep.", Cause.die(failedQuery())));
 
     expect(text).toContain(SUMMARY);
+    expect(text).not.toMatch(/secret-/u);
+  });
+
+  it("logs a node-postgres failed query, as Better Auth throws it, by its kind, SQLSTATE and statement", () => {
+    const failure = new DrizzleQueryError(
+      'select "id" from "session" where "session"."token" = $1',
+      ["secret-param"],
+      Object.assign(new Error("secret-message"), { code: "57P01" }),
+    );
+    const text = logged(Effect.logError("[Better Auth] INTERNAL_SERVER_ERROR", failure));
+
+    expect(text).toContain("DrizzleQueryError (57P01) in select session");
     expect(text).not.toMatch(/secret-/u);
   });
 
