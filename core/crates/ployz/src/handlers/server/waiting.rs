@@ -509,7 +509,7 @@ impl Row {
                 .report
                 .blockers
                 .first()
-                .is_none_or(|blocker| blocker.code == "docker_install_failed");
+                .is_none_or(|blocker| blocker.code == crate::checkin::DOCKER_INSTALL_FAILED);
         match self.status {
             Status::Offline => ("Offline", Tone::Bad),
             Status::Blocked | Status::Preparing if docker_failed => {

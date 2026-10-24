@@ -2106,6 +2106,158 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
     assert_eq!(fs::read_to_string(&paths.prepare_state).unwrap(), state);
 }
 
+fn blocker_codes(paths: &Paths) -> Vec<String> {
+    LocalCheckin::read(&paths.status())
+        .unwrap()
+        .unwrap()
+        .blockers
+        .into_iter()
+        .map(|blocker| blocker.code)
+        .collect()
+}
+
+fn docker_failed_at(paths: &Paths, finished_at: &str) {
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        format!(
+            r#"{{"docker":{{"state":"failed","message":"Docker 29.1.3 is too old.","finished_at":"{finished_at}"}},"zfs":{{"state":"off"}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn an_install_that_retries_a_failed_docker_install_drops_that_failure_from_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    docker_failed_at(&paths, "2026-10-16T00:00:00Z");
+    let (url, _server) = cloud("200 OK", WAIT).await;
+    let host = FakeHost::default();
+    let installed = install_pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    // What the install line prints from, whether or not status.json could be written.
+    let mut seen = installed.seen.clone().unwrap();
+    installed.record(&paths);
+    assert_eq!(
+        blocker_codes(&paths),
+        ["kernel_too_old", "docker_install_failed"]
+    );
+
+    let now = Utc::now();
+    assert!(restart_preparation(&host, &paths, now).await);
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
+    seen.restarted_preparation(now);
+    let codes: Vec<_> = seen.blockers.iter().map(|blocker| &blocker.code).collect();
+    // The host's own blocker still stands.
+    assert_eq!(codes, ["kernel_too_old"]);
+    assert_eq!(blocker_codes(&paths), ["kernel_too_old"]);
+
+    // The loop's next pass can run before the new preparation rewrites the state file.
+    let (url, _server) = cloud("200 OK", WAIT).await;
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    assert_eq!(blocker_codes(&paths), ["kernel_too_old"]);
+}
+
+#[test]
+fn a_docker_failure_in_the_second_its_preparation_started_belongs_to_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    docker_failed_at(&paths, "2026-10-16T00:00:00Z");
+    let state: PrepState =
+        serde_json::from_slice(&fs::read(&paths.prepare_state).unwrap()).unwrap();
+    let started = at("2026-10-16T00:00:00.400Z");
+    assert!(!state.docker_retried(Some(started)));
+    assert!(state.docker_retried(Some(started + TimeDelta::seconds(1))));
+    assert!(!state.docker_retried(None));
+}
+
+#[tokio::test]
+async fn a_preparation_that_stopped_without_retrying_docker_leaves_its_failure_standing() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    docker_failed_at(&paths, "2026-10-16T00:00:00Z");
+    let started = at("2026-10-16T01:00:00Z");
+    record(
+        &LocalCheckin {
+            token_fingerprint: None,
+            answer: Seen::Wait,
+            reason: None,
+            message: None,
+            at: started,
+            prep: None,
+            blockers: Vec::new(),
+            prepare_retries: PREPARE_TRIES,
+            prepare_started: Some(started),
+            refused: None,
+            attempt: None,
+            no_cluster: false,
+        },
+        &paths,
+    );
+    // The unit started then died before ployzd rewrote the Docker step.
+    let host = FakeHost::default();
+    let (url, _server) = cloud("200 OK", WAIT).await;
+    pass(
+        &host,
+        &mut client(&url),
+        &key(),
+        &paths,
+        started + TimeDelta::minutes(1),
+    )
+    .await;
+    assert_eq!(
+        blocker_codes(&paths),
+        ["kernel_too_old", "docker_install_failed"]
+    );
+}
+
+#[tokio::test]
+async fn a_docker_install_that_failed_after_its_preparation_started_still_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let started = at("2026-10-16T00:00:00Z");
+    docker_failed_at(&paths, "2026-10-16T00:05:00Z");
+    record(
+        &LocalCheckin {
+            token_fingerprint: None,
+            answer: Seen::Wait,
+            reason: None,
+            message: None,
+            at: started,
+            prep: None,
+            blockers: Vec::new(),
+            prepare_retries: 0,
+            prepare_started: Some(started),
+            refused: None,
+            attempt: None,
+            no_cluster: false,
+        },
+        &paths,
+    );
+    let host = FakeHost::default();
+    host.preparing.store(true, Ordering::SeqCst);
+    let (url, _server) = cloud("200 OK", WAIT).await;
+    pass(
+        &host,
+        &mut client(&url),
+        &key(),
+        &paths,
+        started + TimeDelta::minutes(6),
+    )
+    .await;
+    assert_eq!(
+        blocker_codes(&paths),
+        ["kernel_too_old", "docker_install_failed"]
+    );
+    // A preparation that is already running is not restarted, so its failure stands.
+    assert!(!restart_preparation(&host, &paths, Utc::now()).await);
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        blocker_codes(&paths),
+        ["kernel_too_old", "docker_install_failed"]
+    );
+}
+
 #[tokio::test]
 async fn an_install_starts_no_preparation_before_cloud_answers_the_token() {
     for (status, body) in [

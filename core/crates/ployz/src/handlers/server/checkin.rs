@@ -270,24 +270,29 @@ async fn install(
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     crate::ui::stream("Checking in");
     let pass = checkin::install_pass(&host, client, key, paths, Utc::now()).await;
-    let seen = pass.seen.as_ref();
-    let joined = checkin::joined(&host, seen.and_then(|seen| seen.attempt.as_ref())).await;
-    let blockers: Vec<String> = seen.map_or_else(Vec::new, |seen| {
-        seen.blockers
-            .iter()
-            .map(|blocker| blocker.message.clone())
-            .collect()
-    });
-    let no_cluster = seen.is_some_and(|seen| seen.no_cluster);
+    let mut seen = pass.seen.clone();
+    let joined = checkin::joined(&host, seen.as_ref().and_then(|seen| seen.attempt.as_ref())).await;
     let answered = answer_install(pass, client, paths, install_with)?;
     write_unit(unit::CHECKIN, &checkin_unit)?;
     write_unit(unit::PREPARE, &prepare_unit)?;
     systemd(&["daemon-reload"]).await?;
-    checkin::restart_preparation(&host, paths, Utc::now()).await;
+    let now = Utc::now();
+    if checkin::restart_preparation(&host, paths, now).await
+        && let Some(seen) = &mut seen
+    {
+        seen.restarted_preparation(now);
+    }
     systemd(&["enable", unit::CHECKIN]).await?;
     // A loop already running checks in with the old token until it starts over.
     systemd(&["restart", unit::CHECKIN]).await?;
     if answered == Answered::Waiting {
+        let blockers: Vec<String> = seen.as_ref().map_or_else(Vec::new, |seen| {
+            seen.blockers
+                .iter()
+                .map(|blocker| blocker.message.clone())
+                .collect()
+        });
+        let no_cluster = seen.is_some_and(|seen| seen.no_cluster);
         for line in waiting_lines(joined, &blockers, no_cluster) {
             crate::ui::stream(line);
         }

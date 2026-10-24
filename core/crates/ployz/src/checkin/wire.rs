@@ -6,6 +6,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
+use chrono::{DateTime, SubsecRound, Utc};
 use ployz_core::CloudEnrollToken;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +17,7 @@ use super::probe;
 pub(super) const PROTOCOL_VERSION: u8 = 1;
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
 pub(super) const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
+pub(crate) const DOCKER_INSTALL_FAILED: &str = "docker_install_failed";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -419,6 +421,19 @@ impl PrepState {
         docker.into_iter().chain(zfs).max()
     }
 
+    /// Whether Docker's install failed before `started`, so the preparation started then tries it
+    /// again and the failure no longer stands.
+    pub(super) fn docker_retried(&self, started: Option<DateTime<Utc>>) -> bool {
+        let failed = matches!(self.docker.step, DockerStep::Failed { .. })
+            .then_some(self.docker.finished_at.as_deref())
+            .flatten()
+            .and_then(|at| DateTime::parse_from_rfc3339(at).ok());
+        // ployzd dates the failure to the second, so one in the start's own second is this run's.
+        failed
+            .zip(started)
+            .is_some_and(|(failed, started)| failed < started.trunc_subsecs(0))
+    }
+
     pub(super) const fn fresh() -> Self {
         Self {
             docker: Step {
@@ -454,11 +469,13 @@ impl PrepState {
 
 impl Probe {
     /// `preparing` is whether `ployz-prepare` was seen running now, not merely assumed to be.
+    /// `prepare_started` is when the last preparation was started.
     pub(super) fn report(
         self,
         hostname: String,
         prep: Option<&PrepState>,
         preparing: bool,
+        prepare_started: Option<DateTime<Utc>>,
     ) -> HostReport {
         let Self { facts, assessment } = self;
         let Assessment {
@@ -495,9 +512,13 @@ impl Probe {
             },
         };
         if let Some(prep) = prep {
-            if let DockerStep::Failed { message } = &prep.docker.step {
+            // Once the unit stops, the state file is final: an older failure the run never
+            // rewrote still stands.
+            if let DockerStep::Failed { message } = &prep.docker.step
+                && !(preparing && prep.docker_retried(prepare_started))
+            {
                 blockers.push(Issue {
-                    code: "docker_install_failed".to_owned(),
+                    code: DOCKER_INSTALL_FAILED.to_owned(),
                     message: message.clone(),
                 });
             }
