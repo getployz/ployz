@@ -4,7 +4,8 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    SavedEnvironmentIntent, SavedVariableValue, SealedCell, SecretCiphertext,
+    LegacyCiphertext, SavedEnvironmentIntent, SavedVariableValue, SealedCell, SealedSecret,
+    SecretCiphertext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -149,13 +150,18 @@ pub(crate) fn reseal(
         ));
     };
     let organization = OrganizationId::parse(row.text(0)?)?;
-    let sealer = Sealer {
-        organization: &organization,
-        recipient: Some(recipient),
+    let mut resealing = Resealing {
+        environment,
+        sealer: Sealer {
+            organization: &organization,
+            recipient: Some(recipient),
+        },
+        sealing,
+        sealed: Vec::new(),
+        tally: Resealed::default(),
     };
-    let mut tally = Resealed::default();
     let mut working = row.intent(1, "Working State")?;
-    if reseal_intent(&mut working, environment, sealer, sealing, &mut tally)? {
+    if resealing.intent(&mut working)? {
         let revision = Revision(row.number(2, "revision")?).next();
         tx.execute(
             "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
@@ -175,7 +181,7 @@ pub(crate) fn reseal(
     )?;
     if let Some(row) = head.first() {
         let mut intent = row.intent(1, "Saved revision")?;
-        if reseal_intent(&mut intent, environment, sealer, sealing, &mut tally)? {
+        if resealing.intent(&mut intent)? {
             tx.execute(
                 "UPDATE config_saved SET intent = ?3 WHERE environment_id = ?1 AND revision = ?2",
                 &[
@@ -189,41 +195,68 @@ pub(crate) fn reseal(
             )?;
         }
     }
-    Ok(tally)
+    Ok(resealing.tally)
 }
 
-/// Reseal `intent` in place; whether anything in it changed.
-fn reseal_intent(
-    intent: &mut SavedEnvironmentIntent,
-    environment: &EnvironmentId,
-    sealer: Sealer<'_>,
-    sealing: &SealingKey,
-    tally: &mut Resealed,
-) -> Result<bool, RpcError> {
-    let mut changed = false;
-    for service in &mut intent.services {
-        let service_id = service.id.clone();
-        for variable in &mut service.variables {
-            let SavedVariableValue::Secret {
-                encrypted_value: Some(SecretCiphertext::Legacy(legacy)),
-            } = &variable.value
-            else {
-                continue;
-            };
-            let Ok(plaintext) = sealing.open(legacy) else {
-                tally.remaining += 1;
-                continue;
-            };
-            let sealed = sealer.seal(environment, &service_id, &variable.key, &plaintext)?;
-            variable.value_fingerprint = sealed.fingerprint;
-            variable.value = SavedVariableValue::Secret {
-                encrypted_value: Some(sealed.value),
-            };
-            tally.resealed += 1;
-            changed = true;
+/// One Environment's reseal across its Working State and Saved head.
+struct Resealing<'a> {
+    environment: &'a EnvironmentId,
+    sealer: Sealer<'a>,
+    sealing: &'a SealingKey,
+    /// Each value sealed so far, by Service ID, key and the value it replaced: the
+    /// same value in Working State and the Saved head gets the same sealed value, so
+    /// Review shows nothing staged.
+    sealed: Vec<(String, String, LegacyCiphertext, SealedSecret)>,
+    tally: Resealed,
+}
+
+impl Resealing<'_> {
+    /// Reseal `intent` in place; whether anything in it changed.
+    fn intent(&mut self, intent: &mut SavedEnvironmentIntent) -> Result<bool, RpcError> {
+        let mut changed = false;
+        for service in &mut intent.services {
+            for variable in &mut service.variables {
+                let SavedVariableValue::Secret {
+                    encrypted_value: Some(SecretCiphertext::Legacy(legacy)),
+                } = &variable.value
+                else {
+                    continue;
+                };
+                let earlier = self.sealed.iter().find(|(id, key, was, _)| {
+                    *id == service.id && *key == variable.key && was == legacy
+                });
+                let sealed = match earlier {
+                    Some((.., sealed)) => sealed.clone(),
+                    None => {
+                        let Ok(plaintext) = self.sealing.open(legacy) else {
+                            self.tally.remaining += 1;
+                            continue;
+                        };
+                        let sealed = self.sealer.seal(
+                            self.environment,
+                            &service.id,
+                            &variable.key,
+                            &plaintext,
+                        )?;
+                        self.sealed.push((
+                            service.id.clone(),
+                            variable.key.clone(),
+                            legacy.clone(),
+                            sealed.clone(),
+                        ));
+                        sealed
+                    }
+                };
+                variable.value_fingerprint = sealed.fingerprint;
+                variable.value = SavedVariableValue::Secret {
+                    encrypted_value: Some(sealed.value),
+                };
+                self.tally.resealed += 1;
+                changed = true;
+            }
         }
+        Ok(changed)
     }
-    Ok(changed)
 }
 
 fn legacy_in(intent: &SavedEnvironmentIntent) -> u32 {
@@ -771,5 +804,49 @@ mod tests {
         let after = working(&store);
         client_sealed(variable(&after, "TOKEN"));
         assert_eq!(variable(&after, "MODE").value_fingerprint, "p1:fast");
+    }
+
+    #[test]
+    fn one_legacy_value_in_working_state_and_the_saved_head_gets_one_sealed_value() {
+        let (store, who) = shop();
+        plant_working(
+            &store,
+            &who,
+            vec![
+                secret("TOKEN", legacy(&store.sealing, "hunter2")),
+                secret("OTHER", legacy(&store.sealing, "swordfish")),
+            ],
+        );
+        plant_saved(&store, 1, |intent| {
+            for variable in &mut intent.services.first_mut().unwrap().variables {
+                if variable.key == "OTHER" {
+                    variable.value = SavedVariableValue::Secret {
+                        encrypted_value: Some(legacy(&store.sealing, "swordfish")),
+                    };
+                }
+            }
+        });
+
+        let keypair = ployz_core::Keypair::generate();
+        store.reseal(&environment(), &recipient(&keypair)).unwrap();
+        let (working, head) = (working(&store), saved(&store, 1));
+        assert_eq!(variable(&working, "TOKEN"), variable(&head, "TOKEN"));
+        assert_ne!(
+            client_sealed(variable(&working, "OTHER")),
+            client_sealed(variable(&head, "OTHER"))
+        );
+        assert_ne!(
+            variable(&working, "OTHER").value_fingerprint,
+            variable(&head, "OTHER").value_fingerprint
+        );
+        let unsaved: Vec<String> = store
+            .read(&who, &crate::DiffQuery::default())
+            .unwrap()
+            .draft_changes
+            .into_iter()
+            .flat_map(|change| change.settings)
+            .map(|row| row.path)
+            .collect();
+        assert_eq!(unsaved, ["web.env.OTHER"]);
     }
 }
