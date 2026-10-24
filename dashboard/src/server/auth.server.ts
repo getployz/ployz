@@ -314,8 +314,9 @@ const BETTER_AUTH_LOGS = {
   error: Effect.logError,
 } as const;
 
-function logBetterAuth(level: keyof typeof BETTER_AUTH_LOGS, message: string, ...args: unknown[]) {
-  runRedactedLog(BETTER_AUTH_LOGS[level](`[Better Auth] ${message}`, ...args));
+// Some Better Auth callers pass an error as the message; kept a value, redaction can name it by its kind.
+export function logBetterAuth(level: keyof typeof BETTER_AUTH_LOGS, ...message: unknown[]) {
+  runRedactedLog(BETTER_AUTH_LOGS[level]("[Better Auth]", ...message));
 }
 
 const makeAuth = Effect.gen(function* () {
@@ -368,6 +369,8 @@ const makeAuth = Effect.gen(function* () {
     // Thrown, it reaches Cloud's boundary, which reports it redacted.
     onAPIError: { errorURL: "/auth", throw: true },
     logger: { log: logBetterAuth },
+    // Its spans record a failed query's exception and message, params included, past Cloud's redacting tracer.
+    experimental: { instrumentation: { enabled: false } },
     emailAndPassword: { enabled: config.nodeEnv !== "production" },
     socialProviders: {
       github: {

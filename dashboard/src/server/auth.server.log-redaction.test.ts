@@ -1,11 +1,13 @@
 import { testConfigEnvironment } from "#/test/config-environment";
+import { INVALID_SPAN_CONTEXT, type Span, trace, type Tracer } from "@opentelemetry/api";
+import { DrizzleQueryError } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { formatWithOptions } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive, logBetterAuth } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
 import { RedactedLogsLive } from "#/server/log-redaction";
@@ -35,12 +37,28 @@ const unreachableAuth = (() => {
   );
 })();
 
-/** Everything written to the console or stdio while `program` runs. */
-async function captureOutput(program: Effect.Effect<void>) {
+/** Everything written to the console, stdio or an OpenTelemetry span while `program` runs. */
+async function captureOutput<E>(program: Effect.Effect<void, E>) {
   const lines: string[] = [];
   const record = (...args: unknown[]) => {
     lines.push(formatWithOptions({ depth: Infinity }, ...args));
   };
+  const span: Span = new Proxy(trace.wrapSpanContext(INVALID_SPAN_CONTEXT), {
+    get: (target, key) => key === "spanContext" || key === "isRecording"
+      ? () => key === "isRecording" || target.spanContext()
+      : (...args: unknown[]) => {
+        record("span", String(key), ...args);
+        return span;
+      },
+  });
+  const tracer: Tracer = {
+    startSpan: () => span,
+    startActiveSpan: (...args: unknown[]) => {
+      const run = args.at(-1);
+      return run instanceof Function ? run(span) : undefined;
+    },
+  };
+  trace.setGlobalTracerProvider({ getTracer: () => tracer });
   for (const method of ["log", "info", "warn", "error", "debug", "trace"] as const) {
     vi.spyOn(console, method).mockImplementation(record);
   }
@@ -52,6 +70,7 @@ async function captureOutput(program: Effect.Effect<void>) {
   }
   await Effect.runPromise(program);
   vi.restoreAllMocks();
+  trace.disable();
   return lines.join("\n");
 }
 
@@ -90,3 +109,12 @@ it("keeps a session token and an email out of every log when Better Auth cannot 
   expect(output).not.toContain(FAKE_EMAIL);
   expect(output).toContain("DrizzleQueryError in select session");
 }, 30_000);
+
+it("names an error Better Auth passes as the message by its kind", async () => {
+  const output = await captureOutput(Effect.sync(() => {
+    logBetterAuth("error", new DrizzleQueryError('select "id" from "session" where "user_id" = $1', [FAKE_SESSION_TOKEN]));
+  }));
+
+  expect(output).not.toContain(FAKE_SESSION_TOKEN);
+  expect(output).toContain("DrizzleQueryError in select session");
+});
