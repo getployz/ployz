@@ -886,12 +886,8 @@ impl Session {
         let body: RpcRequestBody =
             serde_json::from_value(request).map_err(|error| invalid_argument(error.to_string()))?;
         let path = volume_switch_path(&body)?;
-        let client = self.client()?;
-        self.until_closed(crate::bridge_ipv6_compat::admit_switch(
-            &client, &target, &body,
-        ))
-        .await?;
         let request = ployz_core::RpcRequest::from(body);
+        let client = self.client()?;
         let response = self
             .until_closed_answered(async {
                 client

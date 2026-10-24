@@ -120,7 +120,6 @@ new RpcError({ code: "unavailable", message: "Watch interrupted", details: null 
 ({ config_name: "settings", target: "/etc/api/settings.toml", uid: 1000, gid: 1000, mode: 0o440 }) satisfies ConfigMount;
 ({ machine_path: "/dev/fuse", container_path: "/dev/fuse", cgroup_permissions: "rwm" }) satisfies DeviceMapping;
 ({ soft: 1024, hard: 2048 }) satisfies Ulimit;
-({ ...container, ipv6: true }) satisfies ServiceContainerSpec;
 ({ state: "disabled" }) satisfies HealthcheckSpec;
 "api" satisfies ContainerHostname;
 "gateway:host-gateway" satisfies ExtraHost;

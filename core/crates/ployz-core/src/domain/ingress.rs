@@ -114,7 +114,6 @@ fn caddy_container(image: String) -> ServiceContainerSpec {
         stop_timeout_secs: None,
         sysctls: BTreeMap::new(),
         restart: RestartPolicy::default(),
-        ipv6: false,
     }
 }
 
