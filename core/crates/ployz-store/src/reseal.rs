@@ -805,6 +805,10 @@ mod tests {
         std::thread::scope(|scope| {
             let reseal = scope.spawn(|| store.reseal(&environment(), &recipient(&keypair)));
             std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(
+                !reseal.is_finished(),
+                "the reseal ran before the Save held the row"
+            );
             save.commit().unwrap();
             reseal.join().unwrap().unwrap();
         });
