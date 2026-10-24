@@ -8213,6 +8213,28 @@ fn set_seals_each_new_secret_in_the_cli_and_cloud_never_sees_its_plain_text() {
 }
 
 #[test]
+fn set_seals_a_secret_asked_with_its_exported_flag_and_keeps_the_flag() {
+    let keypair = Keypair::generate();
+    let state = SealingState::Ready(keypair.public().to_string());
+    let (cloud, _dir) = sealing_cloud(Some(state), true);
+    one_service(&cloud);
+    let patch = r#"{"env":{"HIDDEN":{"value":{"secret":"hidden-s3cr3t"},"exported":true}}}"#;
+    let (code, patched) = ployz_with_stdin(&cloud, &["set", "web", "--patch", "-"], patch);
+    assert_eq!(code, Some(0), "{patched}");
+
+    cloud_never_saw("hidden-s3cr3t");
+    let hidden = &sealed_in_writes()["HIDDEN"];
+    assert_eq!(
+        keypair.open(&authored(hidden), hidden).as_deref(),
+        Some("hidden-s3cr3t")
+    );
+    assert_eq!(
+        ok(&cloud, &["get", "web"])["values"]["env"]["HIDDEN"],
+        json!({ "value": { "secret": true }, "exported": true })
+    );
+}
+
+#[test]
 fn set_sends_a_secret_for_the_store_to_seal_when_the_organization_seals_there() {
     let (cloud, _dir) = sealing_cloud(Some(SealingState::Off), false);
     ok(&cloud, &["project", "new", "shop"]);
