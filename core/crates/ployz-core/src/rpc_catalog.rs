@@ -117,6 +117,8 @@ macro_rules! rpc_catalog {
                 ENV_SEALED_CAPABILITY: ("ployz.env.sealed.v1", Always),
                 /// The daemon opens a Build's Sealed values as secret files and keeps them out of its output.
                 BUILD_SEALED_CAPABILITY: ("ployz.build.sealed.v1", Always),
+                /// The daemon mints a Build Grant for a holder's own key and returns no grant secret.
+                BUILD_GRANT_HOLDER_CAPABILITY: ("ployz.build.grant.holder.v1", Always),
             }
         }
     };

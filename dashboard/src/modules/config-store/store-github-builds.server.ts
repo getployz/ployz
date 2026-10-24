@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { GithubBuild, GithubClaims } from "@ployz/sdk";
-import { Effect } from "effect";
-import { cancelDispatchedGithubRun, cancelStoreGithubBuilds, connectionsOf } from "#/modules/config-store/config-store.server";
+import { Effect, Schema } from "effect";
+import { cancelDispatchedGithubRun, cancelStoreGithubBuilds, connectionsOf, heldGithubBuild } from "#/modules/config-store/config-store.server";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
@@ -181,8 +181,8 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
   organizationId: string, target: StoreGithubTarget, seen: { ended: boolean; startLimit: boolean },
 ) {
   const store = yield* cloudStore;
-  const build = yield* storeTry(() => store.githubBuild(target.build));
-  if (build.status !== "building") return "done" as const;
+  const build = yield* heldGithubBuild(target.build);
+  if (build === null || build.status !== "building") return "done" as const;
   const deploymentId = build.id.slice(0, build.id.indexOf("."));
   const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
   if (view.status !== "queued" && view.status !== "running") {
@@ -216,8 +216,7 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
 
 /** Whether a build GitHub holds is still on GitHub: a final report may settle it before a wait begins. */
 export const storeGithubBuildOpen = Effect.fn("StoreGithub.open")(function* (target: StoreGithubTarget) {
-  const store = yield* cloudStore;
-  return (yield* storeTry(() => store.githubBuild(target.build))).status === "building";
+  return (yield* heldGithubBuild(target.build))?.status === "building";
 });
 
 const bearer = (request: Request) => /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? null;
@@ -243,19 +242,37 @@ const refused = (error: StoreRefused) => {
   }
 };
 
+const passedOn = () => new Conflict({ message: "GitHub passed this build to the next Builder." });
+
+const MAX_CHECK_IN_BYTES = 4 * 1024;
+const CheckIn = Schema.fromJsonString(Schema.Struct({
+  holder: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)))),
+}));
+const notCheckIn = () => new Validation({ message: "The check-in is not a holder key." });
+
+/** The public key the runner holds its Build Grant with: none from an Action that sends no body. */
+const holderOf = Effect.fn("StoreGithub.holder")(function* (text: string) {
+  if (text.length > MAX_CHECK_IN_BYTES) return yield* notCheckIn();
+  if (text.trim() === "") return null;
+  const { holder } = yield* Schema.decodeUnknownEffect(CheckIn)(text).pipe(Effect.mapError(notCheckIn));
+  return holder ?? null;
+});
+
 /**
- * A runner's one check-in for a Store build: its Build Grant, pinned commit, expected fingerprint, the ployz version
- * that computed it, and the one-Service deployment whose variables carry the build secrets.
+ * A runner's one check-in for a Store build: how it pushes, its pinned commit, expected fingerprint, the ployz
+ * version that computed it, and the one-Service deployment whose variables carry the build secrets.
  */
-export const checkInStoreGithubBuild = Effect.fn("StoreGithub.checkIn")(function* (request: Request, buildId: string) {
+export const checkInStoreGithubBuild = Effect.fn("StoreGithub.checkIn")(function* (request: Request, buildId: string, text: string) {
   const claims = yield* runnerClaims(request);
+  const holder = yield* holderOf(text);
   const store = yield* cloudStore;
   return yield* Effect.gen(function* () {
-    const build = yield* storeTry(() => store.githubBuild(buildId));
+    const build = yield* heldGithubBuild(buildId);
+    if (build === null) return yield* passedOn();
     const refusal = yield* installationRefusal(build.organization, build.run.installation_id);
     if (refusal !== null) return yield* new Forbidden({ message: refusal.message });
     const connections = yield* connectionsOf(build.organization);
-    return yield* storeTry(() => store.githubCheckIn(buildId, claims, connections));
+    return yield* storeTry(() => store.githubCheckIn(buildId, claims, holder, connections));
   }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.fail(refused(error))));
 });
 
@@ -271,7 +288,8 @@ export const recordStoreGithubBuildSteps = Effect.fn("StoreGithub.steps")(functi
   const report: unknown = yield* Effect.try({ try: () => JSON.parse(text), catch: () => new Validation({ message: "The report is not Build Steps." }) });
   const store = yield* cloudStore;
   return yield* Effect.gen(function* () {
-    const build = yield* storeTry(() => store.githubBuild(buildId));
+    const build = yield* heldGithubBuild(buildId);
+    if (build === null) return yield* passedOn();
     const refusal = yield* installationRefusal(build.organization, build.run.installation_id);
     if (refusal !== null) return yield* new Forbidden({ message: refusal.message });
     const reported = yield* storeTry(() => store.githubReport(buildId, claims, report));

@@ -313,7 +313,7 @@ export interface ConfigStore extends Omit<native.ConfigStore, "read"> {
   read<Q extends ConfigQuery>(organization: string, query: Q, trusted?: ConfigTrusted): Promise<Extract<ConfigView, { view: Q["query"] }>>;
 }
 export type GithubStart = { kind: "reused" } | { kind: "dispatch"; runner: string } | { kind: "skipped"; message: string };
-export type GithubCheckIn = { grant: string; commit: string; fingerprint: string; ployzVersion: string; deployment: PreparationInput["deployment"] };
+export type GithubCheckIn = ({ grant: string } | { machine: string }) & { commit: string; fingerprint: string; ployzVersion: string; deployment: PreparationInput["deployment"] };
 export type GithubFinish = "waiting" | { ended: BuildStatus };
 /** Calls run off the JavaScript thread, a few at once; a slow or queued call rejects `unavailable`. */
 export declare function openConfigStore(url: string, sealingSecret: string): Promise<ConfigStore>;

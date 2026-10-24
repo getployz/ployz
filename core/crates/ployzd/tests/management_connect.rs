@@ -1074,14 +1074,14 @@ async fn build_grant_contract() {
         .unwrap()
         .capability
         .unwrap();
-    let minted = machine.mint();
+    let (id, grant) = machine.mint();
     let relay = &machine.relay;
     let grants = &machine.grants;
     let seen = &machine.seen;
 
     // The grant key is not a Management Capability: Machine RPC refuses it.
     let connector = SystemConnector::default().with_management_relay(relay.clone());
-    let as_capability = ManagementCapability::new(*minted.grant.machine(), *minted.grant.secret());
+    let as_capability = ManagementCapability::new(*grant.machine(), *grant.secret());
     assert_refused(connector.connect(&connection(&as_capability)).await);
     // A Management Capability's key holds no grant, so it cannot push.
     let stranger = open_grant_registry(
@@ -1098,7 +1098,7 @@ async fn build_grant_contract() {
             .is_err()
     );
 
-    let registry = open_grant_registry(&minted.grant, relay).await.unwrap();
+    let registry = open_grant_registry(&grant, relay).await.unwrap();
     let base = format!("http://{}/v2/ployz-build/web", registry.address());
     let blob = format!("{base}/blobs/sha256:{}", "a".repeat(64));
     assert_eq!(http.head(&blob).send().await.unwrap().status(), 200);
@@ -1151,7 +1151,7 @@ async fn build_grant_contract() {
 
     // Reading the grant reports the push without spending anything more, and the
     // spent grant refuses a redial.
-    let inspected = grants.inspect(&minted.id).unwrap();
+    let inspected = grants.inspect(&id).unwrap();
     assert_eq!(
         inspected
             .pushed
@@ -1161,7 +1161,7 @@ async fn build_grant_contract() {
     );
     assert!(inspected.expires_in_seconds > 0);
     assert_eq!(http.head(&blob).send().await.unwrap().status(), 403);
-    let again = open_grant_registry(&minted.grant, relay).await.unwrap();
+    let again = open_grant_registry(&grant, relay).await.unwrap();
     assert!(
         http.get(format!("http://{}/v2/", again.address()))
             .send()
@@ -1169,7 +1169,46 @@ async fn build_grant_contract() {
             .is_err()
     );
     assert!(again.refusal().is_some());
-    assert_eq!(grants.inspect(&minted.id).unwrap().pushed, inspected.pushed);
+    assert_eq!(grants.inspect(&id).unwrap().pushed, inspected.pushed);
+    machine.stop().await;
+}
+
+/// The runner makes the key and keeps its secret: the Machine admits that key alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_holder_grant_admits_only_the_holder_key() {
+    tokio::time::timeout(Duration::from_secs(120), holder_contract())
+        .await
+        .expect("build grant test timed out");
+}
+
+async fn holder_contract() {
+    use ployz_core::{BuildGrant, BuildGrantId, MintedKey};
+
+    let machine = GrantMachine::start().await;
+    let holder = iroh::SecretKey::generate();
+    let id = BuildGrantId::parse(hex::encode(holder.public().as_bytes())).unwrap();
+    let minted = machine.mint_for(Some(id));
+    assert_eq!(minted.id, id);
+    let MintedKey::Holder { machine: dial } = minted.key else {
+        panic!("a holder mint returns the Machine to dial, never a secret");
+    };
+    let http = reqwest::Client::new();
+    let blob = async |secret: [u8; 32]| {
+        let registry = open_grant_registry(&BuildGrant::new(dial, secret), &machine.relay)
+            .await
+            .unwrap();
+        http.head(format!(
+            "http://{}/v2/ployz-build/web/blobs/sha256:{}",
+            registry.address(),
+            "a".repeat(64)
+        ))
+        .send()
+        .await
+        .map(|response| response.status())
+        .ok()
+    };
+    assert_eq!(blob(iroh::SecretKey::generate().to_bytes()).await, None);
+    assert_eq!(blob(holder.to_bytes()).await, Some(reqwest::StatusCode::OK));
     machine.stop().await;
 }
 
@@ -1186,10 +1225,8 @@ async fn already_held_contract() {
     let machine = GrantMachine::start().await;
     let http = reqwest::Client::new();
     let head = async |reference: String| {
-        let minted = machine.mint();
-        let registry = open_grant_registry(&minted.grant, &machine.relay)
-            .await
-            .unwrap();
+        let (id, grant) = machine.mint();
+        let registry = open_grant_registry(&grant, &machine.relay).await.unwrap();
         let manifests = format!("http://{}/v2/ployz-build/web/manifests", registry.address());
         let status = http
             .head(format!("{manifests}/{reference}"))
@@ -1198,7 +1235,7 @@ async fn already_held_contract() {
             .unwrap()
             .status();
         assert_eq!(status, 200, "{reference}");
-        (minted, manifests, registry)
+        (id, manifests, registry)
     };
 
     // Another tag, the held digest by digest, or a tag whose digest the ingest does
@@ -1208,12 +1245,12 @@ async fn already_held_contract() {
         format!("sha256:{HELD}"),
         format!("ployz-sha256-{}", "b".repeat(64)),
     ] {
-        let (minted, _, _registry) = head(reference.clone()).await;
-        let inspected = machine.grants.inspect(&minted.id).unwrap();
+        let (id, _, _registry) = head(reference.clone()).await;
+        let inspected = machine.grants.inspect(&id).unwrap();
         assert_eq!(inspected.pushed, None, "{reference}");
     }
 
-    let (minted, manifests, _registry) = head(format!("ployz-sha256-{HELD}")).await;
+    let (id, manifests, _registry) = head(format!("ployz-sha256-{HELD}")).await;
     // One push per grant: the held image spent it.
     let put = http
         .put(format!("{manifests}/ployz-sha256-{HELD}"))
@@ -1222,7 +1259,7 @@ async fn already_held_contract() {
         .await
         .unwrap();
     assert_eq!(put.status(), 403);
-    let inspected = machine.grants.inspect(&minted.id).unwrap();
+    let inspected = machine.grants.inspect(&id).unwrap();
     assert_eq!(
         inspected
             .pushed
@@ -1284,13 +1321,26 @@ impl GrantMachine {
         }
     }
 
-    /// A grant for one push into `ployz-build/web`.
-    fn mint(&self) -> ployz_core::BuildGrantMinted {
+    /// A grant for one push into `ployz-build/web`, held by `holder` when given.
+    fn mint_for(&self, holder: Option<ployz_core::BuildGrantId>) -> ployz_core::BuildGrantMinted {
+        let request = ployz_core::MintBuildGrantRequest {
+            repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            holder,
+        };
         self.grants.mint(
             self.local.record().management_secret().public_key(),
-            ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            ployzd::management::Mint::check(request).unwrap(),
             self.ingest,
         )
+    }
+
+    /// A grant for one push into `ployz-build/web`.
+    fn mint(&self) -> (ployz_core::BuildGrantId, ployz_core::BuildGrant) {
+        let minted = self.mint_for(None);
+        let ployz_core::MintedKey::Grant { grant } = minted.key else {
+            panic!("a holderless mint returns its grant");
+        };
+        (minted.id, grant)
     }
 
     async fn stop(self) {

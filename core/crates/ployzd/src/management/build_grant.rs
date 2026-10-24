@@ -24,13 +24,13 @@ use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use iroh::{
-    SecretKey,
+    PublicKey, SecretKey,
     endpoint::{Connection, VarInt},
 };
 use ployz_core::{
     BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, BuildGrantId, BuildGrantInspected,
     BuildGrantMinted, BuildGrantRepository, ImageDigest, ManagementIdentity, MintBuildGrantRequest,
-    RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
+    MintedKey, RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
@@ -66,18 +66,67 @@ enum Push {
     Pushed(ImageDigest),
 }
 
+/// A mint request this Machine accepts, not yet minted.
+pub struct Mint {
+    repository: BuildGrantRepository,
+    key: Key,
+}
+
+enum Key {
+    /// This Machine made the key; the minted grant returns its secret.
+    Made(SecretKey),
+    /// The holder made it and keeps the secret.
+    Holder(PublicKey),
+}
+
+impl Mint {
+    /// Check `request` before anything is opened for it.
+    ///
+    /// # Errors
+    /// `InvalidArgument` when the holder is not a public key.
+    pub fn check(request: MintBuildGrantRequest) -> Result<Mint, RpcError> {
+        let key = match request.holder {
+            None => Key::Made(SecretKey::generate()),
+            Some(holder) => Key::Holder(
+                hex::decode(holder.as_str())
+                    .ok()
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                    .and_then(|bytes| PublicKey::from_bytes(&bytes).ok())
+                    .ok_or_else(|| RpcError {
+                        code: RpcErrorCode::InvalidArgument,
+                        message: "the Build Grant holder is not a public key".into(),
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    })?,
+            ),
+        };
+        Ok(Mint {
+            repository: request.repository,
+            key,
+        })
+    }
+}
+
 impl BuildGrants {
-    /// Mint a grant for one push into `repository` through the ingest at `ingest`.
+    /// Mint a grant for one push into `mint`'s repository through the ingest at
+    /// `ingest`, dialed at `machine`.
     pub fn mint(
         &self,
         machine: ManagementIdentity,
-        repository: BuildGrantRepository,
+        mint: Mint,
         ingest: SocketAddr,
     ) -> BuildGrantMinted {
-        let secret = SecretKey::generate();
-        let id = grant_id(secret.public().as_bytes());
+        let (id, key) = match mint.key {
+            Key::Made(secret) => (
+                grant_id(secret.public().as_bytes()),
+                MintedKey::Grant {
+                    grant: BuildGrant::new(machine, secret.to_bytes()),
+                },
+            ),
+            Key::Holder(holder) => (grant_id(holder.as_bytes()), MintedKey::Holder { machine }),
+        };
         let grant = Arc::new(Grant {
-            repository,
+            repository: mint.repository,
             ingest,
             expires: Instant::now() + GRANT_LIFETIME,
             push: Mutex::new(Push::Open),
@@ -87,7 +136,7 @@ impl BuildGrants {
         grants.insert(id, grant);
         BuildGrantMinted {
             id,
-            grant: BuildGrant::new(machine, secret.to_bytes()),
+            key,
             expires_in_seconds: GRANT_LIFETIME.as_secs(),
         }
     }
@@ -143,12 +192,12 @@ pub(crate) async fn mint_for(
     grants: &BuildGrants,
     local: &crate::machine::LocalMachine,
     ingest: Arc<crate::docker::ImageIngest>,
-    request: MintBuildGrantRequest,
+    mint: Mint,
 ) -> Result<BuildGrantMinted, crate::machine::LocalMachineError> {
     let opened = local.ensure_image_ingest(ingest).await?.destination;
     Ok(grants.mint(
         local.record().management_secret().public_key(),
-        request.repository,
+        mint,
         SocketAddr::from((opened.management_address.0, opened.port)),
     ))
 }
@@ -426,6 +475,57 @@ fn denied(status: StatusCode, message: &str) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request(holder: Option<&str>) -> MintBuildGrantRequest {
+        MintBuildGrantRequest {
+            repository: BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            holder: holder.map(|holder| BuildGrantId::parse(holder).unwrap()),
+        }
+    }
+
+    fn mint(grants: &BuildGrants, request: MintBuildGrantRequest) -> BuildGrantMinted {
+        let machine = ManagementIdentity::from_bytes([7; 32]);
+        let ingest = SocketAddr::from(([127, 0, 0, 1], 5000));
+        grants.mint(machine, Mint::check(request).unwrap(), ingest)
+    }
+
+    #[test]
+    fn a_holder_mint_names_the_holder_and_returns_no_secret() {
+        let grants = BuildGrants::default();
+        let holder = SecretKey::from_bytes(&[3; 32]).public();
+        let minted = mint(&grants, request(Some(&hex::encode(holder.as_bytes()))));
+        assert_eq!(minted.id.as_str(), hex::encode(holder.as_bytes()));
+        assert_eq!(
+            minted.key,
+            MintedKey::Holder {
+                machine: ManagementIdentity::from_bytes([7; 32])
+            }
+        );
+        assert!(grants.admit(holder.as_bytes()).is_some());
+    }
+
+    #[test]
+    fn a_holderless_mint_returns_the_secret_it_made() {
+        let grants = BuildGrants::default();
+        let minted = mint(&grants, request(None));
+        let MintedKey::Grant { grant } = minted.key else {
+            panic!("a holderless mint returns its grant");
+        };
+        let public = SecretKey::from_bytes(grant.secret()).public();
+        assert_eq!(minted.id.as_str(), hex::encode(public.as_bytes()));
+        assert_eq!(grant.machine(), &ManagementIdentity::from_bytes([7; 32]));
+        assert!(grants.admit(public.as_bytes()).is_some());
+    }
+
+    #[test]
+    fn a_holder_that_is_not_a_public_key_is_refused() {
+        let mut point = [0; 32];
+        point[0] = 2;
+        let Err(refused) = Mint::check(request(Some(&hex::encode(point)))) else {
+            panic!("y = 2 is not on the curve");
+        };
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    }
 
     #[test]
     fn a_grant_allows_only_push_calls_into_its_repository() {

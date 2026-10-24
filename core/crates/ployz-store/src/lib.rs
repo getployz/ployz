@@ -63,8 +63,8 @@ pub use branch::{
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
-    GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubReport, GithubRun, RunEnd,
-    SEALED_BUILDS_RUN_ON_SERVER,
+    GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
+    GithubRun, RunEnd, SEALED_BUILDS_RUN_ON_SERVER,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -468,8 +468,9 @@ impl ConfigStore {
     /// A Git build handed to GitHub. In-process only.
     ///
     /// # Errors
-    /// Returns `not_found` unless GitHub holds or held it, or a storage error.
-    pub fn github_build(&self, id: &GithubBuildId) -> Result<GithubBuild, RpcError> {
+    /// Returns `not_found` unless GitHub holds it, held it, or passed it on, or a
+    /// storage error.
+    pub fn github_build(&self, id: &GithubBuildId) -> Result<GithubHandOff, RpcError> {
         self.storage.read(|tx| build::github_build(tx, id))
     }
 
@@ -488,16 +489,12 @@ impl ConfigStore {
             .read(|tx| build::github_authorize(tx, id, claims))
     }
 
-    /// What GitHub build `id` builds: the Deployment's lowering input with its
-    /// secrets unsealed, the pinned commit, and the Service's latest receipt.
-    /// In-process only: only the authorized runner receives it.
+    /// What GitHub build `id` builds. In-process only: only the authorized runner
+    /// receives it.
     ///
     /// # Errors
     /// Returns `not_found` for an unknown build, or a storage error.
-    pub fn github_input(
-        &self,
-        id: &GithubBuildId,
-    ) -> Result<(serde_json::Value, CommitSha, Option<serde_json::Value>), RpcError> {
+    pub fn github_input(&self, id: &GithubBuildId) -> Result<GithubInput, RpcError> {
         self.storage
             .read(|tx| build::github_input(tx, id, &self.sealing))
     }

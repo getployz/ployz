@@ -827,11 +827,15 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::MintBuildGrant>(request)?;
+        let mint = match crate::management::build_grant::Mint::check(request) {
+            Ok(mint) => mint,
+            Err(refused) => return respond(refused),
+        };
         match crate::management::build_grant::mint_for(
             &self.grants,
             &self.local,
             Arc::clone(&self.ingest),
-            request,
+            mint,
         )
         .await
         {

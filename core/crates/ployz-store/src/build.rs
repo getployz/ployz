@@ -678,6 +678,16 @@ pub struct GithubBuild {
     pub ended: Option<RunEnd>,
 }
 
+/// Where a build handed to GitHub is.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubHandOff {
+    /// GitHub holds it, or held it until it ended.
+    Held(Box<GithubBuild>),
+    /// GitHub passed it to the next Builder, and its run holds it no more.
+    PassedOn { why: String },
+}
+
 /// The claims of a GitHub Actions OIDC token Cloud verified, as GitHub sends them.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct GithubClaims {
@@ -777,7 +787,8 @@ impl BuildRow {
 }
 
 /// Hand a pinned, unstarted build to GitHub run `run`. Handing it the same run again
-/// changes nothing; any other hand-off is `conflict`, and Cloud cancels its run.
+/// changes nothing; any other hand-off, or one after GitHub passed it on, is
+/// `conflict`, and Cloud cancels its run.
 pub(crate) fn github_dispatched(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
@@ -790,7 +801,7 @@ pub(crate) fn github_dispatched(
     }
     if !stored.summary.status.in_flight()
         || row.status != BuildStatus::Pending
-        || row.github.is_some()
+        || row.github_skipped.is_some()
     {
         return Err(no_longer_wanted());
     }
@@ -806,14 +817,17 @@ pub(crate) fn github_dispatched(
         received: 0,
         ended: None,
     };
-    save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))?;
-    skip(tx, id, None)
+    save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))
 }
 
-pub(crate) fn github_build(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<GithubBuild, RpcError> {
+pub(crate) fn github_build(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<GithubHandOff, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
-    github_row(tx, &stored, id)?
-        .github(id)
+    let row = github_row(tx, &stored, id)?;
+    if let Some(build) = row.github(id) {
+        return Ok(GithubHandOff::Held(Box::new(build)));
+    }
+    row.github_skipped
+        .map(|why| GithubHandOff::PassedOn { why })
         .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))
 }
 
@@ -855,15 +869,25 @@ pub(crate) fn github_authorize(
     Ok(build)
 }
 
-/// What GitHub build `id` builds: its Deployment's lowering input with secrets
-/// unsealed and every value sealed in the browser left out, its pinned commit, and
-/// its Service's latest receipt. `conflict` when its Service reads a sealed value:
-/// only a Server builds it. In-process only.
+/// What a GitHub build builds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GithubInput {
+    /// The Deployment's lowering input with secrets unsealed and every value sealed
+    /// in the browser left out.
+    pub input: serde_json::Value,
+    pub commit: CommitSha,
+    /// The Service's latest receipt.
+    pub receipt: Option<serde_json::Value>,
+    /// The first sealed variable the built Service reads, if any.
+    pub sealed: Option<String>,
+}
+
+/// What GitHub build `id` builds. In-process only.
 pub(crate) fn github_input(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
     sealing: &crate::SealingKey,
-) -> Result<(serde_json::Value, CommitSha, Option<serde_json::Value>), RpcError> {
+) -> Result<GithubInput, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
     let commit = row
@@ -873,19 +897,16 @@ pub(crate) fn github_input(
     let deployment::Lowered {
         mut input, sealed, ..
     } = deployment::lowered(tx, &stored, &saved, sealing)?;
-    if !sealed.is_empty() {
+    let sealed = if sealed.is_empty() {
+        None
+    } else {
         let built = saved
             .services
             .iter()
             .find(|service| service.config.private_dns == id.service)
             .ok_or_else(|| error::corrupt("GitHub build Service"))?;
-        if let Some(sealed) = sealed.get(&built.id) {
-            return Err(error::conflict(
-                format!("{sealed} is sealed. {SEALED_BUILDS_RUN_ON_SERVER}"),
-                json!({ "service": id.service, "variable": sealed }),
-            ));
-        }
-    }
+        sealed.get(&built.id).cloned()
+    };
     for snapshot in &mut input.snapshots {
         snapshot.resolved_env.retain(|_, value| !value.is_sealed());
     }
@@ -894,7 +915,12 @@ pub(crate) fn github_input(
     let receipt = deployment::receipts(tx, &stored.summary.environment_id)?
         .remove(&id.service)
         .and_then(|receipts| receipts.into_iter().next());
-    Ok((input, commit, receipt))
+    Ok(GithubInput {
+        input,
+        commit,
+        receipt,
+        sealed,
+    })
 }
 
 /// Run `run_id` checked in and got `grant`: the build starts. Accepted once, while
@@ -978,8 +1004,9 @@ pub(crate) fn github_report(
 }
 
 /// End GitHub build `id`: its run `run_id`'s, or with none, before GitHub took it
-/// (an earlier image served it, or GitHub couldn't take it). Ending it again, or a
-/// run that no longer holds it, is `conflict`.
+/// (an earlier image served it, or GitHub couldn't take it). Ending it again, a run
+/// that no longer holds it, or ending it with none after GitHub passed it on, is
+/// `conflict`.
 pub(crate) fn github_end(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
@@ -993,7 +1020,7 @@ pub(crate) fn github_end(
             .building_on(run_id)
             .is_some_and(|github| github.grant.is_none()),
         (Some(run_id), _) => row.building_on(run_id).is_some(),
-        (None, _) => row.status == BuildStatus::Pending && row.github.is_none(),
+        (None, _) => row.status == BuildStatus::Pending && row.github_skipped.is_none(),
     };
     if !holds {
         return Err(error::conflict("This build already ended", json!({})));
@@ -1017,23 +1044,21 @@ pub(crate) fn github_end(
                 row.github.as_ref(),
             )
         }
-        // The next Builder starts it afresh.
+        // The next Builder starts it afresh: the run holds it no more.
         GithubEnd::Skipped { message } | GithubEnd::Unstarted { message } => {
             append(&mut log, &format!("GitHub skipped: {message}\n"));
             (BuildStatus::Pending, Some(trimmed(message)), None)
         }
     };
     save_github(tx, id, status, message.as_deref(), &log, github)?;
-    let skipped = match end {
-        GithubEnd::Skipped { .. } | GithubEnd::Unstarted { .. } => message.as_deref(),
-        GithubEnd::Built { .. } | GithubEnd::Failed { .. } => None,
-    };
-    skip(tx, id, skipped)?;
+    if let (GithubEnd::Skipped { .. } | GithubEnd::Unstarted { .. }, Some(why)) = (end, &message) {
+        skip(tx, id, why)?;
+    }
     Ok(status)
 }
 
-/// Record why GitHub passed `id` on, or with `None` that GitHub has it again.
-fn skip(tx: &mut dyn Tx, id: &GithubBuildId, why: Option<&str>) -> Result<(), RpcError> {
+/// Record why GitHub passed `id` on.
+fn skip(tx: &mut dyn Tx, id: &GithubBuildId, why: &str) -> Result<(), RpcError> {
     tx.execute(
         "UPDATE config_build SET github_skipped = ?3 WHERE deployment_id = ?1 AND service = ?2",
         &[

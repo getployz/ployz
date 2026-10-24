@@ -98,3 +98,21 @@ pub async fn open_grant_registry(
         _endpoint: endpoint,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use iroh::SecretKey;
+
+    #[test]
+    fn a_holder_seed_names_the_key_the_contract_pins() {
+        let seed: [u8; 32] =
+            hex::decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        assert_eq!(
+            hex::encode(SecretKey::from_bytes(&seed).public().as_bytes()),
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        );
+    }
+}
