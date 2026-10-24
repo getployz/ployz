@@ -73,7 +73,10 @@ export const CheckinRequest = Schema.Struct({
 });
 export type CheckinRequest = typeof CheckinRequest.Type;
 
-export type StoredReport = HostReport & { readonly prep?: Prep; readonly cliVersion?: string };
+/** The attempt a check-in named, by id, and whether the host recorded it as failed. */
+export type ReportedAttempt = { readonly id: string; readonly failed: boolean };
+
+export type StoredReport = HostReport & { readonly prep?: Prep; readonly cliVersion?: string; readonly attempt?: ReportedAttempt };
 
 export type CheckinStopReason = "rejected" | "token_expired" | "token_revoked";
 

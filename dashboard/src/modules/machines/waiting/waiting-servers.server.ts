@@ -79,6 +79,7 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
     .orderBy(desc(serverEnrollment.requestedAt), desc(serverEnrollment.id)).limit(1).as("latest_return");
   // The Server the host joined as, while Cloud still lists it.
   const former = drizzle.select({
+    attemptId: sql<string>`${serverEnrollment.id}`.as("former_attempt_id"),
     machineId: sql<string>`${serverEnrollment.machineId}`.as("former_machine_id"),
     machineName: organizationMachine.machineName,
     endedAt: sql<Date>`${serverEnrollment.endedAt}`.as("former_ended_at"),
@@ -106,6 +107,7 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
       returnState: latest.state,
       returnStage: latest.stage,
       returnFailure: latest.failure,
+      formerAttemptId: former.attemptId,
       formerMachineId: former.machineId,
       formerName: former.machineName,
     })
@@ -120,16 +122,20 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
         isNotNull(former.machineId),
         noOpenEnrollment,
         sql`${waitingServer.lastCheckInAt} > ${former.endedAt} + ${REJOINED_AFTER}`,
+        // That Server itself, still checking in because it missed Cloud's answer to its join.
+        sql`not (coalesce(${waitingServer.report}->'attempt'->>'id', '') = ${former.attemptId}::text
+          and coalesce((${waitingServer.report}->'attempt'->>'failed')::boolean, false))`,
       )),
       id === null ? undefined : eq(waitingServer.id, id),
     ))
     .orderBy(asc(arrival), asc(waitingServer.firstSeenAt), asc(waitingServer.id));
   const now = new Date();
-  return rows.map(({ arrivalAt, returnState, returnStage, returnFailure, formerMachineId, formerName, ...listedRow }) => {
+  return rows.map(({ arrivalAt, returnState, returnStage, returnFailure, formerAttemptId: _attempt, formerMachineId, formerName, ...listedRow }) => {
+    const { attempt: _reported, ...reported } = listedRow.report;
     // Listed only once the host checked in long after it joined, so a Server still listed is one it no longer is.
-    const row = formerMachineId === null ? listedRow : {
+    const row = {
       ...listedRow,
-      report: { ...listedRow.report, blockers: [formerServerBlocker(formerName ?? formerMachineId), ...listedRow.report.blockers] },
+      report: formerMachineId === null ? reported : { ...reported, blockers: [formerServerBlocker(formerName ?? formerMachineId), ...reported.blockers] },
     };
     return {
       ...row,

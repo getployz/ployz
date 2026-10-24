@@ -1121,6 +1121,23 @@ it("shows a host that checks in long after joining as Blocked while its old Serv
   expect(await listed()).toMatchObject([{ status: "waiting", report: { hostname: "web-1", blockers: [] } }]);
 });
 
+it("keeps a joined Server hidden while it still checks in because it missed Cloud's answer to its join", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  const attempt = (await autoAttempts())[0]?.id ?? "";
+  await endAuto(attempt, "joined");
+  await harness.pool.query(`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name)
+    values ($1, repeat('a', 32), repeat('c', 64), '{}', 'web-old')`, [adaOrg]);
+  await harness.pool.query("update server_enrollment set ended_at = now() - interval '1 hour'");
+  const missed = { ...readyAuto, attempt: { attemptId: attempt, stage: "publishing", failure: { stage: "publishing", message: "Cloud did not answer" } } };
+
+  expect(await send(token, host, missed)).toEqual(wait);
+  expect(await run(listWaitingServers(ada, { organizationSlug: "ada" }))).toEqual([]);
+  expect(await autoAttempts()).toHaveLength(1);
+});
+
 it.each(["revoked", "expired", "swept"] as const)("refuses a second arrival after an attempt an older app inserted, once the host's row is %s", async (end) => {
   await foundOrganization();
   const { token, id } = await autoToken(5);
