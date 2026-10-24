@@ -872,8 +872,8 @@ pub(crate) fn github_authorize(
 /// What a GitHub build builds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GithubInput {
-    /// The Deployment's lowering input with secrets unsealed and every value sealed
-    /// in the browser left out.
+    /// The Deployment's lowering input with secrets unsealed, and every value sealed
+    /// in the browser left out but the built Service's.
     pub input: serde_json::Value,
     pub commit: CommitSha,
     /// The Service's latest receipt.
@@ -897,7 +897,7 @@ pub(crate) fn github_input(
     let deployment::Lowered {
         mut input, sealed, ..
     } = deployment::lowered(tx, &stored, &saved, sealing)?;
-    let sealed = if sealed.is_empty() {
+    let built = if sealed.is_empty() {
         None
     } else {
         let built = saved
@@ -905,11 +905,14 @@ pub(crate) fn github_input(
             .iter()
             .find(|service| service.config.private_dns == id.service)
             .ok_or_else(|| error::corrupt("GitHub build Service"))?;
-        sealed.get(&built.id).cloned()
+        Some(&built.id)
     };
     for snapshot in &mut input.snapshots {
-        snapshot.resolved_env.retain(|_, value| !value.is_sealed());
+        if snapshot.service_id.as_ref() != built {
+            snapshot.resolved_env.retain(|_, value| !value.is_sealed());
+        }
     }
+    let sealed = built.and_then(|built| sealed.get(built).cloned());
     let input = deployment::json_value(&input);
     // The latest receipt of the Service, a cache hint; its own when it has one.
     let receipt = deployment::receipts(tx, &stored.summary.environment_id)?

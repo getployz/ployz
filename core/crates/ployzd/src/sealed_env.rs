@@ -11,10 +11,9 @@ use std::{
 use futures_util::StreamExt;
 use ployz_core::scrub::{self, Channel, FrameScrub, SealedForms, SealedValues};
 use ployz_core::{
-    ContainerId, EnvPart, EnvValue, HistoryRow, OpaquePayload, SealedIdentity, SealedScope,
-    SealedValue,
+    ContainerId, EnvPart, EnvValue, HistoryRow, OpaquePayload, OpenedSealed, SealedIdentity,
+    SealedScope, SealedValue,
 };
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -27,13 +26,7 @@ use crate::{
 
 pub(crate) const LABEL_SEALED: &str = "ployz.env.sealed";
 
-/// The Sealed values a Container was given, still sealed, keyed by the env
-/// key they opened into.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SealedRecord {
-    identity: SealedIdentity,
-    values: BTreeMap<String, EnvValue>,
-}
+pub use ployz_core::SealedRecord;
 
 #[derive(Debug, Error)]
 pub enum OpenError {
@@ -79,13 +72,10 @@ pub(crate) fn open(
         });
     };
     let identity = identity.ok_or_else(|| OpenError::MissingIdentity(first.clone()))?;
-    let record = SealedRecord {
-        identity: identity.clone(),
-        values: sealed,
-    };
-    record.check_bindings()?;
+    let record = SealedRecord::new(identity.clone(), sealed);
+    check_bindings(&record)?;
     let key = load(key_dir)?;
-    for opened in record.opened(&key)? {
+    for opened in opened(&record, &key)? {
         values.insert(opened.name.to_owned(), opened.whole);
     }
     Ok(OpenedEnv {
@@ -94,19 +84,25 @@ pub(crate) fn open(
     })
 }
 
-impl SealedRecord {
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
-        self.values.keys().map(String::as_str)
-    }
+pub(crate) fn record_from_label(
+    label: Option<&str>,
+) -> Result<Option<SealedRecord>, serde_json::Error> {
+    label.map(serde_json::from_str).transpose()
+}
 
-    pub(crate) fn from_label(label: Option<&str>) -> Result<Option<Self>, serde_json::Error> {
-        label.map(serde_json::from_str).transpose()
-    }
+/// Opening a record with this Machine's Sealing Key.
+pub(crate) trait Unseal {
+    fn secrets(&self, key_dir: Option<&Path>) -> Result<SealedValues, OpenError>;
 
-    pub(crate) fn secrets(&self, key_dir: Option<&Path>) -> Result<SealedValues, OpenError> {
+    /// Open every value for a Build: each whole by name, with the parts that hide
+    /// them in what it reports.
+    fn open_for_build(&self, key_dir: Option<&Path>) -> Result<OpenedSealed, OpenError>;
+}
+
+impl Unseal for SealedRecord {
+    fn secrets(&self, key_dir: Option<&Path>) -> Result<SealedValues, OpenError> {
         let key = load(key_dir)?;
-        Ok(self
-            .opened(&key)?
+        Ok(opened(self, &key)?
             .into_iter()
             .flat_map(|opened| {
                 std::iter::once((opened.name.to_owned(), opened.whole)).chain(opened.parts)
@@ -114,87 +110,77 @@ impl SealedRecord {
             .collect())
     }
 
-    /// Open every value for a Build on this Machine: the values by name for
-    /// its secret files, and the forms that hide them in what it reports.
-    pub(crate) fn open_for_build(
-        &self,
-        key_dir: Option<&Path>,
-    ) -> Result<(BTreeMap<String, String>, SealedForms), OpenError> {
-        self.check_bindings()?;
+    fn open_for_build(&self, key_dir: Option<&Path>) -> Result<OpenedSealed, OpenError> {
+        check_bindings(self)?;
         let key = load(key_dir)?;
-        let opened = self.opened(&key)?;
-        let secrets: SealedValues = opened
-            .iter()
-            .flat_map(|opened| {
-                std::iter::once((opened.name.to_owned(), opened.whole.clone()))
-                    .chain(opened.parts.iter().cloned())
-            })
-            .collect();
-        let values = opened
-            .into_iter()
-            .map(|opened| (opened.name.to_owned(), opened.whole))
-            .collect();
-        Ok((values, SealedForms::compile(&secrets)))
+        let mut values = BTreeMap::new();
+        let mut parts = Vec::new();
+        for opened in opened(self, &key)? {
+            values.insert(opened.name.to_owned(), opened.whole);
+            parts.extend(opened.parts);
+        }
+        Ok(OpenedSealed::new(values, parts))
     }
+}
 
-    fn opened(&self, key: &SealingKey) -> Result<Vec<Opened<'_>>, OpenError> {
-        self.values
-            .iter()
-            .map(|(name, value)| {
-                let mut opened = Opened {
-                    name,
-                    whole: String::new(),
-                    parts: Vec::new(),
-                };
-                for part in parts(value) {
-                    match part {
-                        Part::Text(text) => opened.whole.push_str(text),
-                        Part::Sealed(sealed) => {
-                            let plaintext = self.open(key, name, sealed)?;
-                            if scrub::has_short_row(&plaintext) {
-                                return Err(OpenError::ShortLine(name.clone()));
-                            }
-                            opened.whole.push_str(&plaintext);
-                            opened.parts.push((sealed.key.clone(), plaintext));
+fn opened<'a>(record: &'a SealedRecord, key: &SealingKey) -> Result<Vec<Opened<'a>>, OpenError> {
+    record
+        .values()
+        .iter()
+        .map(|(name, value)| {
+            let mut opened = Opened {
+                name,
+                whole: String::new(),
+                parts: Vec::new(),
+            };
+            for part in parts(value) {
+                match part {
+                    Part::Text(text) => opened.whole.push_str(text),
+                    Part::Sealed(sealed) => {
+                        let plaintext = open_value(record, key, name, sealed)?;
+                        if scrub::has_short_row(&plaintext) {
+                            return Err(OpenError::ShortLine(name.clone()));
                         }
+                        opened.whole.push_str(&plaintext);
+                        opened.parts.push((sealed.key.clone(), plaintext));
                     }
                 }
-                Ok(opened)
-            })
-            .collect()
-    }
-
-    fn check_bindings(&self) -> Result<(), OpenError> {
-        if self.values.contains_key("PORT") {
-            return Err(OpenError::SealedPort);
-        }
-        for (name, value) in &self.values {
-            if name.is_empty() || name.contains(['=', '\0']) {
-                return Err(OpenError::BadName(name.clone()));
             }
-            if let EnvValue::Sealed(sealed) = value {
-                let scope_matches = match sealed.scope {
-                    SealedScope::Shared => true,
-                    SealedScope::Service(service) => service == self.identity.service,
-                };
-                if sealed.key != *name || !scope_matches {
-                    return Err(OpenError::Unbound(name.clone()));
-                }
+            Ok(opened)
+        })
+        .collect()
+}
+
+fn check_bindings(record: &SealedRecord) -> Result<(), OpenError> {
+    if record.values().contains_key("PORT") {
+        return Err(OpenError::SealedPort);
+    }
+    for (name, value) in record.values() {
+        if name.is_empty() || name.contains(['=', '\0']) {
+            return Err(OpenError::BadName(name.clone()));
+        }
+        if let EnvValue::Sealed(sealed) = value {
+            let scope_matches = match sealed.scope {
+                SealedScope::Shared => true,
+                SealedScope::Service(service) => service == record.identity().service,
+            };
+            if sealed.key != *name || !scope_matches {
+                return Err(OpenError::Unbound(name.clone()));
             }
         }
-        Ok(())
     }
+    Ok(())
+}
 
-    fn open(
-        &self,
-        key: &SealingKey,
-        name: &str,
-        sealed: &SealedValue,
-    ) -> Result<String, OpenError> {
-        key.open_value(&sealed.associated_data(&self.identity), &sealed.sealed)
-            .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
-            .ok_or_else(|| OpenError::Unopenable(name.to_owned()))
-    }
+fn open_value(
+    record: &SealedRecord,
+    key: &SealingKey,
+    name: &str,
+    sealed: &SealedValue,
+) -> Result<String, OpenError> {
+    key.open_value(&sealed.associated_data(record.identity()), &sealed.sealed)
+        .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
+        .ok_or_else(|| OpenError::Unopenable(name.to_owned()))
 }
 
 pub(crate) enum Lines {
@@ -494,7 +480,7 @@ mod tests {
         assert_eq!(format!("{secrets:?}"), r#"["PASSWORD", "TOKEN", "URL"]"#);
         let label = serde_json::to_string(&record).unwrap();
         assert_eq!(
-            SealedRecord::from_label(Some(&label)).unwrap(),
+            record_from_label(Some(&label)).unwrap(),
             Some(record.clone())
         );
         assert!(!serde_json::to_string(&record).unwrap().contains("t0ken"));

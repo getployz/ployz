@@ -3,23 +3,27 @@
 //! Machine with a Build Grant. It knows nothing of the CI system running it; it uses
 //! the GitHub Actions cache when that runtime's environment is exported to it.
 
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{collections::BTreeMap, path::Path, process::Command, sync::Arc};
 
 use clap::{ArgMatches, ValueHint};
+use tokio_util::sync::CancellationToken;
 
 use crate::cli::{env, value};
 use ployz_core::{
-    BuildGrant, RETAINED_DIGEST_TAG_PREFIX, ServiceName,
+    BuildGrant, OpenedSealed, RETAINED_DIGEST_TAG_PREFIX, SealedRecord, ServiceName,
     config::{ServiceSource, parse_service_config},
 };
 use serde_json::{Value, json};
 
 use super::{Error, leaf_matches, required, runtime};
 use crate::{
-    build::LocalImage,
+    build::{CapturedBuild, LocalImage},
     connect::{ManagementRelay, open_grant_registry},
     failure::Failure,
-    sdk::{PreparationInput, preparation::capture},
+    sdk::{
+        PreparationInput, expected_fingerprints,
+        preparation::{capture_opened, frozen_intent},
+    },
 };
 
 /// Why `ployz build` refused or failed after its arguments were accepted.
@@ -44,6 +48,10 @@ enum BuildCommandError {
     NotDigestIdentified,
     #[error("{0}")]
     GrantRefused(&'static str),
+    #[error("{0}")]
+    Sealed(String),
+    #[error("the build was cancelled")]
+    Cancelled,
 }
 
 impl From<BuildCommandError> for Failure {
@@ -70,56 +78,133 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
         return Err(Error::usage("--commit must be a full lowercase Git SHA"));
     }
     check_out(&source, &commit)?;
-    let captured = capture(PreparationInput {
-        deployment,
-        sources: BTreeMap::from([(service.clone(), source)]),
-        source_commits: BTreeMap::from([(service.clone(), commit)]),
-        ..PreparationInput::default()
-    })?;
-    if captured
-        .fingerprints
-        .get(&service)
-        .map(|(fingerprint, _)| fingerprint)
-        != Some(&expected)
-    {
+    let fingerprint = expected_fingerprints(
+        deployment.clone(),
+        BTreeMap::from([(service.clone(), commit.clone())]),
+    )?
+    .remove(&service);
+    if fingerprint.as_ref() != Some(&expected) {
         return Err(BuildCommandError::FingerprintMismatch {
             version: env!("CARGO_PKG_VERSION"),
         }
         .into());
     }
-    let events = std::sync::Arc::new(Events(
+    let events = Arc::new(Events(
         matches
             .get_one::<String>("events")
             .map(std::fs::File::create)
             .transpose()?
             .map(std::sync::Mutex::new),
     ));
-    runtime()?.block_on(async {
-        let cancellation = crate::cancellation::on_ctrl_c();
-        let build = captured.build;
-        let export = cancellation.clone();
-        let building = events.clone();
-        let (build, built) = tokio::task::spawn_blocking(move || {
-            let built = build.execute_local(&cancellation, &|event| building.write(event));
-            (build, built)
-        })
+    // A CI runner's TERM must unwind the staged values and capture, not kill the process.
+    let (cancellation, _sigterm) = crate::cancellation::interrupted_or_terminated()?;
+    let runtime = runtime()?;
+    let opened = runtime.block_on(until_cancelled(
+        &cancellation,
+        sealed(&grant, &deployment, &service, &events),
+    ))?;
+    let captured = capture_opened(
+        PreparationInput {
+            deployment,
+            sources: BTreeMap::from([(service.clone(), source)]),
+            source_commits: BTreeMap::from([(service, commit)]),
+            ..PreparationInput::default()
+        },
+        opened,
+    )?;
+    runtime.block_on(run(captured.build, &grant, events, &cancellation))
+}
+
+/// Build `build` locally, push it through `grant` and export its cache, stopping at
+/// `cancellation`. The Build's staged values and capture are gone when this returns.
+async fn run(
+    build: CapturedBuild,
+    grant: &BuildGrant,
+    events: Arc<Events>,
+    cancellation: &CancellationToken,
+) -> Result<(), Error> {
+    let token = cancellation.clone();
+    let building = Arc::clone(&events);
+    let (build, built) = tokio::task::spawn_blocking(move || {
+        let built = build.execute_local(&token, &|event| building.write(event));
+        (build, built)
+    })
+    .await
+    .map_err(std::io::Error::other)?;
+    push(
+        grant,
+        &built.map_err(BuildCommandError::from)?,
+        &events,
+        cancellation,
+    )
+    .await?;
+    // The pushed image and its printed result are final; uploading cache only speeds up
+    // the next Build, so its failure is a warning and it never reaches the events file.
+    let export = cancellation.clone();
+    let exported = tokio::task::spawn_blocking(move || build.export_local_cache(&export))
         .await
         .map_err(std::io::Error::other)?;
-        push(&grant, &built.map_err(BuildCommandError::from)?, &events).await?;
-        // The pushed image and its printed result are final; uploading cache only speeds up
-        // the next Build, so its failure is a warning and it never reaches the events file.
-        let exported = tokio::task::spawn_blocking(move || build.export_local_cache(&export))
-            .await
-            .map_err(std::io::Error::other)?;
-        if let Err(error) = exported {
-            crate::ui::warn_cause(
-                "the image was pushed, but its build cache was not exported",
-                &error,
-            );
-        }
-        Ok(())
+    if let Err(error) = exported {
+        crate::ui::warn_cause(
+            "the image was pushed, but its build cache was not exported",
+            &error,
+        );
+    }
+    Ok(())
+}
+
+async fn until_cancelled<T>(
+    cancellation: &CancellationToken,
+    work: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::select! {
+        done = work => done,
+        () = cancellation.cancelled() => Err(BuildCommandError::Cancelled.into()),
+    }
+}
+
+/// The Sealed values `service` reads, opened by the grant's Machine. A failure reaches
+/// the events file only as a fixed line, naming at most a variable.
+async fn sealed(
+    grant: &BuildGrant,
+    deployment: &Value,
+    service: &ServiceName,
+    events: &Events,
+) -> Result<Option<OpenedSealed>, Error> {
+    let intent = frozen_intent(deployment.clone())?;
+    let record = intent
+        .target
+        .iter()
+        .find(|spec| spec.name == *service)
+        .map(SealedRecord::of)
+        .transpose()
+        .map_err(|error| BuildCommandError::Sealed(error.to_string()))?
+        .flatten();
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    let fetched = async {
+        let registry = open_grant_registry(grant, &ManagementRelay::default()).await?;
+        Ok(registry.sealed().await?)
+    }
+    .await;
+    covering(fetched, &record, events).map(Some)
+}
+
+fn covering(
+    fetched: Result<OpenedSealed, Error>,
+    record: &SealedRecord,
+    events: &Events,
+) -> Result<OpenedSealed, Error> {
+    let opened = fetched.inspect_err(|_| events.push_line(SEALED_UNREAD))?;
+    opened.covering(record.keys()).map_err(|missing| {
+        let missing = missing.to_string();
+        events.push_line(&missing);
+        BuildCommandError::Sealed(missing).into()
     })
 }
+
+const SEALED_UNREAD: &str = "the Server did not open this Build's sealed values";
 
 /// The `--events` file: one `{"at": <unix ms>, "event": {"Build": <progress>}}` line per
 /// event, the SDK preparation event shape Cloud's build log reads. Progress is best effort:
@@ -198,17 +283,25 @@ fn git(source: &Path, args: &[&str]) -> Result<String, Error> {
 /// Push through the grant with `docker push`, which sends only the layers the Machine
 /// lacks, and print what the Machine verified it received. Each layer's progress line
 /// goes to the events file as the push's output.
-async fn push(grant: &BuildGrant, built: &LocalImage, events: &Events) -> Result<(), Error> {
+async fn push(
+    grant: &BuildGrant,
+    built: &LocalImage,
+    events: &Events,
+    cancellation: &CancellationToken,
+) -> Result<(), Error> {
     let digest = &built.image.reference;
     let hex = digest
         .strip_prefix("sha256:")
         .ok_or(BuildCommandError::NotDigestIdentified)?;
     let tag = format!("{}:{RETAINED_DIGEST_TAG_PREFIX}{hex}", built.repository);
     events.write(&ployz_build::Progress::Stage(ployz_build::Stage::Push));
-    let registry = open_grant_registry(grant, &ManagementRelay::default()).await?;
+    let registry = until_cancelled(cancellation, async {
+        Ok(open_grant_registry(grant, &ManagementRelay::default()).await?)
+    })
+    .await?;
     let local = format!("{}/{tag}", registry.address());
     docker(&["tag", digest, &local]).await?;
-    let pushed = docker_push(&local, events).await;
+    let pushed = until_cancelled(cancellation, docker_push(&local, events)).await;
     // The loopback name is meaningless once this command exits.
     let _ = docker(&["image", "rm", &local]).await;
     if let Err(error) = pushed {
@@ -236,6 +329,7 @@ async fn docker_push(reference: &str, events: &Events) -> Result<(), Error> {
         .args(["push", reference])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()?;
     let stderr = child.stderr.take().map(|stderr| {
         tokio::spawn(async move {
@@ -318,4 +412,221 @@ pub(super) fn command(command: clap::Command) -> clap::Command {
                 .value_hint(ValueHint::FilePath)
                 .help("Also write build progress to this file, one JSON line per event"),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use ployz_core::{EnvValue, SealedIdentity, SealedScope, SealedValue};
+
+    use super::*;
+
+    const MARKER: &str = "marker-sealed-0123456789";
+
+    fn sealed_record() -> SealedRecord {
+        let value = EnvValue::Sealed(SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
+            scope: SealedScope::Shared,
+            key: "NPM_TOKEN".into(),
+        });
+        SealedRecord::new(
+            SealedIdentity {
+                organization: "org_test".into(),
+                environment: uuid::Uuid::from_u128(1),
+                service: uuid::Uuid::from_u128(2),
+            },
+            BTreeMap::from([("NPM_TOKEN".into(), value)]),
+        )
+    }
+
+    fn events() -> (tempfile::TempDir, Events) {
+        let directory = tempfile::tempdir().unwrap();
+        let file = fs::File::create(directory.path().join("events")).unwrap();
+        (directory, Events(Some(std::sync::Mutex::new(file))))
+    }
+
+    /// The build output the events file carries.
+    fn written(directory: &tempfile::TempDir) -> String {
+        fs::read_to_string(directory.path().join("events"))
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let event: Value = serde_json::from_str(line).unwrap();
+                let bytes: Vec<u8> =
+                    serde_json::from_value(event.pointer("/event/Build/Output").unwrap().clone())
+                        .unwrap();
+                String::from_utf8(bytes).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_fetch_reaches_the_events_file_as_a_fixed_line() {
+        let (directory, events) = events();
+        let machine = std::io::Error::other("the Machine did not open them: machine detail");
+        let error = covering(Err(machine.into()), &sealed_record(), &events).unwrap_err();
+        assert!(error.to_string().contains("machine detail"), "{error}");
+        let written = written(&directory);
+        assert!(written.contains(SEALED_UNREAD), "{written}");
+        assert!(!written.contains("machine detail"), "{written}");
+    }
+
+    #[test]
+    fn a_fetch_missing_a_value_names_only_the_variable() {
+        let (directory, events) = events();
+        let opened = OpenedSealed::new(
+            BTreeMap::from([("OTHER".into(), MARKER.into())]),
+            Vec::new(),
+        );
+        covering(Ok(opened), &sealed_record(), &events).unwrap_err();
+        let written = written(&directory);
+        assert!(written.contains("NPM_TOKEN"), "{written}");
+        assert!(!written.contains(MARKER), "{written}");
+    }
+
+    #[cfg(target_os = "linux")]
+    mod terminated {
+        use std::time::Duration;
+
+        use ployz_core::ManagementIdentity;
+
+        use super::*;
+        use crate::build::{BuildSpec, Recipe};
+
+        const CHILD: &str = "PLOYZ_BUILD_TERM_CHILD";
+
+        /// Every capture under `tmp` and the Sealed files staged in it.
+        fn staged(tmp: &Path) -> (usize, usize) {
+            let captures = fs::read_dir(tmp)
+                .unwrap()
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("ployz-build-")
+                })
+                .collect::<Vec<_>>();
+            let sealed = captures
+                .iter()
+                .filter(|capture| capture.path().join("private/sealed/NPM_TOKEN").exists())
+                .count();
+            (captures.len(), sealed)
+        }
+
+        #[test]
+        fn a_sigterm_mid_build_unwinds_its_staged_values_and_capture() {
+            use std::os::unix::fs::PermissionsExt as _;
+            let directory = tempfile::tempdir().unwrap();
+            let bin = directory.path().join("bin");
+            let tmp = directory.path().join("tmp");
+            fs::create_dir_all(&bin).unwrap();
+            fs::create_dir_all(&tmp).unwrap();
+            // The solve hangs until it is stopped; teardown succeeds, so the
+            // builder's state is confirmed and not quarantined.
+            fs::write(
+                bin.join("docker"),
+                r#"#!/bin/sh
+    case "$1 $2" in
+      'context show') echo default ;;
+      'info --format') echo '{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}' ;;
+      'buildx ls') echo "{\"Name\":\"ployz-$(id -u)\",\"Nodes\":[{\"Status\":\"running\",\"Platforms\":[\"linux/amd64\"]}]}" ;;
+      'buildx bake') echo $$ >> "$0.pids"; exec sleep 60 ;;
+    esac
+    exit 0
+    "#,
+            )
+            .unwrap();
+            fs::set_permissions(bin.join("docker"), fs::Permissions::from_mode(0o700)).unwrap();
+            let path = format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            );
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "handlers::build::tests::terminated::a_build_runs_until_its_process_is_terminated",
+                    "--exact",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("PATH", path)
+                .env("TMPDIR", &tmp)
+                .spawn()
+                .unwrap();
+            let pids = bin.join("docker.pids");
+            let mut waited = Duration::ZERO;
+            while fs::read_to_string(&pids).map_or(true, |pids| !pids.ends_with('\n')) {
+                assert!(
+                    waited < Duration::from_secs(30),
+                    "the child never started its build"
+                );
+                // real-wait: the Docker stand-in is another process; its start emits no event to await
+                std::thread::sleep(Duration::from_millis(20));
+                waited += Duration::from_millis(20);
+            }
+            assert_eq!(staged(&tmp), (1, 1), "the build staged its Sealed value");
+            Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status()
+                .unwrap();
+            let mut waited = Duration::ZERO;
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                assert!(
+                    waited < Duration::from_secs(30),
+                    "the build ignored SIGTERM"
+                );
+                // real-wait: the child is another process; its exit emits no event to await
+                std::thread::sleep(Duration::from_millis(50));
+                waited += Duration::from_millis(50);
+            };
+            assert!(status.success(), "{status}");
+            assert_eq!(staged(&tmp), (0, 0));
+            let pids = fs::read_to_string(&pids).unwrap();
+            for pid in pids.lines() {
+                let alive = Command::new("kill").args(["-0", pid]).status().unwrap();
+                assert!(!alive.success(), "docker {pid} outlived the build");
+            }
+        }
+
+        #[test]
+        #[ignore = "child of a_sigterm_mid_build_unwinds_its_staged_values_and_capture"]
+        fn a_build_runs_until_its_process_is_terminated() {
+            assert!(std::env::var_os(CHILD).is_some());
+            let (cancellation, _sigterm) =
+                crate::cancellation::interrupted_or_terminated().unwrap();
+            let mut intent = crate::build::tests::intent(&["api"]);
+            let record = sealed_record();
+            let container = &mut intent.target.first_mut().unwrap().container;
+            container.environment.extend(record.values().clone());
+            container.sealed_identity = Some(record.identity().clone());
+            let source = tempfile::tempdir().unwrap();
+            fs::write(
+                source.path().join("Dockerfile"),
+                "FROM scratch\nRUN --mount=type=secret,id=NPM_TOKEN true\n",
+            )
+            .unwrap();
+            let spec = BuildSpec {
+                context: source.path().to_owned(),
+                recipe: Recipe::Dockerfile(source.path().join("Dockerfile")),
+            };
+            let opened = OpenedSealed::new(
+                BTreeMap::from([("NPM_TOKEN".into(), MARKER.into())]),
+                Vec::new(),
+            );
+            let name = intent.target.first().unwrap().name.clone();
+            let build =
+                crate::build::capture(&intent, BTreeMap::from([(name, spec)]), Some(opened))
+                    .unwrap();
+            let grant = BuildGrant::new(ManagementIdentity::from_bytes([7; 32]), [3; 32]);
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let built = runtime.block_on(run(build, &grant, Arc::new(Events(None)), &cancellation));
+            assert!(built.is_err());
+        }
+    }
 }

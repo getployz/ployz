@@ -567,7 +567,7 @@ esac
             pull: false,
             sealed: false,
         };
-        execute(&request, &Cancellation::new(), &|_| ()).unwrap();
+        execute(&request, &Cancellation::new(), None, &|_| ()).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
         Command::new("kill")
             .args([&signal, &std::process::id().to_string()])
@@ -811,18 +811,43 @@ fn repository_reference_rejects_a_malformed_service_image() {
 }
 
 #[test]
-fn a_cache_export_without_a_runner_cache_runs_nothing() {
-    let environment = BTreeMap::new();
+fn a_cache_export_without_a_runner_cache_or_after_reading_plaintext_runs_nothing() {
+    let runner = BTreeMap::from([("ACTIONS_RUNTIME_TOKEN".to_owned(), "token".to_owned())]);
+    let planned = [Railpack {
+        name: "api".into(),
+        context: "source/api".into(),
+        variables: BTreeMap::new(),
+        sealed: BTreeMap::from([("RAILPACK_BUILD_CMD".to_owned(), "f".repeat(64))]),
+        refresh_cache: false,
+    }];
+    for (environment, sealed_override, railpack) in [
+        (BTreeMap::new(), None, &[][..]),
+        (
+            runner.clone(),
+            Some(Path::new("private/sealed/args.compose.yaml")),
+            &[][..],
+        ),
+        (runner, None, &planned[..]),
+    ] {
+        a_cache_export_runs_nothing(&environment, sealed_override, railpack);
+    }
+}
+
+fn a_cache_export_runs_nothing(
+    environment: &BTreeMap<String, String>,
+    sealed_override: Option<&Path>,
+    railpack: &[Railpack],
+) {
     let targets = [target("api", None)];
     let request = Request {
         image_contexts: &BTreeMap::new(),
         compose_file: Path::new("compose.yaml"),
-        sealed_override: None,
+        sealed_override,
         working_dir: Path::new("/nonexistent"),
-        environment: &environment,
+        environment,
         docker: Some(Path::new("/nonexistent/docker")),
         targets: &targets,
-        railpack: &[],
+        railpack,
         build_args: &[],
         output: Output::Load,
         no_cache: false,
@@ -830,7 +855,7 @@ fn a_cache_export_without_a_runner_cache_runs_nothing() {
         sealed: false,
     };
     // Any Docker call would fail: this Docker does not exist.
-    assert_eq!(export_cache(&request, &Cancellation::new()), Ok(()));
+    assert_eq!(export_cache(&request, &Cancellation::new(), None), Ok(()));
 }
 
 #[test]
@@ -919,9 +944,12 @@ fn railpack_delivers_a_sealed_value_to_a_build_step_and_keeps_it_out_of_the_imag
         format!("services:\n  web:\n    image: {image}\n    build:\n      context: source/app\n"),
     )
     .unwrap();
-    let opened = BTreeMap::from([("NPM_TOKEN".to_owned(), value.to_owned())]);
-    let _files = crate::sealed::OpenedFiles::write(&directory, &opened).unwrap();
+    let opened = ployz_core::OpenedSealed::new(
+        BTreeMap::from([("NPM_TOKEN".to_owned(), value.to_owned())]),
+        Vec::new(),
+    );
     let targets = [target("web", None)];
+    let _files = Staged::stage(&directory, &opened, &targets).unwrap();
     let railpack = [Railpack {
         name: "web".into(),
         context: "source/app".into(),
@@ -1194,7 +1222,10 @@ fn dockerfile_sealed_args_reach_the_image_and_invalidate_the_cache() {
             .execute(
                 &definition,
                 None,
-                &BTreeMap::from([("NPM_TOKEN".into(), value.into())]),
+                Some(&ployz_core::OpenedSealed::new(
+                    BTreeMap::from([("NPM_TOKEN".into(), value.into())]),
+                    Vec::new(),
+                )),
                 &|progress| match progress {
                     Progress::Step(step) => steps.lock().unwrap().push(step),
                     Progress::Target { .. } => no_plaintext(&upload_root, value),
@@ -1265,4 +1296,79 @@ fn dockerfile_sealed_args_reach_the_image_and_invalidate_the_cache() {
         &format!("buildx_buildkit_{}-400_state", builder_name()),
     ]);
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn the_rendered_stderr_and_the_observer_both_read_only_scrubbed_progress() {
+    let value = "opened-token-0123456789";
+    let scrub = OutputScrub::new(&ployz_core::OpenedSealed::new(
+        BTreeMap::from([("NPM_TOKEN".to_owned(), value.to_owned())]),
+        Vec::new(),
+    ));
+    let written = std::sync::Mutex::new(Vec::new());
+    let observed = std::sync::Mutex::new(Vec::new());
+    let sinks = Sinks {
+        renderer: PlainRenderer::default(),
+        write: &|text| written.lock().unwrap().extend_from_slice(text),
+        observe: &|event| observed.lock().unwrap().push(format!("{event:?}")),
+        scrub: Some(&scrub),
+    };
+    let output = |text: &str| Progress::StepOutput {
+        step: "sha256:one".into(),
+        stderr: false,
+        text: text.into(),
+    };
+    sinks.emit(Progress::Step(BuildStep {
+        id: "sha256:one".into(),
+        name: format!("RUN echo {value}"),
+        started: Some("t0".into()),
+        completed: None,
+        cached: false,
+        error: None,
+    }));
+    sinks.emit(output("token opened-tok"));
+    sinks.emit(output("en-0123456789 ok\n"));
+    sinks.emit(output("ends opened-"));
+    sinks.finish();
+    let error = sinks.error(
+        BuildError::Step {
+            step: "RUN".into(),
+            error: format!("exit 1: {value}"),
+        }
+        .at(Stage::Building),
+    );
+
+    let written = String::from_utf8(written.into_inner().unwrap()).unwrap();
+    let observed = observed.into_inner().unwrap().concat();
+    for sink in [&written, &observed, &error.to_string()] {
+        assert!(!sink.contains("opened-tok"), "{sink}");
+        assert!(sink.contains("[secret NPM_TOKEN]"), "{sink}");
+    }
+}
+
+#[test]
+fn without_a_scrub_both_sinks_read_progress_as_it_came() {
+    let written = std::sync::Mutex::new(Vec::new());
+    let observed = std::sync::Mutex::new(Vec::new());
+    let sinks = Sinks {
+        renderer: PlainRenderer::default(),
+        write: &|text| written.lock().unwrap().extend_from_slice(text),
+        observe: &|event| observed.lock().unwrap().push(event.clone()),
+        scrub: None,
+    };
+    sinks.emit(Progress::Output(
+        b"plain opened-token-0123456789\n".to_vec(),
+    ));
+    sinks.finish();
+    assert_eq!(
+        observed.into_inner().unwrap(),
+        [Progress::Output(
+            b"plain opened-token-0123456789\n".to_vec()
+        )]
+    );
+    assert!(
+        String::from_utf8(written.into_inner().unwrap())
+            .unwrap()
+            .contains("plain opened-token-0123456789")
+    );
 }

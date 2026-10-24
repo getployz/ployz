@@ -5,6 +5,7 @@ use crate::{
     Admission, BuildError, Progress, Request,
     remote::{CHUNK_SIZE, Definition, Input, Kind},
 };
+use ployz_core::OpenedSealed;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
@@ -134,7 +135,7 @@ impl AdmittedUpload {
         self,
         definition: &Definition,
         docker: Option<&Path>,
-        opened: &BTreeMap<String, String>,
+        opened: Option<&OpenedSealed>,
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<crate::RetainedImages, BuildError> {
         let _ownership = self.admission.lock.clone();
@@ -336,25 +337,27 @@ impl CompletedUpload {
         definition: &Definition,
         admission: Admission,
         docker: Option<&Path>,
-        opened: &BTreeMap<String, String>,
+        opened: Option<&OpenedSealed>,
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<crate::RetainedImages, BuildError> {
         let mut upload = self.0;
+        let none = OpenedSealed::new(BTreeMap::new(), Vec::new());
+        let opened = opened.unwrap_or(&none);
         // Declared after `upload` so the files go before the root does.
-        let mut opened_files = crate::sealed::OpenedFiles::write(&upload.root, opened)?;
+        let staged = crate::Staged::stage(&upload.root, opened, &definition.targets)?;
         let railpack = crate::received_recipe::validate_capture(
             &upload.root,
             definition,
             crate::received_recipe::SealedFiles::Opened,
         )
         .map_err(|error| BuildError::Request(error.to_string()))?;
-        let sealed_override = opened_files.args(&upload.root, definition, opened)?;
+        let sealed_override = staged.compose_override();
         for (path, mode) in upload.directories.iter().rev() {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))
                 .map_err(|error| BuildError::Request(io_error(error).to_string()))?;
         }
         let mut environment = environment(&upload.root);
-        if sealed_override.is_some() {
+        if crate::reads_plaintext(sealed_override, &railpack) {
             // Buildx provenance metadata records build argument values.
             environment.insert("BUILDX_METADATA_PROVENANCE".into(), "disabled".into());
         }
@@ -368,7 +371,7 @@ impl CompletedUpload {
                 image_contexts: &definition.image_contexts,
                 railpack: &railpack,
                 compose_file: Path::new("compose.yaml"),
-                sealed_override: sealed_override.as_deref(),
+                sealed_override,
                 working_dir: &upload.root,
                 environment: &environment,
                 docker,

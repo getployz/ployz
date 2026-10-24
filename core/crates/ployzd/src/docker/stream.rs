@@ -20,7 +20,7 @@ use super::{ContainerRuntime, docker_error};
 use crate::logs::{
     JournalError, LogLineStream, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space,
 };
-use crate::sealed_env::{self, SealedRecord};
+use crate::sealed_env::{self, Unseal as _};
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 const EXEC_OUTPUT_IDLE: Duration = Duration::from_millis(100);
@@ -169,7 +169,7 @@ impl ContainerRuntime {
             machine_id: *machine_id,
             machine_name: machine_name.clone(),
         };
-        let record = SealedRecord::from_label(
+        let record = sealed_env::record_from_label(
             observation
                 .labels
                 .get(sealed_env::LABEL_SEALED)

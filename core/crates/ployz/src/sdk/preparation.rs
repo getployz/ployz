@@ -160,7 +160,15 @@ fn invalid(message: impl ToString) -> RpcError {
 }
 
 /// Capture authorized checkouts as Builds.
-pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation, RpcError> {
+pub(crate) fn capture(input: PreparationInput) -> Result<CapturedPreparation, RpcError> {
+    capture_opened(input, None)
+}
+
+/// [`capture`] for a runner that already holds the Build's Sealed values `opened`.
+pub(crate) fn capture_opened(
+    mut input: PreparationInput,
+    opened: Option<ployz_core::OpenedSealed>,
+) -> Result<CapturedPreparation, RpcError> {
     for receipt in input.build_receipts.values().flatten() {
         if !ployz_core::is_lower_hex(&receipt.fingerprint, 64)
             || !receipt
@@ -234,7 +242,7 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         return Err(invalid("checkout supplied for a non-Git service"));
     }
     let intent = frozen.intent;
-    let build = crate::build::capture(&intent, builds).map_err(invalid)?;
+    let build = crate::build::capture(&intent, builds, opened).map_err(invalid)?;
     // The latest receipt names the warm Machine even when its image is stale.
     // ponytail: one preference per call; a multi-Service prepare builds on one
     // Machine, so it follows its first target's cache holder.

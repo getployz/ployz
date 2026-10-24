@@ -1,12 +1,12 @@
 //! Sealed values a Build reads: kept sealed in private material, shaped for its
-//! recipe, and opened only by the Server Builder.
+//! recipe, and opened only by the Builder.
 
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
-use ployz_core::{DockerfileFacts, EnvValue, RequestedServiceSpec};
+use ployz_core::{DockerfileFacts, EnvValue, OpenedSealed, RequestedServiceSpec, SealedRecord};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -28,7 +28,8 @@ pub(super) struct Sealed {
 
 /// Keep the Sealed values `service` reads in private upload material and shape
 /// them for `recipe`. A Dockerfile is checked once captured, by
-/// [`declared_args`].
+/// [`declared_args`]. Only a capture with the values `opened` may seal a
+/// Railpack setting, which Railpack then plans with.
 ///
 /// # Errors
 /// Fails without the Deploy's Environment to seal for, when the private file
@@ -37,38 +38,32 @@ pub(super) fn capture(
     service: &RequestedServiceSpec,
     recipe: &Recipe,
     inputs: &BuildInputs,
+    opened: Option<&OpenedSealed>,
 ) -> Result<Sealed, Error> {
-    let values: BTreeMap<String, EnvValue> = service
-        .container
-        .environment
-        .iter()
-        .filter(|(_, value)| value.text().is_none())
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
     let mut sealed = Sealed::default();
-    if values.is_empty() {
+    let Some(record) = SealedRecord::of(service).map_err(|error| invalid(error.to_string()))?
+    else {
         return Ok(sealed);
-    }
-    inputs.sealed(&SealedCapture {
-        identity: service
-            .container
-            .sealed_identity
-            .as_ref()
-            .ok_or_else(|| invalid("a sealed value needs the Deploy's Environment"))?,
-        values: &values,
-    })?;
+    };
+    inputs.sealed(&record)?;
+    let values = record.values();
     match recipe {
-        Recipe::Railpack { .. } => {
-            refuse_railpack_settings(values.keys())?;
-            sealed.fingerprints = values
+        Recipe::Railpack { command } => {
+            // An explicit build command wins, as it does over a plain value.
+            let planned = values
                 .iter()
+                .filter(|(name, _)| command.is_none() || name.as_str() != "RAILPACK_BUILD_CMD");
+            if opened.is_none() {
+                refuse_railpack_settings(planned.clone().map(|(name, _)| name))?;
+            }
+            sealed.fingerprints = planned
                 .map(|(name, value)| (name.clone(), fingerprint(value)))
                 .collect();
         }
         Recipe::Dockerfile(_) => {
             sealed
                 .args
-                .insert(SEALED_HASH_ARG.into(), sealed_hash(&values));
+                .insert(SEALED_HASH_ARG.into(), sealed_hash(values));
             sealed.secrets = values
                 .keys()
                 .map(|name| {
@@ -78,7 +73,7 @@ pub(super) fn capture(
                 .collect();
         }
     }
-    sealed.names = values.into_keys().collect();
+    sealed.names = record.keys().map(str::to_owned).collect();
     Ok(sealed)
 }
 
@@ -140,14 +135,6 @@ fn sealed_hash(sealed: &BTreeMap<String, EnvValue>) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-/// `private/sealed.json`: the Sealed values a Build reads, still sealed, in
-/// the shape the Builder's env opening already accepts.
-#[derive(Serialize)]
-pub(super) struct SealedCapture<'value> {
-    identity: &'value ployz_core::SealedIdentity,
-    values: &'value BTreeMap<String, EnvValue>,
 }
 
 /// One Sealed value as a Compose secret: the file the Builder opens it into.
@@ -434,7 +421,7 @@ mod tests {
                 unreachable!()
             };
             let mut inputs = BuildInputs::new().unwrap();
-            let sealed = capture(service, &spec.recipe, &inputs).unwrap();
+            let sealed = capture(service, &spec.recipe, &inputs, None).unwrap();
             fs::write(source, captured).unwrap();
             let file = inputs.dockerfile(source).unwrap();
             fs::write(source, later).unwrap();
@@ -492,6 +479,125 @@ RUN --mount=type=secret,id=RAILPACK_BUILD_CMD true
         // Only the prefix is refused: another sealed value rides as a fingerprint.
         let (intent, _) = sealed_intent(7);
         capture_one(&intent, railpack()).unwrap();
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
+    fn a_runner_holding_its_sealed_values_plans_railpack_with_them() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("repository");
+        fs::create_dir_all(source.join("config")).unwrap();
+        fs::write(
+            source.join("config/custom.json"),
+            r#"{"exclude": ["drop.log"]}"#,
+        )
+        .unwrap();
+        fs::write(source.join("drop.log"), "excluded").unwrap();
+        let (mut intent, _) = sealed_intent(7);
+        let setting = EnvValue::Sealed(ployz_core::SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
+            scope: ployz_core::SealedScope::Shared,
+            key: "RAILPACK_CONFIG_FILE".into(),
+        });
+        intent
+            .target
+            .first_mut()
+            .unwrap()
+            .container
+            .environment
+            .insert("RAILPACK_CONFIG_FILE".into(), setting);
+        let opened = OpenedSealed::new(
+            BTreeMap::from([
+                ("NPM_TOKEN".into(), "marker-sealed-token".into()),
+                ("RAILPACK_CONFIG_FILE".into(), "config/custom.json".into()),
+            ]),
+            Vec::new(),
+        );
+        let name = intent.target.first().unwrap().name.clone();
+        let spec = BuildSpec {
+            context: source,
+            recipe: Recipe::Railpack { command: None },
+        };
+        let mut build =
+            crate::build::capture(&intent, BTreeMap::from([(name, spec)]), Some(opened)).unwrap();
+        let captured = build.targets.pop().unwrap();
+        let root = captured.inputs.root();
+        let compose: serde_norway::Value =
+            serde_norway::from_slice(&fs::read(root.join("compose.yaml")).unwrap()).unwrap();
+        let context = root.join(
+            compose["services"]["api"]["build"]["context"]
+                .as_str()
+                .unwrap(),
+        );
+        assert!(context.join("config/custom.json").exists());
+        assert!(!context.join("drop.log").exists());
+        let railpack = fs::read_to_string(root.join("private/railpack.json")).unwrap();
+        let private: serde_json::Value = serde_json::from_str(&railpack).unwrap();
+        assert!(
+            private[0]["variables"]
+                .get("RAILPACK_CONFIG_FILE")
+                .is_none()
+        );
+        assert_eq!(
+            private[0]["sealed"]["RAILPACK_CONFIG_FILE"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        assert!(!railpack.contains("marker-sealed-token"));
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
+    fn an_explicit_build_command_wins_over_a_sealed_one() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut intent, _) = sealed_intent(7);
+        let setting = EnvValue::Sealed(ployz_core::SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
+            scope: ployz_core::SealedScope::Shared,
+            key: "RAILPACK_BUILD_CMD".into(),
+        });
+        intent
+            .target
+            .first_mut()
+            .unwrap()
+            .container
+            .environment
+            .insert("RAILPACK_BUILD_CMD".into(), setting);
+        let railpack = || BuildSpec {
+            context: root.path().to_owned(),
+            recipe: Recipe::Railpack {
+                command: Some("make release".into()),
+            },
+        };
+        let opened = OpenedSealed::new(
+            BTreeMap::from([
+                ("NPM_TOKEN".into(), "marker-sealed-token".into()),
+                ("RAILPACK_BUILD_CMD".into(), "marker-sealed-command".into()),
+            ]),
+            Vec::new(),
+        );
+        let name = intent.target.first().unwrap().name.clone();
+        for opened in [Some(opened), None] {
+            let mut build = crate::build::capture(
+                &intent,
+                BTreeMap::from([(name.clone(), railpack())]),
+                opened,
+            )
+            .unwrap();
+            let captured = build.targets.pop().unwrap();
+            let railpack =
+                fs::read_to_string(captured.inputs.root().join("private/railpack.json")).unwrap();
+            let private: serde_json::Value = serde_json::from_str(&railpack).unwrap();
+            assert_eq!(
+                private[0]["variables"]["RAILPACK_BUILD_CMD"],
+                "make release"
+            );
+            assert!(private[0]["sealed"].get("RAILPACK_BUILD_CMD").is_none());
+            assert!(private[0]["sealed"].get("NPM_TOKEN").is_some());
+            assert!(!railpack.contains("marker-sealed"));
+        }
     }
 
     #[test]
