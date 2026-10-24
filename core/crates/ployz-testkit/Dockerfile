@@ -12,8 +12,10 @@ RUN apt-get update \
 COPY --from=docker-bin /usr/local/bin/containerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/ctr /usr/local/bin/docker /usr/local/bin/docker-init /usr/local/bin/docker-proxy /usr/local/bin/dockerd /usr/local/bin/runc /usr/local/bin/
 COPY --from=docker-bin /usr/local/bin/dind /usr/local/bin/dind
 COPY --from=docker-bin /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+# Corrosion goes in as an OCI archive, which keeps its index digest, so the
+# containerd store finds the digest-pinned IMAGE in ployzd's corrosion/service.rs.
 RUN mkdir -p /opt/ployz/images \
- && skopeo copy docker://ghcr.io/unlabs-dev/corrosion:2026.6.15 docker-archive:/opt/ployz/images/corrosion.tar:ghcr.io/unlabs-dev/corrosion:2026.6.15 \
+ && skopeo copy --all docker://ghcr.io/getployz/corrosion@sha256:281efeb3ca82eac25e4ebb8a2cb6c61100a9db2948dcf507627aaa48e22e7dff oci-archive:/opt/ployz/images/corrosion.tar:ghcr.io/getployz/corrosion:20261024-b46434825343 \
  && skopeo copy docker://docker.io/library/alpine:3.23.3 docker-archive:/opt/ployz/images/alpine.tar:alpine:3.23.3 \
  && skopeo copy docker://docker.io/library/caddy:2.10.2 docker-archive:/opt/ployz/images/caddy.tar:caddy:2.10.2 \
  && skopeo copy docker://ghcr.io/psviderski/unregistry:0.4.1 docker-archive:/opt/ployz/images/unregistry.tar:ghcr.io/psviderski/unregistry:0.4.1
