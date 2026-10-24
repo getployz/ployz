@@ -623,12 +623,16 @@ It is shared administrative authority, not per-user access; rotating a Managemen
 _Avoid_: per-user permission, read-only grant, Pairing Credential, management endpoint
 
 **Management Client**:
-One named holder slot on a Machine, such as `cloud` or a signed-in device's `cli-<device>`, whose client key may use the management transport. Setting it mints a Management Capability for that holder; clearing it revokes only that holder's connections and leaves a Cleared tombstone of its public keys. A redial with a tombstoned key is refused with `CLIENT_CLEARED`, confirming the removal; any other refused key gets `CLIENT_REFUSED`. The Machine knows holders, never the people or Organizations behind them.
+One named holder slot on a Machine, such as `cloud`, a signed-in computer's `cli-<id>`, or a Device's `device-<code>`, whose client key may use the management transport. Setting it mints a Management Capability for that holder; clearing it revokes only that holder's connections and leaves a Cleared tombstone of its public keys. A redial with a tombstoned key is refused with `CLIENT_CLEARED`, confirming the removal; any other refused key gets `CLIENT_REFUSED`. The Machine knows holders, never the people or Organizations behind them.
 _Avoid_: Cloud Pairing, user, session, per-user permission
 
 **Management Scope**:
-What a Management Client may do on a Machine, read from its slot's label: `cloud` is Operator, every other label is Full. Operator drives the Machine but cannot Exec or open a tunnel, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
+What a Management Client may do on a Machine, read from its slot: a Device slot holding the key its label names is Full, every other slot is Operator, `cloud` and `cli-<id>` included. Operator drives the Machine but cannot Exec or open a tunnel, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
 _Avoid_: role, permission level, access tier
+
+**Device**:
+A person's computer a Machine admits at Full Scope, named by the code of its management public key: the first 10 base32 characters of its SHA-256. Its slot is `device-<code>`, and only a Full caller adds or removes one, so Cloud can relay a Device's request but never approve it. A joining Machine takes the issuing member's Devices from its registration, never from Corrosion.
+_Avoid_: device login, signed-in computer (that is a `cli-<id>` Management Client), user, roster as a replicated table
 
 **Management Proof**:
 A Management Client's signature, by its client key, over keying material only one management connection exports, sent first on that connection. The Machine admits the client key it proves, never the connection's transport key, so each process dials under a key of its own and processes holding one Management Capability never share a relay identity. It cannot be replayed on another connection.

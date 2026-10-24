@@ -47,6 +47,7 @@ const notOrganizationOwned = {
 const organizationOwnedWithoutChangeLog = {
   organization_token: "A credential the dashboard never reads into the Org Store, so it needs no change log.",
   server_access: "A device's credential on one Server; never read into the Org Store, so it needs no change log.",
+  device_request: "A pending Device request the CLI reads by its code; no view reads it, so it needs no change log.",
   organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
   config_create: "The Config Store's record of caller-minted IDs for replay; no view reads it, so it needs no change log.",
   deployment_run: "Which worker run owns a Deployment, read only when Inngest cancels the run; no view reads it, so it needs no change log.",

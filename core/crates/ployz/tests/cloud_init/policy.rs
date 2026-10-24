@@ -13,6 +13,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
             visible_peers: Vec::new(),
             target_versions: Default::default(),
             sealing_key: None,
+            devices: Vec::new(),
         };
         let pairing = json!({ "secret": PAIRING });
         let response = if resume_founder {

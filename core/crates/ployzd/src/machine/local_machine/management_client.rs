@@ -1,8 +1,8 @@
 //! Management Client slots and the client keys they admit, as admitted mutations.
 
 use ployz_core::{
-    LocalMachinePhase, ManagementCapability, SetManagementClientRequest,
-    SetManagementClientResponse,
+    DeviceCode, DeviceSet, LocalMachinePhase, ManagementCapability, ManagementScope,
+    SetDeviceRequest, SetManagementClientRequest, SetManagementClientResponse,
 };
 
 use super::{Error, LocalMachine};
@@ -18,7 +18,8 @@ impl LocalMachine {
     /// never persisted.
     ///
     /// # Errors
-    /// Returns [`Error::OnlyCloudManagesSlots`] when a management client other than
+    /// Returns [`Error::DeviceSlot`] for a `device-` label, which only [`Self::set_device`]
+    /// writes, [`Error::OnlyCloudManagesSlots`] when a management client other than
     /// Cloud's calls it, [`Error::NotParticipating`] when this Machine is not participating,
     /// admission failures, [`Error::RecordOwner`] when the record owner has stopped,
     /// and [`Error::Store`] when the record cannot be written.
@@ -26,6 +27,11 @@ impl LocalMachine {
         &self,
         request: SetManagementClientRequest,
     ) -> Result<SetManagementClientResponse, Error> {
+        let (SetManagementClientRequest::Set { label }
+        | SetManagementClientRequest::Clear { label }) = &request;
+        if DeviceCode::reserves(label) {
+            return Err(Error::DeviceSlot);
+        }
         let local = self.clone();
         let client = self.management_client;
         self.finish_mutation(async move {
@@ -56,6 +62,57 @@ impl LocalMachine {
         })
         .await
     }
+
+    /// Approve or remove one Device on this Machine under mutation admission.
+    ///
+    /// The scope recheck runs on the Machine the caller dialed: a Device removed there
+    /// while its own request waited for admission changes nothing. A routed call reaches
+    /// its target with no management client, since forwarding carries scope rather than
+    /// identity, so the target trusts the entry Machine's check.
+    ///
+    /// # Errors
+    /// Returns [`Error::NeedsFullScope`] when the caller holds no Device slot,
+    /// [`Error::NotParticipating`] when this Machine is not participating, admission
+    /// failures, [`Error::RecordOwner`] when the record owner has stopped, and
+    /// [`Error::Store`] when the record cannot be written.
+    pub async fn set_device(&self, request: SetDeviceRequest) -> Result<DeviceSet, Error> {
+        let local = self.clone();
+        let client = self.management_client;
+        self.finish_mutation(async move {
+            local
+                .owner
+                .mutate(move |store| {
+                    if store.record().phase() != LocalMachinePhase::Participating {
+                        return Err(Error::NotParticipating);
+                    }
+                    if client.is_some_and(|remote| {
+                        store.record().management_scope(&remote) != Some(ManagementScope::Full)
+                    }) {
+                        return Err(Error::NeedsFullScope);
+                    }
+                    Ok(match request {
+                        SetDeviceRequest::Approve { key } => {
+                            let code = key.code();
+                            if store.approve_device(key)? {
+                                DeviceSet::Approved { code }
+                            } else {
+                                DeviceSet::AlreadyApproved { code }
+                            }
+                        }
+                        SetDeviceRequest::Remove { code } => {
+                            if store.remove_device(code)? {
+                                DeviceSet::Removed { code }
+                            } else {
+                                DeviceSet::NotPresent { code }
+                            }
+                        }
+                    })
+                })
+                .await?
+        })
+        .await
+    }
+
     /// Activate a staged management key for an authenticated operational RPC.
     ///
     /// # Errors
@@ -321,5 +378,137 @@ mod tests {
         assert_eq!(record.pending_client(&cloud()), None);
         // One publication means one write: the keys were not cleared separately.
         assert!(!records.has_changed().unwrap());
+    }
+
+    fn device() -> ployz_core::DeviceKey {
+        ployz_core::DeviceKey::from_bytes(*iroh::SecretKey::generate().public().as_bytes())
+    }
+
+    #[tokio::test]
+    async fn a_device_slot_is_full_only_when_set_device_writes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = participating(dir.path()).await;
+        let key = device();
+        assert_eq!(
+            local
+                .set_device(SetDeviceRequest::Approve { key })
+                .await
+                .unwrap(),
+            DeviceSet::Approved { code: key.code() }
+        );
+        assert_eq!(
+            local
+                .set_device(SetDeviceRequest::Approve { key })
+                .await
+                .unwrap(),
+            DeviceSet::AlreadyApproved { code: key.code() }
+        );
+        let record = local.record();
+        assert_eq!(record.accepted_client(&key.label()), Some(*key.as_bytes()));
+        assert_eq!(
+            record.management_scope(key.as_bytes()),
+            Some(ManagementScope::Full)
+        );
+
+        let cloud_key = accepted(&local, "cloud").await;
+        let cli_key = accepted(&local, "cli-laptop").await;
+        for client in [cloud_key, cli_key] {
+            assert_eq!(
+                local.record().management_scope(&client),
+                Some(ManagementScope::Operator)
+            );
+            let caller = local.clone().with_management_client(client);
+            assert!(matches!(
+                caller
+                    .set_device(SetDeviceRequest::Remove { code: key.code() })
+                    .await,
+                Err(Error::NeedsFullScope)
+            ));
+        }
+        assert_eq!(
+            local.record().accepted_client(&key.label()),
+            Some(*key.as_bytes())
+        );
+    }
+
+    #[tokio::test]
+    async fn no_caller_writes_a_device_slot_through_set_management_client() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = participating(dir.path()).await;
+        let key = device();
+        local
+            .set_device(SetDeviceRequest::Approve { key })
+            .await
+            .unwrap();
+        let cloud = local
+            .clone()
+            .with_management_client(accepted(&local, "cloud").await);
+        let before = local.record();
+        for caller in [&local, &cloud] {
+            for request in [
+                SetManagementClientRequest::Set { label: key.label() },
+                SetManagementClientRequest::Clear { label: key.label() },
+                SetManagementClientRequest::Set {
+                    label: ployz_core::ManagementClientLabel::parse("device-new").unwrap(),
+                },
+            ] {
+                assert!(matches!(
+                    caller.set_management_client(request).await,
+                    Err(Error::DeviceSlot)
+                ));
+            }
+        }
+        assert_eq!(local.record(), before);
+    }
+
+    #[tokio::test]
+    async fn remove_tombstones_the_slot_and_reports_a_rerun_as_not_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = participating(dir.path()).await;
+        let key = device();
+        local
+            .set_device(SetDeviceRequest::Approve { key })
+            .await
+            .unwrap();
+        let remove = SetDeviceRequest::Remove { code: key.code() };
+        assert_eq!(
+            local.set_device(remove.clone()).await.unwrap(),
+            DeviceSet::Removed { code: key.code() }
+        );
+        assert!(!local.record().accepts_management_client(key.as_bytes()));
+        assert_eq!(
+            local.set_device(remove).await.unwrap(),
+            DeviceSet::NotPresent { code: key.code() }
+        );
+        assert_eq!(
+            local
+                .set_device(SetDeviceRequest::Approve { key })
+                .await
+                .unwrap(),
+            DeviceSet::Approved { code: key.code() }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_removed_while_its_request_waits_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = participating(dir.path()).await;
+        let first = device();
+        let second = device();
+        local
+            .set_device(SetDeviceRequest::Approve { key: first })
+            .await
+            .unwrap();
+        let caller = local.clone().with_management_client(*first.as_bytes());
+        let lock = local.owner.admission_lock().write_owned().await;
+        let remove = local.set_device(SetDeviceRequest::Remove { code: first.code() });
+        let queued = caller.set_device(SetDeviceRequest::Approve { key: second });
+        tokio::pin!(remove, queued);
+        assert!(futures_util::poll!(&mut remove).is_pending());
+        assert!(futures_util::poll!(&mut queued).is_pending());
+        drop(lock);
+        remove.await.unwrap();
+        assert!(matches!(queued.await, Err(Error::ManagementRevoked)));
+        assert!(!local.record().accepts_management_client(second.as_bytes()));
     }
 }

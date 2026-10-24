@@ -789,6 +789,7 @@ impl FakeMachine for DiscoveryService {
             visible_peers,
             target_versions: BTreeMap::new(),
             sealing_key: None,
+            devices: Vec::new(),
         };
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),

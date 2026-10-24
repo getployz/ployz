@@ -349,6 +349,17 @@ impl MachineRpc for MachineService {
         finish(self.local.set_management_client(request).await)
     }
 
+    async fn set_device(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .set_device(expect::<op::SetDevice>(request)?)
+                .await,
+        )
+    }
+
     async fn set_push_target(
         &self,
         request: Request<OpaquePayload>,
@@ -964,10 +975,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             tonic::Code::Unauthenticated,
             &error,
         )),
-        LocalMachineError::OnlyCloudManagesSlots => Err(ployz_core::rpc::caused_status(
-            tonic::Code::PermissionDenied,
-            &error,
-        )),
+        LocalMachineError::OnlyCloudManagesSlots | LocalMachineError::NeedsFullScope => Err(
+            ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error),
+        ),
         LocalMachineError::NotParticipating => Ok(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
             Ok(unavailable("Cluster store is not available"))
@@ -980,6 +990,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         }
         LocalMachineError::DockerUnavailable => Ok(unavailable("Docker is not available")),
         LocalMachineError::MissingAssignment
+        | LocalMachineError::DeviceSlot
         | LocalMachineError::InvalidPushTarget(_)
         | LocalMachineError::Seal(_) => Ok(RpcError::caused(RpcErrorCode::InvalidArgument, &error)),
         LocalMachineError::Enrollment(error) => {

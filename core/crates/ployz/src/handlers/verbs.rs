@@ -10,8 +10,8 @@ use serde::Serialize;
 use super::debug;
 use super::{
     Handler, account, build, catalog, cloud, completion, config, config_item, context, deploy,
-    docs, domain, env, github, link, login, mcp, metrics, operator, project, recovery, review,
-    server, service, up, volume,
+    device, docs, domain, env, github, link, login, mcp, metrics, operator, project, recovery,
+    review, server, service, up, volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -288,6 +288,26 @@ pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
     deploy::start,
 )
 .needs(Permission::ChangesDeploy);
+pub(crate) const DEVICE_APPROVE: Verb = Verb::local(
+    "device approve",
+    Never,
+    device::approve_command,
+    device::approve,
+)
+.docs("servers/manage-servers.md");
+pub(crate) const DEVICE_LS: Verb =
+    Verb::local("device ls", Never, device::list_command, device::list)
+        .docs("servers/manage-servers.md");
+pub(crate) const DEVICE_RM: Verb =
+    Verb::local("device rm", Always, device::remove_command, device::remove)
+        .docs("servers/manage-servers.md");
+pub(crate) const DEVICE_REQUEST: Verb = Verb::local(
+    "device request",
+    Never,
+    device::request_command,
+    device::request,
+)
+.docs("servers/manage-servers.md");
 pub(crate) const DIFF: Verb =
     Verb::cloud("diff", Never, review::diff_command, review::diff).docs("services/settings.md");
 pub(crate) const DISCARD: Verb =
@@ -818,6 +838,10 @@ pub(crate) const VERBS: &[Verb] = &[
     DEPLOYMENT_REDEPLOY,
     DEPLOYMENT_SHOW,
     DEPLOYMENT_START,
+    DEVICE_APPROVE,
+    DEVICE_LS,
+    DEVICE_RM,
+    DEVICE_REQUEST,
     DIFF,
     DISCARD,
     DOCS,
@@ -938,6 +962,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "deployment",
         command: deploy::deployment_group,
+    },
+    Group {
+        path: "device",
+        command: device::group,
     },
     Group {
         path: "domain",

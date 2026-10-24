@@ -227,6 +227,10 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 `deploy` [token](#make-an-organization-token) can't run them either, even an owner's: it gets
 `This token's grant doesn't include servers:shell.`
 
+`exec` and `service port-forward` also need an approved device. Run `ployz device request` and
+have an owner or admin approve the code. See
+[Approve a device](../servers/manage-servers.md#approve-a-device).
+
 `logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
 shows each server's newest 200 lines at most, with sealed variables scrubbed, and can't use `--follow`,
