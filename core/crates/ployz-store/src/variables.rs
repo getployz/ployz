@@ -191,8 +191,8 @@ pub(crate) fn set(
         (Some(Input::Generate), _) => {
             let sealed = sealer.seal(
                 &environment.summary.id,
-                environment.service(service)?,
-                key,
+                &environment.service(service)?.id,
+                key.as_str(),
                 &generated_secret()?,
             )?;
             (
@@ -223,8 +223,7 @@ pub(crate) fn set(
             (stored(parts), fingerprint, typed)
         }
         (Some(Input::Seal(_)), _) => {
-            guard.admit(key.as_str())?;
-            return Err(invalid(key, client_sealed::PLAINTEXT_REFUSED));
+            return Err(guard.refuse(key.as_str(), invalid(key, client_sealed::PLAINTEXT_REFUSED)));
         }
         (Some(Input::ClientSealed(value)), _) => {
             let receiver = client_sealed::Receiver {
@@ -929,10 +928,9 @@ pub(crate) struct Resolved {
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers, for a Deploy of Environment
 /// `environment`. Nothing opens a secret here. One sealed for `environment` reaches
-/// its Service as a Sealed part; one sealed for another Environment, or by the
-/// Store before values were sealed on the client, is Not set. A variable a secret
-/// without a value, or a broken reference, reaches is left out; in a file either is
-/// empty.
+/// its Service as a Sealed part; one sealed for another Environment, or Legacy, is
+/// Not set. A variable a secret without a value, or a broken reference, reaches is
+/// left out; in a file either is empty.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a reference cycle, a value too long for the
@@ -949,7 +947,6 @@ pub(crate) fn resolve(
             }),
             _ => Ok(ResolverValue::NotSet),
         },
-        // Nothing here holds the key that opens it, so it reaches nothing.
         Some(SecretCiphertext::Legacy(_)) => Ok(ResolverValue::NotSet),
         None => Err(error::corrupt("sealed secret")),
     };

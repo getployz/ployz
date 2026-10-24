@@ -13,19 +13,16 @@ pub(crate) struct Guard {
 }
 
 impl Guard {
-    /// Admit a plain-text secret for variable `key` to the refusal every plain-text
-    /// secret gets, unless it came from the CLI, which is told to update instead.
-    ///
-    /// # Errors
-    /// Returns `unsupported` naming the variable and the update to run.
-    pub(crate) fn admit(self, key: &str) -> Result<(), RpcError> {
+    /// The refusal a plain-text secret for variable `key` gets: `otherwise`, or
+    /// `unsupported` naming the update when it came from the CLI.
+    pub(crate) fn refuse(self, key: &str, otherwise: RpcError) -> RpcError {
         if self.from_cli {
-            return Err(crate::error::unsupported(
+            return crate::error::unsupported(
                 format!("{key}: update ployz to set a Sealed value."),
                 json!({ "variable": key, "next": "curl -fsSL https://ployz.sh | sh" }),
-            ));
+            );
         }
-        Ok(())
+        otherwise
     }
 }
 

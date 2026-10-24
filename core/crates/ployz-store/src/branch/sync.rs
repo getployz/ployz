@@ -595,20 +595,19 @@ pub(crate) fn seal_secret(
         ));
     };
     let key = VariableKey::parse(key)?;
-    let refuse =
+    let refused =
         |message: &str| error::invalid(format!("{label}: {message}"), json!({ "row": row }));
     match value {
         SecretValue::Text(_) => {
-            guard.admit(key.as_str())?;
-            Err(refuse(client_sealed::PLAINTEXT_REFUSED))
+            Err(guard.refuse(key.as_str(), refused(client_sealed::PLAINTEXT_REFUSED)))
         }
         SecretValue::ClientSealed(value) => {
-            let service = receiving(receiver, row).ok_or_else(|| refuse(NOT_THERE))?;
+            let service = receiving(receiver, row).ok_or_else(|| refused(NOT_THERE))?;
             let receiver = client_sealed::Receiver {
                 environment: &receiver.summary.id,
                 service,
             };
-            client_sealed::accept(value.clone(), &key, &receiver, refuse)
+            client_sealed::accept(value.clone(), &key, &receiver, refused)
         }
     }
 }

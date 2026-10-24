@@ -51,27 +51,13 @@ pub(crate) struct Sealer<'a> {
 }
 
 impl Sealer<'_> {
-    /// `plaintext` sealed as variable `key` of `service` in `environment`, as the
-    /// browser would seal it there.
+    /// `plaintext` sealed as variable `key` of the Service with ID `service` in
+    /// `environment`, as the browser would seal it there.
     ///
     /// # Errors
     /// Returns `conflict` when the Cluster has no Server yet, so no key to seal to,
     /// and `invalid_argument` when the receiver has no UUID to bind to.
     pub(crate) fn seal(
-        self,
-        environment: &EnvironmentId,
-        service: &SavedServiceIntent,
-        key: &VariableKey,
-        plaintext: &str,
-    ) -> Result<SealedSecret, RpcError> {
-        self.seal_bound(environment, &service.id, key.as_str(), plaintext)
-    }
-
-    /// [`seal`](Self::seal) for a Service known by its `service` ID alone.
-    ///
-    /// # Errors
-    /// As [`seal`](Self::seal).
-    pub(crate) fn seal_bound(
         self,
         environment: &EnvironmentId,
         service: &str,
