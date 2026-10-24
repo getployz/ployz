@@ -371,6 +371,7 @@ impl CompletedUpload {
                 output: definition.output,
                 no_cache: definition.no_cache,
                 pull: definition.pull,
+                sealed: !opened.is_empty(),
             },
             admission,
             progress,

@@ -175,6 +175,7 @@ exit 0
         output: Output::Registry,
         no_cache: false,
         pull: false,
+        sealed: false,
     };
     execute_admitted(&request, admission, &|_| {}).unwrap();
     assert!(
@@ -209,6 +210,7 @@ fn resource_launch_failure_reports_preparation_and_releases_confirmed_ownership(
             output: Output::Validate,
             no_cache: false,
             pull: false,
+            sealed: false,
         },
         Admission::try_acquire_with(&host.policy).unwrap(),
         &|_| {},
@@ -340,6 +342,7 @@ echo "$*" >> "$root/mutations"
                 output: Output::Validate,
                 no_cache: false,
                 pull: false,
+                sealed: false,
             },
             Admission::try_acquire_with(&host.policy).unwrap(),
             &|_| {},
