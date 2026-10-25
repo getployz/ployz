@@ -1061,11 +1061,21 @@ pub(crate) async fn apply_update(
         Err(error) => {
             let error = match own_start_failure(&error, machine.id, was_off) {
                 Some(failure) if nothing_serves(client, machine.id).await => {
-                    turn_back_off(client, &mut machine, failure, error, rerun, &recovery).await
+                    let selector = selector.as_str();
+                    turn_back_off(
+                        client,
+                        &mut machine,
+                        failure,
+                        error,
+                        rerun,
+                        &recovery,
+                        selector,
+                    )
+                    .await
                 }
                 _ => ingress_incomplete(
                     "Server updated",
-                    super::ingress_hints(error, |args| super::rerun(&recovery, args)),
+                    set_hints(error, &recovery, machine.id, selector.as_str(), &rerun),
                     rerun,
                 ),
             };
@@ -1165,6 +1175,7 @@ async fn turn_back_off(
     failed: Error,
     rerun: String,
     recovery: &ArgMatches,
+    selector: &str,
 ) -> Error {
     let off = MachineUpdate {
         accepts_ingress: Some(false),
@@ -1190,7 +1201,7 @@ async fn turn_back_off(
                     &failed,
                 ),
             };
-            super::ingress_hints(failed, |args| super::rerun(recovery, args))
+            set_hints(failed, recovery, machine.id, selector, &rerun)
                 .context(headline)
                 .hint(Hint::Next(rerun))
         }
@@ -1204,18 +1215,45 @@ async fn turn_back_off(
             );
             let off = super::rerun(
                 recovery,
-                &[
-                    "server",
-                    "set",
-                    machine.id.as_str(),
-                    "--accepts-ingress=false",
-                ],
+                &["server", "set", selector, "--accepts-ingress=false"],
             );
-            super::ingress_log_hints(failed, |args| super::rerun(recovery, args))
+            let id = machine.id;
+            let server = |machine: &MachineId| server_selector(*machine, id, selector);
+            super::ingress_log_hints(failed, |args| super::rerun(recovery, args), server)
                 .context(headline)
                 .with_detail("rollback_error", json!(RpcError::from(error)))
                 .hint(Hint::Next(off))
         }
+    }
+}
+
+/// The Ingress Proxy hints for `server set` on `machine`, which its reader selected as
+/// `selector` (#3341). The retry is left out when it would repeat `next`.
+fn set_hints(
+    error: Error,
+    recovery: &ArgMatches,
+    machine: MachineId,
+    selector: &str,
+    next: &str,
+) -> Error {
+    let command = |args: &[&str]| super::rerun(recovery, args);
+    let server = |failed: &MachineId| server_selector(*failed, machine, selector);
+    let retry = error
+        .diagnostic()
+        .and_then(|diagnostic| diagnostic.failed_machine)
+        .map(|failed| command(&["server", "set", &server(&failed), "--accepts-ingress=true"]))
+        .filter(|retry| retry != next)
+        .map(Hint::Retry);
+    super::ingress_log_hints(error, command, server).hint(retry)
+}
+
+/// How a hint selects Server `id`: as the reader selected `machine`, which already resolved
+/// to one Server, or else by Machine ID, since another Server's name may be ambiguous.
+fn server_selector(id: MachineId, machine: MachineId, selector: &str) -> String {
+    if id == machine {
+        selector.to_owned()
+    } else {
+        id.to_string()
     }
 }
 
@@ -1901,6 +1939,69 @@ mod tests {
             own_start_failure(&failed_on(MachineId::random()), one, Some(one)),
             None,
             "a failure on another Server"
+        );
+    }
+
+    /// `server set` hints select its Server as the reader did, not by Machine ID, and don't
+    /// repeat `next:` as `retry:` (#3341). Another Server stays selected by Machine ID.
+    #[test]
+    fn set_hints_select_the_server_as_typed() {
+        use crate::ui::progress::{Diagnostic, LogTail};
+        use ployz_core::QualifiedService;
+        let (target, other) = (MachineId::random(), MachineId::random());
+        let tail = |machine| LogTail {
+            service: QualifiedService::system_ingress(),
+            name: QualifiedService::system_ingress().name,
+            machine,
+            server: "machine-3".into(),
+            log: None,
+        };
+        let failed_on = |machine| {
+            Error::unavailable("failed to start").with_diagnostic(Diagnostic {
+                failed_machine: Some(machine),
+                logs: vec![tail(machine)],
+                ..Default::default()
+            })
+        };
+        let root = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "server",
+                "set",
+                "machine-3",
+                "--accepts-ingress=true",
+            ])
+            .unwrap();
+        let recovery = leaf_matches(&root);
+        let next = super::super::rerun(
+            recovery,
+            &["server", "set", "machine-3", "--accepts-ingress=true"],
+        );
+        let hints =
+            |error, next: &str| set_hints(error, recovery, target, "machine-3", next).hints();
+
+        assert_eq!(
+            hints(failed_on(target), &next),
+            [Hint::Inspect(
+                "ployz logs ployz-system/ingress --machine machine-3".into()
+            )]
+        );
+        assert_eq!(
+            hints(
+                failed_on(target),
+                "ployz server set machine-3 --accepts-builds=true"
+            ),
+            [
+                Hint::Inspect("ployz logs ployz-system/ingress --machine machine-3".into()),
+                Hint::Retry("ployz server set machine-3 '--accepts-ingress=true'".into()),
+            ]
+        );
+        assert_eq!(
+            hints(failed_on(other), &next),
+            [
+                Hint::Inspect(format!("ployz logs ployz-system/ingress --machine {other}")),
+                Hint::Retry(format!("ployz server set {other} '--accepts-ingress=true'")),
+            ]
         );
     }
 
