@@ -53,7 +53,7 @@ skips pruning, and still deploys.
 
 To keep those other services, pick **Deploy, keep other services** in the bottom bar's **⋮** menu,
 or run `ployz deploy --no-prune`. It still removes the services you removed, and names each one it
-keeps, such as `postgres: running, not in this environment; kept (--no-prune).`
+keeps, such as `postgres: running, not in this environment; kept.`
 
 Deploying only some services never removes another: after `ployz service rm big`,
 `ployz deploy big` fails with `Service big is staged for removal; a full Deploy removes it`, and

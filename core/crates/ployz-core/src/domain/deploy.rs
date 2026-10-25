@@ -756,7 +756,7 @@ impl Display for PruneRefusal {
                 "Pruning is disabled because this command named specific Services, so it is not a full reconciliation.",
             ),
             Self::RemovalsOnly => f.write_str(
-                "Pruning is off (--no-prune): only the services this environment removed are removed; any other service running in it is kept and reported.",
+                "Pruning was off for this deploy: only the services this environment removed are removed; any other service running in it is kept and reported.",
             ),
         }
     }
@@ -1004,7 +1004,7 @@ impl Display for DeployWarning {
             ),
             Self::NotInStore { service } => write!(
                 f,
-                "{service}: running, not in this environment; kept (--no-prune)."
+                "{service}: running, not in this environment; kept."
             ),
         }
     }
