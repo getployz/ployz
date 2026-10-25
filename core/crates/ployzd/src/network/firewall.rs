@@ -104,8 +104,13 @@ fn container_mesh_fence_document() -> Result<String, NetworkError> {
 }
 
 /// Docker filters IPv6 itself, so DOCKER-USER exists for the mesh fence. Without it
-/// the bridge gets no IPv6.
+/// the bridge gets no IPv6. The chain outlives a Docker restart that turns
+/// ip6tables off, so dockerd's own settings decide.
 pub(super) fn docker_ipv6_firewall() -> bool {
+    docker_user_chain() && super::docker_firewall::docker_filters_ipv6()
+}
+
+fn docker_user_chain() -> bool {
     command_succeeds("ip6tables", &["-w", "-t", "filter", "-S", "DOCKER-USER"])
 }
 
@@ -484,7 +489,8 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     for rule in LOOSE_BUILD_FORWARDING {
         attempt(delete_rule("iptables", "mangle", "FORWARD", rule));
     }
-    if docker_ipv6_firewall() {
+    // A fence left in a chain Docker abandoned is still ours to remove.
+    if docker_user_chain() {
         let fence = container_mesh_fence();
         let fence = fence.split(' ').collect::<Vec<_>>();
         attempt(delete_rule("ip6tables", "filter", "DOCKER-USER", &fence));

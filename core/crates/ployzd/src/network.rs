@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
+mod docker_firewall;
 mod endpoints;
 mod firewall;
 mod linux;
