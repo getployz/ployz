@@ -88,8 +88,7 @@ export function databaseCommand(preset: DatabasePreset, target: {
 }): ConfigCommand {
   const { service, volume, environment, name, volumeName } = target;
   // The generated password is a plain value, not sealed: a Branch copy or PR Environment starts with every sealed
-  // value Not set, which would leave its New, empty Volume with no password to initialize from. Passwords sealed
-  // before this stay sealed.
+  // value Not set, which would leave its New, empty Volume with no password to initialize from.
   const env = Object.fromEntries(Object.entries(preset.env(target.password))
     .map(([key, value]) => [key, { value, exported: true }]));
   const settings = { healthcheck: { command: preset.healthcheck }, env };

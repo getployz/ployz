@@ -29,11 +29,12 @@ other services to reference. They use Railway's names, like `PGHOST` and `PGPASS
 app moving from Railway can keep reading them.
 
 The generated password is a plain variable, not sealed, so anyone who can see the service's
-variables can read it. That's what lets a [branch](../environments/environments.md) or a
+variables, its environment's History or a sync's changes can read it. That's what lets a [branch](../environments/environments.md) or a
 [pull request's preview](../environments/preview-environments.md) work: they start with
 sealed values Not set, but they copy plain ones, so a copy of the database sets up its new,
 empty volume with the password its connection variables already hold. To keep a database's
-password sealed, seal it from its menu in **Variables**, and set it in each branch yourself.
+password sealed, seal it from its menu in **Variables**, and set it in each new branch yourself.
+Branches made before you seal it keep their plain copy.
 
 | | Version | Service | URL variable | Port | User |
 | --- | --- | --- | --- | --- | --- |
@@ -115,7 +116,7 @@ IPs.
 - **The password is set once.** PostgreSQL, MySQL and MongoDB read their password only when
   they first set up their volume. If you change the password variable later, change it in the
   database too, or your app can't connect. Redis reads `REDIS_PASSWORD` each time it starts.
-- **A database added before Ployz 0.3.5 keeps its sealed password.** Ployz can't read a sealed
+- **A database added while Ployz sealed its password keeps it sealed.** Ployz can't read a sealed
   value, so it never unseals one. Its branches and previews show the password **Not set**, and
   their copy of the database can't start until you set it in the branch's **Variables**.
 - **Redis can lose its last minute of writes** if it crashes.
