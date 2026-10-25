@@ -537,7 +537,8 @@ const foundingRecovery = Effect.fn("MachineEnrollment.foundingRecovery")(functio
 ) {
   const organizationKey = yield* readOrganizationSealingKey(organizationId);
   if (!(yield* supportsSealingRecovery(recoverySupport, organizationKey !== undefined))) return undefined;
-  return organizationKey === undefined
+  // Only a backup gives a new Cluster a key no Server holds; without one, the founder makes the next key.
+  return organizationKey?.recoveryBlob == null
     ? { kind: "back_up" as const }
     : { kind: "seed" as const, expectedPublicKey: organizationKey.publicKey, backup: organizationKey.recoveryBlob };
 });

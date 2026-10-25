@@ -10,22 +10,26 @@ import {
   rotateRecoveryBackup,
 } from "#/modules/machines/sealing-key.server";
 import { InngestClient } from "#/modules/inngest/client";
+import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import type { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { sendsNowhere } from "#/test/store-cloud";
+import { makeSecretEncryption, type SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000d01";
 const sealingKey = (letter: string) => `${letter.repeat(43)}=`;
 const clusterA = "a".repeat(64);
 const clusterB = "b".repeat(64);
 const backup = (fill: number) => Buffer.concat([Buffer.from([1]), Buffer.alloc(76, fill)]).toString("base64");
+const pairingSecret = "sealing-key-test-pairing-secret";
+const currentCluster = hashEnrollmentToken(pairingSecret);
 
 describe("the Organization's Sealing Key", () => {
   let harness: PostgresTestHarness;
 
-  const run = <A, E>(operation: Effect.Effect<A, E, Database | InngestClient>) =>
+  const run = <A, E>(operation: Effect.Effect<A, E, Database | InngestClient | SecretEncryption>) =>
     harness.runEffect(operation.pipe(Effect.provideService(InngestClient, sendsNowhere())));
-  const failure = <A, E>(operation: Effect.Effect<A, E, Database | InngestClient>) => run(Effect.flip(operation));
+  const failure = <A, E>(operation: Effect.Effect<A, E, Database | InngestClient | SecretEncryption>) => run(Effect.flip(operation));
   const stored = async () => (await harness.pool.query(
     "select public_key, recovery_blob from organization_sealing_key where organization_id = $1",
     [organizationId],
@@ -33,6 +37,15 @@ describe("the Organization's Sealing Key", () => {
   const store = (publicKey: string, recoveryBlob: string | null) => harness.pool.query(
     "insert into organization_sealing_key (organization_id, public_key, recovery_blob) values ($1, $2, $3)",
     [organizationId, publicKey, recoveryBlob],
+  );
+  const pair = () => harness.pool.query(
+    `insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
+     values ($1, $2, $3, $3)`,
+    [organizationId, JSON.stringify(makeSecretEncryption("test-encryption-secret").encrypt(pairingSecret)), "1".repeat(32)],
+  );
+  const reportCluster = (clusterKey: string, publicKey: string) => harness.pool.query(
+    "insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1, $2, $3)",
+    [organizationId, clusterKey, publicKey],
   );
 
   beforeAll(async () => {
@@ -53,9 +66,23 @@ describe("the Organization's Sealing Key", () => {
   describe("recorded from a Cluster's report", () => {
     it("keeps the first key an Organization reported", async () => {
       await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
-      await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("B")));
+      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("B")));
 
       expect(await stored()).toEqual([{ public_key: sealingKey("A"), recovery_blob: null }]);
+    });
+
+    it("takes a later Cluster's key while no backup holds the first", async () => {
+      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
+      await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("B")));
+
+      expect(await stored()).toEqual([{ public_key: sealingKey("B"), recovery_blob: null }]);
+    });
+
+    it("keeps a key that has a backup when a later Cluster reports another", async () => {
+      await store(sealingKey("A"), backup(2));
+      await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("B")));
+
+      expect(await stored()).toEqual([{ public_key: sealingKey("A"), recovery_blob: backup(2) }]);
     });
 
     it("keeps no Cluster key whose reseal request failed to record, so the next report sends it", async () => {
@@ -129,6 +156,34 @@ describe("the Organization's Sealing Key", () => {
     it("is not found without a recorded key", async () => {
       expect((await failure(readSealingRecovery(organizationId)))._tag).toBe("NotFound");
     });
+
+    it("returns the current Cluster's key in place of one no backup holds", async () => {
+      await store(sealingKey("A"), null);
+      await pair();
+      await reportCluster(currentCluster, sealingKey("B"));
+
+      expect(await run(readSealingRecovery(organizationId))).toEqual({ publicKey: sealingKey("B"), backup: null, digest: null });
+      expect(await stored()).toEqual([{ public_key: sealingKey("B"), recovery_blob: null }]);
+    });
+
+    it("keeps a key that has a backup though the current Cluster reported another", async () => {
+      await store(sealingKey("A"), backup(2));
+      await pair();
+      await reportCluster(currentCluster, sealingKey("B"));
+
+      expect(await run(readSealingRecovery(organizationId))).toMatchObject({ publicKey: sealingKey("A"), backup: backup(2) });
+      expect(await stored()).toEqual([{ public_key: sealingKey("A"), recovery_blob: backup(2) }]);
+    });
+
+    it("keeps a key no backup holds while no current Cluster reported one", async () => {
+      await store(sealingKey("A"), null);
+      await reportCluster(clusterB, sealingKey("B"));
+      expect(await run(readSealingRecovery(organizationId))).toMatchObject({ publicKey: sealingKey("A") });
+
+      await pair();
+      expect(await run(readSealingRecovery(organizationId))).toMatchObject({ publicKey: sealingKey("A") });
+      expect(await stored()).toEqual([{ public_key: sealingKey("A"), recovery_blob: null }]);
+    });
   });
 
   describe("rotating the recovery backup", () => {
@@ -180,10 +235,6 @@ describe("the Organization's Sealing Key", () => {
       const breakpoint = "--> statement-breakpoint";
       await harness.pool.query(migration.slice(migration.lastIndexOf(breakpoint) + breakpoint.length));
     };
-    const reportCluster = (clusterKey: string, publicKey: string) => harness.pool.query(
-      "insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1, $2, $3)",
-      [organizationId, clusterKey, publicKey],
-    );
 
     it("records the one key every Cluster reported", async () => {
       await reportCluster(clusterA, sealingKey("A"));
