@@ -1423,7 +1423,7 @@ mod tests {
         let generator = Generator::new(256, "abc").unwrap();
         let first = super::generate(&generator).unwrap();
         let second = super::generate(&generator).unwrap();
-        assert_ne!(first, second);
+        assert!(first != second, "two draws matched");
         let mut counts = [0_usize; 3];
         for _ in 0..256 {
             for byte in super::generate(&generator).unwrap().bytes() {
