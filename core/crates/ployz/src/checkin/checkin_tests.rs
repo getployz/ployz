@@ -270,6 +270,11 @@ fn an_answer_cloud_could_not_have_sent_is_not_cloud() {
             "Already enrolled.",
         ),
         (
+            StatusCode::CONFLICT,
+            r#"{"error":{"code":"conflict","details":null,"message":"Taken."}}"#,
+            "Taken.",
+        ),
+        (
             StatusCode::UNPROCESSABLE_ENTITY,
             r#"{"_tag":"PublicError","code":"invalid","message":"Bad host."}"#,
             "Bad host.",
@@ -286,6 +291,7 @@ fn an_answer_cloud_could_not_have_sent_is_not_cloud() {
     for body in [
         &br#"{"_tag":"PublicError","message":"no code"}"#[..],
         br#"{"error":7}"#,
+        br#"{"error":{"message":"no code"}}"#,
         br#"{"detail":"Forbidden"}"#,
     ] {
         assert_eq!(

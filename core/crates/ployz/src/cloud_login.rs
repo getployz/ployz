@@ -638,16 +638,26 @@ pub(crate) fn answered(prefix: &str, status: u16, body: &str) -> String {
         .unwrap_or_else(|| format!("{prefix} HTTP {status}{}", readable(body)))
 }
 
-/// The sentence a Cloud refusal carries: a route's `PublicError`, or the `{error}` a
-/// public endpoint sends.
+/// The sentence a Cloud refusal carries: a route's `PublicError`, the `{error}` a
+/// public endpoint sends, or the `{error: {code, message}}` a command refuses with.
 pub(crate) fn cloud_message(body: &[u8]) -> Option<String> {
     let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    let text = |field: &str| body.get(field).and_then(serde_json::Value::as_str);
-    let message = match text("_tag") {
-        Some("PublicError") => text("code").and(text("message")),
-        _ => text("error"),
+    let text = |value: &serde_json::Value, field: &str| {
+        value
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
     };
-    message.map(str::to_owned)
+    match text(&body, "_tag").as_deref() {
+        Some("PublicError") => text(&body, "code").and(text(&body, "message")),
+        _ => {
+            let error = body.get("error")?;
+            if let Some(said) = error.as_str() {
+                return Some(said.to_owned());
+            }
+            text(error, "code").and(text(error, "message"))
+        }
+    }
 }
 
 /// `body` as the tail of a status line: a short text or JSON answer is worth
