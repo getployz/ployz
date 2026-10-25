@@ -4,12 +4,17 @@ use super::DeploySnapshot;
 use ployz_core::{
     DeployWarning, MachineId, MembershipEvidence, Namespace, ObservationGap, ObservationGapReason,
     ObservationKind, QualifiedService, RequestedServiceSpec, ServicePlacementEligibility,
+    ServiceRemovals,
 };
 
+/// `removals` names the Services this Deploy must take out wherever they run. A
+/// Machine it could not check may hold a copy it never saw, so every such Machine
+/// is a gap: the report names it, and the next full Deploy prunes that copy.
 pub(super) fn warnings(
     namespace: &Namespace,
     requested: &[RequestedServiceSpec],
     retiring: &[QualifiedService],
+    removals: &ServiceRemovals,
     snapshot: &DeploySnapshot,
 ) -> Vec<DeployWarning> {
     let mut warnings = super::super::observation_warnings(
@@ -63,7 +68,9 @@ pub(super) fn warnings(
                     ServicePlacementEligibility::Ineligible(_)
                 )
         });
+        let removing = kind == ObservationKind::Container && !removals.is_empty();
         if candidate
+            || removing
             || affected_existing(kind, machine_id, namespace, requested, retiring, snapshot)
         {
             *gap = Some(ObservationGap {

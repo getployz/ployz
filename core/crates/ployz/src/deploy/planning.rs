@@ -937,7 +937,13 @@ fn assemble_plan(
     let services = snapshot.services_in(&intent.namespace);
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
-    let mut warnings = observation::warnings(&intent.namespace, &requested, &retiring, snapshot);
+    let mut warnings = observation::warnings(
+        &intent.namespace,
+        &requested,
+        &retiring,
+        &intent.options.removals,
+        snapshot,
+    );
     if prune_refusal == Some(PruneRefusal::RemovalsOnly) {
         warnings.extend(
             would_remove

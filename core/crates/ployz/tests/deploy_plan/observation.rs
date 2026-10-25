@@ -1,7 +1,7 @@
 use super::support::*;
 use ployz_core::{
     DependencyCondition, DeployWarning, MachineFailure, MembershipEvidence, ObservationGapReason,
-    RpcError, RpcErrorCode, ServiceDependency,
+    RpcError, RpcErrorCode, ServiceDependency, ServiceRemovals,
 };
 
 fn snapshot() -> DeploySnapshot {
@@ -183,6 +183,55 @@ fn unrelated_existing_work_and_converged_removal_do_not_invent_a_gap() {
         !preview_deploy(&removal, &snapshot)
             .unwrap()
             .has_observation_gaps()
+    );
+}
+
+/// A named removal must reach every copy of its Service, and a Server this Deploy
+/// could not check may hold one it never saw. So that Server is a gap even when
+/// the Deploy plans nothing: the report names it, and the next full Deploy prunes
+/// whatever copy it holds.
+#[test]
+fn a_named_removal_makes_every_server_the_deploy_could_not_check_a_gap() {
+    let removal = DeployIntent::new(
+        Namespace::parse("app").unwrap(),
+        Vec::new(),
+        PlanOptions {
+            removals: ServiceRemovals::from_names([ServiceName::parse("rmme").unwrap()]),
+            ..Default::default()
+        },
+    );
+    let preview = preview_deploy(&removal, &snapshot()).unwrap();
+    assert!(preview.operations.is_empty(), "{:?}", preview.operations);
+    assert_eq!(
+        gaps(&preview),
+        [(machine_id('2'), ObservationGapReason::Down)]
+    );
+    assert!(
+        preview.warnings.contains(&DeployWarning::MixedAfterReturn {
+            machine: "unobserved".into(),
+        }),
+        "{:?}",
+        preview.warnings
+    );
+
+    let unread = DeploySnapshot {
+        machines: vec![machine('1', "available"), machine('2', "unread")],
+        container_failures: vec![MachineFailure {
+            machine_id: machine_id('2'),
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "listing failed".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }],
+        ..Default::default()
+    };
+    let preview = preview_deploy(&removal, &unread).unwrap();
+    assert!(preview.operations.is_empty(), "{:?}", preview.operations);
+    assert_eq!(
+        gaps(&preview),
+        [(machine_id('2'), ObservationGapReason::Failed)]
     );
 }
 
