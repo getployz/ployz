@@ -24,8 +24,8 @@ cloud-init or a script, or with `--json` unless you add `--show-recovery-code`. 
 ployz recovery rotate --connect ssh://root@203.0.113.10
 ```
 
-Give it any of your servers. It prints a new code, and your old code stops working. Run it in a
-terminal: with no terminal to show the code, it refuses and changes nothing. Only an owner or admin can rotate the code.
+Give it any of your servers. It prints a new code, and the backup in Ployz Cloud opens only with
+that code from then on. Run it in a terminal: with no terminal to show the code, it refuses and changes nothing. Only an owner or admin can rotate the code.
 
 Rotate the code too if you lose it or think someone else has seen it. You need a running
 server to do that.
@@ -58,9 +58,12 @@ Ployz included.
   and says it "does not open with this Cluster's Sealing Key". Delete each one and add it
   again with its value.
 - **A server waits in Needs recovery, and `ployz recover` says "Nothing to recover from".**
-  Your servers were added before Ployz Cloud stopped expecting a key it had no backup of.
-  [Forget your servers](manage-servers.md#forget-servers-you-deleted) once more and add one
-  again. It then starts with a new key and a new code, as above.
+  Your servers were added before Ployz Cloud stopped expecting a key it had no backup of. Stop
+  Ployz on the waiting server with `sudo systemctl stop ployz.socket ployz`, since Ployz won't
+  forget a server that still answers. Then
+  [forget your servers](manage-servers.md#forget-servers-you-deleted) once more and add one
+  again. It starts with a new key and a new code, as above. To add the same server again, add
+  `--reset`, as in [The server is already initialised](../troubleshooting/servers.md#the-server-is-already-initialised).
 - **You had a code but lost it.** A new server keeps waiting for that code, and forgetting it
   again doesn't help. Rotate the code while you still have a server, so this never happens.
 
