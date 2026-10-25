@@ -173,7 +173,7 @@ pub(crate) fn set(
         (
             current.value.clone(),
             current.value_fingerprint.clone(),
-            current.generated.clone(),
+            current.generator().cloned(),
             None,
         )
     };
@@ -215,7 +215,7 @@ pub(crate) fn set(
         // Asking again for the generator a variable has keeps its value: a retried edit or
         // a re-applied patch must not rotate a password a database already initialized with.
         (Some(Input::Generated(generator)), Some(current))
-            if current.generated.as_ref() == Some(&generator) && !current.awaits_value() =>
+            if current.generator() == Some(&generator) && !current.awaits_value() =>
         {
             kept(current)
         }
@@ -235,7 +235,7 @@ pub(crate) fn set(
             let value = stored(parts);
             // A generated variable's own value, as reads show it, set back stays generated.
             match current {
-                Some(current) if current.generated.is_some() && current.value == value => {
+                Some(current) if current.generator().is_some() && current.value == value => {
                     kept(current)
                 }
                 Some(_) | None => (value, fingerprint, None, typed),
@@ -897,8 +897,8 @@ pub(crate) fn make_generated(
         .iter_mut()
         .flat_map(|service| service.variables.iter_mut())
     {
-        if let (true, Some(generator)) = (variable.awaits_value(), &variable.generated) {
-            (variable.value, variable.value_fingerprint) = generated_value(generator)?;
+        if let (true, Some(generator)) = (variable.awaits_value(), variable.generator().cloned()) {
+            (variable.value, variable.value_fingerprint) = generated_value(&generator)?;
         }
     }
     Ok(())
@@ -922,7 +922,7 @@ pub(crate) fn take_generated(
         for variable in service.variables.iter_mut().filter(|v| v.awaits_value()) {
             if let Some(made) = source.variables.iter().find(|made| {
                 made.key == variable.key
-                    && made.generated == variable.generated
+                    && made.generator() == variable.generator()
                     && !made.awaits_value()
             }) {
                 variable.value.clone_from(&made.value);

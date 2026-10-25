@@ -606,7 +606,7 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
 }
 
 fn variable_cell(variable: &SavedVariableIntent) -> Cell {
-    if let Some(generator) = &variable.generated {
+    if let Some(generator) = variable.generator() {
         return generated_cell(generator);
     }
     match &variable.value {

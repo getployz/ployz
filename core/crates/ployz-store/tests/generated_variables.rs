@@ -462,3 +462,75 @@ fn undoing_a_sync_puts_back_the_value_the_receiver_held() {
         "undo made a new value"
     );
 }
+
+fn save(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &ployz_store::Command::Publish(ployz_store::Publish {
+                id: None,
+                environment: at("production"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            }),
+        )
+        .unwrap();
+}
+
+#[test]
+fn sealing_a_generated_value_keeps_history_readable_and_restorable() {
+    let (store, who) = shop();
+    save(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "db.env.PASSWORD",
+            backend::sealed_secret(&uuid(2), &uuid(4), "PASSWORD", 1),
+        )],
+    )
+    .unwrap();
+    save(&store, &who);
+    let history = store
+        .read(
+            &who,
+            &ployz_store::HistoryQuery {
+                environment: at("production"),
+                limit: None,
+            },
+        )
+        .unwrap();
+    let first = history.revisions.last().unwrap().revision;
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: at("production"),
+                revision: first,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: at("production"),
+                revision: first,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+    // History never brings back plain text for a sealed key: it stays sealed.
+    assert_eq!(
+        env(&store, &who, "production", "db", "PASSWORD"),
+        json!({ "secret": true })
+    );
+    save(&store, &who);
+}

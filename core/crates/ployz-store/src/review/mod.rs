@@ -1080,6 +1080,8 @@ impl Scrub {
                 if was.value != *value {
                     was.value = value.clone();
                     fingerprint.clone_into(&mut was.value_fingerprint);
+                    // A sealed value is never generated.
+                    was.generated = None;
                     scrubbed = true;
                 }
             }

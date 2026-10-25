@@ -245,6 +245,13 @@ mod tests {
     }
 
     #[test]
+    fn a_marker_on_a_sealed_value_reads_and_canonicalizing_drops_it() {
+        let stored = r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"f","value":{"kind":"secret_without_value"},"generated":{"length":32,"charset":"a-z"}}"#;
+        let variable: crate::config::SavedVariableIntent = serde_json::from_str(stored).unwrap();
+        assert_eq!(variable.generator(), None);
+    }
+
+    #[test]
     fn text_without_a_secret_call_is_ordinary() {
         for text in [
             "plain",

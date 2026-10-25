@@ -275,19 +275,32 @@ pub struct SavedVariableIntent {
     pub value_fingerprint: String,
     pub value: SavedVariableValue,
     /// How the Store makes this variable's value, which each Environment holds its own
-    /// of: set only on a literal. Written only when set, so other documents keep their
-    /// bytes and fingerprints.
+    /// of. It counts only on a literal: read it through [`Self::generator`], and
+    /// canonicalizing drops it from any other value, so a document that sealed the value
+    /// and kept the marker still reads. Written only when set, so other documents keep
+    /// their bytes and fingerprints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub generated: Option<Generator>,
 }
 
 impl SavedVariableIntent {
+    /// How the Store makes this variable's value: only a literal is generated.
+    #[must_use]
+    pub fn generator(&self) -> Option<&Generator> {
+        match self.value {
+            SavedVariableValue::Literal { .. } => self.generated.as_ref(),
+            SavedVariableValue::Template { .. }
+            | SavedVariableValue::Secret { .. }
+            | SavedVariableValue::SecretWithoutValue => None,
+        }
+    }
+
     /// Whether this generated variable arrived without its own value yet: a copy or Sync
     /// brought its [`Generator`], and the Store makes the value before it saves.
     #[must_use]
     pub fn awaits_value(&self) -> bool {
-        self.generated.is_some()
+        self.generator().is_some()
             && matches!(&self.value, SavedVariableValue::Literal { value } if value.is_empty())
     }
 }
@@ -618,14 +631,6 @@ fn validate_variables(variables: &[SavedVariableIntent]) -> Result<(), ConfigErr
                 "Only a secret without a value has no fingerprint",
             ));
         }
-        if variable.generated.is_some()
-            && !matches!(variable.value, SavedVariableValue::Literal { .. })
-        {
-            return Err(ConfigError::at(
-                "variables.generated",
-                "Only a literal value is generated",
-            ));
-        }
         if let SavedVariableValue::Secret {
             encrypted_value: Some(SecretCiphertext::Legacy(value)),
         } = &variable.value
@@ -672,6 +677,11 @@ pub fn canonicalize_environment_intent(
             (&a.mount_dir, &a.config_resource_id).cmp(&(&b.mount_dir, &b.config_resource_id))
         });
         service.variables.sort_by(|a, b| a.id.cmp(&b.id));
+        for variable in &mut service.variables {
+            if variable.generator().is_none() {
+                variable.generated = None;
+            }
+        }
         service.volume_attachments.sort_by(|a, b| {
             (&a.mount_path, &a.volume_resource_id).cmp(&(&b.mount_path, &b.volume_resource_id))
         });

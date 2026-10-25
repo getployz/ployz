@@ -2297,6 +2297,7 @@ fn keep_sealed(
                         .value_fingerprint
                         .clone_from(&now.value_fingerprint);
                     variable.value = now.value.clone();
+                    variable.generated.clone_from(&now.generated);
                 }
                 Some(now) if now.value == variable.value => {}
                 Some(_) if ever.holds(&service.id, variable) => {
@@ -2309,6 +2310,7 @@ fn keep_sealed(
                 None if sealed(&variable.value) || ever.holds(&service.id, variable) => {
                     variable.value = SavedVariableValue::SecretWithoutValue;
                     variable.value_fingerprint.clear();
+                    variable.generated = None;
                     not_set.push(NotSetVariable {
                         service: ServiceName::parse(&service.slug)
                             .map_err(|_| error::corrupt("Service name"))?,

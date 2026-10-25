@@ -322,6 +322,7 @@ impl Resealing<'_> {
             variable.value = SavedVariableValue::Secret {
                 encrypted_value: Some(sealed.value),
             };
+            variable.generated = None;
             self.tally.resealed += 1;
             changed = true;
         }
