@@ -104,38 +104,63 @@ const GIT_AUTH_SECRETS: &str = "GIT_AUTH_";
 
 /// The `ARG`s the captured Dockerfile declares, the same bytes BuildKit reads,
 /// and whether it may read every Sealed value. BuildKit resolves a secret
-/// mount's id late (quoting, `src`, `$ARG`, `ONBUILD`), and another frontend
-/// reads secrets its own way, so any mount or such frontend reads them all.
+/// mount's id late (quoting, `src`, `$ARG`, `ONBUILD`, continuations), and
+/// another frontend reads secrets its own way, so any text that could be a
+/// mount or select such a frontend reads them all.
 fn dockerfile_reads(
     dockerfile: &Path,
     service: &RequestedServiceSpec,
 ) -> Result<(BTreeSet<String>, bool), Error> {
     let contents = std::fs::read_to_string(dockerfile)
         .map_err(|error| Error::Io(format!("read captured Dockerfile: {error}")))?;
-    let folded: String = contents
-        .chars()
-        .filter(|character| !character.is_whitespace() && !matches!(character, '"' | '\'' | '\\'))
-        .flat_map(char::to_lowercase)
-        .collect();
-    let standard = |syntax: &str| {
-        let syntax = syntax.trim().to_ascii_lowercase();
-        let syntax = syntax.strip_prefix("docker.io/").unwrap_or(&syntax);
-        syntax.starts_with("docker/dockerfile:") || syntax == "docker/dockerfile"
-    };
-    let directive = contents
+    // A comment may sit inside a continued instruction, so read with them and without.
+    let uncommented: String = contents
         .lines()
-        .map(str::trim)
-        .take_while(|line| line.starts_with('#'))
-        .filter_map(|line| line.trim_start_matches('#').split_once('='))
-        .any(|(key, value)| key.trim().eq_ignore_ascii_case("syntax") && !standard(value));
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    let mounts = [contents.as_str(), uncommented.as_str()]
+        .map(fold)
+        .iter()
+        .any(|text| text.contains("type=secret") || text.contains("type=$"));
+    let folded = fold(&contents);
+    let selected = ["syntax=", "syntax:"]
+        .iter()
+        .flat_map(|key| {
+            folded
+                .match_indices(key)
+                .map(|(at, key)| &folded[at + key.len()..])
+        })
+        .any(|syntax| !standard_frontend(syntax));
     let variable = service
         .container
         .environment
         .get("BUILDKIT_SYNTAX")
-        .is_some_and(|value| !value.text().is_some_and(standard));
-    let every =
-        folded.contains("type=secret") || folded.contains("type=$") || directive || variable;
-    Ok((DockerfileFacts::parse(&contents).args, every))
+        .is_some_and(|value| {
+            !value
+                .text()
+                .map(fold)
+                .is_some_and(|syntax| standard_frontend(&syntax))
+        });
+    Ok((
+        DockerfileFacts::parse(&contents).args,
+        mounts || selected || variable,
+    ))
+}
+
+/// `text` lowercased without whitespace, quotes, escape characters or a BOM.
+fn fold(text: &str) -> String {
+    text.chars()
+        .filter(|character| {
+            !character.is_whitespace() && !matches!(character, '"' | '\'' | '\\' | '`' | '\u{feff}')
+        })
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Whether folded `syntax` starts with the stock Dockerfile frontend.
+fn standard_frontend(syntax: &str) -> bool {
+    let syntax = syntax.strip_prefix("docker.io/").unwrap_or(syntax);
+    syntax.starts_with("docker/dockerfile:") || syntax.starts_with("docker/dockerfile@")
 }
 
 /// Railpack reads its `RAILPACK_*` settings while it plans, where a Sealed
@@ -487,6 +512,20 @@ mod tests {
                 every,
             ),
             ("# syntax=example.test/frontend\nFROM scratch\n", every),
+            (
+                "# escape=`\nFROM scratch\nRUN --mount=type=se`\ncret,id=NPM_TOKEN true\n",
+                every,
+            ),
+            (
+                "FROM scratch\nRUN --mount=type=se\\\n# a comment\ncret,id=NPM_TOKEN true\n",
+                every,
+            ),
+            (
+                "\u{feff}# syntax=example.test/frontend\nFROM scratch\n",
+                every,
+            ),
+            ("// syntax=example.test/frontend\nFROM scratch\n", every),
+            ("{\"syntax\": \"example.test/frontend\"}\n", every),
             (
                 "# syntax = docker.io/docker/dockerfile:1.7\nFROM scratch\nARG NPM_TOKEN\n",
                 ["NPM_TOKEN"].as_slice(),
