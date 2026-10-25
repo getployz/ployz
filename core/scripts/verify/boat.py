@@ -69,6 +69,13 @@ LISTENER = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
 # systemctl's bus connection. Two idle readings in a row mark the restore done.
 SETTLE = ("idle=0; for i in $(seq 120); do if [ -z \"$(systemctl list-jobs --no-legend)\" ]; then idle=$((idle+1));"
           " [ $idle = 2 ] && break; else idle=0; fi; sleep 0.5; done; ")
+# Boat's restore hydrates /var/lib/docker under the running dockerd and replaces volumes/metadata.db. dockerd
+# keeps writing Volume labels to the unlinked file, so the next boot drops them and a Deploy refuses the
+# Volume (#3384). Once hydration is done, restart Docker onto the live file.
+REOPEN_DOCKER = ("if journalctl -b -q --no-pager -g 'LAZY RESTORE START' >/dev/null; then for i in $(seq 120); do"
+                 " journalctl -b -q --no-pager -g 'hydration done' >/dev/null && break; sleep 1; done; fi; "
+                 "if find /proc/$(pidof dockerd)/fd -lname '/var/lib/docker/volumes/metadata.db (deleted)' 2>/dev/null"
+                 " | grep -q .; then systemctl restart docker; fi; ")
 # The ployz units live in /etc/systemd/system, where `systemctl mask` refuses them, so power off disables those.
 PLOYZ_UNITS = "ployz.socket ployz.service ployz-volume-plugin.socket"
 DOCKER_UNITS = "docker.service docker.socket containerd.service"
@@ -810,6 +817,7 @@ for pid in $(pgrep -f {LISTENER}); do [ "$pid" = "$main" ] || kill "$pid"; done
 if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&2; exit 1; fi
 # Boat turns UFW back on in every clone, so the bake cannot keep it off.
 ufw disable >/dev/null
+{REOPEN_DOCKER}
 {bake}""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
         if POOL_SIZE and not reused and self.run["image"] != SNAPSHOT and not fingerprints(self.run["image"]).exists():
             # The first fresh clone of a bake records what reset must return every later sandbox to.
