@@ -183,17 +183,19 @@ fn capture_target(
         reference.repository(),
         uuid::Uuid::new_v4()
     );
-    let sealed = sealed::capture(service, &spec.recipe, &inputs, opened)?;
     let mut args: BTreeMap<String, String> = service
         .container
         .environment
         .iter()
         .filter_map(|(key, value)| Some((key.clone(), value.text()?.to_owned())))
         .collect();
-    args.extend(sealed.args);
     let name = service.name.to_string();
-    let (build_method, context, dockerfile) = match spec.recipe {
+    let (build_method, context, dockerfile, sealed) = match spec.recipe {
         Recipe::Railpack { command } => {
+            let recipe = Recipe::Railpack {
+                command: command.clone(),
+            };
+            let mut sealed = sealed::capture(service, &recipe, &inputs, opened)?;
             if let Some(command) = command {
                 args.insert("RAILPACK_BUILD_CMD".into(), command);
             }
@@ -208,17 +210,19 @@ fn capture_target(
                 name: name.clone(),
                 context: context.clone(),
                 variables: std::mem::take(&mut args),
-                sealed: sealed.fingerprints,
+                sealed: std::mem::take(&mut sealed.fingerprints),
                 refresh_cache: false,
             })?;
-            (BuildMethod::Railpack, context, None)
+            (BuildMethod::Railpack, context, None, sealed)
         }
         Recipe::Dockerfile(dockerfile) => {
             let context = inputs.context(&spec.context, &dockerfile)?;
             let file = inputs.dockerfile(&dockerfile)?;
-            let declared = sealed::declared_args(&file, &sealed.names)?;
-            if !declared.is_empty() {
-                inputs.sealed_args(&name, &declared)?;
+            let mut sealed =
+                sealed::capture(service, &Recipe::Dockerfile(file.clone()), &inputs, opened)?;
+            args.extend(std::mem::take(&mut sealed.args));
+            if !sealed.declared.is_empty() {
+                inputs.sealed_args(&name, &sealed.declared)?;
             }
             // Both context and recipe live directly beneath source/.
             let dockerfile = Path::new("..").join(file.file_name().expect("captured recipe"));
@@ -226,6 +230,7 @@ fn capture_target(
                 BuildMethod::Dockerfile,
                 inputs.relative(&context),
                 Some(dockerfile),
+                sealed,
             )
         }
     };

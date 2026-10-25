@@ -97,6 +97,11 @@ RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci
 On GitHub Actions, a build that reads a sealed value with `ARG`, or sets a `RAILPACK_*`
 variable to a sealed value, saves no build cache. A secret mount keeps it.
 
+A Dockerfile build only gets the sealed values it reads with `ARG` or a secret mount. A sealed
+value it doesn't read, like a runtime-only database password, stays out of the build. Your servers
+open a sealed value for a build only from Ployz 0.3.5. A build that reads one needs a server on
+0.3.5 or later, and it won't start until you upgrade one.
+
 A changed sealed value doesn't rerun a cached secret mount step. To rerun it, add
 `ARG PLOYZ_SEALED_HASH` right above it.
 

@@ -22,18 +22,23 @@ pub(super) struct Sealed {
     pub(super) args: BTreeMap<String, String>,
     /// The secrets a Dockerfile recipe mounts, by name.
     pub(super) secrets: BTreeMap<String, CapturedSecret>,
+    /// The names a Dockerfile declares as `ARG`, which the Builder passes as build args.
+    pub(super) declared: Vec<String>,
     /// The names, for the Build's record.
     pub(super) names: Vec<String>,
 }
 
-/// Keep the Sealed values `service` reads in private upload material and shape
-/// them for `recipe`. A Dockerfile is checked once captured, by
-/// [`declared_args`]. Only a capture with the values `opened` may seal a
+/// Keep the Sealed values the captured `recipe` reads in private upload
+/// material and shape them for it. A Dockerfile reads those it declares as
+/// `ARG` or mounts as a secret; Railpack shows the build every variable. A
+/// Build that reads none captures as it did before Builders opened them, so
+/// any Builder runs it. Only a capture with the values `opened` may seal a
 /// Railpack setting, which Railpack then plans with.
 ///
 /// # Errors
-/// Fails without the Deploy's Environment to seal for, when the private file
-/// cannot be written, or when `recipe` would record a value.
+/// Fails without the Deploy's Environment to seal for, when the captured
+/// Dockerfile or the private file can't be read or written, or when `recipe`
+/// would record a value.
 pub(super) fn capture(
     service: &RequestedServiceSpec,
     recipe: &Recipe,
@@ -44,6 +49,23 @@ pub(super) fn capture(
     let Some(record) = SealedRecord::of(service).map_err(|error| invalid(error.to_string()))?
     else {
         return Ok(sealed);
+    };
+    let record = match recipe {
+        Recipe::Railpack { .. } => record,
+        Recipe::Dockerfile(dockerfile) => {
+            let facts = facts(dockerfile)?;
+            sealed.declared = record
+                .keys()
+                .filter(|name| facts.args.contains(*name))
+                .map(str::to_owned)
+                .collect();
+            let Some(record) =
+                record.only(|name| facts.args.contains(name) || facts.secrets.contains(name))
+            else {
+                return Ok(sealed);
+            };
+            record
+        }
     };
     inputs.sealed(&record)?;
     let values = record.values();
@@ -77,23 +99,11 @@ pub(super) fn capture(
     Ok(sealed)
 }
 
-/// Return the Sealed names declared as `ARG` in the captured Dockerfile,
-/// the same bytes BuildKit reads. Read nothing when no value is Sealed.
-///
-/// # Errors
-/// Fails when the captured Dockerfile cannot be read.
-pub(super) fn declared_args(dockerfile: &Path, sealed: &[String]) -> Result<Vec<String>, Error> {
-    if sealed.is_empty() {
-        return Ok(Vec::new());
-    }
+/// What the captured Dockerfile reads: the same bytes BuildKit reads.
+fn facts(dockerfile: &Path) -> Result<DockerfileFacts, Error> {
     let contents = std::fs::read_to_string(dockerfile)
         .map_err(|error| Error::Io(format!("read captured Dockerfile: {error}")))?;
-    let declared = DockerfileFacts::parse(&contents).args;
-    Ok(sealed
-        .iter()
-        .filter(|name| declared.contains(*name))
-        .cloned()
-        .collect())
+    Ok(DockerfileFacts::parse(&contents))
 }
 
 /// Railpack reads its `RAILPACK_*` settings while it plans, where a Sealed
@@ -484,24 +494,24 @@ mod tests {
                 unreachable!()
             };
             let mut inputs = BuildInputs::new().unwrap();
-            let sealed = capture(service, &spec.recipe, &inputs, None).unwrap();
             fs::write(source, captured).unwrap();
             let file = inputs.dockerfile(source).unwrap();
             fs::write(source, later).unwrap();
-            assert_eq!(
-                !declared_args(&file, &sealed.names).unwrap().is_empty(),
-                expected
-            );
+            let sealed = capture(service, &Recipe::Dockerfile(file), &inputs, None).unwrap();
+            assert_eq!(!sealed.declared.is_empty(), expected);
         }
     }
 
     #[test]
     fn only_a_sealed_build_needs_to_read_the_captured_dockerfile() {
         let root = tempfile::tempdir().unwrap();
-        let missing = root.path().join("missing");
-        assert!(declared_args(&missing, &[]).unwrap().is_empty());
+        let missing = Recipe::Dockerfile(root.path().join("missing"));
+        let inputs = BuildInputs::new().unwrap();
+        let plain = intent(&["api"]);
+        capture(plain.target.first().unwrap(), &missing, &inputs, None).unwrap();
+        let (sealed, _) = sealed_intent(7);
         assert!(matches!(
-            declared_args(&missing, &["NPM_TOKEN".into()]),
+            capture(sealed.target.first().unwrap(), &missing, &inputs, None),
             Err(Error::Io(_))
         ));
     }
