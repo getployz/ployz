@@ -464,6 +464,7 @@ fn only_a_founder_recovers_a_sealing_key() {
                     visible_peers: vec![machine],
                     target_versions: BTreeMap::new(),
                     sealing_key: None,
+                    devices: Vec::new(),
                 },
             },
             wireguard_mtu: None,
