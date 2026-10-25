@@ -22,10 +22,12 @@ const FIT_PADDING = { top: "160px", left: "40px", right: "40px", bottom: "40px" 
 
 type RunFlowNode = Node<{ node: RunNode; selected: boolean }, "run">;
 
-export const runNodeIcons = { build: HammerIcon, service: BoxIcon, volume: DatabaseIcon, config: FolderIcon, cleanup: BrushCleaningIcon } satisfies
-  Record<RunNode["type"], LucideIcon>;
-export const runNodeKinds = { build: "Build", service: "Service", volume: "Volume", config: "Config", cleanup: "Cleanup" } satisfies
-  Record<RunNode["type"], string>;
+export const runNodeIcons = {
+  build: HammerIcon, service: BoxIcon, volume: DatabaseIcon, config: FolderIcon, untargeted: BoxIcon, cleanup: BrushCleaningIcon,
+} satisfies Record<RunNode["type"], LucideIcon>;
+export const runNodeKinds = {
+  build: "Build", service: "Service", volume: "Volume", config: "Config", untargeted: "Not in this environment", cleanup: "Cleanup",
+} satisfies Record<RunNode["type"], string>;
 
 function placed(graph: RunGraph, selectedId: string | undefined): RunFlowNode[] {
   return graph.nodes.map((node) => ({
@@ -51,7 +53,8 @@ export function RunTime({ timing }: { timing: RunTiming | undefined }) {
 
 function caption(node: RunNode) {
   if (node.type === "cleanup") return cleanupLabel(node.cleanup);
-  if (node.type === "build" || !node.node.rows.length) return runNodeKinds[node.type];
+  // A card has no room for a count after "Not in this environment"; its panel lists the Servers.
+  if (node.type === "build" || node.type === "untargeted" || !node.node.rows.length) return runNodeKinds[node.type];
   const count = node.node.rows.length;
   return `${runNodeKinds[node.type]} · ${count} ${count === 1 ? "server" : "servers"}`;
 }
