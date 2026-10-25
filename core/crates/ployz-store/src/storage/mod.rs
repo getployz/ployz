@@ -148,8 +148,13 @@ const MIGRATIONS: &[(&str, Step)] = &[
         Step::Sql(include_str!("migrations/0027_drop_sealed_variables.sql")),
     ),
     (
-        "0028_scrub_sealed_copies",
-        Step::Rust(|tx, _| crate::review::sealed::scrub_kept(tx).map(|()| None)),
+        "0028_unkept_arrival_was",
+        Step::Rust(|tx, _| {
+            for row in tx.query("SELECT id FROM config_environment", &[])? {
+                crate::branch::forget_unclaimed(tx, row.text(0)?)?;
+            }
+            Ok(None)
+        }),
     ),
 ];
 

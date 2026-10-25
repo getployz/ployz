@@ -1150,12 +1150,11 @@ fn a_seal_that_follows_leaves_no_plain_text_in_the_arrival() {
     assert!(backend::tables_holding(&url, "plain-private").is_empty());
 }
 
-/// A Branch made while the value was plain keeps it, until it deploys the seal that
-/// followed, in what its review compares with: the Node Introduction of a node never
-/// deployed and the pending arrival's base cell. What it was made with is a Sync base
-/// and keeps it.
+/// A Branch made while the value was plain keeps it only in what it compares with:
+/// what it was made with, its Node Introduction, and the pending arrival's base cell
+/// until it deploys. Its review still lists the seal that followed.
 #[test]
-fn a_seal_that_follows_scrubs_a_node_introduction_once_deployed() {
+fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_only_its_bases() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
@@ -1191,7 +1190,7 @@ fn a_seal_that_follows_scrubs_a_node_introduction_once_deployed() {
     deploy(&store, &who, "qa", 4);
     assert_eq!(
         backend::tables_holding(&url, "plain-private"),
-        ["config_environment_branch"]
+        ["config_environment_branch", "config_node_introduction"]
     );
 }
 

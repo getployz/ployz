@@ -4,10 +4,7 @@
 use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
-use ployz_core::config::{
-    EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    SavedVariableValue,
-};
+use ployz_core::config::{SavedEnvironmentIntent, SavedVariableIntent, SavedVariableValue};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -155,59 +152,6 @@ pub(crate) fn record(
                 variable.key.as_str().into(),
             ],
         )?;
-    }
-    Ok(())
-}
-
-/// Seal, without its value, each plain value in the Node Introduction of a node
-/// `environment` deployed, of a variable it ever held sealed. A node never deployed
-/// compares with its introduction, as Discard does, so it keeps its plain value.
-pub(crate) fn scrub_introductions(tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
-    let ever = EverSealed::load(tx, environment)?;
-    if ever.is_empty() {
-        return Ok(());
-    }
-    for row in tx.query(
-        "SELECT node_id, node FROM config_node_introduction i \
-         WHERE environment_id = ?1 AND node_type = ?2 AND EXISTS (SELECT 1 FROM config_applied a \
-         WHERE a.environment_id = i.environment_id AND a.node_id = i.node_id)",
-        &[
-            environment.into(),
-            crate::storage::name_of(EnvironmentNodeType::Service)
-                .as_str()
-                .into(),
-        ],
-    )? {
-        let mut service: SavedServiceIntent = row.json(1, "Node Introduction")?;
-        let mut scrubbed = false;
-        for variable in &mut service.variables {
-            if !sealed(&variable.value) && ever.holds(&service.id, variable) {
-                variable.value = SavedVariableValue::SecretWithoutValue;
-                variable.value_fingerprint.clear();
-                scrubbed = true;
-            }
-        }
-        if scrubbed {
-            tx.execute(
-                "UPDATE config_node_introduction SET node = ?3 \
-                 WHERE environment_id = ?1 AND node_id = ?2",
-                &[
-                    environment.into(),
-                    row.text(0)?.into(),
-                    scope::Node::Service(&service).document().as_str().into(),
-                ],
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// Scrub what an earlier Store kept beside sealed values: the receiver's own in each
-/// arrival no Sync claims, and every Environment's Node Introductions.
-pub(crate) fn scrub_kept(tx: &mut dyn Tx) -> Result<(), RpcError> {
-    for row in tx.query("SELECT id FROM config_environment", &[])? {
-        crate::branch::forget_unclaimed(tx, row.text(0)?)?;
-        scrub_introductions(tx, row.text(0)?)?;
     }
     Ok(())
 }
