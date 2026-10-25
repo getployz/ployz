@@ -159,6 +159,7 @@ fn admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
             accept_volume_loss: Vec::new(),
             message: None,
             prune: false,
+            no_prune: false,
         }),
         &ployz_store::Trusted::default(),
     )?;
@@ -317,6 +318,7 @@ fn references_that_resolve_past_any_container_refuse_only_a_deploy_that_starts_t
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &ployz_store::Trusted::default(),
         )

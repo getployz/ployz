@@ -442,6 +442,7 @@ fn admit(
             accept_volume_loss: Vec::new(),
             message: None,
             prune: false,
+            no_prune: false,
         })),
         trusted,
     )
@@ -1163,6 +1164,7 @@ fn a_deploy_refuses_a_hostname_another_namespace_publishes_naming_its_owner() {
         accept_volume_loss: Vec::new(),
         message: None,
         prune: false,
+        no_prune: false,
     }));
     store.write_trusted(&who, &staging, &trusted).unwrap();
     let refused = admit(

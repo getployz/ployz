@@ -81,17 +81,24 @@ pub struct Deploy {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub message: Option<String>,
-    /// Also remove every Service running in the Namespace that this Store never
-    /// held: another Store's, or one deployed directly. Only with every Service;
-    /// without it a Deploy removes only the Services this Store dropped.
+    /// What an older client sends to prune. A Deploy of every Service prunes
+    /// without it, so it changes nothing; refused with named Services or with
+    /// `no_prune`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub prune: bool,
+    /// Keep every Service running in the Namespace that this Store never held:
+    /// another Store's, or one deployed directly. Without it, a Deploy of every
+    /// Service removes them; one of named Services never does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub no_prune: bool,
 }
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
-/// credentials, upload and pinned commits, whatever was saved since. Redeploying
-/// one older than a Deployment that may have changed the Servers rolls that back.
+/// credentials, upload, pinned commits and whether it prunes, whatever was saved
+/// since. Redeploying one older than a Deployment that may have changed the
+/// Servers rolls that back.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Retry {
@@ -326,6 +333,12 @@ fn deploy(
             json!({ "services": admit.services }),
         ));
     }
+    if admit.prune && admit.no_prune {
+        return Err(error::invalid(
+            "A Deploy can't both prune and keep other Services: drop one",
+            json!({}),
+        ));
+    }
     let review = review::review(tx, &environment)?;
     let shipping = review::Shipping::Deploy {
         services: &admit.services,
@@ -388,7 +401,7 @@ fn deploy(
         true => deployment::Scope::All {
             losses: &losses,
             retire: &retire,
-            prune: admit.prune,
+            prune: !admit.no_prune,
         },
         false => deployment::Scope::Narrow {
             services: &admit.services,

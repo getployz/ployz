@@ -289,6 +289,9 @@ pub(crate) struct DeployInput {
     /// Save everything staged for the next deploy instead of deploying it.
     #[serde(default)]
     skip_deploy: bool,
+    /// Keep running Services the Environment doesn't hold.
+    #[serde(default)]
+    no_prune: bool,
     /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
@@ -301,7 +304,7 @@ pub(crate) struct DeployInput {
 
 impl Tool for DeployInput {
     const NAME: &'static str = "deploy";
-    const DESCRIPTION: &'static str = "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns without waiting for it to finish. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain.";
+    const DESCRIPTION: &'static str = "Deploys everything staged. Deploying every Service removes other Services running in the Environment, unless no_prune. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns without waiting for it to finish. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain.";
     const GATE: Gate = Gate::Store;
     const EFFECT: Effect = Effect::Remove;
 
@@ -347,6 +350,7 @@ impl Tool for DeployInput {
             accept_volume_loss: self.accept_volume_loss,
             message: self.message,
             prune: false,
+            no_prune: self.no_prune,
         }))?;
         let mut next = place(cx.call());
         next.insert("deployment".into(), deployment.number.into());
@@ -357,6 +361,7 @@ impl Tool for DeployInput {
             "status": deployment.status,
             "saved_revision": deployment.saved.0,
             "services": deployment.services,
+            "prunes": deployment.prune,
             "next": Call::new("deployment_show", next.into()),
         }))
     }

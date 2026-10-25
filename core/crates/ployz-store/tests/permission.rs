@@ -87,6 +87,7 @@ fn deploy_production(n: u8) -> Admit {
         accept_volume_loss: Vec::new(),
         message: None,
         prune: false,
+        no_prune: false,
     })
 }
 
@@ -220,6 +221,7 @@ fn a_deploy_without_changes_deploy_is_refused_before_it_looks_anything_up() {
         accept_volume_loss: Vec::new(),
         message: None,
         prune: false,
+        no_prune: false,
     });
     let refused = store
         .write_trusted(&who, &nowhere, &holding(&[Permission::ChangesStage]))
