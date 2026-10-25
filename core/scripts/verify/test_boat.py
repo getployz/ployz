@@ -784,6 +784,28 @@ class Pool(unittest.TestCase):
         provider.fingerprint = lambda node: {"containers": []}
         provider.start(dict(name="machine-1"))
         self.assertIn("ufw disable", scripts[0])
+        # Hydration swaps Docker's volume db under dockerd; without a restart a reboot drops Volume labels.
+        self.assertIn(boat.REOPEN_DOCKER, scripts[0])
+
+    def test_reopen_docker_restarts_only_a_dockerd_holding_a_replaced_volume_db(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bin_dir, fds = root / "bin", root / "proc" / "42" / "fd"
+        bin_dir.mkdir()
+        fds.mkdir(parents=True)
+        log = root / "log"
+        for name, body in {"journalctl": "exit 0", "pidof": "echo 42",
+                           "systemctl": f'echo "$*" >> {log}'}.items():
+            (bin_dir / name).write_text(f"#!/bin/sh\n{body}\n")
+            (bin_dir / name).chmod(0o755)
+        script = boat.REOPEN_DOCKER.replace("/proc/", f"{root}/proc/")
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+        (fds / "11").symlink_to("/var/lib/docker/volumes/metadata.db")
+        subprocess.run(["bash", "-ec", script], env=env, check=True)
+        self.assertFalse(log.exists())
+        (fds / "11").unlink()
+        (fds / "11").symlink_to("/var/lib/docker/volumes/metadata.db (deleted)")
+        subprocess.run(["bash", "-ec", script], env=env, check=True)
+        self.assertEqual(log.read_text(), "restart docker\n")
 
     def test_the_ledger_keeps_what_one_lock_saves_and_is_no_run_record(self):
         with boat.pool() as entries:
