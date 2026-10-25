@@ -68,7 +68,7 @@ export async function executeReseal({ event, step }: { event: { data: { organiza
   return { organizations: organizations.length };
 }
 
-/** Asks every Organization with Legacy values to reseal, through the outbox so a failed send is retried. */
+/** Asks every Organization with Legacy values a reseal converts to reseal, through the outbox so a failed send is retried. */
 export const requestResealAtStart = Effect.fn("Reseal.requestAtStart")(function* (startedAt: Date) {
   yield* enqueueEvent(createStartupResealEvent(startedAt));
 });

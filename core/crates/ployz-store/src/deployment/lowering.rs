@@ -939,21 +939,13 @@ pub(super) fn lower(
     };
     // A Legacy secret of a Service this Deploy ships waits for the reseal: leaving
     // it out would drop a value the Service holds. One a Branch reads live from its
-    // parent has no Service here, and the reseal converts it too.
-    if let Some((owner, key)) = resolved.legacy.iter().find(|(owner, _)| {
-        !narrowed
-            || saved
-                .services
-                .iter()
-                .find(|service| service.id == *owner)
-                .is_none_or(|service| shipped.contains(&service.config.private_dns))
-    }) {
-        let service = saved
-            .services
-            .iter()
-            .find(|service| service.id == *owner)
-            .map(|service| service.slug.as_str());
-        return Err(awaiting_reseal(service, key));
+    // parent has no Service here, and is Not set in the Branch even once resealed.
+    let waiting = resolved.legacy.iter().find_map(|(owner, key)| {
+        let service = saved.services.iter().find(|service| service.id == *owner)?;
+        (!narrowed || shipped.contains(&service.config.private_dns)).then_some((service, key))
+    });
+    if let Some((service, key)) = waiting {
+        return Err(awaiting_reseal(&service.slug, key));
     }
     let warnings = warnings
         .into_iter()
@@ -970,11 +962,8 @@ pub(super) fn lower(
 
 /// A Legacy secret, which no Machine opens. `invalid_argument`, so a claim fails the
 /// Deployment rather than leave it queued.
-fn awaiting_reseal(service: Option<&str>, key: &str) -> RpcError {
-    let variable = match service {
-        Some(service) => format!("{service}.{key}"),
-        None => key.to_owned(),
-    };
+fn awaiting_reseal(service: &str, key: &str) -> RpcError {
+    let variable = format!("{service}.{key}");
     error::invalid(
         format!(
             "{variable} is waiting for Ployz Cloud to reseal it for the Cluster, and this Deploy would leave it out. \
