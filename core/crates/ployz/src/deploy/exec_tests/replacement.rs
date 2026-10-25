@@ -1166,7 +1166,8 @@ async fn a_removal_beside_a_copy_on_an_unobserved_server_takes_the_live_copy_out
         test_namespace(),
     )
     .with_machine_names(&[live, away])
-    .with_unobserved(&[away]);
+    .with_unobserved(&[away])
+    .with_retiring(&[api()]);
     let client = Scripted {
         down: BTreeSet::from([away]),
         store: Store::Copies,
@@ -1209,9 +1210,10 @@ async fn a_removal_beside_a_copy_on_an_unobserved_server_takes_the_live_copy_out
     client.assert_done();
 }
 
-/// A finished pre-deploy hook stays Pending for life, so removing it drains nothing
-/// and a copy of its Service on an unobserved Server can't hold it up. The removal
-/// still names that copy: it is the Service's, and the next full Deploy removes it.
+/// A finished pre-deploy hook of a Service this Deploy removes stays Pending for
+/// life, so removing it drains nothing and a copy of its Service on an unobserved
+/// Server can't hold it up. The removal still names that copy: it is the Service's,
+/// and the next full Deploy removes it.
 #[tokio::test(start_paused = true)]
 async fn a_pending_copy_is_removed_beside_a_copy_on_an_unobserved_server() {
     let (live, away) = (machine('1'), machine('3'));
@@ -1225,7 +1227,8 @@ async fn a_pending_copy_is_removed_beside_a_copy_on_an_unobserved_server() {
         test_namespace(),
     )
     .with_machine_names(&[live, away])
-    .with_unobserved(&[away]);
+    .with_unobserved(&[away])
+    .with_retiring(&[api()]);
     let client = Scripted {
         down: BTreeSet::from([away]),
         store: Store::Copies,
@@ -1319,7 +1322,8 @@ async fn a_removal_takes_the_live_copy_out_without_a_drain_wait_when_the_store_c
             test_namespace(),
         )
         .with_machine_names(&[live, away])
-        .with_unobserved(&[away]);
+        .with_unobserved(&[away])
+        .with_retiring(&[api()]);
         let client = Scripted {
             down: BTreeSet::from([away]),
             store,
@@ -1370,7 +1374,8 @@ async fn a_failed_removal_does_not_name_the_copy_on_an_unobserved_server() {
         test_namespace(),
     )
     .with_machine_names(&[live, away])
-    .with_unobserved(&[away]);
+    .with_unobserved(&[away])
+    .with_retiring(&[api()]);
     let client = Scripted {
         down: BTreeSet::from([away]),
         store: Store::Copies,
@@ -1413,7 +1418,8 @@ async fn a_removal_finishes_when_the_copy_on_an_unobserved_server_is_out() {
         test_namespace(),
     )
     .with_machine_names(&[live, away])
-    .with_unobserved(&[away]);
+    .with_unobserved(&[away])
+    .with_retiring(&[api()]);
     let client = Scripted {
         down: BTreeSet::from([away]),
         store: Store::Copies,

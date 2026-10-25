@@ -62,6 +62,7 @@ struct Planned {
     operations: Vec<DeployOperation>,
     groups: Vec<ServiceGroup>,
     volumes: PlannedVolumes,
+    retiring: Vec<QualifiedService>,
     would_remove: Vec<QualifiedService>,
     preserved_volumes: Vec<PreservedVolume>,
     prune_refusal: Option<PruneRefusal>,
@@ -93,6 +94,9 @@ pub struct DeployPlan {
     registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
     /// Every snapshot Machine's name, so a report names a Machine the plan places nothing on.
     machine_names: BTreeMap<MachineId, ployz_core::MachineName>,
+    /// The Services this Deploy takes out wherever they run: each named removal the
+    /// snapshot observed, and each Service it prunes.
+    retiring: BTreeSet<QualifiedService>,
 }
 
 impl DeployPlan {
@@ -120,6 +124,10 @@ impl DeployPlan {
 
     pub(crate) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
         &self.machine_names
+    }
+
+    pub(super) const fn retiring(&self) -> &BTreeSet<QualifiedService> {
+        &self.retiring
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -165,7 +173,15 @@ impl DeployPlan {
             preview: DeployPreview::new(rows, Vec::new(), namespace),
             registry_auth: std::collections::BTreeMap::new(),
             machine_names: BTreeMap::new(),
+            retiring: BTreeSet::new(),
         }
+    }
+
+    /// This Deploy removes `services`, by name or by pruning.
+    #[cfg(test)]
+    pub(super) fn with_retiring(mut self, services: &[QualifiedService]) -> Self {
+        self.retiring = services.iter().cloned().collect();
+        self
     }
 
     #[cfg(test)]
@@ -668,6 +684,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         preview,
         registry_auth: std::collections::BTreeMap::new(),
         machine_names: super::progress::machine_names(snapshot),
+        retiring: planned.retiring.into_iter().collect(),
     }
 }
 
@@ -1170,6 +1187,7 @@ fn assemble_plan(
         operations,
         groups,
         volumes,
+        retiring,
         would_remove,
         preserved_volumes,
         prune_refusal,

@@ -1775,6 +1775,8 @@ struct Rows<'a> {
     stored: tokio::sync::OnceCell<Result<Vec<ContainerObservation>, RpcError>>,
     /// Machines whose Containers the plan's snapshot did not list.
     unobserved: BTreeSet<MachineId>,
+    /// The Services this Deploy takes out wherever they run.
+    retiring: &'a BTreeSet<QualifiedService>,
     /// Copies on those Machines a removal already left to the next full Deploy,
     /// so a Service losing several live copies names each one once.
     unreached: std::sync::Mutex<BTreeSet<ContainerId>>,
@@ -1902,6 +1904,7 @@ impl<'a> Rows<'a> {
                     Some(*machine_id)
                 })
                 .collect(),
+            retiring: plan.retiring(),
             unreached: std::sync::Mutex::new(BTreeSet::new()),
             stop_first,
         }
@@ -2171,19 +2174,24 @@ impl<'a> Rows<'a> {
         .copied()
     }
 
-    /// The copies of `service` the entry Machine's store lists on Machines this
-    /// Deploy did not observe. Every proxy reads those too, so while one is In or
-    /// Pending, a copy sent Out beside it stays routed and its drain never confirms.
+    /// What a removal knows of `service`'s copies on the Machines this Deploy did
+    /// not observe. Every proxy reads the entry Machine's store too, so while a row
+    /// there is In or Pending, a copy sent Out beside it stays routed and its drain
+    /// never confirms. Only a Service this Deploy removes must reach them. One it
+    /// keeps owns its other copies, so they are [`Unreached::None`] to its cleanup.
     async fn unreached<C: MachineOperations>(
         &self,
         client: &C,
         service: &QualifiedService,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<cleanup::Copy>, ExecutionError> {
+    ) -> Result<Unreached, ExecutionError> {
+        if self.unobserved.is_empty() || !self.retiring.contains(service) {
+            return Ok(Unreached::None);
+        }
         let Ok(stored) = self.stored(client, cancellation).await? else {
-            return Ok(Vec::new());
+            return Ok(Unreached::Unknown);
         };
-        Ok(stored
+        let copies: Vec<_> = stored
             .iter()
             .filter(|copy| {
                 copy.identity() == *service
@@ -2191,7 +2199,12 @@ impl<'a> Rows<'a> {
                     && copy.rotation().keeps_route()
             })
             .map(cleanup::Copy::observed)
-            .collect())
+            .collect();
+        Ok(if copies.is_empty() {
+            Unreached::None
+        } else {
+            Unreached::Copies(copies)
+        })
     }
 
     /// Names each copy a removal leaves on a Machine it could not reach, once.
@@ -2378,6 +2391,32 @@ impl<'a> Rows<'a> {
     }
 }
 
+/// A removal's copies of its Service on the Machines this Deploy did not observe.
+enum Unreached {
+    /// None keeps the route: every Machine was observed, the store lists no In or
+    /// Pending copy there, or the Service stays and its other copies are its own.
+    None,
+    /// The entry Machine's store lists these there, each In or Pending.
+    Copies(Vec<cleanup::Copy>),
+    /// The store could not be read, so a copy there may keep the route.
+    Unknown,
+}
+
+impl Unreached {
+    /// Whether a proxy may keep routing the Service once its live copy is Out, so
+    /// that the drain could never confirm.
+    fn may_keep_route(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    fn copies(&self) -> &[cleanup::Copy] {
+        match self {
+            Self::Copies(copies) => copies,
+            Self::None | Self::Unknown => &[],
+        }
+    }
+}
+
 #[derive(Clone)]
 enum Left {
     NotConfirmed(cleanup::Unconfirmed),
@@ -2506,72 +2545,15 @@ async fn execute_operation<C: MachineOperations>(
             container_id,
             purpose,
         } => {
-            let copy = match inspect(client, machine_id, container_id).await {
-                Ok(details) => cleanup::Copy::observed(&details.container),
-                Err(ExecutionError::Machine { error, .. })
-                    if error.code == RpcErrorCode::NotFound =>
-                {
-                    return Ok(Ran::default());
-                }
-                Err(error) => {
-                    // Unread, the copy may still be In and serving the old version.
-                    if let (ExecutionError::Machine { error: cause, .. }, Some(service)) =
-                        (&error, rows.services.get(&index))
-                    {
-                        let copy = cleanup::Copy {
-                            machine_id: *machine_id,
-                            service: QualifiedService::new(
-                                rows.namespace.clone(),
-                                (*service).clone(),
-                            ),
-                            container_id: *container_id,
-                            rotation: CopyRotation::In,
-                        };
-                        rows.leave_running(progress, &copy, Left::Failed(cause.clone()));
-                    }
-                    return Err(error.into());
-                }
-            };
-            // A removal names every copy of its Service on a Machine this Deploy
-            // could not reach, once the live copy is gone. A live copy that drains
-            // can't wait for proxies holding a route for one of those.
-            let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
-            let unreached = if allow_empty && !rows.unobserved.is_empty() {
-                rows.unreached(client, &copy.service, cancellation).await?
-            } else {
-                Vec::new()
-            };
-            let retired = if unreached.is_empty() || !copy.drains() {
-                cleanup::retire(client, &copy, allow_empty, (*purpose).into(), cancellation).await
-            } else {
-                cleanup::retire_unconfirmed(client, &copy, allow_empty, (*purpose).into()).await
-            };
-            match retired {
-                Ok(cleanup::Step::Done) => {
-                    rows.leave_unreached(progress, &unreached);
-                    Ok(Ran::default())
-                }
-                Ok(cleanup::Step::Refused(refusal)) => {
-                    rows.leave_running(progress, &copy, Left::Refused(refusal.clone()));
-                    Err(machine_error(MachineAction::RemoveContainer, refusal.into_error()).into())
-                }
-                Ok(cleanup::Step::NotConfirmed(machines)) => {
-                    let error = machine_error(
-                        MachineAction::RemoveContainer,
-                        unavailable(rows.not_confirmed(&machines)),
-                    );
-                    rows.leave_running(progress, &copy, Left::NotConfirmed(machines));
-                    Err(error.into())
-                }
-                Ok(cleanup::Step::Cancelled) => {
-                    rows.leave_running(progress, &copy, Left::Interrupted);
-                    Err(ExecutionError::Cancelled.into())
-                }
-                Err(error) => {
-                    rows.leave_running(progress, &copy, Left::Failed(error.clone()));
-                    Err(machine_error(MachineAction::RemoveContainer, error).into())
-                }
-            }
+            remove_container(
+                client,
+                index,
+                progress,
+                (machine_id, container_id, *purpose),
+                rows,
+                cancellation,
+            )
+            .await
         }
         DeployOperation::ReplaceContainer(replacement) => {
             let slot = slots.slot(
@@ -3151,6 +3133,92 @@ async fn withdraw<C: MachineOperations>(
     };
     copy.rotation = now;
     Some((copy, step))
+}
+
+/// Removes one Container. A copy that is not there is already removed. Otherwise
+/// what the removal must reach decides how it goes:
+///
+/// - A `Rollout` removal takes an old copy a new one replaced, with its anonymous
+///   Volumes. The Service keeps running, so a copy still In goes Out first, and
+///   the drain waits for every proxy to confirm.
+/// - A `Retire` keeps the anonymous Volumes and may leave the Service empty.
+///   - For a Service this Deploy keeps, such as an exited pre-deploy hook of one
+///     that stays, it is plain cleanup. The Service's other copies are its own,
+///     wherever they run, so none is named.
+///   - For a Service this Deploy removes, named or pruned, it must take the
+///     Service out everywhere. Every proxy keeps the route while the entry
+///     Machine's store lists an In or Pending copy on a Machine this Deploy did
+///     not observe. So when the store lists such a copy, or could not be read, a
+///     live copy that drains goes Out and is removed without waiting for the
+///     proxies to confirm. Once the live copy is gone, each copy the store listed
+///     is named `LeftRunning`, once per Deploy, for the next full Deploy to prune.
+///     A store that could not be read names nothing here. The plan's observation
+///     gap names those Machines, and the Deploy ends partial.
+///
+/// A removal that fails, is refused, is cancelled or goes unconfirmed names the
+/// live copy as left running and no unreached copy, so a retry names them all.
+async fn remove_container<C: MachineOperations>(
+    client: &C,
+    index: usize,
+    progress: &Progress,
+    (machine_id, container_id, purpose): (&MachineId, &ContainerId, RemoveContainerPurpose),
+    rows: &Rows<'_>,
+    cancellation: &CancellationToken,
+) -> Result<Ran, OperationFailure> {
+    let copy = match inspect(client, machine_id, container_id).await {
+        Ok(details) => cleanup::Copy::observed(&details.container),
+        Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
+            return Ok(Ran::default());
+        }
+        Err(error) => {
+            // Unread, the copy may still be In and serving the old version.
+            if let (ExecutionError::Machine { error: cause, .. }, Some(service)) =
+                (&error, rows.services.get(&index))
+            {
+                let copy = cleanup::Copy {
+                    machine_id: *machine_id,
+                    service: QualifiedService::new(rows.namespace.clone(), (*service).clone()),
+                    container_id: *container_id,
+                    rotation: CopyRotation::In,
+                };
+                rows.leave_running(progress, &copy, Left::Failed(cause.clone()));
+            }
+            return Err(error.into());
+        }
+    };
+    let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
+    let unreached = rows.unreached(client, &copy.service, cancellation).await?;
+    let retired = if copy.drains() && unreached.may_keep_route() {
+        cleanup::retire_unconfirmed(client, &copy, allow_empty, purpose.into()).await
+    } else {
+        cleanup::retire(client, &copy, allow_empty, purpose.into(), cancellation).await
+    };
+    match retired {
+        Ok(cleanup::Step::Done) => {
+            rows.leave_unreached(progress, unreached.copies());
+            Ok(Ran::default())
+        }
+        Ok(cleanup::Step::Refused(refusal)) => {
+            rows.leave_running(progress, &copy, Left::Refused(refusal.clone()));
+            Err(machine_error(MachineAction::RemoveContainer, refusal.into_error()).into())
+        }
+        Ok(cleanup::Step::NotConfirmed(machines)) => {
+            let error = machine_error(
+                MachineAction::RemoveContainer,
+                unavailable(rows.not_confirmed(&machines)),
+            );
+            rows.leave_running(progress, &copy, Left::NotConfirmed(machines));
+            Err(error.into())
+        }
+        Ok(cleanup::Step::Cancelled) => {
+            rows.leave_running(progress, &copy, Left::Interrupted);
+            Err(ExecutionError::Cancelled.into())
+        }
+        Err(error) => {
+            rows.leave_running(progress, &copy, Left::Failed(error.clone()));
+            Err(machine_error(MachineAction::RemoveContainer, error).into())
+        }
+    }
 }
 
 async fn stop_old_copy<C: MachineOperations>(
