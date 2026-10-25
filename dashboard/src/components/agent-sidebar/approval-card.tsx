@@ -10,7 +10,7 @@ import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, losesVolumeAccess, redeployLine } from "#/modules/approvals/approvals";
+import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, losesVolumeAccess, prunes, redeployLine } from "#/modules/approvals/approvals";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
@@ -79,7 +79,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
         {redeploy !== null && <p className="text-xs">{redeploy}</p>}
-        {effects.length > 0 && (
+        {(effects.length > 0 || prunes(approval.review)) && (
           <ul aria-label={losesVolumeAccess(approval.review) ? "Effects" : "Destroys"} className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
             {effects.map((effect) => {
               const line = destroyedLine(effect, approval.command, approval.review);
@@ -95,6 +95,12 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
                 </li>
               );
             })}
+            {prunes(approval.review) && (
+              <li className="flex gap-2">
+                <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
+                <span>Also removes any other service running in this environment</span>
+              </li>
+            )}
           </ul>
         )}
         {asked.length > 0 && <ChangeLines label="Saves" changes={asked} className="text-foreground" />}

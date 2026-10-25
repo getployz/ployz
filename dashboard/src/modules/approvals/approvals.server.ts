@@ -350,6 +350,7 @@ const RefusedReview = Schema.Struct({
   diff: Schema.declare<DiffView>((value): value is DiffView => isDiff(value)),
   protected: Schema.optional(Schema.Literal(true)),
   redeploy: Schema.optional(Schema.Struct({ deployment: Schema.Number, rolls_back: Schema.mutable(Schema.Array(Schema.Number)) })),
+  prunes: Schema.optional(Schema.Literal(true)),
 });
 
 const requester = (caller: Caller) => ({
@@ -377,7 +378,7 @@ const askedAgain = (caller: Caller, review: ApprovalReview) =>
 const storeReview = (
   caller: Caller,
   command: ConfigCommand,
-  shown: { effects: DestructiveEffect[]; diff: DiffView; redeploy?: Redeploy },
+  shown: { effects: DestructiveEffect[]; diff: DiffView; redeploy?: Redeploy; prunes?: true },
   guarded: boolean,
 ): ApprovalReview => {
   if (!guarded) return shown;
@@ -415,13 +416,14 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
     yield* Effect.logWarning("An approval_required refusal named no review; nothing was recorded.");
     return refused;
   }
-  const { approval: digest, effects, diff, redeploy } = decoded.value;
+  const { approval: digest, effects, diff, redeploy, prunes } = decoded.value;
   const elsewhere = yield* carriedElsewhere(caller, carried, command, diff.environment.id);
   if (elsewhere !== null) return elsewhere;
   const guarded = decoded.value.protected === true;
   const organizationId = caller.organization.id;
-  // A redeploy's card says what it rolls back, which its digest binds.
-  const review = storeReview(caller, command, redeploy ? { effects, diff, redeploy } : { effects, diff }, guarded);
+  // A redeploy's card says what it rolls back, and a pruning Deploy's that it prunes, which its digest binds.
+  const shown = { effects, diff, ...(redeploy && { redeploy }), ...(prunes && { prunes }) };
+  const review = storeReview(caller, command, shown, guarded);
   const recorded = yield* recordAndSweep(organizationId, diff.environment.id, Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(operationApprovals).values({
@@ -434,7 +436,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
     }).onConflictDoUpdate({ ...pending, set: askedAgain(caller, review) }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleEnvironment(organizationId, diff.environment));
-  const asked = { effects, approval: digest, diff, approval_id: recorded.id };
+  const asked = { effects, approval: digest, diff, approval_id: recorded.id, ...(prunes && { prunes }) };
   const details = redeploy ? { ...asked, redeploy: { deployment: redeploy.deployment, rolls_back: redeploy.rolls_back } } : asked;
   return { ...refused, details: guarded ? { ...details, protected: true } : details };
 });

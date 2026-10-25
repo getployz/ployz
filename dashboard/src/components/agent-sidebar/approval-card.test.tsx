@@ -299,3 +299,10 @@ it("says how long ago it was asked, so a stale ask reads apart from a fresh one"
     vi.useRealTimers();
   }
 });
+
+it("says a Deploy that prunes removes any other service, though it names none", () => {
+  const pruning = { ...approval, review: { ...approval.review, effects: [], prunes: true as const } };
+  const card = show(pruning).card();
+  expect(within(card).getByText("Removes other services")).toBeTruthy();
+  expect(within(card).getByRole("list", { name: "Destroys" }).textContent).toBe("Also removes any other service running in this environment");
+});

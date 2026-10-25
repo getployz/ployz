@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
+import { gatherRunning } from "#/modules/config-store/running-evidence.server";
 import { gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { account, member, user } from "#/modules/identity/tables";
@@ -258,8 +259,8 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
 
 /**
  * The trusted evidence `call` needs, as Cloud observes it itself: GitHub's for repository Services, what Cloud observes
- * of domains, for a Save or Deploy that removes deployed Volumes what the Servers hold of them, for a removal which Servers
- * didn't answer, for an admission or start how many Servers could run it, and for a write the Cluster's Sealing key a
+ * of domains, for a Save or Deploy that removes deployed Volumes what the Servers hold of them, for a full Deploy that prunes
+ * which Services they run, for a removal which Servers didn't answer, for an admission or start how many Servers could run it, and for a write the Cluster's Sealing key a
  * generated secret is sealed to. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
  * can't answer.
  */
@@ -277,6 +278,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   );
   const volumes = yield* gatherVolumeEvidence(organizationId, call, read);
   const unanswered = yield* gatherUnanswered(organizationId, call, volumes);
+  const running = yield* gatherRunning(organizationId, call);
   // An admission or start carries how many Servers the Organization has enrolled, so the Store refuses one nothing could run.
   const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "start"
     || call.command.command === "remove" || call.command.command === "approve_pull_request");
@@ -286,6 +288,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   if (sealing?.state === "ready") trusted.sealing = { publicKey: sealing.publicKey };
   if (volumes !== undefined) trusted.volumes = volumes;
   if (unanswered !== undefined) trusted.unanswered = unanswered;
+  if (running !== undefined) trusted.running = running;
   if (servers !== undefined) trusted.servers = servers;
   return trusted;
 });
