@@ -13,7 +13,7 @@ use bollard::{
         ContainerSummary, EndpointSettings, Ipam, IpamConfig, NetworkConnectRequest,
         NetworkCreateRequest, NetworkDisconnectRequest, NetworkInspect,
     },
-    query_parameters::ListContainersOptionsBuilder,
+    query_parameters::{ListContainersOptionsBuilder, StopContainerOptionsBuilder},
 };
 use defguard_wireguard_rs::{
     InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi,
@@ -22,6 +22,7 @@ use defguard_wireguard_rs::{
     key::Key,
     net::IpAddrMask,
 };
+use futures_util::StreamExt as _;
 use ipnet::IpNet;
 use ployz_core::{
     DOCKER_NETWORK_CONFLICT_RECOVERY, LocalMachinePhase, Machine, MachineId, MachineSubnet,
@@ -553,7 +554,7 @@ impl NetworkPlane {
             Err(error) => return Err(error.into()),
         }
         if let Some(refused) = self.create_bridge(request, ipv4_only).await? {
-            report_readdress(&refused);
+            report_readdress(true, &refused);
         }
         Ok(true)
     }
@@ -562,7 +563,9 @@ impl NetworkPlane {
     /// under its members, stopped ones included, since a stopped container keeps the
     /// old network's ID and could not start. Running containers keep running and
     /// rejoin at their own addresses, pinned, so routes to them stay valid; stopped
-    /// ones rejoin at free ones. A failure leaves a bridge serving; the next start
+    /// ones rejoin at free ones. Docker won't detach or attach a container between
+    /// restarts, so such a member is stopped first and started again once it rejoins.
+    /// A failure leaves a bridge serving, with every member on it; the next start
     /// tries again.
     ///
     /// # Errors
@@ -574,28 +577,23 @@ impl NetworkPlane {
         request: NetworkCreateRequest,
         ipv4_only: Option<NetworkCreateRequest>,
     ) -> Result<(), NetworkError> {
+        let take_ipv6 = ipv4_only.is_some();
         let mut members = match self.bridge_members().await {
             Ok(members) => members,
             Err(error) => {
-                report_readdress(&error);
+                report_readdress(take_ipv6, &error);
                 return Ok(());
             }
         };
+        let _extend = crate::daemon::extend_systemd_start_timeout("readdressing the ployz network");
         members.sort_by_key(|member| (member.ipv4.is_none(), member.ipv4));
+        let mut stopped = Vec::new();
         let mut detached = Vec::new();
         let mut disconnected = Ok(());
         for member in members.iter().filter(|member| member.attached) {
-            let disconnect = NetworkDisconnectRequest {
-                container: member.id.clone(),
-                force: Some(true),
-            };
-            match self
-                .docker
-                .disconnect_network(DOCKER_NETWORK_NAME, disconnect)
-                .await
-            {
-                Ok(()) => detached.push(member),
-                Err(error) if is_not_found(&error) => {}
+            match self.detach(&member.id, &mut stopped).await {
+                Ok(true) => detached.push(member),
+                Ok(false) => {}
                 Err(error) => {
                     disconnected = Err(error.into());
                     break;
@@ -610,12 +608,13 @@ impl NetworkPlane {
             Err(error) => Ok(Some(error)),
         };
         if let Ok(Some(error)) = &replaced {
-            report_readdress(error);
+            report_readdress(take_ipv6, error);
         }
         let taken = members.iter().filter_map(|member| member.ipv4).collect();
         for (member, ipv4) in addresses(detached, taken, self.machine.subnet) {
-            self.rejoin(member, ipv4).await;
+            self.rejoin(member, ipv4, &mut stopped).await;
         }
+        self.restart(stopped).await;
         replaced.map(|_| ())
     }
 
@@ -693,6 +692,7 @@ impl NetworkPlane {
         let members = bridge_members(&containers);
         let taken = crate::docker::bridge_address::taken(&containers);
         let unpinned = members.iter().filter(|member| member.needs_pin());
+        let mut stopped = Vec::new();
         for (member, ipv4) in addresses(unpinned, taken, self.machine.subnet) {
             let mut endpoint = crate::docker::bridge_address::endpoint(member.ipv6, None);
             if member.attached {
@@ -715,39 +715,100 @@ impl NetworkPlane {
                         continue;
                     }
                 }
-                let disconnect = NetworkDisconnectRequest {
-                    container: member.id.clone(),
-                    force: Some(true),
-                };
-                if let Err(error) = self
-                    .docker
-                    .disconnect_network(DOCKER_NETWORK_NAME, disconnect)
-                    .await
-                    && !is_not_found(&error)
-                {
-                    eprintln!(
-                        "container {container} keeps a dynamic {DOCKER_NETWORK_NAME} network address: {error}",
-                        container = member.id,
-                        error = ployz_core::error_chain::inline(&error),
-                    );
-                    continue;
+                match self.detach(&member.id, &mut stopped).await {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        eprintln!(
+                            "container {container} keeps a dynamic {DOCKER_NETWORK_NAME} network address: {error}",
+                            container = member.id,
+                            error = ployz_core::error_chain::inline(&error),
+                        );
+                        continue;
+                    }
                 }
             }
-            self.rejoin_with(member, endpoint, ipv4).await;
+            self.rejoin_with(member, endpoint, ipv4, &mut stopped).await;
+        }
+        self.restart(stopped).await;
+    }
+
+    /// Detaches `id` from the bridge, stopping it first when Docker holds it between
+    /// restarts. Returns `false` when the container is gone.
+    async fn detach(
+        &self,
+        id: &str,
+        stopped: &mut Vec<String>,
+    ) -> Result<bool, bollard::errors::Error> {
+        let disconnect = || {
+            self.docker.disconnect_network(
+                DOCKER_NETWORK_NAME,
+                NetworkDisconnectRequest {
+                    container: id.to_owned(),
+                    force: Some(true),
+                },
+            )
+        };
+        let mut result = disconnect().await;
+        if result.as_ref().is_err_and(between_restarts) {
+            self.stop(id, stopped).await;
+            result = disconnect().await;
+        }
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) if is_not_found(&error) => Ok(false),
+            Err(error) => Err(error),
         }
     }
 
-    async fn rejoin(&self, member: &BridgeMember, ipv4: Option<Ipv4Addr>) {
-        let endpoint = crate::docker::bridge_address::endpoint(member.ipv6, None);
-        self.rejoin_with(member, endpoint, ipv4).await;
+    /// Stops `id` at once, which drops a restart Docker has pending, and notes it to
+    /// start again.
+    async fn stop(&self, id: &str, stopped: &mut Vec<String>) {
+        let options = StopContainerOptionsBuilder::default().t(0).build();
+        match self.docker.stop_container(id, Some(options)).await {
+            Err(error) if is_not_found(&error) => {}
+            _ => stopped.push(id.to_owned()),
+        }
     }
 
-    /// Falls back to any free address when `ipv4` can't be had.
+    /// Starts together the containers `stop` stopped, since each start takes Docker a
+    /// moment.
+    async fn restart(&self, stopped: Vec<String>) {
+        futures_util::stream::iter(stopped)
+            .for_each_concurrent(8, |id| async move {
+                match self.docker.start_container(&id, None).await {
+                    Ok(())
+                    | Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 304,
+                        ..
+                    }) => {}
+                    Err(error) => eprintln!(
+                        "container {id} stayed stopped after rejoining the {DOCKER_NETWORK_NAME} network: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    ),
+                }
+            })
+            .await;
+    }
+
+    async fn rejoin(
+        &self,
+        member: &BridgeMember,
+        ipv4: Option<Ipv4Addr>,
+        stopped: &mut Vec<String>,
+    ) {
+        let endpoint = crate::docker::bridge_address::endpoint(member.ipv6, None);
+        self.rejoin_with(member, endpoint, ipv4, stopped).await;
+    }
+
+    /// Falls back to any free address when `ipv4` can't be had. Stops a container
+    /// Docker holds between restarts first, as `detach` does.
     async fn rejoin_with(
         &self,
         member: &BridgeMember,
         endpoint: EndpointSettings,
         ipv4: Option<Ipv4Addr>,
+        stopped: &mut Vec<String>,
     ) {
         let connect = |ipv4| NetworkConnectRequest {
             container: member.id.clone(),
@@ -757,6 +818,13 @@ impl NetworkPlane {
             .docker
             .connect_network(DOCKER_NETWORK_NAME, connect(ipv4))
             .await;
+        if result.as_ref().is_err_and(between_restarts) {
+            self.stop(&member.id, stopped).await;
+            result = self
+                .docker
+                .connect_network(DOCKER_NETWORK_NAME, connect(ipv4))
+                .await;
+        }
         if result.is_err() && ipv4.is_some() {
             result = self
                 .docker
@@ -794,11 +862,28 @@ fn addresses<'a>(
         .collect()
 }
 
-fn report_readdress(error: &NetworkError) {
+fn report_readdress(take_ipv6: bool, error: &NetworkError) {
     eprintln!(
-        "the {DOCKER_NETWORK_NAME} network could not take IPv6: {error}",
+        "{failure}: {error}",
+        failure = readdress_failure(take_ipv6),
         error = ployz_core::error_chain::inline(error),
     );
+}
+
+fn readdress_failure(take_ipv6: bool) -> String {
+    let change = if take_ipv6 { "take" } else { "drop" };
+    format!("the {DOCKER_NETWORK_NAME} network could not {change} IPv6")
+}
+
+/// Docker still counts a container between restarts as running, but it holds no
+/// sandbox, so Docker refuses to detach it from the bridge or attach it.
+fn between_restarts(error: &bollard::errors::Error) -> bool {
+    let bollard::errors::Error::DockerResponseServerError { message, .. } = error else {
+        return false;
+    };
+    message.ends_with(&format!(
+        "is not connected to network {DOCKER_NETWORK_NAME}"
+    )) || message.starts_with("network sandbox for container ") && message.ends_with(" not found")
 }
 
 /// A container on the ployz bridge, or created for it.

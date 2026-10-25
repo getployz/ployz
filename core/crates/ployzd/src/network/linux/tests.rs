@@ -859,3 +859,31 @@ default via 2001:db8::1 dev ens4 proto static metric 1024 onlink pref medium
     );
     assert!(router_advertised_interfaces("", "").is_empty());
 }
+
+#[test]
+fn a_readdress_names_the_family_it_could_not_reach() {
+    assert!(readdress_failure(true).contains("could not take IPv6"));
+    assert!(readdress_failure(false).contains("could not drop IPv6"));
+}
+
+#[test]
+fn docker_refuses_a_container_between_restarts_both_ways() {
+    let answer = |status_code, message: &str| bollard::errors::Error::DockerResponseServerError {
+        status_code,
+        message: message.into(),
+    };
+    assert!(between_restarts(&answer(
+        500,
+        "container ec5dce3c is not connected to network ployz",
+    )));
+    assert!(between_restarts(&answer(
+        404,
+        "network sandbox for container ec5dce3c not found",
+    )));
+    assert!(!between_restarts(&answer(404, "No such container: gone")));
+    assert!(!between_restarts(&answer(
+        500,
+        "container ec5dce3c is not connected to network other",
+    )));
+    assert!(!between_restarts(&answer(500, "Address already in use",)));
+}

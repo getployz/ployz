@@ -880,7 +880,7 @@ const _: () = assert!(
 );
 
 #[must_use]
-struct SystemdStartTimeoutExtend {
+pub(crate) struct SystemdStartTimeoutExtend {
     task: JoinHandle<()>,
 }
 
@@ -891,7 +891,7 @@ impl Drop for SystemdStartTimeoutExtend {
 }
 
 /// Keeps extending the start timeout while `what` runs, up to MACHINE_START_WAIT.
-fn extend_systemd_start_timeout(what: &'static str) -> SystemdStartTimeoutExtend {
+pub(crate) fn extend_systemd_start_timeout(what: &'static str) -> SystemdStartTimeoutExtend {
     let usec = u32::try_from(SYSTEMD_START_TIMEOUT_EXTENSION.as_micros())
         .expect("30s start-timeout extension fits u32 microseconds");
     let deadline = Instant::now() + MACHINE_START_WAIT;
