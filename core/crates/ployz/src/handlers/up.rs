@@ -35,6 +35,12 @@ pub(super) fn command(command: Command) -> Command {
             .requires("server")
             .help("Reset the --server if it already runs Ployz, before adding it"),
     )
+    .arg(
+        crate::cli::switch("no-prune", None).help(
+            "Keep Services running in the Environment that it doesn't hold. Deploying removes \
+             them by default",
+        ),
+    )
     .arg(crate::cli::volume_acceptance())
     .arg(crate::cli::reviewed_version())
     .arg(crate::cli::approval())
@@ -95,7 +101,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             source: Some(directory),
             accept: super::teardown::accepted(matches)?,
             message: None,
-            no_prune: false,
+            no_prune: matches.get_flag("no-prune"),
         },
         events,
     )?;

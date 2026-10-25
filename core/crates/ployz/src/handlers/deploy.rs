@@ -381,6 +381,9 @@ pub(super) struct Shipped {
 
 impl Shipped {
     fn finish(self) -> Result<(), Error> {
+        if let Some(skipped) = prune_skipped(&self.view.deployment, self.view.preview.as_ref()) {
+            ui::warn(skipped);
+        }
         if self.presented {
             ui::emit(&Next::new(&self.view, Some(self.hint.clone())))?;
         } else {
@@ -1406,7 +1409,7 @@ fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<Vec<u64>, Er
 }
 
 /// What a Deployment of every Service says of its prune: that it keeps what the
-/// Environment lacks, when admitted with `--no-prune`, or why the Servers refused
+/// Environment lacks, when admitted with `--no-prune`, or why the Servers skipped
 /// the prune. Nothing when it prunes, since each Service it removes is named.
 fn prune_line(
     deployment: &DeploymentSummary,
@@ -1418,8 +1421,26 @@ fn prune_line(
     if !deployment.prune {
         return Some("  Keeps services not in this environment.".to_owned());
     }
-    let refusal = preview?.prune_refusal.as_ref()?;
-    Some(format!("  Prune skipped: {refusal}"))
+    prune_skipped(deployment, preview).map(|skipped| format!("  {skipped}"))
+}
+
+/// Why a Deployment admitted to prune removed nothing it lacks, said as the deploy
+/// ends: a plain deploy prunes, so a skipped prune must not pass in silence.
+fn prune_skipped(
+    deployment: &DeploymentSummary,
+    preview: Option<&ployz_core::DeployPreview>,
+) -> Option<String> {
+    if !deployment.prune || !deployment.services.is_empty() {
+        return None;
+    }
+    Some(match preview?.prune_refusal.as_ref()? {
+        ployz_core::PruneRefusal::IncompleteSnapshot => "Prune skipped: not every Server \
+            answered, so services not in this environment stay until a deploy can check \
+            them all."
+            .to_owned(),
+        refusal @ (ployz_core::PruneRefusal::SelectedServices
+        | ployz_core::PruneRefusal::RemovalsOnly) => format!("Prune skipped: {refusal}"),
+    })
 }
 
 /// `#5 and #6`, the Deployments a redeploy undoes; none when it undoes nothing.
@@ -1604,8 +1625,8 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::{
-        Tone, open_events, provenance, prune_line, service_outcome_lines, ships_all, status_tone,
-        status_word, undecided, untargeted_lines,
+        Tone, open_events, provenance, prune_line, prune_skipped, service_outcome_lines, ships_all,
+        status_tone, status_word, undecided, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
 
@@ -1630,12 +1651,20 @@ mod tests {
             .unwrap()
         };
         let refused = preview(Some("incomplete_snapshot"));
+        let skipped = "Prune skipped: not every Server answered, so services not in this \
+                       environment stay until a deploy can check them all.";
         assert_eq!(
             prune_line(&deployment(&[], true), Some(&refused)),
-            Some(format!(
-                "  Prune skipped: {}",
-                ployz_core::PruneRefusal::IncompleteSnapshot
-            ))
+            Some(format!("  {skipped}"))
+        );
+        assert_eq!(
+            prune_skipped(&deployment(&[], true), Some(&refused)).as_deref(),
+            Some(skipped)
+        );
+        assert_eq!(prune_skipped(&deployment(&[], false), Some(&refused)), None);
+        assert_eq!(
+            prune_skipped(&deployment(&["web"], true), Some(&refused)),
+            None
         );
         // What it removed is listed by name, so a prune that ran says nothing more.
         assert_eq!(

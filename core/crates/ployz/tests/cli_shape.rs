@@ -2462,6 +2462,15 @@ fn up_resets_only_a_server_it_adds() {
     assert!(!parse(&["--reset"]));
 }
 
+#[test]
+fn up_keeps_other_services_with_no_prune() {
+    let matches = ployz::cli::command()
+        .try_get_matches_from(["ployz", "up", "--no-prune"])
+        .unwrap();
+    let (_, up) = matches.subcommand().unwrap();
+    assert!(up.get_flag("no-prune"));
+}
+
 /// A thiserror message that interpolates its own source prints that cause
 /// twice: once in the message, once as the next link in the chain.
 #[test]

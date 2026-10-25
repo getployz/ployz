@@ -49,10 +49,10 @@ running in the environment that the environment doesn't hold: the ones you remov
 does the same when it ships every service. `ployz deploy` and `ployz deployment show` name each
 service it removes, such as `db: removed 1/1 (not in this environment)`, and `ployz deploy --plan`
 warns that it will. Their volumes and data stay. A deploy that can't check every server
-skips pruning, and still deploys.
+skips pruning, still deploys, and says `Prune skipped: not every Server answered`.
 
 To keep those other services, pick **Deploy, keep other services** in the bottom bar's **⋮** menu,
-or run `ployz deploy --no-prune`. It still removes the services you removed, and names each one it
+or run `ployz deploy --no-prune` (`ployz up --no-prune` too). It still removes the services you removed, and names each one it
 keeps, such as `postgres: running, not in this environment; kept.`
 
 Deploying only some services never removes another: after `ployz service rm big`,
