@@ -302,8 +302,10 @@ impl<'m> Store<'m> {
     }
 
     /// Admit a Deployment. The in-process Store reviews Volume loss against the
-    /// Servers this CLI observes; over HTTPS, Cloud gathers its own evidence.
+    /// Servers this CLI observes, once this CLI resealed what an earlier one sealed
+    /// with the Store's key; over HTTPS, Cloud gathers its own evidence and reseals.
     pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
+        self.reseal()?;
         let removing = |environment: &EnvironmentRef, remove| RemovalsQuery {
             environment: environment.clone(),
             remove,

@@ -8570,10 +8570,10 @@ fn a_patch_s_secret_in_an_env_that_is_not_an_object_is_refused_as_the_store_does
     cloud_never_saw(&cloud, "array-s3cr3t");
 }
 
-/// The in-process Store has no Cluster key to seal to, so a plain-text secret is refused
-/// there as anywhere else, and nothing is written.
+/// The in-process Store seals nothing itself: the CLI seals to the key its Servers
+/// hold, so with no Server to reach a secret is refused and nothing is written.
 #[test]
-fn a_local_store_refuses_a_plain_text_secret() {
+fn a_local_store_without_a_server_refuses_a_secret() {
     let local = Target::Local(tempfile::tempdir().unwrap());
     one_service(&local);
     let (code, refused) = ployz_with_stdin(
@@ -8581,16 +8581,14 @@ fn a_local_store_refuses_a_plain_text_secret() {
         &["set", "web.env.TOKEN", "--secret"],
         "local-s3cr3t\n",
     );
-    assert_eq!(code, Some(2), "{refused}");
+    assert_eq!(code, Some(1), "{refused}");
+    assert!(!refused.contains("local-s3cr3t"), "{refused}");
     let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(refused["error"]["code"], json!("conflict"), "{refused}");
     assert_eq!(
-        refused["error"],
-        json!({
-            "code": "invalid_argument",
-            "message": "TOKEN: secrets are sealed on your device",
-            "details": { "variable": "TOKEN" },
-            "cause": [],
-        })
+        refused["error"]["message"],
+        json!("Sealed values need a server."),
+        "{refused}"
     );
     let missing = error(&local, &["get", "web.env.TOKEN"]);
     assert_eq!(missing["code"], json!("not_found"), "{missing}");
