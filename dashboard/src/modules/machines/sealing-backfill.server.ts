@@ -9,9 +9,9 @@ import {
   forgetSealingKeyGenerator,
   readOrganizationSealingKey,
   readSealingKeyGenerator,
-  readSealingPublicKey,
   recordSealingPublicKey,
 } from "#/modules/machines/sealing-key.server";
+import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
 import { clusterRead, OrganizationRuntime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";

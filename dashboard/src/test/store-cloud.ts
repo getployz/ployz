@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ConfigTrusted, Connection, MachineId } from "@ployz/sdk";
-import { ConfigProvider, type Context, Effect, Layer, type Scope } from "effect";
+import { type Context, Effect, Layer, type Scope } from "effect";
 import { Inngest } from "inngest";
 import { vi } from "vitest";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
@@ -17,9 +17,8 @@ import { InngestClient } from "#/modules/inngest/client";
 import { organization } from "#/modules/organization/tables";
 import { makeOrganizationRuntimeLayer, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzLive } from "#/modules/runtime/ployz.server";
-import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { testConfigEnvironment } from "#/test/config-environment";
+import { testConfigLayer } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
 import { machineId } from "#/test/ids";
 import { noPairingChanges } from "#/test/organization-runtime";
@@ -47,8 +46,7 @@ interface StoreCloudOptions {
 const storeCloudLayer = Effect.fn(function* (options: StoreCloudOptions) {
   const fleet = options.fleet;
   const cloud = yield* postgresTestDatabase;
-  const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href, ...options.env };
-  const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
+  const configLayer = testConfigLayer({ NODE_ENV: "test", DATABASE_URL: cloud.url.href, ...options.env });
   const database = DatabaseLive.pipe(Layer.provide(configLayer));
   const github = options.github ?? fakeGithubApi().service;
   return Layer.mergeAll(
