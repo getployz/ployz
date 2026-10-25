@@ -352,6 +352,10 @@ started again, or one another `ployz` or Ployz Cloud started there meanwhile. Un
 there, the page reads **The web server isn't running, so your domains don't point here.** To try again
 from Ployz Cloud, turn the switch off, then on.
 
+In both cases the `inspect:` and `retry:` lines select the server the way you typed it, and the
+command leaves out a `retry:` that would repeat its `next:`. They use its Machine ID when the same
+command renamed it with `--name`, and for another server, since two servers can share a name.
+
 ## Upgrade Ployz on a server
 
 Each server's page shows the Ployz release it runs. When a newer release is out on your

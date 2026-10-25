@@ -6,6 +6,7 @@ use clap_complete::Shell;
 use clap_complete::env::Shells;
 
 use crate::failure::Failure;
+use ployz_core::MachineId;
 
 pub(crate) mod account;
 pub(crate) mod build;
@@ -596,6 +597,7 @@ pub(crate) fn ingress_headline(stem: &str, error: &Error) -> String {
 }
 
 /// Direct ingress diagnostics acquire their command scope before committed output is serialized.
+/// Each Server is selected by Machine ID, since a Machine Name may be ambiguous.
 pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> String) -> Error {
     let retry = error
         .diagnostic()
@@ -608,12 +610,16 @@ pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> String) -
                 "--accepts-ingress=true",
             ]))
         });
-    ingress_log_hints(error, command).hint(retry)
+    ingress_log_hints(error, command, ToString::to_string).hint(retry)
 }
 
 /// [`ingress_hints`] without the retry, for a failure that has the reader do something else
-/// first.
-pub(crate) fn ingress_log_hints(mut error: Error, command: impl Fn(&[&str]) -> String) -> Error {
+/// first. `server` selects each Server in the hints.
+pub(crate) fn ingress_log_hints(
+    mut error: Error,
+    command: impl Fn(&[&str]) -> String,
+    server: impl Fn(&MachineId) -> String,
+) -> Error {
     let Some(diagnostic) = error.diagnostic() else {
         return error;
     };
@@ -625,7 +631,7 @@ pub(crate) fn ingress_log_hints(mut error: Error, command: impl Fn(&[&str]) -> S
                 "logs",
                 &tail.service.to_string(),
                 "--machine",
-                &tail.machine.to_string(),
+                &server(&tail.machine),
             ]))
         })
         .collect::<Vec<_>>();
