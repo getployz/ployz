@@ -202,3 +202,51 @@ async fn a_sealed_value_is_refused_when_the_target_shows_no_capability_evidence(
         server.abort();
     }
 }
+
+#[test]
+fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
+    use ployz_core::BUILD_SEALED_CAPABILITY;
+    let mut able = machine('a', "able");
+    able.runtime.capabilities = [BUILD_SEALED_CAPABILITY].map(String::from).into();
+    let behind = machine('b', "behind");
+    let visible = vec![
+        MachineObservation::new(behind.clone(), MembershipObservation::Up),
+        MachineObservation::new(able.clone(), MembershipObservation::Up),
+    ];
+
+    let plain = crate::sealed_compat::builders(&visible, false).unwrap();
+    assert_eq!(plain.len(), 2);
+
+    let sealed = crate::sealed_compat::builders(&visible, true).unwrap();
+    let names: Vec<_> = sealed
+        .iter()
+        .map(|observation| observation.machine.name.to_string())
+        .collect();
+    assert_eq!(names, ["able"]);
+
+    let only_behind = vec![MachineObservation::new(behind, MembershipObservation::Up)];
+    let crate::connect::ConnectError::Remote(error) =
+        crate::sealed_compat::builders(&only_behind, true).unwrap_err()
+    else {
+        panic!("expected a remote refusal");
+    };
+    assert_eq!(error.code, RpcErrorCode::Unsupported);
+    assert_eq!(
+        error.message,
+        "Builds that read a sealed value run on your server. behind cannot open sealed values; upgrade every Server first."
+    );
+    assert_eq!(
+        error
+            .details
+            .pointer("/rejections/cannot open sealed values"),
+        Some(&serde_json::json!(1))
+    );
+
+    let nobody = crate::sealed_compat::builders(&[], true).unwrap_err();
+    assert!(
+        nobody
+            .to_string()
+            .starts_with("Builds that read a sealed value run on your server."),
+        "{nobody}"
+    );
+}

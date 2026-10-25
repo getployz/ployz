@@ -35,6 +35,9 @@ impl Fixture {
         Self::with_policy(|_| {}).await
     }
     async fn with_policy(update: impl FnOnce(&mut HostPolicy)) -> Self {
+        Self::with(update, None).await
+    }
+    async fn with(update: impl FnOnce(&mut HostPolicy), sealing_key_dir: Option<PathBuf>) -> Self {
         let root =
             std::env::temp_dir().join(format!("ployz-remote-build-test-{}", MachineId::random()));
         fs::create_dir_all(&root).unwrap();
@@ -61,6 +64,10 @@ impl Fixture {
             .unwrap();
         let machine = store.record().machine().unwrap().clone();
         let (runtime, _) = crate::docker::test_support::fake_runtime_with(Default::default()).await;
+        let runtime = match sealing_key_dir {
+            Some(dir) => runtime.with_sealing_key(dir),
+            None => runtime,
+        };
         let (replicated, cluster) = crate::corrosion::fake_cluster::store().await;
         replicated.publish_local_machine(&machine).await.unwrap();
         let store = RecordOwner::spawn(store).unwrap();
@@ -137,26 +144,70 @@ impl Fixture {
         (sender, response)
     }
     fn capture(&self) -> ployz::build::CapturedBuild {
+        self.capture_with(None)
+    }
+    /// A capture whose env holds `NPM_TOKEN` sealed for `cluster`, when given.
+    fn capture_with(
+        &self,
+        sealed: Option<&crate::sealed_env::test_support::Cluster>,
+    ) -> ployz::build::CapturedBuild {
+        let dockerfile = if sealed.is_some() {
+            "FROM scratch\nARG NPM_TOKEN\nCOPY payload /payload\n"
+        } else {
+            "FROM scratch\nCOPY payload /payload\n"
+        };
+        self.capture_from(sealed, dockerfile)
+    }
+    fn capture_from(
+        &self,
+        sealed: Option<&crate::sealed_env::test_support::Cluster>,
+        dockerfile: &str,
+    ) -> ployz::build::CapturedBuild {
         let project_root = self.root.join("project");
         fs::create_dir_all(&project_root).unwrap();
-        fs::write(
-            project_root.join("Dockerfile"),
-            "FROM scratch\nCOPY payload /payload\n",
-        )
-        .unwrap();
+        fs::write(project_root.join("Dockerfile"), dockerfile).unwrap();
         fs::write(project_root.join("payload"), "captured-before-edit").unwrap();
         fs::write(project_root.join("ignored"), "excluded-private-value").unwrap();
         fs::write(project_root.join(".dockerignore"), "ignored\n").unwrap();
-        let intent = ployz_core::config::lower_deployment(
-            serde_json::from_value(serde_json::json!({"namespace": "demo", "snapshots": [{
-                "config": {"version": 2, "privateDns": "api", "healthcheck": {"type": "none"},
-                    "restartPolicy": "on-failure", "source": {"type": "image", "version": 1,
-                    "image": "example.test/api:built", "credentials": {"type": "none"}}},
-                "resolvedEnv": {"PRIVATE_VALUE": "secret-value"}
-            }]}))
-            .unwrap(),
-        )
-        .unwrap();
+        let mut deployment = serde_json::json!({"namespace": "demo", "snapshots": [{
+            "config": {"version": 2, "privateDns": "api", "healthcheck": {"type": "none"},
+                "restartPolicy": "on-failure", "source": {"type": "image", "version": 1,
+                "image": "example.test/api:built", "credentials": {"type": "none"}}},
+            "resolvedEnv": {"PRIVATE_VALUE": "secret-value"}
+        }]});
+        if let Some(cluster) = sealed {
+            let identity = &cluster.identity;
+            fn object<'a>(
+                value: &'a mut serde_json::Value,
+                pointer: &str,
+            ) -> &'a mut serde_json::Map<String, serde_json::Value> {
+                value
+                    .pointer_mut(pointer)
+                    .and_then(serde_json::Value::as_object_mut)
+                    .unwrap()
+            }
+            object(&mut deployment, "").insert(
+                "sealedFor".into(),
+                serde_json::json!({
+                    "organization": identity.organization,
+                    "environment": identity.environment,
+                }),
+            );
+            object(&mut deployment, "/snapshots/0")
+                .insert("serviceId".into(), serde_json::json!(identity.service));
+            object(&mut deployment, "/snapshots/0/resolvedEnv").insert(
+                "NPM_TOKEN".into(),
+                serde_json::to_value(ployz_core::EnvValue::Sealed(cluster.seal(
+                    "NPM_TOKEN",
+                    ployz_core::SealedScope::Service(identity.service),
+                    OPENED_TOKEN,
+                )))
+                .unwrap(),
+            );
+        }
+        let intent =
+            ployz_core::config::lower_deployment(serde_json::from_value(deployment).unwrap())
+                .unwrap();
         ployz::build::capture(
             &intent,
             [(
@@ -178,6 +229,9 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
+
+/// A dummy value the tests seal; it never leaves the test root.
+const OPENED_TOKEN: &str = "opened-token-0123456789";
 
 async fn event(response: &mut tonic::Streaming<OpaquePayload>) -> Event {
     let frame = tokio::time::timeout(Duration::from_secs(10), response.message())
@@ -599,9 +653,20 @@ case "$1 $2" in
   'buildx ls') printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     : > "$root/executed"
+    printf '%s\n' "$@" > "$root/bake-args"
+    printf '%s' "$BUILDX_METADATA_PROVENANCE" > "$root/metadata-provenance"
     while [ -f "$root/hold-build" ]; do sleep 0.01; done
     find source -type f > "$root/source-list"
     find source -name payload -exec cp '{{}}' "$root/received-payload" \;
+    if [ -f private/sealed/NPM_TOKEN ]; then
+      stat -c '%a' private/sealed/NPM_TOKEN > "$root/seen-mode"
+      cp private/sealed/NPM_TOKEN "$root/seen-secret"
+      if [ -f private/sealed/args.compose.yaml ]; then
+        python3 -c 'import json; print(json.load(open("private/sealed/args.compose.yaml"))["services"]["api"]["build"]["args"]["NPM_TOKEN"], end="")' > "$root/seen-arg"
+        stat -c '%a' private/sealed/args.compose.yaml > "$root/seen-arg-mode"
+      fi
+      printf 'token is %s here\n' "$(cat private/sealed/NPM_TOKEN)"
+    fi
     if [ -f "$root/slow" ]; then printf 'building\n'; exec sleep 30; fi
     previous=
     for arg in "$@"; do
@@ -698,6 +763,7 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
         fixture.local.clone(),
         ReceiverStream::new(receiver),
         Runner::new(policy, Default::default()).unwrap(),
+        None,
     );
     assert!(matches!(
         remote::decode::<Event>(&responses.next().await.unwrap().unwrap()).unwrap(),
@@ -997,5 +1063,269 @@ async fn dropping_completed_build_releases_only_its_temporary_tags() {
         let released = fs::read_to_string(fixture.root.join("released-tags")).unwrap();
         assert!(released.contains(":ployz-build-"), "{released}");
         assert!(!released.contains("example.test/api:built"), "{released}");
+    }
+}
+
+#[tokio::test]
+async fn a_sealed_value_opens_into_a_private_file_and_never_into_the_output() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    let output = Mutex::new(Vec::new());
+    let built = capture
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            tokio_util::sync::CancellationToken::new(),
+            |progress| {
+                if let Progress::Output(bytes) = progress {
+                    output.lock().unwrap().extend(bytes);
+                }
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(built.len(), 1);
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-arg")).unwrap(),
+        OPENED_TOKEN
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-arg-mode"))
+            .unwrap()
+            .trim(),
+        "600"
+    );
+    let args = fs::read_to_string(fixture.root.join("bake-args")).unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("metadata-provenance")).unwrap(),
+        "disabled"
+    );
+    assert!(args.contains("args.compose.yaml"));
+    assert!(!args.contains(OPENED_TOKEN));
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-secret")).unwrap(),
+        OPENED_TOKEN
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-mode"))
+            .unwrap()
+            .trim(),
+        "600"
+    );
+    let output = String::from_utf8(output.into_inner().unwrap()).unwrap();
+    assert!(
+        output.contains("token is [secret NPM_TOKEN] here"),
+        "{output}"
+    );
+    assert!(!output.contains(OPENED_TOKEN), "{output}");
+    let mut leftovers = Vec::new();
+    files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
+    files_named(&fixture.root, "args.compose.yaml", &mut leftovers);
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[tokio::test]
+async fn a_sealed_value_read_only_by_mount_builds_with_no_arg_override() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let capture = fixture.capture_from(Some(&cluster), "FROM scratch\nCOPY payload /payload\n");
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    capture
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-secret")).unwrap(),
+        OPENED_TOKEN
+    );
+    assert!(!fixture.root.join("seen-arg").exists());
+    assert!(
+        !fs::read_to_string(fixture.root.join("bake-args"))
+            .unwrap()
+            .contains("args.compose.yaml")
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("metadata-provenance")).unwrap(),
+        ""
+    );
+}
+
+#[tokio::test]
+async fn a_failed_sealed_arg_build_removes_its_private_override() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    fs::write(fixture.root.join("fail-after-output"), "").unwrap();
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    let result = failure(
+        capture
+            .execute_remote_images(
+                &client,
+                fixture.machine.id,
+                None,
+                tokio_util::sync::CancellationToken::new(),
+                |_| {},
+            )
+            .await,
+    );
+    assert!(matches!(
+        result,
+        ployz::build::RemoteBuildFailure::Failed {
+            stage: Stage::Building,
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("seen-arg")).unwrap(),
+        OPENED_TOKEN
+    );
+    let mut leftovers = Vec::new();
+    files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
+    files_named(&fixture.root, "args.compose.yaml", &mut leftovers);
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[tokio::test]
+async fn a_cancelled_sealed_build_leaves_no_opened_file_even_in_a_retained_root() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    for uncertain in [false, true] {
+        let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+        fs::write(fixture.root.join("slow"), "").unwrap();
+        if uncertain {
+            fs::write(fixture.root.join("fail-cleanup"), "").unwrap();
+        }
+        let capture = fixture.capture_with(Some(&cluster));
+        let client = ployz::connect::connect(
+            Path::new("/missing-test-config"),
+            Some(&fixture.address.replace("http://", "tcp://")),
+            None,
+        )
+        .await
+        .unwrap();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let cancel = cancellation.clone();
+        let result = failure(
+            capture
+                .execute_remote_images(
+                    &client,
+                    fixture.machine.id,
+                    None,
+                    cancellation,
+                    |progress| {
+                        if matches!(progress, Progress::Output(_)) {
+                            cancel.cancel();
+                        }
+                    },
+                )
+                .await,
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("seen-secret")).unwrap(),
+            OPENED_TOKEN
+        );
+        let upload_root = fixture.policy.state_directory.join("build-upload");
+        if uncertain {
+            assert!(
+                matches!(result, ployz::build::RemoteBuildFailure::Unknown { .. }),
+                "{result:?}"
+            );
+            assert!(upload_root.is_dir(), "an uncertain upload root is retained");
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    ployz::build::RemoteBuildFailure::Failed {
+                        stage: Stage::Building,
+                        ..
+                    }
+                ),
+                "{result:?}"
+            );
+            assert!(!upload_root.exists());
+        }
+        let mut leftovers = Vec::new();
+        files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
+        files_named(&fixture.root, "args.compose.yaml", &mut leftovers);
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+}
+
+fn files_named(root: &Path, name: &str, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files_named(&path, name, found);
+        } else if entry.file_name() == name {
+            found.push(path);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_sealed_value_this_machine_cannot_open_fails_closed_before_docker() {
+    let sealed_by = crate::sealed_env::test_support::Cluster::new();
+    let other_key = crate::sealed_env::test_support::Cluster::new();
+    for key_dir in [None, Some(other_key.dir.0.clone())] {
+        let fixture = Fixture::with(|_| {}, key_dir).await;
+        let capture = fixture.capture_with(Some(&sealed_by));
+        let client = ployz::connect::connect(
+            Path::new("/missing-test-config"),
+            Some(&fixture.address.replace("http://", "tcp://")),
+            None,
+        )
+        .await
+        .unwrap();
+        let result = failure(
+            capture
+                .execute_remote_images(
+                    &client,
+                    fixture.machine.id,
+                    None,
+                    tokio_util::sync::CancellationToken::new(),
+                    |_| {},
+                )
+                .await,
+        );
+        let ployz::build::RemoteBuildFailure::Failed { stage, message, .. } = result else {
+            panic!("{result:?}");
+        };
+        assert_eq!(stage, Stage::Preparation);
+        assert!(
+            message.contains("NPM_TOKEN") || message.contains("Sealing Key"),
+            "{message}"
+        );
+        assert!(!message.contains(OPENED_TOKEN), "{message}");
+        assert!(!fixture.root.join("executed").exists());
+        assert!(!fixture.root.join("seen-secret").exists());
     }
 }

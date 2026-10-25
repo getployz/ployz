@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -554,12 +554,14 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::BuildStream>, Status> {
-        self.containers()
+        let containers = self
+            .containers()
             .map_err(|error| Status::unavailable(error.message))?;
         Ok(Response::new(crate::build::start(
             self.local.clone(),
             request.into_inner(),
             self.builds.clone(),
+            containers.sealing_key_dir().map(Path::to_owned),
         )))
     }
 

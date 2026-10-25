@@ -28,6 +28,9 @@ mod remote;
 pub use local::LocalImage;
 mod reuse;
 pub(crate) use reuse::{holder, image_stores, runs_everywhere};
+mod sealed;
+
+pub(crate) use ployz_store::SEALED_BUILDS_RUN_ON_SERVER;
 
 /// How one Service's checked-out source becomes an image.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,6 +78,9 @@ pub enum Error {
     RemoteBuild { outcome: Box<RemoteBuildFailure> },
     #[error("invalid Build: {0}")]
     Invalid(String),
+    /// The Build reads Sealed values, which only a Server Builder opens.
+    #[error("{0}")]
+    Sealed(String),
     #[error("Could not build {service}.")]
     Build {
         service: ServiceName,
@@ -126,12 +132,16 @@ struct CapturedTarget {
     target: ployz_build::Target,
     build_method: BuildMethod,
     retained_tag: String,
+    /// Names of the Sealed values the Build reads.
+    sealed: Vec<String>,
     inputs: BuildInputs,
 }
 
 /// Freeze each Service's source and effective variables before any Build runs.
-/// Service variables become build variables; a Railpack command is added as
+/// Text variables become build variables; a Railpack command is added as
 /// `RAILPACK_BUILD_CMD`. Build variables may be exposed in build output or history.
+/// Sealed values stay sealed in private material and reach the Build only as
+/// secret mounts the Builder opens.
 ///
 /// # Errors
 /// Rejects Services absent from `intent`, unreadable or unstable source files, and
@@ -170,12 +180,14 @@ fn capture_target(
         reference.repository(),
         uuid::Uuid::new_v4()
     );
+    let sealed = sealed::capture(service, &spec.recipe, &inputs)?;
     let mut args: BTreeMap<String, String> = service
         .container
         .environment
         .iter()
         .filter_map(|(key, value)| Some((key.clone(), value.text()?.to_owned())))
         .collect();
+    args.extend(sealed.args);
     let name = service.name.to_string();
     let (build_method, context, dockerfile) = match spec.recipe {
         Recipe::Railpack { command } => {
@@ -189,6 +201,7 @@ fn capture_target(
                 name: name.clone(),
                 context: context.clone(),
                 variables: std::mem::take(&mut args),
+                sealed: sealed.fingerprints,
                 refresh_cache: false,
             })?;
             (BuildMethod::Railpack, context, None)
@@ -196,6 +209,10 @@ fn capture_target(
         Recipe::Dockerfile(dockerfile) => {
             let context = inputs.context(&spec.context, &dockerfile)?;
             let file = inputs.dockerfile(&dockerfile)?;
+            let declared = sealed::declared_args(&file, &sealed.names)?;
+            if !declared.is_empty() {
+                inputs.sealed_args(&name, &declared)?;
+            }
             // Both context and recipe live directly beneath source/.
             let dockerfile = Path::new("..").join(file.file_name().expect("captured recipe"));
             (
@@ -215,10 +232,12 @@ fn capture_target(
                     context,
                     dockerfile,
                     args,
+                    secrets: sealed.secrets.keys().cloned().collect(),
                     tags: vec![image.clone(), retained_tag.clone()],
                 },
             },
         )]),
+        secrets: &sealed.secrets,
     };
     // Buildx interpolates the recipe. Escape dollars so captured values cannot
     // pick up an execution host value or lose a literal dollar.
@@ -236,6 +255,7 @@ fn capture_target(
         placement: service.placement.clone(),
         build_method,
         retained_tag,
+        sealed: sealed.names,
         inputs,
     })
 }
@@ -244,6 +264,8 @@ fn capture_target(
 #[derive(Serialize)]
 struct CapturedFile<'target> {
     services: BTreeMap<&'target str, CapturedService<'target>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    secrets: &'target BTreeMap<String, sealed::CapturedSecret>,
 }
 
 #[derive(Serialize)]
@@ -259,6 +281,8 @@ struct CapturedRecipe {
     dockerfile: Option<PathBuf>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     args: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secrets: Vec<String>,
     tags: Vec<String>,
 }
 
@@ -272,6 +296,14 @@ impl CapturedBuild {
     #[must_use]
     pub fn to_targets(&self) -> Vec<ployz_build::Target> {
         self.targets().cloned().collect()
+    }
+
+    /// Whether any Build reads a Sealed value, which only a Builder that opens them can run.
+    #[must_use]
+    pub fn reads_sealed(&self) -> bool {
+        self.targets
+            .iter()
+            .any(|captured| !captured.sealed.is_empty())
     }
 
     /// Run each Build in order on one resolved Machine over the authenticated
@@ -445,13 +477,16 @@ mod tests {
         .unwrap()
     }
 
-    fn capture_one(intent: &DeployIntent, spec: BuildSpec) -> Result<CapturedTarget, Error> {
+    pub(super) fn capture_one(
+        intent: &DeployIntent,
+        spec: BuildSpec,
+    ) -> Result<CapturedTarget, Error> {
         let name = intent.target.first().unwrap().name.clone();
         let mut captured = capture(intent, BTreeMap::from([(name, spec)]))?;
         Ok(captured.targets.pop().unwrap())
     }
 
-    fn recipe(captured: &CapturedTarget) -> serde_norway::Value {
+    pub(super) fn recipe(captured: &CapturedTarget) -> serde_norway::Value {
         serde_norway::from_slice(&fs::read(captured.inputs.root().join("compose.yaml")).unwrap())
             .unwrap()
     }
@@ -528,6 +563,7 @@ mod tests {
                 no_cache: false,
                 pull: false,
             },
+            ployz_build::remote::SealedFiles::Opened,
         )
         .unwrap();
         for target in [root.path().join("outside"), "../outside".into()] {

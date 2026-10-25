@@ -32,6 +32,10 @@ pub struct Railpack {
     pub context: PathBuf,
     /// Effective Service values, with build-only overrides already applied.
     pub variables: BTreeMap<String, String>,
+    /// Sealed values by name, each as a fingerprint of its ciphertext. The
+    /// Builder opens them into files; only the fingerprint reaches BuildKit.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sealed: BTreeMap<String, String>,
     /// Request fresh compilation/base resolution on the pinned frontend.
     pub refresh_cache: bool,
 }
@@ -123,32 +127,8 @@ pub(crate) fn prepare(
             .create(&directory)
             .map_err(input_error)?;
         let script = directory.join("prepare.sh");
-        let mut command = String::from("#!/bin/sh\nexec env --");
-        let mut secrets = Vec::new();
-        for (index, (name, value)) in recipe.variables.iter().enumerate() {
-            if name.is_empty()
-                || !name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_+-".contains(&b))
-                || value.contains('\0')
-            {
-                return Err(BuildError::Request(
-                    "Railpack build variables require valid names and NUL-free values".into(),
-                ));
-            }
-            command.push(' ');
-            command.push_str(&quote(&format!("{name}={value}")));
-            let file = directory.join(format!("secret-{index}"));
-            private_file(&file, value.as_bytes())?;
-            secrets.push(format!("id={name},src={}", file.display()));
-        }
-        command.push_str(" /railpack prepare /app --plan-out /plan.json");
-        for name in recipe.variables.keys() {
-            command.push_str(" --env=");
-            command.push_str(&quote(name));
-        }
-        command.push('\n');
-        private_file(&script, command.as_bytes())?;
+        let inputs = frontend_inputs(recipe, &directory, request.working_dir)?;
+        private_file(&script, inputs.script.as_bytes())?;
         let plan = directory.join("plan.json");
         prepare_container(
             docker,
@@ -159,21 +139,13 @@ pub(crate) fn prepare(
             builder,
             resources,
         )?;
-        // Length-delimited, sorted JSON prevents ambiguous concatenations. Only
-        // the digest reaches BuildKit metadata; values travel as secret mounts.
-        let encoded = serde_json::to_vec(&recipe.variables)
-            .map_err(|_| BuildError::Request("invalid Railpack build variables".into()))?;
-        let hash: String = Sha256::digest(encoded)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
         targets.insert(
             recipe.name.replace('.', "_"),
             json!({
                 "dockerfile": plan,
                 "platforms": [request.targets.iter().find(|t| t.name == recipe.name).and_then(|t| t.platforms.first()).map_or(native, String::as_str)],
-                "args": {"BUILDKIT_SYNTAX": IMAGE, "secrets-hash": hash},
-                "secret": secrets,
+                "args": {"BUILDKIT_SYNTAX": IMAGE, "secrets-hash": inputs.hash},
+                "secret": inputs.secrets,
             }),
         );
     }
@@ -184,6 +156,73 @@ pub(crate) fn prepare(
             .map_err(|_| BuildError::Request("invalid Railpack build targets".into()))?,
     )?;
     Ok(Some(preparation))
+}
+
+/// What one recipe hands the frontend: the prepare script, the secret
+/// mounts, and the digest BuildKit sees in place of the values.
+struct FrontendInputs {
+    script: String,
+    secrets: Vec<String>,
+    hash: String,
+}
+
+/// Text values ride in the script's environment and as secret files written
+/// here. Sealed names ride only as mounts of the files the host opened, with
+/// an empty placeholder so the plan still lists them.
+fn frontend_inputs(
+    recipe: &crate::Railpack,
+    directory: &Path,
+    working_dir: &Path,
+) -> Result<FrontendInputs, BuildError> {
+    let mut command = String::from("#!/bin/sh\nexec env --");
+    let mut secrets = Vec::new();
+    for (index, (name, value)) in recipe.variables.iter().enumerate() {
+        if !crate::valid_name(name) || value.contains('\0') {
+            return Err(BuildError::Request(
+                "Railpack build variables require valid names and NUL-free values".into(),
+            ));
+        }
+        command.push(' ');
+        command.push_str(&quote(&format!("{name}={value}")));
+        let file = directory.join(format!("secret-{index}"));
+        private_file(&file, value.as_bytes())?;
+        secrets.push(format!("id={name},src={}", file.display()));
+    }
+    for name in recipe.sealed.keys() {
+        if !crate::valid_name(name) || recipe.variables.contains_key(name) {
+            return Err(BuildError::Request(
+                "Railpack sealed variables require distinct valid names".into(),
+            ));
+        }
+        command.push(' ');
+        command.push_str(&quote(&format!("{name}=")));
+        let file = working_dir.join(crate::sealed_file(name));
+        secrets.push(format!("id={name},src={}", file.display()));
+    }
+    command.push_str(" /railpack prepare /app --plan-out /plan.json");
+    for name in recipe.variables.keys().chain(recipe.sealed.keys()) {
+        command.push_str(" --env=");
+        command.push_str(&quote(name));
+    }
+    command.push('\n');
+    // Length-delimited, sorted JSON prevents ambiguous concatenations. Only
+    // the digest reaches BuildKit metadata; values travel as secret mounts.
+    // A recipe without Sealed values hashes as before, keeping its cache.
+    let encoded = if recipe.sealed.is_empty() {
+        serde_json::to_vec(&recipe.variables)
+    } else {
+        serde_json::to_vec(&json!({"sealed": recipe.sealed, "variables": recipe.variables}))
+    }
+    .map_err(|_| BuildError::Request("invalid Railpack build variables".into()))?;
+    let hash = Sha256::digest(encoded)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok(FrontendInputs {
+        script: command,
+        secrets,
+        hash,
+    })
 }
 
 fn prepare_container(
@@ -288,6 +327,107 @@ fn input_error(error: std::io::Error) -> BuildError {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn recipe(variables: &[(&str, &str)], sealed: &[(&str, &str)]) -> crate::Railpack {
+        let pairs = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect()
+        };
+        crate::Railpack {
+            name: "api".into(),
+            context: "source/app".into(),
+            variables: pairs(variables),
+            sealed: pairs(sealed),
+            refresh_cache: false,
+        }
+    }
+
+    fn inputs(recipe: &crate::Railpack) -> FrontendInputs {
+        let directory =
+            std::env::temp_dir().join(format!("ployz-railpack-inputs-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let inputs = frontend_inputs(recipe, &directory, Path::new("/capture")).unwrap();
+        fs::remove_dir_all(&directory).unwrap();
+        inputs
+    }
+
+    #[test]
+    fn sealed_names_ride_only_as_mounts_of_the_opened_files() {
+        let inputs = inputs(&recipe(
+            &[("PLAIN", "plain-value")],
+            &[("NPM_TOKEN", "fp-ciphertext")],
+        ));
+        let prefix = inputs.script.split(" /railpack ").next().unwrap();
+        assert!(prefix.contains("'PLAIN=plain-value'"), "{prefix}");
+        assert!(prefix.contains("'NPM_TOKEN='"), "{prefix}");
+        assert!(
+            !inputs.script.contains("fp-ciphertext"),
+            "{}",
+            inputs.script
+        );
+        assert!(
+            inputs.script.ends_with("--env='PLAIN' --env='NPM_TOKEN'\n"),
+            "{}",
+            inputs.script
+        );
+        let [plain, sealed] = inputs.secrets.as_slice() else {
+            panic!("{:?}", inputs.secrets);
+        };
+        assert!(plain.starts_with("id=PLAIN,src="), "{plain}");
+        assert_eq!(
+            *sealed,
+            format!(
+                "id=NPM_TOKEN,src=/capture/{}",
+                crate::sealed_file("NPM_TOKEN").display()
+            )
+        );
+    }
+
+    #[test]
+    fn the_secrets_hash_follows_the_fingerprint_and_never_the_values() {
+        let plain = inputs(&recipe(&[("PLAIN", "plain-value")], &[]));
+        let sealed = inputs(&recipe(
+            &[("PLAIN", "plain-value")],
+            &[("NPM_TOKEN", "fp-1")],
+        ));
+        let changed = inputs(&recipe(
+            &[("PLAIN", "plain-value")],
+            &[("NPM_TOKEN", "fp-2")],
+        ));
+        assert_ne!(plain.hash, sealed.hash);
+        assert_ne!(sealed.hash, changed.hash);
+        let expected: String = Sha256::digest(
+            serde_json::to_vec(&recipe(&[("PLAIN", "plain-value")], &[]).variables).unwrap(),
+        )
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+        assert_eq!(
+            plain.hash, expected,
+            "a recipe without Sealed values keeps trunk's hash"
+        );
+        for hash in [&plain.hash, &sealed.hash] {
+            assert!(!hash.contains("plain-value") && hash.len() == 64);
+        }
+    }
+
+    #[test]
+    fn a_sealed_name_cannot_shadow_a_text_variable_or_escape_the_directory() {
+        let directory =
+            std::env::temp_dir().join(format!("ployz-railpack-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        for recipe in [
+            recipe(&[("TOKEN", "x")], &[("TOKEN", "fp")]),
+            recipe(&[], &[("../escape", "fp")]),
+        ] {
+            assert!(frontend_inputs(&recipe, &directory, Path::new("/capture")).is_err());
+        }
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
     #[test]
     fn preparation_sits_behind_the_build_bridge_firewall() {
         assert!(super::NETWORK.starts_with(crate::BUILD_BRIDGE_PREFIX));

@@ -115,6 +115,8 @@ macro_rules! rpc_catalog {
                 MANAGEMENT_SCOPE_CAPABILITY: ("ployz.management.scope.v1", Always),
                 /// The daemon opens Sealed values and keeps them out of its own logs.
                 ENV_SEALED_CAPABILITY: ("ployz.env.sealed.v1", Always),
+                /// The daemon opens a Build's Sealed values as secret files and keeps them out of its output.
+                BUILD_SEALED_CAPABILITY: ("ployz.build.sealed.v1", Always),
             }
         }
     };

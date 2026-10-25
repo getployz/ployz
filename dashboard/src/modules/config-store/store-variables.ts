@@ -50,6 +50,16 @@ type Write = Change | { readonly key: string; readonly sealed: string };
 
 const UNPLACED = "Set this value after merging.";
 
+/** The first of a Service's variables, by key, whose value the browser sealed (`EnvironmentView.sealed`). */
+export function firstBrowserSealed(rows: ReadonlyMap<string, SettingRow>, sealed: readonly RowId[] = []) {
+  const marked = new Set(sealed);
+  const keys = [...rows].flatMap(([name, row]) => {
+    const key = VARIABLE.exec(name)?.[1];
+    return key !== undefined && row.row !== undefined && marked.has(row.row) ? [key] : [];
+  });
+  return keys.sort()[0] ?? null;
+}
+
 const leavesValueless = Schema.is(Schema.Struct({ after: Schema.Struct({ secret: Schema.Literal(false) }) }));
 
 /**

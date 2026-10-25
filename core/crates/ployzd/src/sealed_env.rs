@@ -114,6 +114,29 @@ impl SealedRecord {
             .collect())
     }
 
+    /// Open every value for a Build on this Machine: the values by name for
+    /// its secret files, and the forms that hide them in what it reports.
+    pub(crate) fn open_for_build(
+        &self,
+        key_dir: Option<&Path>,
+    ) -> Result<(BTreeMap<String, String>, SealedForms), OpenError> {
+        self.check_bindings()?;
+        let key = load(key_dir)?;
+        let opened = self.opened(&key)?;
+        let secrets: SealedValues = opened
+            .iter()
+            .flat_map(|opened| {
+                std::iter::once((opened.name.to_owned(), opened.whole.clone()))
+                    .chain(opened.parts.iter().cloned())
+            })
+            .collect();
+        let values = opened
+            .into_iter()
+            .map(|opened| (opened.name.to_owned(), opened.whole))
+            .collect();
+        Ok((values, SealedForms::compile(&secrets)))
+    }
+
     fn opened(&self, key: &SealingKey) -> Result<Vec<Opened<'_>>, OpenError> {
         self.values
             .iter()

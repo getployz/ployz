@@ -11,8 +11,8 @@ use ployz_store::{
     Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildReport, BuildStatus, Change, Command,
     ConfigStore, CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DiffQuery,
     Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
-    Publish, Query, Retry, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, SettingPath,
-    SourceKind, Trusted, View, Written,
+    Publish, Query, Retry, RunEvidence, RunnerId, SealingKey, ServiceLineageId, ServiceQuery,
+    SettingPath, SourceKind, Trusted, View, Written,
 };
 use ployz_store::{
     BuildOrder, BuildOrderQuery, Builder, GithubBuildId, GithubClaims, GithubEnd, GithubGrant,
@@ -24,9 +24,14 @@ use std::collections::BTreeMap;
 mod backend;
 
 const SERVICE: &str = "00000000-0000-4000-8000-000000000003";
+const ENVIRONMENT: &str = "00000000-0000-4000-8000-000000000002";
 
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    project(backend::open())
+}
+
+/// Project `shop` in `store`, its default Environment [`ENVIRONMENT`].
+fn project(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -34,8 +39,7 @@ fn shop() -> (ConfigStore, Actor) {
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
-                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
-                    .unwrap(),
+                default_environment: EnvironmentId::parse(ENVIRONMENT).unwrap(),
             },
         )
         .unwrap();
@@ -736,6 +740,8 @@ fn the_build_order_and_preferred_builder_apply_at_once_and_shape_each_walk() {
     let source = &store.sources(&deployment).unwrap()[0];
     assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
     assert_eq!(source.preferred_machine, None);
+    assert_eq!(source.sealed, None);
+    assert!(json!(source).get("sealed").is_none(), "{source:?}");
 
     // A Preferred Server goes first; the walk is read as the build starts.
     let machine = "0123456789abcdef0123456789abcdef";
@@ -895,6 +901,21 @@ fn a_github_check_in_must_come_from_the_dispatched_repository_workflow_and_run()
     assert_eq!(commit.as_str(), "a".repeat(40));
     assert!(input.get("snapshots").is_some());
     assert_eq!(receipt, None);
+}
+
+#[test]
+fn a_github_input_without_sealed_values_does_not_look_up_the_built_service() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+    let id = dispatched(&store, &who);
+    let expected = store.github_input(&id).unwrap();
+    backend::execute(
+        &url,
+        "UPDATE config_build SET service = 'missing' WHERE service = 'web'",
+    );
+    let id = GithubBuildId::parse(&format!("{}.missing", id.deployment)).unwrap();
+    assert_eq!(store.github_input(&id).unwrap(), expected);
 }
 
 #[test]
@@ -1627,4 +1648,204 @@ fn a_source_switch_lands_the_same_in_every_key_order() {
             "{order:?}"
         );
     }
+}
+
+/// `shop` with `sealedVariables` on and Git Service `web`, on a database in `dir`.
+fn sealed_shop(dir: &tempfile::TempDir) -> (ConfigStore, Actor) {
+    let url = backend::fresh_url(dir);
+    let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+    backend::sealed_variables_on(&url, "org");
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    (store, who)
+}
+
+/// Variable `key` of Service `service` as the browser sealed it.
+fn sealed(service: &str, key: &str) -> Value {
+    json!({ "secret": backend::client_sealed(ENVIRONMENT, service, key, 1) })
+}
+
+#[test]
+fn a_build_that_reads_a_sealed_value_skips_github_whatever_it_prefers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who) = sealed_shop(&dir);
+    store
+        .write(
+            &who,
+            &edit(vec![
+                set("web.preferredBuilder", json!("github")),
+                set("web.env.PLAIN", json!("text")),
+                set("web.env.NPM_TOKEN", sealed(SERVICE, "NPM_TOKEN")),
+            ]),
+        )
+        .unwrap();
+    let deployment = admit(&store, &who, 1, &[]);
+    let source = &store.sources(&deployment).unwrap()[0];
+    assert_eq!(source.builders, [Builder::Servers]);
+    assert_eq!(source.preferred_machine, None);
+    assert_eq!(source.sealed.as_deref(), Some("NPM_TOKEN"));
+    assert_eq!(json!(source)["sealed"], "NPM_TOKEN");
+
+    build_order(&store, &who, Some(BuildOrder::GithubOnly));
+    let source = &store.sources(&deployment).unwrap()[0];
+    assert!(source.builders.is_empty(), "{source:?}");
+
+    // A preferred Server still leads.
+    let machine = "0123456789abcdef0123456789abcdef";
+    store
+        .write(
+            &who,
+            &edit(vec![set("web.preferredBuilder", json!(machine))]),
+        )
+        .unwrap();
+    let source = &store.sources(&deployment).unwrap()[0];
+    assert_eq!(source.builders, [Builder::Servers]);
+    assert_eq!(
+        source.preferred_machine.as_ref().unwrap().to_string(),
+        machine
+    );
+}
+
+#[test]
+fn github_gets_no_sealed_value_and_never_a_build_that_reads_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who) = sealed_shop(&dir);
+    let db = "00000000-0000-4000-8000-000000000004";
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(db).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("db").unwrap(),
+                image: Some("postgres:16".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &edit(vec![
+                set("web.env.PLAIN", json!("text")),
+                set("web.env.TOKEN", json!({ "secret": "legacy" })),
+                set("db.env.PASSWORD", sealed(db, "PASSWORD")),
+                set("db.env.URL", json!("pg://${{ PASSWORD }}@db")),
+            ]),
+        )
+        .unwrap();
+    let id = {
+        let deployment = admit(&store, &who, 1, &[]);
+        store
+            .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+            .unwrap();
+        GithubBuildId::parse(&format!("{deployment}.web")).unwrap()
+    };
+    let (input, _, _) = store.github_input(&id).unwrap();
+    let snapshots = input["snapshots"].as_array().unwrap();
+    assert_eq!(snapshots.len(), 2);
+    for snapshot in snapshots {
+        for (name, value) in snapshot["resolvedEnv"].as_object().unwrap() {
+            assert!(value.is_string(), "{name} is {value}");
+        }
+    }
+    let of = |input: &Value, service: &str| {
+        input["snapshots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|snapshot| snapshot["serviceId"] == service)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(of(&input, SERVICE)["resolvedEnv"]["TOKEN"], "legacy");
+    assert!(of(&input, db)["resolvedEnv"].get("PASSWORD").is_none());
+    // What a Server builds from: the built Service reads the same there.
+    let claimed = store
+        .claim(&id.deployment, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    assert!(of(&claimed.input, db)["resolvedEnv"]["PASSWORD"].is_object());
+    assert_eq!(of(&input, SERVICE), of(&claimed.input, SERVICE));
+
+    // A reference to another Service's sealed value reads it too.
+    store
+        .write(
+            &who,
+            &edit(vec![set("web.env.DB_URL", json!("${{ db.URL }}"))]),
+        )
+        .unwrap();
+    store
+        .record(
+            &id.deployment,
+            &RunnerId::parse("runner").unwrap(),
+            RunEvidence::NotExecuted("stopped".into()),
+        )
+        .unwrap();
+    let deployment = admit(&store, &who, 2, &[]);
+    let sources = store
+        .pin(&deployment, &pins(&backend::sha(&"b".repeat(40))))
+        .unwrap();
+    assert_eq!(sources[0].sealed.as_deref(), Some("DB_URL"));
+    assert_eq!(sources[0].builders, [Builder::Servers]);
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    let error = store.github_input(&id).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert_eq!(
+        error.message,
+        "DB_URL is sealed. Builds that read a sealed value run on your server."
+    );
+}
+
+#[test]
+fn a_revision_claim_will_refuse_still_lists_its_builds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who) = sealed_shop(&dir);
+    // PORT reads PASSWORD while it is plain text, and still once it is sealed.
+    for change in [
+        set("web.preferredBuilder", json!("github")),
+        set("web.env.PASSWORD", json!("8080")),
+        set("web.env.PORT", json!("${{ PASSWORD }}")),
+        set("web.env.PASSWORD", sealed(SERVICE, "PASSWORD")),
+    ] {
+        store.write(&who, &edit(vec![change])).unwrap();
+    }
+    let deployment = admit(&store, &who, 1, &[]);
+    let source = &store.sources(&deployment).unwrap()[0];
+    assert_eq!(source.sealed.as_deref(), Some("PASSWORD"));
+    assert_eq!(source.builders, [Builder::Servers]);
+}
+
+#[test]
+fn an_environment_with_no_sealed_value_routes_without_opening_a_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    store
+        .write(
+            &who,
+            &edit(vec![
+                set("web.env.TOKEN", json!({ "secret": "legacy" })),
+                set("web.env.URL", json!("https://${{ TOKEN }}@example.com")),
+            ]),
+        )
+        .unwrap();
+    let deployment = admit(&store, &who, 1, &[]);
+
+    // Another key can't open the legacy secret, which a build's input needs.
+    let store = ConfigStore::open(&url, SealingKey::new(b"another-key").unwrap()).unwrap();
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    assert!(store.github_input(&id).is_err());
+    // Routing it never did, so it still doesn't.
+    let source = &store.sources(&deployment).unwrap()[0];
+    assert_eq!(source.sealed, None);
+    assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
+    let pinned = store
+        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .unwrap();
+    assert_eq!(pinned[0].commit, Some(backend::sha(&"a".repeat(40))));
+    assert_eq!(pinned[0].sealed, None);
 }

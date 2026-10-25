@@ -1514,11 +1514,17 @@ pub(crate) fn preparation_error(
                 .flatten()
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>();
+            const NO_BUILDER: &str =
+                "No eligible Build Machine was selected; no build was started.";
+            let message = match details.get("lead").and_then(Value::as_str) {
+                Some(lead) => format!("{lead} {NO_BUILDER}"),
+                None => NO_BUILDER.into(),
+            };
             RpcError {
                 code: RpcErrorCode::Unavailable,
-                message: "No eligible Build Machine was selected; no build was started.".into(),
                 details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
-                    "message":"No eligible Build Machine was selected; no build was started.", "rejections":rejections}}),
+                    "message":message, "rejections":rejections}}),
+                message,
                 cause: if reasons.is_empty() {
                     Vec::new()
                 } else {

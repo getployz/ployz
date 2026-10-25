@@ -591,18 +591,80 @@ pub(super) fn unmounted(
 }
 
 /// A Deployment lowered at claim.
-pub(super) struct Lowered {
+pub(crate) struct Lowered {
     /// The lowering input the runner lowers again once it built.
-    pub(super) input: Value,
-    pub(super) intent: DeployIntent,
+    pub(crate) input: LowerDeploymentInput,
+    pub(crate) intent: DeployIntent,
     /// The Services a narrowed Deploy ships once its builds and uploads land: the
     /// named ones and what they reference. Empty for a full Deploy.
-    pub(super) shipped: BTreeSet<ServiceName>,
+    pub(crate) shipped: BTreeSet<ServiceName>,
     /// Service variables a secret without a value or a broken reference left out,
     /// then Config file references whose resolved value may break the file or is
     /// left empty. Only lowering with the sealing key sees every value, so only it
     /// warns of those.
-    pub(super) warnings: Vec<DeploymentWarning>,
+    pub(crate) warnings: Vec<DeploymentWarning>,
+    /// The first variable of each Service, by Service ID, whose value reads a value
+    /// sealed in the browser: its build runs on a Server. Names only. Empty without
+    /// the sealing key, which leaves such a variable out.
+    pub(crate) sealed: BTreeMap<String, String>,
+}
+
+/// `saved` compiled, and its variables and Config files resolved as [`lower`]
+/// resolves them. The compiled producers are `saved`'s own: live values order
+/// nothing, since what provides them runs elsewhere.
+fn resolve(
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+    cluster_domain: Option<&Hostname>,
+    branch: &crate::branch::Lowering,
+    unseal: Option<&SealingKey>,
+) -> Result<
+    (
+        ployz_core::config::CompiledEnvironmentIntent,
+        variables::Resolved,
+    ),
+    RpcError,
+> {
+    let mut compiled = compile_environment_intent(
+        environment.as_str(),
+        crate::domain::expand(saved, cluster_domain),
+    );
+    let own = compiled.variable_producers.len();
+    compiled
+        .variable_producers
+        .extend(branch.live.iter().cloned());
+    let resolved = variables::resolve(&compiled, environment.as_str(), unseal)?;
+    compiled.variable_producers.truncate(own);
+    Ok((compiled, resolved))
+}
+
+/// The first variable of each Service of `saved`, by Service ID, whose value reads
+/// a value sealed in the browser, resolved as [`lower`] resolves it. Names only:
+/// no value leaves here. Refuses what [`lower`] refuses.
+pub(super) fn first_sealed(
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+    cluster_domain: Option<&Hostname>,
+    branch: &crate::branch::Lowering,
+    sealing: &SealingKey,
+) -> Result<BTreeMap<String, String>, RpcError> {
+    let (_, resolved) = resolve(environment, saved, cluster_domain, branch, Some(sealing))?;
+    Ok(sealed_names(&resolved))
+}
+
+/// The first variable of each Service of `resolved`, by Service ID, whose value
+/// reads a value sealed in the browser.
+fn sealed_names(resolved: &variables::Resolved) -> BTreeMap<String, String> {
+    resolved
+        .env
+        .iter()
+        .filter_map(|(service, env)| {
+            let name = env
+                .iter()
+                .find_map(|(name, value)| value.is_sealed().then_some(name))?;
+            Some((service.clone(), name.clone()))
+        })
+        .collect()
 }
 
 /// Lower Saved revision `saved` to the Deploy Intent of a Deployment that
@@ -623,6 +685,8 @@ pub(super) fn lower(
     unseal: Option<(&SealingKey, &OrganizationId)>,
 ) -> Result<Lowered, RpcError> {
     let (unseal, organization) = unseal.unzip();
+    let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch, unseal)?;
+    let sealed = sealed_names(&resolved);
     let (narrowed, services, removals, prune): (bool, &[ServiceName], _, _) = match ships {
         Ships::All { removals, prune } => (
             false,
@@ -638,20 +702,11 @@ pub(super) fn lower(
             (true, services.as_slice(), removals, PruneScope::Namespace)
         }
     };
-    let mut compiled = compile_environment_intent(
-        environment.as_str(),
-        crate::domain::expand(saved, cluster_domain),
-    );
-    // Live values order nothing: what provides them runs elsewhere.
     let lineages: BTreeMap<String, String> = compiled
         .variable_producers
         .iter()
         .map(|producer| (producer.owner_lineage_id.clone(), producer.owner_id.clone()))
         .collect();
-    compiled
-        .variable_producers
-        .extend(branch.live.iter().cloned());
-    let mut resolved = variables::resolve(&compiled, environment.as_str(), unseal)?;
     let targeted: Vec<&str> = saved
         .services
         .iter()
@@ -933,10 +988,11 @@ pub(super) fn lower(
         .map(|(_, warning)| warning)
         .collect();
     Ok(Lowered {
-        input: json_value(&input(with(false, false))),
+        input: input(with(false, false)),
         shipped,
         intent,
         warnings,
+        sealed,
     })
 }
 
@@ -957,6 +1013,6 @@ pub(super) fn built(config: &ServiceConfig) -> ServiceConfig {
     config
 }
 
-pub(super) fn json_value(value: &impl Serialize) -> Value {
+pub(crate) fn json_value(value: &impl Serialize) -> Value {
     serde_json::to_value(value).expect("lowering input is JSON")
 }

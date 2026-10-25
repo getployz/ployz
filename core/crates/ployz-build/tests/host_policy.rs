@@ -2,7 +2,7 @@
 
 use ployz_build::{
     Admission, BuildError, HostPolicy, Output, Railpack, Request, Stage, Target, clear_cache,
-    execute_admitted,
+    execute_admitted, remote,
 };
 use std::{
     collections::BTreeMap,
@@ -160,11 +160,13 @@ exit 0
         name: "app".into(),
         context: "source".into(),
         variables: BTreeMap::from([("cpu_cores".into(), "8".into())]),
+        sealed: BTreeMap::new(),
         refresh_cache: false,
     }];
     let request = Request {
         image_contexts: &BTreeMap::new(),
         compose_file: &host.file("compose.yaml"),
+        sealed_override: None,
         working_dir: &host.policy.state_directory,
         environment: &BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
         docker: Some(&host.policy.docker),
@@ -174,6 +176,7 @@ exit 0
         output: Output::Registry,
         no_cache: false,
         pull: false,
+        sealed: false,
     };
     execute_admitted(&request, admission, &|_| {}).unwrap();
     assert!(
@@ -199,6 +202,7 @@ fn resource_launch_failure_reports_preparation_and_releases_confirmed_ownership(
         &Request {
             image_contexts: &BTreeMap::new(),
             compose_file: &host.file("compose.yaml"),
+            sealed_override: None,
             working_dir: &host.policy.state_directory,
             environment: &BTreeMap::new(),
             docker: Some(&host.policy.docker),
@@ -208,6 +212,7 @@ fn resource_launch_failure_reports_preparation_and_releases_confirmed_ownership(
             output: Output::Validate,
             no_cache: false,
             pull: false,
+            sealed: false,
         },
         Admission::try_acquire_with(&host.policy).unwrap(),
         &|_| {},
@@ -330,6 +335,7 @@ echo "$*" >> "$root/mutations"
             &Request {
                 image_contexts: &BTreeMap::new(),
                 compose_file: &host.file("compose.yaml"),
+                sealed_override: None,
                 working_dir: &host.policy.state_directory,
                 environment: &environment,
                 docker: Some(&host.policy.docker),
@@ -339,6 +345,7 @@ echo "$*" >> "$root/mutations"
                 output: Output::Validate,
                 no_cache: false,
                 pull: false,
+                sealed: false,
             },
             Admission::try_acquire_with(&host.policy).unwrap(),
             &|_| {},
@@ -396,4 +403,147 @@ echo "$*" >> "$root/mutations"
         assert!(status.success(), "{key}={value}");
         assert!(!host.file("mutations").exists(), "{key}={value}");
     }
+}
+
+/// A capture whose Dockerfile reads one opened Sealed value through a secret mount.
+fn sealed_capture(host: &Host) -> PathBuf {
+    let capture = host.file("capture");
+    fs::create_dir_all(capture.join("source/app")).unwrap();
+    fs::create_dir_all(capture.join("private/docker")).unwrap();
+    fs::write(capture.join("private/docker/config.json"), "{}").unwrap();
+    fs::write(
+        capture.join("source/app/Dockerfile"),
+        "FROM scratch\nRUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN true\n",
+    )
+    .unwrap();
+    fs::write(
+        capture.join("compose.yaml"),
+        format!(
+            "services:\n  app:\n    image: example.test/app:1\n    build:\n      context: source/app\n      secrets: [NPM_TOKEN]\nsecrets:\n  NPM_TOKEN:\n    file: {}\n",
+            ployz_build::sealed_file("NPM_TOKEN").display()
+        ),
+    )
+    .unwrap();
+    capture
+}
+
+fn definition(output: Output) -> remote::Definition {
+    remote::Definition {
+        retained_tags: Vec::new(),
+        image_contexts: BTreeMap::new(),
+        targets: vec![Target {
+            name: "app".into(),
+            platforms: Vec::new(),
+        }],
+        output,
+        no_cache: false,
+        pull: false,
+    }
+}
+
+/// Docker stand-in that records the secret file Bake was given, then fails.
+const RECORDING_FAILING_DOCKER: &str = r#"
+root=$(dirname "$0")
+case "$1 $2" in
+ 'context show') echo default ;;
+ 'info --format') echo '{"OSType":"linux","CgroupVersion":"2","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}' ;;
+ 'buildx ls') echo '{"Name":"'"$BUILDER"'","Nodes":[{"Status":"running","Platforms":["linux/amd64"]}]}' ;;
+ 'buildx bake')
+    stat -c '%a' private/sealed/NPM_TOKEN > "$root/seen-mode"
+    cp private/sealed/NPM_TOKEN "$root/seen-secret"
+    echo 'solve failed' >&2
+    exit 1 ;;
+esac
+exit 0
+"#;
+
+#[test]
+fn opened_values_are_private_files_for_the_solve_and_vanish_when_it_fails() {
+    let host =
+        Host::new(&RECORDING_FAILING_DOCKER.replace("$BUILDER", &ployz_build::builder_name()));
+    let capture = sealed_capture(&host);
+    let admission = Admission::try_acquire_with(&host.policy).unwrap();
+    let mut upload = admission.upload().unwrap();
+    remote::upload(&capture, |input| upload.accept(input)).unwrap();
+    let opened = BTreeMap::from([("NPM_TOKEN".to_owned(), "opened-token".to_owned())]);
+    let Err(error) = upload.execute(
+        &definition(Output::Load),
+        Some(&host.policy.docker),
+        &opened,
+        &|_| {},
+    ) else {
+        panic!("a failed solve succeeded");
+    };
+    assert_eq!(error.stage(), Stage::Building, "{error}");
+    assert_eq!(
+        fs::read_to_string(host.file("seen-secret")).unwrap(),
+        "opened-token"
+    );
+    assert_eq!(
+        fs::read_to_string(host.file("seen-mode")).unwrap().trim(),
+        "600"
+    );
+    let upload_root = host.file("build-upload");
+    assert!(!upload_root.join("private/sealed").exists());
+    assert!(!upload_root.exists(), "a failed upload root is removed");
+}
+
+#[test]
+fn opened_values_vanish_from_a_retained_unknown_root() {
+    let docker = RECORDING_FAILING_DOCKER
+        .replace("$BUILDER", &ployz_build::builder_name())
+        .replace(
+            " 'buildx bake')",
+            " 'buildx rm') [ -f \"$root/seen-secret\" ] && { echo 'injected removal failure' >&2; exit 1; } ;;\n 'buildx bake')",
+        );
+    let host = Host::new(&docker);
+    let capture = sealed_capture(&host);
+    let admission = Admission::try_acquire_with(&host.policy).unwrap();
+    let mut upload = admission.upload().unwrap();
+    remote::upload(&capture, |input| upload.accept(input)).unwrap();
+    let opened = BTreeMap::from([("NPM_TOKEN".to_owned(), "opened-token".to_owned())]);
+    let error = upload
+        .execute(
+            &definition(Output::Load),
+            Some(&host.policy.docker),
+            &opened,
+            &|_| {},
+        )
+        .err()
+        .unwrap();
+    assert!(error.is_unknown(), "{error}");
+    assert_eq!(
+        fs::read_to_string(host.file("seen-secret")).unwrap(),
+        "opened-token"
+    );
+    let upload_root = host.file("build-upload");
+    assert!(upload_root.is_dir(), "an uncertain upload root is retained");
+    assert!(!upload_root.join("private/sealed").exists());
+    assert!(
+        Admission::try_acquire_with(&host.policy)
+            .err()
+            .unwrap()
+            .is_unknown()
+    );
+}
+
+#[test]
+fn a_capture_naming_a_sealed_value_nobody_opened_is_refused_before_docker() {
+    let host = Host::new("echo 'docker must not run' >&2; exit 1");
+    let capture = sealed_capture(&host);
+    let admission = Admission::try_acquire_with(&host.policy).unwrap();
+    let mut upload = admission.upload().unwrap();
+    remote::upload(&capture, |input| upload.accept(input)).unwrap();
+    let Err(error) = upload.execute(
+        &definition(Output::Load),
+        Some(&host.policy.docker),
+        &BTreeMap::new(),
+        &|_| {},
+    ) else {
+        panic!("docker ran without the opened file");
+    };
+    assert!(
+        error.to_string().contains("missing captured input"),
+        "{error}"
+    );
 }

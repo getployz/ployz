@@ -180,6 +180,7 @@ impl<'a> Builder<'a> {
     pub(crate) fn run(
         &self,
         arguments: &[String],
+        sealed: bool,
         started: impl FnOnce(),
     ) -> Result<(), BuildError> {
         // A restarted worker is a new cgroup the old fence no longer matches.
@@ -195,7 +196,7 @@ impl<'a> Builder<'a> {
         // The flag and its parser live together so they cannot drift apart;
         // Buildx accepts flags after the targets.
         borrowed.push("--progress=rawjson");
-        let parser = std::sync::Mutex::new(crate::solve::SolveParser::default());
+        let parser = std::sync::Mutex::new(crate::solve::SolveParser::new(sealed));
         let structured = |event| {
             if let crate::Progress::Output(bytes) = event {
                 parser
@@ -924,7 +925,7 @@ exit 1
             bridge: None,
             fence: None,
         };
-        let error = builder.run(&[], || {}).unwrap_err();
+        let error = builder.run(&[], false, || {}).unwrap_err();
         assert_eq!(
             error.to_string(),
             r#"npm run build: process "npm run build" did not complete successfully: exit code: 3"#

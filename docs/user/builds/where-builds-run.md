@@ -119,6 +119,9 @@ goes to GitHub only when none of them does. If the preferred server is gone or d
 builds, another of your servers takes the build. **Auto** follows the build order alone.
 **Preferred Builder** applies at once, from the next build.
 
+Builds that read a sealed value run on your server. GitHub Actions is skipped for them,
+whatever the service prefers.
+
 A deploy names the server each service built on. When GitHub came first and couldn't take
 the build, for example because the repository has no Ployz build workflow, the deploy says so
 and why.
@@ -138,5 +141,7 @@ When no builder can take a build, it fails with one of these:
 - `…No other Builder in your Build Order can take it`. GitHub was last and couldn't take it.
   The build log says why GitHub was skipped. Fix that, or pick an order that ends with your
   servers.
+- `…Builds that read a sealed value run on your server. No other Builder in your Build Order can
+  take it`. The order is **GitHub only**. Pick one with your servers.
 
 See [Troubleshooting builds](../troubleshooting/builds.md) for failed build steps.
