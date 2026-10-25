@@ -53,6 +53,20 @@ answer skips pruning, still deploys, and says `Prune skipped: not every Server a
 Ployz already knows is down doesn't stop the prune: the replicas on the other servers are removed,
 as below.
 
+Before Ployz Cloud queues a whole-environment deploy that prunes, it asks your servers what runs
+there. A prune that removes a service is destructive, like `ployz service rm`:
+
+- Where destructive actions ask first, and for every deploy an agent makes, the approval lists
+  each service the prune removes, such as **Removes service extra2**.
+- A [Deploy token](../account/permissions.md) can't remove one. Its deploy is refused with
+  `Needs changes:destroy: this deploy removes extra2, running in this environment but not part of it. Deploy with --no-prune to keep them.`
+  When nothing else runs, it deploys as usual.
+- When Cloud can't ask your servers, a Deploy token's deploy is refused the same way. Any other
+  deploy goes ahead, and its approval says it also removes any other service running in the
+  environment.
+
+A service started after the deploy was queued, and before it ran, is removed without being listed.
+
 Removing a service while a server that may run one of its replicas is down, or can't be checked,
 still removes the replicas on the servers that answer. The service reads removed and names that
 server, such as

@@ -27,7 +27,9 @@ A token acts as you, narrowed by its preset:
   name, in every project that has one: a Deploy token for `production` deploys to each project's
   `production`. The dialog lists those projects next to each environment. It can't take anything
   off your servers: a deploy that removes a service, volume or domain, or `ployz env shutdown`,
-  needs a **Full as you** token.
+  needs a **Full as you** token. So does a deploy that
+  [prunes](../deploy/deployments.md) a service running in the environment that the environment
+  doesn't hold. Use `ployz deploy --no-prune` to keep it.
 
 Give CI a Deploy token for the environment it ships to. To keep one project's CI out of another
 project, give that environment a name no other project uses. An owner's or admin's Deploy token
