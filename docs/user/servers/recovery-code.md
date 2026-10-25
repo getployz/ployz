@@ -63,8 +63,8 @@ Ployz included.
   Ployz on the waiting server with `sudo systemctl stop ployz.socket ployz`, since Ployz won't
   forget a server that still answers. Then
   [forget your servers](manage-servers.md#forget-servers-you-deleted) once more and add one
-  again. It starts with a new key and a new code, as above. To add the same server again, add
-  `--reset`, as in [The server is already initialised](../troubleshooting/servers.md#the-server-is-already-initialised).
+  again. It starts with a new key and a new code, as above. To add the same server again, first
+  start Ployz on it with `sudo systemctl start ployz.socket ployz`, then add `--reset`, as in [The server is already initialised](../troubleshooting/servers.md#the-server-is-already-initialised).
 - **You had a code but lost it.** A new server keeps waiting for that code, and forgetting it
   again doesn't help. Rotate the code while you still have a server, so this never happens.
 
