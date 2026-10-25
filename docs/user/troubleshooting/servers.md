@@ -177,7 +177,8 @@ which voids every token made before. A token works for 24 hours. Run
 You'll see `web-1 refused:` followed by the server's reason, such as that the command needs Full
 access. The server answered, but this computer's access doesn't cover the command, so nothing
 changed on it. When the server suggests a next step, the CLI prints it under the reason. When the
-reason says the command needs Full access, run it from a computer with Full access. When it says
+reason says the command needs Full access, approve this computer as a device. See
+[Approve a device](../servers/manage-servers.md#approve-a-device). When it says
 only Cloud manages slots, make the change from the dashboard instead. Before Ployz 0.3.4, the CLI
 said such a server `did not answer`.
 

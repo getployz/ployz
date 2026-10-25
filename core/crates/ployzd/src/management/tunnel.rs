@@ -48,8 +48,8 @@ pub(super) async fn serve(
     }
     if record.management_scope(&remote) < Some(ManagementScope::Full) {
         return connection.close(
-            VarInt::from_u32(TUNNEL_NEEDS_FULL),
-            b"tunnels need Full access",
+            VarInt::from_u32(TUNNEL_FAILED),
+            TUNNEL_NEEDS_FULL.as_bytes(),
         );
     }
     let revoked = revoked(records, remote);

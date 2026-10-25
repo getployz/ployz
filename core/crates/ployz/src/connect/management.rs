@@ -312,7 +312,9 @@ pub(super) async fn dial_tunnel(
             ConnectError::ClientRefused
         } else if close.error_code == CLIENT_CLEARED {
             ConnectError::ClientCleared
-        } else if close.error_code == VarInt::from_u32(TUNNEL_NEEDS_FULL) {
+        } else if close.error_code == VarInt::from_u32(TUNNEL_FAILED)
+            && close.reason == TUNNEL_NEEDS_FULL.as_bytes()
+        {
             ConnectError::TunnelNeedsFull
         } else if close.error_code == VarInt::from_u32(TUNNEL_FAILED) {
             ConnectError::Attempt(String::from_utf8_lossy(&close.reason).into_owned().into())
