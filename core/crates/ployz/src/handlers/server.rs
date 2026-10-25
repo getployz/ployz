@@ -938,6 +938,7 @@ pub(crate) async fn apply_update(
 ) -> Result<(), Error> {
     let planned = crate::cluster::PlannedChange::of(&update);
     let accepts_ingress = update.accepts_ingress;
+    let renamed = update.name.is_some();
     let was_off = match accepts_ingress {
         Some(true) => ingress_off(client, &selector).await,
         Some(false) | None => None,
@@ -1059,9 +1060,14 @@ pub(crate) async fn apply_update(
     let (ingress, follow_up) = match followed {
         Ok(ingress) => (ingress, Ok(())),
         Err(error) => {
+            // A rename in this same command leaves the typed selector naming nothing.
+            let selector = if renamed {
+                machine.id.to_string()
+            } else {
+                selector.as_str().to_owned()
+            };
             let error = match own_start_failure(&error, machine.id, was_off) {
                 Some(failure) if nothing_serves(client, machine.id).await => {
-                    let selector = selector.as_str();
                     turn_back_off(
                         client,
                         &mut machine,
@@ -1069,13 +1075,13 @@ pub(crate) async fn apply_update(
                         error,
                         rerun,
                         &recovery,
-                        selector,
+                        &selector,
                     )
                     .await
                 }
                 _ => ingress_incomplete(
                     "Server updated",
-                    set_hints(error, &recovery, machine.id, selector.as_str(), &rerun),
+                    set_hints(error, &recovery, machine.id, &selector, &rerun),
                     rerun,
                 ),
             };

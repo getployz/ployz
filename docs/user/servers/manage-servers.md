@@ -353,8 +353,8 @@ there, the page reads **The web server isn't running, so your domains don't poin
 from Ployz Cloud, turn the switch off, then on.
 
 In both cases the `inspect:` and `retry:` lines select the server the way you typed it, and the
-command leaves out a `retry:` that would repeat its `next:`. A line about another server names it by
-its Machine ID, since two servers can share a name.
+command leaves out a `retry:` that would repeat its `next:`. They use its Machine ID when the same
+command renamed it with `--name`, and for another server, since two servers can share a name.
 
 ## Upgrade Ployz on a server
 
