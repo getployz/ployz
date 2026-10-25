@@ -46,7 +46,7 @@ const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 describe("requestSealingKeyEnsure", () => {
   let harness: PostgresTestHarness;
   const ensure = (servers: Record<string, keyof typeof SEALING>) => harness.runEffect(
-    requestSealingKeyEnsure(organizationId, frame(servers)).pipe(
+    requestSealingKeyEnsure(organizationId, clusterKey, frame(servers)).pipe(
       Effect.provideService(SecretEncryption, encryption),
       Effect.provideService(InngestClient, inngest),
     ),

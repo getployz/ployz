@@ -1,11 +1,14 @@
-import type { RuntimeWatchView, Sealing } from "@ployz/sdk";
-import { Effect } from "effect";
+import type { Client, RuntimeWatchView, Sealing } from "@ployz/sdk";
+import { Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { firstRuntimeFrame, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { runtimeFrameDigest, runtimeFrameRecord } from "#/modules/runtime/runtime-frame-record.server";
 import {
   runtimeWatchFrameFixture,
@@ -23,16 +26,19 @@ const pairingSecret = "runtime-frame-record-test-pairing-secret";
 const clusterKey = hashEnrollmentToken(pairingSecret);
 const publicKey = `${"A".repeat(43)}=`;
 const server = "1".repeat(32);
+const joiner = "2".repeat(32);
 
 const held: Sealing = { kind: "held", public_key: publicKey };
 const awaitsRecovery: Sealing = { kind: "awaits_recovery", public_key: publicKey };
+const needsAccess: Sealing = { kind: "needs_access" };
 
-const frame = (name: string, sealing: Sealing): RuntimeWatchView => {
-  const machine = runtimeWatchMachineFixture(server, name);
-  return runtimeWatchFrameFixture({
-    machines: [runtimeWatchMachineObservationFixture({ machine: { ...machine, runtime: { ...machine.runtime, sealing } } })],
+const frame = (name: string, sealing: Sealing, others: Record<string, Sealing> = {}): RuntimeWatchView =>
+  runtimeWatchFrameFixture({
+    machines: Object.entries({ [server]: sealing, ...others }).map(([id, state]) => {
+      const machine = runtimeWatchMachineFixture(id, id === server ? name : `joiner-${id.slice(0, 1)}`);
+      return runtimeWatchMachineObservationFixture({ machine: { ...machine, runtime: { ...machine.runtime, sealing: state } } });
+    }),
   });
-};
 
 const inngest = new Inngest({ id: "runtime-frame-record-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
@@ -40,7 +46,7 @@ const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 describe("runtimeFrameRecord", () => {
   let harness: PostgresTestHarness;
   const write = (reported: RuntimeWatchView) => harness.runEffect(runtimeFrameRecord.pipe(
-    Effect.flatMap((record) => record.write(organizationId, reported)),
+    Effect.flatMap((record) => record.write(organizationId, clusterKey, reported)),
     Effect.provideService(SecretEncryption, encryption),
     Effect.provideService(InngestClient, inngest),
   ));
@@ -91,6 +97,43 @@ describe("runtimeFrameRecord", () => {
     expect(await write(frame("web-1", held))).toBe("settled");
     expect(await machineName()).toBe("web-1");
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("asks once the founder holds the key, again while the joiner still lacks it, then settles", async () => {
+    expect(await write(frame("web-1", awaitsRecovery, { [joiner]: needsAccess }))).toBe("settled");
+    expect(send).not.toHaveBeenCalled();
+    expect(await write(frame("web-1", held, { [joiner]: needsAccess }))).toBe("asked");
+    expect(send).toHaveBeenCalledTimes(1);
+    // The ensure job records the key, and shares it with the joiner later.
+    await recordKey();
+    expect(await write(frame("web-1", held, { [joiner]: needsAccess }))).toBe("asked");
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(await write(frame("web-1", held, { [joiner]: held }))).toBe("settled");
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the names it wrote and asks again later when the send fails", async () => {
+    send.mockRejectedValueOnce(new Error("Inngest unreachable"));
+    expect(await write(frame("web-1", held))).toBe("asked");
+    expect(await machineName()).toBe("web-1");
+  });
+
+  it("asks from a frame the Organization Runtime reads for an operation, with no watch open", async () => {
+    const ployz = makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({
+        close: async () => {},
+        runtime: { watch: async function* () { yield frame("web-1", held); } },
+      }),
+    });
+    const ensureRequested = { name: "sealing-key/ensure.requested", data: { organizationId } };
+    await harness.runEffect(firstRuntimeFrame(organizationId).pipe(
+      // The write runs off the read, in the Runtime's own scope, which lives on in production.
+      Effect.andThen(Effect.promise(() => vi.waitFor(() => expect(send).toHaveBeenCalledWith(ensureRequested)))),
+      Effect.provide(OrganizationRuntimeLive.pipe(Layer.provide(ployz))),
+      Effect.provideService(SecretEncryption, encryption),
+      Effect.provideService(InngestClient, inngest),
+    ));
+    expect(await machineName()).toBe("web-1");
   });
 
   it("digests a change in a Server's Sealing Key state alone", () => {

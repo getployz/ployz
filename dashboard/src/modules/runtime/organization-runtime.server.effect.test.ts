@@ -12,8 +12,10 @@ import {
   ORGANIZATION_CONNECT_TIMEOUT,
   PAIRING_CHANGE_POLL,
   PAIRING_CHECK_FAILURE_LIMIT,
+  FRAME_REASK_CEILING_MS,
+  FRAME_REASK_MS,
   OrganizationRuntime,
-  RETRY_AFTER_MS,
+  settledByName,
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { runtimeFrameDigest } from "#/modules/runtime/runtime-frame-record.server";
@@ -36,13 +38,11 @@ const sealing = (kind: "awaits_recovery" | "held") => asTestDouble<RuntimeWatchV
   machines: [{ machine: { id: "machine-1", name: "web-1", runtime: { sealing: { kind, public_key: `${"A".repeat(43)}=` } } } }],
 });
 
-const byName: FrameRecord["digest"] = (frame) => JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name]));
-
 /** A runtime whose one Cluster streams what `frames` returns on each watch, writing each frame with `write`. */
 const streamingRuntime = (
   frames: () => readonly RuntimeWatchView[],
   write: FrameRecord["write"],
-  digest = byName,
+  digest = settledByName.digest,
 ) => makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections }), noPairingChanges, { digest, write })
   .pipe(Layer.provide(makePloyzLayer({
     connect: async () => asTestDouble<Client>()({
@@ -461,7 +461,7 @@ it.live("records a rename a direct frame read sees, with no live watch open", ()
   Effect.gen(function* () {
     let reported = named("web-1");
     const written = yield* Queue.unbounded<string>();
-    const runtime = streamingRuntime(() => [reported], (_organizationId, frame) =>
+    const runtime = streamingRuntime(() => [reported], (_organizationId, _generation, frame) =>
       Queue.offer(written, frame.machines[0]?.machine.name ?? "").pipe(Effect.as("settled" as const)));
     const nextWrite = Queue.take(written).pipe(Effect.timeout("1 second"));
     yield* Effect.gen(function* () {
@@ -479,7 +479,7 @@ it.live("retries a failed name write on the next frame until it lands, then skip
     let reported = named("one");
     let failuresLeft = 2;
     const attempts = yield* Queue.unbounded<string>();
-    const runtime = streamingRuntime(() => [reported], (_organizationId, frame) => Effect.suspend(() => {
+    const runtime = streamingRuntime(() => [reported], (_organizationId, _generation, frame) => Effect.suspend(() => {
       const name = frame.machines[0]?.machine.name ?? "";
       Queue.offerUnsafe(attempts, name);
       if (name === "two" && failuresLeft > 0) {
@@ -511,7 +511,7 @@ it.live("records a frame whose only change is a Server's Sealing Key state", () 
   Effect.gen(function* () {
     let reported = sealing("awaits_recovery");
     const written = yield* Queue.unbounded<string>();
-    const runtime = streamingRuntime(() => [reported], (_organizationId, frame) =>
+    const runtime = streamingRuntime(() => [reported], (_organizationId, _generation, frame) =>
       Queue.offer(written, frame.machines[0]?.machine.runtime.sealing?.kind ?? "").pipe(Effect.as("settled" as const)), runtimeFrameDigest);
     const nextWrite = Queue.take(written).pipe(Effect.timeout("1 second"));
     yield* Effect.gen(function* () {
@@ -534,12 +534,12 @@ const writesOfAnotherRead = (writes: Queue.Queue<string>) => Effect.gen(function
 it.effect("writes an identical frame again a minute after its write asked a job, and not before", () =>
   Effect.gen(function* () {
     const writes = yield* Queue.unbounded<string>();
-    const runtime = streamingRuntime(() => [named("web-1")], (_organizationId, frame) =>
+    const runtime = streamingRuntime(() => [named("web-1")], (_organizationId, _generation, frame) =>
       Queue.offer(writes, frame.machines[0]?.machine.name ?? "").pipe(Effect.as("asked" as const)));
     yield* Effect.gen(function* () {
       yield* firstRuntimeFrame("org-1");
       assert.strictEqual(yield* Queue.take(writes), "web-1");
-      yield* TestClock.adjust(RETRY_AFTER_MS - 1);
+      yield* TestClock.adjust(FRAME_REASK_MS - 1);
       assert.strictEqual(yield* writesOfAnotherRead(writes), 0);
       yield* TestClock.adjust(1);
       assert.strictEqual(yield* writesOfAnotherRead(writes), 1);
@@ -547,10 +547,74 @@ it.effect("writes an identical frame again a minute after its write asked a job,
   }),
 );
 
+it.effect("waits twice as long before each re-ask of a frame, up to the ceiling", () =>
+  Effect.gen(function* () {
+    const writes = yield* Queue.unbounded<string>();
+    const runtime = streamingRuntime(() => [named("web-1")], () => Queue.offer(writes, "web-1").pipe(Effect.as("asked" as const)));
+    yield* Effect.gen(function* () {
+      yield* firstRuntimeFrame("org-1");
+      assert.strictEqual(yield* Queue.take(writes), "web-1");
+      const waits = [1, 2, 4, 8, 16, 32].map((times) => times * FRAME_REASK_MS).concat(FRAME_REASK_CEILING_MS, FRAME_REASK_CEILING_MS);
+      for (const wait of waits) {
+        yield* TestClock.adjust(wait - 1);
+        assert.strictEqual(yield* writesOfAnotherRead(writes), 0, `${wait}ms`);
+        yield* TestClock.adjust(1);
+        assert.strictEqual(yield* writesOfAnotherRead(writes), 1, `${wait}ms`);
+        yield* Queue.take(writes);
+      }
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("keeps a wait per frame, so readers that see different names don't ask on every read", () =>
+  Effect.gen(function* () {
+    let reported = named("web-1");
+    const writes = yield* Queue.unbounded<string>();
+    const runtime = streamingRuntime(() => [reported], (_organizationId, _generation, frame) =>
+      Queue.offer(writes, frame.machines[0]?.machine.name ?? "").pipe(Effect.as("asked" as const)));
+    yield* Effect.gen(function* () {
+      yield* firstRuntimeFrame("org-1");
+      assert.strictEqual(yield* Queue.take(writes), "web-1");
+      reported = named("web-2");
+      yield* firstRuntimeFrame("org-1");
+      assert.strictEqual(yield* Queue.take(writes), "web-2");
+      reported = named("web-1");
+      assert.strictEqual(yield* writesOfAnotherRead(writes), 0);
+      reported = named("web-2");
+      assert.strictEqual(yield* writesOfAnotherRead(writes), 0);
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("forgets what it settled once the Organization's pairing generation changes", () =>
+  Effect.gen(function* () {
+    let generation = "first";
+    const writes = yield* Queue.unbounded<string>();
+    const runtime = makeOrganizationRuntimeLayer(
+      () => Effect.succeed({ kind: "ready", generation, connections }),
+      noPairingChanges,
+      { digest: settledByName.digest, write: (_organizationId, written) => Queue.offer(writes, written).pipe(Effect.as("settled" as const)) },
+    ).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({
+        close: async () => {},
+        runtime: { watch: async function* () { yield named("web-1"); } },
+      }),
+    })));
+    yield* Effect.gen(function* () {
+      yield* firstRuntimeFrame("org-1");
+      assert.strictEqual(yield* Queue.take(writes), "first");
+      assert.strictEqual(yield* writesOfAnotherRead(writes), 0);
+      generation = "second";
+      assert.strictEqual(yield* writesOfAnotherRead(writes), 1);
+      assert.strictEqual(yield* Queue.take(writes), "second");
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
 it.effect("never writes an identical frame again once its write settled", () =>
   Effect.gen(function* () {
     const writes = yield* Queue.unbounded<string>();
-    const runtime = streamingRuntime(() => [named("web-1")], (_organizationId, frame) =>
+    const runtime = streamingRuntime(() => [named("web-1")], (_organizationId, _generation, frame) =>
       Queue.offer(writes, frame.machines[0]?.machine.name ?? "").pipe(Effect.as("settled" as const)));
     yield* Effect.gen(function* () {
       yield* firstRuntimeFrame("org-1");
@@ -571,8 +635,8 @@ it.effect("coalesces the frames a slow write outlasts, writing only the latest n
       () => Effect.succeed({ kind: "ready", generation: "current", connections }),
       noPairingChanges,
       {
-        digest: byName,
-        write: (_organizationId, frame) => Effect.gen(function* () {
+        digest: settledByName.digest,
+        write: (_organizationId, _generation, frame) => Effect.gen(function* () {
           const name = frame.machines[0]?.machine.name ?? "";
           yield* Queue.offer(started, name);
           yield* Deferred.succeed(writing, undefined);

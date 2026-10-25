@@ -134,17 +134,22 @@ export type PairingChanges = {
 };
 
 /**
- * What Cloud keeps from a Runtime Watch frame its Organization's session read. `digest` covers every field `write`
- * reads. `write` settles the frame, or asks a job to finish what it can't observe, as an Inngest send does.
+ * What Cloud keeps from a Runtime Watch frame its Organization's session read. `digest` covers every field of the
+ * frame `write` reads; `generation` is the pairing the session read it under. `write` settles the frame, or asks a
+ * job to finish what it can't observe, as an Inngest send does.
  */
 export type FrameRecord = {
   readonly digest: (frame: RuntimeWatchView) => string;
-  readonly write: (organizationId: string, frame: RuntimeWatchView) => Effect.Effect<"settled" | "asked", Error>;
+  readonly write: (organizationId: string, generation: string, frame: RuntimeWatchView) => Effect.Effect<"settled" | "asked", Error>;
 };
 
-export const RETRY_AFTER_MS = 60_000;
+/** How long an asked frame waits before it is written again, doubling each time it asks again, up to the ceiling. */
+export const FRAME_REASK_MS = 60_000;
+export const FRAME_REASK_CEILING_MS = 3_600_000;
+/** Frames an Organization remembers; past that the oldest is forgotten and written again when read. */
+const FRAMES_REMEMBERED = 16;
 
-const settledByName: FrameRecord = {
+export const settledByName: FrameRecord = {
   digest: (frame) => JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name])),
   write: () => Effect.succeed("settled"),
 };
@@ -152,20 +157,32 @@ const settledByName: FrameRecord = {
 /**
  * Hands each frame to `record.write` off the read that carried it: the read never waits on the write, so no deadline
  * of the read's reaches the SQL. Each Organization writes in one fiber of the layer's scope at a time; frames read
- * during a write coalesce into the latest, written next. A frame whose digest equals the last settled one is skipped,
- * and one equal to the last asked one is skipped for `RETRY_AFTER_MS`, then written again in case the job never
- * finished. A failed write is logged and retried by the next frame. When the layer closes, the write in flight
- * finishes and a coalesced one is dropped, for the Cluster's next frame to write.
+ * during a write coalesce into the latest, written next. A frame whose digest settled is skipped for good, and one
+ * whose digest asked is skipped for `FRAME_REASK_MS`, twice that the next time, up to `FRAME_REASK_CEILING_MS`, then
+ * written again in case the job never finished. Each digest keeps its own wait, so readers whose frames differ don't
+ * ask on every read. A new pairing generation forgets every digest. A failed write is logged and retried by the next
+ * frame. When the layer closes, the write in flight finishes and a coalesced one is dropped, for the Cluster's next
+ * frame to write.
  */
 const makeFrameRecorder = Effect.fnUntraced(function* (record: FrameRecord) {
   const run = yield* FiberSet.makeRuntime<never>();
   const clock = yield* Clock.Clock;
-  type Pending = { readonly digest: string; readonly frame: RuntimeWatchView };
-  type Written = { readonly digest: string; readonly until: number };
-  type Organization = { written?: Written; next?: Pending; writing: boolean };
+  type Pending = { readonly digest: string; readonly generation: string; readonly frame: RuntimeWatchView };
+  type Written = { readonly until: number; readonly wait: number };
+  type Organization = { generation?: string; written: Map<string, Written>; next?: Pending; writing: boolean };
   const organizations = new Map<string, Organization>();
-  const current = (organization: Organization, digest: string) =>
-    organization.written?.digest === digest && clock.currentTimeMillisUnsafe() < organization.written.until;
+  const current = (organization: Organization, digest: string) => {
+    const written = organization.written.get(digest);
+    return written !== undefined && clock.currentTimeMillisUnsafe() < written.until;
+  };
+  const remember = (organization: Organization, digest: string, written: Written) => {
+    organization.written.delete(digest);
+    organization.written.set(digest, written);
+    for (const oldest of organization.written.keys()) {
+      if (organization.written.size <= FRAMES_REMEMBERED) break;
+      organization.written.delete(oldest);
+    }
+  };
   const writeAll = (organizationId: string, organization: Organization) => {
     // Clears `writing` in the same step that finds nothing left, so a frame read meanwhile starts a new write.
     const take = Effect.sync(() => {
@@ -177,23 +194,32 @@ const makeFrameRecorder = Effect.fnUntraced(function* (record: FrameRecord) {
     return Effect.gen(function* () {
       for (let next = yield* take; next !== undefined; next = yield* take) {
         if (current(organization, next.digest)) continue;
-        const outcome = yield* record.write(organizationId, next.frame).pipe(
+        const outcome = yield* record.write(organizationId, next.generation, next.frame).pipe(
           Effect.catchCause((cause) => Effect.logWarning("Runtime frame not recorded", cause).pipe(Effect.as("failed" as const))),
           // Uninterruptible like the pairing check, since interrupting pooled SQL can cancel a later statement.
           Effect.uninterruptible,
         );
         // Advanced only once the write lands, so a failed write is retried by the next frame.
-        if (outcome === "settled") organization.written = { digest: next.digest, until: Infinity };
-        if (outcome === "asked") organization.written = { digest: next.digest, until: clock.currentTimeMillisUnsafe() + RETRY_AFTER_MS };
+        if (organization.generation !== next.generation) continue;
+        if (outcome === "settled") remember(organization, next.digest, { until: Infinity, wait: 0 });
+        if (outcome === "asked") {
+          const previous = organization.written.get(next.digest)?.wait ?? 0;
+          const wait = Math.min(Math.max(2 * previous, FRAME_REASK_MS), FRAME_REASK_CEILING_MS);
+          remember(organization, next.digest, { until: clock.currentTimeMillisUnsafe() + wait, wait });
+        }
       }
     });
   };
-  return (organizationId: string, frame: RuntimeWatchView) => {
+  return (organizationId: string, generation: string, frame: RuntimeWatchView) => {
     const digest = record.digest(frame);
-    const organization = organizations.get(organizationId) ?? { writing: false };
+    const organization: Organization = organizations.get(organizationId) ?? { written: new Map(), writing: false };
     organizations.set(organizationId, organization);
+    if (organization.generation !== generation) {
+      organization.generation = generation;
+      organization.written.clear();
+    }
     if (!organization.writing && current(organization, digest)) return;
-    organization.next = { digest, frame };
+    organization.next = { digest, generation, frame };
     if (organization.writing) return;
     organization.writing = true;
     run(writeAll(organizationId, organization));
@@ -327,7 +353,7 @@ export function makeOrganizationRuntimeLayer(
               Effect.tap(() => Effect.forkIn(watchPairing(organizationId, session, cursor), parent)),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
-                connected: recordingFrames(connected, (frame) => record(organizationId, frame)),
+                connected: recordingFrames(connected, (frame) => record(organizationId, access.generation, frame)),
               })),
               // Out of Cluster time fails the open, so its plan refuses instead of reading on as if unpaired.
               Effect.catch((error) => error instanceof ClusterOutOfTime ? Effect.fail(error) : Effect.succeed(session.closed ? noConnection : ({

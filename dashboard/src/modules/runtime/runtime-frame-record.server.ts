@@ -6,7 +6,6 @@ import { recordMachineNames } from "#/modules/machines/machine-names.server";
 import { requestSealingKeyEnsure } from "#/modules/machines/sealing-ensure.server";
 import type { FrameRecord } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
-import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const SEALING_ENSURE_TIMEOUT = "10 seconds";
 
@@ -15,21 +14,21 @@ export const runtimeFrameDigest = (frame: RuntimeWatchView) =>
 
 export const runtimeFrameRecord = Effect.gen(function* () {
   const database = yield* Database;
-  const encryption = yield* SecretEncryption;
   const inngest = yield* InngestClient;
   return {
     digest: runtimeFrameDigest,
-    write: (organizationId, frame) => recordMachineNames(organizationId, frame).pipe(
-      Effect.andThen(requestSealingKeyEnsure(organizationId, frame).pipe(
+    write: (organizationId, generation, frame) => recordMachineNames(organizationId, frame).pipe(
+      Effect.andThen(requestSealingKeyEnsure(organizationId, generation, frame).pipe(
         // The recorder writes uninterruptibly for its SQL; a stalled send must not hold the Organization's writer.
         Effect.timeoutOrElse({
           duration: SEALING_ENSURE_TIMEOUT,
           orElse: () => Effect.fail(new Error("Asking for the Sealing Key ensure timed out")),
         }),
         Effect.interruptible,
+        // The names landed; a send that failed is asked again after the recorder's wait, not on every frame.
+        Effect.catch((error) => Effect.logWarning("Sealing Key ensure not asked", error).pipe(Effect.as("asked" as const))),
       )),
       Effect.provideService(Database, database),
-      Effect.provideService(SecretEncryption, encryption),
       Effect.provideService(InngestClient, inngest),
     ),
   } satisfies FrameRecord;
