@@ -761,8 +761,8 @@ deployment that failed.
 
 `this Machine holds no Sealing Key`, or `does not open with this Cluster's Sealing Key`
 
-Your servers can't open a sealed value. This happens after you lose every server and add one
-again.
+Your servers can't open a sealed value. Usually this happens after you lose every server and add
+one again.
 
 - The first message: the server shows **Needs recovery**. Give it your recovery code with
   `ployz recover`, then deploy again. See

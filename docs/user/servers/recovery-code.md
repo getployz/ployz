@@ -16,16 +16,17 @@ Keep it in your password manager, away from your servers. Adding more servers pr
 code.
 
 You don't get a code when the first server joins from the dashboard's install line, from
-cloud-init or a script, or with `--json` unless you add `--show-recovery-code`. That run says
-"Run ployz recovery rotate to get a recovery code." Make one now, while a server still runs. From your computer, signed in with
-`ployz login`:
+cloud-init or a script, or with `--json` unless you add `--show-recovery-code`. Make one now,
+while a server still runs. From your computer, signed in with `ployz login`:
 
 ```sh
 ployz recovery rotate --connect ssh://root@203.0.113.10
 ```
 
-Give it any of your servers. It prints a new code, and the backup in Ployz Cloud opens only with
-that code from then on. Run it in a terminal: with no terminal to show the code, it refuses and changes nothing. Only an owner or admin can rotate the code.
+Give it a server that runs your services, not one marked **Needs access** or **Needs recovery**.
+It prints a new code, and the backup in Ployz Cloud opens only with that code from then on. Run
+it in a terminal: with no terminal to show the code, it refuses and changes nothing. Only an
+owner or admin can rotate the code.
 
 Rotate the code too if you lose it or think someone else has seen it. You need a running
 server to do that.
@@ -57,7 +58,7 @@ Ployz included.
   a new code as above. Values sealed with the old key fail to deploy, and the error names the variable
   and says it "does not open with this Cluster's Sealing Key". Delete each one and add it
   again with its value.
-- **A server waits in Needs recovery, and `ployz recover` says "Nothing to recover from".**
+- **A server waits in Needs recovery, and `ployz recover` finds no backup to recover from.**
   Your servers were added before Ployz Cloud stopped expecting a key it had no backup of. Stop
   Ployz on the waiting server with `sudo systemctl stop ployz.socket ployz`, since Ployz won't
   forget a server that still answers. Then
