@@ -4,7 +4,9 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
-use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, RpcError, SealingPublicKey};
+use ployz_core::{
+    DockerVolumeId, DockerVolumeName, MachineId, QualifiedService, RpcError, SealingPublicKey,
+};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -41,6 +43,12 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub unanswered: Option<Vec<MachineId>>,
+    /// The Services the Servers run, as Cloud observed them just before a full
+    /// Deploy's admission: what its prune removes, by name. None when Cloud didn't
+    /// look, so nothing names what a prune removes.
+    #[serde(default)]
+    #[ts(optional)]
+    pub running: Option<RunningObservation>,
     /// The GitHub accounts of the Organization's members, as Cloud linked them: a pull
     /// request deploys without approval only when one of them wrote it. None when Cloud
     /// didn't look, which trusts no one.
@@ -198,6 +206,13 @@ impl Trusted {
         }
     }
 
+    /// Whether the caller holds `permission`, as [`Self::admit`] checks it.
+    pub(crate) fn holds(&self, permission: Permission) -> bool {
+        self.permissions
+            .as_ref()
+            .is_none_or(|held| held.contains(&permission))
+    }
+
     pub(crate) fn admit(&self, permission: Permission) -> Result<(), RpcError> {
         match &self.permissions {
             Some(held) if !held.contains(&permission) => Err(crate::error::forbidden(
@@ -317,6 +332,20 @@ impl VolumeObservation {
             failure: Some(failure),
         }
     }
+}
+
+/// The Services running on the Servers that answered, by Namespace.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RunningObservation {
+    /// Each Service with a Container on a Server that answered.
+    pub services: Vec<QualifiedService>,
+    /// Servers that did not answer: what they run is unknown.
+    pub unanswered: Vec<MachineId>,
+    /// Why the observer couldn't check the Servers at all: then nothing was checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub failure: Option<ObservationFailure>,
 }
 
 /// Why an observer couldn't check the Servers, and where the check stopped.

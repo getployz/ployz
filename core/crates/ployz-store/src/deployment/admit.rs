@@ -339,6 +339,7 @@ fn deploy(
             json!({}),
         ));
     }
+    let prunes = admit.services.is_empty() && !admit.no_prune;
     let review = review::review(tx, &environment)?;
     let shipping = review::Shipping::Deploy {
         services: &admit.services,
@@ -382,8 +383,18 @@ fn deploy(
         trusted.volumes.as_ref(),
     )?;
     review::guard_saving(tx, id, review.saved.as_ref(), &saved_intent)?;
+    let pruning = match prunes {
+        true => review::Pruning::of(
+            trusted.running.as_ref(),
+            &namespace,
+            &saved_intent,
+            &review.view.effects,
+        ),
+        false => review::Pruning::Off,
+    };
+    pruning.admit(trusted)?;
     let gate = review::Gate::new(tx, id, trusted)?;
-    review::approve(who, &review, (&saved_intent, shipping), &gate)?;
+    review::approve(who, &review, (&saved_intent, shipping, &pruning), &gate)?;
     let (saved, _) = review::publish(
         tx,
         who,
@@ -401,7 +412,7 @@ fn deploy(
         true => deployment::Scope::All {
             losses: &losses,
             retire: &retire,
-            prune: !admit.no_prune,
+            prune: prunes,
         },
         false => deployment::Scope::Narrow {
             services: &admit.services,

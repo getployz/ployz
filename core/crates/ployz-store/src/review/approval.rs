@@ -4,8 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::RpcError;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent};
+use ployz_core::{Namespace, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -15,7 +15,7 @@ use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname, VolumeNam
 use crate::review::{DiffView, Head, Review, Shipping};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
-use crate::{Actor, Approval, Asks, Permission, Trusted};
+use crate::{Actor, Approval, Asks, Permission, RunningObservation, Trusted};
 
 /// One thing a publication destroys, by the node it changes and the row.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
@@ -426,12 +426,16 @@ impl<'a> Gate<'a> {
 pub(crate) fn approve(
     who: &Actor,
     review: &Review,
-    (target, shipping): (&SavedEnvironmentIntent, Shipping<'_>),
+    (target, shipping, pruning): (&SavedEnvironmentIntent, Shipping<'_>, &Pruning),
     gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
     let diff = &review.view;
     let environment = &diff.environment.id;
-    let effects = &diff.effects;
+    let pruned = match pruning {
+        Pruning::Removes(pruned) => pruned.clone(),
+        Pruning::Off | Pruning::Unseen => BTreeSet::new(),
+    };
+    let effects: &BTreeSet<DestructiveEffect> = &diff.effects.union(&pruned).cloned().collect();
     let resaves = review
         .saved
         .as_ref()
@@ -445,7 +449,8 @@ pub(crate) fn approve(
     if gate.exempt && !effects.is_empty() {
         gate.trusted.admit(Permission::ChangesDestroy)?;
     }
-    if asks == Asks::Destroys && (effects.is_empty() || resaves) {
+    // A prune's removals are new to every Deploy, even one that resaves.
+    if asks == Asks::Destroys && (diff.effects.is_empty() || resaves) && pruned.is_empty() {
         return Ok(());
     }
     if !effects.is_empty() {
@@ -462,6 +467,9 @@ pub(crate) fn approve(
         let services = services.iter().collect::<BTreeSet<_>>();
         bound.insert("services".to_owned(), json!(services));
         bound.insert("upload".to_owned(), json!(upload));
+        if *pruning != Pruning::Off {
+            bound.insert("prunes".to_owned(), json!(true));
+        }
     }
     let message = gate.message(diff, "deploy", || {
         if effects.is_empty() {
@@ -475,7 +483,90 @@ pub(crate) fn approve(
             format!("A human must approve this first: {asked}")
         }
     });
+    // Unseen, the card says the Deploy prunes without naming what.
     gate.require(bound, message, (effects, diff))
+        .map_err(|mut asked| {
+            if *pruning == Pruning::Unseen
+                && let Some(details) = asked.details.as_object_mut()
+            {
+                details.insert("prunes".to_owned(), json!(true));
+            }
+            asked
+        })
+}
+
+/// What a full Deploy's prune removes besides what its Environment dropped: each
+/// Service running in its Namespace that the Environment doesn't hold, as Cloud saw
+/// the Servers just before admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Pruning {
+    /// It keeps every other Service, or deploys named ones.
+    Off,
+    /// Cloud couldn't see what runs, so nothing names what it removes.
+    Unseen,
+    /// Each Service it removes; none when nothing else runs.
+    Removes(BTreeSet<DestructiveEffect>),
+}
+
+impl Pruning {
+    /// What a pruning Deploy of `target` into `namespace` removes beyond `effects`,
+    /// by `running`.
+    pub(crate) fn of(
+        running: Option<&RunningObservation>,
+        namespace: &Namespace,
+        target: &SavedEnvironmentIntent,
+        effects: &BTreeSet<DestructiveEffect>,
+    ) -> Self {
+        let Some(running) = running.filter(|running| running.failure.is_none()) else {
+            return Self::Unseen;
+        };
+        let kept = |name: &str| {
+            target.services.iter().any(|service| service.slug == name)
+                || effects.iter().any(|effect| {
+                    effect.kind == DestructiveKind::RemovesService && effect.name == name
+                })
+        };
+        Self::Removes(
+            running
+                .services
+                .iter()
+                .filter(|service| service.namespace == *namespace && !kept(service.name.as_str()))
+                .map(|service| DestructiveEffect {
+                    kind: DestructiveKind::RemovesService,
+                    name: service.name.to_string(),
+                    node: format!("{}/{}", service.namespace, service.name),
+                    path: service.name.to_string(),
+                    lost_after: None,
+                })
+                .collect(),
+        )
+    }
+
+    /// Refuse a caller who can't destroy a prune that removes a Service, or might.
+    pub(crate) fn admit(&self, trusted: &Trusted) -> Result<(), RpcError> {
+        let destroy = Permission::ChangesDestroy;
+        if trusted.holds(destroy) {
+            return Ok(());
+        }
+        let removes = match self {
+            Self::Off => return Ok(()),
+            Self::Removes(pruned) if pruned.is_empty() => return Ok(()),
+            Self::Removes(pruned) => {
+                let names = pruned.iter().map(|effect| effect.name.as_str());
+                format!(
+                    "this deploy removes {}, running in this environment but not part of it",
+                    names.collect::<Vec<_>>().join(", ")
+                )
+            }
+            Self::Unseen => "Ployz couldn't check which services running in this \
+                 environment but not part of it this deploy removes"
+                .to_owned(),
+        };
+        Err(error::forbidden(
+            format!("Needs {destroy}: {removes}. Deploy with --no-prune to keep them."),
+            json!({ "permission": destroy, "next": "ployz deploy --no-prune" }),
+        ))
+    }
 }
 
 /// Refuse taking an Environment off the Servers for `taking_off` (a shutdown, or the
