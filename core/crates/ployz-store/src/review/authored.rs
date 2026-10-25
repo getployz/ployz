@@ -8,8 +8,8 @@ use crate::storage::Tx;
 use crate::{error, scope};
 use ployz_core::config::{
     At, AuthoredServiceConfig, BuildMethod, ChangeKind, CompiledNodeConfig, ConfigAttachment,
-    EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity, RowId,
-    SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
+    EnvironmentNodeType, Generator, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity,
+    RowId, SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
     SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, ServiceBuildConfig,
     ServiceGitAccess, ServiceGitBranch, ServiceHealthcheck, ServiceManagedHostname,
     ServiceRestartPolicy, ServiceRoute, ServiceSettingChange, ServiceSource, ServiceTemplate,
@@ -53,6 +53,7 @@ impl<T> Lifecycle<T> {
 struct VersionedValue {
     value: SavedVariableValue,
     fingerprint: String,
+    generated: Option<Generator>,
 }
 impl VersionedValue {
     fn of(variable: &SavedVariableIntent) -> Self {
@@ -63,15 +64,24 @@ impl VersionedValue {
             exported: _,
             value_fingerprint,
             value,
+            generated,
         } = variable;
         Self {
             value: value.clone(),
             fingerprint: value_fingerprint.clone(),
+            generated: generated.clone(),
         }
     }
     fn restore(&self, variable: &mut SavedVariableIntent) {
-        (variable.value, variable.value_fingerprint) =
-            (self.value.clone(), self.fingerprint.clone());
+        (
+            variable.value,
+            variable.value_fingerprint,
+            variable.generated,
+        ) = (
+            self.value.clone(),
+            self.fingerprint.clone(),
+            self.generated.clone(),
+        );
     }
     fn shown(&self, names: &BTreeMap<String, String>) -> Value {
         match &self.value {
@@ -111,7 +121,7 @@ enum ServiceField {
 }
 enum VariableField {
     Id(Delta<String>),
-    Value(Delta<VersionedValue>),
+    Value(Box<Delta<VersionedValue>>),
     Exported(Delta<bool>),
     Description(Delta<Option<String>>),
 }
@@ -891,6 +901,7 @@ fn variable_changes(
                 exported,
                 value_fingerprint: _,
                 value: _,
+                generated: _,
             } = after;
             let pair = VersionedValue::of(after);
             let mut add = |field| {
@@ -904,7 +915,7 @@ fn variable_changes(
                 add(VariableField::Id(delta));
             }
             if let Some(delta) = Delta::between(&VersionedValue::of(before), &pair) {
-                add(VariableField::Value(delta));
+                add(VariableField::Value(Box::new(delta)));
             }
             if let Some(delta) = Delta::between(&before.description, description) {
                 add(VariableField::Description(delta));

@@ -373,6 +373,11 @@ fn merge_names(from: &Environment, into: &Environment) -> BTreeMap<String, Strin
 fn shown_edit(edit: &SealedCell, names: &BTreeMap<String, String>) -> Value {
     match edit {
         SealedCell::Secret(_) => json!({ "secret": true }),
+        SealedCell::Cell(cell @ Cell::Value(_))
+            if let Some(generator) = ployz_core::config::cell_generator(cell) =>
+        {
+            json!(generator.to_string())
+        }
         SealedCell::Cell(Cell::Value(value)) => {
             let mut value = value.clone();
             if let Some(object) = value.as_object_mut() {
@@ -505,6 +510,14 @@ pub(crate) fn set_merge_value(
                     format!("{label}: only a secret takes a value sealed in the browser"),
                     json!({ "row": row }),
                 ));
+            }
+            (SecretValue::Text(value), false)
+                if let Some(generator) =
+                    ployz_core::config::Generator::parse(value).map_err(|refused| {
+                        error::invalid(format!("{label}: {refused}"), json!({ "row": row }))
+                    })? =>
+            {
+                SealedCell::Cell(ployz_core::config::generated_cell(&generator))
             }
             (SecretValue::Text(value), false) => {
                 let old: Vec<ValuePart> = [&planned.from, &planned.into]

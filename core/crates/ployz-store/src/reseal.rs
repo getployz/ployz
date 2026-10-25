@@ -411,6 +411,7 @@ mod tests {
 
     fn secret(key: &str, value: SecretCiphertext) -> SavedVariableIntent {
         SavedVariableIntent {
+            generated: None,
             id: Uuid::new_v4().to_string(),
             key: key.into(),
             description: None,
@@ -948,6 +949,7 @@ mod tests {
             .unwrap()
             .variables
             .push(SavedVariableIntent {
+                generated: None,
                 id: Uuid::new_v4().to_string(),
                 key: "MODE".into(),
                 description: None,
@@ -1241,6 +1243,7 @@ mod tests {
                 .unwrap()
                 .variables
                 .push(SavedVariableIntent {
+                    generated: None,
                     id: Uuid::new_v4().to_string(),
                     key: "DATABASE_URL".into(),
                     description: None,
@@ -1308,6 +1311,7 @@ mod tests {
                         .push(secret("TOKEN", legacy(&store.sealing, "hunter2")));
                 } else {
                     service.variables.push(SavedVariableIntent {
+                        generated: None,
                         id: Uuid::new_v4().to_string(),
                         key: "AUTH".into(),
                         description: None,
@@ -1346,6 +1350,7 @@ mod tests {
             auth.variables
                 .push(secret("TOKEN", legacy(&store.sealing, "hunter22")));
             auth.variables.push(SavedVariableIntent {
+                generated: None,
                 id: Uuid::new_v4().to_string(),
                 key: "PAYLOAD".into(),
                 description: None,
@@ -1378,6 +1383,7 @@ mod tests {
                 .unwrap()
                 .variables
                 .push(SavedVariableIntent {
+                    generated: None,
                     id: Uuid::new_v4().to_string(),
                     key: "AUTH".into(),
                     description: None,

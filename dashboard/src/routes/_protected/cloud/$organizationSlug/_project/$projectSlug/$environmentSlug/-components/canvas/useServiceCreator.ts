@@ -4,7 +4,7 @@ import { useReactFlow } from "@xyflow/react";
 import { useLoaderData, useNavigate } from "@tanstack/react-router";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { createServiceCommand, newServiceName, serviceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
-import { databaseCommand, randomPassword, type DatabasePreset } from "#/modules/config-store/database-presets";
+import { databaseCommand, type DatabasePreset } from "#/modules/config-store/database-presets";
 import { servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { toast } from "sonner";
@@ -66,7 +66,7 @@ export function useCreateStoreDatabase(organizationSlug: string) {
     place({ environmentId: target.environmentId, resourceType: "volume", resourceId: volume, x, y: y + SERVICE_NODE_HEIGHT + SNAP_GRID[1] * 2 });
     const name = serviceName(preset.id, services(target.store));
     const command = databaseCommand(preset, { service, volume, environment: target.store, name,
-      volumeName: uniqueName(`${name}-data`, volumeNames(target.store)), password: randomPassword() });
+      volumeName: uniqueName(`${name}-data`, volumeNames(target.store)) });
     const { isPersisted } = writer.commit(command);
     return { service: { id: service }, persisted: isPersisted.promise };
   };

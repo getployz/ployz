@@ -9,7 +9,7 @@ use ts_rs::TS;
 use crate::{ConfigFileName, ConfigName, ContainerPath};
 
 use super::{
-    AuthoredServiceConfig, ConfigError, SecretCiphertext, ValuePart, ValuePartOwner,
+    AuthoredServiceConfig, ConfigError, Generator, SecretCiphertext, ValuePart, ValuePartOwner,
     parse_service_config,
 };
 
@@ -274,6 +274,22 @@ pub struct SavedVariableIntent {
     /// moving it would reshape every stored Working State and Applied State.
     pub value_fingerprint: String,
     pub value: SavedVariableValue,
+    /// How the Store makes this variable's value, which each Environment holds its own
+    /// of: set only on a literal. Written only when set, so other documents keep their
+    /// bytes and fingerprints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub generated: Option<Generator>,
+}
+
+impl SavedVariableIntent {
+    /// Whether this generated variable arrived without its own value yet: a copy or Sync
+    /// brought its [`Generator`], and the Store makes the value before it saves.
+    #[must_use]
+    pub fn awaits_value(&self) -> bool {
+        self.generated.is_some()
+            && matches!(&self.value, SavedVariableValue::Literal { value } if value.is_empty())
+    }
 }
 
 /// Literal text, structured references, or a privately stored sealed value.
@@ -600,6 +616,14 @@ fn validate_variables(variables: &[SavedVariableIntent]) -> Result<(), ConfigErr
             return Err(ConfigError::at(
                 "variables.valueFingerprint",
                 "Only a secret without a value has no fingerprint",
+            ));
+        }
+        if variable.generated.is_some()
+            && !matches!(variable.value, SavedVariableValue::Literal { .. })
+        {
+            return Err(ConfigError::at(
+                "variables.generated",
+                "Only a literal value is generated",
             ));
         }
         if let SavedVariableValue::Secret {

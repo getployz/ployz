@@ -484,7 +484,8 @@ pub(crate) fn named_in<'row>(
 }
 
 /// `cell`, `intent`'s at `row`, as reads show it: text for a variable with references
-/// by `names`, `{"secret": true}`, or `{"secret": false}` for one without a value.
+/// by `names`, `${{ secret(…) }}` for a generated one, `{"secret": true}`, or
+/// `{"secret": false}` for one without a value.
 pub(crate) fn shown(
     intent: &SavedEnvironmentIntent,
     names: &BTreeMap<String, String>,
@@ -495,6 +496,10 @@ pub(crate) fn shown(
         Cell::Absent => Value::Null,
         Cell::Secret { .. } => json!({ "secret": true }),
         Cell::SecretWithoutValue => json!({ "secret": false }),
+        // Each Environment makes its own value: a row moves the generator, never a value.
+        Cell::Value(_) if let Some(generator) = ployz_core::config::cell_generator(cell) => {
+            json!(generator.to_string())
+        }
         Cell::Value(value) => match row.at() {
             At::Variable(key) => Some(key),
             At::File(_) => {

@@ -112,7 +112,36 @@ service still gets the real value when it deploys.
   with the new value. A version saved before this change deploys without its sealed values, so
   deploy the current version instead.
 
-## Reference another service's variable
+## Generate a value
+
+Write `${{ secret() }}` as a variable's whole value, and Ployz makes a random one for it, like a
+database password. It's plain, not sealed, so you can read it and other variables can reference it.
+
+```sh
+POSTGRES_PASSWORD=${{ secret() }}
+API_KEY=${{ secret(48) }}
+PIN=${{ secret(8, "0-9") }}
+```
+
+- `secret()` makes 32 letters and digits. Give a length from 8 to 256, and optionally the
+  characters to use, in quotes: ranges like `a-z` and single characters, at least two different
+  ones, without spaces, quotes or backslashes.
+- Each environment makes its own value. A separate copy of a service in a branch or a
+  [preview](../environments/preview-environments.md) gets a new one, so its new, empty database
+  starts with a password of its own. A service the branch shares with its parent keeps the
+  parent's value, and references to it read the parent's.
+- A value stays until you change it. Deploys, History and Discard never make a new one, and
+  neither does writing `${{ secret() }}` again, or setting the value it shows back.
+- [Sync](../environments/environments.md) and pull request merges never carry a generated value.
+  A new generated variable, or a new length or set of characters, arrives as `${{ secret(…) }}`,
+  and the receiving environment makes its own value.
+- To make a new value, write a different `secret(…)`, or set a plain value of your own. A
+  database reads its password only when it first starts with an empty volume, so change it in
+  the database too.
+- `${{ secret() }}` must be the whole value. Write `$${{ secret() }}` for that text itself.
+- Before Ployz 0.3.6, a value typed as `${{ secret(32) }}` was saved as that text. Values saved
+  then stay as they are; typing it now makes a value.
+
 
 A reference fills a variable with another variable's value. Write `${{ SERVICE.KEY }}` for
 another service's variable and `${{ KEY }}` for one of this service's own:
@@ -173,7 +202,8 @@ can't reference it, and it replaces a variable of yours with that name.
   [preview](../environments/preview-environments.md) starts with its parent's variables, and
   changing them leaves the parent alone. By design, a branch never gets its parent's secret
   values: its sealed variables start **Not set**, and deploys leave each out until you choose
-  **Set value** on it in the branch. A reference to a service the branch shares with its parent reads the
+  **Set value** on it in the branch. A [generated value](#generate-a-value) gets a new value in
+  the copy. A reference to a service the branch shares with its parent reads the
   parent's values.
 - **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
   `invalid_argument` and the limit. Split it into smaller changes.
