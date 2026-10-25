@@ -5,6 +5,7 @@
 //! Cluster's, the CLI seals to the key the Cluster's Servers hold.
 
 use std::cell::Cell;
+use std::time::Duration;
 
 use ployz_core::{RpcErrorCode, SealedIdentity, SealingPublicKey, seal_value};
 use ployz_store::{
@@ -56,13 +57,16 @@ impl Backend {
 /// the one its Cluster's Servers hold, read once a secret is ready to seal.
 type Recipient = Cell<Option<SealingPublicKey>>;
 
+/// How long the CLI waits for the Cluster's Servers to name their Sealing Key.
+const SEALING_KEY_TIMEOUT: Duration = Duration::from_secs(15);
+
 impl Store<'_> {
     /// The Sealing public key this Standalone Cluster's Servers hold, read from one
     /// Runtime Watch frame as Cloud reads it; None while no Server holds one, or they
     /// disagree.
     fn cluster_sealing_key(&self) -> Result<Option<SealingPublicKey>, StoreCallError> {
         let runtime = super::runtime().map_err(StoreCallError::Stopped)?;
-        let frame = runtime.block_on(async {
+        let observe = async {
             match super::super::connect_context(self.matches, self.context()).await {
                 Ok(client) => client.runtime_frame().await.map(Some).map_err(Error::from),
                 Err(error)
@@ -79,7 +83,15 @@ impl Store<'_> {
                 }
                 Err(error) => Err(error),
             }
-        });
+        };
+        let frame = runtime
+            .block_on(async { tokio::time::timeout(SEALING_KEY_TIMEOUT, observe).await })
+            .unwrap_or_else(|_| {
+                Err(Error::unavailable(
+                    "No Server answered with the Cluster's Sealing Key, so nothing was sealed. \
+                     Start a Server and try again.",
+                ))
+            });
         let Some(frame) = frame.map_err(StoreCallError::Stopped)? else {
             return Ok(None);
         };
