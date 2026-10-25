@@ -85,6 +85,12 @@ fn located(config: PathBuf) -> Locate {
 pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     let config = super::config_path(leaf_matches(root))?;
     let local = if store::local_mode() {
+        // An agent reads versions it deploys at, so values an earlier CLI sealed with the
+        // Store's key are resealed before it reads any; a Cluster out of reach leaves
+        // them, and a Deploy that ships one says so.
+        if let Some(cli) = store::reachable(root)? {
+            let _ = cli.reseal();
+        }
         store::backend_at(&config)?
     } else {
         None

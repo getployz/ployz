@@ -79,6 +79,11 @@ service still gets the real value when it deploys.
 
 - New variables are plain unless you tick **Sealed**.
 - A new sealed value needs a server in your organization first. Add one with `ployz server add`.
+- On a [standalone server](../servers/add-a-server.md#add-a-standalone-server), `ployz` seals to
+  the key your servers hold, so it needs to reach one of them. The first deploy after you update
+  `ployz` from v0.3.3 or v0.3.4 seals the values you set before for your servers too, and keeps
+  each value. Servers that started on v0.3.2 or earlier hold no key yet, so they can't take a
+  sealed value.
 - Your sealed values open only on your servers. Keep your organization's
   [recovery code](../servers/recovery-code.md): if you lose every server, it's the only way to
   open them again.

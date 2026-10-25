@@ -1,18 +1,23 @@
 //! Seals a write's new secrets in this CLI once its Organization seals on the client.
 //! Cloud says whether it does and to which key, asked once per command and only for
 //! a write that carries plain text; the Store says where each secret lands. Off, the
-//! write goes exactly as it always has. The in-process Store seals every secret itself.
+//! write goes exactly as it always has. With the in-process Store, a Standalone
+//! Cluster's, the CLI seals to the key the Cluster's Servers hold.
+
+use std::cell::Cell;
+use std::time::Duration;
 
 use ployz_core::{RpcErrorCode, SealedIdentity, SealingPublicKey, seal_value};
 use ployz_store::{
-    Ask as _, Edit, EnvironmentSummary, SealingService, SealingTargetsQuery, SealingTargetsView,
-    SecretValue, SyncChanges, View,
+    Ask as _, Edit, EnvironmentSummary, SealingRecipient, SealingService, SealingTargetsQuery,
+    SealingTargetsView, SecretValue, SyncChanges, View,
 };
 use serde::Deserialize;
 use uuid::Uuid;
 
 use super::{Backend, Error, Store};
 use crate::cloud_account::{self, StoreCallError};
+use crate::context::ContextError;
 use crate::ui::Hint;
 
 /// What Cloud answers about sealing one write's secrets.
@@ -48,7 +53,99 @@ impl Backend {
     }
 }
 
+/// The key a write's secrets seal to: Cloud's answer, or for the in-process Store
+/// the one its Cluster's Servers hold, read once a secret is ready to seal.
+type Recipient = Cell<Option<SealingPublicKey>>;
+
+/// How long the CLI waits for the Cluster's Servers to name their Sealing Key.
+const SEALING_KEY_TIMEOUT: Duration = Duration::from_secs(15);
+
 impl Store<'_> {
+    /// The Sealing public key this Standalone Cluster's Servers hold, read from one
+    /// Runtime Watch frame as Cloud reads it; None while no Server holds one, or they
+    /// disagree.
+    fn cluster_sealing_key(&self) -> Result<Option<SealingPublicKey>, StoreCallError> {
+        let runtime = super::runtime().map_err(StoreCallError::Stopped)?;
+        let observe = async {
+            match super::super::connect_context(self.matches, self.context()).await {
+                Ok(client) => client.runtime_frame().await.map(Some).map_err(Error::from),
+                Err(error)
+                    if matches!(
+                        error.context_error(),
+                        Some(
+                            ContextError::NoConfig
+                                | ContextError::NoContexts(_)
+                                | ContextError::NoConnections { .. }
+                        )
+                    ) =>
+                {
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            }
+        };
+        let frame = runtime
+            .block_on(async { tokio::time::timeout(SEALING_KEY_TIMEOUT, observe).await })
+            .unwrap_or_else(|_| {
+                Err(Error::unavailable(
+                    "No Server answered with the Cluster's Sealing Key, so nothing was sealed. \
+                     Start a Server and try again.",
+                ))
+            });
+        let Some(frame) = frame.map_err(StoreCallError::Stopped)? else {
+            return Ok(None);
+        };
+        let mut held =
+            frame
+                .machines
+                .iter()
+                .filter_map(|observed| match observed.machine.runtime.sealing {
+                    Some(ployz_core::Sealing::Held { public_key }) => Some(public_key),
+                    _ => None,
+                });
+        let first = held.next();
+        Ok(first.filter(|key| held.all(|other| other == *key)))
+    }
+
+    /// The key `recipient` names, read from the Cluster on first use.
+    fn key(&self, recipient: &Recipient) -> Result<SealingPublicKey, StoreCallError> {
+        if let Some(key) = recipient.get() {
+            return Ok(key);
+        }
+        let key = self
+            .cluster_sealing_key()?
+            .ok_or_else(|| StoreCallError::Stopped(no_server()))?;
+        recipient.set(Some(key));
+        Ok(key)
+    }
+
+    /// Seal for the Cluster each secret a CLI before 0.3.5 sealed with the in-process
+    /// Store's key, as Cloud's worker does for its Store: no Machine opens one. Whether
+    /// it resealed any; none without a key to seal to, and the Deploy says what waits.
+    pub(crate) fn reseal(&self) -> Result<bool, StoreCallError> {
+        let Backend::Local(store, who) = &self.backend else {
+            return Ok(false);
+        };
+        let environments = store
+            .reseal_environments(&who.organization)
+            .map_err(StoreCallError::Refused)?;
+        if environments.is_empty() {
+            return Ok(false);
+        }
+        let Some(public_key) = self.cluster_sealing_key()? else {
+            return Ok(false);
+        };
+        let recipient = SealingRecipient { public_key };
+        let mut resealed = 0;
+        for environment in environments {
+            resealed += store
+                .reseal(&environment, &recipient)
+                .map_err(StoreCallError::Refused)?
+                .resealed;
+        }
+        Ok(resealed > 0)
+    }
+
     /// `edit` with each new secret's plain text sealed for the Service it sets, when
     /// the Organization seals on the client. `fail` maps what Cloud or the Store
     /// refuses, as it maps the write's own refusal.
@@ -90,7 +187,8 @@ impl Store<'_> {
                 service,
             };
             let plaintext = secret.admit().map_err(refused)?;
-            seal(&recipient, &identity, secret.key(), plaintext).map(Some)
+            let key = self.key(&recipient).map_err(&fail)?;
+            seal(&key, &identity, secret.key(), plaintext).map(Some)
         })?;
         Ok(edit)
     }
@@ -149,8 +247,8 @@ impl Store<'_> {
             let plaintext = target
                 .admit(plaintext)
                 .map_err(|error| fail(StoreCallError::Refused(error)))?;
-            *value =
-                SecretValue::ClientSealed(seal(&recipient, &identity, &target.key, plaintext)?);
+            let key = self.key(&recipient).map_err(&fail)?;
+            *value = SecretValue::ClientSealed(seal(&key, &identity, &target.key, plaintext)?);
         }
         Ok(request)
     }
@@ -160,21 +258,28 @@ impl Store<'_> {
         &self,
         query: &SealingTargetsQuery,
         fail: impl Fn(StoreCallError) -> Error,
-    ) -> Result<Option<(SealingPublicKey, SealingTargetsView)>, Error> {
+    ) -> Result<Option<(Recipient, SealingTargetsView)>, Error> {
+        if let Backend::Local(..) = &self.backend {
+            let targets = self.backend.read(query).map_err(&fail)?;
+            return Ok(Some((Cell::new(None), targets)));
+        }
         match self.backend.sealing(query).map_err(&fail)? {
             Sealing::Off => Ok(None),
-            Sealing::NoServer => Err(Error::conflict("Sealed values need a server.")
-                .hint(Hint::Next("ployz server add".into()))),
+            Sealing::NoServer => Err(no_server()),
             Sealing::Ready {
                 public_key,
                 targets,
             } => {
                 let targets = SealingTargetsQuery::view(*targets)
                     .map_err(|error| fail(StoreCallError::Refused(error)))?;
-                Ok(Some((public_key, targets)))
+                Ok(Some((Cell::new(Some(public_key)), targets)))
             }
         }
     }
+}
+
+fn no_server() -> Error {
+    Error::conflict("Sealed values need a server.").hint(Hint::Next("ployz server add".into()))
 }
 
 fn seal(

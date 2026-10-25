@@ -47,6 +47,7 @@ mod sdk_update_machine;
 mod sdk_upgrade_machine;
 mod sdk_volumes;
 mod sdk_watch;
+mod sealed_cli;
 mod server_endpoint_cli;
 mod support;
 mod unix_session;

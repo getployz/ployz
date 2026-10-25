@@ -302,8 +302,26 @@ impl<'m> Store<'m> {
     }
 
     /// Admit a Deployment. The in-process Store reviews Volume loss against the
-    /// Servers this CLI observes; over HTTPS, Cloud gathers its own evidence.
+    /// Servers this CLI observes; over HTTPS, Cloud gathers its own evidence. A Deploy
+    /// the in-process Store refuses for a value an earlier CLI sealed with its key is
+    /// admitted again once this CLI resealed it, as Cloud's worker does for its Store.
     pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
+        match self.admit_once(admit) {
+            Err(StoreCallError::Refused(refused))
+                if refused
+                    .details
+                    .get("reseal")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("pending")
+                    && self.reseal()? =>
+            {
+                self.admit_once(admit)
+            }
+            admitted => admitted,
+        }
+    }
+
+    fn admit_once(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
         let removing = |environment: &EnvironmentRef, remove| RemovalsQuery {
             environment: environment.clone(),
             remove,
