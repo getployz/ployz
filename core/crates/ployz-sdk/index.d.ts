@@ -41,6 +41,7 @@ export {
   allocateEnrollment,
   machineUpgradeAttemptId,
   observeCopies,
+  observeRunning,
   observeVolumes,
   ployzVersion,
   SealedNames,

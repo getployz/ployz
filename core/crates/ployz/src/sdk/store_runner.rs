@@ -243,6 +243,56 @@ pub async fn observe_volumes(
     Ok(observed)
 }
 
+/// Which Services run on `connections`' Servers, by Namespace: the evidence a full
+/// Deploy's prune is admitted with, naming each Service it removes. A check that
+/// fails names each of `connections`' Servers unanswered and says why, as
+/// [`observe_volumes`] does.
+///
+/// # Errors
+/// Returns `invalid_argument` when `connections` is empty.
+pub async fn observe_running(
+    connections: Vec<Connection>,
+) -> Result<ployz_store::RunningObservation, RpcError> {
+    if connections.is_empty() {
+        return Err(super::invalid_argument(
+            "connections must not be empty".into(),
+        ));
+    }
+    let servers: Vec<MachineId> = connections
+        .iter()
+        .filter_map(Connection::machine_id)
+        .copied()
+        .collect();
+    let failed = |failure| ployz_store::RunningObservation {
+        services: Vec::new(),
+        unanswered: servers.clone(),
+        failure: Some(failure),
+    };
+    let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
+        Ok(session) => session,
+        Err(error) => {
+            let failure = if error.unreached() {
+                ObservationFailure::unreachable(error.into())
+            } else {
+                ObservationFailure::answered(None, error.into())
+            };
+            return Ok(failed(failure));
+        }
+    };
+    let observed = match session.observe_running().await {
+        Ok(observed) => observed,
+        Err(error) => {
+            let server = session
+                .client()
+                .ok()
+                .and_then(|client| client.entry_machine());
+            failed(ObservationFailure::answered(server, error))
+        }
+    };
+    session.close().await;
+    Ok(observed)
+}
+
 /// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep
 /// finds orphaned mirror slots with.
 ///
