@@ -937,6 +937,32 @@ pub(super) fn lower(
     } else {
         BTreeSet::new()
     };
+    // A Legacy secret that reaches a Service this Deploy ships, or a Config one of
+    // them mounts, waits for the reseal: leaving it out would drop a value the
+    // Service holds.
+    let deploys =
+        |service: &SavedServiceIntent| !narrowed || shipped.contains(&service.config.private_dns);
+    let waiting = resolved.legacy.iter().find(|read| {
+        saved
+            .services
+            .iter()
+            .filter(|service| deploys(service))
+            .any(|service| match &read.reader {
+                variables::LegacyReader::Service(id) => service.id == *id,
+                variables::LegacyReader::Config(id) => service
+                    .config_attachments
+                    .iter()
+                    .any(|mount| mount.config_resource_id == *id),
+            })
+    });
+    if let Some(read) = waiting {
+        let owner = saved
+            .services
+            .iter()
+            .find(|service| service.id == read.owner)
+            .map_or("", |service| service.slug.as_str());
+        return Err(awaiting_reseal(owner, &read.key));
+    }
     let warnings = warnings
         .into_iter()
         .filter(|(services, _)| !narrowed || services.iter().any(|name| shipped.contains(*name)))
@@ -948,6 +974,19 @@ pub(super) fn lower(
         intent,
         warnings,
     })
+}
+
+/// A Legacy secret, which no Machine opens. `invalid_argument`, so a claim fails the
+/// Deployment rather than leave it queued.
+fn awaiting_reseal(service: &str, key: &str) -> RpcError {
+    let variable = format!("{service}.{key}");
+    error::invalid(
+        format!(
+            "{variable} is waiting for Ployz Cloud to reseal it for the Cluster, and this Deploy would leave it out. \
+             Cloud reseals such values when its worker starts. Deploy again in a minute, or set {variable} again"
+        ),
+        json!({ "variable": variable, "reseal": "pending" }),
+    )
 }
 
 /// `config` with a Git or empty source replaced by the image its build or upload

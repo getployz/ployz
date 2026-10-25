@@ -139,8 +139,9 @@ installation back to the first Callback URL.
 > [!WARNING]
 > Keep `APP_ENCRYPTION_SECRET` the same forever, and back it up with the Postgres volume
 > `ployz-cloud-self-host_postgres-data`. It encrypts the credentials Ployz Cloud stores, such as
-> registry credentials and domain tokens, so a new value makes them unreadable. Your variables
-> don't use it.
+> registry credentials and domain tokens, so a new value makes them unreadable. Secret
+> variables saved on v0.3.4 or earlier are encrypted with it too, until the upgrade reseals them.
+> Variables saved after that are sealed on your device and don't use it.
 
 ### More than one install on a host
 
@@ -254,6 +255,19 @@ fi
 Nothing migrates the database on start, so run the migration on every upgrade.
 `docker compose up -d` can take up to 30 minutes: `worker` finishes the work it's running
 before it stops.
+
+### Upgrading from v0.3.4 or earlier
+
+Before v0.3.5, Ployz Cloud encrypted secret variables with `APP_ENCRYPTION_SECRET`. Now only your
+Servers open them. Each time `worker` starts, it reseals any such variable it finds for your
+Servers. It needs the same `APP_ENCRYPTION_SECRET` you had before, and a Server that has joined.
+You don't run anything for it.
+
+Until the reseal finishes, a deploy that reads one of those variables stops before it changes
+anything, and says the variable is waiting to be resealed. Your apps keep running with their
+values. Deploy again once it's done, usually within a minute. `docker compose logs worker`
+shows `0 legacy values` for each organization when nothing is left. If a deploy keeps stopping on
+one variable, set that variable again.
 
 ## Good to know
 

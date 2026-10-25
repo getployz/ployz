@@ -25,7 +25,7 @@ pub struct LegacyCount {
     /// every Environment: what a reseal converts.
     pub current: u32,
     /// In older Saved revisions, pending arrivals and merge values: kept as they
-    /// are, and Not set should one of them ever apply.
+    /// are, and a Deploy that would apply one is refused.
     pub history: u32,
 }
 
@@ -1147,5 +1147,254 @@ mod tests {
         assert_eq!(variable(&after, "PORT"), &port);
         client_sealed(variable(&after, "TOKEN"));
         set_mode(&store, &who);
+    }
+
+    fn deploy(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Result<(), RpcError> {
+        store
+            .write(
+                who,
+                &crate::Admit::Deploy(crate::Deploy {
+                    id: crate::DeploymentId::parse(uuid(10 + n)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    services: services
+                        .iter()
+                        .map(|name| ServiceName::parse(*name).unwrap())
+                        .collect(),
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                    prune: false,
+                    no_prune: false,
+                }),
+            )
+            .map(|_| ())
+    }
+
+    fn assert_waits(error: &RpcError, variable: &str) {
+        assert_eq!(error.code, ployz_core::RpcErrorCode::InvalidArgument);
+        assert!(error.message.contains(variable), "{error:?}");
+        assert!(error.message.contains("reseal"), "{error:?}");
+        assert!(!format!("{error:?}").contains("hunter2"), "{error:?}");
+    }
+
+    #[test]
+    fn a_deploy_waits_for_the_reseal_of_a_legacy_value_instead_of_leaving_it_out() {
+        let (store, who) = shop();
+        plant_working(
+            &store,
+            &who,
+            vec![secret("TOKEN", legacy(&store.sealing, "hunter2"))],
+        );
+
+        assert_waits(&deploy(&store, &who, 1, &[]).unwrap_err(), "web.TOKEN");
+        assert_waits(&deploy(&store, &who, 2, &["web"]).unwrap_err(), "web.TOKEN");
+
+        let keypair = ployz_core::Keypair::generate();
+        store.reseal(&environment(), &recipient(&keypair)).unwrap();
+        deploy(&store, &who, 3, &[]).unwrap();
+    }
+
+    #[test]
+    fn a_targeted_deploy_ships_past_a_legacy_value_of_a_service_it_leaves_alone() {
+        let (store, who) = shop();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(4)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("db").unwrap(),
+                    image: Some("postgres:16".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        crate::rules::tests::seed(&store, &who, |working| {
+            let db = working
+                .services
+                .iter_mut()
+                .find(|service| service.slug == "db")
+                .unwrap();
+            db.variables
+                .push(secret("PASSWORD", legacy(&store.sealing, "hunter2")));
+        });
+
+        deploy(&store, &who, 1, &["web"]).unwrap();
+        assert_waits(&deploy(&store, &who, 2, &[]).unwrap_err(), "db.PASSWORD");
+        assert_waits(
+            &deploy(&store, &who, 3, &["db"]).unwrap_err(),
+            "db.PASSWORD",
+        );
+
+        let db = working(&store)
+            .services
+            .iter()
+            .find(|service| service.slug == "db")
+            .unwrap()
+            .lineage_id
+            .clone();
+        crate::rules::tests::seed(&store, &who, |working| {
+            working
+                .services
+                .first_mut()
+                .unwrap()
+                .variables
+                .push(SavedVariableIntent {
+                    id: Uuid::new_v4().to_string(),
+                    key: "DATABASE_URL".into(),
+                    description: None,
+                    exported: false,
+                    value_fingerprint: "t1:url".into(),
+                    value: SavedVariableValue::Template {
+                        parts: ployz_core::config::parse_variable_template(
+                            "postgres://app:${{ db.PASSWORD }}@db/app",
+                            |_, _| Some(db.clone()),
+                        )
+                        .parts,
+                    },
+                });
+        });
+        assert_waits(
+            &deploy(&store, &who, 4, &["web"]).unwrap_err(),
+            "db.PASSWORD",
+        );
+    }
+
+    /// Git Service `auth`, which a Deploy that names only `web` leaves alone.
+    fn create_auth(store: &ConfigStore, who: &Actor) {
+        store
+            .write_trusted(
+                who,
+                &crate::CreateGitService {
+                    id: ServiceLineageId::parse(uuid(4)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("auth").unwrap(),
+                    repository: crate::RepositoryName::parse("acme/auth").unwrap(),
+                    branch: None,
+                },
+                &crate::Trusted {
+                    repositories: vec![crate::AuthorizedRepository {
+                        repository: crate::RepositoryName::parse("acme/auth").unwrap(),
+                        repository_id: crate::RepositoryId::parse(11).unwrap(),
+                        access: ployz_core::config::ServiceGitAccess::GithubInstallation {
+                            installation_id: 7,
+                        },
+                        default_branch: crate::BranchName::parse("main").unwrap(),
+                        branches: Vec::new(),
+                    }],
+                    ..crate::Trusted::default()
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_targeted_deploy_waits_for_a_legacy_value_it_reads_from_a_service_it_leaves_alone() {
+        let (store, who) = shop();
+        create_auth(&store, &who);
+        let auth = working(&store)
+            .services
+            .iter()
+            .find(|service| service.slug == "auth")
+            .unwrap()
+            .lineage_id
+            .clone();
+        crate::rules::tests::seed(&store, &who, |working| {
+            for service in &mut working.services {
+                if service.slug == "auth" {
+                    service
+                        .variables
+                        .push(secret("TOKEN", legacy(&store.sealing, "hunter2")));
+                } else {
+                    service.variables.push(SavedVariableIntent {
+                        id: Uuid::new_v4().to_string(),
+                        key: "AUTH".into(),
+                        description: None,
+                        exported: false,
+                        value_fingerprint: "t1:auth".into(),
+                        value: SavedVariableValue::Template {
+                            parts: ployz_core::config::parse_variable_template(
+                                "Bearer ${{ auth.TOKEN }}",
+                                |_, _| Some(auth.clone()),
+                            )
+                            .parts,
+                        },
+                    });
+                }
+            }
+        });
+
+        assert_waits(
+            &deploy(&store, &who, 1, &["web"]).unwrap_err(),
+            "auth.TOKEN",
+        );
+    }
+
+    #[test]
+    fn a_legacy_value_no_shipped_service_reads_never_makes_a_deploy_too_long() {
+        let (store, who) = shop();
+        create_auth(&store, &who);
+        let padding = "x".repeat(crate::variables::MAX_ENV_STRING - "PAYLOAD".len() - 2 - 8);
+        crate::rules::tests::seed(&store, &who, |working| {
+            let auth = working
+                .services
+                .iter_mut()
+                .find(|service| service.slug == "auth")
+                .unwrap();
+            let lineage = auth.lineage_id.clone();
+            auth.variables
+                .push(secret("TOKEN", legacy(&store.sealing, "hunter22")));
+            auth.variables.push(SavedVariableIntent {
+                id: Uuid::new_v4().to_string(),
+                key: "PAYLOAD".into(),
+                description: None,
+                exported: false,
+                value_fingerprint: "t1:payload".into(),
+                value: SavedVariableValue::Template {
+                    parts: ployz_core::config::parse_variable_template(
+                        &format!("{padding}${{{{ TOKEN }}}}"),
+                        |_, _| Some(lineage.clone()),
+                    )
+                    .parts,
+                },
+            });
+        });
+
+        deploy(&store, &who, 1, &["web"]).unwrap();
+        assert_waits(&deploy(&store, &who, 2, &[]).unwrap_err(), "auth.TOKEN");
+
+        let auth = working(&store)
+            .services
+            .iter()
+            .find(|service| service.slug == "auth")
+            .unwrap()
+            .lineage_id
+            .clone();
+        crate::rules::tests::seed(&store, &who, |working| {
+            working
+                .services
+                .first_mut()
+                .unwrap()
+                .variables
+                .push(SavedVariableIntent {
+                    id: Uuid::new_v4().to_string(),
+                    key: "AUTH".into(),
+                    description: None,
+                    exported: false,
+                    value_fingerprint: "t1:auth".into(),
+                    value: SavedVariableValue::Template {
+                        parts: ployz_core::config::parse_variable_template(
+                            "Bearer ${{ auth.TOKEN }}",
+                            |_, _| Some(auth.clone()),
+                        )
+                        .parts,
+                    },
+                });
+        });
+        assert_waits(
+            &deploy(&store, &who, 3, &["web"]).unwrap_err(),
+            "auth.TOKEN",
+        );
     }
 }

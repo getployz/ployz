@@ -29,6 +29,10 @@ const protectedDetails = Schema.is(Schema.Struct({ protected: Schema.Literal(tru
 /** The Store's refusal of a write into a Protected Environment by someone who can't protect it: it waits for someone who can. */
 export const isProtectedAsk = ({ code, details }: StoreRefusal) => code === "approval_required" && protectedDetails(details);
 
+const resealDetails = Schema.is(Schema.Struct({ reseal: Schema.Literal("pending") }));
+/** The Store's refusal of a Deploy that reads a Legacy value: it waits for the reseal. */
+export const isResealPending = ({ code, details }: StoreRefusal) => code === "invalid_argument" && resealDetails(details);
+
 /**
  * What a Store read or write returns across the server-function boundary. A refusal is an outcome, not a failure:
  * `conflict` carries fresh state and `not_found` names what's missing, so callers need the code and details intact.

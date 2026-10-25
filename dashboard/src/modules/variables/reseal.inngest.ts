@@ -2,7 +2,8 @@ import { Effect } from "effect";
 import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import { createVariablesResealRequestedEvent, variablesResealRequestedEventType } from "#/modules/inngest/events";
+import { createStartupResealEvent, createVariablesResealRequestedEvent, variablesResealRequestedEventType } from "#/modules/inngest/events";
+import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { runInngestEffect } from "#/server/run.server";
 
@@ -66,6 +67,11 @@ export async function executeReseal({ event, step }: { event: { data: { organiza
   }
   return { organizations: organizations.length };
 }
+
+/** Asks every Organization with Legacy values a reseal converts to reseal, through the outbox so a failed send is retried. */
+export const requestResealAtStart = Effect.fn("Reseal.requestAtStart")(function* (startedAt: Date) {
+  yield* enqueueEvent(createStartupResealEvent(startedAt));
+});
 
 export const createResealVariables = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
   inngest.createFunction(
