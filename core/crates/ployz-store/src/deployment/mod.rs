@@ -863,6 +863,11 @@ pub(crate) struct Stored {
 }
 
 impl Stored {
+    /// The runtime Namespace it deploys into.
+    pub(crate) const fn namespace(&self) -> &Namespace {
+        &self.namespace
+    }
+
     /// What it lowers: the Saved Services it ships and the runtime Services it
     /// tears down, beside each shipped one those it no longer runs as. A full
     /// Deploy ships every Service of `saved`, its revision, and tears down each

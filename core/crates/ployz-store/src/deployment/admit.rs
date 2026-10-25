@@ -178,6 +178,8 @@ pub(crate) fn admit(
         Admit::Retry(retry) => {
             let asked = retry_review(tx, who, &retry.deployment, trusted)?;
             let (retried, rollback) = deployment::retry(tx, who, retry, trusted)?;
+            let pruning = retry_pruning(tx, &retried, trusted)?;
+            pruning.admit(trusted)?;
             deployment::admitted_by_user(tx, &retried.id, trusted)?;
             let forget = match retried.remove {
                 true => deployment::forgettable(tx, &retried.environment_id, trusted)?,
@@ -199,7 +201,7 @@ pub(crate) fn admit(
                 Asked::Retry(review, gate) => {
                     trusted
                         .writes(&scope::load_by_id(tx, &retried.environment_id)?.summary.name)?;
-                    review::approve_retry(who, &review, (retry, &rollback), &gate)?;
+                    review::approve_retry(who, &review, (retry, &rollback, &pruning), &gate)?;
                 }
                 Asked::Nothing => {}
             }
@@ -213,6 +215,31 @@ pub(crate) fn admit(
         Admit::ShutDown(shut_down) => crate::removal::shut_down(tx, who, shut_down, trusted),
         Admit::Deploy(deploy) => self::deploy(tx, who, deploy, trusted),
     }
+}
+
+/// What a redeploy of a pruning Deployment prunes again: each Service running in
+/// its Namespace that neither it nor what this Store holds now runs as.
+fn retry_pruning(
+    tx: &mut dyn Tx,
+    retried: &DeploymentSummary,
+    trusted: &Trusted,
+) -> Result<review::Pruning, RpcError> {
+    if !retried.prune || retried.remove {
+        return Ok(review::Pruning::Off);
+    }
+    let stored = deployment::load(tx, &retried.id)?;
+    let environment = scope::load_by_id(tx, &retried.environment_id)?;
+    let head = deployment::head(tx, &environment)?;
+    let landing = deployment::Landing::of(&head);
+    Ok(review::Pruning::of(
+        trusted.running.as_ref(),
+        stored.namespace(),
+        stored.nodes.iter().flat_map(TargetNode::runtimes).chain(
+            landing
+                .services()
+                .map(|service| &service.config.private_dns),
+        ),
+    ))
 }
 
 /// What a retry asks a human about, read before it queues.
@@ -339,6 +366,7 @@ fn deploy(
             json!({}),
         ));
     }
+    let prunes = admit.services.is_empty() && !admit.no_prune;
     let review = review::review(tx, &environment)?;
     let shipping = review::Shipping::Deploy {
         services: &admit.services,
@@ -382,8 +410,22 @@ fn deploy(
         trusted.volumes.as_ref(),
     )?;
     review::guard_saving(tx, id, review.saved.as_ref(), &saved_intent)?;
+    let pruning = match prunes {
+        // What this Store holds, deploying or dropping, isn't the prune's.
+        true => review::Pruning::of(
+            trusted.running.as_ref(),
+            &namespace,
+            saved_intent
+                .services
+                .iter()
+                .chain(deployment::Landing::of(&review.head).services())
+                .map(|service| &service.config.private_dns),
+        ),
+        false => review::Pruning::Off,
+    };
+    pruning.admit(trusted)?;
     let gate = review::Gate::new(tx, id, trusted)?;
-    review::approve(who, &review, (&saved_intent, shipping), &gate)?;
+    review::approve(who, &review, (&saved_intent, shipping, &pruning), &gate)?;
     let (saved, _) = review::publish(
         tx,
         who,
@@ -401,7 +443,7 @@ fn deploy(
         true => deployment::Scope::All {
             losses: &losses,
             retire: &retire,
-            prune: !admit.no_prune,
+            prune: prunes,
         },
         false => deployment::Scope::Narrow {
             services: &admit.services,

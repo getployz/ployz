@@ -35,6 +35,7 @@ import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
+import { RunningObserver } from "#/modules/config-store/running-evidence.server";
 import { Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
@@ -91,13 +92,14 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
     return rows.map((row) => row.id);
   }));
   const { secret } = yield* provided(createOrganizationToken({ ...caller, credential: { kind: "session", id: "session-1" } }, { name: "agent", expiresInDays: 1 }));
-  const cli = (command: ConfigCommand, approval?: string, via?: "agent", bearer = secret) => provided(Effect.gen(function* () {
+  // `running` is what the Servers run, as Cloud asks them before a full Deploy; nothing beyond the Environment by default.
+  const cli = (command: ConfigCommand, approval?: string, via?: "agent", bearer = secret, running: string[] = []) => provided(Effect.gen(function* () {
     const headers = new Headers({ "content-type": "application/json", authorization: `Bearer ${bearer}` });
     if (approval !== undefined) headers.set("x-ployz-approval", approval);
     if (via !== undefined) headers.set("x-ployz-via", via);
     const response = yield* handleConfigRequest(new Request("http://localhost:3000/api/config/write", {
       method: "POST", headers, body: JSON.stringify(command),
-    }));
+    })).pipe(Effect.provideService(RunningObserver, { observe: async () => ({ services: running, unanswered: [] }) }));
     return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
   }));
   return { provided, write, refusal, protectedRefusal, caller, userId, store, pending, withApproval, cli };
@@ -128,6 +130,17 @@ const dashboardMember = Effect.gen(function* () {
 type Asked = { approval: string; approval_id: string; effects: unknown[] };
 const asked = (refused: { details: unknown }) => refused.details as Asked;
 type Reply = { written?: string; error?: { code: string; message: string; details: Partial<Asked> | null } };
+
+it.live("an ask for a Deploy that prunes keeps saying so, on its card and to the asker", () =>
+  Effect.gen(function* () {
+    const { provided, refusal, caller } = yield* shopRemovingWeb();
+    const refused = yield* refusal;
+    const pruning = { ...refused, details: { ...(refused.details as object), prunes: true } };
+    const answered = yield* provided(requestApproval(caller, publish, pruning, null));
+    expect(answered.details).toMatchObject({ prunes: true });
+    const row = yield* provided(getApproval(ORGANIZATION, asked(answered).approval_id));
+    expect(row.review).toMatchObject({ prunes: true });
+  }));
 
 it.live("a destructive CLI publish waits for a human to approve exactly what it destroys, once", () =>
   Effect.gen(function* () {
@@ -605,7 +618,11 @@ it.live("an owner's Deploy token ships into its Protected Environment unasked bu
       { name: "ci", expiresInDays: 1, preset: { preset: "deploy", environment: "production" } }));
     const sent = vi.spyOn(store, "write");
 
-    expect(yield* cli(deploy(1), undefined, undefined, deployToken)).toMatchObject({ status: 200 });
+    // A Deploy token can't prune: refused while something runs the prune would remove, shipped once nothing does.
+    const pruning = yield* cli(deploy(1), undefined, undefined, deployToken, ["shop-production/extra2"]);
+    expect(pruning).toMatchObject({ status: 403, json: { error: { code: "forbidden" } } });
+    expect(pruning.json.error?.message).toContain("extra2");
+    expect(yield* cli(deploy(1), undefined, undefined, deployToken, ["shop-production/web"])).toMatchObject({ status: 200 });
     // The Store's fences on protection and source still see the token's own grant.
     expect(sent.mock.calls[0]?.[2]).toMatchObject({ protector: true });
     expect(sent.mock.calls[0]?.[2]?.permissions).not.toContain("environments:protect");

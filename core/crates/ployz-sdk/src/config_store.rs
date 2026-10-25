@@ -76,6 +76,21 @@ pub async fn observe_copies(
     to_json(ployz::sdk::observe_copies(connections).await)
 }
 
+/// Which Services run on `connections`' Servers, by Namespace
+/// (`RunningObservation`): the evidence Cloud admits a full Deploy that prunes with,
+/// naming each Service it removes. Servers that don't answer are named, and when the
+/// check fails its `failure` says why.
+///
+/// # Errors
+/// Returns `invalid_argument` for malformed input.
+#[napi(ts_return_type = "Promise<RunningObservation>")]
+pub async fn observe_running(
+    #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let connections = crate::parse_connections(connections)?;
+    to_json(ployz::sdk::observe_running(connections).await)
+}
+
 #[napi]
 impl ConfigStore {
     /// Answer a `ConfigQuery` as the given Organization. `trusted` is what Cloud

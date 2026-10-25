@@ -13,7 +13,7 @@ use ployz_store::{
     DestructiveEffect, DestructiveKind, DiffQuery, DiffView, Discard, Discarded, Edit,
     EnvironmentId, EnvironmentQuery, EnvironmentRef, Hostname, Mount, OrganizationId, Permission,
     ProjectId, ProjectName, Publish, Published, RemoveDomain, RemoveService, RemoveVolume,
-    Revision, ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
+    Revision, RunningObservation, ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -4359,10 +4359,12 @@ fn publishing_a_removal_waits_for_a_human_to_approve_exactly_it() {
 fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
     let (store, who) = shop();
     apply_all(&store, &who, &Trusted::default());
+    // Nothing runs that a prune removes.
     let holding = |permissions: &[Permission], approval: Approval, asks: Asks| Trusted {
         permissions: Some(permissions.iter().copied().collect()),
         approval,
         asks,
+        running: Some(RunningObservation::default()),
         ..Trusted::default()
     };
     let stages = [Permission::ChangesStage, Permission::ChangesDeploy];

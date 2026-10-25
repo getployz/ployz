@@ -120,8 +120,8 @@ pub use teardown::{
     RemovedBecause, SeenProtection, SetDefaultEnvironment, SetEnvironmentProtected,
 };
 pub use trusted::{
-    Approval, Asks, ObservationFailure, ObservationStage, SealingRecipient, Trusted,
-    VolumeObservation,
+    Approval, Asks, ObservationFailure, ObservationStage, RunningObservation, SealingRecipient,
+    Trusted, VolumeObservation,
 };
 pub use volume::size::VolumeResized;
 

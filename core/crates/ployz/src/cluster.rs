@@ -834,6 +834,43 @@ impl Client {
         })
     }
 
+    /// Every Service with a Container on a Machine that answered, by Namespace: what a
+    /// full Deploy's prune may remove. Every Machine that should answer and did not is
+    /// named in `unanswered`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when listing Machines fails.
+    pub async fn observe_running(&mut self) -> Result<ployz_store::RunningObservation, RpcError> {
+        let machines = self
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .await
+            .map_err(RpcError::from)?;
+        let live = self
+            .live_services_from(&machines.machines, EnvironmentValues::Redacted)
+            .await
+            .map_err(RpcError::from)?;
+        let services: BTreeSet<_> = live
+            .containers
+            .successes
+            .iter()
+            .flat_map(|success| &success.value)
+            .map(ContainerObservation::identity)
+            .collect();
+        // A Machine already marked down is left out, as the Deploy's prune leaves it.
+        let unanswered: BTreeSet<MachineId> = live
+            .containers
+            .failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .collect();
+        Ok(ployz_store::RunningObservation {
+            services: services.into_iter().collect(),
+            unanswered: unanswered.into_iter().collect(),
+            failure: None,
+        })
+    }
+
     /// Every copy of every Volume on every Machine, by role, slots included. Every
     /// Machine that did not answer is named in `unanswered`, never assumed empty.
     ///

@@ -46,7 +46,8 @@ pub use github_build::{
 pub use running::Running;
 pub use store_call::store_call;
 pub use store_runner::{
-    RetireLeft, RetireOutcome, Sources, observe_copies, observe_volumes, retire_old, run_deployment,
+    RetireLeft, RetireOutcome, Sources, observe_copies, observe_running, observe_volumes,
+    retire_old, run_deployment,
 };
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
@@ -854,6 +855,18 @@ impl Session {
     ) -> Result<ployz_store::VolumeObservation, RpcError> {
         let mut client = self.client()?;
         self.until_closed(client.observe_volumes(sought)).await
+    }
+
+    /// Every Service running on a Machine that answered, by Namespace, naming every
+    /// Machine that did not answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed or listing
+    /// Machines fails.
+    pub async fn observe_running(&self) -> Result<ployz_store::RunningObservation, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(client.observe_running()).await
     }
 
     /// Every copy of every Volume on every Machine, by role, naming every Machine that

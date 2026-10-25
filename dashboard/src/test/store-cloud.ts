@@ -4,6 +4,7 @@ import { ConfigProvider, type Context, Effect, Layer, type Scope } from "effect"
 import { Inngest } from "inngest";
 import { vi } from "vitest";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
+import { RunningObserver } from "#/modules/config-store/running-evidence.server";
 import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { GithubRepositories, GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
@@ -61,6 +62,8 @@ const storeCloudLayer = Effect.fn(function* (options: StoreCloudOptions) {
       : Layer.succeed(GithubRepositories, options.repositories),
     Layer.succeed(Polar, options.polar ?? { mode: "self_hosted" }),
     Layer.succeed(InngestClient, options.inngest ?? sendsNowhere()),
+    // The enrolled test Servers can't be asked what runs: by default nothing runs that a prune would remove.
+    Layer.succeed(RunningObserver, { observe: async () => ({ services: [], unanswered: [] }) }),
     fleet == null
       // No Cluster is paired: domains read as unobserved.
       ? Layer.succeed(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) })

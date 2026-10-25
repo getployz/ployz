@@ -4,8 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::RpcError;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent};
+use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -15,7 +15,7 @@ use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname, VolumeNam
 use crate::review::{DiffView, Head, Review, Shipping};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
-use crate::{Actor, Approval, Asks, Permission, Trusted};
+use crate::{Actor, Approval, Asks, Permission, RunningObservation, Trusted};
 
 /// One thing a publication destroys, by the node it changes and the row.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
@@ -426,12 +426,13 @@ impl<'a> Gate<'a> {
 pub(crate) fn approve(
     who: &Actor,
     review: &Review,
-    (target, shipping): (&SavedEnvironmentIntent, Shipping<'_>),
+    (target, shipping, pruning): (&SavedEnvironmentIntent, Shipping<'_>, &Pruning),
     gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
     let diff = &review.view;
     let environment = &diff.environment.id;
-    let effects = &diff.effects;
+    let pruned = pruning.removes();
+    let effects: &BTreeSet<DestructiveEffect> = &diff.effects.union(&pruned).cloned().collect();
     let resaves = review
         .saved
         .as_ref()
@@ -445,7 +446,12 @@ pub(crate) fn approve(
     if gate.exempt && !effects.is_empty() {
         gate.trusted.admit(Permission::ChangesDestroy)?;
     }
-    if asks == Asks::Destroys && (effects.is_empty() || resaves) {
+    // A prune's removals, named or not, are new to every Deploy, even one that resaves.
+    if asks == Asks::Destroys
+        && (diff.effects.is_empty() || resaves)
+        && pruned.is_empty()
+        && !pruning.unseen()
+    {
         return Ok(());
     }
     if !effects.is_empty() {
@@ -462,6 +468,13 @@ pub(crate) fn approve(
         let services = services.iter().collect::<BTreeSet<_>>();
         bound.insert("services".to_owned(), json!(services));
         bound.insert("upload".to_owned(), json!(upload));
+        if *pruning != Pruning::Off {
+            bound.insert("prunes".to_owned(), json!(true));
+        }
+        // An approval of a prune every Server answered for doesn't cover one they didn't.
+        if pruning.unseen() {
+            bound.insert("unseen".to_owned(), json!(true));
+        }
     }
     let message = gate.message(diff, "deploy", || {
         if effects.is_empty() {
@@ -476,6 +489,115 @@ pub(crate) fn approve(
         }
     });
     gate.require(bound, message, (effects, diff))
+        .map_err(|asked| pruning.unnamed(asked))
+}
+
+/// What a full Deploy's prune removes besides what its Environment dropped: each
+/// Service running in its Namespace that the Environment doesn't hold, as Cloud saw
+/// the Servers just before admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Pruning {
+    /// It keeps every other Service, or deploys named ones.
+    Off,
+    /// It removes each of `removes`, by runtime name. `unseen` when Cloud couldn't
+    /// ask every Server that should answer, so it may remove others nothing names.
+    On {
+        removes: BTreeSet<DestructiveEffect>,
+        unseen: bool,
+    },
+}
+
+impl Pruning {
+    /// What a pruning Deploy into `namespace` removes by `running`: each Service
+    /// there whose runtime name isn't `held`.
+    pub(crate) fn of<'a>(
+        running: Option<&RunningObservation>,
+        namespace: &Namespace,
+        held: impl IntoIterator<Item = &'a ServiceName>,
+    ) -> Self {
+        let Some(running) = running.filter(|running| running.failure.is_none()) else {
+            return Self::On {
+                removes: BTreeSet::new(),
+                unseen: true,
+            };
+        };
+        let held: BTreeSet<&ServiceName> = held.into_iter().collect();
+        let removes = running
+            .services
+            .iter()
+            .filter(|service| service.namespace == *namespace && !held.contains(&service.name))
+            .map(|service| DestructiveEffect {
+                kind: DestructiveKind::RemovesService,
+                name: service.name.to_string(),
+                node: format!("{}/{}", service.namespace, service.name),
+                path: service.name.to_string(),
+                lost_after: None,
+            })
+            .collect();
+        Self::On {
+            removes,
+            unseen: !running.unanswered.is_empty(),
+        }
+    }
+
+    /// Each Service it names that it removes.
+    pub(crate) fn removes(&self) -> BTreeSet<DestructiveEffect> {
+        match self {
+            Self::Off => BTreeSet::new(),
+            Self::On { removes, .. } => removes.clone(),
+        }
+    }
+
+    /// Whether it may remove a Service nothing names.
+    pub(crate) const fn unseen(&self) -> bool {
+        matches!(self, Self::On { unseen: true, .. })
+    }
+
+    /// `asked` saying, when it may remove a Service nothing names, that the Deploy
+    /// prunes: the card then says so.
+    pub(crate) fn unnamed(&self, mut asked: RpcError) -> RpcError {
+        if self.unseen()
+            && asked.code.as_str() == "approval_required"
+            && let Some(details) = asked.details.as_object_mut()
+        {
+            details.insert("prunes".to_owned(), json!(true));
+        }
+        asked
+    }
+
+    /// Refuse a caller who can't destroy a prune that removes a Service, or might.
+    pub(crate) fn admit(&self, trusted: &Trusted) -> Result<(), RpcError> {
+        let destroy = Permission::ChangesDestroy;
+        let Self::On { removes, unseen } = self else {
+            return Ok(());
+        };
+        if trusted.holds(destroy) || (removes.is_empty() && !unseen) {
+            return Ok(());
+        }
+        let names = removes
+            .iter()
+            .map(|effect| effect.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let removes = match (names.is_empty(), unseen) {
+            (false, false) => {
+                format!(
+                    "this deploy removes {names}, running in this environment but not part of it"
+                )
+            }
+            (false, true) => format!(
+                "this deploy removes {names}, running in this environment but not part of it, \
+                 and Ployz couldn't check every server for others"
+            ),
+            (true, _) => "Ployz couldn't check every server for services running in this \
+                 environment but not part of it, which this deploy removes"
+                .to_owned(),
+        };
+        Err(error::forbidden(
+            format!("Needs {destroy}: {removes}. Deploy with --no-prune to keep them."),
+            json!({ "permission": destroy, "next": "ployz deploy --no-prune" }),
+        ))
+    }
 }
 
 /// Refuse taking an Environment off the Servers for `taking_off` (a shutdown, or the
@@ -576,7 +698,7 @@ pub(crate) fn approve_cancel(
 pub(crate) fn approve_retry(
     who: &Actor,
     review: &Review,
-    (retry, rollback): (&crate::Retry, &crate::deployment::Rollback),
+    (retry, rollback, pruning): (&crate::Retry, &crate::deployment::Rollback, &Pruning),
     gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
     // The Volumes a rollback removes and the deployed Services it retires, as a
@@ -612,8 +734,11 @@ pub(crate) fn approve_retry(
         })
         .chain(retired)
         .collect();
+    // A redeploy of a pruning Deployment prunes again, what runs now.
+    let effects: BTreeSet<DestructiveEffect> =
+        effects.into_iter().chain(pruning.removes()).collect();
     // Beyond where every retry asks, a retry asks only when it takes something off.
-    if !gate.asks_retry() && effects.is_empty() {
+    if !gate.asks_retry() && effects.is_empty() && !pruning.unseen() {
         return Ok(());
     }
     if !effects.is_empty() {
@@ -629,6 +754,8 @@ pub(crate) fn approve_retry(
         "rolls_back": rollback.rolls_back,
         "effects": effects,
         "accept_volume_loss": accepted,
+        "prunes": *pruning != Pruning::Off,
+        "unseen": pruning.unseen(),
     });
     // The retry ships its source's frozen state: none of the staged changes, and it
     // destroys only what its source's review or the caller's acceptance covered.
@@ -655,6 +782,7 @@ pub(crate) fn approve_retry(
         None => "A human must approve this redeploy first.".to_owned(),
     });
     gate.require(bound, message, (&effects, &diff))
+        .map_err(|refused| pruning.unnamed(refused))
         .map_err(|mut refused| {
             if let Some(details) = refused.details.as_object_mut() {
                 details.insert(

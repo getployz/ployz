@@ -32,7 +32,7 @@ export type Redeploy = { deployment: number; rolls_back: number[] };
  * operation's preview. A dashboard ask into a Protected Environment also keeps what runs as its asker once approved.
  */
 export type ApprovalReview =
-  | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy }
+  | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy; prunes?: true }
   | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply | VolumeApply };
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
@@ -67,6 +67,9 @@ export function redeployLine(command: string, review: ApprovalReview) {
   return rollback ? `Back to #${deployment}. ${rollback.body}.` : `Ships #${deployment} again.`;
 }
 
+/** A full Deploy that also removes every other Service its Environment runs, which only the Servers can name. */
+export const prunes = (review: ApprovalReview) => "diff" in review && review.prunes === true;
+
 /** A Server removal: its Volumes' data stays on the disk, so the card lists effects rather than destruction. */
 export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
   && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
@@ -87,7 +90,7 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (command === "restore") return "Restores volume";
   if (command === "resize") return "Resizes volume";
   if (command === "release" && effects.length === 0) return "Releases volume";
-  if (effects.length === 0) return "Deploys";
+  if (effects.length === 0) return prunes(review) ? "Removes other services" : "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {
     return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
   }

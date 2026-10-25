@@ -8,7 +8,7 @@
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{
     ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, MachineId,
-    OperationRow, RpcError, RpcErrorCode, ServiceName,
+    OperationRow, QualifiedService, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 use ployz_store::{
@@ -19,9 +19,9 @@ use ployz_store::{
     EnvironmentRef, FailedAt, IngressAction, IngressFailure, IngressRepair, NamespaceQuery,
     NodeStatus, OrganizationId, Permission, PlanQuery, Principal, ProjectId, ProjectName, Publish,
     PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision, RowPhase,
-    RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId, ServiceQuery,
-    ServicesQuery, SettingPath, Start, StoppedBy, Trusted, UploadBase, UploadedSource, View,
-    Written,
+    RowState, RowTracker, RunEvidence, RunnerId, RunningObservation, ServerRow, ServiceLineageId,
+    ServiceQuery, ServicesQuery, SettingPath, Start, StoppedBy, Trusted, UploadBase,
+    UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -4700,6 +4700,11 @@ fn discard_config_mount_preserves_same_name_replacement() {
     );
 }
 
+/// Cloud's evidence that nothing runs beyond what the Environment holds.
+fn nothing_else_runs() -> Option<RunningObservation> {
+    Some(RunningObservation::default())
+}
+
 fn deploy_as(
     store: &ConfigStore,
     who: &Actor,
@@ -4712,6 +4717,7 @@ fn deploy_as(
         n,
         &Trusted {
             approval,
+            running: nothing_else_runs(),
             ..Trusted::default()
         },
     )
@@ -4730,6 +4736,7 @@ fn agent_deploys(
         &Trusted {
             approval,
             asks: Asks::EveryDeploy,
+            running: nothing_else_runs(),
             ..Trusted::default()
         },
     )
@@ -4741,21 +4748,327 @@ fn deploy_trusted(
     n: u8,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
-    store.write_trusted(
-        who,
-        &Admit::Deploy(Deploy {
-            id: id(n),
-            environment: EnvironmentRef::default(),
-            services: Vec::new(),
-            version: None,
-            upload: None,
-            accept_volume_loss: Vec::new(),
-            message: None,
-            prune: false,
-            no_prune: false,
-        }),
-        trusted,
+    deploy_choosing(store, who, n, trusted, |_| {})
+}
+
+/// A Deploy of every Service under `trusted`, as `choose` sets its prune choice.
+fn deploy_choosing(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    trusted: &Trusted,
+    choose: impl FnOnce(&mut Deploy),
+) -> Result<DeploymentSummary, RpcError> {
+    let mut deploy = Deploy {
+        id: id(n),
+        environment: EnvironmentRef::default(),
+        services: Vec::new(),
+        version: None,
+        upload: None,
+        accept_volume_loss: Vec::new(),
+        message: None,
+        prune: false,
+        no_prune: false,
+    };
+    choose(&mut deploy);
+    store.write_trusted(who, &Admit::Deploy(deploy), trusted)
+}
+
+/// Cloud's evidence for a Deploy token: its grant leaves out `changes:destroy`.
+fn deploy_token() -> Trusted {
+    Trusted {
+        permissions: Some(
+            Permission::ALL
+                .iter()
+                .copied()
+                .filter(|permission| *permission != Permission::ChangesDestroy)
+                .collect(),
+        ),
+        ..Trusted::default()
+    }
+}
+
+/// Cloud's evidence that the Servers run `services` in shop-production: `web`,
+/// `api`, and any the Environment never held.
+fn running(services: &[&str]) -> Option<RunningObservation> {
+    Some(RunningObservation {
+        services: services
+            .iter()
+            .map(|service| QualifiedService::parse(format!("shop-production/{service}")).unwrap())
+            .chain([QualifiedService::parse("other-production/extra2").unwrap()])
+            .collect(),
+        unanswered: Vec::new(),
+        failure: None,
+    })
+}
+
+fn removes(services: &[&str]) -> Vec<(String, String)> {
+    services
+        .iter()
+        .map(|service| ("removes_service".to_owned(), (*service).to_owned()))
+        .collect()
+}
+
+fn effects(refused: &RpcError) -> Vec<(String, String)> {
+    refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|effect| {
+            (
+                effect["kind"].as_str().unwrap().to_owned(),
+                effect["name"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_deploy_token_cant_prune_what_its_environment_never_held() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    let token = |running| Trusted {
+        running,
+        ..deploy_token()
+    };
+    let refused =
+        deploy_trusted(&store, &who, 2, &token(running(&["web", "api", "extra2"]))).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert!(
+        refused.message.starts_with("Needs changes:destroy"),
+        "{}",
+        refused.message
+    );
+    assert!(refused.message.contains("extra2"), "{}", refused.message);
+    assert!(
+        refused.message.contains("--no-prune"),
+        "{}",
+        refused.message
+    );
+    // When Cloud couldn't look, it can't tell the prune removes nothing.
+    let unseen = deploy_trusted(&store, &who, 2, &token(None)).unwrap_err();
+    assert_eq!(unseen.code.as_str(), "forbidden", "{unseen:?}");
+    assert!(unseen.message.contains("--no-prune"), "{}", unseen.message);
+    // An older client's explicit prune is refused too.
+    let older = deploy_choosing(&store, &who, 2, &token(running(&["extra2"])), |deploy| {
+        deploy.prune = true;
+    })
+    .unwrap_err();
+    assert_eq!(older.code.as_str(), "forbidden");
+    // Keeping them, or a prune that removes nothing, deploys.
+    let kept = deploy_choosing(&store, &who, 2, &token(None), |deploy| {
+        deploy.no_prune = true
+    })
+    .unwrap();
+    assert!(!kept.prune);
+    cancel(&store, &who, 2).unwrap();
+    assert!(
+        deploy_trusted(&store, &who, 3, &token(running(&["web", "api"])))
+            .unwrap()
+            .prune
+    );
+}
+
+#[test]
+fn an_agents_ask_names_each_service_its_prune_removes_and_its_approval_binds_them() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    let agent = |approval, running| Trusted {
+        approval,
+        asks: Asks::EveryDeploy,
+        running,
+        ..Trusted::default()
+    };
+    let asked = deploy_trusted(
+        &store,
+        &who,
+        2,
+        &agent(Approval::Required, running(&["web", "api", "extra2"])),
     )
+    .unwrap_err();
+    assert_eq!(effects(&asked), removes(&["extra2"]), "{asked:?}");
+    assert_eq!(asked.details.get("prunes"), None);
+    // Unseen, the ask says it prunes without naming what.
+    let unseen = deploy_trusted(&store, &who, 2, &agent(Approval::Required, None)).unwrap_err();
+    assert_eq!(unseen.details["prunes"], true, "{unseen:?}");
+    let keep = |deploy: &mut Deploy| deploy.no_prune = true;
+    let keeps =
+        deploy_choosing(&store, &who, 2, &agent(Approval::Required, None), keep).unwrap_err();
+    assert_eq!(keeps.details.get("prunes"), None, "{keeps:?}");
+    // Approving the Deploy that keeps them doesn't admit the one that prunes.
+    let refused = deploy_trusted(&store, &who, 2, &agent(approved(&keeps), None)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let pruning = deploy_trusted(
+        &store,
+        &who,
+        2,
+        &agent(approved(&asked), running(&["web", "api", "extra2"])),
+    )
+    .unwrap();
+    assert!(pruning.prune);
+}
+
+#[test]
+fn a_prune_that_removes_a_service_asks_first_though_nothing_else_destroys() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let person = |approval| Trusted {
+        approval,
+        running: running(&["web", "api", "extra2"]),
+        ..Trusted::default()
+    };
+    let asked = deploy_trusted(&store, &who, 2, &person(Approval::Required)).unwrap_err();
+    assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
+    assert_eq!(effects(&asked), removes(&["extra2"]));
+    assert!(
+        deploy_trusted(&store, &who, 2, &person(approved(&asked)))
+            .unwrap()
+            .prune
+    );
+}
+
+#[test]
+fn a_renamed_service_runs_as_its_old_name_so_a_deploy_token_still_deploys() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("frontend").unwrap(),
+            },
+        )
+        .unwrap();
+    let token = Trusted {
+        running: running(&["web", "api"]),
+        ..deploy_token()
+    };
+    assert!(deploy_trusted(&store, &who, 2, &token).unwrap().prune);
+}
+
+#[test]
+fn a_server_that_didnt_answer_leaves_the_prune_unseen() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let partial = |services: &[&str]| {
+        running(services).map(|running| RunningObservation {
+            unanswered: vec![MachineId::parse("e".repeat(32)).unwrap()],
+            ..running
+        })
+    };
+    let token = Trusted {
+        running: partial(&["web", "api"]),
+        ..deploy_token()
+    };
+    let refused = deploy_trusted(&store, &who, 2, &token).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert!(
+        refused.message.contains("--no-prune"),
+        "{}",
+        refused.message
+    );
+    let agent = Trusted {
+        approval: Approval::Required,
+        asks: Asks::EveryDeploy,
+        running: partial(&["web", "api", "extra2"]),
+        ..Trusted::default()
+    };
+    let asked = deploy_trusted(&store, &who, 2, &agent).unwrap_err();
+    assert_eq!(effects(&asked), removes(&["extra2"]), "{asked:?}");
+    assert_eq!(asked.details["prunes"], true);
+}
+
+#[test]
+fn an_unseen_prune_asks_first_where_destroys_ask() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let person = Trusted {
+        approval: Approval::Required,
+        ..Trusted::default()
+    };
+    let asked = deploy_trusted(&store, &who, 2, &person).unwrap_err();
+    assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
+    assert_eq!(asked.details["prunes"], true);
+    assert!(
+        deploy_trusted(
+            &store,
+            &who,
+            2,
+            &Trusted {
+                approval: approved(&asked),
+                ..person
+            }
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_deploy_token_cant_redeploy_a_prune_that_removes_what_runs_now() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let redeploy = |n: u8, running| {
+        store.write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(n),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &Trusted {
+                running,
+                ..deploy_token()
+            },
+        )
+    };
+    let refused = redeploy(2, running(&["web", "api", "extra2"])).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert!(refused.message.contains("extra2"), "{}", refused.message);
+    assert!(redeploy(2, running(&["web", "api"])).unwrap().prune);
+}
+
+#[test]
+fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let agent = |approval, running| Trusted {
+        approval,
+        asks: Asks::EveryDeploy,
+        running,
+        ..Trusted::default()
+    };
+    let seen = deploy_trusted(
+        &store,
+        &who,
+        2,
+        &agent(Approval::Required, running(&["web", "api"])),
+    )
+    .unwrap_err();
+    let unseen = deploy_trusted(&store, &who, 2, &agent(approved(&seen), None)).unwrap_err();
+    assert_eq!(unseen.code.as_str(), "approval_required", "{unseen:?}");
+    assert_eq!(unseen.details["prunes"], true);
+    let redeploy = |approval, running| {
+        store.write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &agent(approval, running),
+        )
+    };
+    let seen = redeploy(Approval::Required, running(&["web", "api"])).unwrap_err();
+    let unseen = redeploy(approved(&seen), None).unwrap_err();
+    assert_eq!(unseen.code.as_str(), "approval_required", "{unseen:?}");
 }
 
 fn apply_both(store: &ConfigStore, who: &Actor, n: u8) {
@@ -4849,6 +5162,7 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
             }),
             &Trusted {
                 approval: Approval::Required,
+                running: nothing_else_runs(),
                 ..Trusted::default()
             },
         )
@@ -5496,10 +5810,11 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
 }
 
 /// Cloud's evidence for an owner's Deploy token: it can protect, but its grant leaves
-/// out `environments:protect` and `changes:destroy`.
+/// out `environments:protect` and `changes:destroy`. Nothing runs that a prune removes.
 fn protectors_deploy_token(approval: Approval) -> Trusted {
     Trusted {
         protector: true,
+        running: Some(RunningObservation::default()),
         permissions: unprotecting(approval.clone()).permissions.map(|held| {
             held.into_iter()
                 .filter(|p| *p != Permission::ChangesDestroy)
@@ -6184,6 +6499,7 @@ fn protector(approval: Approval, asks: Asks) -> Trusted {
         approval,
         asks,
         permissions: Some(Permission::ALL.iter().copied().collect()),
+        running: nothing_else_runs(),
         ..Trusted::default()
     }
 }
@@ -6192,6 +6508,7 @@ fn protector(approval: Approval, asks: Asks) -> Trusted {
 fn member(approval: Approval, asks: Asks) -> Trusted {
     Trusted {
         asks,
+        running: nothing_else_runs(),
         ..unprotecting(approval)
     }
 }

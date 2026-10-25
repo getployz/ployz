@@ -263,12 +263,12 @@ fn deploying_a_staged_destroy_needs_changes_destroy() {
         )
         .unwrap();
     let before = revision(&store, &who);
+    let mut keeping = deploy_production(2);
+    if let Admit::Deploy(deploy) = &mut keeping {
+        deploy.no_prune = true;
+    }
     let refused = store
-        .write_trusted(
-            &who,
-            &deploy_production(2),
-            &holding(&[Permission::ChangesDeploy]),
-        )
+        .write_trusted(&who, &keeping, &holding(&[Permission::ChangesDeploy]))
         .unwrap_err();
     needs(&refused, "changes:destroy");
     assert_eq!(revision(&store, &who), before);
