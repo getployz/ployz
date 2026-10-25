@@ -110,7 +110,9 @@ page shows how to point it at your project and environment.
 ## Good to know
 
 - **Names stay inside one environment.** In staging, `postgres.internal` is staging's
-  `postgres`.
+  `postgres`. A [pre-deploy command](../deploy/zero-downtime.md), such as a migration, reaches
+  `postgres.internal` the same way. A container that has just started may wait up to 3 seconds
+  for its first answer while its server learns which environment it belongs to.
 - **A name finds only ready replicas.** A replica is ready once it runs, or once it passes its
   [healthcheck](settings.md#healthcheck) if it has one. One that passed stays even if its check
   fails later, and its service card shows an amber **⚠**. While no replica is ready, the name

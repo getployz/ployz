@@ -54,6 +54,10 @@ const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_RESPONSE_BUFFER: usize = 32;
+/// How long a caller-relative query from an unknown bridge address waits for a
+/// projection that names its caller. A container asks as soon as it starts, before
+/// its own observation reaches Corrosion (#3379); a resolver retries after 5 s.
+const CALLER_WAIT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, PartialEq)]
 enum ResponsePlan {
@@ -62,6 +66,8 @@ enum ResponsePlan {
         code: ResponseCode,
         answers: Vec<Record>,
     },
+    /// A caller-relative name from a bridge address no projection has named yet.
+    UnknownCaller,
 }
 
 struct Projection {
@@ -189,16 +195,19 @@ impl Projection {
                     .unwrap_or_default(),
                 false,
             ),
-            InternalQuery::CallerService(service) => (
-                self.caller_namespace(source)
-                    .and_then(|namespace| {
-                        self.identities
-                            .get(&QualifiedService::new(namespace.clone(), service))
-                    })
-                    .map(ServiceAddresses::rotated)
-                    .unwrap_or_default(),
-                false,
-            ),
+            InternalQuery::CallerService(service) => match self.caller_namespace(source) {
+                Some(namespace) => (
+                    self.identities
+                        .get(&QualifiedService::new(namespace.clone(), service))
+                        .map(ServiceAddresses::rotated)
+                        .unwrap_or_default(),
+                    false,
+                ),
+                None if matches!(source, IpAddr::V4(address) if local_subnet.contains(&address)) => {
+                    return ResponsePlan::UnknownCaller;
+                }
+                None => (Vec::new(), false),
+            },
             InternalQuery::Nearest(identity) => (
                 self.identities
                     .get(&identity)
@@ -271,6 +280,7 @@ pub(crate) struct Answers(Arc<Shared>);
 
 struct Shared {
     projection: RwLock<Projection>,
+    replaced: watch::Sender<()>,
     local_subnet: Ipv4Net,
     upstreams: Upstreams,
 }
@@ -279,6 +289,7 @@ impl Answers {
     fn loaded(projection: Projection, local_subnet: Ipv4Net, upstreams: Upstreams) -> Self {
         Self(Arc::new(Shared {
             projection: RwLock::new(projection),
+            replaced: watch::Sender::new(()),
             local_subnet,
             upstreams,
         }))
@@ -290,11 +301,36 @@ impl Answers {
             .projection
             .write()
             .map_err(|_| io::Error::other("DNS projection lock poisoned"))? = projection;
+        self.0.replaced.send_replace(());
         Ok(())
     }
 
     fn upstreams(&self) -> &Upstreams {
         &self.0.upstreams
+    }
+
+    /// Plans an answer, holding a query from a caller not yet projected until a
+    /// projection names it or [`CALLER_WAIT`] passes.
+    async fn settled_plan(
+        &self,
+        name: &Name,
+        query_type: RecordType,
+        caller: IpAddr,
+    ) -> ResponsePlan {
+        let mut replaced = self.0.replaced.subscribe();
+        let deadline = tokio::time::Instant::now() + CALLER_WAIT;
+        loop {
+            let plan = self.plan(name, query_type, caller);
+            if plan != ResponsePlan::UnknownCaller {
+                return plan;
+            }
+            if !matches!(
+                tokio::time::timeout_at(deadline, replaced.changed()).await,
+                Ok(Ok(()))
+            ) {
+                return ResponsePlan::UnknownCaller;
+            }
+        }
     }
 
     fn plan(&self, name: &Name, query_type: RecordType, caller: IpAddr) -> ResponsePlan {
@@ -448,63 +484,75 @@ impl RequestHandler for Handler {
         let Ok(info) = request.request_info() else {
             return send_error(request, response_handle, ResponseCode::FormErr).await;
         };
-        let plan = self.answers.plan(
-            info.query.original().name(),
-            info.query.query_type(),
-            info.src.ip(),
+        let plan = self
+            .answers
+            .settled_plan(
+                info.query.original().name(),
+                info.query.query_type(),
+                info.src.ip(),
+            )
+            .await;
+        let (code, answers) = match plan {
+            ResponsePlan::Internal { code, answers } => (code, answers),
+            // No projection named the caller within CALLER_WAIT.
+            ResponsePlan::UnknownCaller => (ResponseCode::NXDomain, Vec::new()),
+            ResponsePlan::Forward => return self.forwarded(request, response_handle).await,
+        };
+        let mut metadata = Metadata::response_from_request(&request.metadata);
+        metadata.authoritative = true;
+        metadata.recursion_available = true;
+        metadata.response_code = code;
+        let edns = request.edns.as_ref();
+        let (answers, truncated) = fit_udp_answers(request, &metadata, edns, &answers);
+        metadata.truncation = truncated;
+        let response = MessageResponseBuilder::new(&request.queries, edns).build(
+            metadata,
+            answers.iter(),
+            [].iter(),
+            [].iter(),
+            [].iter(),
         );
-        match plan {
-            ResponsePlan::Internal { code, answers } => {
-                let mut metadata = Metadata::response_from_request(&request.metadata);
-                metadata.authoritative = true;
-                metadata.recursion_available = true;
-                metadata.response_code = code;
-                let edns = request.edns.as_ref();
-                let (answers, truncated) = fit_udp_answers(request, &metadata, edns, &answers);
-                metadata.truncation = truncated;
-                let response = MessageResponseBuilder::new(&request.queries, edns).build(
-                    metadata,
-                    answers.iter(),
+        response_handle
+            .send_response(response)
+            .await
+            .unwrap_or_else(|_| failed_response(request, ResponseCode::ServFail))
+    }
+}
+
+impl Handler {
+    async fn forwarded<R: ResponseHandler>(
+        &self,
+        request: &Request,
+        mut response_handle: R,
+    ) -> ResponseInfo {
+        match self.forward(request).await {
+            Ok(message) => {
+                let mut builder = MessageResponseBuilder::from_message_request(request);
+                if let Some(edns) = message.edns.as_ref() {
+                    builder.edns(edns);
+                }
+                let response = builder.build(
+                    message.metadata,
+                    message.answers.iter(),
+                    message.authorities.iter(),
                     [].iter(),
-                    [].iter(),
-                    [].iter(),
+                    message.additionals.iter(),
                 );
                 response_handle
                     .send_response(response)
                     .await
                     .unwrap_or_else(|_| failed_response(request, ResponseCode::ServFail))
             }
-            ResponsePlan::Forward => match self.forward(request).await {
-                Ok(message) => {
-                    let mut builder = MessageResponseBuilder::from_message_request(request);
-                    if let Some(edns) = message.edns.as_ref() {
-                        builder.edns(edns);
-                    }
-                    let response = builder.build(
-                        message.metadata,
-                        message.answers.iter(),
-                        message.authorities.iter(),
-                        [].iter(),
-                        message.additionals.iter(),
-                    );
-                    response_handle
-                        .send_response(response)
-                        .await
-                        .unwrap_or_else(|_| failed_response(request, ResponseCode::ServFail))
-                }
-                Err(error) => {
-                    eprintln!(
-                        "failed to forward DNS query: {error}",
-                        error = ployz_core::error_chain::inline(&error),
-                    );
-                    send_error(request, response_handle, ResponseCode::ServFail).await
-                }
-            },
+            Err(error) => {
+                eprintln!(
+                    "failed to forward DNS query: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
+                send_error(request, response_handle, ResponseCode::ServFail).await
+            }
         }
     }
-}
 
-impl Handler {
     async fn forward(&self, request: &Request) -> io::Result<Message> {
         let mut last_error = io::Error::other("no upstream DNS servers configured");
         for upstream in self.answers.upstreams().snapshot() {
