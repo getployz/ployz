@@ -700,3 +700,126 @@ fn publish(store: &ConfigStore, who: &Actor) {
         )
         .unwrap();
 }
+
+/// Copies of a plain value an older Store kept beside a Branch after the Parent sealed
+/// it: the receiver's own in a Follow's arrival, and the Node Introduction. The Sync
+/// bases keep theirs.
+#[test]
+fn plain_text_kept_beside_a_branch_before_the_scrub_is_gone_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    {
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse(uuid(1)).unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("web").unwrap(),
+                    image: Some("web:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        set(
+            &store,
+            &who,
+            "production",
+            &[("web.env.TOKEN", json!("plain-private"))],
+        );
+        backend::deploy(&store, &who, "production", 1);
+        store
+            .write(
+                &who,
+                &CreateBranch {
+                    id: EnvironmentId::parse(uuid(9)).unwrap(),
+                    from: at("production"),
+                    name: EnvironmentName::parse("fix-web").unwrap(),
+                    copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                    live: Vec::new(),
+                    setup: Vec::new(),
+                    keep: false,
+                    fix: None,
+                },
+            )
+            .unwrap();
+        let introduced: Vec<String> = select(
+            &url,
+            &format!(
+                "SELECT node_id, node FROM config_node_introduction \
+                 WHERE environment_id = '{}' AND node LIKE '%plain-private%'",
+                uuid(9)
+            ),
+        )
+        .into_iter()
+        .flatten()
+        .collect();
+        let [id, node] = introduced.as_slice() else {
+            panic!("{introduced:?}")
+        };
+        set(
+            &store,
+            &who,
+            "production",
+            &[(
+                "web.env.TOKEN",
+                backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+            )],
+        );
+        backend::deploy(&store, &who, "production", 2);
+        run(
+            &url,
+            &format!(
+                "UPDATE config_sync_arrival \
+                 SET was = '{{\"cell\":{{\"value\":{{\"kind\":\"literal\",\"value\":\"plain-private\"}}}}}}' \
+                 WHERE environment_id = '{branch}' AND state = 'pending';
+                 UPDATE config_node_introduction SET node = '{node}' \
+                 WHERE environment_id = '{branch}' AND node_id = '{id}';
+                 DELETE FROM config_migration WHERE name = '0028_scrub_sealed_copies';",
+                branch = uuid(9),
+                node = node.replace('\'', "''"),
+            ),
+        );
+        assert_eq!(
+            backend::tables_holding(&url, "plain-private"),
+            [
+                "config_environment_branch",
+                "config_node_introduction",
+                "config_sync_arrival"
+            ]
+        );
+    }
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    let kept = |sql: &str| !select(&url, sql).is_empty();
+    assert!(!kept(
+        "SELECT was FROM config_sync_arrival WHERE was LIKE '%plain-private%'"
+    ));
+    assert!(!kept(
+        "SELECT node FROM config_node_introduction WHERE node LIKE '%plain-private%'"
+    ));
+    let incoming: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap()
+        .incoming
+        .iter()
+        .map(|change| format!("{} {}", change.at, change.from))
+        .collect();
+    assert_eq!(incoming, ["web.env.TOKEN production"]);
+}
