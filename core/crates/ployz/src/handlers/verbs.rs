@@ -507,13 +507,15 @@ pub(crate) const RECOVER: Verb = Verb::local(
     recovery::recover_command,
     recovery::recover,
 )
-.stdin(&[("--code-stdin", Stdin::Only)]);
+.stdin(&[("--code-stdin", Stdin::Only)])
+.docs("servers/recovery-code.md");
 pub(crate) const RECOVERY_ROTATE: Verb = Verb::cloud(
     "recovery rotate",
     Always,
     recovery::rotate_command,
     recovery::rotate,
-);
+)
+.docs("servers/recovery-code.md");
 pub(crate) const SCHEMA: Verb =
     Verb::cloud("schema", Never, catalog::schema_command, catalog::schema).docs("cli/overview.md");
 pub(crate) const SERVER_ADD: Verb = Verb::cloud(

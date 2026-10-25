@@ -756,3 +756,16 @@ Then deploy again to delete the data.
 Ployz can't reach your servers, so it can't deploy to them or read their logs. See
 [Troubleshooting servers](servers.md). Once a server answers again, click **Redeploy** on the
 deployment that failed.
+
+## My deploy says a server holds no Sealing Key
+
+`this Machine holds no Sealing Key`, or `does not open with this Cluster's Sealing Key`
+
+Your servers can't open a sealed value. Usually this happens after you lose every server and add
+one again.
+
+- The first message: the server shows **Needs recovery**. Give it your recovery code with
+  `ployz recover`, then deploy again. See
+  [When a server shows Needs recovery](../servers/recovery-code.md#when-a-server-shows-needs-recovery).
+- The second message names a variable sealed with a key no server has any more. Delete the
+  variable and add it again with its value, then deploy again.
