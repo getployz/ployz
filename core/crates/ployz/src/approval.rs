@@ -42,6 +42,19 @@ pub(crate) struct Asked {
     /// Environment, which only the Servers can name.
     #[serde(default)]
     prunes: bool,
+    /// Set on a redeploy: its Deployment's number and the later ones it rolls back.
+    #[serde(default)]
+    redeploy: Option<Redeploy>,
+    /// Cloud's reason for asking, such as that the Environment is Protected.
+    #[serde(skip)]
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Redeploy {
+    deployment: u64,
+    #[serde(default)]
+    rolls_back: Vec<u64>,
 }
 
 impl Asked {
@@ -173,7 +186,11 @@ impl Asked {
         if error.code.as_str() != APPROVAL_REQUIRED {
             return None;
         }
-        serde_json::from_value(error.details.clone()).ok()
+        let asked: Self = serde_json::from_value(error.details.clone()).ok()?;
+        Some(Self {
+            reason: error.message.clone(),
+            ..asked
+        })
     }
 
     /// The verb Cloud named, or `Deploy` for a Store write, whose diff names none.
@@ -220,6 +237,11 @@ impl Asked {
         };
         let loses_volume_access = matches!(&self.subject, Subject::Operation(operation) if operation.loses_volume_access());
         let changes_only = self.effects.iter().all(|effect| !destroys(effect.kind));
+        // A redeploy ships what its Deployment froze, so its card names that Deployment.
+        let (verb, within) = match &self.redeploy {
+            Some(redeploy) => (Verb::Retry, format!(" of #{}{within}", redeploy.deployment)),
+            None => (verb, within),
+        };
         let mut lines = vec![if verb == Verb::Publish && changes_only {
             format!("The next deploy{within} after this save:")
         } else if verb == Verb::Publish {
@@ -256,6 +278,14 @@ impl Asked {
                 ));
             }
         }
+        if let Some(redeploy) = &self.redeploy
+            && let Some(undoes) = deployments(&redeploy.rolls_back)
+        {
+            lines.push(format!(
+                "  ~ rolls back to #{}, undoing {undoes}",
+                redeploy.deployment
+            ));
+        }
         if self.prunes {
             lines.push("  ✕ removes any other Service running in this environment".to_owned());
         }
@@ -271,6 +301,20 @@ impl Asked {
         }
         lines
     }
+}
+
+/// `#5`, `#5 and #6`, `#5, #6 and #7`; None for no Deployments.
+pub(crate) fn deployments(numbers: &[u64]) -> Option<String> {
+    let (last, rest) = numbers.split_last()?;
+    let named = |number: &u64| format!("#{number}");
+    Some(match rest {
+        [] => named(last),
+        _ => format!(
+            "{} and {}",
+            rest.iter().map(named).collect::<Vec<_>>().join(", "),
+            named(last)
+        ),
+    })
 }
 
 /// A role change, a stop, a restart or an unprotect interrupts or alters something; it leaves nothing gone.
@@ -357,6 +401,9 @@ pub(crate) fn settle(
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
     if asked.for_someone_else() {
+        if !asked.reason.is_empty() {
+            crate::ui::note(&asked.reason);
+        }
         crate::ui::note(format!(
             "An owner or admin who didn't ask must approve {} in Ployz Cloud.",
             asked.id
@@ -739,6 +786,55 @@ mod tests {
                 "This deploy destroys 1 thing:",
                 "  ✕ detaches Volume pg-data from postgres",
                 "    Changes after 2026-10-08T11:27:00+02:00 are not in pg-data-0927",
+            ]
+        );
+    }
+
+    /// A protected redeploy that destroys nothing still names what it asks about and
+    /// why, rather than an empty `This deploy:` (#3417).
+    #[test]
+    fn a_protected_redeploy_names_its_deployment_rollback_and_reason() {
+        let refusal = |rolls_back: serde_json::Value| -> ployz_core::RpcError {
+            serde_json::from_value(serde_json::json!({
+                "code": "approval_required",
+                "message": "production is Protected; an admin must approve this deploy.",
+                "details": {
+                    "approval_id": "a1",
+                    "approval": "d1",
+                    "effects": [],
+                    "diff": {
+                        "environment": {
+                            "id": "00000000-0000-4000-8000-000000000002",
+                            "project": "shop",
+                            "name": "production",
+                            "revision": 3,
+                        },
+                        "version": "3:2:0.1",
+                        "saved": 2,
+                        "holds_staged": false,
+                        "changes": [],
+                        "total_count": 0,
+                    },
+                    "redeploy": { "deployment": 4, "rolls_back": rolls_back },
+                    "protected": true,
+                },
+            }))
+            .unwrap()
+        };
+        let asked = Asked::of(&refusal(serde_json::json!([]))).unwrap();
+        assert!(asked.for_someone_else());
+        assert_eq!(asked.review(Verb::Deploy), ["This redeploy of #4:"]);
+        assert_eq!(
+            asked.reason,
+            "production is Protected; an admin must approve this deploy."
+        );
+
+        let asked = Asked::of(&refusal(serde_json::json!([5, 6]))).unwrap();
+        assert_eq!(
+            asked.review(Verb::Deploy),
+            [
+                "This redeploy of #4:",
+                "  ~ rolls back to #4, undoing #5 and #6"
             ]
         );
     }

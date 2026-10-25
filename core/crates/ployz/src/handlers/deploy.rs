@@ -1387,7 +1387,7 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
 /// Returns what the person confirmed it rolls back.
 fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<Vec<u64>, Error> {
     let view = store.read(&ployz_store::DeploymentQuery { id: source.clone() })?;
-    let Some(undoes) = rolls_back(&view.rolls_back) else {
+    let Some(undoes) = crate::approval::deployments(&view.rolls_back) else {
         return Ok(Vec::new());
     };
     // Only a Deployment that ran can be rolled back to, and every one that ran is numbered.
@@ -1440,20 +1440,6 @@ fn prune_skipped(
             .to_owned(),
         refusal @ (ployz_core::PruneRefusal::SelectedServices
         | ployz_core::PruneRefusal::RemovalsOnly) => format!("Prune skipped: {refusal}"),
-    })
-}
-
-/// `#5 and #6`, the Deployments a redeploy undoes; none when it undoes nothing.
-fn rolls_back(numbers: &[u64]) -> Option<String> {
-    let (last, rest) = numbers.split_last()?;
-    let named = |number: &u64| format!("#{number}");
-    Some(match rest {
-        [] => named(last),
-        _ => format!(
-            "{} and {}",
-            rest.iter().map(named).collect::<Vec<_>>().join(", "),
-            named(last)
-        ),
     })
 }
 
