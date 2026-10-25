@@ -28,6 +28,7 @@ function RunNodeDetail({ deployment, node }: { deployment: DeploymentView; node:
   const Icon = runNodeIcons[node.type];
   const status = node.type === "build" ? buildStatusLabels[node.build.status]
     : node.type === "cleanup" ? cleanupLabel(node.cleanup)
+    : node.type === "untargeted" ? nodeStatusLabels[node.status]
     : nodeStatusLabels[shownNodeStatus(node.node)];
   const deleted = node.type === "volume" && node.node.outcome === "removed";
   return (
@@ -46,6 +47,7 @@ function RunNodeDetail({ deployment, node }: { deployment: DeploymentView; node:
       </div>
       {node.type === "build" ? <BuildDetail deployment={deployment} build={node.build} />
         : node.type === "cleanup" ? <CleanupDetail cleanup={node.cleanup} />
+        : node.type === "untargeted" ? <Rows rows={node.rows} className="min-h-0" />
         : <OutcomeDetail deployment={deployment} node={node} />}
     </>
   );
@@ -99,11 +101,8 @@ function OutcomeDetail({ deployment, node }: { deployment: DeploymentView; node:
   const missing = missingDeployLogs(deployment, node.node);
   return (
     <>
-      {node.node.rows.length ? (
-        <ul aria-label="Servers" className={cn("flex flex-col divide-y overflow-y-auto border-b", node.type === "service" ? "max-h-48 shrink-0" : "min-h-0")}>
-          {node.node.rows.map((row) => <Row key={row.machine_id} row={row} />)}
-        </ul>
-      ) : node.type === "service" ? null : (
+      {node.node.rows.length ? <Rows rows={node.node.rows} className={node.type === "service" ? "max-h-48 shrink-0" : "min-h-0"} />
+        : node.type === "service" ? null : (
         <div className="p-4"><LogEmpty title={missing ?? "No servers"} /></div>
       )}
       {node.type === "service" ? (
@@ -149,6 +148,14 @@ function CleanupDetail({ cleanup }: { cleanup: DeploymentCleanupView }) {
         <div className="p-4"><LogEmpty title={cleanupEmpty[cleanup.state]} /></div>
       )}
     </>
+  );
+}
+
+function Rows({ rows, className }: { rows: ServerRow[]; className: string }) {
+  return (
+    <ul aria-label="Servers" className={cn("flex flex-col divide-y overflow-y-auto border-b", className)}>
+      {rows.map((row) => <Row key={row.machine_id} row={row} />)}
+    </ul>
   );
 }
 

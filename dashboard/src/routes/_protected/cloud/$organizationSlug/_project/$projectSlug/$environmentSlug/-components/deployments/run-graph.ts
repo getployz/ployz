@@ -1,5 +1,5 @@
 import type { BuildStatus, BuildView, DeploymentView, FailedAt, NodeOutcome, NodeStatus, RowPhase, ServerRow } from "@ployz/sdk";
-import { buildNodeId, nodeLight, shownNodeStatus, type NodeLight } from "#/modules/config-store/store-deployments";
+import { buildNodeId, nodeLight, shownNodeStatus, type NodeLight, type ShownNodeStatus } from "#/modules/config-store/store-deployments";
 import type { DeploymentCleanupState, DeploymentCleanupView } from "#/modules/config-store/tables";
 import type { RunSearch } from "./run-search";
 
@@ -10,10 +10,15 @@ export type RunTiming = { started: number; finished: number | null };
 type RunNodeBase = { id: string; name: string; light: NodeLight; column: number; row: number; timing?: RunTiming };
 export type BuildRunNode = RunNodeBase & { type: "build"; build: BuildView };
 export type OutcomeRunNode = RunNodeBase & { type: NodeOutcome["type"]; node: NodeOutcome };
+/** A runtime Service the Deployment removed that its Environment doesn't hold, so no node of its own targets it. */
+export type UntargetedRunNode = RunNodeBase & { type: "untargeted"; status: ShownNodeStatus; rows: ServerRow[] };
 /** Cloud retiring the old copies the Deployment replaced, after its Services. */
 export type CleanupRunNode = RunNodeBase & { type: "cleanup"; cleanup: DeploymentCleanupView };
-/** One entry of a Deployment as it reports it: a build, or a Service, Volume or Config node; then Cloud's cleanup. */
-export type RunNode = BuildRunNode | OutcomeRunNode | CleanupRunNode;
+/**
+ * One entry of a Deployment as it reports it: a build, a Service, Volume or Config node, or a Service it removed that
+ * its Environment doesn't hold; then Cloud's cleanup.
+ */
+export type RunNode = BuildRunNode | OutcomeRunNode | UntargetedRunNode | CleanupRunNode;
 
 /** A build to its Service, or a Service to one depending on it; `animated` while the target runs. */
 export type RunEdge = { id: string; source: string; target: string; animated: boolean };
@@ -118,13 +123,22 @@ export function orderRows(nodes: Placeable[], edges: Pick<RunEdge, "source" | "t
   return rows;
 }
 
-const columnRanks = { build: 0, volume: 1, config: 2, service: 3, cleanup: 4 } satisfies Record<RunNode["type"], number>;
+const columnRanks = { build: 0, volume: 1, config: 2, service: 3, untargeted: 4, cleanup: 5 } satisfies Record<RunNode["type"], number>;
 
 const CLEANUP_NODE_ID = "cleanup";
 
 const cleanupLights = {
   waiting: "deploying", done: "deployed", left_running: "unknown", cancelled: "not_applied", failed: "failed",
 } satisfies Record<DeploymentCleanupState, NodeLight>;
+
+/** How removing a Service no node targets went, read from its rows since the Store records no outcome for it. */
+function untargetedStatus(rows: ServerRow[]): ShownNodeStatus {
+  if (rows.some((row) => row.state === "failed" && !rowStopped(row))) return "failed";
+  if (rows.some((row) => row.state === "failed" && row.cancelled === true)) return "cancelled";
+  if (rows.some((row) => row.state === "unknown" || (row.state === "failed" && row.interrupted === true))) return "unknown";
+  if (rows.some((row) => row.state === "pending" || row.state === "running")) return "pending";
+  return rows.every((row) => row.state === "completed") ? "removed" : "not_attempted";
+}
 
 export function cleanupLabel(cleanup: DeploymentCleanupView): string {
   switch (cleanup.state) {
@@ -142,7 +156,8 @@ export function cleanupLabel(cleanup: DeploymentCleanupView): string {
  * A Deployment's Services at their preview depth, each build in the column just before its Service, and Volumes and
  * Configs in the first column, since nothing says which Service mounts them. Edges run from each build to its Service
  * and along the preview's dependencies. A deployed Service reads as running while any of its rows runs, old copies
- * stopping included, and an edge animates while its Service runs. Cloud's `cleanup`, when it ran one, follows last.
+ * stopping included, and an edge animates while its Service runs. Each Service it removed that its Environment doesn't
+ * hold sits unlinked at its own preview depth. Cloud's `cleanup`, when it ran one, follows last.
  */
 export function makeRunGraph(deployment: DeploymentView, cleanup: DeploymentCleanupView | null = null): RunGraph {
   const runtime = (name: string) => deployment.runtime_names[name] ?? name;
@@ -161,6 +176,13 @@ export function makeRunGraph(deployment: DeploymentView, cleanup: DeploymentClea
       timing: buildTiming(build, deployment.in_flight), light: nodeLight(buildOutcome[build.status], deployment),
     })),
     ...outcomes,
+    ...Object.entries(deployment.untargeted ?? {}).map(([name, rows]): RunNode => {
+      const status = untargetedStatus(rows);
+      return {
+        type: "untargeted", id: `untargeted:${name}`, name, status, rows, row: 0, timing: rowTiming(rows),
+        light: nodeLight(status, deployment), column: (deployment.preview?.depths[name] ?? 0) + 1,
+      };
+    }),
   ];
   if (cleanup !== null) {
     unplaced.push({
