@@ -76,7 +76,10 @@ unknown.
 
 A failed deploy exits with code 1. A Deployment that applied but whose result is missing
 a Server, or that left an old container running because its Server didn't answer, exits
-with code 3. A warning that names an incomplete Server observation also
+with code 3. So does a removal while a Server that runs one of the service's replicas is
+down or can't be checked: it removes the replicas on the Servers that answer, reads
+`rmme: removed 2/3; web-2 didn't answer, the next full deploy removes its copy once it is back`,
+and your next deploy of the whole environment removes the replica on web-2 once it is back. A warning that names an incomplete Server observation also
 makes an otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
