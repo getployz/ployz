@@ -23,7 +23,7 @@ reaches an app that listens only on IPv4. The port still answers IPv6 visitors, 
 them as the server's private gateway, such as `10.210.0.1`, and the service can't reach IPv6
 addresses.
 
-A service that was running before the server's upgrade to 0.3.5 gets its IPv6 address the next
+A service that was running before the server's upgrade to 0.3.6 gets its IPv6 address the next
 time Ployz replaces its container, such as at a deploy that changes its image or a variable. The
 upgrade itself restarts nothing.
 
