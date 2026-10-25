@@ -102,10 +102,24 @@ fn into(
             picks.insert(row.id.clone());
         }
     }
-    let picks = whole(checked.rows(), picks);
+    let mut picks = whole(checked.rows(), picks);
     let mut landing = checked.plan().landable(&picks);
+    let none = BTreeMap::new();
+    // A secret that would land Not set, as one sealed for the Parent does, never
+    // replaces one the Branch holds with a value (#3389).
+    if let Ok(applied) = checked.plan().apply(&landing, &none) {
+        for landed in applied.landed {
+            let holds = checked
+                .rows()
+                .iter()
+                .any(|row| row.id == landed.row && matches!(row.into, Cell::Secret { .. }));
+            if holds && landed.value == Cell::SecretWithoutValue {
+                picks.remove(&landed.row);
+                landing.remove(&landed.row);
+            }
+        }
+    }
     if !landing.is_empty() {
-        let none = BTreeMap::new();
         let landed = crate::storage::attempt(tx, |tx| {
             checked.apply(tx, who, &mut branch, &landing, &none, (Owner::None, None))
         });

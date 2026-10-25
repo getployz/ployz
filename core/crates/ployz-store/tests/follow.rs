@@ -15,9 +15,11 @@ use ployz_store::{
     Actor, Batch, BatchCommand, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
     DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
     EnvironmentRef, HintSource, NeverSync, OrganizationId, ProjectId, ProjectName, Publish,
-    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take, Trusted,
+    SecretValue, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, SyncChanges,
+    SyncQuery, SyncView, Take, Trusted,
 };
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 mod backend;
 use backend::deploy;
@@ -989,5 +991,133 @@ fn a_left_out_service_the_parent_removes_and_undoes_stays_left_out() {
     assert_eq!(
         incoming(&store, &who, "fix-web"),
         ["web.env.PLAIN production"]
+    );
+}
+
+#[test]
+fn a_secret_a_branch_synced_to_its_parent_does_not_follow_back() {
+    // With a value sealed for production, and with none (it lands Not set there).
+    for given in [Some(2), None] {
+        let (store, who) = shop();
+        let own = token(&store, &who, "fix-web", 1);
+        set(
+            &store,
+            &who,
+            "fix-web",
+            &[("web.env.TOKEN", json!({ "secret": own.clone() }))],
+        );
+        let view: SyncView = store
+            .read(
+                &who,
+                &SyncQuery {
+                    from: at("fix-web"),
+                    into: Some(at("production")),
+                },
+            )
+            .unwrap();
+        let values = given
+            .map(|n| {
+                let sealed = token(&store, &who, "production", n);
+                (
+                    "web.env.TOKEN".into(),
+                    serde_json::from_value(sealed).unwrap(),
+                )
+            })
+            .into_iter()
+            .collect();
+        store
+            .write(
+                &who,
+                &SyncChanges {
+                    from: at("fix-web"),
+                    into: Some(at("production")),
+                    close_after: false,
+                    version: view.version,
+                    picks: Some(vec!["web.env.TOKEN".into()]),
+                    skip: Vec::new(),
+                    values,
+                    id: None,
+                },
+            )
+            .unwrap();
+        deploy(&store, &who, "production", 2);
+
+        assert!(incoming(&store, &who, "fix-web").is_empty(), "{given:?}");
+        assert!(hints(&store, &who, "fix-web").is_empty(), "{given:?}");
+        assert_eq!(
+            web(&store, &who, "fix-web")["env"]["TOKEN"],
+            json!({ "secret": true }),
+            "{given:?}"
+        );
+        assert_eq!(
+            deployed_env(&store, &who, "fix-web", 3)["TOKEN"],
+            own["value"],
+            "{given:?}"
+        );
+
+        // production then sets its own: sealed for production, it would land Not set.
+        let rotated = token(&store, &who, "production", 5);
+        set(
+            &store,
+            &who,
+            "production",
+            &[("web.env.TOKEN", json!({ "secret": rotated }))],
+        );
+        deploy(&store, &who, "production", 4);
+        assert!(incoming(&store, &who, "fix-web").is_empty(), "{given:?}");
+        assert_eq!(
+            deployed_env(&store, &who, "fix-web", 5)["TOKEN"],
+            own["value"],
+            "{given:?}"
+        );
+    }
+}
+
+#[test]
+fn a_secret_the_parent_synced_into_its_branch_with_the_branchs_value_does_not_follow() {
+    let (store, who) = shop();
+    let parents = token(&store, &who, "production", 1);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!({ "secret": parents }))],
+    );
+    let view: SyncView = store
+        .read(
+            &who,
+            &SyncQuery {
+                from: at("production"),
+                into: Some(at("fix-web")),
+            },
+        )
+        .unwrap();
+    let own = token(&store, &who, "fix-web", 2);
+    store
+        .write(
+            &who,
+            &SyncChanges {
+                from: at("production"),
+                into: Some(at("fix-web")),
+                close_after: false,
+                version: view.version,
+                picks: Some(vec!["web.env.TOKEN".into()]),
+                skip: Vec::new(),
+                values: BTreeMap::from([(
+                    "web.env.TOKEN".into(),
+                    serde_json::from_value::<SecretValue>(own.clone()).unwrap(),
+                )]),
+                id: None,
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "fix-web", 2);
+    deploy(&store, &who, "production", 3);
+
+    // production deployed the value it synced: fix-web keeps the one it was given.
+    assert!(incoming(&store, &who, "fix-web").is_empty());
+    assert_eq!(
+        deployed_env(&store, &who, "fix-web", 4)["TOKEN"],
+        own["value"]
     );
 }

@@ -454,6 +454,35 @@ fn a_kept_preview_edited_after_its_merge_still_reads_landed() {
 }
 
 #[test]
+fn a_kept_preview_offers_no_sync_of_a_value_its_merge_overrode() {
+    let (store, who) = shop();
+    keep(&store, &who);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    store
+        .write(&who, &merge_value("web.env.A", Some("3")))
+        .unwrap();
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+
+    let view = store
+        .read(
+            &who,
+            &ployz_store::SyncQuery {
+                from: at("pr-5"),
+                into: Some(at("production")),
+            },
+        )
+        .unwrap();
+    assert!(
+        !view
+            .rows
+            .iter()
+            .any(|row| row.at.to_string() == "web.env.A"),
+        "{:?}",
+        view.rows
+    );
+}
+
+#[test]
 fn a_stale_merged_event_still_closes_the_preview() {
     let (store, who) = shop();
     set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
