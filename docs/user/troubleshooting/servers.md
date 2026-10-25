@@ -542,6 +542,7 @@ server's container network has no IPv6. `journalctl -u ployz` says why:
   these settings from Docker's command line and its `daemon.json`, so restarting Docker is enough,
   with no reboot. While Ployz can't read them, or `daemon.json` changed after Docker last started,
   the network stays IPv4-only: Ployz can't tell what the running Docker loaded until Docker restarts.
+  `systemctl reload docker` isn't enough; use `systemctl restart docker`.
 - `the IPv6 mesh fence failed`: the log line gives ip6tables' reason. Ployz tries again at its
   next start.
 - `could not take IPv6`: the log line gives Docker's reason. Ployz tries again at its next start.
