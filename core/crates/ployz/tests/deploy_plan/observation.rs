@@ -1,7 +1,7 @@
 use super::support::*;
 use ployz_core::{
     DependencyCondition, DeployWarning, MachineFailure, MembershipEvidence, ObservationGapReason,
-    RpcError, RpcErrorCode, ServiceDependency, ServiceRemovals,
+    PruneScope, QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceRemovals,
 };
 
 fn snapshot() -> DeploySnapshot {
@@ -233,6 +233,45 @@ fn a_named_removal_makes_every_server_the_deploy_could_not_check_a_gap() {
         gaps(&preview),
         [(machine_id('2'), ObservationGapReason::Failed)]
     );
+}
+
+/// A prune takes a Service out wherever it runs, as a named removal does, so a Server
+/// the Deploy could not check is a gap even when nothing requested could land there:
+/// it may hold a copy, and the report names it. Keeping the Service names no gap.
+#[test]
+fn a_prune_makes_a_server_the_deploy_could_not_check_a_gap() {
+    let mut snapshot = snapshot();
+    let mut web = spec("web");
+    web.placement.constraints =
+        [PlacementConstraint::parse(format!("node.id == {}", machine_id('1'))).unwrap()].into();
+    snapshot
+        .containers
+        .push(container('a', '1', &spec("old"), &ServiceId::random()));
+    let full = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web],
+        PlanOptions::default(),
+    );
+    let preview = preview_deploy(&full, &snapshot).unwrap();
+    assert_eq!(
+        preview.would_remove,
+        [QualifiedService::parse("app/old").unwrap()]
+    );
+    assert_eq!(
+        gaps(&preview),
+        [(machine_id('2'), ObservationGapReason::Down)]
+    );
+
+    let kept = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web],
+        PlanOptions {
+            prune: PruneScope::Removals,
+            ..Default::default()
+        },
+    );
+    let preview = preview_deploy(&kept, &snapshot).unwrap();
+    assert!(gaps(&preview).is_empty(), "{:?}", preview.warnings);
 }
 
 #[test]

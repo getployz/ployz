@@ -1259,6 +1259,102 @@ async fn a_pending_copy_is_removed_beside_a_copy_on_an_unobserved_server() {
     client.assert_done();
 }
 
+/// An exited pre-deploy hook of a Service this Deploy keeps goes as plain cleanup.
+/// The Service's copy on an unobserved Server is a valid copy of a Service that
+/// stays, so nothing names it: a `LeftRunning` on a Deployed Service reads as rollout
+/// cleanup, and Cloud would take the copy and its anonymous Volumes once the Server
+/// is back.
+#[tokio::test(start_paused = true)]
+async fn removing_a_kept_services_exited_hook_names_no_copy_on_an_unobserved_server() {
+    let (live, away) = (machine('1'), machine('3'));
+    let (here, hook, there) = (container('a'), container('b'), container('c'));
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![DeployOperation::RemoveContainer {
+            machine_id: live,
+            container_id: hook,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+        }],
+        test_namespace(),
+    )
+    .with_machine_names(&[live, away])
+    .with_unobserved(&[away]);
+    let client = Scripted {
+        down: BTreeSet::from([away]),
+        store: Store::Copies,
+        ..Scripted::new(vec![
+            observed(Call::Inspect(live, hook), exited(0)),
+            ok(Call::Remove(live, hook)),
+        ])
+    }
+    .with_copy(&live, &here, CopyRotation::In)
+    .with_copy(&live, &hook, CopyRotation::Pending)
+    .with_copy(&away, &there, CopyRotation::In)
+    .routing(&api());
+
+    let (outcome, warnings) = reported_warnings(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.moves(), [Move::Gone(hook)]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    client.assert_done();
+}
+
+/// With the entry store unread, whether the Down Server's row keeps the route is
+/// unknown, so the live copy can't wait for a drain the proxies may never confirm.
+/// No row names the copy there; the plan's observation gap names the Server.
+#[tokio::test(start_paused = true)]
+async fn a_removal_takes_the_live_copy_out_without_a_drain_wait_when_the_store_cant_be_read() {
+    for store in [Store::Fails, Store::Silent] {
+        let (live, away) = (machine('1'), machine('3'));
+        let (here, there) = (container('a'), container('b'));
+        let plan = crate::deploy::DeployPlan::for_execution_test(
+            vec![DeployOperation::RemoveContainer {
+                machine_id: live,
+                container_id: here,
+                purpose: ployz_core::RemoveContainerPurpose::Retire,
+            }],
+            test_namespace(),
+        )
+        .with_machine_names(&[live, away])
+        .with_unobserved(&[away]);
+        let client = Scripted {
+            down: BTreeSet::from([away]),
+            store,
+            ..Scripted::new(vec![
+                observed(Call::Inspect(live, here), running()),
+                ok(Call::Remove(live, here)),
+            ])
+        }
+        .with_copy(&live, &here, CopyRotation::In)
+        .with_copy(&away, &there, CopyRotation::In)
+        .routing(&api());
+
+        let started = tokio::time::Instant::now();
+        let (outcome, warnings) =
+            reported_warnings(&plan, &client, &CancellationToken::new()).await;
+
+        assert!(
+            matches!(outcome, DeployOutcome::Success { .. }),
+            "{store:?}: {outcome:?}"
+        );
+        assert!(
+            started.elapsed() < crate::deploy::cleanup::ACK_WAIT,
+            "{store:?}: no drain wait on a route the Down Server may hold: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            client.moves(),
+            [Move::To(here, CopyRotation::Out), Move::Gone(here)],
+            "{store:?}"
+        );
+        assert!(warnings.is_empty(), "{store:?}: {warnings:?}");
+        client.assert_done();
+    }
+}
+
 /// A copy the removal could not reach is named only once the live copy is gone.
 /// A failed removal names the live copy as left, and a retry names the rest.
 #[tokio::test(start_paused = true)]
