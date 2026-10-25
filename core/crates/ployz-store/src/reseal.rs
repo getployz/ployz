@@ -1261,12 +1261,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_targeted_deploy_waits_for_a_legacy_value_it_reads_from_a_service_it_leaves_alone() {
-        let (store, who) = shop();
+    /// Git Service `auth`, which a Deploy that names only `web` leaves alone.
+    fn create_auth(store: &ConfigStore, who: &Actor) {
         store
             .write_trusted(
-                &who,
+                who,
                 &crate::CreateGitService {
                     id: ServiceLineageId::parse(uuid(4)).unwrap(),
                     environment: EnvironmentRef::default(),
@@ -1288,6 +1287,12 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    #[test]
+    fn a_targeted_deploy_waits_for_a_legacy_value_it_reads_from_a_service_it_leaves_alone() {
+        let (store, who) = shop();
+        create_auth(&store, &who);
         let auth = working(&store)
             .services
             .iter()
@@ -1324,5 +1329,39 @@ mod tests {
             &deploy(&store, &who, 1, &["web"]).unwrap_err(),
             "auth.TOKEN",
         );
+    }
+
+    #[test]
+    fn a_legacy_value_no_shipped_service_reads_never_makes_a_deploy_too_long() {
+        let (store, who) = shop();
+        create_auth(&store, &who);
+        let padding = "x".repeat(crate::variables::MAX_ENV_STRING - "PAYLOAD".len() - 2 - 8);
+        crate::rules::tests::seed(&store, &who, |working| {
+            let auth = working
+                .services
+                .iter_mut()
+                .find(|service| service.slug == "auth")
+                .unwrap();
+            let lineage = auth.lineage_id.clone();
+            auth.variables
+                .push(secret("TOKEN", legacy(&store.sealing, "hunter22")));
+            auth.variables.push(SavedVariableIntent {
+                id: Uuid::new_v4().to_string(),
+                key: "PAYLOAD".into(),
+                description: None,
+                exported: false,
+                value_fingerprint: "t1:payload".into(),
+                value: SavedVariableValue::Template {
+                    parts: ployz_core::config::parse_variable_template(
+                        &format!("{padding}${{{{ TOKEN }}}}"),
+                        |_, _| Some(lineage.clone()),
+                    )
+                    .parts,
+                },
+            });
+        });
+
+        deploy(&store, &who, 1, &["web"]).unwrap();
+        assert_waits(&deploy(&store, &who, 2, &[]).unwrap_err(), "auth.TOKEN");
     }
 }

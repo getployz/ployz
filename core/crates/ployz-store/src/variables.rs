@@ -959,7 +959,7 @@ pub(crate) fn resolve(
     environment: &str,
 ) -> Result<Resolved, RpcError> {
     let mut resolved = resolve_values(compiled, environment)?;
-    resolved.legacy = legacy_reads(compiled, environment)?;
+    resolved.legacy = legacy_reads(compiled, environment);
     Ok(resolved)
 }
 
@@ -1156,10 +1156,7 @@ fn sealed_in_file(
 /// `compiled` again with each such secret as a marker literal, so a reference
 /// through any chain of variables or a Config file counts. One a Branch reads live
 /// from its parent is left out: it is Not set in the Branch even once resealed.
-fn legacy_reads(
-    compiled: &CompiledEnvironmentIntent,
-    environment: &str,
-) -> Result<Vec<LegacyRead>, RpcError> {
+fn legacy_reads(compiled: &CompiledEnvironmentIntent, environment: &str) -> Vec<LegacyRead> {
     let is_legacy =
         |value: Option<&SecretCiphertext>| matches!(value, Some(SecretCiphertext::Legacy(_)));
     let nonce = uuid::Uuid::new_v4().simple().to_string();
@@ -1196,9 +1193,21 @@ fn legacy_reads(
         }
     }
     if owners.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
-    let resolved = resolve_values(&marked, environment)?;
+    // A marker may be longer than the value it stands for, so this pass can be
+    // refused where the real one wasn't. Then each secret counts as read by its
+    // owner alone.
+    let Ok(resolved) = resolve_values(&marked, environment) else {
+        return owners
+            .into_iter()
+            .map(|(owner, key)| LegacyRead {
+                reader: LegacyReader::Service(owner.clone()),
+                owner,
+                key,
+            })
+            .collect();
+    };
     let mut reads = Vec::new();
     let mut read = |reader: LegacyReader, text: &str| {
         for (index, (owner, key)) in owners.iter().enumerate() {
@@ -1236,7 +1245,7 @@ fn legacy_reads(
             read(LegacyReader::Config(config.clone()), &file.content);
         }
     }
-    Ok(reads)
+    reads
 }
 
 /// The name of Service `node_id`, as a refusal names it.
