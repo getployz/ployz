@@ -812,13 +812,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "server")?;
     let update = parse_update(matches)?;
     let image = matches.get_one::<String>("ingress-image");
-    let mut args = vec!["server", "set", selector, "--accepts-ingress=true"];
-    args.extend(
-        image
-            .iter()
-            .flat_map(|image| ["--ingress-image", image.as_str()]),
-    );
-    let rerun = super::rerun(matches, &args);
+    let rerun = ingress_rerun(matches, selector);
     let ingress = IngressImage::given_or(image.cloned(), IngressImage::Keep);
     let selector = MachineTarget::parse(selector)?;
     let seed = update
@@ -870,6 +864,18 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         )
         .await
     })
+}
+
+/// The `server set` that finishes turning web traffic on for the Server `selector` names.
+fn ingress_rerun(matches: &ArgMatches, selector: &str) -> String {
+    let mut args = vec!["server", "set", selector, "--accepts-ingress=true"];
+    args.extend(
+        matches
+            .get_one::<String>("ingress-image")
+            .iter()
+            .flat_map(|image| ["--ingress-image", image.as_str()]),
+    );
+    super::rerun(matches, &args)
 }
 
 /// Ask before turning web traffic off on the Server `selector` names when no other online
@@ -1060,11 +1066,13 @@ pub(crate) async fn apply_update(
     let (ingress, follow_up) = match followed {
         Ok(ingress) => (ingress, Ok(())),
         Err(error) => {
-            // A rename in this same command leaves the typed selector naming nothing.
-            let selector = if renamed {
-                machine.id.to_string()
+            // A rename in this same command leaves the typed selector naming nothing (#3449).
+            let (selector, rerun) = if renamed {
+                let id = machine.id.to_string();
+                let rerun = ingress_rerun(&recovery, &id);
+                (id, rerun)
             } else {
-                selector.as_str().to_owned()
+                (selector.as_str().to_owned(), rerun)
             };
             let error = match own_start_failure(&error, machine.id, was_off) {
                 Some(failure) if nothing_serves(client, machine.id).await => {

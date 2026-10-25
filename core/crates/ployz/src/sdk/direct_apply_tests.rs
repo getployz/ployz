@@ -240,17 +240,23 @@ fn server_one(on: bool) -> ployz_core::MachineObservation {
 async fn turn_web_traffic_on(
     service: support::DeployService,
 ) -> (Result<(), crate::failure::Failure>, bool) {
+    let id = support::machine('a', "one").machine.id;
+    set_web_traffic_on(service, id.as_str(), None).await
+}
+
+/// [`turn_web_traffic_on`] with Server one selected as `typed`, renamed to `name` in the same
+/// command. The in-memory client routes only by Machine ID, so the target is the ID `typed`
+/// resolved to.
+async fn set_web_traffic_on(
+    service: support::DeployService,
+    typed: &str,
+    name: Option<&str>,
+) -> (Result<(), crate::failure::Failure>, bool) {
     let (mut client, server) = support::connected_in_memory(service.lists_created()).await;
     let id = support::machine('a', "one").machine.id;
-    let root = crate::cli::command()
-        .try_get_matches_from([
-            "ployz",
-            "server",
-            "set",
-            id.as_str(),
-            "--accepts-ingress=true",
-        ])
-        .unwrap();
+    let mut args = vec!["ployz", "server", "set", typed, "--accepts-ingress=true"];
+    args.extend(name.iter().flat_map(|name| ["--name", name]));
+    let root = crate::cli::command().try_get_matches_from(args).unwrap();
     let recovery = root
         .subcommand_matches("server")
         .and_then(|server| server.subcommand_matches("set"))
@@ -261,11 +267,12 @@ async fn turn_web_traffic_on(
         ployz_core::MachineTarget::from(&id),
         ployz_core::MachineUpdate {
             accepts_ingress: Some(true),
+            name: name.map(|name| ployz_core::MachineName::parse(name).unwrap()),
             ..Default::default()
         },
         None,
         crate::ingress::IngressImage::Given("caddy:2".into()),
-        format!("ployz server set {id} --accepts-ingress=true"),
+        format!("ployz server set {typed} --accepts-ingress=true"),
         recovery,
     )
     .await;
@@ -300,6 +307,34 @@ async fn web_traffic_whose_proxy_cannot_take_its_port_goes_back_off() {
         "{report:?}"
     );
     assert!(report.details.get("retry").is_some(), "{report:?}");
+}
+
+/// A rename in the same command leaves the typed name selecting nothing, so `next:` selects
+/// the Server by Machine ID, and `retry:` doesn't repeat it (#3449).
+#[tokio::test(start_paused = true)]
+async fn renamed_web_traffic_reruns_by_machine_id() {
+    let id = support::machine('a', "one").machine.id;
+    let rerun = [
+        "ployz",
+        "server",
+        "set",
+        id.as_str(),
+        "--accepts-ingress=true",
+    ];
+    // Back off (the command turned it on), and left on (it was already on).
+    for on_before in [false, true] {
+        let (result, _) = set_web_traffic_on(
+            support::DeployService::new(server_one(on_before)).fail_starts(PORT_TAKEN),
+            "one",
+            Some("two"),
+        )
+        .await;
+        let report = result.unwrap_err().report();
+        let next = report.details.get("next").and_then(|next| next.as_str());
+        let next = next.unwrap_or_else(|| panic!("{report:?}"));
+        assert_eq!(shell_words::split(next).unwrap(), rerun, "{report:?}");
+        assert!(report.details.get("retry").is_none(), "{report:?}");
+    }
 }
 
 /// A proxy that failed its health check and was removed from the Server says what failed
