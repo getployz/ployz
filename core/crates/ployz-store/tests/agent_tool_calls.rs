@@ -3059,6 +3059,13 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 page: DashboardPage::Variables
             })
         );
+        // #3346: the refusal names the variable but never hands its value back,
+        // so it offers no retry to repeat the call.
+        let text = serde_json::to_string(&refused).unwrap();
+        for value in ["sk-live-123", "hunter2"] {
+            assert!(!text.contains(value), "{key} echoes the value: {text}");
+        }
+        assert!(json!(refused).get("retry").is_none(), "{key}: {text}");
     }
     let db = call(
         &store,

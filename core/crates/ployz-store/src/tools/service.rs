@@ -463,12 +463,15 @@ impl ServiceUpdate {
             true => format!(" For a random one, send generate_secret: [\"{path}\"] instead."),
             false => String::new(),
         };
-        Refusal::invalid(
-            format!(
-                "{service}.{path} is a secret, and its value never passes through an agent. The member sets it in the dashboard under Variables, or runs: {command}.{random}"
-            ),
-            &format!("set.{path}"),
-        )
+        Refusal {
+            secret_sent: true,
+            ..Refusal::invalid(
+                format!(
+                    "{service}.{path} is a secret, and its value never passes through an agent. The member sets it in the dashboard under Variables, or runs: {command}.{random}"
+                ),
+                &format!("set.{path}"),
+            )
+        }
         .with_fix(&Fix::OpenDashboard {
             page: DashboardPage::Variables,
         })

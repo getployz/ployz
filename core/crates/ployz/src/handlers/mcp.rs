@@ -1280,6 +1280,7 @@ fn command_refusal(mut error: RpcError, retry: tools::Call) -> tools::Refusal {
         writes,
         next: Vec::new(),
         details: error.details,
+        secret_sent: false,
     }
 }
 
