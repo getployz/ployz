@@ -554,7 +554,7 @@ fn a_full_deploy_tears_down_the_runtime_a_renamed_service_ran_as() {
 }
 
 #[test]
-fn a_full_deploy_keeps_a_refused_runtime_removal_for_the_next_complete_one() {
+fn a_full_deploy_tears_down_a_runtime_removal_from_a_snapshot_missing_a_machine() {
     let (store, who) = retiring_api();
     let gone = deploy(&store, &who, 3, &[]).unwrap();
     assert_eq!(
@@ -576,46 +576,37 @@ fn a_full_deploy_keeps_a_refused_runtime_removal_for_the_next_complete_one() {
         )
         .unwrap();
     publish(&store, &who);
-    // A snapshot missing a Machine refuses the removal of `web`, and the Deployment
-    // still lands Applied on `front` alone.
-    let refused = deploy(&store, &who, 4, &[]).unwrap();
-    let claimed = store.claim(&refused.id, &runner()).unwrap();
+    // A snapshot missing a Machine still removes `web` on the Machines it saw, and
+    // the Deployment lands Applied on `front` with `web` torn down.
+    let partial = deploy(&store, &who, 4, &[]).unwrap();
+    let claimed = store.claim(&partial.id, &runner()).unwrap();
     assert_eq!(
         claimed.intent.options.removals,
         ployz_core::ServiceRemovals::from_names([name("web")])
     );
     store
         .record(
-            &refused.id,
+            &partial.id,
             &runner(),
-            RunEvidence::Prepared(preview(&["front"], false)),
+            RunEvidence::Prepared(preview(&["front", "web"], false)),
         )
         .unwrap();
     assert_eq!(
         store
-            .record(&refused.id, &runner(), succeeded(&["front"]))
+            .record(&partial.id, &runner(), succeeded(&["front", "web"]))
             .unwrap()
             .status,
         DeploymentStatus::Applied
     );
-    let outcomes = outcomes(&store, &who, &refused.id);
+    let outcomes = outcomes(&store, &who, &partial.id);
     assert!(
         outcomes.contains(&("web".to_owned(), NodeStatus::Deployed)),
         "{outcomes:?}"
     );
-    // Nothing removed `web`, so the next full Deployment carries it again.
+    // Torn down on every Machine that answered, `web` is no later Deployment's to
+    // remove by name; a copy on the missed Machine is the next full Deploy's prune.
     let again = deploy(&store, &who, 5, &[]).unwrap();
     let claimed = store.claim(&again.id, &runner()).unwrap();
-    assert_eq!(
-        claimed.intent.options.removals,
-        ployz_core::ServiceRemovals::from_names([name("web")])
-    );
-    assert_eq!(
-        run(&store, &again.id, preview(&["web"], true), &["web"]),
-        DeploymentStatus::Applied
-    );
-    let done = deploy(&store, &who, 6, &[]).unwrap();
-    let claimed = store.claim(&done.id, &runner()).unwrap();
     assert!(
         claimed.intent.options.removals.is_empty(),
         "{:?}",
@@ -799,39 +790,29 @@ fn a_service_already_gone_is_removed_with_nothing_to_run() {
     assert_eq!(applied(&store, &who), ["web"]);
 }
 
+/// A removal goes ahead on the Servers that answered. The Service is Removed even
+/// when the snapshot missed a Machine, and leaves Applied State; a copy on the
+/// missed Machine is the next full Deploy's prune, not a carried removal.
 #[test]
-fn a_snapshot_missing_a_machine_keeps_the_service_in_applied_state() {
+fn a_snapshot_missing_a_machine_still_records_the_removal() {
     let (store, who) = retiring_api();
     let admitted = retire_api(&store, &who, &[]);
     assert_eq!(
         run(&store, &admitted.id, preview(&[], false), &[]),
-        DeploymentStatus::Failed
+        DeploymentStatus::Applied
     );
     assert_eq!(
         outcomes(&store, &who, &admitted.id),
-        [("api".to_owned(), NodeStatus::NotAttempted)]
-    );
-    assert_eq!(applied(&store, &who), ["web", "api"]);
-
-    // A retry tears down exactly what the failed attempt froze.
-    store
-        .write(
-            &who,
-            &Admit::Retry(Retry {
-                id: deployment(3),
-                deployment: admitted.id.clone(),
-                rolls_back: None,
-                version: None,
-                accept_volume_loss: Vec::new(),
-            }),
-        )
-        .unwrap();
-    assert_eq!(nodes(&store, &deployment(3)), nodes(&store, &admitted.id));
-    assert_eq!(
-        run(&store, &deployment(3), preview(&["api"], true), &["api"]),
-        DeploymentStatus::Applied
+        [("api".to_owned(), NodeStatus::Removed)]
     );
     assert_eq!(applied(&store, &who), ["web"]);
+    let again = deploy(&store, &who, 3, &[]).unwrap();
+    let claimed = store.claim(&again.id, &runner()).unwrap();
+    assert!(
+        claimed.intent.options.removals.is_empty(),
+        "{:?}",
+        claimed.intent.options.removals
+    );
 }
 
 #[test]

@@ -143,14 +143,12 @@ fn ran_as(
             break;
         }
         let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
-        // Applied means every operation the preview planned completed, and a
-        // preview plans removals only from a complete snapshot: only then did the
-        // Deployment tear down what it shipped beside. What any other one shipped
-        // or tried to tear down may run still.
-        let torn = row.text(2)? == "applied"
-            && run.preview.as_ref().is_some_and(|preview| {
-                preview.prune_refusal != Some(ployz_core::PruneRefusal::IncompleteSnapshot)
-            });
+        // Applied means every operation the preview planned completed, so the
+        // Deployment tore down what it shipped beside on every Machine it reached.
+        // A copy on a Machine it could not check is the next full Deploy's prune,
+        // not a removal to name again. What any other Deployment shipped or tried
+        // to tear down may run still.
+        let torn = row.text(2)? == "applied";
         for node in nodes.iter().filter(|node| node.id() == id.as_str()) {
             if let TargetNode::Service {
                 name: then,

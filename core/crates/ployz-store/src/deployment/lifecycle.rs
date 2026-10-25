@@ -1968,8 +1968,9 @@ pub(super) enum Evidence<'run> {
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed and
 /// none ran is Not attempted, as is one the planner blocked. A Service that left Saved State with nothing planned
-/// is Removed when the snapshot saw every Machine, else Not attempted; one with
-/// several runtime Services reads the worst of them. A kept Volume follows the
+/// is Removed, whether or not the snapshot saw every Machine: the Deploy removed
+/// every copy it could reach, and a copy on a Machine it could not check is the
+/// next full Deploy's prune. One with several runtime Services reads the worst of them. A kept Volume follows the
 /// targeted Services mounting it: Deployed once one of them is, whatever the others do. It is Unchanged when Applied State already
 /// holds it as saved. One no targeted Service mounts is Not attempted when new
 /// (nothing creates its storage), and a held one is Deployed only by a Deploy that
@@ -2023,17 +2024,15 @@ pub(super) fn node_outcomes(
         }
     };
     let (Evidence::Planned { preview, .. } | Evidence::Executed { preview, .. }) = evidence;
-    let complete = preview.prune_refusal != Some(ployz_core::PruneRefusal::IncompleteSnapshot);
     let removed_service = |runtimes: Vec<&ServiceName>| {
         let statuses: Vec<NodeStatus> = runtimes
             .into_iter()
             .map(|name| match service(name, false) {
                 NodeStatus::Unchanged
-                    if complete
-                        && !preview
-                            .operations
-                            .iter()
-                            .any(|row| row.service_name() == Some(name)) =>
+                    if !preview
+                        .operations
+                        .iter()
+                        .any(|row| row.service_name() == Some(name)) =>
                 {
                     NodeStatus::Removed
                 }
