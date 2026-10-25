@@ -928,26 +928,27 @@ pub(crate) struct Resolved {
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers, for a Deploy of Environment
 /// `environment`. Nothing opens a secret here. One sealed for `environment` reaches
-/// its Service as a Sealed part; one sealed for another Environment, or Legacy, is
-/// Not set. A variable a secret without a value, or a broken reference, reaches is
-/// left out; in a file either is empty.
+/// its Service as a Sealed part; one sealed for another Environment is Not set. A
+/// variable a secret without a value, or a broken reference, reaches is left out; in
+/// a file either is empty.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a reference cycle, a value too long for the
-/// environment or a Config file that reads a value sealed in the browser.
+/// environment or a Config file that reads a value sealed in the browser, and
+/// `conflict` for a Legacy secret, which waits for the reseal.
 pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
     environment: &str,
 ) -> Result<Resolved, RpcError> {
     let environment = uuid::Uuid::parse_str(environment).ok();
-    let stored = |sealed: Option<&SecretCiphertext>| match sealed {
+    let stored = |sealed: Option<&SecretCiphertext>, owner: &str, key: &str| match sealed {
         Some(SecretCiphertext::ClientSealed(client)) => match environment {
             Some(id) if client.sealed_for == id => Ok(ResolverValue::Sealed {
                 value: client.value.clone(),
             }),
             _ => Ok(ResolverValue::NotSet),
         },
-        Some(SecretCiphertext::Legacy(_)) => Ok(ResolverValue::NotSet),
+        Some(SecretCiphertext::Legacy(_)) => Err(awaiting_reseal(compiled, owner, key)),
         None => Err(error::corrupt("sealed secret")),
     };
     let mut producers = Vec::new();
@@ -959,7 +960,9 @@ pub(crate) fn resolve(
             SavedVariableValue::Template { parts } => ResolverValue::Template {
                 parts: parts.clone(),
             },
-            SavedVariableValue::Secret { encrypted_value } => stored(encrypted_value.as_ref())?,
+            SavedVariableValue::Secret { encrypted_value } => {
+                stored(encrypted_value.as_ref(), &producer.owner_id, &producer.key)?
+            }
             SavedVariableValue::SecretWithoutValue => ResolverValue::NotSet,
         };
         producers.push(VariableProducer {
@@ -1037,7 +1040,7 @@ pub(crate) fn resolve(
                 }
                 ServiceEnvValue::Secret {
                     encrypted_value, ..
-                } => match stored(encrypted_value.as_ref())? {
+                } => match stored(encrypted_value.as_ref(), &node.node_id, key)? {
                     // Only a value sealed for this very variable is bound to its name. A
                     // renamed one keeps the key it was sealed under, so it reaches the
                     // Machine as a Template part, which opens under that key.
@@ -1133,6 +1136,22 @@ fn service_name(compiled: &CompiledEnvironmentIntent, node_id: &str) -> Option<S
             CompiledNodeConfig::Service(config) => Some(config.settings.private_dns.to_string()),
             CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
         })
+}
+
+/// A Legacy secret, which no Machine opens: a Deploy that left it out would drop a
+/// value the reseal is about to seal for the Cluster.
+fn awaiting_reseal(compiled: &CompiledEnvironmentIntent, owner: &str, key: &str) -> RpcError {
+    let variable = match service_name(compiled, owner) {
+        Some(service) => format!("{service}.{key}"),
+        None => key.to_owned(),
+    };
+    error::conflict(
+        format!(
+            "{variable} is waiting for Ployz Cloud to reseal it for the Cluster, and this Deploy would leave it out. \
+             Cloud reseals such values when its worker starts. Deploy again in a minute, or set {variable} again"
+        ),
+        json!({ "variable": variable, "reseal": "pending" }),
+    )
 }
 
 /// A reference cycle, named by Service and variable.
@@ -1282,7 +1301,11 @@ mod tests {
         };
         let error = resolve(&compiled, "env").map(|_| ()).unwrap_err();
         assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
-        assert_eq!(error.details["variable"], "P", "{error:?}");
+        assert_eq!(
+            error.details.get("variable"),
+            Some(&json!("P")),
+            "{error:?}"
+        );
         assert!(error.message.contains("reseal"), "{error:?}");
     }
 }

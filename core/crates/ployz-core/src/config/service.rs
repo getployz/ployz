@@ -347,8 +347,8 @@ pub type LegacyCiphertext = EncryptedSecretValue;
 pub enum SecretCiphertext {
     ClientSealed(ClientSealedValue),
     /// A value sealed with the Store's own key. Opaque: nothing on a Deploy, a
-    /// claim, a Build or a pull request opens it, so it is Not set there. Only the
-    /// one-time reseal converts it.
+    /// claim, a Build or a pull request opens it, so a Deploy that reads one waits
+    /// for the one-time reseal, which converts it.
     Legacy(LegacyCiphertext),
 }
 

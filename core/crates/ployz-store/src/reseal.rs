@@ -25,7 +25,7 @@ pub struct LegacyCount {
     /// every Environment: what a reseal converts.
     pub current: u32,
     /// In older Saved revisions, pending arrivals and merge values: kept as they
-    /// are, and Not set should one of them ever apply.
+    /// are, and a Deploy that would apply one is refused.
     pub history: u32,
 }
 
