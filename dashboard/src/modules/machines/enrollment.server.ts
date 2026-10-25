@@ -393,7 +393,7 @@ export const reserveEnrollmentAssignment = Effect.fn(
     const saved = history.assignments.find((assignment) => assignment.machine.id === id);
     const joined = input.snapshot.machines.some((machine) => machine.id === id && machine.runtime.daemon_version !== "");
     const conflict = new Conflict(joined
-      ? { message: "This host already joined the Cluster with other options. Retry with the same options, or run ployz-uninstall on it to add it as a new Server.", userFacing: true }
+      ? { message: "This host already joined the Cluster, as a Server that doesn't match this add. To add it again, run ployz-uninstall on it and remove the old Server.", userFacing: true }
       : { message: "Enrollment inputs conflict with saved assignments or the observed subnet pool is exhausted." });
     // A rerun under the same WireGuard key whose Machine never ran its daemon in the Cluster may change its inputs:
     // the earlier attempt's saved assignment and registered row give way, keeping its subnet. Register overwrites the row.
