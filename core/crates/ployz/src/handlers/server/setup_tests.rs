@@ -298,3 +298,93 @@ async fn readiness_waits_out_a_cluster_store_that_is_still_opening() {
     assert_eq!(lists.load(Ordering::SeqCst), 4);
     server.abort();
 }
+
+/// The daemon restarts after it enrolls, so the readiness wait after a healthy join must
+/// not read as a failure or send the user to their firewall (#3371).
+#[test]
+fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
+    // libtest captures eprintln!, so observe the notice from a child run.
+    const CHILD: &str = "PLOYZ_JOIN_READINESS_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ployzd.sock");
+        let machine = founder();
+        let lists = Arc::new(AtomicUsize::new(0));
+        let daemon = crate::connect::test_support::unix_daemon(&path, move |body| {
+            let (machine, lists) = (machine.clone(), lists.clone());
+            async move {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "this fixture answers only readiness RPCs"
+                )]
+                Ok(match body {
+                    RpcRequestBody::Inspect(_) => RpcResponse::from(ployz_core::MachineDetails {
+                        id: machine.id,
+                        phase: LocalMachinePhase::Participating,
+                        machine: Some(machine.clone()),
+                        public_key: machine.public_key,
+                        advertised_endpoints: Vec::new(),
+                        store_version: Default::default(),
+                        rtts: Vec::new(),
+                        management_clients: Vec::new(),
+                        telemetry: None,
+                        storage: None,
+                        upgrade: None,
+                        token: None,
+                        sealing: None,
+                    }),
+                    // The first answer comes from the daemon still opening its store.
+                    RpcRequestBody::ListMachines(_)
+                        if lists.fetch_add(1, Ordering::SeqCst) == 0 =>
+                    {
+                        RpcResponse::from(RpcError {
+                            code: RpcErrorCode::Unavailable,
+                            message: "Cluster store is not available".into(),
+                            details: serde_json::Value::Null,
+                            cause: Vec::new(),
+                        })
+                    }
+                    RpcRequestBody::ListMachines(_) => RpcResponse::from(ployz_core::MachineList {
+                        enrollment: None,
+                        machines: vec![ployz_core::MachineObservation::new(
+                            machine,
+                            ployz_core::MembershipObservation::Up,
+                        )],
+                    }),
+                    request => panic!("unexpected readiness request: {request:?}"),
+                })
+            }
+        });
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "ls"])
+            .unwrap();
+        let connection = crate::context::Connection::unix(&path).unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(super::wait_direct_participating(
+                &matches,
+                &connection,
+                "not ready",
+            ))
+            .unwrap();
+        daemon.shutdown_background();
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "handlers::server::helpers::setup_tests::readiness_after_a_join_waits_for_the_restart_without_blaming_the_network",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Waiting for the Server's daemon to start…"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("firewall"), "{stderr}");
+    assert!(!stderr.contains("couldn't reach"), "{stderr}");
+}

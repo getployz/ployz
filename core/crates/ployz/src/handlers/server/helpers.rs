@@ -171,14 +171,20 @@ pub(super) async fn reconnect_direct(
     .map_err(Into::into)
 }
 
+/// The daemon restarts after it enrolls, so a first failed attempt is the expected path,
+/// not a reachability problem: this setup reached the same connection moments before (#3371).
+const STARTING: crate::setup_retry::Expected =
+    crate::setup_retry::Expected("Waiting for the Server's daemon to start…");
+
 pub(super) async fn wait_direct_participating(
     matches: &ArgMatches,
     connection: &Connection,
     timeout_message: &str,
 ) -> Result<Client, Error> {
-    crate::setup_retry::run(
+    crate::setup_retry::run_expecting(
         &mut (),
         &format!("Waiting for {connection} to participate"),
+        Some(STARTING),
         MACHINE_START_WAIT,
         ConnectError::is_setup_retryable,
         async |_| {
