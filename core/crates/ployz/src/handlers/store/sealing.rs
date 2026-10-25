@@ -120,29 +120,30 @@ impl Store<'_> {
     }
 
     /// Seal for the Cluster each secret a CLI before 0.3.5 sealed with the in-process
-    /// Store's key, as Cloud's worker does for its Store: no Machine opens one, so a
-    /// Deploy that ships it waits for this. Without a key to seal to, nothing changes
-    /// and the Deploy says what waits.
-    pub(super) fn reseal(&self) -> Result<(), StoreCallError> {
+    /// Store's key, as Cloud's worker does for its Store: no Machine opens one. Whether
+    /// it resealed any; none without a key to seal to, and the Deploy says what waits.
+    pub(crate) fn reseal(&self) -> Result<bool, StoreCallError> {
         let Backend::Local(store, who) = &self.backend else {
-            return Ok(());
+            return Ok(false);
         };
         let environments = store
             .reseal_environments(&who.organization)
             .map_err(StoreCallError::Refused)?;
         if environments.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let Some(public_key) = self.cluster_sealing_key()? else {
-            return Ok(());
+            return Ok(false);
         };
         let recipient = SealingRecipient { public_key };
+        let mut resealed = 0;
         for environment in environments {
-            store
+            resealed += store
                 .reseal(&environment, &recipient)
-                .map_err(StoreCallError::Refused)?;
+                .map_err(StoreCallError::Refused)?
+                .resealed;
         }
-        Ok(())
+        Ok(resealed > 0)
     }
 
     /// `edit` with each new secret's plain text sealed for the Service it sets, when

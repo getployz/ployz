@@ -99,8 +99,8 @@ fn working(store: &Path) -> (String, SavedEnvironmentIntent) {
     (id, serde_json::from_str(&working).unwrap())
 }
 
-/// Plant `web.env.KEY` sealed with the Store's own key, as a CLI before 0.3.5 set it.
-fn plant_legacy(store: &Path, key: &str, plaintext: &str) {
+/// Plant `SERVICE.env.KEY` sealed with the Store's own key, as a CLI before 0.3.5 set it.
+fn plant_legacy(store: &Path, service: &str, key: &str, plaintext: &str) {
     let cipher = digest(&SHA256, STORE_SECRET);
     let cipher = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, cipher.as_ref()).unwrap());
     let iv = [7; 12];
@@ -117,7 +117,8 @@ fn plant_legacy(store: &Path, key: &str, plaintext: &str) {
     let (id, mut intent) = working(store);
     intent
         .services
-        .first_mut()
+        .iter_mut()
+        .find(|found| found.slug == service)
         .unwrap()
         .variables
         .push(SavedVariableIntent {
@@ -211,7 +212,7 @@ async fn a_standalone_deploy_reseals_secrets_an_earlier_cli_set() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("store.db");
     shop(&store, address).await;
-    plant_legacy(&store, "TOKEN", "from-0.3.4");
+    plant_legacy(&store, "web", "TOKEN", "from-0.3.4");
     let (_, printed) = ployz(
         &store,
         address,
@@ -224,5 +225,56 @@ async fn a_standalone_deploy_reseals_secrets_an_earlier_cli_set() {
         "the Deploy waited on a reseal: {printed}"
     );
     assert_eq!(opened(&store, &key, "TOKEN").as_deref(), Some("from-0.3.4"));
+    server.abort();
+}
+
+fn deployments(store: &Path) -> i64 {
+    let db = rusqlite::Connection::open(store).unwrap();
+    db.query_row("SELECT COUNT(*) FROM config_deployment", [], |row| {
+        row.get(0)
+    })
+    .unwrap()
+}
+
+/// A Deploy of a secret-free Service ships at the version its plan named, though
+/// another Service holds a secret an earlier CLI set: nothing reseals under it.
+#[tokio::test]
+async fn a_targeted_deploy_at_a_planned_version_is_not_blocked_by_another_service_s_secret() {
+    let key = Keypair::generate();
+    let (address, server) = server(Some(&key)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("store.db");
+    shop(&store, address).await;
+    let api = [
+        "service",
+        "add",
+        "api",
+        "--image",
+        "nginx:1",
+        "--project",
+        "shop",
+    ];
+    let (ok, printed) = ployz(&store, address, &api, "").await;
+    assert!(ok, "{printed}");
+    plant_legacy(&store, "api", "TOKEN", "from-0.3.4");
+    let plan = ["deploy", "web", "--plan", "--project", "shop"];
+    let (ok, planned) = ployz(&store, address, &plan, "").await;
+    assert!(ok, "{planned}");
+    let version = planned["version"].as_str().unwrap().to_owned();
+    let deploy = [
+        "deploy",
+        "web",
+        "--yes",
+        "--project",
+        "shop",
+        "--expect-version",
+        &version,
+    ];
+    let (_, printed) = ployz(&store, address, &deploy, "").await;
+    assert_eq!(
+        deployments(&store),
+        1,
+        "the Deploy was not admitted: {printed}"
+    );
     server.abort();
 }
