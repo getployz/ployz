@@ -369,6 +369,69 @@ mod tests {
         );
     }
 
+    /// A Builder that can't open Sealed values builds it, as it did before #3302.
+    #[test]
+    fn a_dockerfile_that_reads_no_sealed_value_captures_what_it_always_did() {
+        let root = tempfile::tempdir().unwrap();
+        let (sealed, _) = sealed_intent(7);
+        let mut plain = sealed.clone();
+        let container = &mut plain.target.first_mut().unwrap().container;
+        container.environment.remove("NPM_TOKEN");
+        container.sealed_identity = None;
+        for dockerfile in [
+            "FROM scratch\n",
+            "FROM scratch\nARG PLAIN\nRUN --mount=type=secret,id=OTHER true\n",
+        ] {
+            let [with, without] = [&sealed, &plain].map(|intent| {
+                let captured =
+                    capture_one(intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
+                assert!(captured.sealed.is_empty(), "{dockerfile}");
+                assert!(!captured.inputs.root().join("private/sealed.json").exists());
+                fs::read_to_string(captured.inputs.root().join("compose.yaml"))
+                    .unwrap()
+                    .replace(&captured.retained_tag, "retained")
+            });
+            assert_eq!(with, without);
+        }
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
+    fn a_dockerfile_captures_only_the_sealed_values_it_reads() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut intent, _) = sealed_intent(7);
+        let unread = EnvValue::Sealed(ployz_core::SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
+            scope: ployz_core::SealedScope::Shared,
+            key: "RUNTIME_ONLY".into(),
+        });
+        intent
+            .target
+            .first_mut()
+            .unwrap()
+            .container
+            .environment
+            .insert("RUNTIME_ONLY".into(), unread);
+        for dockerfile in [
+            MOUNTING_DOCKERFILE,
+            "FROM scratch\nRUN --mount=type=secret,target=/run/secrets/NPM_TOKEN true\n",
+            "FROM scratch\nARG NPM_TOKEN\n",
+        ] {
+            let captured = capture_one(&intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
+            assert_eq!(captured.sealed, ["NPM_TOKEN"], "{dockerfile}");
+            let private: serde_json::Value = serde_json::from_slice(
+                &fs::read(captured.inputs.root().join("private/sealed.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(private["values"].get("RUNTIME_ONLY").is_none());
+            let recipe = recipe(&captured);
+            assert_eq!(
+                recipe["services"]["api"]["build"]["secrets"],
+                serde_norway::to_value(["NPM_TOKEN"]).unwrap()
+            );
+        }
+    }
+
     #[test]
     #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
     fn a_dockerfile_declaring_a_sealed_value_as_arg_captures_only_its_name() {
