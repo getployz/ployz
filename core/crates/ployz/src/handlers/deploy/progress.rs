@@ -1750,6 +1750,64 @@ mod tests {
         assert_eq!(crate::ui::after_result(&failure), 3);
     }
 
+    /// A removal that could not reach one Server takes the live copies out, records
+    /// the Service removed, names the Server, and exits partial. The next full
+    /// Deploy prunes the copy it left.
+    #[test]
+    fn a_removal_beside_an_unreached_server_reads_removed_names_the_server_and_is_partial() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = None;
+        view.deployment.remove = true;
+        view.runtime_names.clear();
+        view.preview = Some(
+            serde_json::from_value(json!({
+                "namespace": "shop-production", "warnings": [],
+                "would_remove": ["shop-production/rmme"],
+                "operations": [{
+                    "index": 0, "machine_id": "a".repeat(32), "service_name": "rmme",
+                    "operation": {"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "d".repeat(64), "purpose": "retire"},
+                    "status": {"type": "completed"}
+                }, {
+                    "index": 1, "machine_id": "b".repeat(32), "service_name": "rmme",
+                    "operation": {"type": "remove_container", "machine_id": "b".repeat(32), "container_id": "e".repeat(64), "purpose": "retire"},
+                    "status": {"type": "completed"}
+                }]
+            }))
+            .unwrap(),
+        );
+        view.nodes = serde_json::from_value(json!([{
+            "type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "rmme", "outcome": "removed", "rows": [
+                {"machine_id": "a".repeat(32), "server": "machine-1", "state": "completed", "started_at": 1, "finished_at": 2},
+                {"machine_id": "b".repeat(32), "server": "machine-2", "state": "completed", "started_at": 1, "finished_at": 2}
+            ]
+        }]))
+        .unwrap();
+        view.deployment.warnings = vec![DeploymentWarning::Deploy {
+            warning: ployz_core::DeployWarning::LeftRunning {
+                service: "shop-production/rmme".parse().unwrap(),
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                machine: "machine-3".into(),
+                reason:
+                    "machine-3 didn't answer, the next full deploy removes its copy once it is back"
+                        .into(),
+            },
+        }];
+        let text = crate::ui::progress::settled_text(&frame(&view));
+        assert!(
+            text.contains(
+                "rmme: removed 2/3; machine-3 didn't answer, the next full deploy removes its copy once it is back"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("1 copy left running · 1 removed · across 2 servers"),
+            "{text}"
+        );
+        let failure = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
     #[test]
     fn an_applied_deploy_with_a_gap_found_at_run_time_is_partial() {
         use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
