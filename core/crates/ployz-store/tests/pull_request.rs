@@ -796,6 +796,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )
@@ -970,6 +971,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
                     accept_volume_loss: Vec::new(),
                     message: None,
                     prune: false,
+                    no_prune: false,
                 }),
                 &Trusted::default(),
             )
@@ -1032,6 +1034,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, services: &[&str]
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )

@@ -659,6 +659,7 @@ fn deploy_by_hand(
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )

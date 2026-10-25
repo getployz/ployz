@@ -62,6 +62,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -95,6 +96,7 @@ fn take_over(run: &Run, actor: &ployz_store::Actor) {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -803,6 +805,7 @@ fn separately_uploaded() -> Claimed {
                     accept_volume_loss: Vec::new(),
                     message: None,
                     prune: false,
+                    no_prune: false,
                 }),
                 &ployz_store::Trusted::default(),
             )

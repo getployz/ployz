@@ -1498,7 +1498,7 @@
       "read_only": false
     },
     {
-      "description": "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns without waiting for it to finish. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain. May stop to ask a human to approve.",
+      "description": "Deploys everything staged. Deploying every Service removes other Services running in the Environment, unless no_prune. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns without waiting for it to finish. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain. May stop to ask a human to approve.",
       "destructive": true,
       "gate": "store",
       "input_schema": {
@@ -1521,6 +1521,10 @@
             "description": "What this ships, in a few words. Shown on the Deployment.",
             "maxLength": 200,
             "type": "string"
+          },
+          "no_prune": {
+            "description": "Keep running Services the Environment doesn't hold.",
+            "type": "boolean"
           },
           "project": {
             "description": "Project name.",

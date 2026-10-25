@@ -153,6 +153,7 @@ fn admit_at(
                     .collect(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted {
                 volumes: observed,
@@ -1427,6 +1428,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),

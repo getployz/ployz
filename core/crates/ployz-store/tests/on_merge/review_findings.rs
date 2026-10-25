@@ -697,6 +697,7 @@ fn a_full_manual_deploy_takes_what_landed_from_the_next_push() {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )
@@ -789,6 +790,7 @@ fn a_merge_that_renames_a_git_service_keeps_it_on_the_commit_it_last_built() {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )
@@ -857,6 +859,7 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )

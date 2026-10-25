@@ -94,6 +94,7 @@ fn admit(
             accept_volume_loss: Vec::new(),
             message: None,
             prune: false,
+            no_prune: false,
         }),
         &Trusted::default(),
     )
@@ -3688,6 +3689,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )
@@ -3790,6 +3792,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )
@@ -3906,6 +3909,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                         accept_volume_loss: Vec::new(),
                         message: None,
                         prune: false,
+                        no_prune: false,
                     }),
                     &Trusted::default(),
                 )
@@ -3992,6 +3996,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4120,6 +4125,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4162,6 +4168,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             accept_volume_loss: Vec::new(),
             message: None,
             prune: false,
+            no_prune: false,
         }));
         // Cloud names who acts and what they hold; the Deployment records them as its
         // admitter and uploader.
@@ -4244,6 +4251,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 accept_volume_loss: Vec::new(),
                 message: Some(message),
                 prune: false,
+                no_prune: false,
             }),
         )
     };
@@ -4744,6 +4752,7 @@ fn deploy_trusted(
             accept_volume_loss: Vec::new(),
             message: None,
             prune: false,
+            no_prune: false,
         }),
         trusted,
     )
@@ -4907,6 +4916,7 @@ fn agent_deploys_only(
             accept_volume_loss: Vec::new(),
             message: None,
             prune: false,
+            no_prune: false,
         }),
         &Trusted {
             approval,
@@ -4951,6 +4961,7 @@ fn agent_deploys_upload(
             accept_volume_loss: Vec::new(),
             message: None,
             prune: false,
+            no_prune: false,
         }),
         &Trusted {
             approval,
@@ -5987,6 +5998,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
                     accept_volume_loss: Vec::new(),
                     message: None,
                     prune: false,
+                    no_prune: false,
                 }),
                 &Trusted::default(),
             )
@@ -6059,6 +6071,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )
@@ -6100,6 +6113,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
                     accept_volume_loss: Vec::new(),
                     message: None,
                     prune: false,
+                    no_prune: false,
                 }),
                 &Trusted::default(),
             )

@@ -763,7 +763,12 @@ pub(crate) fn retry(
                 i64::try_from(number)
                     .map_err(|_| error::corrupt("Deployment number"))?
                     .into(),
-                json_text(&Run::default()).as_str().into(),
+                json_text(&Run {
+                    prune: stored.run.prune,
+                    ..Run::default()
+                })
+                .as_str()
+                .into(),
                 source.as_str().into(),
                 admitted_at.into(),
                 who.principal.as_ref().map(Principal::as_str).into(),
@@ -803,7 +808,6 @@ pub(crate) fn retry(
         held: false,
         chooses_upload_at_start: false,
         preparing: false,
-        prune: false,
         ..stored.summary
     };
     Ok((summary, rollback))
@@ -1019,7 +1023,7 @@ fn retried(
                     Scope::All {
                         losses,
                         retire: &retire,
-                        prune: false,
+                        prune: stored.summary.prune,
                     },
                     stored.namespace.clone(),
                     stored.cluster_domain.as_ref(),

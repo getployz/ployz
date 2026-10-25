@@ -5953,6 +5953,7 @@ fn applied(store: &Target, environment: &str) {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             });
             local
                 .write_trusted(&who, &deploy, &Trusted::default())

@@ -323,6 +323,7 @@ pub(super) fn upload_and_ship(
             accept_volume_loss: accept,
             message,
             prune,
+            no_prune: false,
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
     execute(matches, store, &admitted, source.as_deref(), events)
