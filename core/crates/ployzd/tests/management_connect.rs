@@ -113,6 +113,114 @@ async fn two_holders_of_one_capability_stay_independent_through_the_relay() {
     server.await.unwrap();
 }
 
+/// A session held open in one process, as Cloud holds a runtime watch, must not make that
+/// process's next dial wait on the held session's relay connection. Here that connection
+/// goes silent without closing, as a dropped NAT or load-balancer mapping leaves it, and
+/// iroh notices only at its next relay ping, 15 s on (#3309).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_session_with_a_silent_relay_does_not_stall_the_next_dial() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let proxy = FreezableProxy::start(&relay_url).await;
+    let (_dir, owner, local) = participating().await;
+    let capability = local
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        MachineApi::builder(owner).build(),
+        Arc::default(),
+        None::<ReplicatedStore>,
+        shutdown.clone(),
+    ));
+    let process: Arc<dyn Connector> = Arc::new(
+        SystemConnector::default().with_management_relay(
+            ManagementRelay::custom(proxy.url.clone(), CaTlsConfig::insecure_skip_verify())
+                .relay_only(),
+        ),
+    );
+    let held = ployz::sdk::connect_connections(vec![connection(&capability)], process.clone())
+        .await
+        .unwrap();
+    proxy.freeze();
+    let next = tokio::time::timeout(
+        Duration::from_secs(5),
+        ployz::sdk::connect_connections(vec![connection(&capability)], process),
+    )
+    .await
+    .expect("the next dial waited on the held session's silent relay connection")
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), next.about())
+        .await
+        .expect("the next session stalled")
+        .unwrap();
+    drop(next);
+    drop(held);
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
+/// A TCP proxy in front of a relay. [`Self::freeze`] silences every connection open so
+/// far without closing it; later connections pass through.
+struct FreezableProxy {
+    url: iroh::RelayUrl,
+    open: Arc<Mutex<Vec<CancellationToken>>>,
+}
+
+impl FreezableProxy {
+    async fn start(relay: &iroh::RelayUrl) -> Self {
+        let target = format!(
+            "{}:{}",
+            relay.host_str().unwrap(),
+            relay.port_or_known_default().unwrap()
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("https://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let open = Arc::new(Mutex::new(Vec::<CancellationToken>::new()));
+        let tracked = Arc::clone(&open);
+        tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = listener.accept().await {
+                let frozen = CancellationToken::new();
+                tracked.lock().unwrap().push(frozen.clone());
+                let target = target.clone();
+                tokio::spawn(async move {
+                    let mut outbound = tokio::net::TcpStream::connect(target).await.unwrap();
+                    tokio::select! {
+                        () = frozen.cancelled() => {}
+                        _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound) => return,
+                    }
+                    // Hold both sockets open and pass nothing more.
+                    std::future::pending::<()>().await;
+                    drop((inbound, outbound));
+                });
+            }
+        });
+        Self { url, open }
+    }
+
+    fn freeze(&self) {
+        for frozen in self.open.lock().unwrap().iter() {
+            frozen.cancel();
+        }
+    }
+}
+
 /// A proof binds to the connection it was made on: replayed on another connection, even
 /// by a peer that saw it, it admits nothing.
 #[tokio::test(flavor = "multi_thread")]
