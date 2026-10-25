@@ -124,7 +124,7 @@ pub(crate) fn deployed(head: &Head) -> SavedEnvironmentIntent {
 }
 
 /// What the Servers may hold: [`deployed`], plus each route, generated domain and
-/// mount that a Deployment whose outcome is unknown may have put in place on a
+/// mount that any Deployment whose outcome is unknown may have put in place on a
 /// Service Applied State already holds.
 pub(crate) fn may_hold(head: &Head) -> SavedEnvironmentIntent {
     let mut held = deployed(head);

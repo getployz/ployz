@@ -6018,18 +6018,38 @@ fn a_protectors_retry_removing_a_domain_an_unknown_deployment_may_have_left_stil
     let (store, who) = shop();
     apply_both(&store, &who, 1);
     add_web_domain(&store, &who, "app.example.com");
-    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
     // #2 lost track after preparing: it may have put the domain in place.
-    let a = runner("runner-a");
-    store.claim(&id(2), &a).unwrap();
-    store
-        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
-        .unwrap();
-    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+    lose_track(&store, &who, 2);
     remove_domain(&store, &who, "app.example.com");
     deploy_as(&store, &who, 3, Approval::NotRequired).unwrap();
     cancel(&store, &who, 3).unwrap();
     let refused = retry_as(&store, &who, (4, 3), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+/// Admit Deployment `n` of every Service, then lose track of it after preparing.
+fn lose_track(store: &ConfigStore, who: &Actor, n: u8) {
+    deploy_as(store, who, n, Approval::NotRequired).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(n), &a).unwrap();
+    store
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store.record(&id(n), &a, RunEvidence::Abandoned).unwrap();
+}
+
+#[test]
+fn a_protectors_retry_weighs_every_unknown_deployment_of_a_service() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    add_web_domain(&store, &who, "a.example.com");
+    lose_track(&store, &who, 2);
+    add_web_domain(&store, &who, "b.example.com");
+    lose_track(&store, &who, 3);
+    remove_domain(&store, &who, "b.example.com");
+    deploy_as(&store, &who, 4, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 4).unwrap();
+    let refused = retry_as(&store, &who, (5, 4), &admins_token(nothing_else_runs())).unwrap_err();
     assert_admin_asked(&refused);
 }
 
