@@ -887,3 +887,38 @@ fn docker_refuses_a_container_between_restarts_both_ways() {
     )));
     assert!(!between_restarts(&answer(500, "Address already in use",)));
 }
+
+#[test]
+fn a_member_between_restarts_rejoins_at_the_address_it_is_pinned_to() {
+    use bollard::models::{ContainerSummaryHostConfig, ContainerSummaryNetworkSettings};
+    let crash_looping = ContainerSummary {
+        id: Some("crash-looping".into()),
+        host_config: Some(ContainerSummaryHostConfig {
+            network_mode: Some(DOCKER_NETWORK_NAME.into()),
+            ..Default::default()
+        }),
+        network_settings: Some(ContainerSummaryNetworkSettings {
+            networks: Some(HashMap::from([(
+                DOCKER_NETWORK_NAME.to_owned(),
+                crate::docker::bridge_address::endpoint(false, Some("10.210.1.7".parse().unwrap())),
+            )])),
+        }),
+        ..Default::default()
+    };
+    let ipv4 = bridge_members(&[crash_looping])
+        .first()
+        .and_then(|member| member.ipv4);
+    assert_eq!(ipv4, Some("10.210.1.7".parse().unwrap()));
+}
+
+#[test]
+fn only_a_container_docker_would_run_again_is_noted_to_start() {
+    use bollard::models::RestartPolicyNameEnum as Policy;
+    assert!(runs_again(true, Some(Policy::ON_FAILURE)));
+    assert!(runs_again(true, None));
+    assert!(runs_again(false, Some(Policy::ALWAYS)));
+    assert!(runs_again(false, Some(Policy::UNLESS_STOPPED)));
+    assert!(!runs_again(false, Some(Policy::ON_FAILURE)));
+    assert!(!runs_again(false, Some(Policy::NO)));
+    assert!(!runs_again(false, None));
+}

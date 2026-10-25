@@ -239,7 +239,7 @@ impl Daemon {
             &local_record,
         )
         .await?;
-        let mut network = NetworkPlane::start(&local_record).await?;
+        let mut network = NetworkPlane::start(&local_record, &config.data_dir).await?;
         let machine_api_listener = match config
             .machine_api_address
             .or_else(|| network.as_ref().map(NetworkPlane::machine_api_address))
