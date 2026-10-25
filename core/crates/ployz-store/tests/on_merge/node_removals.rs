@@ -659,6 +659,7 @@ fn deploy_by_hand(
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )
@@ -917,8 +918,11 @@ fn a_manual_deploy_of_other_services_leaves_the_teardown_to_the_push() {
     );
 }
 
+/// A full Deploy that can't see every Server still tears `db` down on the Servers
+/// it saw. The push then has nothing to tear down: a copy on the Server the Deploy
+/// couldn't check is the next full Deploy's prune.
 #[test]
-fn a_full_deploy_that_cant_see_every_server_leaves_the_teardown_to_the_push() {
+fn a_full_deploy_that_cant_see_every_server_still_tears_the_service_down() {
     let (store, who) = shop_with_nodes();
     running(&store, &who);
     watching(&store, &who);
@@ -927,15 +931,22 @@ fn a_full_deploy_that_cant_see_every_server_leaves_the_teardown_to_the_push() {
     let full = deploy_by_hand(&store, &who, &[]);
     run_seeing(&store, &full, &["web", "worker"], false);
 
-    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
     assert_eq!(
-        teardown(&store, &who, &pushed),
-        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+        status(&store, &who, &full),
+        ployz_store::DeploymentStatus::Applied
     );
+    let ended = outcomes(&store, &who, &full);
+    assert!(
+        ended.contains(&("db".to_owned(), ployz_store::NodeStatus::Removed)),
+        "{ended:?}"
+    );
+    assert!(!applied(&store, &who).contains(&"db".to_owned()));
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
 }
 
 #[test]
-fn a_full_deploy_over_a_queued_teardown_that_cant_see_every_server_is_not_applied() {
+fn a_full_deploy_over_a_queued_teardown_that_cant_see_every_server_is_applied() {
     let (store, who) = shop_with_nodes();
     running(&store, &who);
     watching(&store, &who);
@@ -946,11 +957,15 @@ fn a_full_deploy_over_a_queued_teardown_that_cant_see_every_server_is_not_applie
     let full = deploy_by_hand(&store, &who, &[]);
     run_seeing(&store, &full, &["web", "worker"], false);
 
-    assert_ne!(
+    assert_eq!(
         status(&store, &who, &full),
         ployz_store::DeploymentStatus::Applied
     );
-    retry(&store, &who, &full).unwrap();
+    let ended = outcomes(&store, &who, &full);
+    assert!(
+        ended.contains(&("db".to_owned(), ployz_store::NodeStatus::Removed)),
+        "{ended:?}"
+    );
 }
 
 /// The Services production's Applied State runs.
@@ -1080,7 +1095,7 @@ fn fail(store: &ConfigStore, id: &ployz_store::DeploymentId, service: &str) {
 }
 
 #[test]
-fn a_full_deploy_over_a_teardown_of_a_service_that_never_applied_cant_apply_blind() {
+fn a_full_deploy_over_a_teardown_of_a_service_that_never_applied_removes_it_where_it_can() {
     let (store, who) = shop_with_nodes();
     let worker = deploy_by_hand(&store, &who, &["worker"]);
     run(&store, &worker, &["worker"]);
@@ -1101,27 +1116,16 @@ fn a_full_deploy_over_a_teardown_of_a_service_that_never_applied_cant_apply_blin
 
     assert_eq!(
         status(&store, &who, &full),
-        ployz_store::DeploymentStatus::Failed
-    );
-    let retried = retry(&store, &who, &full).unwrap();
-    let nodes = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: retried.clone(),
-            },
-        )
-        .unwrap()
-        .nodes;
-    assert!(
-        nodes.iter().any(|node| node.node.name() == "db"),
-        "{nodes:?}"
-    );
-    run(&store, &retried, &["web", "worker", "db"]);
-    assert_eq!(
-        status(&store, &who, &retried),
         ployz_store::DeploymentStatus::Applied
     );
+    let ended = outcomes(&store, &who, &full);
+    assert!(
+        ended.contains(&("db".to_owned(), ployz_store::NodeStatus::Removed)),
+        "{ended:?}"
+    );
+    let again = deploy_by_hand(&store, &who, &[]);
+    let [_, removals, _] = told(&store, &who, &again);
+    assert_eq!(removals, NOTHING);
 }
 
 #[test]
@@ -1334,21 +1338,36 @@ fn outcomes(
 
 #[test]
 fn a_removed_config_reads_removed_only_once_the_service_that_mounted_it_is_gone() {
-    for (touched, complete, outcome) in [
-        (&["web"][..], false, ployz_store::NodeStatus::NotAttempted),
-        (&["web", "db"][..], true, ployz_store::NodeStatus::Removed),
-    ] {
+    type Run = fn(&ConfigStore, &ployz_store::DeploymentId);
+    let cases: [(Run, ployz_store::NodeStatus, ployz_store::NodeStatus); 3] = [
+        (
+            |store, id| fail(store, id, "db"),
+            ployz_store::NodeStatus::Failed,
+            ployz_store::NodeStatus::NotAttempted,
+        ),
+        (
+            |store, id| run_seeing(store, id, &["web"], false),
+            ployz_store::NodeStatus::Removed,
+            ployz_store::NodeStatus::Removed,
+        ),
+        (
+            |store, id| run(store, id, &["web", "db"]),
+            ployz_store::NodeStatus::Removed,
+            ployz_store::NodeStatus::Removed,
+        ),
+    ];
+    for (run, db, dbconf) in cases {
         let (store, who) = shop_merging_db_with_its_config();
         let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
         let [admitted] = pushed.admitted.as_slice() else {
             panic!("one Deployment: {pushed:?}")
         };
         let id = &admitted.deployment.id;
-        run_seeing(&store, id, touched, complete);
+        run(&store, id);
 
         let ended = outcomes(&store, &who, id);
-        assert!(ended.contains(&("db".to_owned(), outcome)), "{ended:?}");
-        assert!(ended.contains(&("dbconf".to_owned(), outcome)), "{ended:?}");
+        assert!(ended.contains(&("db".to_owned(), db)), "{ended:?}");
+        assert!(ended.contains(&("dbconf".to_owned(), dbconf)), "{ended:?}");
     }
 }
 

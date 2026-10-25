@@ -4,7 +4,7 @@ use crate::deploy::{Replica, service_row, starts, updates};
 use crate::failure::Failure;
 use crate::ui::{
     Hint,
-    progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
+    progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing, Work},
 };
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
 use ployz_core::{
@@ -52,6 +52,13 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                 node,
                 build.is_some_and(|build| build.status == BuildStatus::Failed),
             );
+            // A removal with nothing to plan found no copy on the Servers it could
+            // check. It is still a removal, not a switch.
+            if node.outcome == NodeStatus::Removed
+                && let Subject::Service(graph) = &mut row.subject
+            {
+                graph.work = Work::Remove;
+            }
             let blocked = view.preview.as_ref().and_then(|preview| {
                 preview
                     .blocked
@@ -1746,6 +1753,118 @@ mod tests {
                 },
             },
         ];
+        let failure = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    /// A removal that could not reach one Server takes the live copies out, records
+    /// the Service removed, names the Server, and exits partial. The next full
+    /// Deploy prunes the copy it left.
+    #[test]
+    fn a_removal_beside_an_unreached_server_reads_removed_names_the_server_and_is_partial() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = None;
+        view.deployment.remove = true;
+        view.runtime_names.clear();
+        view.preview = Some(
+            serde_json::from_value(json!({
+                "namespace": "shop-production", "warnings": [],
+                "would_remove": ["shop-production/rmme"],
+                "operations": [{
+                    "index": 0, "machine_id": "a".repeat(32), "service_name": "rmme",
+                    "operation": {"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "d".repeat(64), "purpose": "retire"},
+                    "status": {"type": "completed"}
+                }, {
+                    "index": 1, "machine_id": "b".repeat(32), "service_name": "rmme",
+                    "operation": {"type": "remove_container", "machine_id": "b".repeat(32), "container_id": "e".repeat(64), "purpose": "retire"},
+                    "status": {"type": "completed"}
+                }]
+            }))
+            .unwrap(),
+        );
+        view.nodes = serde_json::from_value(json!([{
+            "type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "rmme", "outcome": "removed", "rows": [
+                {"machine_id": "a".repeat(32), "server": "machine-1", "state": "completed", "started_at": 1, "finished_at": 2},
+                {"machine_id": "b".repeat(32), "server": "machine-2", "state": "completed", "started_at": 1, "finished_at": 2}
+            ]
+        }]))
+        .unwrap();
+        // The plan names machine-3 as one it could not check, and the run names the
+        // copy it holds. The row says why once.
+        view.preview.as_mut().unwrap().warnings =
+            vec![ployz_core::DeployWarning::ObservationOmitted {
+                kind: ployz_core::ObservationKind::Container,
+                machine_id: ployz_core::MachineId::parse("c".repeat(32)).unwrap(),
+                gap: Some(ployz_core::ObservationGap {
+                    machine_name: ployz_core::MachineName::parse("machine-3").unwrap(),
+                    reason: ployz_core::ObservationGapReason::Down,
+                }),
+            }];
+        view.deployment.warnings = vec![DeploymentWarning::Deploy {
+            warning: ployz_core::DeployWarning::LeftRunning {
+                service: "shop-production/rmme".parse().unwrap(),
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                machine: "machine-3".into(),
+                reason:
+                    "machine-3 didn't answer, the next full deploy removes its copy once it is back"
+                        .into(),
+            },
+        }];
+        let text = crate::ui::progress::settled_text(&frame(&view));
+        assert!(
+            text.contains(
+                "rmme: removed 2/3; machine-3 didn't answer, the next full deploy removes its copy once it is back\n"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("couldn't check"), "{text}");
+        assert!(
+            text.contains("1 copy left running · 1 removed · across 2 servers"),
+            "{text}"
+        );
+        let failure = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    /// The only copy of a removed Service may sit on a Server the Deploy could not
+    /// check. Nothing was planned, so the Service reads removed with nothing counted,
+    /// names that Server, and the Deploy is partial.
+    #[test]
+    fn a_removal_with_nothing_to_plan_beside_an_unchecked_server_reads_removed_and_names_it() {
+        use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = None;
+        view.deployment.remove = true;
+        view.runtime_names.clear();
+        let mut preview: ployz_core::DeployPreview = serde_json::from_value(json!({
+            "namespace": "shop-production", "warnings": [],
+            "would_remove": ["shop-production/rmme"], "operations": [],
+            "prune_refusal": "incomplete_snapshot"
+        }))
+        .unwrap();
+        preview.warnings = vec![ployz_core::DeployWarning::ObservationFailed {
+            gap: Some(ObservationGap {
+                machine_name: MachineName::parse("machine-3").unwrap(),
+                reason: ObservationGapReason::Failed,
+            }),
+            kind: ObservationKind::Container,
+            machine_id: ployz_core::MachineId::random(),
+            message: "Machine machine-3 did not answer: deadline has elapsed".into(),
+        }];
+        view.preview = Some(preview);
+        view.nodes = serde_json::from_value(json!([{
+            "type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "rmme", "outcome": "removed", "rows": []
+        }]))
+        .unwrap();
+        let text = crate::ui::progress::settled_text(&frame(&view));
+        assert!(
+            text.contains(
+                "rmme: removed 0/0; couldn't check machine-3, the next full deploy removes any copy there"
+            ),
+            "{text}"
+        );
         let failure = completion(&view, None, &[], command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }

@@ -1,7 +1,7 @@
 use super::support::*;
 use ployz_core::{
     DependencyCondition, DeployWarning, MachineFailure, MembershipEvidence, ObservationGapReason,
-    RpcError, RpcErrorCode, ServiceDependency,
+    PruneScope, QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceRemovals,
 };
 
 fn snapshot() -> DeploySnapshot {
@@ -184,6 +184,96 @@ fn unrelated_existing_work_and_converged_removal_do_not_invent_a_gap() {
             .unwrap()
             .has_observation_gaps()
     );
+}
+
+/// A named removal must reach every copy of its Service, and a Server this Deploy
+/// could not check may hold one it never saw. So that Server is a gap even when
+/// the Deploy plans nothing: the report names it, and the next full Deploy prunes
+/// whatever copy it holds.
+#[test]
+fn a_named_removal_makes_every_server_the_deploy_could_not_check_a_gap() {
+    let removal = DeployIntent::new(
+        Namespace::parse("app").unwrap(),
+        Vec::new(),
+        PlanOptions {
+            removals: ServiceRemovals::from_names([ServiceName::parse("rmme").unwrap()]),
+            ..Default::default()
+        },
+    );
+    let preview = preview_deploy(&removal, &snapshot()).unwrap();
+    assert!(preview.operations.is_empty(), "{:?}", preview.operations);
+    assert_eq!(
+        gaps(&preview),
+        [(machine_id('2'), ObservationGapReason::Down)]
+    );
+    // A removal starts no new copy, so nothing on that Server can serve beside one.
+    assert!(
+        !preview
+            .warnings
+            .iter()
+            .any(|warning| matches!(warning, DeployWarning::MixedAfterReturn { .. })),
+        "{:?}",
+        preview.warnings
+    );
+
+    let unread = DeploySnapshot {
+        machines: vec![machine('1', "available"), machine('2', "unread")],
+        container_failures: vec![MachineFailure {
+            machine_id: machine_id('2'),
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "listing failed".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }],
+        ..Default::default()
+    };
+    let preview = preview_deploy(&removal, &unread).unwrap();
+    assert!(preview.operations.is_empty(), "{:?}", preview.operations);
+    assert_eq!(
+        gaps(&preview),
+        [(machine_id('2'), ObservationGapReason::Failed)]
+    );
+}
+
+/// A prune takes a Service out wherever it runs, as a named removal does, so a Server
+/// the Deploy could not check is a gap even when nothing requested could land there:
+/// it may hold a copy, and the report names it. Keeping the Service names no gap.
+#[test]
+fn a_prune_makes_a_server_the_deploy_could_not_check_a_gap() {
+    let mut snapshot = snapshot();
+    let mut web = spec("web");
+    web.placement.constraints =
+        [PlacementConstraint::parse(format!("node.id == {}", machine_id('1'))).unwrap()].into();
+    snapshot
+        .containers
+        .push(container('a', '1', &spec("old"), &ServiceId::random()));
+    let full = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web],
+        PlanOptions::default(),
+    );
+    let preview = preview_deploy(&full, &snapshot).unwrap();
+    assert_eq!(
+        preview.would_remove,
+        [QualifiedService::parse("app/old").unwrap()]
+    );
+    assert_eq!(
+        gaps(&preview),
+        [(machine_id('2'), ObservationGapReason::Down)]
+    );
+
+    let kept = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web],
+        PlanOptions {
+            prune: PruneScope::Removals,
+            ..Default::default()
+        },
+    );
+    let preview = preview_deploy(&kept, &snapshot).unwrap();
+    assert!(gaps(&preview).is_empty(), "{:?}", preview.warnings);
 }
 
 #[test]

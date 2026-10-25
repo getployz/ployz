@@ -225,6 +225,38 @@ describe("run graph", () => {
     ]).toEqual(["0 of 2", "0 of 2", "2 of 2", "2 of 2"]);
   });
 
+  it("shows each Service the Deployment removed that this Environment doesn't hold, at its preview depth", () => {
+    const refused: ServerRow = {
+      ...at, machine_id: machineId("2"), server: "fsn-2", state: "failed", reason: "Docker did not answer", cause: [], step: "remove", log: null,
+      finished_at: 30,
+    };
+    const view = deployment({
+      status: "failed", in_flight: false,
+      nodes: [service("web", [completed()], "deployed")],
+      preview: preview({ depths: { web: 0, db: 1 } }),
+      untargeted: { cache: [completed(), refused], db: [completed()] },
+    });
+    const graph = makeRunGraph(view);
+    expect(graph.nodes.map(({ type, id, name, light, column }) => ({ type, id, name, light, column }))).toEqual([
+      { type: "service", id: "web-id", name: "web", light: "deployed", column: 1 },
+      { type: "untargeted", id: "untargeted:cache", name: "cache", light: "failed", column: 1 },
+      { type: "untargeted", id: "untargeted:db", name: "db", light: "deployed", column: 2 },
+    ]);
+    expect(graph.nodes.find((node) => node.id === "untargeted:db")).toMatchObject({
+      status: "removed", rows: [completed()], timing: { started: 10, finished: 20 },
+    });
+    expect(graph.nodes.find((node) => node.id === "untargeted:cache")).toMatchObject({ status: "failed", rows: [completed(), refused] });
+    expect({ done: graph.done, total: graph.total }).toEqual({ done: 2, total: 3 });
+    expect(selectRunNode(graph, {})?.id).toBe("untargeted:cache");
+  });
+
+  it("reads a removal of a Service this Environment doesn't hold as running until each Server took it off", () => {
+    const view = deployment({ untargeted: { db: [running("removing_container"), { ...completed("fsn-2"), machine_id: machineId("2") }] } });
+    expect(makeRunGraph(view).nodes).toMatchObject([{ type: "untargeted", name: "db", status: "pending", light: "deploying" }]);
+    const cancelled = { ...view, status: "cancelled" as const, in_flight: false, untargeted: { db: [{ ...completed(), state: "not_attempted" as const }] } };
+    expect(makeRunGraph(cancelled).nodes).toMatchObject([{ status: "not_attempted", light: "not_applied" }]);
+  });
+
   it("words and lights each way a cleanup goes, naming each Machine a copy was left running on once", () => {
     const left = (machine: string) => ({ machine, service: "web", reason: "did not answer" });
     const light = (state: "waiting" | "done" | "left_running" | "cancelled" | "failed") =>

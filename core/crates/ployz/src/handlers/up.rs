@@ -35,6 +35,12 @@ pub(super) fn command(command: Command) -> Command {
             .requires("server")
             .help("Reset the --server if it already runs Ployz, before adding it"),
     )
+    .arg(
+        crate::cli::switch("no-prune", None).help(
+            "Keep Services running in the Environment that it doesn't hold. Deploying removes \
+             them by default",
+        ),
+    )
     .arg(crate::cli::volume_acceptance())
     .arg(crate::cli::reviewed_version())
     .arg(crate::cli::approval())
@@ -66,7 +72,9 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         .map(|destination| add_server(matches, &config, destination))
         .transpose()?
         .flatten();
-    let store = store(root)?.args(super::deploy::following_args(matches));
+    let store = store(root)?
+        .args(matches.get_flag("no-prune").then_some("--no-prune"))
+        .args(super::deploy::following_args(matches));
     let scope = super::link::scope(matches)?.at();
     let name = directory_name(&directory);
     let environment = match scope.project {
@@ -95,7 +103,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             source: Some(directory),
             accept: super::teardown::accepted(matches)?,
             message: None,
-            prune: false,
+            no_prune: matches.get_flag("no-prune"),
         },
         events,
     )?;

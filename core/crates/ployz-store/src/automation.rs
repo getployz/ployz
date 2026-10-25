@@ -979,10 +979,10 @@ fn same_source(a: &ServiceSource, b: &ServiceSource) -> bool {
 
 /// Admit the Store's own Deployment of Saved revision `saved` of `environment`:
 /// `services` and the teardown of `retire`, from [`deployment::retirements`]
-/// (neither: every Service), with generated domains under `cluster_domain` and
-/// each Git Service of `pins` pinned to its commit, as `admission` queues it. It
-/// deletes only the Volume data accepted when `saved` was saved, while the Servers
-/// still show the same.
+/// (neither: every Service, removing any other its Namespace runs), with
+/// generated domains under `cluster_domain` and each Git Service of `pins` pinned
+/// to its commit, as `admission` queues it. It deletes only the Volume data
+/// accepted when `saved` was saved, while the Servers still show the same.
 pub(crate) fn auto_admit(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -1020,7 +1020,7 @@ pub(crate) fn auto_admit(
             deployment::Scope::All {
                 losses: &losses,
                 retire: &dropped,
-                prune: false,
+                prune: true,
             }
         } else {
             deployment::Scope::Narrow {

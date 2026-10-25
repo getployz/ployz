@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
+import type { ConfigCommand, DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DeletionDialog } from "#/components/deletion-dialog";
 import { reviewMoving, useStoreBusy, writeMark } from "#/modules/config-store/store-pending";
@@ -11,13 +11,17 @@ type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
 type Message = string | null;
+/** Whether a Deploy keeps the Services the Environment runs but doesn't hold; by default it removes them. */
+export type DeployChoice = { noPrune: boolean };
+const PRUNES: DeployChoice = { noPrune: false };
 /** What a Deploy or Save would delete, waiting on the user. */
-type Loss = { action: Action; check: VolumeLossCheck; message: Message };
+type Loss = { action: Action; check: VolumeLossCheck; message: Message; choice: DeployChoice };
 /** How a Deploy or Save went: done, failed (the writer toasted why), asking first, or not sent while a field still stages. */
 type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; loss: Loss } | { status: "staging" };
 
 /**
- * The bottom bar's actions over the Config Store: Deploy, Save only (the Store's publish), Discard and Never sync,
+ * The bottom bar's actions over the Config Store: Deploy, which removes the Services the Environment runs but doesn't
+ * hold unless told to keep them, Save only (the Store's publish), Discard and Never sync,
  * each in the Environment's write queue after its pending edits, so the CLI and this tab share one queue of Deployments.
  *
  * When a Deploy or Save only would delete Volume data the Servers hold, the Store refuses with `confirmation_required`;
@@ -63,7 +67,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   }, [queryClient, organizationSlug, environment]);
 
   /** Deploys or saves; resolves with how it went, holding what it would delete when the Store asks first. */
-  async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null): Promise<Outcome> {
+  async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null, choice = PRUNES): Promise<Outcome> {
     // Read now, not from the last render: the press that got here may have just staged the field it left.
     const { mark, saving } = gesture.current;
     // Each press is judged once: a later one with no pointer or key before it (assistive tech) starts from here.
@@ -71,16 +75,19 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     if (saving || reviewMoving(queryClient, organizationSlug, environment, mark)) return { status: "staging" };
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
+    const command: ConfigCommand = action === "deploy"
+      ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }
+      : { command: "publish", environment, version, accept_volume_loss: [...accept], message: words };
+    // A Store from before no_prune refuses a Deploy carrying it, so only a Deploy that keeps other services sends it.
+    if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;
     try {
-      await writer.commit(action === "deploy"
-        ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }
-        : { command: "publish", environment, version, accept_volume_loss: [...accept], message: words }, ["confirmation_required"]).isPersisted.promise;
+      await writer.commit(command, ["confirmation_required"]).isPersisted.promise;
       if (action === "deploy") onAdmitted(id);
       return { status: "done" };
     } catch (error) {
       const check = error instanceof StoreRefused ? lossOf(error) : null;
       // Anything else the writer toasted.
-      return check ? { status: "asks", loss: { action, check, message } } : { status: "failed" };
+      return check ? { status: "asks", loss: { action, check, message, choice } } : { status: "failed" };
     }
   }
 
@@ -103,14 +110,14 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     savePending.current = null;
   }
 
-  function deploy(message: Message) {
+  function deploy(message: Message, choice = PRUNES) {
     if (inFlight.current) return;
     if (placementLoss.items.length > 0) {
-      setLoss({ action: "deploy", check: { items: placementLoss.items, evidence: { accept: placementLoss.accept, version: placementLoss.version(version) }, losesWrites: placementLoss.losesWrites }, message });
+      setLoss({ action: "deploy", check: { items: placementLoss.items, evidence: { accept: placementLoss.accept, version: placementLoss.version(version) }, losesWrites: placementLoss.losesWrites }, message, choice });
       return;
     }
     inFlight.current = true;
-    void run("deploy", { accept: [], version }, message).then(ask).finally(() => { inFlight.current = false; });
+    void run("deploy", { accept: [], version }, message, choice).then(ask).finally(() => { inFlight.current = false; });
   }
 
   function discard(path: string | null, target: DiscardTarget = "head") {
@@ -149,7 +156,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
           // Servers holding more by now: the Store asks again, and so does the dialog.
           confirm: async (evidence) => {
             if (!loss) return undefined;
-            const outcome = await run(loss.action, evidence, loss.message);
+            const outcome = await run(loss.action, evidence, loss.message, loss.choice);
             if (outcome.status === "asks") return outcome.loss.check;
             if (outcome.status === "done") settleSave(true);
             return undefined;

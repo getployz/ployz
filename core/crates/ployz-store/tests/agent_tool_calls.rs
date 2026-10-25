@@ -765,6 +765,44 @@ fn a_service_goes_from_staged_to_deployed() {
     assert_eq!(ended.code, RpcErrorCode::Conflict);
 }
 
+#[test]
+fn a_deploy_of_every_service_prunes_unless_told_to_keep_the_rest() {
+    let store = shop();
+    call(
+        &store,
+        "service_add",
+        json!({ "name": "web", "image": "traefik/whoami" }),
+        "add-1",
+    )
+    .ok();
+    let prunes = |input: Value, key: &str| {
+        let deployed = call(&store, "deploy", input, key).ok();
+        call(
+            &store,
+            "deployment_cancel",
+            json!({}),
+            &format!("cancel-{key}"),
+        )
+        .ok();
+        deployed["prunes"].clone()
+    };
+    assert_eq!(prunes(json!({ "request_key": "deploy-0001" }), "1"), true);
+    assert_eq!(
+        prunes(
+            json!({ "request_key": "deploy-0002", "no_prune": true }),
+            "2"
+        ),
+        false
+    );
+    assert_eq!(
+        prunes(
+            json!({ "request_key": "deploy-0003", "services": ["web"] }),
+            "3"
+        ),
+        false
+    );
+}
+
 // Catches a Deploy with no Server reading as queued, or as anything but the sentence Cloud's reads use.
 #[test]
 fn a_deploy_with_no_servers_says_nothing_deployed_and_leaves_the_change_staged() {
@@ -1935,6 +1973,7 @@ fn deploying() -> (ConfigStore, DeploymentId) {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
         )
         .unwrap();
@@ -2415,6 +2454,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
         )
         .unwrap();
@@ -2708,6 +2748,7 @@ fn a_deployments_metrics_refuse_a_service_it_did_not_deploy() {
                     accept_volume_loss: Vec::new(),
                     message: None,
                     prune: false,
+                    no_prune: false,
                 }),
             )
             .unwrap();
@@ -2933,6 +2974,7 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
         )
         .unwrap();

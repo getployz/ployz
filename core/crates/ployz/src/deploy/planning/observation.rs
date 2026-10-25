@@ -4,12 +4,18 @@ use super::DeploySnapshot;
 use ployz_core::{
     DeployWarning, MachineId, MembershipEvidence, Namespace, ObservationGap, ObservationGapReason,
     ObservationKind, QualifiedService, RequestedServiceSpec, ServicePlacementEligibility,
+    ServiceRemovals,
 };
 
+/// `removals` names the Services this Deploy must take out wherever they run, and
+/// `retiring` the ones it plans to, pruned Services included. A Machine it could
+/// not check may hold a copy of one it never saw, so every such Machine is a gap:
+/// the report names it, and the next full Deploy prunes that copy.
 pub(super) fn warnings(
     namespace: &Namespace,
     requested: &[RequestedServiceSpec],
     retiring: &[QualifiedService],
+    removals: &ServiceRemovals,
     snapshot: &DeploySnapshot,
 ) -> Vec<DeployWarning> {
     let mut warnings = super::super::observation_warnings(
@@ -18,6 +24,9 @@ pub(super) fn warnings(
         &snapshot.container_omissions,
     );
     warnings.extend(snapshot.volume_snapshot.deploy_warnings());
+    // Machines whose old copies may serve beside this Deploy's new ones; a gap
+    // that only a removal opened starts no new copy there.
+    let mut serving_beside = std::collections::BTreeSet::new();
     for warning in &mut warnings {
         let (kind, machine_id, gap, failed) = match warning {
             DeployWarning::ObservationFailed {
@@ -63,7 +72,15 @@ pub(super) fn warnings(
                     ServicePlacementEligibility::Ineligible(_)
                 )
         });
-        if candidate
+        let removing =
+            kind == ObservationKind::Container && (!removals.is_empty() || !retiring.is_empty());
+        let replacing =
+            candidate || affected_existing(kind, machine_id, namespace, requested, &[], snapshot);
+        if replacing && kind == ObservationKind::Container {
+            serving_beside.insert(machine_id);
+        }
+        if replacing
+            || removing
             || affected_existing(kind, machine_id, namespace, requested, retiring, snapshot)
         {
             *gap = Some(ObservationGap {
@@ -84,17 +101,21 @@ pub(super) fn warnings(
         .filter_map(|warning| {
             let (DeployWarning::ObservationFailed {
                 kind: ObservationKind::Container,
+                machine_id,
                 gap: Some(gap),
                 ..
             }
             | DeployWarning::ObservationOmitted {
                 kind: ObservationKind::Container,
+                machine_id,
                 gap: Some(gap),
-                ..
             }) = warning
             else {
                 return None;
             };
+            if !serving_beside.contains(machine_id) {
+                return None;
+            }
             Some(DeployWarning::MixedAfterReturn {
                 machine: gap.machine_name.to_string(),
             })

@@ -62,6 +62,7 @@ struct Planned {
     operations: Vec<DeployOperation>,
     groups: Vec<ServiceGroup>,
     volumes: PlannedVolumes,
+    retiring: Vec<QualifiedService>,
     would_remove: Vec<QualifiedService>,
     preserved_volumes: Vec<PreservedVolume>,
     prune_refusal: Option<PruneRefusal>,
@@ -93,6 +94,9 @@ pub struct DeployPlan {
     registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
     /// Every snapshot Machine's name, so a report names a Machine the plan places nothing on.
     machine_names: BTreeMap<MachineId, ployz_core::MachineName>,
+    /// The Services this Deploy takes out wherever they run: each named removal the
+    /// snapshot observed, and each Service it prunes.
+    retiring: BTreeSet<QualifiedService>,
 }
 
 impl DeployPlan {
@@ -120,6 +124,10 @@ impl DeployPlan {
 
     pub(crate) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
         &self.machine_names
+    }
+
+    pub(super) const fn retiring(&self) -> &BTreeSet<QualifiedService> {
+        &self.retiring
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -165,7 +173,15 @@ impl DeployPlan {
             preview: DeployPreview::new(rows, Vec::new(), namespace),
             registry_auth: std::collections::BTreeMap::new(),
             machine_names: BTreeMap::new(),
+            retiring: BTreeSet::new(),
         }
+    }
+
+    /// This Deploy removes `services`, by name or by pruning.
+    #[cfg(test)]
+    pub(super) fn with_retiring(mut self, services: &[QualifiedService]) -> Self {
+        self.retiring = services.iter().cloned().collect();
+        self
     }
 
     #[cfg(test)]
@@ -668,6 +684,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         preview,
         registry_auth: std::collections::BTreeMap::new(),
         machine_names: super::progress::machine_names(snapshot),
+        retiring: planned.retiring.into_iter().collect(),
     }
 }
 
@@ -706,8 +723,9 @@ fn bind(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<BoundIntent,
 }
 
 /// The Services this Deploy retires: what a full Deploy prunes, and the removals it
-/// names. Absence is evidence only in a complete snapshot, so a partial one retires
-/// nothing by name.
+/// names. Absence is evidence only in a complete snapshot, so a partial one prunes
+/// nothing. A named removal needs no such evidence: it goes ahead on the Servers the
+/// snapshot observed, and the next full Deploy prunes a copy on one it couldn't check.
 fn retiring_services(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Vec<QualifiedService> {
     let services = snapshot.services_in(&intent.namespace);
     let mut retiring = if intent
@@ -718,13 +736,11 @@ fn retiring_services(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Vec<Qu
     } else {
         Vec::new()
     };
-    if snapshot.is_observer_complete() {
-        for service in &services {
-            if intent.options.removals.contains(&service.identity.name)
-                && !retiring.contains(&service.identity)
-            {
-                retiring.push(service.identity.clone());
-            }
+    for service in &services {
+        if intent.options.removals.contains(&service.identity.name)
+            && !retiring.contains(&service.identity)
+        {
+            retiring.push(service.identity.clone());
         }
     }
     retiring
@@ -938,7 +954,13 @@ fn assemble_plan(
     let services = snapshot.services_in(&intent.namespace);
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
-    let mut warnings = observation::warnings(&intent.namespace, &requested, &retiring, snapshot);
+    let mut warnings = observation::warnings(
+        &intent.namespace,
+        &requested,
+        &retiring,
+        &intent.options.removals,
+        snapshot,
+    );
     if prune_refusal == Some(PruneRefusal::RemovalsOnly) {
         warnings.extend(
             would_remove
@@ -977,19 +999,6 @@ fn assemble_plan(
     let mut reservations = PlacementReservations::new(snapshot);
     let mut blocked =
         volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
-    let unobserved = snapshot.unobserved_required();
-    if !unobserved.is_empty() {
-        blocked.extend(
-            intent
-                .options
-                .removals
-                .iter()
-                .map(|service| BlockedService {
-                    service: service.clone(),
-                    error: removal_unobserved(&unobserved),
-                }),
-        );
-    }
     let mut budget = ServiceBudget {
         volumes: volume_plan,
         placement: reservations.into_placement(snapshot),
@@ -1178,6 +1187,7 @@ fn assemble_plan(
         operations,
         groups,
         volumes,
+        retiring,
         would_remove,
         preserved_volumes,
         prune_refusal,
@@ -1194,28 +1204,6 @@ fn dependency_blocked(dependency: &ServiceName) -> RpcError {
         details: serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
         cause: Vec::new(),
     }
-}
-
-/// Why a named removal waits: a Server this observer could not read may still run a copy.
-fn removal_unobserved(unobserved: &[&MachineObservation]) -> RpcError {
-    let names: Vec<&str> = unobserved
-        .iter()
-        .map(|machine| machine.machine.name.as_str())
-        .collect();
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: removal_unobserved_message(&names),
-        details: serde_json::json!({ "reason": "removal_unobserved", "servers": names }),
-        cause: Vec::new(),
-    }
-}
-
-pub(super) fn removal_unobserved_message(names: &[impl AsRef<str>]) -> String {
-    let names: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
-    format!(
-        "couldn't check {} for its copies. Deploy again once every Server answers.",
-        names.join(", ")
-    )
 }
 
 /// Why a Service handing a hostname to a blocked one is blocked too: replacing its copies

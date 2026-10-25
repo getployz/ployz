@@ -742,6 +742,7 @@ fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
                 accept_volume_loss: vec![ployz_store::VolumeName::parse("data").unwrap()],
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted {
                 volumes: Some(held_on_a()),
@@ -1048,6 +1049,7 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )

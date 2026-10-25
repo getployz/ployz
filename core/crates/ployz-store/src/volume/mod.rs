@@ -685,6 +685,7 @@ mod tests {
                     accept_volume_loss: Vec::new(),
                     message: None,
                     prune: false,
+                    no_prune: false,
                 }),
                 &Trusted::default(),
             )

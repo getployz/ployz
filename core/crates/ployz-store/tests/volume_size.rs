@@ -156,6 +156,7 @@ fn admit_only(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Res
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
+                no_prune: false,
             }),
             &Trusted::default(),
         )
