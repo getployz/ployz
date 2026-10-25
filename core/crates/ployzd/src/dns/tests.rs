@@ -315,12 +315,118 @@ fn caller_namespace_includes_hooks_but_requires_one_visible_container() {
         RecordType::A,
         Ipv4Addr::new(10, 210, 1, 9),
     ));
+    // A shared address names no one caller yet, so the query waits for one.
+    assert_eq!(
+        plan_from(
+            &projection,
+            "api.internal.",
+            RecordType::A,
+            Ipv4Addr::new(10, 210, 1, 8),
+        ),
+        ResponsePlan::UnknownCaller
+    );
+}
+
+fn api_and_migrate_hook() -> [ContainerObservation; 2] {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    [
+        observation(
+            1,
+            &machine,
+            &ServiceId::parse("b".repeat(32)).unwrap(),
+            &ServiceName::parse("api").unwrap(),
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 2]),
+        ),
+        observation(
+            2,
+            &machine,
+            &ServiceId::parse("c".repeat(32)).unwrap(),
+            &ServiceName::parse("migrate").unwrap(),
+            ContainerKind::PreDeployHook,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 9]),
+        ),
+    ]
+}
+
+#[test]
+fn caller_service_from_an_unprojected_bridge_address_waits_for_its_caller() {
+    let [api, _] = api_and_migrate_hook();
+    let projection = unfiltered_projection(&[api]);
+
+    assert_eq!(
+        plan_from(
+            &projection,
+            "api.internal.",
+            RecordType::A,
+            Ipv4Addr::new(10, 210, 1, 9),
+        ),
+        ResponsePlan::UnknownCaller
+    );
+    // The gateway is the host, which no projection names.
     assert_nxdomain(plan_from(
         &projection,
         "api.internal.",
         RecordType::A,
-        Ipv4Addr::new(10, 210, 1, 8),
+        Ipv4Addr::new(10, 210, 1, 1),
     ));
+    // Off the bridge no projection will ever name the caller.
+    assert_nxdomain(plan_from(
+        &projection,
+        "api.internal.",
+        RecordType::A,
+        Ipv4Addr::new(10, 9, 9, 9),
+    ));
+    // Qualified names never depend on the caller.
+    assert_eq!(
+        addresses(plan_from(
+            &projection,
+            "api.app.internal.",
+            RecordType::A,
+            Ipv4Addr::new(10, 210, 1, 9),
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+}
+
+/// A pre-deploy hook asks for `api.internal` as it starts, before its own
+/// observation reaches Corrosion (#3379).
+#[tokio::test(start_paused = true)]
+async fn hook_query_before_its_observation_lands_answers_once_it_does() {
+    let [api, hook] = api_and_migrate_hook();
+    let answers = Answers::loaded(
+        unfiltered_projection(std::slice::from_ref(&api)),
+        SUBNET.parse().unwrap(),
+        Upstreams::fixed(Vec::new()),
+    );
+    let name = Name::from_ascii("api.internal.").unwrap();
+    let caller = IpAddr::V4(Ipv4Addr::new(10, 210, 1, 9));
+
+    let pending = tokio::spawn({
+        let answers = answers.clone();
+        let name = name.clone();
+        async move { answers.settled_plan(&name, RecordType::A, caller).await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!pending.is_finished());
+    answers
+        .replace(unfiltered_projection(&[api.clone(), hook]))
+        .unwrap();
+    assert_eq!(
+        addresses(pending.await.unwrap()),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+
+    // A caller no projection names gives up after CALLER_WAIT.
+    let started = tokio::time::Instant::now();
+    let stranger = IpAddr::V4(Ipv4Addr::new(10, 210, 1, 77));
+    assert_eq!(
+        answers.settled_plan(&name, RecordType::A, stranger).await,
+        ResponsePlan::UnknownCaller
+    );
+    assert_eq!(started.elapsed(), CALLER_WAIT);
 }
 
 #[test]
