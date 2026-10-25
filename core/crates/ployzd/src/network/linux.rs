@@ -486,6 +486,8 @@ impl NetworkPlane {
                 .is_ok();
         let ipv6 =
             (fenced && bridge_ipv6_allowed()).then(|| docker_network_ipv6(self.machine.subnet));
+        // Both passes may stop members, and start them again only at their end.
+        let _extend = crate::daemon::extend_systemd_start_timeout("settling the ployz network");
         let created = self.ensure_docker_network_shape(ipv6.as_ref()).await?;
         self.pin_members().await;
         Ok(created)
@@ -585,7 +587,6 @@ impl NetworkPlane {
                 return Ok(());
             }
         };
-        let _extend = crate::daemon::extend_systemd_start_timeout("readdressing the ployz network");
         members.sort_by_key(|member| (member.ipv4.is_none(), member.ipv4));
         let mut stopped = Vec::new();
         let mut detached = Vec::new();
