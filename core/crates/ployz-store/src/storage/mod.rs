@@ -147,6 +147,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0027_drop_sealed_variables",
         Step::Sql(include_str!("migrations/0027_drop_sealed_variables.sql")),
     ),
+    (
+        "0028_scrub_sealed_copies",
+        Step::Rust(|tx, _| crate::review::sealed::scrub_kept(tx).map(|()| None)),
+    ),
 ];
 
 enum Step {

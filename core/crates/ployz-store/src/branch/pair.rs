@@ -336,6 +336,7 @@ impl Checked<'_> {
                 Owner::Proposal { id, sync } => Claim::Owned {
                     sync: sync.clone(),
                     proposal: id.clone(),
+                    was: landed.was,
                 },
             };
             let from = self
@@ -352,7 +353,6 @@ impl Checked<'_> {
                 value: landed.value,
                 arrival: Arrival::Pending {
                     prior: landed.prior,
-                    was: landed.was,
                     claim,
                 },
             };
@@ -715,24 +715,38 @@ pub(super) enum How {
 
 /// Where an arrived row stands in its receiver.
 pub(super) enum Arrival {
-    /// Staged, not deployed: `prior` is what the pair base held before it landed and
-    /// `was` the receiver's own, to rewind a discard and to undo the Sync that landed
-    /// it.
-    Pending {
-        prior: Cell,
-        was: SealedCell,
-        claim: Claim,
-    },
+    /// Staged, not deployed: `prior` is what the pair base held before it landed, to
+    /// rewind a discard.
+    Pending { prior: Cell, claim: Claim },
     /// A Follow the receiver changed too, or discarded.
     Hint,
     /// Deployed.
     Settled,
 }
 
+/// The Sync that landed a pending row, if one did, with the receiver's own from
+/// before it (`was`) to undo it.
 pub(super) enum Claim {
     Nobody,
-    Released(SyncId),
-    Owned { sync: SyncId, proposal: ProposalId },
+    Released {
+        sync: SyncId,
+        was: SealedCell,
+    },
+    Owned {
+        sync: SyncId,
+        proposal: ProposalId,
+        was: SealedCell,
+    },
+}
+
+impl Claim {
+    /// The receiver's own from before the Sync that landed it.
+    pub(super) fn was(self) -> Result<SealedCell, RpcError> {
+        match self {
+            Self::Nobody => Err(error::corrupt("Sync")),
+            Self::Released { was, .. } | Self::Owned { was, .. } => Ok(was),
+        }
+    }
 }
 
 /// A row that arrived in a receiver from `other`.
@@ -748,6 +762,22 @@ pub(super) struct Arrived {
     pub(super) arrival: Arrival,
 }
 
+/// What a row no Sync claims holds as the receiver's own. Nothing undoes it, so the
+/// value isn't kept: it may be plain text sealed since. A Cloud an older release runs
+/// during a rolling deploy reads it on every pending row, so it is Absent, not NULL.
+const UNKEPT: SealedCell = SealedCell::Cell(Cell::Absent);
+
+/// Forget the receiver's own an earlier Store kept in each row no Sync claims.
+pub(crate) fn forget_unclaimed(tx: &mut dyn Tx) -> Result<(), RpcError> {
+    let unkept = json_of(&UNKEPT);
+    tx.execute(
+        "UPDATE config_sync_arrival SET was = ?1 \
+         WHERE sync_id IS NULL AND was IS NOT NULL AND was <> ?1",
+        &[unkept.as_str().into()],
+    )?;
+    Ok(())
+}
+
 /// Record `arrived` in `receiver`, replacing what arrived at that row from that side
 /// before. A row still pending under the same owner keeps the base's cell from
 /// before its first arrival, and one its proposal still owns keeps the receiver's own
@@ -760,11 +790,15 @@ fn arrive(
     arrived: &Arrived,
 ) -> Result<(), RpcError> {
     let (state, prior, was, sync, owner) = match &arrived.arrival {
-        Arrival::Pending { prior, was, claim } => {
-            let (sync, owner) = match claim {
-                Claim::Nobody => (None, None),
-                Claim::Released(sync) => (Some(sync.as_str()), None),
-                Claim::Owned { sync, proposal } => (Some(sync.as_str()), Some(proposal.as_str())),
+        Arrival::Pending { prior, claim } => {
+            let (sync, owner, was) = match claim {
+                Claim::Nobody => (None, None, &UNKEPT),
+                Claim::Released { sync, was } => (Some(sync.as_str()), None, was),
+                Claim::Owned {
+                    sync,
+                    proposal,
+                    was,
+                } => (Some(sync.as_str()), Some(proposal.as_str()), was),
             };
             (
                 "pending",
@@ -859,14 +893,20 @@ pub(super) fn arrived(
             let arrival = match row.text(4)? {
                 "pending" => Arrival::Pending {
                     prior: row.json(6, "Sync")?,
-                    was: row.json(7, "Sync")?,
                     claim: match (
                         row.parse_optional(8, "Sync")?,
                         row.parse_optional(9, "Sync")?,
                     ) {
                         (None, None) => Claim::Nobody,
-                        (Some(sync), None) => Claim::Released(sync),
-                        (Some(sync), Some(proposal)) => Claim::Owned { sync, proposal },
+                        (Some(sync), None) => Claim::Released {
+                            sync,
+                            was: row.json(7, "Sync")?,
+                        },
+                        (Some(sync), Some(proposal)) => Claim::Owned {
+                            sync,
+                            proposal,
+                            was: row.json(7, "Sync")?,
+                        },
                         (None, Some(_)) => return Err(error::corrupt("Sync")),
                     },
                 },
@@ -924,7 +964,7 @@ pub(super) fn undo(
     let mut others = Vec::new();
     let mut landed = Vec::new();
     for arrived in rows {
-        let Arrival::Pending { prior, was, .. } = arrived.arrival else {
+        let Arrival::Pending { prior, claim } = arrived.arrival else {
             return Err(error::conflict(
                 format!(
                     "{} is deployed: change it back instead",
@@ -938,7 +978,7 @@ pub(super) fn undo(
             row: arrived.row,
             value: arrived.value,
             prior,
-            was,
+            was: claim.was()?,
         });
     }
     receiver.working = match unapply(&receiver.working, &suffix(tx, receiver)?, &landed) {

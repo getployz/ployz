@@ -507,7 +507,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
     let mut others = Vec::new();
     let mut landed = Vec::new();
     for arrived in owned {
-        let Arrival::Pending { prior, was, .. } = arrived.arrival else {
+        let Arrival::Pending { prior, claim } = arrived.arrival else {
             return Err(error::corrupt("proposal"));
         };
         others.push(arrived.other);
@@ -515,7 +515,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
             row: arrived.row,
             value: arrived.value,
             prior,
-            was,
+            was: claim.was()?,
         });
     }
     // A node it brought goes whole, so a row of it the draft made its own (released
@@ -541,7 +541,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         .find(|arrived| {
             matches!(
                 &arrived.arrival,
-                Arrival::Pending { claim: Claim::Released(sync), .. } if syncs.contains(sync)
+                Arrival::Pending { claim: Claim::Released { sync, .. }, .. } if syncs.contains(sync)
             ) && (nodes.contains(arrived.row.lineage()) || *arrived.row.at() == At::Node)
         })
         .map(|arrived| arrived.row);
@@ -822,7 +822,7 @@ pub(crate) fn undo(
             matches!(
                 arrived.arrival,
                 Arrival::Pending {
-                    claim: Claim::Released(_),
+                    claim: Claim::Released { .. },
                     ..
                 }
             )
