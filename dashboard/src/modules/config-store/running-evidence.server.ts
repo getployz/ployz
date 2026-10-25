@@ -10,16 +10,19 @@ export const RunningObserver = Context.Reference<{ readonly observe: typeof obse
   defaultValue: () => ({ observe: observeRunning }),
 });
 
-/** The fields that say whether a Deploy prunes; native Store decoding still validates the original command. */
+/**
+ * The fields that say whether a Deploy prunes; a retry prunes as the Deployment it ships did, which only the Store
+ * knows. Native Store decoding still validates the original command.
+ */
 const DeployCommand = Schema.Struct({
   command: Schema.Literal("admit"),
-  admit: Schema.Literal("deploy"),
+  admit: Schema.Literals(["deploy", "retry"]),
   services: Schema.optional(Schema.Array(Schema.String)),
   no_prune: Schema.optional(Schema.Boolean),
 });
 
 /**
- * For a full Deploy that prunes: which Services the Servers run, as Cloud itself observes them, so the Store names each
+ * For a full Deploy that prunes, or a retry that may: which Services the Servers run, as Cloud itself observes them, so the Store names each
  * one the prune removes and refuses a caller who can't destroy. Each Server's answer has its own deadline. Left out when
  * Cloud couldn't try, which the Store reads as not knowing what the prune removes.
  */

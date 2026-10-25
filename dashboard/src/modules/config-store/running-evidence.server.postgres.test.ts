@@ -13,7 +13,7 @@ const staging = { project: "shop", environment: "staging" };
 const raw = asTestDouble<ConfigCommand>();
 const seen: RunningObservation = { services: ["shop-staging/web", "shop-staging/extra2"], unanswered: [] };
 
-it.live("only a full Deploy that prunes asks the Servers what runs, and hands what they said to the Store", () =>
+it.live("only a full Deploy that prunes, or a retry, asks the Servers what runs, and hands what they said to the Store", () =>
   Effect.gen(function* () {
     const services = yield* storeTestCloud();
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
@@ -28,12 +28,13 @@ it.live("only a full Deploy that prunes asks the Servers what runs, and hands wh
     expect(observe).toHaveBeenCalledExactlyOnceWith([{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }]);
     expect(yield* gathered(deploy)).toEqual(seen);
     expect(yield* gathered({ ...deploy, services: [], prune: true })).toEqual(seen);
-    expect(observe).toHaveBeenCalledTimes(3);
+    expect(yield* gathered({ command: "admit", admit: "retry", id: deploy.id, deployment: deploy.id, rolls_back: null, version: null, accept_volume_loss: [] })).toEqual(seen);
+    expect(observe).toHaveBeenCalledTimes(4);
 
     expect(yield* gathered({ ...deploy, services: [], no_prune: true })).toBeUndefined();
     expect(yield* gathered({ ...deploy, services: ["web"] })).toBeUndefined();
     expect(yield* gathered({ command: "publish", environment: staging, version: null, accept_volume_loss: [] })).toBeUndefined();
-    expect(observe).toHaveBeenCalledTimes(3);
+    expect(observe).toHaveBeenCalledTimes(4);
   }));
 
 it.live("without Servers to ask, a pruning Deploy carries no evidence, so the Store can't read a prune as removing nothing", () =>

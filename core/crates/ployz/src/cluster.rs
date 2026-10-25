@@ -835,8 +835,8 @@ impl Client {
     }
 
     /// Every Service with a Container on a Machine that answered, by Namespace: what a
-    /// full Deploy's prune may remove. Every Machine that did not answer is named in
-    /// `unanswered`.
+    /// full Deploy's prune may remove. Every Machine that should answer and did not is
+    /// named in `unanswered`.
     ///
     /// # Errors
     ///
@@ -857,12 +857,12 @@ impl Client {
             .flat_map(|success| &success.value)
             .map(ContainerObservation::identity)
             .collect();
+        // A Machine already marked down is left out, as the Deploy's prune leaves it.
         let unanswered: BTreeSet<MachineId> = live
             .containers
             .failures
             .iter()
             .map(|failure| failure.machine_id)
-            .chain(live.containers.omissions.iter().copied())
             .collect();
         Ok(ployz_store::RunningObservation {
             services: services.into_iter().collect(),

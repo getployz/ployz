@@ -92,13 +92,14 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
     return rows.map((row) => row.id);
   }));
   const { secret } = yield* provided(createOrganizationToken({ ...caller, credential: { kind: "session", id: "session-1" } }, { name: "agent", expiresInDays: 1 }));
-  const cli = (command: ConfigCommand, approval?: string, via?: "agent", bearer = secret) => provided(Effect.gen(function* () {
+  // `running` is what the Servers run, as Cloud asks them before a full Deploy; nothing beyond the Environment by default.
+  const cli = (command: ConfigCommand, approval?: string, via?: "agent", bearer = secret, running: string[] = []) => provided(Effect.gen(function* () {
     const headers = new Headers({ "content-type": "application/json", authorization: `Bearer ${bearer}` });
     if (approval !== undefined) headers.set("x-ployz-approval", approval);
     if (via !== undefined) headers.set("x-ployz-via", via);
     const response = yield* handleConfigRequest(new Request("http://localhost:3000/api/config/write", {
       method: "POST", headers, body: JSON.stringify(command),
-    }));
+    })).pipe(Effect.provideService(RunningObserver, { observe: async () => ({ services: running, unanswered: [] }) }));
     return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
   }));
   return { provided, write, refusal, protectedRefusal, caller, userId, store, pending, withApproval, cli };
@@ -618,12 +619,10 @@ it.live("an owner's Deploy token ships into its Protected Environment unasked bu
     const sent = vi.spyOn(store, "write");
 
     // A Deploy token can't prune: refused while something runs the prune would remove, shipped once nothing does.
-    const runs = (services: string[]) => ({ observe: vi.fn(async () => ({ services, unanswered: [] })) });
-    const pruning = yield* cli(deploy(1), undefined, undefined, deployToken).pipe(Effect.provideService(RunningObserver, runs(["shop-production/extra2"])));
+    const pruning = yield* cli(deploy(1), undefined, undefined, deployToken, ["shop-production/extra2"]);
     expect(pruning).toMatchObject({ status: 403, json: { error: { code: "forbidden" } } });
     expect(pruning.json.error?.message).toContain("extra2");
-    expect(yield* cli(deploy(1), undefined, undefined, deployToken).pipe(Effect.provideService(RunningObserver, runs(["shop-production/web"]))))
-      .toMatchObject({ status: 200 });
+    expect(yield* cli(deploy(1), undefined, undefined, deployToken, ["shop-production/web"])).toMatchObject({ status: 200 });
     // The Store's fences on protection and source still see the token's own grant.
     expect(sent.mock.calls[0]?.[2]).toMatchObject({ protector: true });
     expect(sent.mock.calls[0]?.[2]?.permissions).not.toContain("environments:protect");

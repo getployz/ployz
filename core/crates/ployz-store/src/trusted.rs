@@ -340,7 +340,8 @@ impl VolumeObservation {
 pub struct RunningObservation {
     /// Each Service with a Container on a Server that answered.
     pub services: Vec<QualifiedService>,
-    /// Servers that did not answer: what they run is unknown.
+    /// Servers that should answer and did not: what they run is unknown. One already
+    /// marked down isn't asked, as a Deploy's prune leaves it alone.
     pub unanswered: Vec<MachineId>,
     /// Why the observer couldn't check the Servers at all: then nothing was checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]

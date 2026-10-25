@@ -61,9 +61,12 @@ there. A prune that removes a service is destructive, like `ployz service rm`:
 - A [Deploy token](../account/permissions.md) can't remove one. Its deploy is refused with
   `Needs changes:destroy: this deploy removes extra2, running in this environment but not part of it. Deploy with --no-prune to keep them.`
   When nothing else runs, it deploys as usual.
-- When Cloud can't ask your servers, a Deploy token's deploy is refused the same way. Any other
-  deploy goes ahead, and its approval says it also removes any other service running in the
-  environment.
+- When Cloud can't ask every server that should answer, a Deploy token's deploy is refused the same
+  way. Any other deploy asks first where destructive actions do, and its approval says it also
+  removes any other service running in the environment. A server Ployz already knows is down isn't
+  asked.
+- A redeploy of a deploy that pruned prunes again, and asks or is refused the same way, by what runs
+  now.
 
 A service started after the deploy was queued, and before it ran, is removed without being listed.
 

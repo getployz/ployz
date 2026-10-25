@@ -4700,6 +4700,11 @@ fn discard_config_mount_preserves_same_name_replacement() {
     );
 }
 
+/// Cloud's evidence that nothing runs beyond what the Environment holds.
+fn nothing_else_runs() -> Option<RunningObservation> {
+    Some(RunningObservation::default())
+}
+
 fn deploy_as(
     store: &ConfigStore,
     who: &Actor,
@@ -4712,6 +4717,7 @@ fn deploy_as(
         n,
         &Trusted {
             approval,
+            running: nothing_else_runs(),
             ..Trusted::default()
         },
     )
@@ -4730,6 +4736,7 @@ fn agent_deploys(
         &Trusted {
             approval,
             asks: Asks::EveryDeploy,
+            running: nothing_else_runs(),
             ..Trusted::default()
         },
     )
@@ -4922,6 +4929,110 @@ fn a_prune_that_removes_a_service_asks_first_though_nothing_else_destroys() {
     );
 }
 
+#[test]
+fn a_renamed_service_runs_as_its_old_name_so_a_deploy_token_still_deploys() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("frontend").unwrap(),
+            },
+        )
+        .unwrap();
+    let token = Trusted {
+        running: running(&["web", "api"]),
+        ..deploy_token()
+    };
+    assert!(deploy_trusted(&store, &who, 2, &token).unwrap().prune);
+}
+
+#[test]
+fn a_server_that_didnt_answer_leaves_the_prune_unseen() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let partial = |services: &[&str]| {
+        running(services).map(|running| RunningObservation {
+            unanswered: vec![MachineId::parse("e".repeat(32)).unwrap()],
+            ..running
+        })
+    };
+    let token = Trusted {
+        running: partial(&["web", "api"]),
+        ..deploy_token()
+    };
+    let refused = deploy_trusted(&store, &who, 2, &token).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert!(
+        refused.message.contains("--no-prune"),
+        "{}",
+        refused.message
+    );
+    let agent = Trusted {
+        approval: Approval::Required,
+        asks: Asks::EveryDeploy,
+        running: partial(&["web", "api", "extra2"]),
+        ..Trusted::default()
+    };
+    let asked = deploy_trusted(&store, &who, 2, &agent).unwrap_err();
+    assert_eq!(effects(&asked), removes(&["extra2"]), "{asked:?}");
+    assert_eq!(asked.details["prunes"], true);
+}
+
+#[test]
+fn an_unseen_prune_asks_first_where_destroys_ask() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let person = Trusted {
+        approval: Approval::Required,
+        ..Trusted::default()
+    };
+    let asked = deploy_trusted(&store, &who, 2, &person).unwrap_err();
+    assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
+    assert_eq!(asked.details["prunes"], true);
+    assert!(
+        deploy_trusted(
+            &store,
+            &who,
+            2,
+            &Trusted {
+                approval: approved(&asked),
+                ..person
+            }
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_deploy_token_cant_redeploy_a_prune_that_removes_what_runs_now() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let redeploy = |n: u8, running| {
+        store.write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(n),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &Trusted {
+                running,
+                ..deploy_token()
+            },
+        )
+    };
+    let refused = redeploy(2, running(&["web", "api", "extra2"])).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert!(refused.message.contains("extra2"), "{}", refused.message);
+    assert!(redeploy(2, running(&["web", "api"])).unwrap().prune);
+}
+
 fn apply_both(store: &ConfigStore, who: &Actor, n: u8) {
     admit(store, who, n, &[], None).unwrap();
     let a = runner("runner-a");
@@ -5013,6 +5124,7 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
             }),
             &Trusted {
                 approval: Approval::Required,
+                running: nothing_else_runs(),
                 ..Trusted::default()
             },
         )
@@ -6349,6 +6461,7 @@ fn protector(approval: Approval, asks: Asks) -> Trusted {
         approval,
         asks,
         permissions: Some(Permission::ALL.iter().copied().collect()),
+        running: nothing_else_runs(),
         ..Trusted::default()
     }
 }
@@ -6357,6 +6470,7 @@ fn protector(approval: Approval, asks: Asks) -> Trusted {
 fn member(approval: Approval, asks: Asks) -> Trusted {
     Trusted {
         asks,
+        running: nothing_else_runs(),
         ..unprotecting(approval)
     }
 }
