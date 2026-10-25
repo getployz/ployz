@@ -1226,5 +1226,103 @@ mod tests {
             &deploy(&store, &who, 3, &["db"]).unwrap_err(),
             "db.PASSWORD",
         );
+
+        let db = working(&store)
+            .services
+            .iter()
+            .find(|service| service.slug == "db")
+            .unwrap()
+            .lineage_id
+            .clone();
+        crate::rules::tests::seed(&store, &who, |working| {
+            working
+                .services
+                .first_mut()
+                .unwrap()
+                .variables
+                .push(SavedVariableIntent {
+                    id: Uuid::new_v4().to_string(),
+                    key: "DATABASE_URL".into(),
+                    description: None,
+                    exported: false,
+                    value_fingerprint: "t1:url".into(),
+                    value: SavedVariableValue::Template {
+                        parts: ployz_core::config::parse_variable_template(
+                            "postgres://app:${{ db.PASSWORD }}@db/app",
+                            |_, _| Some(db.clone()),
+                        )
+                        .parts,
+                    },
+                });
+        });
+        assert_waits(
+            &deploy(&store, &who, 4, &["web"]).unwrap_err(),
+            "db.PASSWORD",
+        );
+    }
+
+    #[test]
+    fn a_targeted_deploy_waits_for_a_legacy_value_it_reads_from_a_service_it_leaves_alone() {
+        let (store, who) = shop();
+        store
+            .write_trusted(
+                &who,
+                &crate::CreateGitService {
+                    id: ServiceLineageId::parse(uuid(4)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("auth").unwrap(),
+                    repository: crate::RepositoryName::parse("acme/auth").unwrap(),
+                    branch: None,
+                },
+                &crate::Trusted {
+                    repositories: vec![crate::AuthorizedRepository {
+                        repository: crate::RepositoryName::parse("acme/auth").unwrap(),
+                        repository_id: crate::RepositoryId::parse(11).unwrap(),
+                        access: ployz_core::config::ServiceGitAccess::GithubInstallation {
+                            installation_id: 7,
+                        },
+                        default_branch: crate::BranchName::parse("main").unwrap(),
+                        branches: Vec::new(),
+                    }],
+                    ..crate::Trusted::default()
+                },
+            )
+            .unwrap();
+        let auth = working(&store)
+            .services
+            .iter()
+            .find(|service| service.slug == "auth")
+            .unwrap()
+            .lineage_id
+            .clone();
+        crate::rules::tests::seed(&store, &who, |working| {
+            for service in &mut working.services {
+                if service.slug == "auth" {
+                    service
+                        .variables
+                        .push(secret("TOKEN", legacy(&store.sealing, "hunter2")));
+                } else {
+                    service.variables.push(SavedVariableIntent {
+                        id: Uuid::new_v4().to_string(),
+                        key: "AUTH".into(),
+                        description: None,
+                        exported: false,
+                        value_fingerprint: "t1:auth".into(),
+                        value: SavedVariableValue::Template {
+                            parts: ployz_core::config::parse_variable_template(
+                                "Bearer ${{ auth.TOKEN }}",
+                                |_, _| Some(auth.clone()),
+                            )
+                            .parts,
+                        },
+                    });
+                }
+            }
+        });
+
+        assert_waits(
+            &deploy(&store, &who, 1, &["web"]).unwrap_err(),
+            "auth.TOKEN",
+        );
     }
 }

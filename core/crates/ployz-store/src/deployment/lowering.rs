@@ -937,15 +937,31 @@ pub(super) fn lower(
     } else {
         BTreeSet::new()
     };
-    // A Legacy secret of a Service this Deploy ships waits for the reseal: leaving
-    // it out would drop a value the Service holds. One a Branch reads live from its
-    // parent has no Service here, and is Not set in the Branch even once resealed.
-    let waiting = resolved.legacy.iter().find_map(|(owner, key)| {
-        let service = saved.services.iter().find(|service| service.id == *owner)?;
-        (!narrowed || shipped.contains(&service.config.private_dns)).then_some((service, key))
+    // A Legacy secret that reaches a Service this Deploy ships, or a Config one of
+    // them mounts, waits for the reseal: leaving it out would drop a value the
+    // Service holds.
+    let deploys =
+        |service: &SavedServiceIntent| !narrowed || shipped.contains(&service.config.private_dns);
+    let waiting = resolved.legacy.iter().find(|read| {
+        saved
+            .services
+            .iter()
+            .filter(|service| deploys(service))
+            .any(|service| match &read.reader {
+                variables::LegacyReader::Service(id) => service.id == *id,
+                variables::LegacyReader::Config(id) => service
+                    .config_attachments
+                    .iter()
+                    .any(|mount| mount.config_resource_id == *id),
+            })
     });
-    if let Some((service, key)) = waiting {
-        return Err(awaiting_reseal(&service.slug, key));
+    if let Some(read) = waiting {
+        let owner = saved
+            .services
+            .iter()
+            .find(|service| service.id == read.owner)
+            .map_or("", |service| service.slug.as_str());
+        return Err(awaiting_reseal(owner, &read.key));
     }
     let warnings = warnings
         .into_iter()

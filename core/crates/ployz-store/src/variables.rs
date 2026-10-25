@@ -923,22 +923,47 @@ pub(crate) struct Resolved {
     /// Each Service's variables left out because they reference, directly or through
     /// another variable, a Service or variable that isn't there, by Service ID.
     pub(crate) broken: BTreeMap<String, Vec<String>>,
-    /// Each Legacy secret, by the ID of the Service that owns it: Not set here, and
-    /// a Deploy that ships its Service waits for the reseal instead.
-    pub(crate) legacy: Vec<(String, String)>,
+    /// Each Legacy secret of this Environment's Services that reaches a Service's
+    /// environment or a Config's files: Not set there, and a Deploy that ships the
+    /// reader waits for the reseal instead.
+    pub(crate) legacy: Vec<LegacyRead>,
+}
+
+/// A Legacy secret, by its owner's Service ID and key, that reaches `reader`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LegacyRead {
+    pub(crate) reader: LegacyReader,
+    pub(crate) owner: String,
+    pub(crate) key: String,
+}
+
+/// What a Legacy secret reaches: a Service's environment or a Config's files, by ID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum LegacyReader {
+    Service(String),
+    Config(String),
 }
 
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers, for a Deploy of Environment
 /// `environment`. Nothing opens a secret here. One sealed for `environment` reaches
 /// its Service as a Sealed part; one sealed for another Environment, or Legacy, is
-/// Not set, and a Legacy one is listed. A variable a secret without a value, or a broken reference, reaches is
-/// left out; in a file either is empty.
+/// Not set, and what a Legacy one reaches is listed. A variable a secret without a
+/// value, or a broken reference, reaches is left out; in a file either is empty.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a reference cycle, a value too long for the
 /// environment or a Config file that reads a value sealed in the browser.
 pub(crate) fn resolve(
+    compiled: &CompiledEnvironmentIntent,
+    environment: &str,
+) -> Result<Resolved, RpcError> {
+    let mut resolved = resolve_values(compiled, environment)?;
+    resolved.legacy = legacy_reads(compiled, environment)?;
+    Ok(resolved)
+}
+
+fn resolve_values(
     compiled: &CompiledEnvironmentIntent,
     environment: &str,
 ) -> Result<Resolved, RpcError> {
@@ -954,14 +979,7 @@ pub(crate) fn resolve(
         None => Err(error::corrupt("sealed secret")),
     };
     let mut producers = Vec::new();
-    let mut legacy = Vec::new();
     for producer in &compiled.variable_producers {
-        if let SavedVariableValue::Secret {
-            encrypted_value: Some(SecretCiphertext::Legacy(_)),
-        } = &producer.value
-        {
-            legacy.push((producer.owner_id.clone(), producer.key.clone()));
-        }
         let value = match &producer.value {
             SavedVariableValue::Literal { value } => ResolverValue::Literal {
                 value: value.clone(),
@@ -986,7 +1004,7 @@ pub(crate) fn resolve(
         configs: BTreeMap::new(),
         not_set: BTreeMap::new(),
         broken: BTreeMap::new(),
-        legacy,
+        legacy: Vec::new(),
     };
     for node in &compiled.node_snapshots {
         let config = match &node.snapshot.0 {
@@ -1134,6 +1152,93 @@ fn sealed_in_file(
     )
 }
 
+/// What each Legacy secret of `compiled`'s own Services reaches. It resolves
+/// `compiled` again with each such secret as a marker literal, so a reference
+/// through any chain of variables or a Config file counts. One a Branch reads live
+/// from its parent is left out: it is Not set in the Branch even once resealed.
+fn legacy_reads(
+    compiled: &CompiledEnvironmentIntent,
+    environment: &str,
+) -> Result<Vec<LegacyRead>, RpcError> {
+    let is_legacy =
+        |value: Option<&SecretCiphertext>| matches!(value, Some(SecretCiphertext::Legacy(_)));
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let marker = |index: usize| format!("ployz-legacy-{nonce}-{index}-");
+    let mut owners: Vec<(String, String)> = Vec::new();
+    let mut marked = compiled.clone();
+    for producer in &mut marked.variable_producers {
+        if let SavedVariableValue::Secret { encrypted_value } = &producer.value
+            && is_legacy(encrypted_value.as_ref())
+            && service_name(compiled, &producer.owner_id).is_some()
+        {
+            producer.value = SavedVariableValue::Literal {
+                value: marker(owners.len()),
+            };
+            owners.push((producer.owner_id.clone(), producer.key.clone()));
+        }
+    }
+    for node in &mut marked.node_snapshots {
+        let CompiledNodeConfig::Service(config) = &mut node.snapshot.0 else {
+            continue;
+        };
+        for (key, value) in &mut config.env {
+            if let ServiceEnvValue::Secret {
+                encrypted_value, ..
+            } = value
+                && is_legacy(encrypted_value.as_ref())
+            {
+                *value = ServiceEnvValue::Literal {
+                    value: marker(owners.len()),
+                    parts: None,
+                };
+                owners.push((node.node_id.clone(), key.clone()));
+            }
+        }
+    }
+    if owners.is_empty() {
+        return Ok(Vec::new());
+    }
+    let resolved = resolve_values(&marked, environment)?;
+    let mut reads = Vec::new();
+    let mut read = |reader: LegacyReader, text: &str| {
+        for (index, (owner, key)) in owners.iter().enumerate() {
+            let found = LegacyRead {
+                reader: reader.clone(),
+                owner: owner.clone(),
+                key: key.clone(),
+            };
+            if text.contains(&marker(index)) && !reads.contains(&found) {
+                reads.push(found);
+            }
+        }
+    };
+    for (service, env) in &resolved.env {
+        for value in env.values() {
+            let parts = match value {
+                EnvValue::Text(text) => vec![text.as_str()],
+                EnvValue::Template(template) => template
+                    .template
+                    .iter()
+                    .filter_map(|part| match part {
+                        EnvPart::Text(text) => Some(text.as_str()),
+                        EnvPart::Sealed(_) => None,
+                    })
+                    .collect(),
+                EnvValue::Sealed(_) => Vec::new(),
+            };
+            for text in parts {
+                read(LegacyReader::Service(service.clone()), text);
+            }
+        }
+    }
+    for (config, files) in &resolved.configs {
+        for file in files.values() {
+            read(LegacyReader::Config(config.clone()), &file.content);
+        }
+    }
+    Ok(reads)
+}
+
 /// The name of Service `node_id`, as a refusal names it.
 fn service_name(compiled: &CompiledEnvironmentIntent, node_id: &str) -> Option<String> {
     compiled
@@ -1250,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn a_config_file_that_reads_a_legacy_secret_reads_it_as_not_set_and_lists_it() {
+    fn a_config_file_that_reads_a_legacy_secret_reads_it_as_not_set() {
         let file = |text: &str| SavedConfigFile {
             content: parse_variable_template(text, |_, _| Some("web-lineage".to_owned())).parts,
             mode: FileMode::READ_ONLY,
@@ -1292,7 +1397,10 @@ mod tests {
             }],
         };
         let mut resolved = resolve(&compiled, "env").unwrap();
-        assert_eq!(resolved.legacy, [("web".to_owned(), "P".to_owned())]);
+        assert!(
+            resolved.legacy.is_empty(),
+            "web is no Service here, as a live value"
+        );
         let files = resolved.configs.remove("sentry").unwrap();
         assert_eq!(
             files
