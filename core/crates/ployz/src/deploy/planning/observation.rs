@@ -7,9 +7,10 @@ use ployz_core::{
     ServiceRemovals,
 };
 
-/// `removals` names the Services this Deploy must take out wherever they run. A
-/// Machine it could not check may hold a copy it never saw, so every such Machine
-/// is a gap: the report names it, and the next full Deploy prunes that copy.
+/// `removals` names the Services this Deploy must take out wherever they run, and
+/// `retiring` the ones it plans to, pruned Services included. A Machine it could
+/// not check may hold a copy of one it never saw, so every such Machine is a gap:
+/// the report names it, and the next full Deploy prunes that copy.
 pub(super) fn warnings(
     namespace: &Namespace,
     requested: &[RequestedServiceSpec],
@@ -68,7 +69,8 @@ pub(super) fn warnings(
                     ServicePlacementEligibility::Ineligible(_)
                 )
         });
-        let removing = kind == ObservationKind::Container && !removals.is_empty();
+        let removing =
+            kind == ObservationKind::Container && (!removals.is_empty() || !retiring.is_empty());
         if candidate
             || removing
             || affected_existing(kind, machine_id, namespace, requested, retiring, snapshot)
