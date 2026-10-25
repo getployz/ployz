@@ -741,7 +741,8 @@ pub enum PruneRefusal {
     SelectedServices,
     /// The Deploy removes only the Services its `removals` name: the ones its
     /// Config Store held and dropped. Every other Service the target lacks is kept
-    /// and reported as [`DeployWarning::NotInStore`].
+    /// and reported as [`DeployWarning::NotInStore`]. A Config Store Deploy
+    /// admitted with `no_prune`, or before it pruned by default.
     RemovalsOnly,
 }
 
@@ -755,7 +756,7 @@ impl Display for PruneRefusal {
                 "Pruning is disabled because this command named specific Services, so it is not a full reconciliation.",
             ),
             Self::RemovalsOnly => f.write_str(
-                "Pruning is limited to the services this environment removed; any other service running in it is kept and reported.",
+                "Pruning is off (--no-prune): only the services this environment removed are removed; any other service running in it is kept and reported.",
             ),
         }
     }
@@ -909,8 +910,8 @@ pub enum DeployWarning {
         machine: String,
     },
     /// `service` runs in the Namespace, and neither the target nor the removals
-    /// name it: another Config Store, or a direct Deploy, put it there. The Deploy
-    /// keeps it; `ployz deploy --prune` removes it.
+    /// name it: another Config Store, or a direct Deploy, put it there. A Deploy
+    /// admitted with `--no-prune` keeps it; any other full Deploy removes it.
     NotInStore { service: QualifiedService },
 }
 
@@ -1003,7 +1004,7 @@ impl Display for DeployWarning {
             ),
             Self::NotInStore { service } => write!(
                 f,
-                "{service}: running, not in this environment; kept. ployz deploy --prune removes it."
+                "{service}: running, not in this environment; kept (--no-prune)."
             ),
         }
     }

@@ -95,7 +95,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             source: Some(directory),
             accept: super::teardown::accepted(matches)?,
             message: None,
-            prune: false,
+            no_prune: false,
         },
         events,
     )?;

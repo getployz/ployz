@@ -3464,8 +3464,8 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
             json!("not_found")
         );
 
-        // Nothing deployed loses data, so there is nothing to accept. --yes answers only
-        // --prune's ask, so the deploy runs and fails for want of a Server.
+        // Nothing deployed loses data, so there is nothing to accept. --yes asks nothing,
+        // so the deploy runs and fails for want of a Server.
         let accept = error(store, &["deploy", "--accept-volume-loss", "data"]);
         assert_eq!(accept["code"], json!("invalid_argument"));
         let (code, deployed) = ployz(Some(store), &["deploy", "--yes"]);
@@ -3475,78 +3475,82 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
 }
 
 #[test]
-fn deploy_prune_asks_before_removing_what_the_store_does_not_hold() {
+fn a_full_deploy_prunes_unless_no_prune_keeps_the_rest() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
-        // Under --json nothing can ask, so --prune refuses until --yes answers for it.
-        let asked = error(store, &["deploy", "--prune"]);
-        assert_eq!(asked["code"], json!("confirmation_required"), "{asked}");
-        assert_eq!(
-            asked["details"]["retry"],
-            json!("ployz --json deploy --prune --yes"),
-            "{asked}"
-        );
+        // The Store can't name what runs, so the plan says a full deploy prunes.
+        for (args, prunes) in [
+            (&["deploy", "--plan"][..], true),
+            (&["deploy", "--plan", "--no-prune"], false),
+            (&["deploy", "web", "--plan"], false),
+        ] {
+            assert_eq!(ok(store, args)["prunes"], json!(prunes), "{args:?}");
+        }
+        let home = tempfile::tempdir().unwrap();
+        let output = store
+            .command(home.path())
+            .args(["deploy", "--plan"])
+            .output()
+            .unwrap();
+        let said = String::from_utf8(output.stdout).unwrap();
         assert!(
-            asked["message"]
-                .as_str()
-                .unwrap()
-                .contains("Nothing deployed"),
-            "{asked}"
+            said.contains(
+                "Also removes any other service running in this environment; --no-prune keeps them."
+            ),
+            "{said}"
         );
-        assert_eq!(ok(store, &["deployment", "ls"])["deployments"], json!([]));
 
-        let deployed = no_server_answers(store, &["deploy", "--prune", "--yes"]);
+        let deployed = no_server_answers(store, &["deploy"]);
         assert_eq!(deployed["prune"], json!(true), "{deployed}");
         let id = deployed["id"].as_str().unwrap().to_owned();
         assert_eq!(
             ok(store, &["deployment", "show", &id])["prune"],
             json!(true)
         );
-
-        // Without --prune the Deployment keeps what this Store never held, and says so.
-        let kept = no_server_answers(store, &["deploy"]);
+        let kept = no_server_answers(store, &["deploy", "--no-prune"]);
         assert!(kept.get("prune").is_none(), "{kept}");
+        // Older scripts' --prune and --yes still deploy, without asking.
+        let pruned = no_server_answers(store, &["deploy", "--prune", "--yes"]);
+        assert_eq!(pruned["prune"], json!(true), "{pruned}");
+        let pruned = no_server_answers(store, &["deploy", "--prune"]);
+        assert_eq!(pruned["prune"], json!(true), "{pruned}");
+
+        for args in [
+            &["deploy", "web", "--no-prune"][..],
+            &["deploy", "--prune", "--no-prune"],
+            &["deploy", "--skip-deploy", "--no-prune"],
+        ] {
+            assert_eq!(
+                error(store, args)["code"],
+                json!("invalid_argument"),
+                "{args:?}"
+            );
+        }
     }
 }
 
 #[test]
-fn auto_confirm_in_the_environment_answers_for_deploy() {
+fn auto_confirm_in_the_environment_never_stops_a_deploy() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
-        let deploy = |auto_confirm: &str, args: &[&str]| -> (Option<i32>, Value) {
+        for auto_confirm in ["1", "0"] {
             let home = tempfile::tempdir().unwrap();
             let output = store
                 .command(home.path())
                 .env("PLOYZ_AUTO_CONFIRM", auto_confirm)
-                .arg("--json")
-                .args(args)
+                .args(["--json", "deploy", "--prune"])
                 .args(UNREACHABLE_SERVER)
                 .output()
                 .unwrap();
             let stdout = String::from_utf8(output.stdout).unwrap();
-            let json = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+            let deployed: Value = serde_json::from_str(&stdout).unwrap_or_else(|error| {
                 panic!("stdout is not one JSON object ({error}): {stdout:?}")
             });
-            (output.status.code(), json)
-        };
-        // `1` answers yes, as it does for every other --yes.
-        let (code, pruned) = deploy("1", &["deploy", "--prune"]);
-        assert_eq!(code, Some(1), "{pruned}");
-        assert_eq!(pruned["prune"], json!(true), "{pruned}");
-        // A deploy that never asks doesn't mind the answer's spelling.
-        let (code, deployed) = deploy("1", &["deploy"]);
-        assert_eq!(code, Some(1), "{deployed}");
-        assert!(deployed.get("error").is_none(), "{deployed}");
-        // `0` answers no.
-        let (code, asked) = deploy("0", &["deploy", "--prune"]);
-        assert_eq!(code, Some(2), "{asked}");
-        assert_eq!(
-            asked["error"]["code"],
-            json!("confirmation_required"),
-            "{asked}"
-        );
+            assert_eq!(output.status.code(), Some(1), "{deployed}");
+            assert_eq!(deployed["prune"], json!(true), "{deployed}");
+        }
     }
 }
 
