@@ -293,7 +293,8 @@ pub(super) async fn dial_tunnel(
         send.write_u8(header).await?;
         send.write_all(address.as_bytes()).await?;
         match receive.read_u8().await? {
-            TUNNEL_OPEN => Ok((send, receive)),
+            TUNNEL_OPEN => Ok(Some((send, receive))),
+            TUNNEL_NEEDS_FULL => Ok(None),
             other => Err(io::Error::other(format!("unexpected tunnel reply {other}"))),
         }
     };
@@ -302,7 +303,7 @@ pub(super) async fn dial_tunnel(
         // The Machine finishes the stream before its close carries the refusal; wait for it.
         let _ = tokio::time::timeout(TUNNEL_CLOSE_GRACE, session.connection.closed()).await;
     }
-    let (send, receive) = opened.map_err(|error| {
+    let opened = opened.map_err(|error| {
         let Some(iroh::endpoint::ConnectionError::ApplicationClosed(close)) =
             session.connection.close_reason()
         else {
@@ -312,14 +313,15 @@ pub(super) async fn dial_tunnel(
             ConnectError::ClientRefused
         } else if close.error_code == CLIENT_CLEARED {
             ConnectError::ClientCleared
-        } else if close.error_code == VarInt::from_u32(TUNNEL_NEEDS_FULL) {
-            ConnectError::TunnelNeedsFull
         } else if close.error_code == VarInt::from_u32(TUNNEL_FAILED) {
             ConnectError::Attempt(String::from_utf8_lossy(&close.reason).into_owned().into())
         } else {
             ConnectError::Attempt(format!("tunnel open: {error}").into())
         }
     })?;
+    let Some((send, receive)) = opened else {
+        return Err(ConnectError::TunnelNeedsFull);
+    };
     Ok(Box::new(ManagementIo {
         io: tokio::io::join(receive, send),
         _session: session,

@@ -19,19 +19,22 @@ pub const MANAGEMENT_ALPN: &[u8] = b"ployz/rpc/2";
 ///
 /// The client opens one bidirectional stream and writes its [`ManagementProof`], then a
 /// one-byte length followed by the target `ip:port` in ASCII. The Machine answers [`TUNNEL_OPEN`] once it is
-/// connected, then relays bytes; otherwise it closes the connection with
-/// [`TUNNEL_NEEDS_FULL`] or [`TUNNEL_FAILED`] and the reason.
+/// connected, then relays bytes, or [`TUNNEL_NEEDS_FULL`] to a client below `Full` scope.
+/// Otherwise, and after a [`TUNNEL_NEEDS_FULL`], it closes the connection with
+/// [`TUNNEL_FAILED`] and the reason.
 pub const TUNNEL_ALPN: &[u8] = b"ployz/tunnel/2";
 
 /// The byte a Machine writes once a tunnel's target accepted the TCP connection.
 pub const TUNNEL_OPEN: u8 = 0;
 
-/// QUIC application close code on [`TUNNEL_ALPN`] for a target that is malformed,
-/// outside the Cluster network, or unreachable. The close reason says which.
-pub const TUNNEL_FAILED: u32 = 0x53;
+/// The byte a Machine writes to a client below `Full` scope before it closes the tunnel.
+/// A v0.3.4 CLI knows no such reply and prints the [`TUNNEL_FAILED`] close reason instead.
+pub const TUNNEL_NEEDS_FULL: u8 = 1;
 
-/// QUIC application close code on [`TUNNEL_ALPN`] for a client below `Full` scope.
-pub const TUNNEL_NEEDS_FULL: u32 = 0x54;
+/// QUIC application close code on [`TUNNEL_ALPN`] for a target that is malformed,
+/// outside the Cluster network, or unreachable, or a client below `Full` scope. The close
+/// reason says which.
+pub const TUNNEL_FAILED: u32 = 0x53;
 
 /// TLS exporter label for a [`ManagementProof`]. The exporter is unique to one
 /// connection's handshake, so a proof verifies on no other connection.

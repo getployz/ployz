@@ -560,7 +560,11 @@ async fn only_a_device_execs_or_tunnels() {
             other => panic!("an Operator tunnel must be refused, got {:?}", other.err()),
         }
         let close = v0_3_4_tunnel(&relay_url, &machine, capability, &target).await;
-        assert_eq!(close.error_code, VarInt::from_u32(TUNNEL_FAILED), "{close:?}");
+        assert_eq!(
+            close.error_code,
+            VarInt::from_u32(TUNNEL_FAILED),
+            "{close:?}"
+        );
         assert_eq!(
             String::from_utf8_lossy(&close.reason),
             "tunnels need Full access: run `ployz device request` \
@@ -600,10 +604,10 @@ async fn v0_3_4_tunnel(
         .await
         .expect("the refusal must close within a v0.3.4 CLI's grace");
     client.close().await;
-    match closed {
-        iroh::endpoint::ConnectionError::ApplicationClosed(close) => close,
-        other => panic!("expected an application close, got {other:?}"),
-    }
+    let iroh::endpoint::ConnectionError::ApplicationClosed(close) = closed else {
+        panic!("expected an application close, got {closed:?}");
+    };
+    close
 }
 
 async fn exec(channel: Channel) -> Result<(), tonic::Status> {
