@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
+import type { ConfigCommand, DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DeletionDialog } from "#/components/deletion-dialog";
 import { reviewMoving, useStoreBusy, writeMark } from "#/modules/config-store/store-pending";
@@ -75,10 +75,13 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     if (saving || reviewMoving(queryClient, organizationSlug, environment, mark)) return { status: "staging" };
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
+    const command: ConfigCommand = action === "deploy"
+      ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }
+      : { command: "publish", environment, version, accept_volume_loss: [...accept], message: words };
+    // A Store from before no_prune refuses a Deploy carrying it, so only a Deploy that keeps other services sends it.
+    if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;
     try {
-      await writer.commit(action === "deploy"
-        ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words, no_prune: choice.noPrune }
-        : { command: "publish", environment, version, accept_volume_loss: [...accept], message: words }, ["confirmation_required"]).isPersisted.promise;
+      await writer.commit(command, ["confirmation_required"]).isPersisted.promise;
       if (action === "deploy") onAdmitted(id);
       return { status: "done" };
     } catch (error) {

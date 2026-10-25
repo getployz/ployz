@@ -240,10 +240,12 @@ it("keeps other services through the ask before a Deploy deletes Volume data", a
 
   await waitFor(() => expect(admittedIds).toHaveLength(2));
   expect(test.admits()).toMatchObject([
-    { admit: "deploy", no_prune: false },
+    { admit: "deploy" },
     { admit: "deploy", accept_volume_loss: [], no_prune: true },
     { admit: "deploy", accept_volume_loss: ["pg-data"], no_prune: true },
   ]);
+  // A Store from before no_prune refuses any field it doesn't know, so a Deploy that prunes leaves it out.
+  expect(test.admits()[0]).not.toHaveProperty("no_prune");
 });
 
 it("asks before a Deploy deletes a copy, before anything reaches the Store, then admits accepting the Volume", async () => {
