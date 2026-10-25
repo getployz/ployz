@@ -600,12 +600,14 @@ fn automatic_provisioned_volume_uses_known_eligible_and_warns_about_unknown() {
         operations(&preview).as_slice(),
         [DeployOperation::PrepareVolumes { .. }, DeployOperation::RunContainer { machine_id: target, .. }] if target == &machine_id('1')
     ));
-    assert!(
-        preview
-            .warnings
-            .contains(&ployz_core::DeployWarning::StorageObservationUnknown {
-                machine_id: machine_id('2')
-            })
+    let warning = ployz_core::DeployWarning::StorageObservationUnknown {
+        machine_id: machine_id('2'),
+        machine_name: Some(MachineName::parse("unknown").unwrap()),
+    };
+    assert!(preview.warnings.contains(&warning));
+    assert_eq!(
+        warning.to_string(),
+        "Server unknown did not report its storage, so this deploy placed no Managed volume on it. Bring unknown back to place Managed volumes there again."
     );
 }
 
