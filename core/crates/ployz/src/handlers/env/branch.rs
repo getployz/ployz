@@ -609,7 +609,8 @@ fn not_set_note(
         branch.as_str(),
     ]);
     Some(format!(
-        "{} {secrets} not set in {branch}: {}. Deploys leave {them} out until you set {each}: {set}",
+        "{} {secrets} not set in {branch}: {}. Deploys leave {them} out until you set {each}: \
+         printf %s \"$VALUE\" | {set}",
         not_set.len(),
         paths.join(", "),
     ))
@@ -664,7 +665,8 @@ mod tests {
             not_set_note(&shop, &feat, &[secret("web", "TOKEN")]).as_deref(),
             Some(
                 "1 secret not set in feat: web.env.TOKEN. Deploys leave it out until you \
-                 set it: ployz set web.env.TOKEN --secret --project shop --env feat"
+                 set it: printf %s \"$VALUE\" | ployz set web.env.TOKEN --secret --project shop \
+                 --env feat"
             )
         );
         assert_eq!(
@@ -676,8 +678,8 @@ mod tests {
             .as_deref(),
             Some(
                 "2 secrets not set in feat: web.env.TOKEN, worker.env.API_KEY. Deploys leave \
-                 them out until you set each: ployz set web.env.TOKEN --secret --project shop \
-                 --env feat"
+                 them out until you set each: printf %s \"$VALUE\" | ployz set web.env.TOKEN \
+                 --secret --project shop --env feat"
             )
         );
     }

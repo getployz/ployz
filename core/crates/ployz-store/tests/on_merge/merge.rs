@@ -970,9 +970,8 @@ fn the_check_names_the_secrets_the_preview_runs_without_until_they_are_set() {
             summary: "No config changes.\n\n\
                       ### Not set in pr-5\n\n\
                       - `web · TOKEN`\n\n\
-                      Secrets don't carry into a preview, so its deploys leave these out. \
-                      Set each in pr-5's Variables, or with \
-                      `ployz set web.env.TOKEN --secret --env pr-5`."
+                      pr-5's deploys leave these out until you set each in its Variables, or with \
+                      `printf %s \"$VALUE\" | ployz set web.env.TOKEN --secret --project shop --env pr-5`."
                 .into(),
             merged_into: None,
         }

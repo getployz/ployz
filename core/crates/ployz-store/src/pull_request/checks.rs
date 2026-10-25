@@ -137,21 +137,25 @@ pub(super) fn check(
 
 /// Each preview's secrets without a value, and how to set them: a copy never carries one.
 fn preview_not_set(environments: &[PrEnvironment]) -> String {
+    let headed = environments.len() > 1;
     let mut said = String::new();
     for environment in environments {
-        let name = &environment.environment.name;
+        let EnvironmentSummary { project, name, .. } = &environment.environment;
         let Some(first) = environment.not_set.first() else {
             continue;
         };
-        let _ = writeln!(said, "\n### Not set in {name}\n");
+        let place = match headed {
+            true => format!("{project} · {name}"),
+            false => name.to_string(),
+        };
+        let _ = writeln!(said, "\n### Not set in {place}\n");
         for variable in &environment.not_set {
             let _ = writeln!(said, "- `{} · {}`", variable.service, variable.key);
         }
         let _ = writeln!(
             said,
-            "\nSecrets don't carry into a preview, so its deploys leave these out. \
-             Set each in {name}'s Variables, or with \
-             `ployz set {}.env.{} --secret --env {name}`.",
+            "\n{name}'s deploys leave these out until you set each in its Variables, or with \
+             `printf %s \"$VALUE\" | ployz set {}.env.{} --secret --project {project} --env {name}`.",
             first.service, first.key
         );
     }
@@ -395,4 +399,48 @@ pub(crate) fn destinations_of(
         }
     }
     Ok(destinations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn preview(project: &str, id: u8, secrets: &[&str]) -> PrEnvironment {
+        PrEnvironment {
+            environment: EnvironmentSummary {
+                id: EnvironmentId::parse(format!("00000000-0000-4000-8000-0000000000{id:02}"))
+                    .unwrap(),
+                project: ProjectName::parse(project).unwrap(),
+                name: EnvironmentName::parse("pr-5").unwrap(),
+                revision: crate::id::Revision(1),
+            },
+            deployment: None,
+            destinations: Vec::new(),
+            not_set: secrets
+                .iter()
+                .map(|key| NotSetVariable {
+                    service: ServiceName::parse("web").unwrap(),
+                    key: (*key).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn previews_in_two_projects_say_which_project_each_secret_is_set_in() {
+        let said = preview_not_set(&[
+            preview("shop", 1, &["TOKEN"]),
+            preview("blog", 2, &[]),
+            preview("docs", 3, &["API_KEY"]),
+        ]);
+        assert_eq!(
+            said,
+            "\n### Not set in shop · pr-5\n\n- `web · TOKEN`\n\n\
+             pr-5's deploys leave these out until you set each in its Variables, or with \
+             `printf %s \"$VALUE\" | ployz set web.env.TOKEN --secret --project shop --env pr-5`.\n\
+             \n### Not set in docs · pr-5\n\n- `web · API_KEY`\n\n\
+             pr-5's deploys leave these out until you set each in its Variables, or with \
+             `printf %s \"$VALUE\" | ployz set web.env.API_KEY --secret --project docs --env pr-5`.\n"
+        );
+    }
 }

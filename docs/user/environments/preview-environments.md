@@ -79,8 +79,8 @@ When a pull request opens, Ployz deploys its preview, named like `pr-142`:
 - A push deploys the new commit, even if production doesn't deploy on push, once the pull request
   [deploys automatically](#who-deploys-automatically) or a member approves that commit. **Wait
   for CI** and **Watch paths** still apply.
-- Secrets don't carry into a preview. Each sealed variable starts **Not set**, and the preview
-  deploys without it. See [Set a preview's secrets](#set-a-previews-secrets).
+- Secrets don't carry into a preview: by design, a branch never gets real secret values. Each
+  sealed variable starts **Not set**, and the preview deploys without it. See [Set a preview's secrets](#set-a-previews-secrets).
 
 Open previews are listed under **Open now** in the panel, and in the environment switcher under
 the environment they start from. Each one is a [branch](environments.md) of that environment, so
@@ -93,10 +93,9 @@ key may fail until you set them. The **Ployz · ready to merge** check on the pu
 them under **Not set in pr-142**, and each service's card on the preview's canvas reads like
 `1 not set`.
 
-Open the preview, open the service's **Variables**, and choose **Set value** on each. From the CLI,
-run `printf %s "$VALUE" | ployz set web.env.TOKEN --secret --env pr-142`. Then deploy the preview
-again, or push. A value you set here stays in the preview: the merge doesn't bring it to
-production.
+Open the preview, open the service's **Variables**, and choose **Set value** on each. Then deploy
+the preview again, or push. A value you set here stays in the preview: the merge doesn't bring it
+to production.
 
 ## Config changes in a pull request
 
@@ -149,8 +148,9 @@ built. An edit you staged in production but didn't save stays staged.
 
 A removal deploys too: the service's containers stop and go away, and its volumes stay on the
 server with their data. The merge opens no approval, because it never deletes volume data.
-**Undo** in production's **Versions** brings the service or config back whole, settings and
-secrets included, and the next deploy starts it on the same volumes. If another service took its
+**Undo** in production's **Versions** brings the service or config back whole, and the next
+deploy starts it on the same volumes. Its secrets come back **Not set**: choose **Set value** on
+each before that deploy. If another service took its
 name since, Undo is refused with **api exists. Rename it first.**
 
 If the merge couldn't land in production, or landed but couldn't deploy, the check says so, like

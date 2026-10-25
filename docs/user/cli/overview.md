@@ -137,7 +137,9 @@ Some things are not tools. Run these yourself in a terminal:
 - Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` seals a secret on this
   computer. A new secret needs a Server first, so run `ployz server add` if you have none. An
-  older `ployz` can't set a secret and tells you to update.
+  older `ployz` can't set a secret and tells you to update. A new branch's secrets start Not
+  set: `ployz env branch` lists them, like `1 secret not set in staging: web.env.TOKEN`, with
+  the command to set one.
 
 Tools that can delete something when they run are marked destructive: `deploy`,
 `deployment_retry`, `deployment_start`, `discard`, `environment_remove`, `project_remove`, the

@@ -392,7 +392,7 @@ Putting one Environment's changes, chosen change by change, into another Environ
 _Avoid_: Save, push, promote, merge (a GitHub merge only), Publish
 
 **Follow**:
-A Branch receiving what its Parent deploys, as staged changes in its Working State. When a Deployment applies changes in an Environment, each of its Branches gets them, without waiting for its own undeployed changes, so they flow down one level per deploy. Where the Branch changed a setting too, its own value stays and the Parent's is a Use hint. Each of the Parent's changes is delivered once: one the Branch discards stays a Use hint until the Parent changes that setting again. Never-synced settings don't follow. A Parent's secret value follows into a Branch that never set its own.
+A Branch receiving what its Parent deploys, as staged changes in its Working State. When a Deployment applies changes in an Environment, each of its Branches gets them, without waiting for its own undeployed changes, so they flow down one level per deploy. Where the Branch changed a setting too, its own value stays and the Parent's is a Use hint. Each of the Parent's changes is delivered once: one the Branch discards stays a Use hint until the Parent changes that setting again. Never-synced settings don't follow. A Parent's secret value never follows: it opens only in the Environment it was sealed for, so a secret the Parent changes arrives Not set in a Branch that never set its own.
 _Avoid_: Update, pull, rebase, inherit
 
 **Never sync**:
