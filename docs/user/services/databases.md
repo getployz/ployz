@@ -25,8 +25,15 @@ it's an ordinary service you can change like any other.
 ![Create → Database: PostgreSQL, Redis, MongoDB and MySQL](../images/database-preset-menu.png)
 
 You get a service named after the database. Its connection variables are exported for your
-other services to reference, and its password is sealed. They use Railway's names, like
-`PGHOST` and `PGPASSWORD`, so an app moving from Railway can keep reading them.
+other services to reference. They use Railway's names, like `PGHOST` and `PGPASSWORD`, so an
+app moving from Railway can keep reading them.
+
+The generated password is a plain variable, not sealed, so anyone who can see the service's
+variables can read it. That's what lets a [branch](../environments/environments.md) or a
+[pull request's preview](../environments/preview-environments.md) work: they start with
+sealed values Not set, but they copy plain ones, so a copy of the database sets up its new,
+empty volume with the password its connection variables already hold. To keep a database's
+password sealed, seal it from its menu in **Variables**, and set it in each branch yourself.
 
 | | Version | Service | URL variable | Port | User |
 | --- | --- | --- | --- | --- | --- |
@@ -41,7 +48,7 @@ PostgreSQL and MySQL start with a database named `ployz`.
 
 1. Open your app's service, go to **Variables** and click **New Variable**.
 2. Enter `DATABASE_URL` as the **Key**, and leave **Sealed** unticked: a sealed value can't
-   hold a reference. The password inside stays hidden anyway.
+   hold a reference.
 3. Enter `${{ postgres.DATABASE_URL }}` as the **Value** and click **Add**.
 4. Click **Deploy**.
 
@@ -61,7 +68,7 @@ is CLI-only for now ([install the CLI](../cli/overview.md) first):
 # Forward 127.0.0.1:5432 to the database, until you press Ctrl-C
 ployz service port-forward postgres 5432:5432
 
-# In another terminal: read the sealed password, then connect
+# In another terminal: read the password, then connect
 ployz exec postgres -- printenv POSTGRES_PASSWORD
 psql -h 127.0.0.1 -U postgres ployz
 ```
@@ -108,6 +115,9 @@ IPs.
 - **The password is set once.** PostgreSQL, MySQL and MongoDB read their password only when
   they first set up their volume. If you change the password variable later, change it in the
   database too, or your app can't connect. Redis reads `REDIS_PASSWORD` each time it starts.
+- **A database added before Ployz 0.3.5 keeps its sealed password.** Ployz can't read a sealed
+  value, so it never unseals one. Its branches and previews show the password **Not set**, and
+  their copy of the database can't start until you set it in the branch's **Variables**.
 - **Redis can lose its last minute of writes** if it crashes.
 - **Deleting a database deletes its data.** Deleting its service in the dashboard also deletes
   its volume, unless another service mounts it. The deploy asks you to confirm first.
