@@ -1363,5 +1363,38 @@ mod tests {
 
         deploy(&store, &who, 1, &["web"]).unwrap();
         assert_waits(&deploy(&store, &who, 2, &[]).unwrap_err(), "auth.TOKEN");
+
+        let auth = working(&store)
+            .services
+            .iter()
+            .find(|service| service.slug == "auth")
+            .unwrap()
+            .lineage_id
+            .clone();
+        crate::rules::tests::seed(&store, &who, |working| {
+            working
+                .services
+                .first_mut()
+                .unwrap()
+                .variables
+                .push(SavedVariableIntent {
+                    id: Uuid::new_v4().to_string(),
+                    key: "AUTH".into(),
+                    description: None,
+                    exported: false,
+                    value_fingerprint: "t1:auth".into(),
+                    value: SavedVariableValue::Template {
+                        parts: ployz_core::config::parse_variable_template(
+                            "Bearer ${{ auth.TOKEN }}",
+                            |_, _| Some(auth.clone()),
+                        )
+                        .parts,
+                    },
+                });
+        });
+        assert_waits(
+            &deploy(&store, &who, 3, &["web"]).unwrap_err(),
+            "auth.TOKEN",
+        );
     }
 }

@@ -959,7 +959,7 @@ pub(crate) fn resolve(
     environment: &str,
 ) -> Result<Resolved, RpcError> {
     let mut resolved = resolve_values(compiled, environment)?;
-    resolved.legacy = legacy_reads(compiled, environment);
+    resolved.legacy = legacy_reads(compiled);
     Ok(resolved)
 }
 
@@ -1152,97 +1152,99 @@ fn sealed_in_file(
     )
 }
 
-/// What each Legacy secret of `compiled`'s own Services reaches. It resolves
-/// `compiled` again with each such secret as a marker literal, so a reference
-/// through any chain of variables or a Config file counts. One a Branch reads live
-/// from its parent is left out: it is Not set in the Branch even once resealed.
-fn legacy_reads(compiled: &CompiledEnvironmentIntent, environment: &str) -> Vec<LegacyRead> {
+/// What each Legacy secret of `compiled`'s own Services reaches, by reference
+/// alone: a variable is tainted when it is one or references a tainted one, and a
+/// Service's environment or a Config's file that holds or references a tainted
+/// variable reads it. Nothing resolves here, so no limit on resolved values applies.
+/// One a Branch reads live from its parent is left out: it is Not set in the Branch
+/// even once resealed.
+fn legacy_reads(compiled: &CompiledEnvironmentIntent) -> Vec<LegacyRead> {
     let is_legacy =
         |value: Option<&SecretCiphertext>| matches!(value, Some(SecretCiphertext::Legacy(_)));
-    let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let marker = |index: usize| format!("ployz-legacy-{nonce}-{index}-");
-    let mut owners: Vec<(String, String)> = Vec::new();
-    let mut marked = compiled.clone();
-    for producer in &mut marked.variable_producers {
+    // Each tainted variable by owner lineage and key, with the Legacy secret it reads
+    // by owner Service ID and key.
+    let mut tainted: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
+    for producer in &compiled.variable_producers {
         if let SavedVariableValue::Secret { encrypted_value } = &producer.value
             && is_legacy(encrypted_value.as_ref())
             && service_name(compiled, &producer.owner_id).is_some()
         {
-            producer.value = SavedVariableValue::Literal {
-                value: marker(owners.len()),
-            };
-            owners.push((producer.owner_id.clone(), producer.key.clone()));
+            tainted.insert(
+                (producer.owner_lineage_id.clone(), producer.key.clone()),
+                (producer.owner_id.clone(), producer.key.clone()),
+            );
         }
     }
-    for node in &mut marked.node_snapshots {
-        let CompiledNodeConfig::Service(config) = &mut node.snapshot.0 else {
-            continue;
+    let reads_tainted =
+        |tainted: &BTreeMap<(String, String), (String, String)>, parts: &[ValuePart], own: &str| {
+            parts
+                .iter()
+                .filter_map(|part| match part {
+                    ValuePart::Ref { owner, key } => {
+                        let lineage = match owner {
+                            ValuePartOwner::Service { lineage_id } => lineage_id.as_str(),
+                            ValuePartOwner::Self_ => own,
+                        };
+                        tainted.get(&(lineage.to_owned(), key.clone())).cloned()
+                    }
+                    ValuePart::Text { .. } => None,
+                })
+                .collect::<Vec<_>>()
         };
-        for (key, value) in &mut config.env {
-            if let ServiceEnvValue::Secret {
-                encrypted_value, ..
-            } = value
-                && is_legacy(encrypted_value.as_ref())
+    loop {
+        let mut spread = Vec::new();
+        for producer in &compiled.variable_producers {
+            let id = (producer.owner_lineage_id.clone(), producer.key.clone());
+            if let SavedVariableValue::Template { parts } = &producer.value
+                && !tainted.contains_key(&id)
+                && let Some(origin) = reads_tainted(&tainted, parts, &producer.owner_lineage_id)
+                    .into_iter()
+                    .next()
             {
-                *value = ServiceEnvValue::Literal {
-                    value: marker(owners.len()),
-                    parts: None,
-                };
-                owners.push((node.node_id.clone(), key.clone()));
+                spread.push((id, origin));
             }
         }
+        if spread.is_empty() {
+            break;
+        }
+        tainted.extend(spread);
     }
-    if owners.is_empty() {
-        return Vec::new();
-    }
-    // A marker may be longer than the value it stands for, so this pass can be
-    // refused where the real one wasn't. Then each secret counts as read by its
-    // owner alone.
-    let Ok(resolved) = resolve_values(&marked, environment) else {
-        return owners
-            .into_iter()
-            .map(|(owner, key)| LegacyRead {
-                reader: LegacyReader::Service(owner.clone()),
-                owner,
-                key,
-            })
-            .collect();
-    };
     let mut reads = Vec::new();
-    let mut read = |reader: LegacyReader, text: &str| {
-        for (index, (owner, key)) in owners.iter().enumerate() {
-            let found = LegacyRead {
-                reader: reader.clone(),
-                owner: owner.clone(),
-                key: key.clone(),
-            };
-            if text.contains(&marker(index)) && !reads.contains(&found) {
-                reads.push(found);
-            }
+    let mut read = |reader: LegacyReader, (owner, key): (String, String)| {
+        let found = LegacyRead { reader, owner, key };
+        if !reads.contains(&found) {
+            reads.push(found);
         }
     };
-    for (service, env) in &resolved.env {
-        for value in env.values() {
-            let parts = match value {
-                EnvValue::Text(text) => vec![text.as_str()],
-                EnvValue::Template(template) => template
-                    .template
-                    .iter()
-                    .filter_map(|part| match part {
-                        EnvPart::Text(text) => Some(text.as_str()),
-                        EnvPart::Sealed(_) => None,
-                    })
-                    .collect(),
-                EnvValue::Sealed(_) => Vec::new(),
-            };
-            for text in parts {
-                read(LegacyReader::Service(service.clone()), text);
+    for node in &compiled.node_snapshots {
+        match &node.snapshot.0 {
+            CompiledNodeConfig::Service(config) => {
+                for (key, value) in &config.env {
+                    let origins = match value {
+                        ServiceEnvValue::Secret {
+                            encrypted_value, ..
+                        } if is_legacy(encrypted_value.as_ref()) => {
+                            vec![(node.node_id.clone(), key.clone())]
+                        }
+                        ServiceEnvValue::Literal {
+                            parts: Some(parts), ..
+                        } => reads_tainted(&tainted, parts, &node.node_lineage_id),
+                        ServiceEnvValue::Literal { parts: None, .. }
+                        | ServiceEnvValue::Secret { .. } => Vec::new(),
+                    };
+                    for origin in origins {
+                        read(LegacyReader::Service(node.node_id.clone()), origin);
+                    }
+                }
             }
-        }
-    }
-    for (config, files) in &resolved.configs {
-        for file in files.values() {
-            read(LegacyReader::Config(config.clone()), &file.content);
+            CompiledNodeConfig::Config(config) => {
+                for file in config.files.values() {
+                    for origin in reads_tainted(&tainted, &file.content, "") {
+                        read(LegacyReader::Config(node.node_id.clone()), origin);
+                    }
+                }
+            }
+            CompiledNodeConfig::Volume(_) => {}
         }
     }
     reads
