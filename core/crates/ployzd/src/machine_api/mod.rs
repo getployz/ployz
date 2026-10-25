@@ -266,7 +266,7 @@ impl Service<http::Request<Body>> for MachineApi {
 
 /// The way to Full access, said in the refusal itself: a v0.3.4 CLI prints only the
 /// message, and has no `device` command.
-pub(crate) const FULL_ACCESS_NEXT: &str =
+const FULL_ACCESS_NEXT: &str =
     "run `ployz device request` (update ployz first if it has no `device` command)";
 
 #[derive(Debug, thiserror::Error)]

@@ -213,7 +213,8 @@ moved to member loses this access within 5 minutes.
 and point you at `ployz device request`. Every other command works as before.
 
 Ployz 0.3.4 and earlier have no `device` command. Once your servers run 0.3.5, an older CLI's
-`exec` and `service port-forward` are refused with `needs Full access`.
+`exec` and `service port-forward` through Ployz Cloud are refused with `needs Full access`.
+Over `--connect ssh://` they still work.
 [Upgrade the CLI](../cli/overview.md#install-the-cli) first, then run `ployz device request`.
 
 ```sh

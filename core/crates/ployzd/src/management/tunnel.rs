@@ -21,13 +21,9 @@ use super::{REVOKED, refusal, revoked};
 use ipnet::Ipv4Net;
 
 use crate::machine::{LocalMachine, LocalMachineRecord};
-use crate::machine_api::FULL_ACCESS_NEXT;
 
 /// Bounds the client's header and the Machine's dial, so a stalled open never lingers.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Bounds the wait for a refused client to hold [`TUNNEL_NEEDS_FULL`].
-const REFUSAL_DELIVERY: Duration = Duration::from_secs(1);
 
 /// Serve one tunnel on an authenticated connection until either side ends it, the key
 /// is revoked, or `shutdown`.
@@ -51,7 +47,10 @@ pub(super) async fn serve(
         return;
     }
     if record.management_scope(&remote) < Some(ManagementScope::Full) {
-        return refuse_below_full(connection, send).await;
+        return connection.close(
+            VarInt::from_u32(TUNNEL_FAILED),
+            TUNNEL_NEEDS_FULL.as_bytes(),
+        );
     }
     let revoked = revoked(records, remote);
     tokio::pin!(revoked);
@@ -80,16 +79,6 @@ pub(super) async fn serve(
             connection.close(VarInt::from_u32(0), b"tunnel closed");
         }
     }
-}
-
-/// Answer [`TUNNEL_NEEDS_FULL`], then close with [`TUNNEL_FAILED`] once the client holds
-/// the answer, inside the two seconds a v0.3.4 CLI waits for the close it prints.
-async fn refuse_below_full(connection: Connection, mut send: iroh::endpoint::SendStream) {
-    if send.write_u8(TUNNEL_NEEDS_FULL).await.is_ok() && send.finish().is_ok() {
-        let _ = tokio::time::timeout(REFUSAL_DELIVERY, send.stopped()).await;
-    }
-    let reason = format!("tunnels need Full access: {FULL_ACCESS_NEXT}");
-    connection.close(VarInt::from_u32(TUNNEL_FAILED), reason.as_bytes());
 }
 
 /// Only the founder records the Cluster network locally; a joined Machine reads it from
