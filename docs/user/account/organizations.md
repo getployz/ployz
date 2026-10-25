@@ -129,7 +129,10 @@ How you answer depends on where the command runs:
   pending and changes nothing.
 - Without a terminal, such as in a script, it prints the same list, the approval's ID, a link to
   the [Ployz agent](agent-sidebar.md) where it waits, and `ployz org approval approve ID`. With
-  `PLOYZ_TOKEN`, when Cloud doesn't name the organization, the link is Ployz Cloud itself. It
+  `PLOYZ_TOKEN`, when Cloud doesn't name the organization, the link is Ployz Cloud itself. A
+  redeploy's list names the deploy it ships again, such as `This redeploy of #4:`, and the later
+  deploys it rolls back. When a [Protected environment](../environments/environments.md#protect-an-environment)
+  asks, it prints Ployz Cloud's reason and waits for an owner or admin who didn't ask. It
   waits until someone approves or denies it in Ployz Cloud, then carries on, or fails naming what
   was denied and the reason given. Ctrl-C, or losing Ployz Cloud, stops waiting and leaves the
   approval pending, and the error names the command to run again with `--approval ID`, except
