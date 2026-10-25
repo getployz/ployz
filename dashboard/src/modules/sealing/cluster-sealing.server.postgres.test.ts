@@ -1,6 +1,7 @@
 import type { RuntimeWatchView } from "@ployz/sdk";
+import { Inngest } from "inngest";
 import { ConfigProvider, Effect, Layer } from "effect";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -57,10 +58,10 @@ describe("readClusterSealing", () => {
     ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl } }),
   )));
   const read = () => harness.runEffect(readClusterSealing(organizationId).pipe(Effect.provideService(SecretEncryption, encryption)));
-  const readToSeal = () => harness.runEffect(readClusterSealingToSeal(organizationId).pipe(
+  const readToSeal = (inngest = sendsNowhere()) => harness.runEffect(readClusterSealingToSeal(organizationId).pipe(
     Effect.provideService(SecretEncryption, encryption),
     Effect.provideService(OrganizationRuntime, runtime),
-    Effect.provideService(InngestClient, sendsNowhere()),
+    Effect.provideService(InngestClient, inngest),
     Effect.provide(config()),
   ));
   // A Server reporting its key reads Cloud's config, which keeps its shipped default here.
@@ -117,6 +118,15 @@ describe("readClusterSealing", () => {
 
     expect(await readToSeal()).toEqual({ state: "ready", publicKey });
     expect([opened, await reseals()]).toEqual([1, 1]);
+  });
+
+  it("to seal, answers without waiting for Inngest to take the reseal request", async () => {
+    await pair();
+    cluster = frameOf({ m1: held(publicKey) });
+    const stalled = new Inngest({ id: "stalled" });
+    vi.spyOn(stalled, "send").mockReturnValue(new Promise(() => {}));
+    expect(await readToSeal(stalled)).toEqual({ state: "ready", publicKey });
+    expect(await reseals()).toBe(1);
   });
 
   it("to seal, records the held key while another Server still awaits recovery", async () => {

@@ -32,17 +32,17 @@ export const readSealingPublicKey = Effect.fn("SealingKey.readPublicKey")(functi
 
 /**
  * Keeps the first Sealing Key a Cluster reports, and gives it to the Organization unless a backup holds another; the first
- * one asks for its Organization's Legacy secrets to be resealed to it.
+ * one asks for its Organization's Legacy secrets to be resealed to it, waiting on that send unless `delivery` detaches it.
  */
 export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(function* (
-  organizationId: string, clusterKey: string, publicKey: SealingPublicKey,
+  organizationId: string, clusterKey: string, publicKey: SealingPublicKey, delivery: "await" | "detach" = "await",
 ) {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const inserted = yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey }).onConflictDoNothing()
       .returning({ clusterKey: clusterSealingKey.clusterKey });
-    if (inserted.length > 0) yield* enqueueEvent(createClusterResealRequestedEvent({ organizationId, clusterKey }));
+    if (inserted.length > 0) yield* enqueueEvent(createClusterResealRequestedEvent({ organizationId, clusterKey }), delivery);
   }));
   const recorded = yield* readSealingPublicKey(organizationId, clusterKey);
   if (recorded !== undefined && recorded !== publicKey) {
