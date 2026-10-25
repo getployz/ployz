@@ -1,5 +1,5 @@
 //! Whether the running dockerd filters IPv6 with ip6tables, read from its own
-//! flags and the `daemon.json` it loaded. Docker leaves its ip6tables chains in
+//! flags and its `daemon.json`. Docker leaves its ip6tables chains in
 //! the kernel when a restart turns ip6tables off, so the chains alone prove
 //! nothing until a reboot clears them (#3458).
 
@@ -13,10 +13,12 @@ pub(super) fn docker_filters_ipv6() -> bool {
     dockerd_args().is_some_and(|args| filters_ipv6(&args, |path| fs::read_to_string(path)))
 }
 
-/// The command line of the one dockerd running as root. A rootless daemon runs
-/// as its user and doesn't own the bridge; two root daemons leave unknown which
-/// one does.
+/// The command line of the one dockerd running as root in this PID namespace.
+/// A rootless daemon runs as its user and one inside a container, such as a
+/// Docker-in-Docker Service, sits in its own namespace; neither owns the
+/// bridge. Two that could leave unknown which one does.
 fn dockerd_args() -> Option<Vec<String>> {
+    let namespace = fs::read_link("/proc/self/ns/pid").ok()?;
     let mut daemons = fs::read_dir("/proc")
         .ok()?
         .filter_map(Result::ok)
@@ -24,6 +26,7 @@ fn dockerd_args() -> Option<Vec<String>> {
             fs::read_to_string(entry.path().join("comm"))
                 .is_ok_and(|comm| comm.trim_end() == "dockerd")
                 && entry.metadata().is_ok_and(|metadata| metadata.uid() == 0)
+                && fs::read_link(entry.path().join("ns/pid")).is_ok_and(|ns| ns == namespace)
         });
     let daemon = daemons.next()?;
     if daemons.next().is_some() {
@@ -45,6 +48,10 @@ fn filters_ipv6(args: &[String], read: impl FnOnce(&Path) -> io::Result<String>)
     let Some((flags, config_file)) = flag_settings(args.get(1..).unwrap_or_default()) else {
         return false;
     };
+    // An empty `--config-file=` loads no file.
+    if config_file == Some("") {
+        return flags.filters_ipv6();
+    }
     let file = match read(Path::new(config_file.unwrap_or(DEFAULT_CONFIG_FILE))) {
         Ok(contents) => file_settings(&contents),
         // Docker starts without its default file; a named one it must have read.
@@ -113,8 +120,13 @@ fn flag_settings(args: &[String]) -> Option<(Settings, Option<&str>)> {
 }
 
 /// `None` when the file isn't a JSON object or a firewall key has a type
-/// dockerd would reject.
+/// dockerd would reject. Like dockerd, a byte order mark is dropped and a blank
+/// file holds no settings.
 fn file_settings(contents: &str) -> Option<Settings> {
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
+    if contents.trim().is_empty() {
+        return Some(Settings::default());
+    }
     let serde_json::Value::Object(config) = serde_json::from_str(contents).ok()? else {
         return None;
     };
@@ -160,6 +172,17 @@ mod tests {
         assert!(decide(&["dockerd"], Some(r#"{"ip6tables": true}"#)));
         assert!(decide(&["dockerd", "--ip6tables"], Some("{}")));
         assert!(decide(&["dockerd", "--firewall-backend", "iptables"], None));
+        assert!(decide(&["dockerd"], Some(" \n")));
+        assert!(decide(&["dockerd"], Some("\u{feff}{}")));
+        assert!(decide(&["dockerd", "--config-file="], None));
+        assert!(!decide(
+            &["dockerd", "--config-file=", "--ip6tables=false"],
+            None
+        ));
+        assert!(!decide(
+            &["dockerd"],
+            Some("\u{feff}{\"ip6tables\": false}")
+        ));
     }
 
     #[test]
