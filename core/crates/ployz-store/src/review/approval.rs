@@ -117,31 +117,46 @@ pub(crate) fn deployed(head: &Head) -> SavedEnvironmentIntent {
             })
         });
         add_missing(&mut deployed.volumes, mounted, |volume| &volume.resource_id);
-        for service in &target.services {
-            let Some(running) = deployed
-                .services
-                .iter_mut()
-                .find(|running| running.id == service.id)
-            else {
-                deployed.services.push(service.clone());
-                continue;
-            };
-            let (into, from) = (&mut running.config, &service.config);
-            add_missing(&mut into.routes, &from.routes, |route| &route.hostname);
-            add_missing(
-                &mut into.managed_hostnames,
-                &from.managed_hostnames,
-                |managed| &managed.prefix,
-            );
-            add_missing(
-                &mut running.volume_attachments,
-                &service.volume_attachments,
-                |attachment| &attachment.volume_resource_id,
-            );
-        }
+        put_in_place(&mut deployed, &target.services);
     }
     add_missing(&mut deployed.services, &head.may_run, |service| &service.id);
     deployed
+}
+
+/// What the Servers may hold: [`deployed`], plus each route, generated domain and
+/// mount that a Deployment whose outcome is unknown may have put in place on a
+/// Service Applied State already holds.
+pub(crate) fn may_hold(head: &Head) -> SavedEnvironmentIntent {
+    let mut held = deployed(head);
+    put_in_place(&mut held, &head.may_run);
+    held
+}
+
+/// Add each of `services` to `deployed`, or to the one it holds, each route,
+/// generated domain and mount it lacks.
+fn put_in_place(deployed: &mut SavedEnvironmentIntent, services: &[SavedServiceIntent]) {
+    for service in services {
+        let Some(running) = deployed
+            .services
+            .iter_mut()
+            .find(|running| running.id == service.id)
+        else {
+            deployed.services.push(service.clone());
+            continue;
+        };
+        let (into, from) = (&mut running.config, &service.config);
+        add_missing(&mut into.routes, &from.routes, |route| &route.hostname);
+        add_missing(
+            &mut into.managed_hostnames,
+            &from.managed_hostnames,
+            |managed| &managed.prefix,
+        );
+        add_missing(
+            &mut running.volume_attachments,
+            &service.volume_attachments,
+            |attachment| &attachment.volume_resource_id,
+        );
+    }
 }
 
 fn add_missing<'a, T: Clone + 'a, K: PartialEq + ?Sized>(

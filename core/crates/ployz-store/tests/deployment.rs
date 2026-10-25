@@ -5976,31 +5976,60 @@ fn a_protectors_rollback_that_takes_a_service_off_still_asks_an_admin() {
 #[test]
 fn a_protectors_retry_whose_revision_removes_a_domain_still_asks_an_admin() {
     let (store, who) = shop();
+    add_web_domain(&store, &who, "app.example.com");
+    apply_both(&store, &who, 1);
+    remove_domain(&store, &who, "app.example.com");
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let refused = retry_as(&store, &who, (3, 2), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+/// Add domain `hostname` to `web`, as staged.
+fn add_web_domain(store: &ConfigStore, who: &Actor, hostname: &str) {
     store
         .write(
-            &who,
+            who,
             &ployz_store::AddDomain {
                 environment: EnvironmentRef::default(),
                 service: ServiceName::parse("web").unwrap(),
-                hostname: Some(ployz_store::Hostname::parse("app.example.com").unwrap()),
+                hostname: Some(ployz_store::Hostname::parse(hostname).unwrap()),
                 prefix: None,
                 port: None,
             },
         )
         .unwrap();
-    apply_both(&store, &who, 1);
+}
+
+fn remove_domain(store: &ConfigStore, who: &Actor, hostname: &str) {
     store
         .write(
-            &who,
+            who,
             &ployz_store::RemoveDomain {
                 environment: EnvironmentRef::default(),
-                domain: "app.example.com".into(),
+                domain: hostname.into(),
             },
         )
         .unwrap();
+}
+
+#[test]
+fn a_protectors_retry_removing_a_domain_an_unknown_deployment_may_have_left_still_asks_an_admin() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    add_web_domain(&store, &who, "app.example.com");
     deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
-    cancel(&store, &who, 2).unwrap();
-    let refused = retry_as(&store, &who, (3, 2), &admins_token(nothing_else_runs())).unwrap_err();
+    // #2 lost track after preparing: it may have put the domain in place.
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+    remove_domain(&store, &who, "app.example.com");
+    deploy_as(&store, &who, 3, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 3).unwrap();
+    let refused = retry_as(&store, &who, (4, 3), &admins_token(nothing_else_runs())).unwrap_err();
     assert_admin_asked(&refused);
 }
 

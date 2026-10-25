@@ -738,7 +738,7 @@ pub(crate) fn retry(
             .collect()
     });
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
-    let running = crate::review::approval::deployed(&head(tx, &environment)?);
+    let running = crate::review::approval::may_hold(&head(tx, &environment)?);
     rollback.replays_destruction =
         nodes.iter().any(|node| match node {
             TargetNode::Service { removals, .. } => !removals.is_empty(),
@@ -836,9 +836,9 @@ pub(crate) struct Rollback {
     /// Service that runs, or may. None for one of some Services, which leaves the
     /// rest as they are.
     pub(crate) ships: Option<Vec<ServiceLineageId>>,
-    /// Whether it may destroy what runs now, as its source's review accepted: what it
+    /// Whether it may destroy anything, as its source's review accepted: what it
     /// queues takes a runtime Service off or deletes a Docker Volume, or its revision
-    /// drops a Service, Volume, mount or domain that runs.
+    /// drops a Service, Volume, mount or domain the Servers may hold.
     pub(crate) replays_destruction: bool,
 }
 
