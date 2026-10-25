@@ -53,7 +53,7 @@ const LOG_LEVEL: VariableRecord = { id: "LOG_LEVEL", serviceId: "web", key: "LOG
 
 /** The Service tab's wiring: the raw editor's Apply through the real variables writer, over a Store writer that records each edit. */
 function StoreHarness({ sealing, edits, prepare, variables = [SECRET, LOG_LEVEL] }: {
-  sealing: "off" | "no_server" | "ready";
+  sealing: "no_server" | "ready";
   edits: StoreEdit[];
   prepare: Sealing["prepare"];
   variables?: VariableRecord[];
@@ -70,7 +70,7 @@ function StoreHarness({ sealing, edits, prepare, variables = [SECRET, LOG_LEVEL]
 
 const env = () => screen.getByLabelText<HTMLTextAreaElement>("Service variables in ENV format");
 
-it.each(["off", "ready"] as const)("a save that leaves out a sealed variable never removes it, sealing %s", async (sealing) => {
+it.each(["no_server", "ready"] as const)("a save that leaves out a sealed variable never removes it, sealing %s", async (sealing) => {
   const edits: StoreEdit[] = [];
   render(<StoreHarness sealing={sealing} edits={edits} prepare={vi.fn()} />);
   expect(env().value).toBe("LOG_LEVEL=info");
@@ -105,20 +105,20 @@ it("names each sealed variable, and seals the new keys ticked Sealed, across ENV
   expect(prepare).toHaveBeenCalledWith([{ key: "TOKEN", value: "tok_live_123456", target: expect.anything() }]);
 });
 
-it.each(["no_server", "off"] as const)("a key ticked Sealed still goes Sealed once the cached state turns %s", async (later) => {
+it("a key ticked Sealed still goes Sealed once the cached state turns no_server", async () => {
   const edits: StoreEdit[] = [];
-  const prepare = vi.fn(async (items: readonly SealItem[]) => items.map((item) => item.value));
+  const prepare = vi.fn(async (items: readonly SealItem[]) => items.map((item) => ({ sealedFor: item.target.environment, value: { sealed: "c2VhbGVk", scope: { service: item.target.service }, key: item.key } })));
   const { rerender } = render(<StoreHarness sealing="ready" edits={edits} prepare={prepare} />);
   fireEvent.change(env(), { target: { value: "LOG_LEVEL=info\nTOKEN=tok_live_123456" } });
   fireEvent.click(screen.getByRole("checkbox", { name: "Seal TOKEN" }));
-  rerender(<StoreHarness sealing={later} edits={edits} prepare={prepare} />);
+  rerender(<StoreHarness sealing="no_server" edits={edits} prepare={prepare} />);
   expect(screen.getByRole("checkbox", { name: "Seal TOKEN" }).getAttribute("aria-checked")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "Update variables" }));
 
   expect(edits).toHaveLength(1);
   expect(JSON.stringify(edits[0]?.changes)).not.toContain("tok_live_123456");
-  // The write's fresh read decides: here off, so trunk's legacy secret.
-  expect(await edits[0]?.prepare?.()).toEqual([{ op: "set", path: "web.env.TOKEN", value: { secret: "tok_live_123456" } }]);
+  expect(JSON.stringify(await edits[0]?.prepare?.())).not.toContain("tok_live_123456");
+  expect(prepare).toHaveBeenCalledWith([{ key: "TOKEN", value: "tok_live_123456", target: expect.anything() }]);
 });
 
 it.each([
@@ -152,8 +152,8 @@ it("holds a value it can't seal, saying why", () => {
   expect(edits).toEqual([]);
 });
 
-it("offers no Sealed choice while sealing is off", () => {
-  render(<StoreHarness sealing="off" edits={[]} prepare={vi.fn()} />);
+it("offers no Sealed choice without a Server", () => {
+  render(<StoreHarness sealing="no_server" edits={[]} prepare={vi.fn()} />);
   fireEvent.change(env(), { target: { value: "LOG_LEVEL=info\nTOKEN=x" } });
   expect(screen.queryByRole("checkbox")).toBeNull();
   expect(screen.getByText(/1 sealed variable omitted from the editor/u)).toBeTruthy();

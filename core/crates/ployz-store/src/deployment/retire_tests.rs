@@ -805,6 +805,7 @@ fn a_narrowed_deployment_never_tears_down_a_service_saved_state_runs() {
                 let saved = crate::review::latest_saved(tx, &environment.summary.id)?.unwrap();
                 super::freeze(
                     &environment.summary.id,
+                    &who.organization,
                     &saved.intent,
                     &super::Landing::applied(&saved.intent),
                     Scope::Narrow {

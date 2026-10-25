@@ -6,7 +6,6 @@ import { takeDeviceOrganization } from "#/modules/identity/device-organization.s
 import { invitation, member, session, user } from "#/modules/identity/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
-import { readSealedVariables } from "#/modules/sealing/sealed-variables.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unauthorized } from "#/server/public-error";
@@ -163,7 +162,6 @@ export const getOrganizationState = Effect.fn(
     formerOrganization: organizationSlug === undefined || accessible ? null : yield* formerOrganizationName(actor.userId, organizationSlug),
     billingEnabled: polar.mode === "hosted",
     uptimeEnabled: config.uptimeEnabled,
-    sealedVariables: activeOrganization === null ? false : yield* readSealedVariables(activeOrganization.id),
     /** Whether this Cloud has Ployz support at all, so the support switch means something. */
     supportAvailable: staff.available,
     activeOrganization,

@@ -5,7 +5,6 @@ import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
 import type { BranchView, ConfigCommand, ConfigQuery, ConfigView, MergeRow, OnMerge, PrPlansView, PullRequestView, RowId, ServiceListing } from "@ployz/sdk";
-import { CipherSuite } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 import { toast } from "sonner";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -17,13 +16,12 @@ import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import { onMergeQuery, prPlansQuery, pullRequestQuery } from "#/modules/config-store/store-pull-requests";
 import { branchQuery, storeViewPrefix } from "#/modules/config-store/store-view.queries";
 import { githubKeys } from "#/modules/github/github.queries";
-import { anyOrderShows } from "#/test/store-write-body";
 import { OnMergeButton } from "./OnMerge";
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   Element.prototype.scrollIntoView ??= () => {};
-  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "off" } });
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "no_server" } });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
@@ -344,36 +342,6 @@ it("reads a Kept row of any kind as Kept, with nothing to do", async () => {
   expect(list.queryByRole("button", { name: "More for Mount of data" })).toBeNull();
 });
 
-/** What a secret's Edit, a plain Edit and a Reset handed the server function at 686f82827. */
-const TRUNK_MERGE = [
-  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:variables.TOKEN\",\"value\":\"merge-secret\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
-  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:variables.API_URL\",\"value\":\"http://c\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
-  "{\"organizationSlug\":\"acme\",\"command\":{\"command\":\"set_merge_value\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"},\"into\":{\"project\":\"blog\",\"environment\":\"production\"},\"row\":\"w:variables.TOKEN\"},\"shows\":[{\"query\":\"branch\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}},{\"query\":\"on_merge\",\"environment\":{\"project\":\"blog\",\"environment\":\"pr-146\"}}]}",
-];
-
-it("sends trunk's exact Edit and Reset while sealing is off, sealing nothing", async () => {
-  const hpke = vi.spyOn(CipherSuite.prototype, "seal");
-  const { store, write } = open();
-  const list = await panel();
-  await choose(list, "TOKEN", "Edit");
-  const secret = within(await screen.findByRole("dialog", { name: /TOKEN/u }));
-  fireEvent.change(secret.getByLabelText("TOKEN in production"), { target: { value: "merge-secret" } });
-  store.onMerge = onMerge(rows.map((entry) => entry.name === "env.TOKEN" ? { ...entry, ride: "edited", lands: { secret: true } } : entry));
-  fireEvent.click(secret.getByRole("button", { name: "Save" }));
-  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(item(list, "TOKEN").getAttribute("aria-busy")).toBe("false"));
-  await choose(list, "API_URL", "Edit");
-  const plain = within(await screen.findByRole("dialog", { name: /API_URL/u }));
-  fireEvent.change(plain.getByLabelText("API_URL in production"), { target: { value: "http://c" } });
-  fireEvent.click(plain.getByRole("button", { name: "Save" }));
-  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
-  await waitFor(() => expect(item(list, "TOKEN").getAttribute("aria-busy")).toBe("false"));
-  await choose(list, "TOKEN", "Reset");
-  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
-  expect(write.mock.calls.map(([call]) => anyOrderShows(JSON.stringify(call.data)))).toEqual(TRUNK_MERGE.map(anyOrderShows));
-  expect(hpke).not.toHaveBeenCalled();
-});
-
 async function sealingReady() {
   const kem = new DhkemX25519HkdfSha256();
   const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
@@ -418,7 +386,7 @@ it("refuses a secret's Edit, keeping what was typed, when the fresh read seals a
   const kem = new DhkemX25519HkdfSha256();
   const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
   vi.spyOn(sealingFunctions, "readSealingFn")
-    .mockResolvedValueOnce({ organizationId: "org", sealing: { state: "off" } })
+    .mockResolvedValueOnce({ organizationId: "org", sealing: { state: "no_server" } })
     .mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)) } });
   const { write } = open({ services: [] });
   const list = await panel();

@@ -1,16 +1,12 @@
 import { eq } from "drizzle-orm";
-import { ConfigProvider, Effect, Layer, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Polar } from "#/modules/billing/polar-provider.server";
-import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { member, session, user } from "#/modules/identity/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
-import { AppConfig } from "#/server/config.server";
-import { testConfigEnvironment } from "#/test/config-environment";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 import { CreateOrganization, RenameOrganization } from "./organization-state";
-import { createOrganization, getOrganizationState, renameOrganization } from "./organization-state.server";
+import { createOrganization, renameOrganization } from "./organization-state.server";
 import { organization } from "./tables";
 
 let harness: PostgresTestHarness;
@@ -117,33 +113,5 @@ describe("renameOrganization", () => {
     const decode = Schema.decodeUnknownSync(RenameOrganization);
     expect(() => decode({ organizationSlug: "initech", name: "   " })).toThrow();
     expect(() => decode({ organizationSlug: "initech", name: "x".repeat(65) })).toThrow();
-  });
-});
-
-describe("getOrganizationState", () => {
-  beforeAll(async () => {
-    // The Store makes config_sealed_variables when it opens.
-    await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
-  });
-  const stateOf = (organizationSlug: string) => {
-    const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
-      env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl },
-    }))));
-    return harness.runEffect(getOrganizationState({ userId: actor }, organizationSlug).pipe(
-      Effect.provideService(Polar, { mode: "self_hosted" }),
-      Effect.provideService(SupportStaff, supportStaffOf([])),
-      Effect.provide(config),
-    ));
-  };
-
-  it("turns sealedVariables on only for an active Organization with its own row", async () => {
-    const dark = await create({ name: "Hooli", slug: "hooli" });
-    const sealed = await create({ name: "Pied Piper", slug: "pied-piper" });
-    const [row] = await harness.db.select({ id: organization.id }).from(organization).where(eq(organization.slug, sealed));
-    if (!row) throw new Error(`no organization ${sealed}`);
-    await harness.pool.query("insert into config_sealed_variables (organization_id) values ($1)", [row.id]);
-
-    expect(await stateOf(dark)).toMatchObject({ activeOrganization: { slug: dark }, sealedVariables: false });
-    expect(await stateOf(sealed)).toMatchObject({ activeOrganization: { slug: sealed }, sealedVariables: true });
   });
 });

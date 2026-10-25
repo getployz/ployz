@@ -83,7 +83,6 @@ describe("ensure-cluster-sealing-key", () => {
 
   beforeAll(async () => {
     harness = await startPostgresTestHarness();
-    // The Store makes config_sealed_variables when it opens.
     await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
   }, 60_000);
 
@@ -98,7 +97,7 @@ describe("ensure-cluster-sealing-key", () => {
     requests.length = 0;
     send.mockClear();
     await harness.pool.query(`
-      truncate table organization, config_sealed_variables cascade;
+      truncate table organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
     `);
     await pair();
@@ -264,7 +263,6 @@ describe("ensure-cluster-sealing-key", () => {
     });
 
     it("expects the Organization's Sealing Key for a Cluster that reported none, so no Server generates another", async () => {
-      await harness.pool.query("insert into config_sealed_variables (organization_id) values ($1)", [organizationId]);
       await harness.pool.query(
         "insert into organization_sealing_key (organization_id, public_key) values ($1, $2)",
         [organizationId, sealingKey("A")],
@@ -276,18 +274,6 @@ describe("ensure-cluster-sealing-key", () => {
       expect(output.result).toEqual({ organizationId, result: "no_holder", awaitsOperator: true });
       expect(requests).toEqual([{ expected: sealingKey("A"), generator: null }]);
       expect(await generators()).toEqual([]);
-    });
-
-    it("expects nothing from the Organization's Sealing Key without its sealedVariables row", async () => {
-      await harness.pool.query(
-        "insert into organization_sealing_key (organization_id, public_key) values ($1, $2)",
-        [organizationId, sealingKey("A")],
-      );
-      reports = [{ result: "distributed", public_key: sealingKey("A"), machines: [] }];
-
-      await ensure();
-
-      expect(requests).toEqual([{ expected: null, generator: null }]);
     });
   });
 

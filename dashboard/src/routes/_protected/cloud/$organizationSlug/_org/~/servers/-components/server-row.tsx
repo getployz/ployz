@@ -2,7 +2,6 @@ import { Link } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { cn } from "#/lib/utils";
-import { useSealedVariables } from "#/modules/machines/sealed-variables.queries";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { Server } from "#/modules/machines/use-servers";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
@@ -70,7 +69,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
 }) {
   const { word, dot, tone } = STATES[serverRowState(server.status, upgrade)];
   const names = serviceNames(server);
-  const sealing = useSealedVariables(organizationSlug) ? server.machine.sealing : null;
+  const sealing = server.machine.sealing;
   return (
     <Link
       to="/cloud/$organizationSlug/~/servers/$serverId"

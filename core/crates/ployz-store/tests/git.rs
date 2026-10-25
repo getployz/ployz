@@ -1848,11 +1848,10 @@ fn a_source_switch_lands_the_same_in_every_key_order() {
     }
 }
 
-/// `shop` with `sealedVariables` on and Git Service `web`, on a database in `dir`.
-fn sealed_shop(dir: &tempfile::TempDir) -> (ConfigStore, Actor) {
+/// `shop` with Git Service `web`, on a database in `dir`.
+fn git_shop(dir: &tempfile::TempDir) -> (ConfigStore, Actor) {
     let url = backend::fresh_url(dir);
     let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
-    backend::sealed_variables_on(&url, "org");
     store
         .write_trusted(&who, &create("acme/web", None), &evidence())
         .unwrap();
@@ -1867,7 +1866,7 @@ fn sealed(service: &str, key: &str) -> Value {
 #[test]
 fn a_build_that_reads_a_sealed_value_walks_its_builders_like_any_other() {
     let dir = tempfile::tempdir().unwrap();
-    let (store, who) = sealed_shop(&dir);
+    let (store, who) = git_shop(&dir);
     store
         .write(
             &who,
@@ -1905,7 +1904,7 @@ fn a_build_that_reads_a_sealed_value_walks_its_builders_like_any_other() {
 #[test]
 fn github_gets_only_its_own_sealed_values() {
     let dir = tempfile::tempdir().unwrap();
-    let (store, who) = sealed_shop(&dir);
+    let (store, who) = git_shop(&dir);
     let db = "00000000-0000-4000-8000-000000000004";
     store
         .write(
@@ -1924,7 +1923,7 @@ fn github_gets_only_its_own_sealed_values() {
             &who,
             &edit(vec![
                 set("web.env.PLAIN", json!("text")),
-                set("web.env.TOKEN", json!({ "secret": "legacy" })),
+                set("web.env.TOKEN", sealed(SERVICE, "TOKEN")),
                 set("db.env.PASSWORD", sealed(db, "PASSWORD")),
                 set("db.env.URL", json!("pg://${{ PASSWORD }}@db")),
             ]),
@@ -1938,13 +1937,7 @@ fn github_gets_only_its_own_sealed_values() {
         GithubBuildId::parse(&format!("{deployment}.web")).unwrap()
     };
     let input = store.github_input(&id).unwrap().input;
-    let snapshots = input["snapshots"].as_array().unwrap();
-    assert_eq!(snapshots.len(), 2);
-    for snapshot in snapshots {
-        for (name, value) in snapshot["resolvedEnv"].as_object().unwrap() {
-            assert!(value.is_string(), "{name} is {value}");
-        }
-    }
+    assert_eq!(input["snapshots"].as_array().unwrap().len(), 2);
     let of = |input: &Value, service: &str| {
         input["snapshots"]
             .as_array()
@@ -1954,8 +1947,15 @@ fn github_gets_only_its_own_sealed_values() {
             .unwrap()
             .clone()
     };
-    assert_eq!(of(&input, SERVICE)["resolvedEnv"]["TOKEN"], "legacy");
+    assert_eq!(of(&input, SERVICE)["resolvedEnv"]["PLAIN"], "text");
+    assert_eq!(
+        of(&input, SERVICE)["resolvedEnv"]["TOKEN"],
+        sealed(SERVICE, "TOKEN")["secret"]["value"]
+    );
     assert!(of(&input, db)["resolvedEnv"].get("PASSWORD").is_none());
+    for (name, value) in of(&input, db)["resolvedEnv"].as_object().unwrap() {
+        assert!(value.is_string(), "{name} is {value}");
+    }
     // What a Server builds from: the built Service reads the same there.
     let claimed = store
         .claim(&id.deployment, &RunnerId::parse("runner").unwrap())
@@ -1991,7 +1991,7 @@ fn github_gets_only_its_own_sealed_values() {
 }
 
 #[test]
-fn an_environment_with_no_sealed_value_routes_without_opening_a_secret() {
+fn a_build_s_input_and_routing_need_no_key_to_open_a_secret() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
@@ -2002,21 +2002,28 @@ fn an_environment_with_no_sealed_value_routes_without_opening_a_secret() {
         .write(
             &who,
             &edit(vec![
-                set("web.env.TOKEN", json!({ "secret": "legacy" })),
+                set("web.env.TOKEN", sealed(SERVICE, "TOKEN")),
                 set("web.env.URL", json!("https://${{ TOKEN }}@example.com")),
             ]),
         )
         .unwrap();
     let deployment = admit(&store, &who, 1, &[]);
 
-    // Another key can't open the legacy secret, which a build's input needs.
+    // A Store under another key serves the same input: the value stays sealed.
     let store = ConfigStore::open(&url, SealingKey::new(b"another-key").unwrap()).unwrap();
-    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
-    assert!(store.github_input(&id).is_err());
     let source = &store.sources(&deployment).unwrap()[0];
     assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
     let pinned = store
         .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
         .unwrap();
     assert_eq!(pinned[0].commit, Some(backend::sha(&"a".repeat(40))));
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    let input = store.github_input(&id).unwrap().input;
+    let env = &input["snapshots"][0]["resolvedEnv"];
+    let token = sealed(SERVICE, "TOKEN")["secret"]["value"].clone();
+    assert_eq!(env["TOKEN"], token);
+    assert_eq!(
+        env["URL"],
+        json!({ "template": ["https://", token, "@example.com"] })
+    );
 }

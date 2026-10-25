@@ -13,6 +13,7 @@ import { Auth, type AuthService, type AuthSession } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { Forbidden } from "#/server/public-error";
 import type { StoreRefusal, ViewAnswer } from "#/modules/config-store/store.contract";
+import { sealedSecret } from "#/test/sealed-secret";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a003";
@@ -70,11 +71,12 @@ it.live(
           const result = yield* callStoreAsMember({ userId: owner }, SLUG, { operation: "write", command }).pipe(asStaff);
           assert.isTrue(result.ok, JSON.stringify(result));
         });
-        yield* write({ command: "create_project", id: randomUUID(), name: "shop", default_environment: randomUUID() });
-        yield* write({ command: "create_service", id: randomUUID(), environment: production, name: "api", image: "whoami:1" });
+        const api = { environment: randomUUID(), service: randomUUID() };
+        yield* write({ command: "create_project", id: randomUUID(), name: "shop", default_environment: api.environment });
+        yield* write({ command: "create_service", id: api.service, environment: production, name: "api", image: "whoami:1" });
         yield* write({ command: "edit", environment: production, expect: null, changes: [
           { op: "set", path: "api.env.LOG_LEVEL", value: "debug" },
-          { op: "set", path: "api.env.SECRET_KEY", value: { secret: "hunter2" } },
+          { op: "set", path: "api.env.SECRET_KEY", value: sealedSecret(api, "SECRET_KEY") },
         ] });
         yield* write({ command: "create_config", id: randomUUID(), environment: production, name: "sentry", mounts: [{ service: "api", dir: "/etc/sentry" }] });
         yield* write({ command: "put_config_file", environment: production, config: "sentry", file: "config.yml", content: CONTENT });

@@ -10,8 +10,16 @@ use crate::backend;
 use crate::support::{
     HEAD, LATER, MERGE, at, check, deployed, exclude, history, labels, merge_sealed, merge_value,
     merged, merged_within, on_merge, preview_listed, production_diff, pull, push, row, rows, save,
-    set, shop, shop_in, shop_with, system, unset, uuid, value, watching,
+    sealed_in, set, shop, shop_with, system, unset, uuid, value, watching,
 };
+
+/// `web.env.TOKEN` sealed in the browser for production's `web`, as a merge value.
+fn merge_token(n: u8) -> ployz_store::SetMergeValue {
+    merge_sealed(
+        "web.env.TOKEN",
+        backend::client_sealed(&uuid(2), &uuid(3), "TOKEN", n),
+    )
+}
 
 #[test]
 fn every_change_rides_over_what_production_changed_since_a_removal_too() {
@@ -95,12 +103,8 @@ fn productions_own_never_sync_mark_keeps_its_value() {
 #[test]
 fn a_new_secret_lands_not_set_unless_edited_and_its_edit_stays_sealed() {
     let (store, who) = shop();
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("web.env.TOKEN", json!({ "secret": "test-token" }))],
-    );
+    let token = sealed_in(&store, &who, "pr-5", "web", "TOKEN", 1);
+    set(&store, &who, "pr-5", &[("web.env.TOKEN", token)]);
     let token = row(&store, &who, "web.env.TOKEN");
     assert_eq!(
         (token.preview, token.lands, token.ride),
@@ -111,15 +115,13 @@ fn a_new_secret_lands_not_set_unless_edited_and_its_edit_stays_sealed() {
         )
     );
 
-    let edited = store
-        .write(&who, &merge_value("web.env.TOKEN", Some("prod-token")))
-        .unwrap();
+    let edited = store.write(&who, &merge_token(2)).unwrap();
     let token = &edited.destinations[0].rows[0];
     assert_eq!(
         (&token.lands, token.ride),
         (&json!({ "secret": true }), Ride::Edited)
     );
-    assert!(!format!("{edited:?}").contains("prod-token"));
+    assert!(!format!("{edited:?}").contains(&backend::ciphertext(2)));
 
     // Taking the Edit back lands it Not set again.
     store
@@ -133,19 +135,14 @@ fn a_new_secret_lands_not_set_unless_edited_and_its_edit_stays_sealed() {
 }
 
 #[test]
-fn a_new_secret_takes_a_value_sealed_in_the_browser_for_it_with_the_flag_on() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    let store = ployz_store::ConfigStore::open(&url, backend::key()).unwrap();
-    let (store, who) = shop_in(store, |_, _| {}, None);
+fn a_new_secret_takes_only_a_value_sealed_in_the_browser_for_it() {
+    let (store, who) = shop();
+    let token = sealed_in(&store, &who, "pr-5", "web", "TOKEN", 1);
     set(
         &store,
         &who,
         "pr-5",
-        &[
-            ("web.env.TOKEN", json!({ "secret": "test-token" })),
-            ("web.env.A", json!("2")),
-        ],
+        &[("web.env.TOKEN", token), ("web.env.A", json!("2"))],
     );
     let sealed = |environment: u8, service: u8, key: &str| {
         backend::client_sealed(&uuid(environment), &uuid(service), key, 1)
@@ -155,13 +152,12 @@ fn a_new_secret_takes_a_value_sealed_in_the_browser_for_it_with_the_flag_on() {
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
         assert!(error.message.contains(why), "{error:?}");
         assert!(!format!("{error:?}").contains("AAAA"), "{error:?}");
+        assert!(!format!("{error:?}").contains("prod-token"), "{error:?}");
     };
     refused(
-        merge_sealed("web.env.TOKEN", sealed(2, 3, "TOKEN")),
-        "off for this Organization",
+        merge_value("web.env.TOKEN", Some("prod-token")),
+        "secrets are sealed on your device",
     );
-
-    backend::sealed_variables_on(&url, "org");
     for (value, why) in [
         (sealed(9, 3, "TOKEN"), "sealed for another Environment"),
         (sealed(2, 3, "A"), "sealed for another variable"),
@@ -195,33 +191,19 @@ fn a_new_secret_takes_a_value_sealed_in_the_browser_for_it_with_the_flag_on() {
 }
 
 #[test]
-fn an_old_clis_plain_text_for_a_secret_is_refused_once_the_flag_is_on() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    let store = ployz_store::ConfigStore::open(&url, backend::key()).unwrap();
-    let (store, who) = shop_in(store, |_, _| {}, None);
+fn an_old_clis_plain_text_for_a_secret_is_refused() {
+    let (store, who) = shop();
+    let token = sealed_in(&store, &who, "pr-5", "web", "TOKEN", 1);
     set(
         &store,
         &who,
         "pr-5",
-        &[
-            ("web.env.TOKEN", json!({ "secret": "test-token" })),
-            ("web.env.A", json!("2")),
-        ],
+        &[("web.env.TOKEN", token), ("web.env.A", json!("2"))],
     );
     let cli = Trusted {
         from_cli: true,
         ..Trusted::default()
     };
-    store
-        .write_trusted(
-            &who,
-            &merge_value("web.env.TOKEN", Some("before-flag")),
-            &cli,
-        )
-        .unwrap();
-
-    backend::sealed_variables_on(&url, "org");
     let error = store
         .write_trusted(
             &who,
@@ -233,14 +215,11 @@ fn an_old_clis_plain_text_for_a_secret_is_refused_once_the_flag_is_on() {
     assert_eq!(error.message, "TOKEN: update ployz to set a Sealed value.");
     assert_eq!(error.details["next"], "curl -fsSL https://ployz.sh | sh");
     assert!(!format!("{error:?}").contains("prod-token"), "{error:?}");
-    // An ordinary variable still takes the CLI's text, and the Store still seals a
-    // secret's text from anyone else.
+    // An ordinary variable still takes the CLI's text, and a secret its sealed value.
     store
         .write_trusted(&who, &merge_value("web.env.A", Some("prod")), &cli)
         .unwrap();
-    store
-        .write(&who, &merge_value("web.env.TOKEN", Some("prod-token")))
-        .unwrap();
+    store.write_trusted(&who, &merge_token(2), &cli).unwrap();
     let token = row(&store, &who, "web.env.TOKEN");
     assert_eq!(
         (token.lands, token.ride),
@@ -448,7 +427,10 @@ fn the_merge_lands_edits_and_not_set_secrets_and_leaves_what_stays() {
             ("web.env.B", json!("new")),
             ("web.env.C", json!("2")),
             ("web.env.D", json!("2")),
-            ("web.env.TOKEN", json!({ "secret": "test-token" })),
+            (
+                "web.env.TOKEN",
+                sealed_in(&store, &who, "pr-5", "web", "TOKEN", 1),
+            ),
         ],
     );
     exclude(&store, &who, "web.env.B", false);
@@ -482,12 +464,8 @@ fn an_edit_of_a_plain_variable_the_preview_made_secret_never_lands_in_plain_text
     store
         .write(&who, &merge_value("web.env.NEW", Some("prod-token")))
         .unwrap();
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("web.env.NEW", json!({ "secret": "test-token" }))],
-    );
+    let new = sealed_in(&store, &who, "pr-5", "web", "NEW", 1);
+    set(&store, &who, "pr-5", &[("web.env.NEW", new)]);
 
     // The Edit was for a plain value: the secret lands Not set, as unedited.
     let new = row(&store, &who, "web.env.NEW");
@@ -505,14 +483,16 @@ fn an_edit_of_a_plain_variable_the_preview_made_secret_never_lands_in_plain_text
 #[test]
 fn an_edit_of_a_secret_the_preview_made_plain_lands_the_preview_value() {
     let (store, who) = shop();
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("web.env.NEW", json!({ "secret": "test-token" }))],
-    );
+    let new = sealed_in(&store, &who, "pr-5", "web", "NEW", 1);
+    set(&store, &who, "pr-5", &[("web.env.NEW", new)]);
     store
-        .write(&who, &merge_value("web.env.NEW", Some("prod-token")))
+        .write(
+            &who,
+            &merge_sealed(
+                "web.env.NEW",
+                backend::client_sealed(&uuid(2), &uuid(3), "NEW", 2),
+            ),
+        )
         .unwrap();
     // A secret never turns plain in place: the preview unsets it, then sets it.
     unset(&store, &who, "pr-5", "web.env.NEW");
@@ -915,7 +895,10 @@ fn the_check_names_a_missing_secret_without_its_value_and_what_stays_here() {
         &who,
         "pr-5",
         &[
-            ("web.env.TOKEN", json!({ "secret": "test-token" })),
+            (
+                "web.env.TOKEN",
+                sealed_in(&store, &who, "pr-5", "web", "TOKEN", 1),
+            ),
             ("web.env.D", json!("2")),
         ],
     );
@@ -932,16 +915,14 @@ fn the_check_names_a_missing_secret_without_its_value_and_what_stays_here() {
     );
 
     // An Edit gives it a value, which the check never shows.
-    store
-        .write(&who, &merge_value("web.env.TOKEN", Some("prod-token")))
-        .unwrap();
+    store.write(&who, &merge_token(2)).unwrap();
     let edited = check(&store, &who).unwrap();
     assert_eq!(
         (edited.conclusion, edited.title.as_str()),
         (OnMergeConclusion::Success, "1 config change")
     );
     assert!(edited.summary.contains("`web · TOKEN`: set"), "{edited:?}");
-    assert!(!format!("{edited:?}").contains("prod-token"));
+    assert!(!format!("{edited:?}").contains(&backend::ciphertext(2)));
 }
 
 #[test]
@@ -951,7 +932,10 @@ fn the_check_reads_a_secret_the_preview_removed_as_removed() {
             store,
             who,
             "production",
-            &[("web.env.TOKEN", json!({ "secret": "prod-token" }))],
+            &[(
+                "web.env.TOKEN",
+                backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+            )],
         );
         save(store, who, "production");
     });

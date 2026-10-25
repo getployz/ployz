@@ -192,7 +192,7 @@ export function receivingService(row: RowId, services: readonly ServiceListing[]
 
 /**
  * What a Sync or On merge sends for secret rows given values typed for them: each value sealed for the Service it lands
- * in, once a fresh read says the Organization seals; else trunk's plaintext. A row whose Service is new in the receiver
+ * in, to the key a fresh read returns. A row whose Service is new in the receiver
  * has nothing to seal for: with `unplaced` "drop" its value stays out and the row arrives Not set, with "refuse" the
  * write is refused, since leaving it out would take back an On merge Edit.
  */
@@ -201,7 +201,6 @@ export async function receivingValues<T extends { readonly row: RowId; readonly 
   unplaced: "drop" | "refuse",
 ): Promise<(T & { value: SecretValue })[]> {
   const seal = await sealing.sealer();
-  if (!seal) return [...typed];
   const { environment, services } = await receiver();
   return (await Promise.all(typed.map(async (one) => {
     const key = rowAt(one.row)?.key;

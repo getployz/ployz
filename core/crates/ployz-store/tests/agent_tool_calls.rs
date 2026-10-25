@@ -13,7 +13,7 @@ mod backend;
 use ployz_core::{
     BuildConcurrencyUpdate, DeployOutcome, DeployPreview, MachineLogService, ServiceName,
 };
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{EnvValue, RpcError, RpcErrorCode, SealingPublicKey};
 use ployz_store::tools::{
     Act, Action, Ask, Call, CloudQuery, DashboardPage, Fix, Gate, INSTRUCTIONS, MetricsQuery,
     MetricsSince, MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, Timestamp,
@@ -23,7 +23,7 @@ use ployz_store::{
     Actor, Admit, ConfigStore, ConfigsQuery, CreateEnvironment, CreateProject, CreateService,
     CreateVolume, Deploy, DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef,
     EnvironmentsQuery, NamespacesQuery, OrganizationId, ProjectId, ProjectName, RowTracker,
-    RunEvidence, RunnerId, ServiceLineageId, Trusted, VolumeId, VolumeName,
+    RunEvidence, RunnerId, SealingRecipient, ServiceLineageId, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -48,6 +48,17 @@ fn shop_in(store: ConfigStore) -> ConfigStore {
         )
         .unwrap();
     store
+}
+
+/// Cloud's word that the Cluster has a Server: a throwaway Sealing public key a
+/// generated secret is sealed to, which nothing in these tests opens.
+fn with_server() -> Trusted {
+    Trusted {
+        sealing: Some(SealingRecipient {
+            public_key: SealingPublicKey::from_bytes([7; 32]),
+        }),
+        ..Trusted::default()
+    }
 }
 
 fn in_org() -> StoreAt {
@@ -2865,7 +2876,17 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
     )
     .ok();
 
+    // A generated secret is sealed to the Cluster, so it needs a Server to seal to.
     let input = json!({ "service": "db", "generate_secret": ["env.POSTGRES_PASSWORD"] });
+    let no_server = call(&store, "service_update", input.clone(), "secret-0").refused();
+    assert_eq!(no_server.code, RpcErrorCode::Conflict, "{no_server:?}");
+    assert!(
+        no_server
+            .message
+            .contains("Add a server to set sealed values."),
+        "{no_server:?}"
+    );
+
     let (mut step, mut state) = start("service_update", input, &place(in_org()), "secret-1");
     let mut seen = vec![serde_json::to_string(&state).unwrap()];
     let result = loop {
@@ -2882,7 +2903,7 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 };
                 vec![
                     store
-                        .write(&who(), &command)
+                        .write_trusted(&who(), &command, &with_server())
                         .map(|written| serde_json::to_value(written).unwrap()),
                 ]
             }
@@ -2898,7 +2919,7 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
     assert_eq!(updated["changed"], json!(["env.POSTGRES_PASSWORD"]));
     seen.push(updated.to_string());
 
-    // Only a Deployment's claim unseals it, so that is where the value is read.
+    // The value reaches only a Deployment's claim, sealed to the Cluster.
     let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
     store
         .write(
@@ -2924,12 +2945,16 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
         .iter()
         .find(|spec| spec.name.as_str() == "db")
         .unwrap();
-    let minted = db.container.environment["POSTGRES_PASSWORD"]
-        .text()
+    let EnvValue::Sealed(sealed) = &db.container.environment["POSTGRES_PASSWORD"] else {
+        panic!("a generated secret reaches the claim sealed");
+    };
+    // 32 letters under HPKE's 48 bytes of encapsulated key and tag.
+    assert_eq!(sealed.sealed.as_bytes().len(), 32 + 48);
+    let minted = serde_json::to_value(&sealed.sealed)
+        .unwrap()
+        .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(minted.len(), 32);
-    assert!(minted.chars().all(|c| c.is_ascii_alphabetic()), "{minted}");
     for text in &seen {
         assert!(
             !text.contains(&minted),
@@ -3084,11 +3109,14 @@ fn renaming_a_referenced_variable_asks_to_update_its_references() {
 #[test]
 fn service_logs_asks_cloud_for_the_service_and_says_why_a_server_did_not_answer() {
     let (store, _) = deploying();
-    call(
+    drive_as(
         &store,
+        (&who(), &with_server()),
+        in_org(),
         "service_update",
         json!({ "service": "web", "generate_secret": ["env.KEY"] }),
         "env-1",
+        &mut no_cloud,
     )
     .ok();
     let mut asked = Vec::new();

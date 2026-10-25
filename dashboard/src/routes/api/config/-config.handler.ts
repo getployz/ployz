@@ -60,7 +60,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     const expected = operation === "read" ? "query" : operation === "sealing" ? "sealing target" : "command";
     return refusal({ code: "invalid_argument", message: `Expected a ${expected}.`, details: null });
   }
-  // Off or without a server, the CLI hears so before the Store reads anything.
+  // Without a server, the CLI hears so before the Store reads anything.
   const sealing = operation === "sealing" ? yield* readClusterSealing(caller.organization.id) : undefined;
   if (sealing !== undefined && sealing.state !== "ready") return Response.json({ state: sealing.state }, { headers: { "cache-control": "no-store" } });
   // An approval the write names must be this Caller's, for this command, even where nobody is asked.
@@ -85,7 +85,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     if (!gated.ok) return refusal(gated.refusal);
   }
   const approval = asks && (yield* hasApprover(caller.organization.id)) ? trusted.approval : "not_required";
-  // Every write here is a CLI's: once its Organization seals on the client, a plain-text secret from one that predates sealing is refused with the update to run.
+  // Every write here is a CLI's: a plain-text secret from one that predates sealing is refused with the update to run.
   const gate = {
     approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller),
     protector: protector(caller), environments: callerEnvironments(caller), from_cli: true,

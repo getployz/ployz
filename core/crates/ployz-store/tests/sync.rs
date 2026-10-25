@@ -1454,19 +1454,29 @@ fn a_sync_stays_within_its_project() {
 #[test]
 fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
     let (store, who) = shop(false);
+    let copy = service_id(&store, &who, "fix-web", "web");
     set(
         &store,
         &who,
         "production",
-        &[("web.env.TOKEN", json!({ "secret": "prod-token" }))],
+        &[(
+            "web.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+        )],
     );
     set(
         &store,
         &who,
         "fix-web",
         &[
-            ("web.env.TOKEN", json!({ "secret": "test-token" })),
-            ("web.env.API_KEY", json!({ "secret": "test-key" })),
+            (
+                "web.env.TOKEN",
+                backend::sealed_secret(&uuid(9), copy.as_str(), "TOKEN", 2),
+            ),
+            (
+                "web.env.API_KEY",
+                backend::sealed_secret(&uuid(9), copy.as_str(), "API_KEY", 3),
+            ),
         ],
     );
     service(&store, &who, "fix-web", 5, "api", "api:1");
@@ -1474,7 +1484,10 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
         &store,
         &who,
         "fix-web",
-        &[("api.env.KEY", json!({ "secret": "test-api-key" }))],
+        &[(
+            "api.env.KEY",
+            backend::sealed_secret(&uuid(9), &uuid(5), "KEY", 4),
+        )],
     );
 
     // production has TOKEN: it is never offered. The secrets it lacks are, flagged.
@@ -1493,7 +1506,7 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
 
     // A value only fills a picked secret the receiver lacks; a pick needs its new node.
     let with = |picks: Option<&[&str]>, row: &SyncRow| SyncChanges {
-        values: BTreeMap::from([(row.at.row().clone().into(), "given-key".into())]),
+        values: BTreeMap::from([(row.at.row().clone().into(), sealed(2, 3, "API_KEY", 5))]),
         ..sync(&review, picks)
     };
     for refused in [
@@ -1551,9 +1564,10 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
             .unwrap()["resolvedEnv"]
             .clone()
     };
+    let given = backend::client_sealed(&uuid(2), &uuid(3), "API_KEY", 5)["value"].clone();
     assert_eq!(env(&input, 5).get("KEY"), None);
     assert_eq!(env(&input, 3).get("KEY_URL"), None);
-    assert_eq!(env(&input, 3)["API_KEY"], json!("given-key"));
+    assert_eq!(env(&input, 3)["API_KEY"], given);
     let shipped = store
         .read(&who, &ployz_store::DeploymentQuery { id })
         .unwrap();
@@ -1564,21 +1578,30 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
             { "service": "api", "variable": "KEY" },
         ])
     );
+    let api = service_id(&store, &who, "production", "api");
+    let key = backend::client_sealed(&uuid(2), api.as_str(), "KEY", 6);
     set(
         &store,
         &who,
         "production",
-        &[("api.env.KEY", json!({ "secret": "prod-api-key" }))],
+        &[("api.env.KEY", json!({ "secret": key }))],
     );
     let input = deploy(&store, &who, "production", 4);
-    // Each Service by its lineage: web's is 3, api's 5.
+    // Each Service by its lineage: web's is 3, api's 5. Every secret reaches its
+    // Service as the browser sealed it, a template around one unopened too.
     let web = env(&input, 3);
     assert_eq!(
         (&web["TOKEN"], &web["API_KEY"]),
-        (&json!("prod-token"), &json!("given-key"))
+        (
+            &backend::client_sealed(&uuid(2), &uuid(3), "TOKEN", 1)["value"],
+            &given
+        )
     );
-    assert_eq!(env(&input, 5)["KEY"], json!("prod-api-key"));
-    assert_eq!(web["KEY_URL"], json!("https://prod-api-key@api"));
+    assert_eq!(env(&input, 5)["KEY"], key["value"]);
+    assert_eq!(
+        web["KEY_URL"],
+        json!({ "template": ["https://", key["value"], "@api"] })
+    );
 }
 
 #[test]
@@ -1928,22 +1951,27 @@ fn sealed(environment: u8, service: u8, key: &str, n: u8) -> SecretValue {
 }
 
 #[test]
-fn a_value_sealed_in_the_browser_fills_a_secret_only_with_the_flag_on_and_sealed_for_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), false);
+fn a_value_sealed_in_the_browser_fills_a_secret_only_sealed_for_it() {
+    let (store, who) = shop(false);
+    let copy = service_id(&store, &who, "fix-web", "web");
     set(
         &store,
         &who,
         "fix-web",
-        &[("web.env.API_KEY", json!({ "secret": "test-key" }))],
+        &[(
+            "web.env.API_KEY",
+            backend::sealed_secret(&uuid(9), copy.as_str(), "API_KEY", 1),
+        )],
     );
     service(&store, &who, "fix-web", 5, "api", "api:1");
     set(
         &store,
         &who,
         "fix-web",
-        &[("api.env.KEY", json!({ "secret": "test-api-key" }))],
+        &[(
+            "api.env.KEY",
+            backend::sealed_secret(&uuid(9), &uuid(5), "KEY", 1),
+        )],
     );
     let review = view(&store, &who);
     let with = |picks: Option<&[&str]>, label: &str, value: SecretValue| SyncChanges {
@@ -1956,12 +1984,6 @@ fn a_value_sealed_in_the_browser_fills_a_secret_only_with_the_flag_on_and_sealed
         assert!(error.message.contains(why), "{error:?}");
         assert!(!format!("{error:?}").contains("AAAA"), "{error:?}");
     };
-    refused(
-        with(Some(&["web.env.API_KEY"]), "web.env.API_KEY", api_key(1)),
-        "off for this Organization",
-    );
-
-    backend::sealed_variables_on(&url, "org");
     for (value, why) in [
         (sealed(9, 3, "API_KEY", 1), "sealed for another Environment"),
         (sealed(2, 3, "TOKEN", 1), "sealed for another variable"),
@@ -1997,10 +2019,7 @@ fn a_value_sealed_in_the_browser_fills_a_secret_only_with_the_flag_on_and_sealed
 
 #[test]
 fn a_value_sealed_for_the_parent_arrives_not_set_in_a_branch_created_from_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), false);
-    backend::sealed_variables_on(&url, "org");
+    let (store, who) = shop(false);
     let value = backend::client_sealed(&uuid(2), &uuid(3), "API_KEY", 1);
     set(
         &store,
@@ -2125,7 +2144,10 @@ fn sealing_targets_resolve_each_row_as_the_sync_does_to_the_receiver_s_own_servi
         &who,
         "fix-web",
         &[
-            ("web.env.API_KEY", json!({ "secret": "test-key" })),
+            (
+                "web.env.API_KEY",
+                backend::sealed_secret(&uuid(9), copy.as_str(), "API_KEY", 1),
+            ),
             ("web.image", json!("web:2")),
         ],
     );
@@ -2168,7 +2190,10 @@ fn sealing_targets_resolve_each_row_as_the_sync_does_to_the_receiver_s_own_servi
         &store,
         &who,
         "fix-web",
-        &[("api.env.KEY", json!({ "secret": "test-api-key" }))],
+        &[(
+            "api.env.KEY",
+            backend::sealed_secret(&uuid(9), &uuid(5), "KEY", 1),
+        )],
     );
     let review = view(&store, &who);
     let error = sync_targets(&store, &who, &review.version, &["api.env.KEY"]).unwrap_err();
@@ -2186,14 +2211,9 @@ fn sealing_targets_resolve_each_row_as_the_sync_does_to_the_receiver_s_own_servi
 }
 
 #[test]
-fn an_old_cli_s_plain_text_for_a_synced_secret_is_refused_once_the_flag_is_on() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), false);
-    let cli = Trusted {
-        from_cli: true,
-        ..Trusted::default()
-    };
+fn plain_text_for_a_synced_secret_is_refused_and_an_old_cli_is_told_to_update() {
+    let (store, who) = shop(false);
+    let copy = service_id(&store, &who, "fix-web", "web");
     let with_value = |label: &str| {
         let review = view(&store, &who);
         SyncChanges {
@@ -2205,23 +2225,15 @@ fn an_old_cli_s_plain_text_for_a_synced_secret_is_refused_once_the_flag_is_on() 
         &store,
         &who,
         "fix-web",
-        &[("web.env.API_KEY", json!({ "secret": "test-key" }))],
+        &[(
+            "web.env.TOKEN",
+            backend::sealed_secret(&uuid(9), copy.as_str(), "TOKEN", 1),
+        )],
     );
-    store
-        .write_trusted(&who, &with_value("web.env.API_KEY"), &cli)
-        .unwrap();
-    assert_eq!(
-        values(&store, &who, "production", "web")["env"]["API_KEY"],
-        json!({ "secret": true })
-    );
-
-    backend::sealed_variables_on(&url, "org");
-    set(
-        &store,
-        &who,
-        "fix-web",
-        &[("web.env.TOKEN", json!({ "secret": "test-token" }))],
-    );
+    let cli = Trusted {
+        from_cli: true,
+        ..Trusted::default()
+    };
     let error = store
         .write_trusted(&who, &with_value("web.env.TOKEN"), &cli)
         .unwrap_err();
@@ -2229,14 +2241,13 @@ fn an_old_cli_s_plain_text_for_a_synced_secret_is_refused_once_the_flag_is_on() 
     assert_eq!(error.message, "TOKEN: update ployz to set a Sealed value.");
     assert_eq!(error.details["next"], "curl -fsSL https://ployz.sh | sh");
     assert!(!format!("{error:?}").contains("plain-value"), "{error:?}");
+    // From anyone else, plain text is refused too: a value arrives only sealed.
+    let error = store.write(&who, &with_value("web.env.TOKEN")).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    assert!(error.message.contains("sealed on your device"), "{error:?}");
+    assert!(!format!("{error:?}").contains("plain-value"), "{error:?}");
     assert_eq!(
         values(&store, &who, "production", "web")["env"]["TOKEN"],
         Value::Null
-    );
-    // Not from the CLI, the Store seals it as before.
-    store.write(&who, &with_value("web.env.TOKEN")).unwrap();
-    assert_eq!(
-        values(&store, &who, "production", "web")["env"]["TOKEN"],
-        json!({ "secret": true })
     );
 }

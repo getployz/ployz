@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 use crate::backend;
 use crate::support::{
     HEAD, LATER, MERGE, at, check, deployed, exclude, merge_value, merged, passed, preview_listed,
-    pull, push, row, save, set, shop, shop_with, system, unset, uuid, value, vouched, watching,
+    pull, push, row, save, sealed_in, set, shop, shop_with, system, unset, uuid, value, vouched,
+    watching,
 };
 
 /// Pull request `number` from `head_branch` onto `target`, as GitHub said at `updated`.
@@ -257,12 +258,8 @@ fn a_deploy_warns_only_about_the_services_it_ships() {
     // Production runs what it saved, so only what lands is a Saved change.
     backend::deploy(&store, &who, "production", 1);
     watching(&store, &who);
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("db.env.TOKEN", json!({ "secret": "test-token" }))],
-    );
+    let token = sealed_in(&store, &who, "pr-5", "db", "TOKEN", 1);
+    set(&store, &who, "pr-5", &[("db.env.TOKEN", token)]);
     system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
     let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
     assert_eq!(deployed_services(&landed), ["db"]);
@@ -509,12 +506,8 @@ fn a_removal_takes_no_edit_and_lands_as_a_removal() {
 fn a_config_file_reading_a_secret_the_merge_left_not_set_warns() {
     let (store, who) = shop();
     watching(&store, &who);
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("web.env.TOKEN", json!({ "secret": "test-token" }))],
-    );
+    let token = sealed_in(&store, &who, "pr-5", "web", "TOKEN", 1);
+    set(&store, &who, "pr-5", &[("web.env.TOKEN", token)]);
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
     let config = || ployz_core::ConfigName::parse("sentry").unwrap();
     store

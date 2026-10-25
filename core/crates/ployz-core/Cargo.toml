@@ -23,7 +23,12 @@ uuid = { version = "1.24.0", features = ["serde", "v4"] }
 minisign-verify = "0.3.0"
 zeroize = "1.9.0"
 
+[features]
+# A throwaway Sealing keypair that opens what `seal_value` sealed, for tests only.
+test-keypair = []
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+hpke = { version = "0.13.0", default-features = false, features = ["x25519", "alloc"] }
 rand_core = { version = "0.9.5", features = ["os_rng"] }
 reqwest = { version = "0.13.4", default-features = false }
 tonic = { version = "0.13.1", features = ["transport"] }

@@ -604,15 +604,12 @@ impl Editing<'_> {
             }
             (Some(Target::Variable(key)), Some(value)) => {
                 let guard = crate::old_cli::Guard::from(self.trusted);
-                let (changed, typed) = variables::set(
-                    environment,
-                    service,
-                    key,
-                    value,
-                    self.sealing,
-                    guard,
-                    || crate::client_sealed::enabled(&mut *self.tx, &self.who.organization),
-                )?;
+                let sealer = crate::client_sealed::Sealer {
+                    organization: &self.who.organization,
+                    recipient: self.trusted.sealing.as_ref(),
+                };
+                let (changed, typed) =
+                    variables::set(environment, service, key, value, guard, sealer)?;
                 self.typed_addresses
                     .extend(typed.map(|Typed { services, instead }| TypedAddresses {
                         path: path.clone(),

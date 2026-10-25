@@ -1,14 +1,13 @@
 import { assert, it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue, SealingTargetsQuery } from "@ployz/sdk";
-import { createHash } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { Effect, Schema } from "effect";
 import { viewOf } from "#/modules/config-store/store.contract";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
-import { Database } from "#/server/database.server";
+import { sealedSecret } from "#/test/sealed-secret";
 import { enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-000000005e01";
@@ -22,7 +21,7 @@ const UPDATE = "curl -fsSL https://ployz.sh | sh";
 
 /** What `/api/config/sealing` answers, and how a write is refused. */
 const Answer = Schema.Union([
-  Schema.Struct({ state: Schema.Literals(["off", "no_server"]) }),
+  Schema.Struct({ state: Schema.Literal("no_server") }),
   Schema.Struct({
     state: Schema.Literal("ready"),
     publicKey: Schema.String,
@@ -46,10 +45,6 @@ type Body = ConfigCommand | SealingTargetsQuery | { readonly query: "environment
 const set = (key: string, value: JsonValue): ConfigCommand => ({
   command: "edit", environment: here, expect: null, changes: [{ op: "set", path: `web.env.${key}`, value }],
 });
-/** `key` as the CLI seals it for `web` of the default Environment: Cloud never checks the ciphertext itself. */
-const sealed = (key: string): JsonValue => ({
-  secret: { sealedFor: ENVIRONMENT, value: { sealed: Buffer.alloc(48, 1).toString("base64"), scope: { service: SERVICE }, key } },
-});
 
 /** Shop with Git Service `web`, reached as a CLI token of its owner. */
 const shop = Effect.fn(function* () {
@@ -65,13 +60,9 @@ const shop = Effect.fn(function* () {
     const text = yield* Effect.promise(() => response.text());
     return { status: response.status, cache: response.headers.get("cache-control"), json: decodeAnswer(text) };
   });
-  const sealsOnClient = Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`insert into config_sealed_variables (organization_id) values (${ORGANIZATION})`);
-  });
-  const serverReported = Effect.gen(function* () {
+  const serverReported = (publicKey = PUBLIC_KEY) => Effect.gen(function* () {
     yield* enrollStoreServer(ORGANIZATION);
-    yield* recordSealingPublicKey(ORGANIZATION, createHash("sha256").update(PAIRING_SECRET).digest("hex"), PUBLIC_KEY);
+    yield* recordSealingPublicKey(ORGANIZATION, createHash("sha256").update(PAIRING_SECRET).digest("hex"), publicKey);
   });
   /** The default Environment's settings, by path, as the Store shows them. */
   const settings = Effect.promise(async () => {
@@ -79,21 +70,19 @@ const shop = Effect.fn(function* () {
     const view = viewOf(await store.read(ORGANIZATION, query), query) ?? assert.fail("no environment view");
     return Object.fromEntries(view.settings.map((setting) => [setting.path, setting.value]));
   });
-  return { send, sealsOnClient, serverReported, settings };
+  return { send, serverReported, settings };
 });
 
 const cloud = storeTestCloudWith(AuthLive);
 const edit: Body = { target: "edit", environment: here };
 
-it.live("tells the CLI whether to seal: off, no server once the Organization seals on the client, then ready with where each secret lands", () =>
+it.live("tells the CLI whether to seal: no server, then ready with where each secret lands", () =>
   Effect.gen(function* () {
     yield* Effect.gen(function* () {
-      const { send, sealsOnClient, serverReported } = yield* shop();
-      const off = yield* send("sealing", edit);
-      assert.deepStrictEqual([off.status, off.cache, off.json], [200, "no-store", { state: "off" }]);
-      yield* sealsOnClient;
-      assert.deepStrictEqual((yield* send("sealing", edit)).json, { state: "no_server" });
-      yield* serverReported;
+      const { send, serverReported } = yield* shop();
+      const waiting = yield* send("sealing", edit);
+      assert.deepStrictEqual([waiting.status, waiting.cache, waiting.json], [200, "no-store", { state: "no_server" }]);
+      yield* serverReported();
       const ready = yield* send("sealing", edit);
       assert.strictEqual(ready.status, 200);
       if (!("state" in ready.json) || ready.json.state !== "ready") assert.fail(`not ready: ${JSON.stringify(ready.json)}`);
@@ -107,13 +96,12 @@ it.live("tells the CLI whether to seal: off, no server once the Organization sea
     }).pipe(Effect.provide(yield* cloud));
   }), 60_000);
 
-it.live("once the Organization seals on the client, a value the CLI sealed is saved and its plain text is refused unread, with the update to run", () =>
+it.live("a value the CLI sealed is saved and its plain text is refused unread, with the update to run", () =>
   Effect.gen(function* () {
     yield* Effect.gen(function* () {
-      const { send, sealsOnClient, serverReported, settings } = yield* shop();
-      yield* sealsOnClient;
-      yield* serverReported;
-      const saved = yield* send("write", set("TOKEN", sealed("TOKEN")));
+      const { send, serverReported, settings } = yield* shop();
+      yield* serverReported();
+      const saved = yield* send("write", set("TOKEN", sealedSecret({ environment: ENVIRONMENT, service: SERVICE }, "TOKEN")));
       assert.deepStrictEqual([saved.status, "staged" in saved.json && saved.json.staged], [200, ["web.env.TOKEN"]]);
       const refused = yield* send("write", set("OTHER", { secret: "plain-s3cr3t" }));
       assert.deepStrictEqual([refused.status, refused.json], [501, {
@@ -126,12 +114,21 @@ it.live("once the Organization seals on the client, a value the CLI sealed is sa
     }).pipe(Effect.provide(yield* cloud));
   }), 60_000);
 
-it.live("off, a plain-text secret from the CLI goes to the Store to seal, as it always has", () =>
+it.live("a generated secret waits for a Server, then is sealed to the Cluster's key", () =>
   Effect.gen(function* () {
     yield* Effect.gen(function* () {
-      const { send, settings } = yield* shop();
-      const saved = yield* send("write", set("TOKEN", { secret: "plain-s3cr3t" }));
-      assert.deepStrictEqual([saved.status, "staged" in saved.json && saved.json.staged], [200, ["web.env.TOKEN"]]);
-      assert.deepStrictEqual((yield* settings)["web.env.TOKEN"], { secret: true });
+      const { send, serverReported, settings } = yield* shop();
+      const generate = set("PASSWORD", { secret: { generate: true } });
+      const waiting = yield* send("write", generate);
+      assert.deepStrictEqual([waiting.status, waiting.json], [409, {
+        error: { code: "conflict", message: "Add a server to set sealed values.", details: { variable: "PASSWORD" } },
+      }]);
+      assert.notProperty(yield* settings, "web.env.PASSWORD");
+
+      const jwk = generateKeyPairSync("x25519").publicKey.export({ format: "jwk" });
+      yield* serverReported(Buffer.from(jwk.x ?? "", "base64url").toString("base64"));
+      const saved = yield* send("write", generate);
+      assert.deepStrictEqual([saved.status, "staged" in saved.json && saved.json.staged], [200, ["web.env.PASSWORD"]]);
+      assert.deepStrictEqual((yield* settings)["web.env.PASSWORD"], { secret: true });
     }).pipe(Effect.provide(yield* cloud));
   }), 60_000);

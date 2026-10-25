@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Effect } from "effect";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { Inngest } from "inngest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   readSealingRecovery,
   recordFirstRecoveryBackup,
@@ -8,8 +9,10 @@ import {
   recoveryDigest,
   rotateRecoveryBackup,
 } from "#/modules/machines/sealing-key.server";
+import { InngestClient } from "#/modules/inngest/client";
 import type { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
 
 const organizationId = "00000000-0000-4000-8000-000000000d01";
 const sealingKey = (letter: string) => `${letter.repeat(43)}=`;
@@ -20,8 +23,9 @@ const backup = (fill: number) => Buffer.concat([Buffer.from([1]), Buffer.alloc(7
 describe("the Organization's Sealing Key", () => {
   let harness: PostgresTestHarness;
 
-  const run = <A, E>(operation: Effect.Effect<A, E, Database>) => harness.runEffect(operation);
-  const failure = <A, E>(operation: Effect.Effect<A, E, Database>) => run(Effect.flip(operation));
+  const run = <A, E>(operation: Effect.Effect<A, E, Database | InngestClient>) =>
+    harness.runEffect(operation.pipe(Effect.provideService(InngestClient, sendsNowhere())));
+  const failure = <A, E>(operation: Effect.Effect<A, E, Database | InngestClient>) => run(Effect.flip(operation));
   const stored = async () => (await harness.pool.query(
     "select public_key, recovery_blob from organization_sealing_key where organization_id = $1",
     [organizationId],
@@ -41,17 +45,39 @@ describe("the Organization's Sealing Key", () => {
 
   beforeEach(async () => {
     await harness.pool.query(`
-      truncate table organization cascade;
+      truncate table organization, operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
     `);
   });
 
   describe("recorded from a Cluster's report", () => {
-    it("keeps the first key an Organization reported, with its sealedVariables flag off", async () => {
+    it("keeps the first key an Organization reported", async () => {
       await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
       await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("B")));
 
       expect(await stored()).toEqual([{ public_key: sealingKey("A"), recovery_blob: null }]);
+    });
+
+    it("keeps no Cluster key whose reseal request failed to record, so the next report sends it", async () => {
+      const inngest = new Inngest({ id: "sealing-key-sends" });
+      const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const report = () => harness.runEffect(
+        recordSealingPublicKey(organizationId, clusterA, sealingKey("A")).pipe(Effect.provideService(InngestClient, inngest)),
+      );
+      await harness.pool.query(`
+        create function refuse_outbox() returns trigger language plpgsql as $$ begin raise exception 'outbox refused'; end $$;
+        create trigger refuse_outbox before insert on operation_outbox execute function refuse_outbox();
+      `);
+      try {
+        await expect(report()).rejects.toThrow();
+      } finally {
+        await harness.pool.query("drop trigger refuse_outbox on operation_outbox; drop function refuse_outbox();");
+      }
+      expect((await harness.pool.query("select 1 from cluster_sealing_key")).rowCount).toBe(0);
+
+      await report();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "variables/reseal.requested", data: { organizationId } }));
     });
   });
 

@@ -38,7 +38,6 @@ import {
 } from "#/modules/machines/enrollment";
 import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-compat.server";
-import { readSealedVariables } from "#/modules/sealing/sealed-variables.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
@@ -536,7 +535,6 @@ const queueBeforeLocking = Effect.fn("MachineEnrollment.queueBeforeLocking")(
 const foundingRecovery = Effect.fn("MachineEnrollment.foundingRecovery")(function* (
   organizationId: string, recoverySupport: 1 | undefined,
 ) {
-  if (!(yield* readSealedVariables(organizationId))) return undefined;
   const organizationKey = yield* readOrganizationSealingKey(organizationId);
   if (!(yield* supportsSealingRecovery(recoverySupport, organizationKey !== undefined))) return undefined;
   return organizationKey === undefined
@@ -828,14 +826,6 @@ export const completeMachineEnrollment = Effect.fn(
   function* (input: EnrollmentCallback & { token: string }) {
     if ("stage" in input) return yield* publishMachineEnrollment(input);
     const { recoveryBackup } = input;
-    if (recoveryBackup !== undefined) {
-      // An unknown token names no Organization, so it answers as one with sealedVariables off.
-      const sealing = yield* loadEnrollmentToken(input.token).pipe(
-        Effect.flatMap((token) => readSealedVariables(token.organizationId)),
-        Effect.catchTag("Unauthorized", () => Effect.succeed(false)),
-      );
-      if (!sealing) return yield* new Validation({ message: "Invalid enrollment callback." });
-    }
     if (recoveryBackup !== undefined && (input.sealing?.kind !== "held" || input.sealing.publicKey !== recoveryBackup.publicKey)) {
       return yield* new Validation({ message: "The recovery backup is not of the Sealing Key this Server holds." });
     }

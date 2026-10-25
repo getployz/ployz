@@ -484,7 +484,10 @@ fn sealed<const N: usize>(names: [&str; N]) -> BTreeSet<String> {
 }
 
 fn seal(run: &Run, actor: &ployz_store::Actor, name: &str) {
-    use ployz_store::{Change, CreateService, Edit, EnvironmentRef, ServiceLineageId, SettingPath};
+    use base64::Engine as _;
+    use ployz_store::{
+        Change, CreateService, Edit, EnvironmentRef, ServiceLineageId, ServiceQuery, SettingPath,
+    };
     run.store
         .write(
             actor,
@@ -497,6 +500,17 @@ fn seal(run: &Run, actor: &ployz_store::Actor, name: &str) {
             },
         )
         .unwrap();
+    let web = run
+        .store
+        .read(
+            actor,
+            &ServiceQuery {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    let sealed = base64::engine::general_purpose::STANDARD.encode([7; 48]);
     run.store
         .write(
             actor,
@@ -505,7 +519,14 @@ fn seal(run: &Run, actor: &ployz_store::Actor, name: &str) {
                 expect: None,
                 changes: vec![Change::Set {
                     path: SettingPath::parse(&format!("web.env.{name}")).unwrap(),
-                    value: serde_json::json!({ "secret": "sealed-later" }),
+                    value: serde_json::json!({ "secret": {
+                        "sealedFor": environment().as_str(),
+                        "value": {
+                            "sealed": sealed,
+                            "scope": { "service": web.service.service.id },
+                            "key": name,
+                        },
+                    } }),
                 }],
             },
         )

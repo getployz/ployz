@@ -10,7 +10,8 @@ run with Docker Compose.
 ## Should you self-host?
 
 Most people should use [ployz.dev](https://ployz.dev). It's free on your own servers, we run and upgrade
-it, and your apps, data and secrets stay on your servers anyway.
+it, and your apps and data stay on your servers anyway. Secrets are sealed on your device and
+opened only on your servers.
 
 ```mermaid
 flowchart TD
@@ -137,8 +138,9 @@ installation back to the first Callback URL.
 
 > [!WARNING]
 > Keep `APP_ENCRYPTION_SECRET` the same forever, and back it up with the Postgres volume
-> `ployz-cloud-self-host_postgres-data`. It encrypts the credentials Ployz Cloud stores, so a new
-> value makes them unreadable.
+> `ployz-cloud-self-host_postgres-data`. It encrypts the credentials Ployz Cloud stores, such as
+> registry credentials and domain tokens, so a new value makes them unreadable. Your variables
+> don't use it.
 
 ### More than one install on a host
 

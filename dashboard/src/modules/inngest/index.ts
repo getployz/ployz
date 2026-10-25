@@ -15,6 +15,7 @@ import { createServerEnrollmentFunctions } from "#/modules/machines/waiting/serv
 import { createServerWebTrafficFunctions } from "#/modules/machines/server-web-traffic.inngest";
 import { createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
 import { createEnsureClusterSealingKey } from "#/modules/machines/sealing-backfill.inngest";
+import { createResealVariables } from "#/modules/variables/reseal.inngest";
 import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
@@ -62,6 +63,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
     createEnsureClusterSealingKey(inngest),
+    createResealVariables(inngest),
     ...createServerUpgradeFunctions(inngest),
     createRunStoreDeployment(inngest),
     ...createRetireOldFunctions(inngest),

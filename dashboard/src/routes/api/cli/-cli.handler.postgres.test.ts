@@ -31,7 +31,7 @@ import { operationsOn } from "#/modules/operations/operation-history.server";
 import { removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { permissionsOf } from "#/modules/organization/permissions";
-import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
+import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { syncOrganizationSlug } from "#/modules/organization/organization-state.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
@@ -46,7 +46,6 @@ import { CliMintMachineEnrollmentInput } from "#/modules/machines/enrollment";
 import { mintCliMachineEnrollment } from "#/modules/machines/enrollment.server";
 import { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
 import { readCliSealingRecovery, recoveryDigest, rotateCliSealingRecovery } from "#/modules/machines/sealing-key.server";
-import { handleSealingRequest } from "#/routes/api/cli/sealing/-sealing.handler";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
@@ -1941,8 +1940,8 @@ const sealing = Effect.fn(function* (path: "recovery" | "rotate", as: As, body: 
   if (bearer !== undefined) headers.set("authorization", `Bearer ${bearer}`);
   const request = new Request(`${origin}/api/cli/sealing/${path}`, { method: "POST", headers, body: JSON.stringify(body) });
   const handled = path === "recovery"
-    ? handleSealingRequest(request, CliReadSealingRecoveryInput, readCliSealingRecovery)
-    : handleSealingRequest(request, CliRotateSealingRecoveryInput, rotateCliSealingRecovery);
+    ? handleOrganizationCliRequest(request, CliReadSealingRecoveryInput, readCliSealingRecovery)
+    : handleOrganizationCliRequest(request, CliRotateSealingRecoveryInput, rotateCliSealingRecovery);
   return yield* handled.pipe(
     Effect.flatMap((response) => Effect.promise(async (): Promise<{ status: number; json?: unknown }> => ({
       status: response.status,
@@ -1950,13 +1949,6 @@ const sealing = Effect.fn(function* (path: "recovery" | "rotate", as: As, body: 
     }))),
     Effect.catch((error) => Effect.succeed({ status: statusForPublicError(encodePublicError(error)) })),
   );
-});
-
-/** Turns on an Organization's sealedVariables flag in this test's database only. */
-const sealedVariablesOn = Effect.fn(function* (organizationId: string) {
-  yield* cloudStore;
-  const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`insert into config_sealed_variables (organization_id) values (${organizationId})`);
 });
 
 it.live(
@@ -1969,7 +1961,6 @@ it.live(
         const alice = yield* signUp("alice");
         const bob = yield* signUp("bob");
         const organizationId = alice.organization.id;
-        yield* sealedVariablesOn(organizationId);
         const read = () => sealing("recovery", alice, { organizationId });
         const rotate = (publicKey: string, currentDigest: string | null, backup: string) =>
           sealing("rotate", alice, { organizationId, publicKey, currentDigest, backup });
@@ -1994,42 +1985,6 @@ it.live(
           organizationId, publicKey: sealingKey("A"), currentDigest: recoveryDigest(recoveryBackup(2)), backup: recoveryBackup(4),
         })).status, 404);
         assert.strictEqual((yield* sealing("recovery", {}, { organizationId })).status, 401);
-      }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-it.live(
-  "without its Organization's sealedVariables row the recovery routes answer as any unknown CLI path",
-  () =>
-    Effect.gen(function* () {
-      const layer = yield* cliLayer();
-      yield* Effect.gen(function* () {
-        const { drizzle } = yield* Database;
-        const alice = yield* signUp("alice");
-        const bob = yield* signUp("bob");
-        const organizationId = alice.organization.id;
-        yield* sealedVariablesOn(bob.organization.id);
-        yield* drizzle.insert(organizationSealingKey).values({ organizationId, publicKey: sealingKey("A"), recoveryBlob: recoveryBackup(2) });
-        const rotation = { organizationId, publicKey: sealingKey("A"), currentDigest: recoveryDigest(recoveryBackup(2)), backup: recoveryBackup(3) };
-
-        assert.strictEqual((yield* cli("POST", "sealing/elsewhere", alice, { organizationId })).status, 404);
-        assert.strictEqual((yield* sealing("recovery", alice, { organizationId })).status, 404);
-        assert.strictEqual((yield* sealing("rotate", alice, rotation)).status, 404);
-        assert.strictEqual((yield* sealing("recovery", alice, {})).status, 404);
-        assert.strictEqual((yield* cli("POST", "sealing/elsewhere", {}, { organizationId })).status, 401);
-        assert.strictEqual((yield* sealing("recovery", {}, { organizationId })).status, 401);
-        assert.strictEqual((yield* sealing("rotate", {}, rotation)).status, 401);
-        const unfinished = new Request(`${origin}/api/cli/sealing/recovery`, {
-          method: "POST", body: new ReadableStream(), duplex: "half",
-        } as RequestInit);
-        const refused = yield* handleSealingRequest(unfinished, CliReadSealingRecoveryInput, readCliSealingRecovery).pipe(
-          Effect.flip,
-          Effect.timeout("5 seconds"),
-        );
-        assert.strictEqual(statusForPublicError(encodePublicError(refused)), 401);
-        const [stored] = yield* drizzle.select({ recoveryBlob: organizationSealingKey.recoveryBlob }).from(organizationSealingKey);
-        assert.strictEqual(stored?.recoveryBlob, recoveryBackup(2));
       }).pipe(Effect.provide(layer));
     }),
   60_000,

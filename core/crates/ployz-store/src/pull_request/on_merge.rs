@@ -14,6 +14,7 @@ use ployz_core::config::{
 use serde_json::Value;
 
 use super::*;
+use crate::SecretValue;
 use crate::automation;
 use crate::branch::{
     Carried, Move, NamedRow, RowRef, config, end_included, json_of, named, resolve_one, row_id,
@@ -23,7 +24,6 @@ use crate::id::ServiceLineageId;
 use crate::scope::RemovedServices;
 use crate::storage;
 use crate::variables::{self, VariableKey};
-use crate::{SealingKey, SecretValue};
 
 /// Read a PR Environment's On merge list.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -404,7 +404,6 @@ fn edits(
 pub(crate) fn set_merge_value(
     tx: &mut dyn Tx,
     who: &Actor,
-    sealing: &SealingKey,
     request: &SetMergeValue,
     trusted: &Trusted,
 ) -> Result<OnMerge, RpcError> {
@@ -494,18 +493,13 @@ pub(crate) fn set_merge_value(
         }
         let secret = planned.from.is_secret() || planned.into.is_secret();
         let cell = match (value, secret) {
-            (value, true) => {
-                let enabled = (trusted.from_cli || value.is_client_sealed())
-                    && crate::client_sealed::enabled(tx, &who.organization)?;
-                SealedCell::Secret(crate::branch::seal_secret(
-                    sealing,
-                    &row,
-                    &label,
-                    value,
-                    &landing.into,
-                    (crate::old_cli::Guard::from(trusted), enabled),
-                )?)
-            }
+            (value, true) => SealedCell::Secret(crate::branch::seal_secret(
+                &row,
+                &label,
+                value,
+                &landing.into,
+                crate::old_cli::Guard::from(trusted),
+            )?),
             (SecretValue::ClientSealed(_), false) => {
                 return Err(error::invalid(
                     format!("{label}: only a secret takes a value sealed in the browser"),

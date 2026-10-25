@@ -583,7 +583,10 @@ fn a_seal_only_working_state_held_at_upgrade_keeps_history_from_plain_text() {
             &store,
             &who,
             "production",
-            &[("web.env.TOKEN", json!({ "secret": "private-value" }))],
+            &[(
+                "web.env.TOKEN",
+                backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+            )],
         );
     }
     run(&url, BEFORE_SEALED_LEDGER);

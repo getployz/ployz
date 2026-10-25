@@ -181,10 +181,9 @@ fn discard(store: &ConfigStore, who: &Actor, environment: &str, path: &str) {
         .unwrap();
 }
 
-/// The environment `web` deploys with in `environment`, deploying it as `n`.
-fn deployed_env(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value {
-    let input = deploy(store, who, environment, n);
-    let id = store
+/// The ID of `web` in `environment`: its own, not its lineage.
+fn web_id(store: &ConfigStore, who: &Actor, environment: &str) -> String {
+    store
         .read(
             who,
             &ServicesQuery {
@@ -198,7 +197,30 @@ fn deployed_env(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> V
         .unwrap()
         .service
         .id
-        .to_string();
+        .to_string()
+}
+
+/// `web.env.TOKEN` as the browser sealed it for `environment`'s own `web`, holding
+/// ciphertext `n`.
+fn token(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value {
+    let environment_id = match environment {
+        "production" => uuid(2),
+        "fix-web" => uuid(9),
+        "qa" => uuid(10),
+        other => panic!("{other}"),
+    };
+    backend::client_sealed(
+        &environment_id,
+        &web_id(store, who, environment),
+        "TOKEN",
+        n,
+    )
+}
+
+/// The environment `web` deploys with in `environment`, deploying it as `n`.
+fn deployed_env(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value {
+    let input = deploy(store, who, environment, n);
+    let id = web_id(store, who, environment);
     input["snapshots"]
         .as_array()
         .unwrap()
@@ -391,34 +413,44 @@ fn a_discarded_change_stays_a_hint_until_the_parent_changes_that_setting_again()
 }
 
 #[test]
-fn a_discarded_secret_rotation_is_a_hint_and_the_next_one_still_follows() {
+fn a_discarded_secret_is_a_hint_and_the_next_rotation_still_follows() {
     let (store, who) = shop();
-    let rotate = |secret: &str, n: u8| {
+    let rotate = |secret: u8, n: u8| {
+        let sealed = token(&store, &who, "production", secret);
         set(
             &store,
             &who,
             "production",
-            &[("web.env.TOKEN", json!({ "secret": secret }))],
+            &[("web.env.TOKEN", json!({ "secret": sealed }))],
         );
         deploy(&store, &who, "production", n);
     };
-    rotate("prod-1", 2);
-    deploy(&store, &who, "fix-web", 3);
-    rotate("prod-2", 4);
+    rotate(1, 2);
+    assert_eq!(
+        incoming(&store, &who, "fix-web"),
+        ["web.env.TOKEN production"]
+    );
     discard(&store, &who, "fix-web", "web.env.TOKEN");
     assert_eq!(
         hints(&store, &who, "fix-web"),
         [r#"web.env.TOKEN = {"secret":true} from production"#]
     );
+    assert_eq!(web(&store, &who, "fix-web")["env"].get("TOKEN"), None);
+    assert_eq!(deployed_env(&store, &who, "fix-web", 3).get("TOKEN"), None);
+
+    // The next rotation follows again. A value sealed for production never opens in
+    // fix-web: it arrives Not set.
+    rotate(2, 4);
+    assert!(hints(&store, &who, "fix-web").is_empty());
     assert_eq!(
-        deployed_env(&store, &who, "fix-web", 5)["TOKEN"],
-        json!("prod-1")
+        incoming(&store, &who, "fix-web"),
+        ["web.env.TOKEN production"]
     );
-    rotate("prod-3", 6);
     assert_eq!(
-        deployed_env(&store, &who, "fix-web", 7)["TOKEN"],
-        json!("prod-3")
+        web(&store, &who, "fix-web")["env"]["TOKEN"],
+        json!({ "secret": false })
     );
+    assert_eq!(deployed_env(&store, &who, "fix-web", 5).get("TOKEN"), None);
 }
 
 #[test]
@@ -439,36 +471,45 @@ fn changes_cascade_one_level_per_deploy() {
 fn a_secret_follows_into_a_branch_that_never_set_its_own_and_not_one_that_did() {
     let (store, who) = shop();
     branch(&store, &who, 10, "production", "qa");
+    let prod_1 = token(&store, &who, "production", 1);
     set(
         &store,
         &who,
         "production",
-        &[("web.env.TOKEN", json!({ "secret": "prod-1" }))],
+        &[("web.env.TOKEN", json!({ "secret": prod_1 }))],
     );
     deploy(&store, &who, "production", 2);
+    let qa_own = token(&store, &who, "qa", 2);
     set(
         &store,
         &who,
         "qa",
-        &[("web.env.TOKEN", json!({ "secret": "qa-own" }))],
+        &[("web.env.TOKEN", json!({ "secret": qa_own.clone() }))],
     );
 
     // production rotates it: fix-web follows, qa keeps its own and gets no hint.
+    let prod_2 = token(&store, &who, "production", 3);
     set(
         &store,
         &who,
         "production",
-        &[("web.env.TOKEN", json!({ "secret": "prod-2" }))],
+        &[("web.env.TOKEN", json!({ "secret": prod_2 }))],
     );
     deploy(&store, &who, "production", 3);
     assert!(hints(&store, &who, "qa").is_empty());
+    assert!(incoming(&store, &who, "qa").is_empty());
     assert_eq!(
-        deployed_env(&store, &who, "fix-web", 4)["TOKEN"],
-        json!("prod-2")
+        incoming(&store, &who, "fix-web"),
+        ["web.env.TOKEN production"]
     );
     assert_eq!(
+        web(&store, &who, "fix-web")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    assert_eq!(deployed_env(&store, &who, "fix-web", 4).get("TOKEN"), None);
+    assert_eq!(
         deployed_env(&store, &who, "qa", 5)["TOKEN"],
-        json!("qa-own")
+        qa_own["value"]
     );
 }
 

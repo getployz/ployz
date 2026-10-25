@@ -3929,7 +3929,6 @@ dependencies = [
  "globset",
  "hex",
  "hmac 0.13.0",
- "hpke",
  "http",
  "http-body-util",
  "hyper",
@@ -3942,7 +3941,6 @@ dependencies = [
  "ployz-core",
  "ployz-store",
  "ployz-testkit",
- "rand_core 0.9.5",
  "regex",
  "reqwest",
  "rmcp",
@@ -4009,6 +4007,7 @@ name = "ployz-core"
 version = "0.3.4"
 dependencies = [
  "base64 0.22.1",
+ "hpke",
  "ipnet",
  "minisign-verify",
  "oci-spec",

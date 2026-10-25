@@ -344,6 +344,37 @@ mod tests {
     }
 
     #[test]
+    fn a_value_sealed_by_the_core_sealer_opens_under_this_key() {
+        let key = SealingKey::generate();
+        let identity = ployz_core::SealedIdentity {
+            organization: "org_1".into(),
+            environment: uuid::Uuid::from_u128(2),
+            service: uuid::Uuid::from_u128(3),
+        };
+        let sealed = ployz_core::seal_value(&key.public_key(), &identity, "TOKEN", "hunter2")
+            .unwrap()
+            .value;
+        let aad = sealed.associated_data(&identity);
+        assert_eq!(
+            key.open_value(&aad, &sealed.sealed).unwrap().as_slice(),
+            b"hunter2"
+        );
+        let other = ployz_core::SealedIdentity {
+            environment: uuid::Uuid::from_u128(4),
+            ..identity
+        };
+        assert!(
+            key.open_value(&sealed.associated_data(&other), &sealed.sealed)
+                .is_none()
+        );
+        assert!(
+            SealingKey::generate()
+                .open_value(&aad, &sealed.sealed)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn a_sealed_value_with_any_byte_flipped_does_not_open() {
         let key = SealingKey::generate();
         let sealed = key.seal_value(b"aad", b"hunter2");

@@ -6,7 +6,7 @@ export function sealingQueryOptions(organizationSlug: string) {
   return queryOptions({
     queryKey: ["sealing", organizationSlug] as const,
     queryFn: () => readSealingFn({ data: { organizationSlug } }),
-    // A first Server pairs, or the flag turns, rarely and from elsewhere.
+    // A first Server pairs rarely and from elsewhere.
     staleTime: 60_000,
   });
 }

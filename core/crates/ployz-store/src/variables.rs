@@ -21,7 +21,7 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{Map, Value, json};
 
 use crate::scope::Environment;
-use crate::sealing::{SealingKey, plain_fingerprint};
+use crate::sealing::plain_fingerprint;
 use crate::typed_address::{self, Typed};
 use crate::{client_sealed, error, old_cli};
 
@@ -140,17 +140,17 @@ pub(crate) fn find<'intent>(
 }
 
 /// Set variable `key` of `service` from `value`: text, `{"secret": true}` to keep
-/// a secret, `{"secret": "…"}` to seal a new one, or `{"value": …, "exported": …}`
-/// with either field. A new secret's plain text passes `guard` first. Returns
-/// whether Working State changed, and the Typed Addresses in a new value.
+/// a secret, a value sealed in the browser, `{"secret": {"generate": true}}` for one
+/// `sealer` seals, or `{"value": …, "exported": …}` with either field. A secret's
+/// plain text is refused, through `guard` for the CLI. Returns whether Working State
+/// changed, and the Typed Addresses in a new value.
 pub(crate) fn set(
     environment: &mut Environment,
     service: &ServiceName,
     key: &VariableKey,
     value: Value,
-    sealing: &SealingKey,
     guard: old_cli::Guard,
-    client_sealed: impl FnOnce() -> Result<bool, RpcError>,
+    sealer: client_sealed::Sealer<'_>,
 ) -> Result<(bool, Option<Typed>), RpcError> {
     let (input, exported) = parse(key, value)?;
     let names = environment.names();
@@ -165,21 +165,6 @@ pub(crate) fn set(
         .variables
         .iter()
         .find(|variable| variable.key == key.as_str());
-    let seal = |plaintext: String| -> Result<_, RpcError> {
-        validate_text(key, &plaintext)?;
-        let typed = typed_address::in_sealed(&plaintext, key, &others)?;
-        let fingerprint = sealing.fingerprint(&plaintext);
-        let value = match current {
-            // Sealing the same secret again changes nothing.
-            Some(current) if secret(current) && current.value_fingerprint == fingerprint => {
-                current.value.clone()
-            }
-            Some(_) | None => SavedVariableValue::Secret {
-                encrypted_value: Some(SecretCiphertext::Store(sealing.seal(&plaintext))),
-            },
-        };
-        Ok((value, fingerprint, typed))
-    };
     let (value, fingerprint, typed) = match (input, current) {
         (None, None) => return Err(invalid(key, "a new variable needs a value")),
         (None, Some(current)) => (
@@ -203,7 +188,21 @@ pub(crate) fn set(
                 None,
             )
         }
-        (Some(Input::Generate), _) => seal(generated_secret()?)?,
+        (Some(Input::Generate), _) => {
+            let sealed = sealer.seal(
+                &environment.summary.id,
+                &environment.service(service)?.id,
+                key.as_str(),
+                &generated_secret()?,
+            )?;
+            (
+                SavedVariableValue::Secret {
+                    encrypted_value: Some(sealed.value),
+                },
+                sealed.fingerprint,
+                None,
+            )
+        }
         (Some(Input::Text(_)), Some(current)) if secret(current) => {
             return Err(error::conflict(
                 format!(
@@ -223,15 +222,13 @@ pub(crate) fn set(
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
             (stored(parts), fingerprint, typed)
         }
-        (Some(Input::Seal(plaintext)), _) => {
-            guard.admit(key.as_str(), client_sealed)?;
-            seal(plaintext)?
+        (Some(Input::Seal(_)), _) => {
+            return Err(guard.refuse(key.as_str(), invalid(key, client_sealed::PLAINTEXT_REFUSED)));
         }
         (Some(Input::ClientSealed(value)), _) => {
             let receiver = client_sealed::Receiver {
                 environment: &environment.summary.id,
                 service: environment.service(service)?,
-                enabled: client_sealed()?,
             };
             let sealed =
                 client_sealed::accept(value, key, &receiver, |message| invalid(key, message))?;
@@ -930,38 +927,28 @@ pub(crate) struct Resolved {
 
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers, for a Deploy of Environment
-/// `environment`. With `unseal`, secrets and values that reference one resolve to
-/// plaintext. Without it, such a variable is left out and such a file is empty. A
-/// variable a secret without a value, or a broken reference, reaches is always
-/// left out; in a file either is empty. A value sealed in the browser is never
-/// opened here: with `unseal`, sealed for `environment` it reaches the Service as
-/// a Sealed part, sealed for another Environment it is Not set.
+/// `environment`. Nothing opens a secret here. One sealed for `environment` reaches
+/// its Service as a Sealed part; one sealed for another Environment, or Legacy, is
+/// Not set. A variable a secret without a value, or a broken reference, reaches is
+/// left out; in a file either is empty.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a reference cycle, a value too long for the
-/// environment or a Config file that reads a value sealed in the browser, or
-/// `internal` when a sealed value can't be opened.
+/// environment or a Config file that reads a value sealed in the browser.
 pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
     environment: &str,
-    unseal: Option<&SealingKey>,
 ) -> Result<Resolved, RpcError> {
     let environment = uuid::Uuid::parse_str(environment).ok();
-    let stored = |sealed: Option<&SecretCiphertext>| match (unseal, sealed) {
-        // Without the key a secret still marks what references it.
-        (None, _) => Ok(ResolverValue::Secret {
-            value: String::new(),
-        }),
-        (Some(_), Some(SecretCiphertext::ClientSealed(client))) => match environment {
+    let stored = |sealed: Option<&SecretCiphertext>| match sealed {
+        Some(SecretCiphertext::ClientSealed(client)) => match environment {
             Some(id) if client.sealed_for == id => Ok(ResolverValue::Sealed {
                 value: client.value.clone(),
             }),
             _ => Ok(ResolverValue::NotSet),
         },
-        (Some(key), Some(SecretCiphertext::Store(sealed))) => Ok(ResolverValue::Secret {
-            value: key.open(sealed)?,
-        }),
-        (Some(_), None) => Err(error::corrupt("sealed secret")),
+        Some(SecretCiphertext::Legacy(_)) => Ok(ResolverValue::NotSet),
+        None => Err(error::corrupt("sealed secret")),
     };
     let mut producers = Vec::new();
     for producer in &compiled.variable_producers {
@@ -996,13 +983,10 @@ pub(crate) fn resolve(
             CompiledNodeConfig::Config(config) => {
                 let mut files = BTreeMap::new();
                 for (name, file) in &config.files {
-                    let mut file = resolve_config_file(name.as_str(), &file.content, &producers)
+                    let file = resolve_config_file(name.as_str(), &file.content, &producers)
                         .map_err(|path| cycle(compiled, &path))?;
                     if let Some(reference) = file.sealed.first() {
                         return Err(sealed_in_file(compiled, &config.name, name, reference));
-                    }
-                    if file.secret && unseal.is_none() {
-                        file.content.clear();
                     }
                     files.insert(name.clone(), file);
                 }
@@ -1030,9 +1014,7 @@ pub(crate) fn resolve(
                         broken.push(key.clone());
                         None
                     }
-                    ResolveVariablesResult::Resolved { value, secret, .. } => {
-                        (unseal.is_some() || !secret).then_some(value)
-                    }
+                    ResolveVariablesResult::Resolved { value, .. } => Some(value),
                     ResolveVariablesResult::NotSet { warnings } => {
                         not_set.push(key.clone());
                         if !warnings.is_empty() {
@@ -1072,10 +1054,9 @@ pub(crate) fn resolve(
                         not_set.push(key.clone());
                         None
                     }
-                    ResolverValue::Secret { value } => {
-                        unseal.is_some().then_some(EnvValue::Text(value))
-                    }
-                    ResolverValue::Literal { .. } | ResolverValue::Template { .. } => None,
+                    ResolverValue::Secret { .. }
+                    | ResolverValue::Literal { .. }
+                    | ResolverValue::Template { .. } => None,
                 },
             };
             if let Some(value) = value {
@@ -1177,8 +1158,8 @@ fn cycle(compiled: &CompiledEnvironmentIntent, path: &[String]) -> RpcError {
 mod tests {
     use ployz_core::ConfigName;
     use ployz_core::config::{
-        CompiledEnvironmentNode, CompiledNodeSnapshot, ConfigNodeConfig, FileMode, SavedConfigFile,
-        SavedVariableProducer,
+        CompiledEnvironmentNode, CompiledNodeSnapshot, ConfigNodeConfig, EncryptedSecretValue,
+        FileMode, SavedConfigFile, SavedVariableProducer,
     };
 
     use super::*;
@@ -1247,8 +1228,7 @@ mod tests {
                 },
             }],
         };
-        let key = SealingKey::new(b"test-encryption-secret").unwrap();
-        let error = resolve(&compiled, &environment.to_string(), Some(&key))
+        let error = resolve(&compiled, &environment.to_string())
             .map(|_| ())
             .unwrap_err();
         assert_eq!(error.code, ployz_core::RpcErrorCode::InvalidArgument);
@@ -1256,21 +1236,10 @@ mod tests {
         assert!(error.message.contains("secret.yml"), "{error:?}");
         assert!(error.message.contains("reads P"), "{error:?}");
         assert!(!format!("{error:?}").contains(&ciphertext), "{error:?}");
-        // A plan, without the key, leaves every secret out and checks the rest.
-        let mut planned = resolve(&compiled, &environment.to_string(), None).unwrap();
-        let files = planned.configs.remove("sentry").unwrap();
-        assert_eq!(
-            files
-                .values()
-                .map(|file| file.content.as_str())
-                .collect::<Vec<_>>(),
-            [""]
-        );
     }
 
     #[test]
-    fn a_config_file_that_reads_a_secret_is_empty_without_the_key() {
-        let key = SealingKey::new(b"test-encryption-secret").unwrap();
+    fn a_config_file_that_reads_a_legacy_secret_reads_it_as_not_set() {
         let file = |text: &str| SavedConfigFile {
             content: parse_variable_template(text, |_, _| Some("web-lineage".to_owned())).parts,
             mode: FileMode::READ_ONLY,
@@ -1302,33 +1271,34 @@ mod tests {
                 owner_lineage_id: "web-lineage".into(),
                 key: "P".into(),
                 value: SavedVariableValue::Secret {
-                    encrypted_value: Some(SecretCiphertext::Store(key.seal("s3cr3t"))),
+                    encrypted_value: Some(SecretCiphertext::Legacy(EncryptedSecretValue {
+                        version: 1,
+                        iv: "P06pur97O+q8KRa4".into(),
+                        tag: "WX+lTmeP37rpdHHvD6iOEQ==".into(),
+                        ciphertext: "LcZhKYl1ZWoTpzn9xXoetYCxr8Iy".into(),
+                    })),
                 },
             }],
         };
-        let contents = |unseal| {
-            resolve(&compiled, "env", unseal)
-                .unwrap()
-                .configs
-                .remove("sentry")
-                .unwrap()
+        let files = resolve(&compiled, "env")
+            .unwrap()
+            .configs
+            .remove("sentry")
+            .unwrap();
+        assert_eq!(
+            files
                 .iter()
                 .map(|(name, file)| (name.to_string(), file.content.clone()))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            contents(None),
+                .collect::<Vec<_>>(),
             [
                 ("plain.yml".into(), "plain".into()),
-                ("secret.yml".into(), String::new())
+                ("secret.yml".into(), "p: ".into())
             ]
         );
-        assert_eq!(
-            contents(Some(&key)),
-            [
-                ("plain.yml".into(), "plain".into()),
-                ("secret.yml".into(), "p: s3cr3t".to_owned())
-            ]
-        );
+        let secret = files
+            .get(&ConfigFileName::parse("secret.yml").unwrap())
+            .unwrap();
+        assert!(secret.secret);
+        assert_eq!(secret.not_set.len(), 1);
     }
 }

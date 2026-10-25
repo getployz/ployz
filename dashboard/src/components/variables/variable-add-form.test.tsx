@@ -13,7 +13,7 @@ const existing: VariableRecord = {
   value: { type: "plain", value: "old" },
 };
 
-function renderForm(onCreateVariable = vi.fn(), state: SealedControls["state"] = "off") {
+function renderForm(onCreateVariable = vi.fn(), state: SealedControls["state"] = "ready") {
   render(
     <VariableAddForm
       variables={[existing]}
@@ -78,15 +78,6 @@ describe("VariableAddForm", () => {
     expect(screen.queryByText("A sealed value can't be empty.")).toBeNull();
     fireEvent.submit(screen.getByRole("button", { name: "Add" }));
     expect(onCreateVariable).not.toHaveBeenCalled();
-  });
-
-  it("keeps trunk's checks while sealing is off", () => {
-    const onCreateVariable = renderForm();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Sealed" }));
-    fireEvent.change(screen.getByLabelText("Key"), { target: { value: "PORT" } });
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "8080" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
-    expect(onCreateVariable).toHaveBeenCalledWith({ key: "PORT", value: "8080", sealed: true, exported: false });
   });
 
   it("disables Sealed until a server joins, linking to add one", () => {

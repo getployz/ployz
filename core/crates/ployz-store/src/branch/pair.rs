@@ -336,19 +336,19 @@ impl Checked<'_> {
                 Owner::Proposal { id, sync } => Claim::Owned {
                     sync: sync.clone(),
                     proposal: id.clone(),
-                    source: Box::new(
-                        self.plan
-                            .rows()
-                            .iter()
-                            .find(|row| row.id == landed.row)
-                            .map_or(Cell::Absent, |row| row.from.clone()),
-                    ),
                 },
             };
+            let from = self
+                .plan
+                .rows()
+                .iter()
+                .find(|row| row.id == landed.row)
+                .map_or(Cell::Absent, |row| row.from.clone());
             let arrived = Arrived {
                 other: of.other.clone(),
                 row: landed.row,
                 how,
+                from,
                 value: landed.value,
                 arrival: Arrival::Pending {
                     prior: landed.prior,
@@ -698,6 +698,7 @@ pub(super) fn hint(
         other: other.clone(),
         row: row.clone(),
         how: How::Follow,
+        from: value.clone(),
         value: value.clone(),
         arrival: Arrival::Hint,
     };
@@ -731,11 +732,7 @@ pub(super) enum Arrival {
 pub(super) enum Claim {
     Nobody,
     Released(SyncId),
-    Owned {
-        sync: SyncId,
-        proposal: ProposalId,
-        source: Box<Cell>,
-    },
+    Owned { sync: SyncId, proposal: ProposalId },
 }
 
 /// A row that arrived in a receiver from `other`.
@@ -743,7 +740,10 @@ pub(super) struct Arrived {
     pub(super) other: EnvironmentId,
     pub(super) row: RowId,
     pub(super) how: How,
-    /// The cell delivered; redacted.
+    /// `other`'s cell, which was delivered; redacted. A secret sealed for `other`
+    /// lands without its value, so this tells which of its values came.
+    pub(super) from: Cell,
+    /// The cell that landed; redacted.
     pub(super) value: Cell,
     pub(super) arrival: Arrival,
 }
@@ -759,20 +759,12 @@ fn arrive(
     receiver: &EnvironmentId,
     arrived: &Arrived,
 ) -> Result<(), RpcError> {
-    let (state, prior, was, sync, owner, source) = match &arrived.arrival {
+    let (state, prior, was, sync, owner) = match &arrived.arrival {
         Arrival::Pending { prior, was, claim } => {
-            let (sync, owner, source) = match claim {
-                Claim::Nobody => (None, None, None),
-                Claim::Released(sync) => (Some(sync.as_str()), None, None),
-                Claim::Owned {
-                    sync,
-                    proposal,
-                    source,
-                } => (
-                    Some(sync.as_str()),
-                    Some(proposal.as_str()),
-                    Some(json_of(source)),
-                ),
+            let (sync, owner) = match claim {
+                Claim::Nobody => (None, None),
+                Claim::Released(sync) => (Some(sync.as_str()), None),
+                Claim::Owned { sync, proposal } => (Some(sync.as_str()), Some(proposal.as_str())),
             };
             (
                 "pending",
@@ -780,11 +772,10 @@ fn arrive(
                 Some(json_of(was)),
                 sync,
                 owner,
-                source,
             )
         }
-        Arrival::Hint => ("hint", None, None, None, None, None),
-        Arrival::Settled => ("settled", None, None, None, None, None),
+        Arrival::Hint => ("hint", None, None, None, None),
+        Arrival::Settled => ("settled", None, None, None, None),
     };
     let hint = if matches!(arrived.arrival, Arrival::Hint) {
         " WHERE config_sync_arrival.proposal_id IS NULL"
@@ -821,7 +812,7 @@ fn arrive(
             was.as_deref().into(),
             sync.into(),
             owner.into(),
-            source.as_deref().into(),
+            json_of(&arrived.from).as_str().into(),
         ],
     )?;
     Ok(())
@@ -875,11 +866,7 @@ pub(super) fn arrived(
                     ) {
                         (None, None) => Claim::Nobody,
                         (Some(sync), None) => Claim::Released(sync),
-                        (Some(sync), Some(proposal)) => Claim::Owned {
-                            sync,
-                            proposal,
-                            source: Box::new(row.json(10, "Sync")?),
-                        },
+                        (Some(sync), Some(proposal)) => Claim::Owned { sync, proposal },
                         (None, Some(_)) => return Err(error::corrupt("Sync")),
                     },
                 },
@@ -887,18 +874,25 @@ pub(super) fn arrived(
                 "settled" => Arrival::Settled,
                 _ => return Err(error::corrupt("Sync")),
             };
+            let value: Cell = row.json(5, "Sync")?;
+            // A row no proposal owns has no source: what it offers is what landed.
+            let from = match row.optional_text(10)? {
+                Some(from) => serde_json::from_str(from).map_err(|_| error::corrupt("Sync"))?,
+                None => value.clone(),
+            };
             Ok(Arrived {
                 other: row.parse(0, "Sync")?,
                 row: row_id(row.text(1)?, row.text(2)?)?,
                 how: row.variant(3, "Sync")?,
-                value: row.json(5, "Sync")?,
+                from,
+                value,
                 arrival,
             })
         })
         .collect()
 }
 
-/// What arrived in `receiver` from `other`, by row: the cell delivered.
+/// What arrived in `receiver` from `other`, by row: the cell `other` held.
 pub(super) fn arrivals(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
@@ -906,7 +900,7 @@ pub(super) fn arrivals(
 ) -> Result<BTreeMap<RowId, Cell>, RpcError> {
     Ok(arrived(tx, receiver, Which::From(other))?
         .into_iter()
-        .map(|arrived| (arrived.row, arrived.value))
+        .map(|arrived| (arrived.row, arrived.from))
         .collect())
 }
 

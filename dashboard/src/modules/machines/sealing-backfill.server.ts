@@ -14,7 +14,6 @@ import {
 } from "#/modules/machines/sealing-key.server";
 import { clusterRead, OrganizationRuntime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { readSealedVariables } from "#/modules/sealing/sealed-variables.server";
 import { Database } from "#/server/database.server";
 
 const BACKFILL_CLUSTER_BUDGET_MS = 60_000;
@@ -43,7 +42,7 @@ export const loadSealingBackfillTarget = Effect.fn("SealingBackfill.loadTarget")
   if (pairing === undefined || pairing.founderMachineId === null || pairing.removalStartedAt !== null) return null;
   const clusterKey = hashEnrollmentToken(yield* decryptPairingSecret(pairing.encryptedPairingSecret));
   const expected = (yield* readSealingPublicKey(organizationId, clusterKey))
-    ?? ((yield* readSealedVariables(organizationId)) ? (yield* readOrganizationSealingKey(organizationId))?.publicKey : undefined);
+    ?? (yield* readOrganizationSealingKey(organizationId))?.publicKey;
   return {
     clusterKey,
     expected: expected ?? null,

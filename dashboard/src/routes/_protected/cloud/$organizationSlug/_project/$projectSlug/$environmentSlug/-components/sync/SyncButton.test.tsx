@@ -20,7 +20,7 @@ import { SyncButton } from "./SyncButton";
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   Element.prototype.scrollIntoView ??= () => {};
-  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "off" } });
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "no_server" } });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
@@ -125,7 +125,7 @@ it("says what a Sync into the Parent carries, and opens the dialog into the Pare
     "Sourceshop/api:1.81.9",
     "LOG_LEVELChanged in productionwarndebug",
     "APP_ENVproductionstaging",
-    "STRIPE_WEBHOOK_SECRETSecret",
+    "STRIPE_WEBHOOK_SECRETSealed",
   ]);
   // A secret arrives by name only: the row takes production's own value.
   expect(sync.getByLabelText("Set production's value of STRIPE_WEBHOOK_SECRET").getAttribute("placeholder")).toBe("Set production's value");
@@ -256,14 +256,10 @@ it("syncs a PR Environment into production now and opens production, with no Clo
   expect(sync.getByText("These become production's changes to deploy.")).toBeTruthy();
   // A PR Environment closes with its pull request.
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
-  fireEvent.change(sync.getByLabelText("Set production's value of STRIPE_WEBHOOK_SECRET"), { target: { value: "whsec" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
   await waitFor(() => expect(app.success).toHaveBeenCalled());
   const production = { project: "shop", environment: "production" };
-  expect(app.commands()[0]).toMatchObject({
-    command: "sync", from: fixApi, into: production, close_after: false,
-    values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" },
-  });
+  expect(app.commands()[0]).toMatchObject({ command: "sync", from: fixApi, into: production, close_after: false });
   expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/production");
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 4 changes from fix-api");
 });
@@ -275,15 +271,13 @@ it("syncs a PR Environment into another Environment now, and its menu shuts it d
   fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
   await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   const sync = await pick("staging");
-  fireEvent.change(sync.getByLabelText("Set staging's value of STRIPE_WEBHOOK_SECRET"), { target: { value: "whsec" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/staging"));
-  // A value set now seals the secret, with the Sync.
   const staging = { project: "shop", environment: "staging" };
   expect(app.commands()).toEqual([{
     command: "sync", from: fixApi, into: staging, close_after: false, version: "4:abc",
     picks: ["a:source", "a:env.LOG_LEVEL", "a:env.APP_ENV", "a:env.STRIPE_WEBHOOK_SECRET"],
-    values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" }, id: expect.any(String),
+    values: {}, id: expect.any(String),
   }]);
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 4 changes from fix-api");
 });

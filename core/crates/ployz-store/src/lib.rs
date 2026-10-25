@@ -29,6 +29,7 @@ mod query;
 mod registry;
 mod removal;
 mod replay;
+mod reseal;
 mod review;
 mod rules;
 mod scope;
@@ -101,6 +102,7 @@ pub use removal::{
     RemovalCancelled, Remove, RemovedQuery, RemovedView, RemovedVolume, Residual, VolumeLoss,
     Waiting, docker_volume,
 };
+pub use reseal::{LegacyCount, Resealed};
 pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{
     DataEffect, DestructiveEffect, DestructiveKind, DiffView, LostAfter, NodeChange,
@@ -118,7 +120,8 @@ pub use teardown::{
     RemovedBecause, SeenProtection, SetDefaultEnvironment, SetEnvironmentProtected,
 };
 pub use trusted::{
-    Approval, Asks, ObservationFailure, ObservationStage, Trusted, VolumeObservation,
+    Approval, Asks, ObservationFailure, ObservationStage, SealingRecipient, Trusted,
+    VolumeObservation,
 };
 pub use volume::size::VolumeResized;
 
@@ -295,27 +298,64 @@ impl ConfigStore {
             .read(|tx| review::sealed::names(tx, environment.as_str()))
     }
 
-    /// Whether `organization` takes values sealed in the browser: on only once its
-    /// `config_sealed_variables` row exists, which nothing in the Store inserts.
-    /// In-process only.
+    /// Organizations with a secret the Store sealed itself in some Working State or
+    /// Saved head: those a reseal has work in. In-process only.
     ///
     /// # Errors
     /// Returns a storage error.
-    pub fn sealed_variables(&self, organization: &OrganizationId) -> Result<bool, RpcError> {
+    pub fn legacy_organizations(&self) -> Result<Vec<OrganizationId>, RpcError> {
+        self.storage.read(reseal::legacy_organizations)
+    }
+
+    /// How many secrets the Store sealed itself `organization` holds, by whether a
+    /// reseal converts them. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn legacy_count(&self, organization: &OrganizationId) -> Result<LegacyCount, RpcError> {
         self.storage
-            .read(|tx| client_sealed::enabled(tx, organization))
+            .read(|tx| reseal::legacy_count(tx, organization))
+    }
+
+    /// The Environments of `organization` whose Working State or Saved head holds a
+    /// secret the Store sealed itself. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn reseal_environments(
+        &self,
+        organization: &OrganizationId,
+    ) -> Result<Vec<EnvironmentId>, RpcError> {
+        self.storage
+            .read(|tx| reseal::reseal_environments(tx, organization))
+    }
+
+    /// Seal every secret of `environment` the Store sealed itself for `recipient`,
+    /// the Cluster's key, in its Working State and Saved head, in one transaction.
+    /// Running it again changes nothing. In-process only.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Environment, or a storage error.
+    pub fn reseal(
+        &self,
+        environment: &EnvironmentId,
+        recipient: &SealingRecipient,
+    ) -> Result<Resealed, RpcError> {
+        self.storage
+            .write(|tx| reseal::reseal(tx, environment, recipient, &self.sealing))
     }
 
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with
-    /// its secrets unsealed: the only way plaintext leaves the Store. In-process only:
-    /// never exposed over HTTPS. The same runner may claim again until it records a
-    /// Deploy Preview; after that its claim leaves the outcome unknown.
+    /// its registry credentials opened and its secrets still sealed for the Machine.
+    /// In-process only: never exposed over HTTPS. The same runner may claim again
+    /// until it records a Deploy Preview; after that its claim leaves the outcome
+    /// unknown.
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, `conflict` when another runner
     /// owns it, a newer one replaced it, it was cancelled or ended, this runner
-    /// already prepared it, or its unsealed values can't deploy, which fails it with
-    /// why; or a storage error.
+    /// already prepared it, or its values can't deploy, which fails it with why; or
+    /// a storage error.
     pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
         self.storage
             .write(|tx| deployment::claim(tx, deployment, runner, &self.sealing))
@@ -494,8 +534,7 @@ impl ConfigStore {
     /// # Errors
     /// Returns `not_found` for an unknown build, or a storage error.
     pub fn github_input(&self, id: &GithubBuildId) -> Result<GithubInput, RpcError> {
-        self.storage
-            .read(|tx| build::github_input(tx, id, &self.sealing))
+        self.storage.read(|tx| build::github_input(tx, id))
     }
 
     /// Run `run_id` of GitHub build `id` checked in with `grant`. In-process only.

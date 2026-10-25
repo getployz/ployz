@@ -21,7 +21,7 @@ export function syncLine(row: SyncRow, into: string): SyncLine {
     // A whole node is named by its kind; its section names it.
     ...row.name === null ? { name: row.kind === "volume" ? "Volume" : "Service", variable: false } : settingName(row.name),
     // A secret's value never syncs, whatever else holds.
-    badge: row.held_by !== null ? `Included with ${row.held_by}` : row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
+    badge: row.held_by !== null ? `Included with ${row.held_by}` : row.secret ? "Sealed" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
     before,
     after,
   };

@@ -98,6 +98,7 @@ export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const sealingKeyEnsureRequestedEvent = "sealing-key/ensure.requested";
+export const variablesResealRequestedEvent = "variables/reseal.requested";
 export const uptimeBackfillRequestedEvent = "uptime/backfill.requested";
 export const observeCrashReceivedEvent = "observe/crash.received";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
@@ -196,6 +197,11 @@ export type ClusterDomainSyncRequestedEventData = {
 
 export type SealingKeyEnsureRequestedEventData = {
   organizationId: string;
+};
+
+/** Reseal the Legacy secrets of `organizationId`, or of every Organization that holds one. */
+export type VariablesResealRequestedEventData = {
+  organizationId?: string;
 };
 
 /** Sync every Environment's uptime checks with its Applied State, for Services applied before checks existed. */
@@ -397,6 +403,10 @@ export const sealingKeyEnsureRequestedEventType = eventType(
   sealingKeyEnsureRequestedEvent,
   { schema: staticSchema<SealingKeyEnsureRequestedEventData>() },
 );
+export const variablesResealRequestedEventType = eventType(
+  variablesResealRequestedEvent,
+  { schema: staticSchema<VariablesResealRequestedEventData>() },
+);
 export const uptimeBackfillRequestedEventType = eventType(
   uptimeBackfillRequestedEvent,
   { schema: staticSchema<UptimeBackfillRequestedEventData>() },
@@ -565,6 +575,15 @@ export function createClusterDomainSyncRequestedEvent(
 
 export function createSealingKeyEnsureRequestedEvent(data: SealingKeyEnsureRequestedEventData) {
   return { name: sealingKeyEnsureRequestedEvent, data } as const;
+}
+
+export function createVariablesResealRequestedEvent(data: VariablesResealRequestedEventData) {
+  return { name: variablesResealRequestedEvent, data } as const;
+}
+
+/** Keyed by the Cluster whose first Sealing Key Cloud recorded: a retried record sends it again, and Inngest runs it once. */
+export function createClusterResealRequestedEvent({ organizationId, clusterKey }: { organizationId: string; clusterKey: string }) {
+  return { id: `variables-reseal-${organizationId}-${clusterKey}`, name: variablesResealRequestedEvent, data: { organizationId } } as const;
 }
 
 export function createOrganizationBillingSyncRequestedEvent(
@@ -739,6 +758,8 @@ export type InngestSendableEvent =
   | ReturnType<typeof createVolumeRunTakenEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createSealingKeyEnsureRequestedEvent>
+  | ReturnType<typeof createVariablesResealRequestedEvent>
+  | ReturnType<typeof createClusterResealRequestedEvent>
   | ReturnType<typeof createObserveCrashReceivedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

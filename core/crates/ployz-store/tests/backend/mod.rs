@@ -36,15 +36,6 @@ pub fn execute(url: &str, sql: &str) {
     }
 }
 
-/// Turn `sealedVariables` on for `organization` beside the Store at `url`, the way no
-/// Store code does: a throwaway test store only.
-pub fn sealed_variables_on(url: &str, organization: &str) {
-    execute(
-        url,
-        &format!("INSERT INTO config_sealed_variables (organization_id) VALUES ('{organization}')"),
-    );
-}
-
 /// 48 bytes of ciphertext the browser could have sealed: `n` repeated.
 pub fn ciphertext(n: u8) -> String {
     use base64::Engine as _;
@@ -58,6 +49,11 @@ pub fn client_sealed(environment: &str, service: &str, key: &str, n: u8) -> serd
         "sealedFor": environment,
         "value": { "sealed": ciphertext(n), "scope": { "service": service }, "key": key },
     })
+}
+
+/// [`client_sealed`] as a secret setting: what an edit sets `service.env.key` to.
+pub fn sealed_secret(environment: &str, service: &str, key: &str, n: u8) -> serde_json::Value {
+    serde_json::json!({ "secret": client_sealed(environment, service, key, n) })
 }
 
 /// A new, empty Store.

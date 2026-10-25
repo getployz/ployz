@@ -551,20 +551,28 @@ fn put_sentry(store: &ConfigStore, who: &Actor, content: &str) {
         .unwrap();
 }
 
-// Catches a retried edit rotating a generated secret that its referrers and an
-// initialized database already use, and generate leaving a plain value unsealed.
+/// A replayed edit must not rotate a secret that referrers and an initialized
+/// database already use, and generate seals over a plain value.
 #[test]
 fn a_replayed_generate_keeps_its_secret_and_seals_over_plain_text() {
     let (store, who) = shop();
+    let keypair = ployz_core::Keypair::generate();
+    let trusted = Trusted {
+        sealing: Some(ployz_store::SealingRecipient {
+            public_key: keypair.public(),
+        }),
+        ..Trusted::default()
+    };
     let edit = |changes: Vec<Change>| {
         store
-            .write(
+            .write_trusted(
                 &who,
                 &Edit {
                     environment: EnvironmentRef::default(),
                     expect: None,
                     changes,
                 },
+                &trusted,
             )
             .unwrap();
     };
@@ -590,11 +598,18 @@ fn a_replayed_generate_keeps_its_secret_and_seals_over_plain_text() {
             .iter()
             .find(|spec| spec.name.as_str() == "web")
             .unwrap();
-        let env = &web.container.environment;
-        claimed_env.push((
-            env["PASSWORD"].text().unwrap().to_owned(),
-            env["TOKEN"].text().unwrap().to_owned(),
-        ));
+        let identity = web.container.sealed_identity.clone().unwrap();
+        let opened = |key: &str| {
+            let ployz_core::EnvValue::Sealed(value) = &web.container.environment[key] else {
+                panic!("{:?}", web.container.environment);
+            };
+            let sealed = ployz_core::config::ClientSealedValue {
+                sealed_for: identity.environment,
+                value: value.clone(),
+            };
+            (value.clone(), keypair.open(&identity, &sealed).unwrap())
+        };
+        claimed_env.push((opened("PASSWORD"), opened("TOKEN")));
         store
             .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
             .unwrap();
@@ -602,7 +617,7 @@ fn a_replayed_generate_keeps_its_secret_and_seals_over_plain_text() {
             .record(&id(n), &a, succeeded(&["web", "api"]))
             .unwrap();
     }
-    let (password, token) = &claimed_env[0];
+    let ((_, password), (_, token)) = &claimed_env[0];
     for secret in [password, token] {
         assert_eq!(secret.len(), 32, "{secret}");
         assert!(secret.chars().all(|c| c.is_ascii_alphabetic()), "{secret}");

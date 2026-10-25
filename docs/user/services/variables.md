@@ -71,11 +71,12 @@ references the variable still blocks the rename: change that file first.
 
 ## Seal a secret
 
-A sealed variable is encrypted when you save it, and the dashboard never shows its value again.
-A lock marks it in the list.
-Your service still gets the real value when it deploys.
+A value you seal is sealed on your device, in the browser or the `ployz` CLI, and opened only
+on your servers. The dashboard never shows it again, and a lock marks it in the list. Your
+service still gets the real value when it deploys.
 
 - New variables are plain unless you tick **Sealed**.
+- A new sealed value needs a server in your organization first. Add one with `ployz server add`.
 - To seal a plain variable, choose **Seal** from its menu. You can't unseal it. Saving the
   sealed value removes its earlier values from History too, so older versions show **Sealed**.
   A retried deployment of an older version gets the sealed value, not the one it had.
@@ -94,6 +95,10 @@ Your service still gets the real value when it deploys.
 - Asking for a new random value for a variable that's already sealed keeps the sealed value, so
   a retried change never swaps the password a database already uses. To get a new value, delete
   the variable first. A plain variable gets a new sealed value.
+- Rotate a secret you saved before this change. Older backups of Ployz Cloud's database still
+  hold it. Change the secret where it comes from, then delete the variable and add it again
+  with the new value. A version saved before this change deploys without its sealed values, so
+  deploy the current version instead.
 
 ## Reference another service's variable
 

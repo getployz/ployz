@@ -1,6 +1,6 @@
 //! Variables and sealed secrets through the Store's interface only, on SQLite and on
-//! Postgres (see `backend`): what reads show, what edits accept, and that plaintext
-//! leaves the Store only through `claim`.
+//! Postgres (see `backend`): what reads show, what edits accept, and that a sealed
+//! value reaches a claim as the browser sealed it.
 #![expect(
     clippy::indexing_slicing,
     reason = "Fixed JSON results use indexing; missing entries must fail the test."
@@ -17,8 +17,6 @@ use ployz_store::{
 use serde_json::{Value, json};
 
 mod backend;
-
-const SECRET: &str = "s3cr3t-pässwörd 🔑";
 
 fn who() -> Actor {
     Actor::system(OrganizationId::parse("org").unwrap())
@@ -52,6 +50,21 @@ fn shop(store: &ConfigStore) {
             )
             .unwrap();
     }
+}
+
+fn uuid(n: u8) -> String {
+    format!("00000000-0000-4000-8000-0000000000{n:02}")
+}
+
+/// Variable `key` of Service `service` (3 is `web`, 4 is `api`) sealed in the browser
+/// for the default Environment, holding ciphertext `n`.
+fn sealed(service: u8, key: &str, n: u8) -> Value {
+    backend::sealed_secret(&uuid(2), &uuid(service), key, n)
+}
+
+/// What a claim carries for [`sealed`]: the value without the Environment it was sealed for.
+fn carried(service: u8, key: &str, n: u8) -> Value {
+    backend::client_sealed(&uuid(2), &uuid(service), key, n)["value"].clone()
 }
 
 fn set(store: &ConfigStore, changes: &[(&str, Value)]) -> Result<Edited, RpcError> {
@@ -184,7 +197,6 @@ fn null_environment_values_are_refused_before_any_setting_changes() {
     let before = get(&store, None);
     for value in [
         json!("private\0value"),
-        json!({ "secret": "private\0value" }),
         json!({ "value": "private\0value", "exported": true }),
     ] {
         let error = store
@@ -216,15 +228,13 @@ fn a_value_too_long_for_the_environment_is_refused_when_set() {
     set(&store, &[("web.env.BIG", json!(fits))]).unwrap();
     let before = get(&store, None);
     let over = format!("{fits}x");
-    for value in [json!(over), json!({ "secret": over })] {
-        let error = set(&store, &[("web.env.BIG", value)]).unwrap_err();
-        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-        assert_eq!(
-            error.message,
-            "BIG: too long for a Container's environment: Linux passes at most 128 KiB per variable, name included"
-        );
-        assert_eq!(get(&store, None), before);
-    }
+    let error = set(&store, &[("web.env.BIG", json!(over))]).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        "BIG: too long for a Container's environment: Linux passes at most 128 KiB per variable, name included"
+    );
+    assert_eq!(get(&store, None), before);
 }
 
 /// What `KEY=value` takes of a program's environment: the string with its NUL, and
@@ -345,84 +355,6 @@ fn a_reference_that_resolves_too_long_refuses_the_deploy() {
 }
 
 #[test]
-fn a_secret_that_resolves_too_long_fails_the_deployment_at_claim() {
-    let store = backend::open();
-    shop(&store);
-    let half = "x".repeat(70 * 1024);
-    set(
-        &store,
-        &[
-            ("api.env.HALF", json!({ "secret": half })),
-            ("web.env.BOTH", json!("${{ api.HALF }}${{ api.HALF }}")),
-        ],
-    )
-    .unwrap();
-    // Admission can't open the secret, so only the claim sees the value.
-    let id = admit(&store, 1).unwrap();
-    let message = "web.env.BOTH is too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
-    for refused in [message, "This Deployment already ended"] {
-        let error = store
-            .claim(&id, &RunnerId::parse("runner").unwrap())
-            .unwrap_err();
-        assert_eq!(error.code, RpcErrorCode::Conflict);
-        assert_eq!(error.message, refused);
-    }
-    let read = store
-        .read(&who(), &ployz_store::DeploymentQuery { id })
-        .unwrap();
-    assert_eq!(
-        read.deployment.status,
-        ployz_store::DeploymentStatus::Failed
-    );
-    assert_eq!(
-        read.deployment.outcome,
-        Some(ployz_store::Outcome::NotExecuted {
-            reason: message.into(),
-            cause: Vec::new(),
-            needs_upload: Vec::new(),
-            same_again: false,
-        })
-    );
-}
-
-#[test]
-fn a_claim_that_resolves_too_long_leaves_the_running_deployment_running() {
-    let store = backend::open();
-    shop(&store);
-    set(
-        &store,
-        &[
-            ("api.env.HALF", json!({ "secret": "short" })),
-            ("web.env.BOTH", json!("${{ api.HALF }}${{ api.HALF }}")),
-        ],
-    )
-    .unwrap();
-    let healthy = admit(&store, 1).unwrap();
-    store
-        .claim(&healthy, &RunnerId::parse("runner").unwrap())
-        .unwrap();
-    set(
-        &store,
-        &[("api.env.HALF", json!({ "secret": "x".repeat(70 * 1024) }))],
-    )
-    .unwrap();
-    let newer = admit(&store, 2).unwrap();
-    let error = store
-        .claim(&newer, &RunnerId::parse("other").unwrap())
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict);
-    let status = |id: &DeploymentId| {
-        store
-            .read(&who(), &ployz_store::DeploymentQuery { id: id.clone() })
-            .unwrap()
-            .deployment
-            .status
-    };
-    assert_eq!(status(&healthy), ployz_store::DeploymentStatus::Running);
-    assert_eq!(status(&newer), ployz_store::DeploymentStatus::Failed);
-}
-
-#[test]
 fn a_typed_private_address_answers_with_its_reference() {
     let store = backend::open();
     shop(&store);
@@ -436,7 +368,7 @@ fn a_typed_private_address_answers_with_its_reference() {
             ("web.env.API_HOST", json!("api")),
             ("web.env.API_ADDR", json!("api:8080")),
             // A reference in the user info leaves the host a URL's host, not the user.
-            ("web.env.DB_PASSWORD", json!({ "secret": SECRET })),
+            ("web.env.DB_PASSWORD", sealed(3, "DB_PASSWORD", 1)),
             (
                 "web.env.API_LOGIN",
                 json!("postgres://api:${{ DB_PASSWORD }}@api:5432/app"),
@@ -444,15 +376,11 @@ fn a_typed_private_address_answers_with_its_reference() {
             // Elsewhere a bare name is just a word, or an image.
             ("web.env.PROCESS_TYPE", json!("api")),
             ("web.env.IMAGE", json!("api:16")),
-            (
-                "web.env.API_SECRET",
-                json!({ "secret": format!("postgres://app:{SECRET}@api.internal:5432/app") }),
-            ),
+            // A sealed value can't be read for one.
+            ("web.env.API_SECRET", sealed(3, "API_SECRET", 2)),
         ],
     )
     .unwrap();
-    let answered = serde_json::to_string(&edited.typed_addresses).unwrap();
-    assert!(!answered.contains(SECRET));
     assert_eq!(
         serde_json::to_value(&edited.typed_addresses).unwrap(),
         json!([
@@ -482,12 +410,6 @@ fn a_typed_private_address_answers_with_its_reference() {
                 "instead": reference(
                     "postgres://api:${{ DB_PASSWORD }}@${{ api.PLOYZ_PRIVATE_DOMAIN }}:5432/app"
                 ),
-            },
-            // A secret can't hold a reference: nothing to show.
-            {
-                "path": "web.env.API_SECRET",
-                "services": ["api"],
-                "instead": { "kind": "sealed" },
             },
         ])
     );
@@ -530,15 +452,13 @@ fn a_typed_private_address_answers_with_its_reference() {
 }
 
 #[test]
-fn secrets_never_leave_reads_and_only_claim_unseals_them() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    let store = ConfigStore::open(&url, backend::key()).unwrap();
+fn secrets_never_leave_reads_and_reach_a_claim_as_sealed() {
+    let store = backend::open();
     shop(&store);
     let edited = set(
         &store,
         &[
-            ("web.env.password", json!({ "secret": SECRET })),
+            ("web.env.password", sealed(3, "PASSWORD", 1)),
             ("web.env.DB_HOST", json!("db")),
             (
                 "api.env.DATABASE_URL",
@@ -589,28 +509,18 @@ fn secrets_never_leave_reads_and_only_claim_unseals_them() {
     ];
     for read in reads {
         let text = read.to_string();
-        assert!(
-            !text.contains("s3cr3t") && !text.contains("ciphertext"),
-            "{text}"
-        );
+        assert!(!text.contains(&backend::ciphertext(1)), "{text}");
     }
-    if let Some(path) = url.strip_prefix("sqlite:") {
-        drop(store);
-        let stored = std::fs::read(path).unwrap();
-        assert!(!String::from_utf8_lossy(&stored).contains("s3cr3t"));
-        let store = ConfigStore::open(&url, backend::key()).unwrap();
-        return claim_unseals(&store, &id);
-    }
-    claim_unseals(&store, &id);
-}
-
-fn claim_unseals(store: &ConfigStore, id: &DeploymentId) {
     let claimed = store
-        .claim(id, &RunnerId::parse("runner").unwrap())
+        .claim(&id, &RunnerId::parse("runner").unwrap())
         .unwrap();
-    assert_eq!(environment_of(&claimed, "web")["PASSWORD"], SECRET);
+    let sealed = carried(3, "PASSWORD", 1);
+    assert_eq!(environment_of(&claimed, "web")["PASSWORD"], sealed);
     let api = environment_of(&claimed, "api");
-    assert_eq!(api["DATABASE_URL"], format!("postgres://{SECRET}@db/app"));
+    assert_eq!(
+        api["DATABASE_URL"],
+        json!({ "template": ["postgres://", sealed, "@db/app"] })
+    );
     assert_eq!(api["WEB"], "web.internal");
     assert_eq!(
         claimed
@@ -629,28 +539,30 @@ fn claim_unseals(store: &ConfigStore, id: &DeploymentId) {
 }
 
 #[test]
-fn a_store_with_another_key_cannot_unseal() {
+fn a_claim_carries_a_sealed_value_without_the_key_the_store_was_opened_with() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let store = ConfigStore::open(&url, backend::key()).unwrap();
     shop(&store);
-    set(&store, &[("web.env.TOKEN", json!({ "secret": SECRET }))]).unwrap();
+    set(&store, &[("web.env.TOKEN", sealed(3, "TOKEN", 1))]).unwrap();
     let id = admit(&store, 1).unwrap();
     let other = ConfigStore::open(&url, SealingKey::new(b"another secret").unwrap()).unwrap();
-    let error = other
+    let claimed = other
         .claim(&id, &RunnerId::parse("runner").unwrap())
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Internal);
-    assert!(!error.message.contains("s3cr3t"));
+        .unwrap();
+    assert_eq!(
+        environment_of(&claimed, "web")["TOKEN"],
+        carried(3, "TOKEN", 1)
+    );
 }
 
 #[test]
 fn a_secret_is_kept_by_its_marker_and_never_becomes_plain() {
     let store = backend::open();
     shop(&store);
-    set(&store, &[("web.env.TOKEN", json!({ "secret": SECRET }))]).unwrap();
-    // Sending back what reads show keeps it, as does sealing the same value again.
-    for same in [json!({ "secret": true }), json!({ "secret": SECRET })] {
+    set(&store, &[("web.env.TOKEN", sealed(3, "TOKEN", 1))]).unwrap();
+    // Sending back what reads show keeps it, as does the same sealed value again.
+    for same in [json!({ "secret": true }), sealed(3, "TOKEN", 1)] {
         assert!(staged(&set(&store, &[("web.env.TOKEN", same)]).unwrap()).is_empty());
     }
     let refused = set(&store, &[("web.env.TOKEN", json!("plain now"))]).unwrap_err();
@@ -668,8 +580,8 @@ fn a_secret_is_kept_by_its_marker_and_never_becomes_plain() {
     let edited = set(
         &store,
         &[
-            ("web.env.PLAIN", json!({ "secret": "now sealed" })),
-            ("web.env.TOKEN", json!({ "secret": "rotated" })),
+            ("web.env.PLAIN", sealed(3, "PLAIN", 2)),
+            ("web.env.TOKEN", sealed(3, "TOKEN", 3)),
         ],
     )
     .unwrap();
@@ -726,7 +638,7 @@ fn references_and_exports_round_trip_through_get_and_patch() {
             ),
             ("web.env.HOST", json!("web.internal")),
             ("web.env.HOST.exported", json!("true")),
-            ("web.env.KEY", json!({ "secret": SECRET })),
+            ("web.env.KEY", sealed(3, "KEY", 1)),
         ],
     )
     .unwrap();
@@ -811,7 +723,7 @@ fn a_renamed_secret_stays_sealed_and_keeps_its_value() {
     set(
         &store,
         &[
-            ("web.env.TOKEN", json!({ "secret": SECRET })),
+            ("web.env.TOKEN", sealed(3, "TOKEN", 1)),
             (
                 "web.env.API_URL",
                 json!({ "value": "https://api", "exported": true }),
@@ -821,7 +733,7 @@ fn a_renamed_secret_stays_sealed_and_keeps_its_value() {
     .unwrap();
     let edited = rename(&store, &[], "web.env.TOKEN", "api_token").unwrap();
     assert_eq!(staged(&edited), ["web.env.API_TOKEN", "web.env.TOKEN"]);
-    assert!(!json!(edited).to_string().contains("s3cr3t"));
+    assert!(!json!(edited).to_string().contains(&backend::ciphertext(1)));
     assert_eq!(
         value(&store, "web.env.API_TOKEN"),
         json!({ "secret": true })
@@ -850,7 +762,11 @@ fn a_renamed_secret_stays_sealed_and_keeps_its_value() {
         .claim(&id, &RunnerId::parse("runner").unwrap())
         .unwrap();
     let web = environment_of(&claimed, "web");
-    assert_eq!(web["API_TOKEN"], SECRET);
+    // Renamed, it reaches the Service under its new name, sealed for the old one.
+    assert_eq!(
+        web["API_TOKEN"],
+        json!({ "template": [carried(3, "TOKEN", 1)] })
+    );
     assert_eq!(web["PUBLIC_API_URL"], "https://api");
     assert!(web.get("TOKEN").is_none() && web.get("API_URL").is_none());
 }
@@ -862,8 +778,8 @@ fn sealed_names_keep_every_name_ever_sealed_and_every_template() {
     set(
         &store,
         &[
-            ("web.env.TOKEN", json!({ "secret": SECRET })),
-            ("web.env.OLD", json!({ "secret": "retired-value" })),
+            ("web.env.TOKEN", sealed(3, "TOKEN", 1)),
+            ("web.env.OLD", sealed(3, "OLD", 2)),
             ("web.env.PLAIN", json!("hello-plain")),
             ("api.env.URL", json!("http://${{ web.PLAIN }}")),
         ],
@@ -892,7 +808,7 @@ fn sealed_names_keep_every_name_ever_sealed_and_every_template() {
     assert!(
         !json!(store.read(&who(), &SealedNamesQuery::default()).unwrap())
             .to_string()
-            .contains("s3cr3t")
+            .contains(&backend::ciphertext(1))
     );
 }
 
@@ -1086,7 +1002,7 @@ fn referenced(store: &ConfigStore) {
             ),
             ("worker.env.LITERAL", json!("$${{ web.API_URL }} API_URL")),
             ("api.env.SELF", json!("${{ API_URL }}")),
-            ("web.env.TOKEN", json!({ "secret": "${{ API_URL }}" })),
+            ("web.env.TOKEN", sealed(3, "TOKEN", 1)),
         ],
     )
     .unwrap();
@@ -1163,8 +1079,11 @@ fn a_referenced_variable_is_renamed_only_with_its_references() {
         environment_of(&claimed, "worker")["BACKEND"],
         "https://api https://own"
     );
-    // A secret holds text, never a reference: it is neither read nor rewritten.
-    assert_eq!(environment_of(&claimed, "web")["TOKEN"], "${{ API_URL }}");
+    // A secret holds a sealed value, never a reference: it is neither read nor rewritten.
+    assert_eq!(
+        environment_of(&claimed, "web")["TOKEN"],
+        carried(3, "TOKEN", 1)
+    );
 }
 
 #[test]
@@ -1174,7 +1093,7 @@ fn a_referenced_secret_is_renamed_and_stays_sealed() {
     set(
         &store,
         &[
-            ("web.env.TOKEN", json!({ "secret": SECRET })),
+            ("web.env.TOKEN", sealed(3, "TOKEN", 1)),
             ("api.env.AUTH", json!("Bearer ${{ web.TOKEN }}")),
         ],
     )
@@ -1184,7 +1103,7 @@ fn a_referenced_secret_is_renamed_and_stays_sealed() {
         staged(&edited),
         ["web.env.API_TOKEN", "web.env.TOKEN", "api.env.AUTH"]
     );
-    assert!(!json!(edited).to_string().contains("s3cr3t"));
+    assert!(!json!(edited).to_string().contains(&backend::ciphertext(1)));
     assert_eq!(
         value(&store, "web.env.API_TOKEN"),
         json!({ "secret": true })
@@ -1197,10 +1116,13 @@ fn a_referenced_secret_is_renamed_and_stays_sealed() {
     let claimed = store
         .claim(&id, &RunnerId::parse("runner").unwrap())
         .unwrap();
-    assert_eq!(environment_of(&claimed, "web")["API_TOKEN"], SECRET);
+    assert_eq!(
+        environment_of(&claimed, "web")["API_TOKEN"],
+        json!({ "template": [carried(3, "TOKEN", 1)] })
+    );
     assert_eq!(
         environment_of(&claimed, "api")["AUTH"],
-        format!("Bearer {SECRET}")
+        json!({ "template": ["Bearer ", carried(3, "TOKEN", 1)] })
     );
 }
 
@@ -1226,15 +1148,13 @@ fn ployz_built_ins_cannot_be_set_but_port_can() {
 }
 
 #[test]
-fn a_config_file_gets_its_secrets_only_at_claim_and_warns_of_what_may_break_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    let store = ConfigStore::open(&url, backend::key()).unwrap();
+fn a_config_file_never_takes_a_sealed_value_and_warns_of_what_may_break_it() {
+    let store = backend::open();
     shop(&store);
     set(
         &store,
         &[
-            ("web.env.PASSWORD", json!({ "secret": SECRET })),
+            ("web.env.PASSWORD", sealed(3, "PASSWORD", 1)),
             ("web.env.HOSTS", json!("a\nb")),
         ],
     )
@@ -1253,21 +1173,25 @@ fn a_config_file_gets_its_secrets_only_at_claim_and_warns_of_what_may_break_it()
             },
         )
         .unwrap();
-    store
-        .write(
-            &who(),
-            &PutConfigFile {
-                environment: EnvironmentRef::default(),
-                config: ConfigName::parse("sentry").unwrap(),
-                file: ConfigFileName::parse("config.yml").unwrap(),
-                content: "password: \"${{ web.PASSWORD }}\"\nhosts: ${{ web.HOSTS }}\nraw: $${{ web.PASSWORD }}\n".into(),
-                mode: None,
-                uid: None,
-                gid: None,
-            },
-        )
-        .unwrap();
-    let id = admit(&store, 1).unwrap();
+    let put = |content: &str| {
+        store
+            .write(
+                &who(),
+                &PutConfigFile {
+                    environment: EnvironmentRef::default(),
+                    config: ConfigName::parse("sentry").unwrap(),
+                    file: ConfigFileName::parse("config.yml").unwrap(),
+                    content: content.into(),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    };
+    // A file can't carry a sealed value: the Store can't open it, and the file is
+    // rendered here. The refusal says which file reads which variable, never the value.
+    put("password: \"${{ web.PASSWORD }}\"\nhosts: ${{ web.HOSTS }}\nraw: $${{ web.PASSWORD }}\n");
     let configs = store
         .read(
             &who(),
@@ -1276,17 +1200,22 @@ fn a_config_file_gets_its_secrets_only_at_claim_and_warns_of_what_may_break_it()
             },
         )
         .unwrap();
-    for read in [
-        json!(configs),
-        json!(
-            store
-                .read(&who(), &ployz_store::DeploymentQuery { id: id.clone() })
-                .unwrap()
-        ),
-    ] {
-        assert!(!read.to_string().contains("s3cr3t"), "{read}");
-    }
+    assert!(
+        !json!(configs).to_string().contains(&backend::ciphertext(1)),
+        "{configs:?}"
+    );
+    let error = admit(&store, 1).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    assert!(error.message.contains("sentry"), "{error:?}");
+    assert!(error.message.contains("config.yml"), "{error:?}");
+    assert!(error.message.contains("reads web.PASSWORD"), "{error:?}");
+    assert!(
+        !format!("{error:?}").contains(&backend::ciphertext(1)),
+        "{error:?}"
+    );
 
+    put("hosts: ${{ web.HOSTS }}\nraw: $${{ web.PASSWORD }}\n");
+    let id = admit(&store, 2).unwrap();
     let claimed = store
         .claim(&id, &RunnerId::parse("runner").unwrap())
         .unwrap();
@@ -1300,7 +1229,7 @@ fn a_config_file_gets_its_secrets_only_at_claim_and_warns_of_what_may_break_it()
     assert_eq!(config.name, "sentry/config.yml");
     assert_eq!(
         String::from_utf8(config.content.clone()).unwrap(),
-        format!("password: \"{SECRET}\"\nhosts: a\nb\nraw: ${{{{ web.PASSWORD }}}}\n")
+        "hosts: a\nb\nraw: ${{ web.PASSWORD }}\n"
     );
     let api_name = ServiceName::parse("api").unwrap();
     assert_eq!(
@@ -1316,7 +1245,7 @@ fn a_config_file_gets_its_secrets_only_at_claim_and_warns_of_what_may_break_it()
         .read(&who(), &ployz_store::DeploymentQuery { id })
         .unwrap();
     assert_eq!(json!(read.deployment.warnings), warnings);
-    assert!(!json!(read).to_string().contains("s3cr3t"));
+    assert!(!json!(read).to_string().contains(&backend::ciphertext(1)));
 }
 
 #[test]

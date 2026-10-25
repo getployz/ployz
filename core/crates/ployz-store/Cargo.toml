@@ -27,6 +27,7 @@ ts-rs.workspace = true
 uuid = { version = "1.24.0", features = ["serde", "v4", "v5"] }
 
 [dev-dependencies]
+ployz-core = { workspace = true, features = ["test-keypair"] }
 tempfile = "3.27.0"
 uuid = { version = "1.24.0", features = ["v5"] }
 

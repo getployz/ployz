@@ -291,6 +291,8 @@ if [ -n "${SERVERS:-}" ]; then
   for daemon in ${DAEMON:-stable}; do daemons+=(--daemon "$daemon"); done
   cluster=$("$wt/core/scripts/verify-cluster" up --machines "$SERVERS" "${daemons[@]}" --cloud-attach)
   echo "$cluster" > "$run/cluster"
+  sealed_out=$(node scripts/verify/runner.mjs /scripts/verify/seed-sealed.ts 2>&1) || { echo "$sealed_out" >&2; exit 1; }
+  echo "$sealed_out"
   cat <<EOF | tee -a "$run/info"
 cluster: $cluster
   $wt/core/scripts/verify-cluster cli $cluster -- --json server ls

@@ -601,17 +601,11 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
     ui::warn(format!(
         "{path} types the private address of {services}, so Ployz can't see that {consumer} uses {them}: a Branch that doesn't copy {them} can't reach {them}, and a Deploy won't start {them} first."
     ));
-    match &typed.instead {
-        Instead::Reference { value } => {
-            ui::hint(&Hint::Retry(next(
-                matches,
-                &["set", &format!("{path}={value}")],
-            )));
-        }
-        Instead::Sealed => ui::note(format_args!(
-            "It is sealed, so it can't hold a reference: seal only the password, in its own variable, and set {path} from references to it and to the address."
-        )),
-    }
+    let Instead::Reference { value } = &typed.instead;
+    ui::hint(&Hint::Retry(next(
+        matches,
+        &["set", &format!("{path}={value}")],
+    )));
 }
 
 #[cfg(test)]

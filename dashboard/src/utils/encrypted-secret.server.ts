@@ -4,45 +4,11 @@ import { Context, Effect, Layer, Redacted } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { AppConfig } from "#/server/config.server";
 
-const variableValueFingerprintVersion = "v1";
-const variableValueFingerprintKeyPurpose =
-  "ployz:variable-value-fingerprint:v1";
-const sealedVariableValueFingerprintPurpose =
-  "ployz:sealed-variable-value:v1";
-
 function getEncryptionKey(encryptionSecret: string) {
   return crypto
     .createHash("sha256")
     .update(encryptionSecret)
     .digest();
-}
-
-function getVariableValueFingerprintKey(encryptionSecret: string) {
-  return crypto
-    .createHash("sha256")
-    .update(variableValueFingerprintKeyPurpose)
-    .update("\0")
-    .update(encryptionSecret)
-    .digest();
-}
-
-export function getPlainVariableValueFingerprint(value: string) {
-  return `${variableValueFingerprintVersion}:${crypto
-    .createHash("sha256")
-    .update(JSON.stringify({ kind: "plain", value }))
-    .digest("hex")}`;
-}
-
-export function getSealedVariableValueFingerprint(
-  encryptionSecret: string,
-  value: string,
-) {
-  return `${variableValueFingerprintVersion}:${crypto
-    .createHmac("sha256", getVariableValueFingerprintKey(encryptionSecret))
-    .update(sealedVariableValueFingerprintPurpose)
-    .update("\0")
-    .update(value, "utf8")
-    .digest("hex")}`;
 }
 
 export function encryptSecretValue(
@@ -88,7 +54,6 @@ export function decryptSecretValue(
 export interface SecretEncryptionService {
   readonly encrypt: (value: string) => EncryptedSecretValue;
   readonly decrypt: (value: EncryptedSecretValue) => string;
-  readonly sealedFingerprint: (value: string) => string;
 }
 
 export function makeSecretEncryption(
@@ -97,8 +62,6 @@ export function makeSecretEncryption(
   return {
     encrypt: (value) => encryptSecretValue(encryptionSecret, value),
     decrypt: (value) => decryptSecretValue(encryptionSecret, value),
-    sealedFingerprint: (value) =>
-      getSealedVariableValueFingerprint(encryptionSecret, value),
   };
 }
 

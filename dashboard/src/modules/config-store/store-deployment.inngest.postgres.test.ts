@@ -20,6 +20,7 @@ import { volumePlacement } from "#/modules/volume-placement/tables";
 import { Database } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
+import { sealedSecret } from "#/test/sealed-secret";
 import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a001";
@@ -32,7 +33,7 @@ const LOST = "00000000-0000-4000-8000-00000000a103";
 const QUEUED = "00000000-0000-4000-8000-00000000a104";
 const UNCLAIMED = "00000000-0000-4000-8000-00000000a105";
 const UNSTORED = "00000000-0000-4000-8000-00000000a106";
-const SECRET = "s3cr3t-never-in-a-step";
+const TOKEN = sealedSecret({ environment: ENVIRONMENT, service: SERVICE }, "TOKEN");
 const here = { project: null, environment: null };
 // A run that ran asks for its cleanup, and the test engine stops at a send nothing answers. Each engine gets its own
 // mock, since an engine keeps state in the mocks it is given.
@@ -57,7 +58,7 @@ it.live(
       });
       yield* write({
         command: "edit", environment: here, expect: null, changes: [
-          { op: "set", path: "web.env.TOKEN", value: { secret: SECRET } },
+          { op: "set", path: "web.env.TOKEN", value: TOKEN },
           { op: "set", path: "web.env.GREETING", value: "hi-${{ TOKEN }}" },
         ],
       });
@@ -147,7 +148,7 @@ it.live(
       const steps = yield* Effect.promise(() =>
         Promise.all([first, duplicate, cancelled].flatMap((output) => Object.values(output.state))));
       const serialized = JSON.stringify([first.result, duplicate.result, cancelled.result, steps]);
-      expect(serialized).not.toContain(SECRET);
+      expect(serialized).not.toContain(TOKEN.secret.value.sealed);
       expect(serialized).not.toContain("hi-");
       expect(serialized).not.toContain("resolvedEnv");
       expect(serialized).not.toContain("ployz1:");

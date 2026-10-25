@@ -57,7 +57,6 @@ const organizationOwnedWithoutChangeLog = {
   upload_chunk: "Source a Deployment's runner reads while it's in flight; no view reads it, so it needs no change log.",
   config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
   config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
-  config_sealed_variables: "An Organization's sealedVariables flag, read by the Store's writes of a client-sealed value and by Cloud's readSealedVariables; no view reads it, so it needs no change log.",
   config_removal_mark: "The Store's record of removals under way, read by its sweep; what a removal does shows in the Environment and Deployment rows it admits or deletes, so it needs no change log.",
   agent_threads: "One member's private sidebar conversation, read only through the agent chat route; no view reads it, so it needs no change log.",
   agent_runs: "A sidebar turn's run record, read only by its own conversation; no view reads it, so it needs no change log.",

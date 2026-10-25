@@ -402,7 +402,7 @@ commands! {
     Sync(crate::SyncChanges) -> Synced(crate::Synced)
         needs ChangesStage
         agent none "No tool works on branches."
-        => crate::branch::sync(tx, who, sealing, c, trusted);
+        => crate::branch::sync(tx, who, c, trusted);
     /// Undo a Sync while what it staged is undeployed and unchanged, or forget the
     /// offer it made.
     UndoSync(crate::UndoSync) -> Undone(crate::Undone)
@@ -433,7 +433,7 @@ commands! {
     SetMergeValue(crate::SetMergeValue) -> OnMerge(crate::OnMerge)
         needs ChangesStage
         agent none "No tool works on branches."
-        => crate::pull_request::set_merge_value(tx, who, sealing, c, trusted);
+        => crate::pull_request::set_merge_value(tx, who, c, trusted);
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch) -> Branch(crate::Branched)
         needs ChangesStage

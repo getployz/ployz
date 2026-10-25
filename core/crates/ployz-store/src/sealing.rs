@@ -1,7 +1,7 @@
-//! Sealing: secret variable values are stored only as AES-256-GCM ciphertext, and
-//! compared by an HMAC fingerprint. Byte-compatible with Cloud's TypeScript sealing
-//! in both directions: the key is SHA-256 of the injected secret, the IV 12 random
-//! bytes, the tag 16 bytes, each base64; fingerprints are `v1:` and hex.
+//! Sealing: registry credentials and Legacy secrets are stored only as AES-256-GCM
+//! ciphertext. Byte-compatible with Cloud's TypeScript sealing in both directions:
+//! the key is SHA-256 of the injected secret, the IV 12 random bytes, the tag 16
+//! bytes, each base64. A plain value's fingerprint is `v1:` and hex.
 
 use std::fmt;
 use std::io::{ErrorKind, Write as _};
@@ -13,26 +13,23 @@ use ployz_core::RpcError;
 use ployz_core::config::{EncryptedSecretValue, ValuePart};
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use ring::digest::{SHA256, digest};
-use ring::hmac;
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::json;
 
 use crate::error;
 
-pub(crate) const FINGERPRINT_VERSION: &str = "v1";
-const FINGERPRINT_KEY_PURPOSE: &[u8] = b"ployz:variable-value-fingerprint:v1";
-const SEALED_FINGERPRINT_PURPOSE: &[u8] = b"ployz:sealed-variable-value:v1";
+const FINGERPRINT_VERSION: &str = "v1";
 
-/// The key the Store seals secrets with, derived from an injected secret: Cloud's
-/// encryption secret in Cloud, a local key file in the hidden test mode.
+/// The key the Store seals registry credentials with, derived from an injected
+/// secret: Cloud's encryption secret in Cloud, a local key file in the hidden test
+/// mode. It also opens Legacy secrets for the reseal.
 #[derive(Clone)]
 pub struct SealingKey {
     cipher: [u8; 32],
-    fingerprint: hmac::Key,
 }
 
 impl SealingKey {
-    /// Derive the sealing and fingerprint keys from `secret`.
+    /// Derive the sealing key from `secret`.
     ///
     /// # Errors
     /// Returns `invalid_argument` for an empty secret.
@@ -40,22 +37,11 @@ impl SealingKey {
         if secret.is_empty() {
             return Err(error::invalid("The sealing secret is empty", json!({})));
         }
-        let hash = |parts: &[&[u8]]| {
-            let mut context = ring::digest::Context::new(&SHA256);
-            for part in parts {
-                context.update(part);
-            }
-            context.finish()
-        };
-        let cipher = hash(&[secret])
+        let cipher = digest(&SHA256, secret)
             .as_ref()
             .try_into()
             .expect("SHA-256 is 32 bytes");
-        let fingerprint = hash(&[FINGERPRINT_KEY_PURPOSE, b"\0", secret]);
-        Ok(Self {
-            cipher,
-            fingerprint: hmac::Key::new(hmac::HMAC_SHA256, fingerprint.as_ref()),
-        })
+        Ok(Self { cipher })
     }
 
     /// The key in the key file at `path`, creating the file with a random secret
@@ -135,15 +121,6 @@ impl SealingKey {
             .map_err(|_| unreadable())?;
         String::from_utf8(plaintext.to_vec()).map_err(|_| unreadable())
     }
-
-    /// The fingerprint a secret is compared by, without revealing it.
-    pub(crate) fn fingerprint(&self, plaintext: &str) -> String {
-        let mut context = hmac::Context::with_key(&self.fingerprint);
-        context.update(SEALED_FINGERPRINT_PURPOSE);
-        context.update(b"\0");
-        context.update(plaintext.as_bytes());
-        format!("{FINGERPRINT_VERSION}:{}", hex::encode(context.sign()))
-    }
 }
 
 impl fmt::Debug for SealingKey {
@@ -182,10 +159,9 @@ mod tests {
         }
     }
 
-    // Sealed by Cloud's `encryptSecretValue` and fingerprinted by
-    // `getSealedVariableValueFingerprint`, with the secret above.
+    // Sealed by Cloud's `encryptSecretValue` with the secret above.
     #[test]
-    fn opens_what_cloud_sealed_and_fingerprints_alike() {
+    fn opens_what_cloud_sealed() {
         let vectors = [
             (
                 "postgres://u:p@db/app",
@@ -194,7 +170,6 @@ mod tests {
                     "WX+lTmeP37rpdHHvD6iOEQ==",
                     "LcZhKYl1ZWoTpzn9xXoetYCxr8Iy",
                 ),
-                "v1:84deeccda72e54030ebff34a05c985585fa26b1f6e313d5b826f7c1ad916bfdc",
             ),
             (
                 "pässwörd 🔑 秘密",
@@ -203,12 +178,10 @@ mod tests {
                     "/hfvTvSwVTkQcbCzaF/6PA==",
                     "w6fyakteWAS4cdfEBcv9DGk404imqw==",
                 ),
-                "v1:a5a478b6d3b77dab18f838ae270d88f36135d92dbe6a96423554f13f89db664a",
             ),
         ];
-        for (plaintext, sealed, fingerprint) in vectors {
+        for (plaintext, sealed) in vectors {
             assert_eq!(key().open(&sealed).unwrap(), plaintext);
-            assert_eq!(key().fingerprint(plaintext), fingerprint);
         }
     }
 

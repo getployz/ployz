@@ -24,10 +24,6 @@ use crate::variables::VariableKey;
 pub enum Instead {
     /// The value with each address referenced, ready to set.
     Reference { value: String },
-    /// Nothing to show: the value is sealed, and a secret can't hold a reference.
-    /// Seal only the password, in its own variable, and build the value from
-    /// references to it and to the address.
-    Sealed,
 }
 
 /// The Typed Addresses in one new value: whose they are, and what to set instead.
@@ -101,24 +97,6 @@ pub(crate) fn in_plain(
             value: render_variable_parts(&referenced, names),
         },
     }))
-}
-
-/// What a sealed value of `key` types of `others`' private addresses. Its value is
-/// never shown.
-///
-/// # Errors
-/// Returns `internal` for a Service whose name is corrupt.
-pub(crate) fn in_sealed(
-    plaintext: &str,
-    key: &VariableKey,
-    others: &[&SavedServiceIntent],
-) -> Result<Option<Typed>, RpcError> {
-    Ok(
-        services(&hosts(plaintext, key, others))?.map(|services| Typed {
-            services,
-            instead: Instead::Sealed,
-        }),
-    )
 }
 
 /// Where `text` types a private address of one of `others`: `NAME.internal`

@@ -63,7 +63,6 @@ const disposeClients: Array<() => Promise<void>> = [];
 /** The harness's Config Store, opened once so its tables exist. */
 let store: CloudStore["Service"];
 const organizationId = "00000000-0000-4000-8000-000000000401";
-const otherOrganizationId = "00000000-0000-4000-8000-000000000404";
 const userId = "00000000-0000-4000-8000-000000000402";
 const tokens = ["pmet_founding_cas_a", "pmet_founding_cas_b"];
 const founderMachineId = Schema.decodeUnknownSync(rustMachineIdSchema)("00000000000000000000000000000001");
@@ -265,16 +264,10 @@ describe("organization enrollment coordinator", () => {
     return token;
   }
 
-  /** Turns on the Organization's sealedVariables flag in the harness database only. */
-  const sealedVariablesOn = (id = organizationId) => harness.pool.query(
-    "insert into config_sealed_variables (organization_id) values ($1) on conflict do nothing",
-    [id],
-  );
-
   beforeEach(async () => {
     await harness.pool.query(`
       truncate table organization_machine, organization_pairing,
-        machine_enrollment_token, "user", organization, config_sealed_variables cascade;
+        machine_enrollment_token, "user", organization cascade;
       insert into organization (id, name, slug)
       values ('${organizationId}', 'Enroll', 'enroll');
       insert into "user" (id, email, name)
@@ -375,47 +368,39 @@ describe("organization enrollment coordinator", () => {
       "insert into organization_sealing_key (organization_id, public_key, recovery_blob) values ($1, $2, $3)",
       [organizationId, sealingKey, recoveryBlob],
     );
-    const found = async (sealedVariables: boolean, recoverySupport?: 1) => {
-      if (sealedVariables) await sealedVariablesOn();
+    const found = async (recoverySupport?: 1) => {
       const { coordinator } = fakeSession(harness.database);
       return coordinator.enroll({ token: tokens[0] ?? "", identity: recoverySupport === undefined ? identity(0) : { ...identity(0), recoverySupport } });
     };
     const recoveryOf = (outcome: Awaited<ReturnType<typeof found>>) =>
       Result.isSuccess(outcome) && outcome.success.kind === "initialize" ? outcome.success.recovery : "not initialized";
 
-    it("is never offered without the Organization's sealedVariables row, even with another Organization's", async () => {
-      await storeOrganizationKey(backup);
-      await sealedVariablesOn(otherOrganizationId);
-
-      expect(recoveryOf(await found(false, 1))).toBeUndefined();
-    });
-
     it("is not offered to an older ployz founding an Organization with no Sealing Key", async () => {
-      expect(recoveryOf(await found(true))).toBeUndefined();
+      expect(recoveryOf(await found())).toBeUndefined();
     });
 
     it("asks the first Server to back up the key it makes", async () => {
-      expect(recoveryOf(await found(true, 1))).toEqual({ kind: "back_up" });
+      expect(recoveryOf(await found(1))).toEqual({ kind: "back_up" });
     });
 
     it("seeds a Server with its Organization's key and backup, and again on resume", async () => {
       await storeOrganizationKey(backup);
       const seed = { kind: "seed", expectedPublicKey: sealingKey, backup };
 
-      expect(recoveryOf(await found(true, 1))).toEqual(seed);
-      expect(recoveryOf(await found(true, 1))).toEqual(seed);
+      expect(recoveryOf(await found(1))).toEqual(seed);
+      expect(recoveryOf(await found(1))).toEqual(seed);
     });
 
     it("seeds the key alone before any backup is stored", async () => {
       await storeOrganizationKey(null);
 
-      expect(recoveryOf(await found(true, 1))).toEqual({ kind: "seed", expectedPublicKey: sealingKey, backup: null });
+      expect(recoveryOf(await found(1))).toEqual({ kind: "seed", expectedPublicKey: sealingKey, backup: null });
     });
 
     it("refuses an older ployz when its Organization has a key, and keeps no claim", async () => {
       await storeOrganizationKey(backup);
 
-      expect(await found(true)).toMatchObject({
+      expect(await found()).toMatchObject({
         failure: { _tag: "Conflict", message: "Update ployz on this server to restore its Cluster's Sealing Key.", userFacing: true },
       });
       expect((await harness.pool.query("select organization_id from organization_pairing")).rows).toEqual([]);
@@ -1262,8 +1247,7 @@ describe("organization enrollment coordinator", () => {
     );
     const founderMachine = () => harness.pool.query<{ founder_machine_id: string | null }>("select founder_machine_id from organization_pairing")
       .then((result) => result.rows);
-    const completeWithBackup = async (sealedVariables: boolean, recoveryBackup: { publicKey: string; backup: string }) => {
-      if (sealedVariables) await sealedVariablesOn();
+    const completeWithBackup = async (recoveryBackup: { publicKey: string; backup: string }) => {
       const fake = fakeSession(harness.database);
       const founder = await pendingFounder(fake);
       await fake.coordinator.publish({ ...founder, capability });
@@ -1272,7 +1256,7 @@ describe("organization enrollment coordinator", () => {
     };
 
     it("is stored with the key, echoed as its digest, and accepted again on retry", async () => {
-      const { founder, complete } = await completeWithBackup(true, { publicKey: held("A").publicKey, backup: backup(2) });
+      const { founder, complete } = await completeWithBackup({ publicKey: held("A").publicKey, backup: backup(2) });
       const completed = { success: { machineId: founder.machineId, recoveryBackupDigest: recoveryDigest(backup(2)) } };
 
       expect(await complete()).toMatchObject(completed);
@@ -1281,7 +1265,7 @@ describe("organization enrollment coordinator", () => {
     });
 
     it("fills the Organization's recorded key that has no backup", async () => {
-      const { complete } = await completeWithBackup(true, { publicKey: held("A").publicKey, backup: backup(2) });
+      const { complete } = await completeWithBackup({ publicKey: held("A").publicKey, backup: backup(2) });
       await storeOrganizationKey("A", null);
 
       expect(await complete()).toMatchObject({ success: { recoveryBackupDigest: recoveryDigest(backup(2)) } });
@@ -1291,7 +1275,7 @@ describe("organization enrollment coordinator", () => {
     it("refuses another backup or another key, writes nothing and leaves the founder uncommitted", async () => {
       for (const [letter, stored] of [["A", backup(3)], ["B", null]] as const) {
         await harness.pool.query("delete from organization_sealing_key");
-        const { complete } = await completeWithBackup(true, { publicKey: held("A").publicKey, backup: backup(2) });
+        const { complete } = await completeWithBackup({ publicKey: held("A").publicKey, backup: backup(2) });
         await storeOrganizationKey(letter, stored);
 
         expect(await complete()).toMatchObject({ failure: { _tag: "Conflict" } });
@@ -1302,28 +1286,19 @@ describe("organization enrollment coordinator", () => {
     });
 
     it("is refused when it backs up a key other than the one the Server holds", async () => {
-      const { complete } = await completeWithBackup(true, { publicKey: held("B").publicKey, backup: backup(2) });
+      const { complete } = await completeWithBackup({ publicKey: held("B").publicKey, backup: backup(2) });
 
       expect(await complete()).toMatchObject({ failure: { _tag: "Validation" } });
       expect(await organizationKey()).toEqual([]);
     });
 
-    it("is refused without the Organization's sealedVariables row", async () => {
-      await sealedVariablesOn(otherOrganizationId);
-      const { complete } = await completeWithBackup(false, { publicKey: held("A").publicKey, backup: backup(2) });
-
-      expect(await complete()).toMatchObject({ failure: { _tag: "Validation", message: "Invalid enrollment callback." } });
-      expect(await organizationKey()).toEqual([]);
-      expect(await founderMachine()).toEqual([{ founder_machine_id: null }]);
-    });
-
-    it("is refused as an invalid callback for a token Cloud doesn't know", async () => {
-      const { founder } = await completeWithBackup(true, { publicKey: held("A").publicKey, backup: backup(2) });
+    it("is refused as any callback for a token Cloud doesn't know", async () => {
+      const { founder } = await completeWithBackup({ publicKey: held("A").publicKey, backup: backup(2) });
       const fake = fakeSession(harness.database);
       const recoveryBackup = { publicKey: held("A").publicKey, backup: backup(2) };
 
       expect(await fake.coordinator.completeFounding({ ...founder, token: "pmet_unknown", sealing: held("A"), recoveryBackup }))
-        .toMatchObject({ failure: { _tag: "Validation", message: "Invalid enrollment callback." } });
+        .toMatchObject({ failure: { _tag: "Unauthorized" } });
     });
   });
 
