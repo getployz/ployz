@@ -833,4 +833,5 @@ If you deleted all your servers at your provider, forget them:
 
 Ployz refuses while any server answers. Your projects, settings and deployment history stay, but
 volume data on the forgotten servers can't be recovered. When you add a server again, Ployz deploys
-your environments to it.
+your environments to it. If your organization has a [recovery code](recovery-code.md), that
+server shows **Needs recovery** until you give it the code with `ployz recover`.

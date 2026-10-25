@@ -31,7 +31,9 @@ Paste or edit them, then click **Update variables**.
 
 - Deleting a line deletes that variable.
 - Sealed variables stay as they are. To delete one, use its menu.
-- Values you save here are plain text. Seal secrets afterwards from their menu.
+- Once you have a server, each new variable gets a **Seal** checkbox with its name under the
+  editor. Tick it for a secret, and its value is sealed when you click **Update variables**.
+  Unticked values are plain text.
 
 ## Rename a variable
 
@@ -77,6 +79,9 @@ service still gets the real value when it deploys.
 
 - New variables are plain unless you tick **Sealed**.
 - A new sealed value needs a server in your organization first. Add one with `ployz server add`.
+- Your sealed values open only on your servers. Keep your organization's
+  [recovery code](../servers/recovery-code.md): if you lose every server, it's the only way to
+  open them again.
 - To seal a plain variable, choose **Seal** from its menu. You can't unseal it. Saving the
   sealed value removes its earlier values from History too, so older versions show **Sealed**.
   A retried deployment of an older version gets the sealed value, not the one it had.
