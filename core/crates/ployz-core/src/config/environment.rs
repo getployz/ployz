@@ -296,6 +296,13 @@ impl SavedVariableIntent {
         }
     }
 
+    /// Drop a generator from a value it doesn't count on, such as one sealed since.
+    pub fn drop_stale_generator(&mut self) {
+        if self.generator().is_none() {
+            self.generated = None;
+        }
+    }
+
     /// Whether this generated variable arrived without its own value yet: a copy or Sync
     /// brought its [`Generator`], and the Store makes the value before it saves.
     #[must_use]
@@ -678,9 +685,7 @@ pub fn canonicalize_environment_intent(
         });
         service.variables.sort_by(|a, b| a.id.cmp(&b.id));
         for variable in &mut service.variables {
-            if variable.generator().is_none() {
-                variable.generated = None;
-            }
+            variable.drop_stale_generator();
         }
         service.volume_attachments.sort_by(|a, b| {
             (&a.mount_path, &a.volume_resource_id).cmp(&(&b.mount_path, &b.volume_resource_id))

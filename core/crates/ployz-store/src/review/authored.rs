@@ -64,12 +64,12 @@ impl VersionedValue {
             exported: _,
             value_fingerprint,
             value,
-            generated,
+            generated: _,
         } = variable;
         Self {
             value: value.clone(),
             fingerprint: value_fingerprint.clone(),
-            generated: generated.clone(),
+            generated: variable.generator().cloned(),
         }
     }
     fn restore(&self, variable: &mut SavedVariableIntent) {

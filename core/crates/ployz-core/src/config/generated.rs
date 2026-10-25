@@ -249,6 +249,9 @@ mod tests {
         let stored = r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"f","value":{"kind":"secret_without_value"},"generated":{"length":32,"charset":"a-z"}}"#;
         let variable: crate::config::SavedVariableIntent = serde_json::from_str(stored).unwrap();
         assert_eq!(variable.generator(), None);
+        let mut variable = variable;
+        variable.drop_stale_generator();
+        assert_eq!(variable.generated, None);
     }
 
     #[test]
