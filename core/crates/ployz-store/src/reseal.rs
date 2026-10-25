@@ -1148,4 +1148,43 @@ mod tests {
         client_sealed(variable(&after, "TOKEN"));
         set_mode(&store, &who);
     }
+
+    fn deploy(store: &ConfigStore, who: &Actor, n: u8) -> Result<(), RpcError> {
+        store
+            .write(
+                who,
+                &crate::Admit::Deploy(crate::Deploy {
+                    id: crate::DeploymentId::parse(uuid(10 + n)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    services: Vec::new(),
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                    prune: false,
+                    no_prune: false,
+                }),
+            )
+            .map(|_| ())
+    }
+
+    #[test]
+    fn a_deploy_waits_for_the_reseal_of_a_legacy_value_instead_of_leaving_it_out() {
+        let (store, who) = shop();
+        plant_working(
+            &store,
+            &who,
+            vec![secret("TOKEN", legacy(&store.sealing, "hunter2"))],
+        );
+
+        let error = deploy(&store, &who, 1).unwrap_err();
+        assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
+        assert!(error.message.contains("web.TOKEN"), "{error:?}");
+        assert!(error.message.contains("reseal"), "{error:?}");
+        assert!(!format!("{error:?}").contains("hunter2"), "{error:?}");
+
+        let keypair = ployz_core::Keypair::generate();
+        store.reseal(&environment(), &recipient(&keypair)).unwrap();
+        deploy(&store, &who, 2).unwrap();
+    }
 }

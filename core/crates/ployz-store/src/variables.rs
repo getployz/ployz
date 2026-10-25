@@ -1239,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn a_config_file_that_reads_a_legacy_secret_reads_it_as_not_set() {
+    fn a_legacy_secret_waits_for_its_reseal_instead_of_reading_as_not_set() {
         let file = |text: &str| SavedConfigFile {
             content: parse_variable_template(text, |_, _| Some("web-lineage".to_owned())).parts,
             mode: FileMode::READ_ONLY,
@@ -1280,25 +1280,9 @@ mod tests {
                 },
             }],
         };
-        let files = resolve(&compiled, "env")
-            .unwrap()
-            .configs
-            .remove("sentry")
-            .unwrap();
-        assert_eq!(
-            files
-                .iter()
-                .map(|(name, file)| (name.to_string(), file.content.clone()))
-                .collect::<Vec<_>>(),
-            [
-                ("plain.yml".into(), "plain".into()),
-                ("secret.yml".into(), "p: ".into())
-            ]
-        );
-        let secret = files
-            .get(&ConfigFileName::parse("secret.yml").unwrap())
-            .unwrap();
-        assert!(secret.secret);
-        assert_eq!(secret.not_set.len(), 1);
+        let error = resolve(&compiled, "env").map(|_| ()).unwrap_err();
+        assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
+        assert_eq!(error.details["variable"], "P", "{error:?}");
+        assert!(error.message.contains("reseal"), "{error:?}");
     }
 }
