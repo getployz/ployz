@@ -233,20 +233,12 @@ fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
     assert_eq!(error.code, RpcErrorCode::Unsupported);
     assert_eq!(
         error.message,
-        "Builds that read a sealed value run on your server. behind cannot open sealed values; upgrade every Server first."
+        "behind cannot open sealed values; upgrade every Server first."
     );
     assert_eq!(
         error
             .details
             .pointer("/rejections/cannot open sealed values"),
         Some(&serde_json::json!(1))
-    );
-
-    let nobody = crate::sealed_compat::builders(&[], true).unwrap_err();
-    assert!(
-        nobody
-            .to_string()
-            .starts_with("Builds that read a sealed value run on your server."),
-        "{nobody}"
     );
 }

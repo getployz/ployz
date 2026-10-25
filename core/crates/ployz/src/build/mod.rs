@@ -11,7 +11,8 @@ use ployz_build::{
     remote::{Definition, Outcome},
 };
 use ployz_core::{
-    DeployIntent, MachineId, Placement, RequestedServiceSpec, ServiceName, config::BuildMethod,
+    DeployIntent, MachineId, OpenedSealed, Placement, RequestedServiceSpec, ServiceName,
+    config::BuildMethod,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -29,8 +30,6 @@ pub use local::LocalImage;
 mod reuse;
 pub(crate) use reuse::{holder, image_stores, runs_everywhere};
 mod sealed;
-
-pub(crate) use ployz_store::SEALED_BUILDS_RUN_ON_SERVER;
 
 /// How one Service's checked-out source becomes an image.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,7 +77,6 @@ pub enum Error {
     RemoteBuild { outcome: Box<RemoteBuildFailure> },
     #[error("invalid Build: {0}")]
     Invalid(String),
-    /// The Build reads Sealed values, which only a Server Builder opens.
     #[error("{0}")]
     Sealed(String),
     #[error("Could not build {service}.")]
@@ -123,6 +121,8 @@ impl PartialEq for BuiltService {
 /// Builds whose sources and settings have already been captured.
 pub struct CapturedBuild {
     targets: Vec<CapturedTarget>,
+    /// The Sealed values a runner fetched for this Build, held for every solve.
+    opened: Option<OpenedSealed>,
 }
 
 struct CapturedTarget {
@@ -141,7 +141,8 @@ struct CapturedTarget {
 /// Text variables become build variables; a Railpack command is added as
 /// `RAILPACK_BUILD_CMD`. Build variables may be exposed in build output or history.
 /// Sealed values stay sealed in private material and reach the Build only as
-/// secret mounts the Builder opens.
+/// secret mounts the Builder opens. A runner that already holds them `opened` plans
+/// a Railpack Build with its sealed settings.
 ///
 /// # Errors
 /// Rejects Services absent from `intent`, unreadable or unstable source files, and
@@ -149,6 +150,7 @@ struct CapturedTarget {
 pub fn capture(
     intent: &DeployIntent,
     specs: BTreeMap<ServiceName, BuildSpec>,
+    opened: Option<OpenedSealed>,
 ) -> Result<CapturedBuild, Error> {
     let targets = specs
         .into_iter()
@@ -158,15 +160,16 @@ pub fn capture(
                 .iter()
                 .find(|service| service.name == name)
                 .ok_or_else(|| invalid(format!("undefined service '{name}'")))?;
-            capture_target(service, spec)
+            capture_target(service, spec, opened.as_ref())
         })
         .collect::<Result<_, _>>()?;
-    Ok(CapturedBuild { targets })
+    Ok(CapturedBuild { targets, opened })
 }
 
 fn capture_target(
     service: &RequestedServiceSpec,
     spec: BuildSpec,
+    opened: Option<&OpenedSealed>,
 ) -> Result<CapturedTarget, Error> {
     let mut inputs = BuildInputs::new()?;
     let image = service.container.image.clone();
@@ -180,7 +183,7 @@ fn capture_target(
         reference.repository(),
         uuid::Uuid::new_v4()
     );
-    let sealed = sealed::capture(service, &spec.recipe, &inputs)?;
+    let sealed = sealed::capture(service, &spec.recipe, &inputs, opened)?;
     let mut args: BTreeMap<String, String> = service
         .container
         .environment
@@ -194,7 +197,11 @@ fn capture_target(
             if let Some(command) = command {
                 args.insert("RAILPACK_BUILD_CMD".into(), command);
             }
-            let context = inputs.railpack_context(&spec.context, &args)?;
+            let config = args
+                .get("RAILPACK_CONFIG_FILE")
+                .map(String::as_str)
+                .or_else(|| opened.and_then(|opened| opened.get("RAILPACK_CONFIG_FILE")));
+            let context = inputs.railpack_context(&spec.context, config)?;
             let context = inputs.relative(&context);
             // Railpack variables stay in private upload material, not the recipe.
             inputs.railpack(&ployz_build::Railpack {
@@ -453,12 +460,12 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};
 
     /// Image-sourced Cloud Services; each test sets the fields it exercises.
-    pub(super) fn intent(names: &[&str]) -> DeployIntent {
+    pub(crate) fn intent(names: &[&str]) -> DeployIntent {
         let snapshots = names
             .iter()
             .map(|name| {
@@ -482,7 +489,7 @@ mod tests {
         spec: BuildSpec,
     ) -> Result<CapturedTarget, Error> {
         let name = intent.target.first().unwrap().name.clone();
-        let mut captured = capture(intent, BTreeMap::from([(name, spec)]))?;
+        let mut captured = capture(intent, BTreeMap::from([(name, spec)]), None)?;
         Ok(captured.targets.pop().unwrap())
     }
 

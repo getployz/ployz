@@ -465,11 +465,14 @@ fn opened_values_are_private_files_for_the_solve_and_vanish_when_it_fails() {
     let admission = Admission::try_acquire_with(&host.policy).unwrap();
     let mut upload = admission.upload().unwrap();
     remote::upload(&capture, |input| upload.accept(input)).unwrap();
-    let opened = BTreeMap::from([("NPM_TOKEN".to_owned(), "opened-token".to_owned())]);
+    let opened = ployz_core::OpenedSealed::new(
+        BTreeMap::from([("NPM_TOKEN".to_owned(), "opened-token".to_owned())]),
+        Vec::new(),
+    );
     let Err(error) = upload.execute(
         &definition(Output::Load),
         Some(&host.policy.docker),
-        &opened,
+        Some(&opened),
         &|_| {},
     ) else {
         panic!("a failed solve succeeded");
@@ -501,12 +504,15 @@ fn opened_values_vanish_from_a_retained_unknown_root() {
     let admission = Admission::try_acquire_with(&host.policy).unwrap();
     let mut upload = admission.upload().unwrap();
     remote::upload(&capture, |input| upload.accept(input)).unwrap();
-    let opened = BTreeMap::from([("NPM_TOKEN".to_owned(), "opened-token".to_owned())]);
+    let opened = ployz_core::OpenedSealed::new(
+        BTreeMap::from([("NPM_TOKEN".to_owned(), "opened-token".to_owned())]),
+        Vec::new(),
+    );
     let error = upload
         .execute(
             &definition(Output::Load),
             Some(&host.policy.docker),
-            &opened,
+            Some(&opened),
             &|_| {},
         )
         .err()
@@ -537,7 +543,7 @@ fn a_capture_naming_a_sealed_value_nobody_opened_is_refused_before_docker() {
     let Err(error) = upload.execute(
         &definition(Output::Load),
         Some(&host.policy.docker),
-        &BTreeMap::new(),
+        None,
         &|_| {},
     ) else {
         panic!("docker ran without the opened file");

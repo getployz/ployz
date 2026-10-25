@@ -9,6 +9,7 @@ import { callStore, gatherTrusted } from "#/modules/config-store/config-store.se
 import { permissionsOf } from "#/modules/organization/permissions";
 import {
   checkInStoreGithubBuild, checkStoreGithubBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
+  storeGithubBuildOpen,
 } from "#/modules/config-store/store-github-builds.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubOidcKeys } from "#/modules/github/github-oidc.server";
@@ -93,7 +94,7 @@ it.live(
       }));
       const request = (token: string) =>
         new Request(`http://localhost:3000/api/builds/${next}/check-in`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
-      const rejection = (token: string) => provided(Effect.flip(checkInStoreGithubBuild(request(token), next)));
+      const rejection = (token: string) => provided(Effect.flip(checkInStoreGithubBuild(request(token), next, "")));
       expect(yield* rejection(oidcToken({}, crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey))).toMatchObject({ _tag: "Unauthorized" });
       expect(yield* rejection(oidcToken({ repository_id: "43" }))).toMatchObject({ _tag: "Forbidden", message: "The token is for another repository" });
       expect(yield* rejection(oidcToken({ job_workflow_ref: WORKFLOW.replace("main", "evil") })))
@@ -102,6 +103,15 @@ it.live(
       expect(yield* rejection(oidcToken({ event_name: "push" }))).toMatchObject({ _tag: "Forbidden", message: "The run was not dispatched by Ployz" });
       // The right run with no Server to mint a grant: the runner retries its check-in.
       expect(yield* rejection(oidcToken())).toMatchObject({ _tag: "BuildGrantUnavailable" });
+      const holding = (body: string) => provided(Effect.flip(checkInStoreGithubBuild(new Request(
+        `http://localhost:3000/api/builds/${next}/check-in`,
+        { method: "POST", headers: { authorization: `Bearer ${oidcToken()}`, "content-type": "application/json" } },
+      ), next, body)));
+      expect(yield* holding(JSON.stringify({ holder: "d".repeat(64) }))).toMatchObject({ _tag: "BuildGrantUnavailable" });
+      expect(yield* holding(JSON.stringify({}))).toMatchObject({ _tag: "BuildGrantUnavailable" });
+      for (const body of [JSON.stringify({ holder: "D".repeat(64) }), JSON.stringify({ holder: "d".repeat(63) }), "[]", "not json"]) {
+        expect(yield* holding(body)).toMatchObject({ _tag: "Validation" });
+      }
       // Build Steps before the check-in are refused.
       const steps = yield* provided(Effect.flip(recordStoreGithubBuildSteps(request(oidcToken()), next, JSON.stringify({ from: 0, events: [] }))));
       expect(steps).toMatchObject({ _tag: "Conflict", message: "This build has not checked in" });
@@ -111,7 +121,7 @@ it.live(
         operation: "write", command: { command: "cancel", deployment: "00000000-0000-4000-8000-00000000b102" },
       }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") }));
       expect(cancelled).toMatchObject({ ok: true });
-      expect(yield* Effect.promise(() => store.githubBuild(next))).toMatchObject({ status: "failed" });
+      expect(yield* Effect.promise(() => store.githubBuild(next))).toMatchObject({ held: { status: "failed" } });
       expect(yield* rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
 
       // A walk that starts with the Servers leaves the build to them, unless no Server takes builds: then GitHub.
@@ -167,14 +177,14 @@ it.live(
         run_id: 9105, run_url: "https://github.com/acme/web/actions/runs/9105", workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
       }));
       expect(yield* provided(unlinkGithubInstallation({ organizationId: ORGANIZATION, installationId: 7 }))).toBe(true);
-      expect(yield* provided(Effect.flip(checkInStoreGithubBuild(request(oidcToken({ run_id: "9105" })), held))))
+      expect(yield* provided(Effect.flip(checkInStoreGithubBuild(request(oidcToken({ run_id: "9105" })), held, ""))))
         .toMatchObject({ _tag: "Forbidden", message: "GitHub account `acme` was disconnected" });
       expect(yield* provided(Effect.flip(recordStoreGithubBuildSteps(request(oidcToken({ run_id: "9105" })), held, JSON.stringify({ from: 0, events: [] })))))
         .toMatchObject({ _tag: "Forbidden", message: "GitHub account `acme` was disconnected" });
-      expect(yield* Effect.promise(() => store.githubBuild(held))).toMatchObject({ status: "building" });
+      expect(yield* Effect.promise(() => store.githubBuild(held))).toMatchObject({ held: { status: "building" } });
       const look = yield* provided(checkStoreGithubBuild(ORGANIZATION, { ...target, build: held }, { ended: false, startLimit: false }));
       expect(look).toEqual({ failed: "GitHub account `acme` was disconnected" });
-      expect(yield* Effect.promise(() => store.githubBuild(held))).toMatchObject({ status: "failed" });
+      expect(yield* Effect.promise(() => store.githubBuild(held))).toMatchObject({ held: { status: "failed" } });
     }),
   60_000,
 );
@@ -206,4 +216,49 @@ it.live("a build that checked in reports its steps until its Organization discon
     expect(yield* provided(unlinkGithubInstallation({ organizationId: ORGANIZATION, installationId: 7 }))).toBe(true);
     expect(yield* provided(Effect.flip(steps()))).toMatchObject({ _tag: "Forbidden", message: "GitHub account `acme` was disconnected" });
     expect(githubReport).toHaveBeenCalledTimes(1);
+  }), 60_000);
+
+it.live("a build GitHub passed on before its run checked in is no longer GitHub's, even once the next Builder claims it", () =>
+  Effect.gen(function* () {
+    const services = yield* storeTestCloud({ github: github.service });
+    const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
+      Effect.provide(services),
+      Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
+    );
+    yield* provided(seedStoreOrganization(ORGANIZATION));
+    const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
+    }, acmeWeb()));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
+    yield* Effect.promise(() => store.githubDispatched(BUILD, {
+      run_id: RUN, run_url: `https://github.com/acme/web/actions/runs/${RUN}`, workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+    }));
+    // The start limit passes it on before any grant, the same Skip a check-in records when only the next Builder can
+    // build a sealed value. That one needs a Machine to answer the mint, which no test here runs.
+    expect(yield* Effect.promise(() => store.githubFinish(BUILD, true, []))).toEqual({ ended: "pending" });
+    expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toEqual({ passed_on: { why: "no runner started the build in time" } });
+
+    const target = {
+      build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true,
+    };
+    const passedOn = { _tag: "Conflict", message: "GitHub passed this build to the next Builder." };
+    const runner = () => new Request(`http://localhost:3000/api/builds/${BUILD}/check-in`, {
+      method: "POST", headers: { authorization: `Bearer ${oidcToken()}` },
+    });
+    const late = Effect.gen(function* () {
+      expect(yield* provided(Effect.flip(checkInStoreGithubBuild(runner(), BUILD, "")))).toMatchObject(passedOn);
+      expect(yield* provided(Effect.flip(recordStoreGithubBuildSteps(runner(), BUILD, JSON.stringify({ from: 0, events: [] })))))
+        .toMatchObject(passedOn);
+      expect(yield* provided(storeGithubBuildOpen(target))).toBe(false);
+      expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, target, { ended: true, startLimit: false }))).toBe("done");
+    });
+    yield* late;
+
+    // The next Builder takes it, with why; the run GitHub passed it on from still holds nothing.
+    expect(yield* Effect.promise(() => store.claimDeployment(ORGANIZATION, DEPLOYMENT, "cloud-1"))).toMatchObject({ id: DEPLOYMENT });
+    expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: DEPLOYMENT }))).toMatchObject({
+      builds: [{ service: "web", status: "pending", message: "no runner started the build in time" }],
+    });
+    yield* late;
   }), 60_000);

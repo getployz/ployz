@@ -846,7 +846,7 @@ impl ContainerRuntime {
             .as_ref()
             .and_then(|config| config.labels.as_ref())
             .and_then(|labels| labels.get(crate::sealed_env::LABEL_SEALED));
-        Ok(crate::sealed_env::SealedRecord::from_label(
+        Ok(crate::sealed_env::record_from_label(
             label.map(String::as_str),
         )?)
     }
@@ -920,7 +920,7 @@ impl ContainerRuntime {
         let mut last_check = last_docker_check(inspected.state.as_ref(), || {
             crate::sealed_env::Lines::new(
                 *container_id,
-                crate::sealed_env::SealedRecord::from_label(
+                crate::sealed_env::record_from_label(
                     labels
                         .get(crate::sealed_env::LABEL_SEALED)
                         .map(String::as_str),

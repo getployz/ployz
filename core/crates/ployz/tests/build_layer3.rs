@@ -209,6 +209,7 @@ fn capture(root: &Path, image: &str, variables: Value, recipe: Recipe) -> Captur
                 recipe,
             },
         )]),
+        None,
     )
     .unwrap()
 }

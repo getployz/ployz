@@ -77,8 +77,11 @@ Builds on [GitHub Actions](where-builds-run.md#build-on-github-actions) get your
 
 ### Read a sealed value
 
-A build that reads a sealed value [runs on your server](where-builds-run.md).
-Railpack builds see it as they see any other variable. A Dockerfile reads it with `ARG`:
+Railpack builds see a sealed value as they see any other variable, on your servers and on
+[GitHub Actions](where-builds-run.md#build-on-github-actions). A sealed `RAILPACK_*` setting
+builds only on GitHub Actions: your servers refuse it. A **Build command** replaces a sealed
+`RAILPACK_BUILD_CMD`, so that build runs on your servers too. A Dockerfile reads a sealed value with
+`ARG`:
 
 ```dockerfile
 ARG NPM_TOKEN
@@ -90,6 +93,9 @@ A secret mount keeps the value out of the image's history:
 ```dockerfile
 RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci
 ```
+
+On GitHub Actions, a build that reads a sealed value with `ARG`, or sets a `RAILPACK_*`
+variable to a sealed value, saves no build cache. A secret mount keeps it.
 
 A changed sealed value doesn't rerun a cached secret mount step. To rerun it, add
 `ARG PLOYZ_SEALED_HASH` right above it.

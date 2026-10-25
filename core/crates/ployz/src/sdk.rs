@@ -40,8 +40,8 @@ mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
 pub use github_build::{
-    GithubCheckIn, GithubFinish, GithubReported, GithubStart, github_cancel, github_check_in,
-    github_finish, github_report, github_start,
+    GithubCheckIn, GithubFinish, GithubKey, GithubReported, GithubStart, github_cancel,
+    github_check_in, github_finish, github_report, github_start,
 };
 pub use running::Running;
 pub use store_call::store_call;
@@ -1514,12 +1514,8 @@ pub(crate) fn preparation_error(
                 .flatten()
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>();
-            const NO_BUILDER: &str =
-                "No eligible Build Machine was selected; no build was started.";
-            let message = match details.get("lead").and_then(Value::as_str) {
-                Some(lead) => format!("{lead} {NO_BUILDER}"),
-                None => NO_BUILDER.into(),
-            };
+            let message =
+                "No eligible Build Machine was selected; no build was started.".to_owned();
             RpcError {
                 code: RpcErrorCode::Unavailable,
                 details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",

@@ -603,10 +603,6 @@ pub(crate) struct Lowered {
     /// left empty. Only lowering with the sealing key sees every value, so only it
     /// warns of those.
     pub(crate) warnings: Vec<DeploymentWarning>,
-    /// The first variable of each Service, by Service ID, whose value reads a value
-    /// sealed in the browser: its build runs on a Server. Names only. Empty without
-    /// the sealing key, which leaves such a variable out.
-    pub(crate) sealed: BTreeMap<String, String>,
 }
 
 /// `saved` compiled, and its variables and Config files resolved as [`lower`]
@@ -638,35 +634,6 @@ fn resolve(
     Ok((compiled, resolved))
 }
 
-/// The first variable of each Service of `saved`, by Service ID, whose value reads
-/// a value sealed in the browser, resolved as [`lower`] resolves it. Names only:
-/// no value leaves here. Refuses what [`lower`] refuses.
-pub(super) fn first_sealed(
-    environment: &EnvironmentId,
-    saved: &SavedEnvironmentIntent,
-    cluster_domain: Option<&Hostname>,
-    branch: &crate::branch::Lowering,
-    sealing: &SealingKey,
-) -> Result<BTreeMap<String, String>, RpcError> {
-    let (_, resolved) = resolve(environment, saved, cluster_domain, branch, Some(sealing))?;
-    Ok(sealed_names(&resolved))
-}
-
-/// The first variable of each Service of `resolved`, by Service ID, whose value
-/// reads a value sealed in the browser.
-fn sealed_names(resolved: &variables::Resolved) -> BTreeMap<String, String> {
-    resolved
-        .env
-        .iter()
-        .filter_map(|(service, env)| {
-            let name = env
-                .iter()
-                .find_map(|(name, value)| value.is_sealed().then_some(name))?;
-            Some((service.clone(), name.clone()))
-        })
-        .collect()
-}
-
 /// Lower Saved revision `saved` to the Deploy Intent of a Deployment that
 /// `ships` into its Namespace, with generated domains under the
 /// Cluster Domain. Variables and Config files resolve here, a Branch's Live Node
@@ -686,7 +653,6 @@ pub(super) fn lower(
 ) -> Result<Lowered, RpcError> {
     let (unseal, organization) = unseal.unzip();
     let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch, unseal)?;
-    let sealed = sealed_names(&resolved);
     let (narrowed, services, removals, prune): (bool, &[ServiceName], _, _) = match ships {
         Ships::All { removals, prune } => (
             false,
@@ -992,7 +958,6 @@ pub(super) fn lower(
         shipped,
         intent,
         warnings,
-        sealed,
     })
 }
 

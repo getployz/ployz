@@ -32,9 +32,11 @@ secrets. The **GitHub Actions** section appears once a service builds from a rep
 through the Ployz GitHub App.
 
 > [!NOTE]
-> A GitHub build receives your service's variables, secrets included, so it can build your
-> app the same way your servers would. To keep them on your servers, choose **Your servers
-> only** and don't set any service's **Preferred Builder** to **GitHub Actions**.
+> A GitHub build receives your service's variables, sealed values included, so it can build
+> your app the same way your servers would. Your server unlocks sealed values only for that
+> build's runner, and Cloud passes them on still sealed. The build log hides them. To keep
+> your variables off GitHub, choose **Your servers only** and don't set any service's
+> **Preferred Builder** to **GitHub Actions**.
 
 1. Go to **Organization → Builds**.
 2. Under **GitHub Actions**, click **Add workflow ↗** next to the repository. GitHub opens the
@@ -119,9 +121,6 @@ goes to GitHub only when none of them does. If the preferred server is gone or d
 builds, another of your servers takes the build. **Auto** follows the build order alone.
 **Preferred Builder** applies at once, from the next build.
 
-Builds that read a sealed value run on your server. GitHub Actions is skipped for them,
-whatever the service prefers.
-
 A deploy names the server each service built on. When GitHub came first and couldn't take
 the build, for example because the repository has no Ployz build workflow, the deploy says so
 and why.
@@ -141,7 +140,5 @@ When no builder can take a build, it fails with one of these:
 - `…No other Builder in your Build Order can take it`. GitHub was last and couldn't take it.
   The build log says why GitHub was skipped. Fix that, or pick an order that ends with your
   servers.
-- `…Builds that read a sealed value run on your server. No other Builder in your Build Order can
-  take it`. The order is **GitHub only**. Pick one with your servers.
 
 See [Troubleshooting builds](../troubleshooting/builds.md) for failed build steps.

@@ -7,7 +7,9 @@ use iroh::{
     Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey,
     endpoint::{Connection, ConnectionError, VarInt, presets},
 };
-use ployz_core::{BUILD_GRANT_ALPN, BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant};
+use ployz_core::{
+    BUILD_GRANT_ALPN, BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, OpenedSealed,
+};
 use tokio::net::TcpListener;
 
 use super::ManagementRelay;
@@ -41,6 +43,38 @@ impl GrantRegistry {
         } else {
             None
         }
+    }
+
+    /// The Sealed values the Machine opened for this grant, which it serves only to the
+    /// grant's holder before the push.
+    ///
+    /// # Errors
+    /// Reports the Machine's refusal or an unreadable answer.
+    pub async fn sealed(&self) -> io::Result<OpenedSealed> {
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .map_err(io::Error::other)?
+            .get(format!("http://{}/ployz/sealed", self.address))
+            .send()
+            .await
+            .map_err(|error| self.refused(error.to_string()))?;
+        if response.status().is_success() {
+            return response.json().await.map_err(io::Error::other);
+        }
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or_default();
+        let message = body
+            .pointer("/errors/0/message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| status.canonical_reason().unwrap_or("refused"));
+        Err(io::Error::other(format!(
+            "the Machine did not open the Build's Sealed values: {message}"
+        )))
+    }
+
+    fn refused(&self, error: String) -> io::Error {
+        io::Error::other(self.refusal().map_or(error, str::to_owned))
     }
 }
 
@@ -97,4 +131,22 @@ pub async fn open_grant_registry(
         accept,
         _endpoint: endpoint,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh::SecretKey;
+
+    #[test]
+    fn a_holder_seed_names_the_key_the_contract_pins() {
+        let seed: [u8; 32] =
+            hex::decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        assert_eq!(
+            hex::encode(SecretKey::from_bytes(&seed).public().as_bytes()),
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        );
+    }
 }
