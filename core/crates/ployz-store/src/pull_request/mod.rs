@@ -45,6 +45,7 @@ use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
 use crate::project::ProjectSummary;
+use crate::review::history::NotSetVariable;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::NodeName;
 use crate::storage::Tx;
@@ -267,6 +268,10 @@ pub struct PrEnvironment {
     pub deployment: Option<DeploymentSummary>,
     /// What its merge lands in each Environment that deploys the target branch.
     pub destinations: Vec<OnMergeInto>,
+    /// Its sealed variables without a value, which its Deploys leave out.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<NotSetVariable>>", optional)]
+    pub not_set: Vec<NotSetVariable>,
 }
 
 /// A pull request's GitHub check: what its merge lands, never blocking it.

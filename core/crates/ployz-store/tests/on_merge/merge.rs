@@ -948,6 +948,51 @@ fn the_check_reads_a_secret_the_preview_removed_as_removed() {
 }
 
 #[test]
+fn the_check_names_the_secrets_the_preview_runs_without_until_they_are_set() {
+    let (store, who) = shop_with(|store, who| {
+        set(
+            store,
+            who,
+            "production",
+            &[(
+                "web.env.TOKEN",
+                backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+            )],
+        );
+        save(store, who, "production");
+    });
+    let without = check(&store, &who).unwrap();
+    assert_eq!(
+        without,
+        OnMergeCheck {
+            conclusion: OnMergeConclusion::Success,
+            title: "No config changes".into(),
+            summary: "No config changes.\n\n\
+                      ### Not set in pr-5\n\n\
+                      - `web · TOKEN`\n\n\
+                      Secrets don't carry into a preview, so its deploys leave these out. \
+                      Set each in pr-5's Variables, or with \
+                      `ployz set web.env.TOKEN --secret --env pr-5`."
+                .into(),
+            merged_into: None,
+        }
+    );
+
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[(
+            "web.env.TOKEN",
+            sealed_in(&store, &who, "pr-5", "web", "TOKEN", 2),
+        )],
+    );
+    // Set in the preview, it stays there: the merge leaves production's value alone.
+    let set_now = check(&store, &who).unwrap();
+    assert_eq!(set_now.summary, "No config changes.", "{set_now:?}");
+}
+
+#[test]
 fn the_check_says_nothing_deploys_from_a_branch_no_environment_tracks() {
     let (store, who) = shop();
     set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);

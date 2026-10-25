@@ -42,10 +42,10 @@ use ployz_core::config::{
     Arrives, At, BranchNodeReason, BranchNodeRole, BranchPicks, BranchPlan, BranchPreset, Cell,
     Cells, ConfigError, EnvironmentNodeType, Hostnames, Landed, LiveLineageUse, LiveValuesInput,
     LiveValuesOwner, NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableProducer, SealedCell, SealedSecret, ServiceImageCredentials,
-    ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner, Verdict, Way, Why,
-    canonicalize_environment_intent, compile_environment_intent, dependents, live_values, marks_on,
-    parse_service_setting, plan, plan_branch, put_back, unapply,
+    SavedServiceIntent, SavedVariableProducer, SavedVariableValue, SealedCell, SealedSecret,
+    ServiceImageCredentials, ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner,
+    Verdict, Way, Why, canonicalize_environment_intent, compile_environment_intent, dependents,
+    live_values, marks_on, parse_service_setting, plan, plan_branch, put_back, unapply,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -490,6 +490,30 @@ pub struct Branched {
     pub branch: BranchView,
     /// Nodes staged in its Working State.
     pub staged: Vec<NodeName>,
+    /// Its sealed variables without a value, as a copy brings them: Deploys leave
+    /// each out until someone sets it.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<review::history::NotSetVariable>>", optional)]
+    pub not_set: Vec<review::history::NotSetVariable>,
+}
+
+/// The sealed variables `working` holds without a value.
+pub(crate) fn not_set(
+    working: &SavedEnvironmentIntent,
+) -> Result<Vec<review::history::NotSetVariable>, RpcError> {
+    let mut not_set = Vec::new();
+    for service in &working.services {
+        for variable in &service.variables {
+            if variable.value == SavedVariableValue::SecretWithoutValue {
+                not_set.push(review::history::NotSetVariable {
+                    service: ServiceName::parse(&service.slug)
+                        .map_err(|_| error::corrupt("Service name"))?,
+                    key: variable.key.clone(),
+                });
+            }
+        }
+    }
+    Ok(not_set)
 }
 
 /// A Branch's row.

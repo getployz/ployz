@@ -43,7 +43,7 @@ bots.
 
 ## Who deploys automatically
 
-A preview runs the pull request's code with copies of its environment's secrets. So Ployz deploys
+A preview runs the pull request's code next to your services, with any secrets you set in it. So Ployz deploys
 a pull request on its own only when a member of your Ployz organization wrote it, from a branch
 of the repository itself. A pull request from a fork, or from someone outside your organization,
 reads **Needs approval** under **Open now**, with its commit like `a1b2c3d`. Until a member
@@ -79,10 +79,24 @@ When a pull request opens, Ployz deploys its preview, named like `pr-142`:
 - A push deploys the new commit, even if production doesn't deploy on push, once the pull request
   [deploys automatically](#who-deploys-automatically) or a member approves that commit. **Wait
   for CI** and **Watch paths** still apply.
+- Secrets don't carry into a preview. Each sealed variable starts **Not set**, and the preview
+  deploys without it. See [Set a preview's secrets](#set-a-previews-secrets).
 
 Open previews are listed under **Open now** in the panel, and in the environment switcher under
 the environment they start from. Each one is a [branch](environments.md) of that environment, so
 you change, sync and close it like any other branch.
+
+## Set a preview's secrets
+
+A preview's first deploy runs without your secrets, so code that needs a `DATABASE_URL` or an API
+key may fail until you set them. The **Ployz · ready to merge** check on the pull request lists
+them under **Not set in pr-142**, and each service's card on the preview's canvas reads like
+`1 not set`.
+
+Open the preview, open the service's **Variables**, and choose **Set value** on each. From the CLI,
+run `printf %s "$VALUE" | ployz set web.env.TOKEN --secret --env pr-142`. Then deploy the preview
+again, or push. A value you set here stays in the preview: the merge doesn't bring it to
+production.
 
 ## Config changes in a pull request
 

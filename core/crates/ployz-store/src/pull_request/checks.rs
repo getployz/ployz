@@ -26,6 +26,7 @@ pub(crate) fn view(
                     rows: landing.rows,
                 })
                 .collect(),
+            not_set: crate::branch::not_set(&environment.working)?,
         });
     }
     let reference = PullRequestRef {
@@ -73,8 +74,11 @@ pub(super) fn check(
             title: format!("Nothing deploys from {target}"),
             summary: format!(
                 "No Environment deploys from `{target}`, so the merge lands nowhere. \
-                 Changes stay in the preview."
-            ),
+                 Changes stay in the preview.\n{}",
+                preview_not_set(environments)
+            )
+            .trim_end()
+            .to_owned(),
             merged_into: None,
         });
     }
@@ -118,6 +122,7 @@ pub(super) fn check(
     if sections.iter().all(|(_, into)| into.rows.is_empty()) {
         summary.push_str("No config changes.\n");
     }
+    summary.push_str(&preview_not_set(environments));
     Some(OnMergeCheck {
         conclusion: if neutral {
             OnMergeConclusion::Neutral
@@ -128,6 +133,29 @@ pub(super) fn check(
         summary: summary.trim_end().to_owned(),
         merged_into: None,
     })
+}
+
+/// Each preview's secrets without a value, and how to set them: a copy never carries one.
+fn preview_not_set(environments: &[PrEnvironment]) -> String {
+    let mut said = String::new();
+    for environment in environments {
+        let name = &environment.environment.name;
+        let Some(first) = environment.not_set.first() else {
+            continue;
+        };
+        let _ = writeln!(said, "\n### Not set in {name}\n");
+        for variable in &environment.not_set {
+            let _ = writeln!(said, "- `{} · {}`", variable.service, variable.key);
+        }
+        let _ = writeln!(
+            said,
+            "\nSecrets don't carry into a preview, so its deploys leave these out. \
+             Set each in {name}'s Variables, or with \
+             `ployz set {}.env.{} --secret --env {name}`.",
+            first.service, first.key
+        );
+    }
+    said
 }
 
 /// A merged pull request's check, from what its merge recorded: silent when every

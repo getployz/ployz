@@ -32,7 +32,12 @@ database, so staging gets its own copy of both and its own data. Use your own se
 
 ![The New branch panel set to Everything: each service is Separate](../images/new-branch-panel.png)
 
-Ployz never copies data, so staging's database starts empty. A setup command runs before `web`
+Ployz never copies data, so staging's database starts empty. Nor does it copy secrets: each
+sealed variable in staging starts **Not set**, and deploys leave it out until you set it. In
+each service's **Variables**, choose **Set value**, or run
+`printf %s "$VALUE" | ployz set web.env.TOKEN --secret --env staging`. `ployz env branch` lists
+the ones to set, like `1 secret not set in staging: web.env.TOKEN`. Set them before staging's
+first deploy, or deploy again after. A setup command runs before `web`
 first starts, to fill it, and again on each deploy until `web` first deploys successfully. To give every new branch of production the same commands, add
 them under **Branch setup** in production's **Settings → Environment**.
 
@@ -142,7 +147,7 @@ Click a service in the **New branch** panel to change what the branch gets:
 
 | Row says | What the branch gets |
 | --- | --- |
-| **Separate** | Its own copy of the service, with the parent's settings and variables. |
+| **Separate** | Its own copy of the service, with the parent's settings and variables. Its secrets start **Not set**. |
 | **New, empty** | Its own volume, with no data. |
 | **production's** | No copy: the branch uses production's running service. |
 | **Not included** | Nothing. Anything that uses it breaks. |
