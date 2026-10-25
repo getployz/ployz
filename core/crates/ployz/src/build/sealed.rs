@@ -2,7 +2,7 @@
 //! recipe, and opened only by the Builder.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -29,11 +29,11 @@ pub(super) struct Sealed {
 }
 
 /// Keep the Sealed values the captured `recipe` reads in private upload
-/// material and shape them for it. A Dockerfile reads those it declares as
-/// `ARG` or mounts as a secret; Railpack shows the build every variable. A
-/// Build that reads none captures as it did before Builders opened them, so
-/// any Builder runs it. Only a capture with the values `opened` may seal a
-/// Railpack setting, which Railpack then plans with.
+/// material and shape them for it. Railpack shows the build every variable;
+/// a Dockerfile reads what [`dockerfile_reads`] finds. A Build that reads
+/// none captures as it did before Builders opened them, so any Builder runs
+/// it. Only a capture with the values `opened` may seal a Railpack setting,
+/// which Railpack then plans with.
 ///
 /// # Errors
 /// Fails without the Deploy's Environment to seal for, when the captured
@@ -53,14 +53,14 @@ pub(super) fn capture(
     let record = match recipe {
         Recipe::Railpack { .. } => record,
         Recipe::Dockerfile(dockerfile) => {
-            let facts = facts(dockerfile)?;
+            let (args, every) = dockerfile_reads(dockerfile, service)?;
             sealed.declared = record
                 .keys()
-                .filter(|name| facts.args.contains(*name))
+                .filter(|name| args.contains(*name))
                 .map(str::to_owned)
                 .collect();
-            let Some(record) =
-                record.only(|name| facts.args.contains(name) || facts.secrets.contains(name))
+            let Some(record) = record
+                .only(|name| every || args.contains(name) || name.starts_with(GIT_AUTH_SECRETS))
             else {
                 return Ok(sealed);
             };
@@ -99,11 +99,43 @@ pub(super) fn capture(
     Ok(sealed)
 }
 
-/// What the captured Dockerfile reads: the same bytes BuildKit reads.
-fn facts(dockerfile: &Path) -> Result<DockerfileFacts, Error> {
+/// BuildKit's Git sources read these secrets, by host too, without a mount.
+const GIT_AUTH_SECRETS: &str = "GIT_AUTH_";
+
+/// The `ARG`s the captured Dockerfile declares, the same bytes BuildKit reads,
+/// and whether it may read every Sealed value. BuildKit resolves a secret
+/// mount's id late (quoting, `src`, `$ARG`, `ONBUILD`), and another frontend
+/// reads secrets its own way, so any mount or such frontend reads them all.
+fn dockerfile_reads(
+    dockerfile: &Path,
+    service: &RequestedServiceSpec,
+) -> Result<(BTreeSet<String>, bool), Error> {
     let contents = std::fs::read_to_string(dockerfile)
         .map_err(|error| Error::Io(format!("read captured Dockerfile: {error}")))?;
-    Ok(DockerfileFacts::parse(&contents))
+    let folded: String = contents
+        .chars()
+        .filter(|character| !character.is_whitespace() && !matches!(character, '"' | '\'' | '\\'))
+        .flat_map(char::to_lowercase)
+        .collect();
+    let standard = |syntax: &str| {
+        let syntax = syntax.trim().to_ascii_lowercase();
+        let syntax = syntax.strip_prefix("docker.io/").unwrap_or(&syntax);
+        syntax.starts_with("docker/dockerfile:") || syntax == "docker/dockerfile"
+    };
+    let directive = contents
+        .lines()
+        .map(str::trim)
+        .take_while(|line| line.starts_with('#'))
+        .filter_map(|line| line.trim_start_matches('#').split_once('='))
+        .any(|(key, value)| key.trim().eq_ignore_ascii_case("syntax") && !standard(value));
+    let variable = service
+        .container
+        .environment
+        .get("BUILDKIT_SYNTAX")
+        .is_some_and(|value| !value.text().is_some_and(standard));
+    let every =
+        folded.contains("type=secret") || folded.contains("type=$") || directive || variable;
+    Ok((DockerfileFacts::parse(&contents).args, every))
 }
 
 /// Railpack reads its `RAILPACK_*` settings while it plans, where a Sealed
@@ -390,7 +422,7 @@ mod tests {
         container.sealed_identity = None;
         for dockerfile in [
             "FROM scratch\n",
-            "FROM scratch\nARG PLAIN\nRUN --mount=type=secret,id=OTHER true\n",
+            "# syntax=docker/dockerfile:1\nFROM scratch\nARG PLAIN\n# NPM_TOKEN is runtime-only\nRUN --mount=type=cache,target=/c true\n",
         ] {
             let [with, without] = [&sealed, &plain].map(|intent| {
                 let captured =
@@ -405,15 +437,11 @@ mod tests {
         }
     }
 
-    #[test]
-    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
-    fn a_dockerfile_captures_only_the_sealed_values_it_reads() {
-        let root = tempfile::tempdir().unwrap();
-        let (mut intent, _) = sealed_intent(7);
-        let unread = EnvValue::Sealed(ployz_core::SealedValue {
-            sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
+    fn with_sealed(intent: &mut DeployIntent, name: &str, byte: u8) {
+        let value = EnvValue::Sealed(ployz_core::SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![byte; 48]),
             scope: ployz_core::SealedScope::Shared,
-            key: "RUNTIME_ONLY".into(),
+            key: name.into(),
         });
         intent
             .target
@@ -421,24 +449,95 @@ mod tests {
             .unwrap()
             .container
             .environment
-            .insert("RUNTIME_ONLY".into(), unread);
-        for dockerfile in [
-            MOUNTING_DOCKERFILE,
-            "FROM scratch\nRUN --mount=type=secret,target=/run/secrets/NPM_TOKEN true\n",
-            "FROM scratch\nARG NPM_TOKEN\n",
+            .insert(name.into(), value);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "fixed capture fixture")]
+    fn a_dockerfile_captures_only_the_sealed_values_it_may_read() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut intent, _) = sealed_intent(7);
+        with_sealed(&mut intent, "RUNTIME_ONLY", 9);
+        let every = ["NPM_TOKEN", "RUNTIME_ONLY"].as_slice();
+        for (dockerfile, read) in [
+            ("FROM scratch\nARG NPM_TOKEN\n", ["NPM_TOKEN"].as_slice()),
+            (MOUNTING_DOCKERFILE, every),
+            (
+                "FROM scratch\nRUN --mount=type=secret,id=OTHER true\n",
+                every,
+            ),
+            (
+                "FROM scratch\nRUN --mount=type=secret,src=NPM_TOKEN,target=/n true\n",
+                every,
+            ),
+            (
+                "FROM scratch\nRUN --mount=\"type=Secret,id=\\\"NPM_TOKEN\\\"\" true\n",
+                every,
+            ),
+            (
+                "FROM scratch\nARG ID=NPM_TOKEN\nRUN --mount=type=secret,id=$ID true\n",
+                every,
+            ),
+            (
+                "FROM scratch\nARG T=secret\nRUN --mount=type=$T,id=NPM_TOKEN true\n",
+                every,
+            ),
+            (
+                "FROM scratch AS base\nONBUILD RUN --mount=type = secret,id=NPM_TOKEN true\nFROM base\n",
+                every,
+            ),
+            ("# syntax=example.test/frontend\nFROM scratch\n", every),
+            (
+                "# syntax = docker.io/docker/dockerfile:1.7\nFROM scratch\nARG NPM_TOKEN\n",
+                ["NPM_TOKEN"].as_slice(),
+            ),
         ] {
             let captured = capture_one(&intent, dockerfile_spec(root.path(), dockerfile)).unwrap();
-            assert_eq!(captured.sealed, ["NPM_TOKEN"], "{dockerfile}");
+            assert_eq!(captured.sealed, read, "{dockerfile}");
             let private: serde_json::Value = serde_json::from_slice(
                 &fs::read(captured.inputs.root().join("private/sealed.json")).unwrap(),
             )
             .unwrap();
-            assert!(private["values"].get("RUNTIME_ONLY").is_none());
+            assert_eq!(
+                private["values"].as_object().unwrap().len(),
+                read.len(),
+                "{dockerfile}"
+            );
             let recipe = recipe(&captured);
             assert_eq!(
                 recipe["services"]["api"]["build"]["secrets"],
-                serde_norway::to_value(["NPM_TOKEN"]).unwrap()
+                serde_norway::to_value(read).unwrap(),
+                "{dockerfile}"
             );
+        }
+    }
+
+    #[test]
+    fn a_frontend_or_git_source_may_read_a_sealed_value_without_a_mount() {
+        let root = tempfile::tempdir().unwrap();
+        let plain = "FROM scratch\nADD https://git.test/private.git /src\n";
+        let (mut intent, _) = sealed_intent(7);
+        with_sealed(&mut intent, "GIT_AUTH_TOKEN", 8);
+        with_sealed(&mut intent, "GIT_AUTH_HEADER.git.test", 9);
+        let captured = capture_one(&intent, dockerfile_spec(root.path(), plain)).unwrap();
+        assert_eq!(
+            captured.sealed,
+            ["GIT_AUTH_HEADER.git.test", "GIT_AUTH_TOKEN"]
+        );
+        let (mut intent, _) = sealed_intent(7);
+        for (syntax, read) in [
+            (EnvValue::from("docker/dockerfile:1"), false),
+            (EnvValue::from("example.test/frontend"), true),
+        ] {
+            intent
+                .target
+                .first_mut()
+                .unwrap()
+                .container
+                .environment
+                .insert("BUILDKIT_SYNTAX".into(), syntax);
+            let captured = capture_one(&intent, dockerfile_spec(root.path(), plain)).unwrap();
+            assert_eq!(!captured.sealed.is_empty(), read);
         }
     }
 

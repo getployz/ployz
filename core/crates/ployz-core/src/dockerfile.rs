@@ -15,8 +15,6 @@ pub struct DockerfileFacts {
     pub env: BTreeSet<String>,
     /// The `ARG` names of every stage: each is a build input.
     pub args: BTreeSet<String>,
-    /// The secret ids every stage's `RUN --mount=type=secret` reads.
-    pub secrets: BTreeSet<String>,
 }
 
 impl DockerfileFacts {
@@ -65,7 +63,6 @@ impl DockerfileFacts {
                 "ARG" => facts
                     .args
                     .extend(words(&arguments).into_iter().filter_map(name_of)),
-                "RUN" => facts.secrets.extend(secret_mounts(&arguments)),
                 _ => {}
             }
         }
@@ -80,37 +77,6 @@ fn env_names(arguments: &str) -> Vec<String> {
         Some(first) if !first.contains('=') => vec![first.clone()],
         _ => words.into_iter().filter_map(name_of).collect(),
     }
-}
-
-/// The ids a `RUN`'s leading `--mount=type=secret` flags read. A mount without
-/// an `id` reads the one its `target` names, as BuildKit does.
-fn secret_mounts(arguments: &str) -> Vec<String> {
-    words(arguments)
-        .into_iter()
-        .take_while(|word| word.starts_with("--"))
-        .filter_map(|word| {
-            let mount = word.strip_prefix("--mount=")?.trim_matches(['"', '\'']);
-            let options: Vec<_> = mount
-                .split(',')
-                .map(|option| option.split_once('=').unwrap_or((option, "")))
-                .collect();
-            let option = |names: &[&str]| {
-                options
-                    .iter()
-                    .find(|(key, _)| names.contains(&key.trim().to_ascii_lowercase().as_str()))
-                    .map(|(_, value)| value.trim())
-            };
-            if option(&["type"]) != Some("secret") {
-                return None;
-            }
-            let id = option(&["id"]).or_else(|| {
-                option(&["target", "dst", "destination"])?
-                    .rsplit('/')
-                    .next()
-            })?;
-            (!id.is_empty()).then(|| id.to_owned())
-        })
-        .collect()
 }
 
 /// The name a `NAME=value` or bare `NAME` word declares.
@@ -286,25 +252,5 @@ mod tests {
             "ARG BASE=node\nFROM $BASE AS build\nARG TOKEN\nFROM x\nARG GREETING=\"hello world\" MODE",
         );
         assert_eq!(facts.args, names(&["BASE", "GREETING", "MODE", "TOKEN"]));
-    }
-
-    #[test]
-    fn secrets_are_every_stages_secret_mount_ids() {
-        let facts = DockerfileFacts::parse(concat!(
-            "FROM x AS build\n",
-            "RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci\n",
-            "run --network=none --mount=type=secret,target=/run/secrets/BY_TARGET,required \\\n",
-            "  --mount=type=cache,target=/root/.cache make\n",
-            "FROM y\n",
-            "RUN --mount=type=secret,dst=/token/BY_DST,id=BY_ID true\n",
-            "RUN --mount=type=cache,id=CACHE,target=/CACHE true\n",
-            "RUN echo --mount=type=secret,id=IN_COMMAND\n",
-        ));
-        assert_eq!(facts.secrets, names(&["BY_ID", "BY_TARGET", "NPM_TOKEN"]));
-        assert!(
-            DockerfileFacts::parse("FROM x\nARG NPM_TOKEN\n")
-                .secrets
-                .is_empty()
-        );
     }
 }

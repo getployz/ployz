@@ -97,15 +97,19 @@ RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci
 On GitHub Actions, a build that reads a sealed value with `ARG`, or sets a `RAILPACK_*`
 variable to a sealed value, saves no build cache. A secret mount keeps it.
 
-A Dockerfile build only gets the sealed values it reads with `ARG` or a secret mount. A sealed
-value it doesn't read, like a runtime-only database password, stays out of the build. Your servers
-open a sealed value for a build only from Ployz 0.3.5. A build that reads one needs a server on
-0.3.5 or later, and it won't start until you upgrade one.
+A Dockerfile with no secret mount gets only the sealed values it declares with `ARG`. Other
+sealed values, like a runtime-only database password, stay out of the build. A Dockerfile with any
+secret mount, or one built by a custom `# syntax=` frontend, gets every sealed value. A sealed
+`GIT_AUTH_TOKEN` or `GIT_AUTH_HEADER` always reaches the build, for an `ADD` of a private Git
+repository.
+
+Your servers open a sealed value for a build only from Ployz 0.3.5. A build that gets one needs a
+server on 0.3.5 or later, and it won't start until you upgrade one.
 
 Railpack gives the build every variable, so a Railpack build reads every sealed value, even one
 only your app uses at runtime. A Railpack service with any sealed value needs a server on 0.3.5
-or later to build. To build one on older servers, switch it to a Dockerfile that doesn't read
-the value.
+or later to build. To build one on older servers, switch it to a Dockerfile with no secret mount
+and no `ARG` for the value.
 
 A changed sealed value doesn't rerun a cached secret mount step. To rerun it, add
 `ARG PLOYZ_SEALED_HASH` right above it.
