@@ -869,6 +869,23 @@ mod tests {
                 .to_owned(),
         };
         assert_eq!(public.to_string(), "Bad host.");
+        let nested = Error::Status {
+            status: 409,
+            body: r#"{"error":{"cause":[],"code":"conflict","details":null,"message":"The request conflicts with the current state."}}"#
+                .to_owned(),
+        };
+        assert_eq!(
+            nested.to_string(),
+            "The request conflicts with the current state."
+        );
+        let unknown = Error::Status {
+            status: 409,
+            body: r#"{"error":{"message":"no code"}}"#.to_owned(),
+        };
+        assert_eq!(
+            unknown.to_string(),
+            r#"enroll HTTP 409: {"error":{"message":"no code"}}"#
+        );
     }
 
     #[test]
