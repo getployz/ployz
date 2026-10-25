@@ -581,6 +581,11 @@ export function createVariablesResealRequestedEvent(data: VariablesResealRequest
   return { name: variablesResealRequestedEvent, data } as const;
 }
 
+/** Sent when a worker starts, so an install whose Clusters reported their keys before it reseals too; resealing again changes nothing. */
+export function createStartupResealEvent(startedAt: Date) {
+  return { id: `variables-reseal-start-${startedAt.getTime()}`, name: variablesResealRequestedEvent, data: {} } as const;
+}
+
 /** Keyed by the Cluster whose first Sealing Key Cloud recorded: a retried record sends it again, and Inngest runs it once. */
 export function createClusterResealRequestedEvent({ organizationId, clusterKey }: { organizationId: string; clusterKey: string }) {
   return { id: `variables-reseal-${organizationId}-${clusterKey}`, name: variablesResealRequestedEvent, data: { organizationId } } as const;
@@ -760,6 +765,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createSealingKeyEnsureRequestedEvent>
   | ReturnType<typeof createVariablesResealRequestedEvent>
   | ReturnType<typeof createClusterResealRequestedEvent>
+  | ReturnType<typeof createStartupResealEvent>
   | ReturnType<typeof createObserveCrashReceivedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

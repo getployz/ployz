@@ -10,7 +10,7 @@ import { account, member, user } from "#/modules/identity/tables";
 import { guardProtected } from "#/modules/config-store/protected.server";
 import { resolvePreferredBuilders } from "#/modules/config-store/preferred-builder.server";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
-import { commandEnvironments, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
+import { commandEnvironments, isResealPending, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
@@ -22,6 +22,7 @@ import {
   createConfigPrCheckRequestedEvent,
   createConfigSweepRequestedEvent,
   createGithubBuildRunCompletedEvent,
+  createVariablesResealRequestedEvent,
   type ConfigDeploymentAdmittedEventData,
   type DeploymentTrigger,
 } from "#/modules/inngest/events";
@@ -368,7 +369,15 @@ export const callStore = <C extends StoreCall>(
   }).pipe(
     // SAFETY: a read answers its query's view, a write what it wrote.
     Effect.map((result) => result as StoreResult<StoreAnswer<C>>),
-    Effect.catchTag("StoreRefused", (error) => Effect.succeed<StoreResult<never>>({ ok: false, refusal: error.refusal })),
+    Effect.catchTag("StoreRefused", (error) => Effect.gen(function* () {
+      // A Deploy waits for the reseal of a Legacy value: ask for it now rather than at the next worker start.
+      if (isResealPending(error.refusal)) {
+        yield* sendInngestEvent(createVariablesResealRequestedEvent({ organizationId })).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("A reseal request for a refused Deploy failed.", cause)),
+        );
+      }
+      return { ok: false, refusal: error.refusal } satisfies StoreResult<never>;
+    })),
   );
 }).pipe(Effect.withSpan("ConfigStore.call"));
 

@@ -9,7 +9,9 @@ import { sql } from "drizzle-orm";
 import { type Context, Effect } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, vi } from "vitest";
+import { callStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import { clusterSealingKey } from "#/modules/machines/tables";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { Database } from "#/server/database.server";
@@ -17,7 +19,7 @@ import { makeInngestEffectRunner } from "#/server/run.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { enrollStoreServer, seedStoreOrganization, type StoreCloud, storeTestCloud } from "#/test/store-cloud";
 import { encryptSecretValue } from "#/utils/encrypted-secret.server";
-import { createResealVariables } from "./reseal.inngest";
+import { createResealVariables, requestResealAtStart } from "./reseal.inngest";
 
 const ORGANIZATION = "00000000-0000-4000-8000-0000000e5001";
 const SHOP = { project: "00000000-0000-4000-8000-0000000e5010", environment: "00000000-0000-4000-8000-0000000e5011", service: "00000000-0000-4000-8000-0000000e5012" };
@@ -106,12 +108,16 @@ const logged = () => {
   };
 };
 
-const resealJob = (services: Context.Context<StoreCloud>, steps: ConstructorParameters<typeof InngestTestEngine>[0]["steps"] = []) => {
+const resealJob = (
+  services: Context.Context<StoreCloud>,
+  steps: ConstructorParameters<typeof InngestTestEngine>[0]["steps"] = [],
+  data: { organizationId?: string } = { organizationId: ORGANIZATION },
+) => {
   const runner: Parameters<typeof createResealVariables>[1] =
     makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
   return Effect.promise(() => new InngestTestEngine({
     function: createResealVariables(new Inngest({ id: "reseal-test" }), runner),
-    events: [{ name: "variables/reseal.requested", data: { organizationId: ORGANIZATION } }],
+    events: [{ name: "variables/reseal.requested", data }],
     steps,
   }).execute());
 };
@@ -184,6 +190,39 @@ describe("variables/reseal.requested", () => {
       yield* recordSealingPublicKey(ORGANIZATION, hashEnrollmentToken(PAIRING_SECRET), publicKey);
       expect(send).toHaveBeenCalledTimes(1);
 
+      expect((yield* resealJob(services)).error).toBeUndefined();
+      expect(yield* openedIn(SHOP.environment, privateKey)).toEqual(PLAINTEXT);
+      expect(yield* openedIn(BLOG.environment, privateKey)).toEqual(PLAINTEXT);
+    }).pipe(Effect.provide(services));
+  }), 120_000);
+
+  it.live("an install whose Cluster reported its key before an upgrade reseals once a worker starts, and a Deploy waits for it", () => Effect.gen(function* () {
+    const inngest = new Inngest({ id: "reseal-test-upgrade" });
+    const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+    const services = yield* storeTestCloud({ inngest });
+    yield* Effect.gen(function* () {
+      const { privateKey, publicKey } = yield* clusterKeyPair;
+      yield* legacyOrganization;
+      yield* enrollStoreServer(ORGANIZATION);
+      // As v0.3.4 recorded it: the key, and no reseal request.
+      const { drizzle } = yield* Database;
+      yield* drizzle.insert(clusterSealingKey).values({ organizationId: ORGANIZATION, clusterKey: hashEnrollmentToken(PAIRING_SECRET), publicKey });
+      yield* recordSealingPublicKey(ORGANIZATION, hashEnrollmentToken(PAIRING_SECRET), publicKey);
+      expect(send).not.toHaveBeenCalled();
+
+      const refused = yield* callStore(ORGANIZATION, null, { operation: "write", command: {
+        command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: { project: "shop", environment: null },
+        services: [], version: null, accept_volume_loss: [],
+      } });
+      if (refused.ok) return expect.unreachable("a Deploy that reads a Legacy value waits for the reseal");
+      expect(refused.refusal.code).toBe("conflict");
+      expect(refused.refusal.message).toContain("reseal");
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "variables/reseal.requested", data: { organizationId: ORGANIZATION } }));
+
+      yield* requestResealAtStart(new Date());
+      expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ name: "variables/reseal.requested", data: {} }));
+      const fanOut = yield* resealJob(services, [], {});
+      expect(fanOut.ctx.step.sendEvent).toHaveBeenCalledWith("reseal-organizations", [expect.objectContaining({ data: { organizationId: ORGANIZATION } })]);
       expect((yield* resealJob(services)).error).toBeUndefined();
       expect(yield* openedIn(SHOP.environment, privateKey)).toEqual(PLAINTEXT);
       expect(yield* openedIn(BLOG.environment, privateKey)).toEqual(PLAINTEXT);
