@@ -27,7 +27,12 @@ const connections: Connection[] = [
 ];
 
 /** A Runtime Watch frame reporting one Machine, `machine-1`, named `name`. */
-const named = (name: string) => asTestDouble<RuntimeWatchView>()({ machines: [{ machine: { id: "machine-1", name } }] });
+const named = (name: string) => asTestDouble<RuntimeWatchView>()({ machines: [{ machine: { id: "machine-1", name, runtime: {} } }] });
+
+/** A Runtime Watch frame reporting one Server, `machine-1`, whose Sealing Key is in state `kind`. */
+const sealing = (kind: "awaits_recovery" | "held") => asTestDouble<RuntimeWatchView>()({
+  machines: [{ machine: { id: "machine-1", name: "web-1", runtime: { sealing: { kind, public_key: `${"A".repeat(43)}=` } } } }],
+});
 
 /** A runtime whose one Cluster streams what `frames` returns on each watch, recording each frame with `recordFrame`. */
 const streamingRuntime = (
@@ -492,6 +497,23 @@ it.live("retries a failed name write on the next frame until it lands, then skip
       reported = named("three");
       yield* firstRuntimeFrame("org-1");
       assert.strictEqual(yield* nextAttempt, "three");
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.live("records a frame whose only change is a Server's Sealing Key state", () =>
+  Effect.gen(function* () {
+    let reported = sealing("awaits_recovery");
+    const written = yield* Queue.unbounded<string>();
+    const runtime = streamingRuntime(() => [reported], (_organizationId, frame) =>
+      Queue.offer(written, frame.machines[0]?.machine.runtime.sealing?.kind ?? "").pipe(Effect.asVoid));
+    const nextWrite = Queue.take(written).pipe(Effect.timeout("1 second"));
+    yield* Effect.gen(function* () {
+      yield* firstRuntimeFrame("org-1");
+      assert.strictEqual(yield* nextWrite, "awaits_recovery");
+      reported = sealing("held");
+      yield* firstRuntimeFrame("org-1");
+      assert.strictEqual(yield* nextWrite, "held");
     }).pipe(Effect.provide(runtime));
   }),
 );
