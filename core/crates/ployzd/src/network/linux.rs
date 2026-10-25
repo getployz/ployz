@@ -767,9 +767,10 @@ impl NetworkPlane {
         }
     }
 
-    /// Stops `id` at once, which drops a restart Docker has pending. One Docker would
-    /// run again is noted in `stopped` first, and left running when that note can't be
-    /// written. One that is exiting for good is stopped and left stopped.
+    /// Stops `id` at once, which drops a restart Docker has pending and settles the
+    /// container, so Docker's own restart can't attach it behind a detach. One Docker
+    /// would run again is noted in `stopped` first, and left alone when that note
+    /// can't be written. One that is exiting for good is stopped and left stopped.
     async fn stop(&self, id: &str, stopped: &mut Stopped) {
         let inspected = match self.docker.inspect_container(id, None).await {
             Ok(inspected) => inspected,
@@ -780,15 +781,12 @@ impl NetworkPlane {
                 return;
             }
         };
-        let state = inspected.state.unwrap_or_default();
-        if state.running != Some(true) {
-            return;
-        }
+        let restarting = inspected.state.and_then(|state| state.restarting) == Some(true);
         let policy = inspected
             .host_config
             .and_then(|host| host.restart_policy)
             .and_then(|policy| policy.name);
-        if runs_again(state.restarting == Some(true), policy)
+        if runs_again(restarting, policy)
             && let Err(error) = stopped.note(id)
         {
             report_stop(id, &error);
@@ -900,13 +898,14 @@ fn between_restarts(error: &bollard::errors::Error) -> bool {
             && message.ends_with(" not found"))
 }
 
-/// Whether Docker would run a container again that it counts as running: one it is
-/// restarting, or one whose policy restarts it whatever its exit.
+/// Whether Docker would run again a container it holds between restarts: one it is
+/// restarting, or one with a policy that restarts it. A container with no policy is
+/// exiting for good.
 fn runs_again(restarting: bool, policy: Option<RestartPolicyNameEnum>) -> bool {
     restarting
-        || matches!(
+        || !matches!(
             policy,
-            Some(RestartPolicyNameEnum::ALWAYS | RestartPolicyNameEnum::UNLESS_STOPPED)
+            None | Some(RestartPolicyNameEnum::NO | RestartPolicyNameEnum::EMPTY)
         )
 }
 

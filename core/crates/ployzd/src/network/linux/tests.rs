@@ -912,13 +912,14 @@ fn a_member_between_restarts_rejoins_at_the_address_it_is_pinned_to() {
 }
 
 #[test]
-fn only_a_container_docker_would_run_again_is_noted_to_start() {
+fn only_a_container_docker_would_run_again_is_noted_to_start_again() {
     use bollard::models::RestartPolicyNameEnum as Policy;
     assert!(runs_again(true, Some(Policy::ON_FAILURE)));
     assert!(runs_again(true, None));
     assert!(runs_again(false, Some(Policy::ALWAYS)));
     assert!(runs_again(false, Some(Policy::UNLESS_STOPPED)));
-    assert!(!runs_again(false, Some(Policy::ON_FAILURE)));
+    assert!(runs_again(false, Some(Policy::ON_FAILURE)));
     assert!(!runs_again(false, Some(Policy::NO)));
+    assert!(!runs_again(false, Some(Policy::EMPTY)));
     assert!(!runs_again(false, None));
 }
