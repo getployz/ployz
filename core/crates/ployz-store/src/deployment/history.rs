@@ -179,7 +179,9 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
 /// lost before recording. The runner names only the first failure it saw, so a
 /// Service it reports as never attempted may still have a row that started: a
 /// Container it created beside the one it names. Only an applied Deployment of
-/// every Service settles them; one of some Services leaves the rest in doubt.
+/// every Service settles them; one of some Services leaves the rest in doubt. A
+/// Service comes once for each such Deployment, as each may have put
+/// its own routes and mounts in place.
 fn may_run(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -229,7 +231,6 @@ fn may_run(
                 .services
                 .iter()
                 .find(|service| service.id == node.id())
-                && services.iter().all(|held| held.id != service.id)
             {
                 services.push(service.clone());
             }

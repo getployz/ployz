@@ -5867,26 +5867,200 @@ fn a_protectors_deploy_token_cannot_ship_a_saved_removal_into_protected_producti
     assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
 }
 
+/// Retry `source` as `id` under `trusted`, confirming no rollback.
+fn retry_as(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, source): (u8, u8),
+    trusted: &Trusted,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Retry(Retry {
+            id: id(n),
+            deployment: id(source),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
+        }),
+        trusted,
+    )
+}
+
 #[test]
-fn a_protectors_deploy_token_still_asks_an_admin_to_retry() {
+fn a_protectors_deploy_token_retries_what_destroys_nothing_unasked() {
     let (store, who) = shop();
     apply_both(&store, &who, 1);
     set_replicas(&store, &who, "api", 2);
     deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
     cancel(&store, &who, 2).unwrap();
-    let refused = store
-        .write_trusted(
-            &who,
-            &Admit::Retry(Retry {
-                id: id(3),
-                deployment: id(2),
-                rolls_back: None,
-                version: None,
-                accept_volume_loss: Vec::new(),
-            }),
-            &protectors_deploy_token(Approval::NotRequired),
+    let retried = retry_as(
+        &store,
+        &who,
+        (3, 2),
+        &protectors_deploy_token(Approval::NotRequired),
+    )
+    .unwrap();
+    assert_eq!(retried.status, DeploymentStatus::Queued);
+}
+
+#[test]
+fn a_members_retry_that_destroys_nothing_still_asks_an_admin() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let member = Trusted {
+        running: nothing_else_runs(),
+        ..unprotecting(Approval::NotRequired)
+    };
+    let refused = retry_as(&store, &who, (3, 2), &member).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+/// Cloud's evidence for an admin's token that can protect and destroy, but whose
+/// grant leaves out `environments:protect`.
+fn admins_token(running: Option<RunningObservation>) -> Trusted {
+    Trusted {
+        protector: true,
+        running,
+        ..unprotecting(Approval::NotRequired)
+    }
+}
+
+#[test]
+fn a_protectors_retry_that_prunes_still_asks_an_admin() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let refused = retry_as(
+        &store,
+        &who,
+        (3, 2),
+        &admins_token(running(&["web", "api", "extra2"])),
+    )
+    .unwrap_err();
+    assert_admin_asked(&refused);
+    let unseen = running(&["web", "api"]).map(|running| RunningObservation {
+        unanswered: vec![MachineId::parse("e".repeat(32)).unwrap()],
+        ..running
+    });
+    let refused = retry_as(&store, &who, (3, 2), &admins_token(unseen)).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+#[test]
+fn a_protectors_rollback_still_asks_an_admin_even_when_it_takes_nothing_off() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    apply(&store, 2);
+    let refused = retry_as(&store, &who, (3, 1), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+    assert_eq!(refused.details["effects"], json!([]));
+    assert_eq!(refused.details["redeploy"]["rolls_back"], json!([2]));
+}
+
+#[test]
+fn a_protectors_rollback_that_takes_a_service_off_still_asks_an_admin() {
+    let (store, who) = cron_added();
+    let refused = retry_as(&store, &who, (3, 1), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+    assert_eq!(refused.details["effects"][0]["name"], json!("cron"));
+}
+
+#[test]
+fn a_protectors_retry_whose_revision_removes_a_domain_still_asks_an_admin() {
+    let (store, who) = shop();
+    add_web_domain(&store, &who, "app.example.com");
+    apply_both(&store, &who, 1);
+    remove_domain(&store, &who, "app.example.com");
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let refused = retry_as(&store, &who, (3, 2), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+/// Add domain `hostname` to `web`, as staged.
+fn add_web_domain(store: &ConfigStore, who: &Actor, hostname: &str) {
+    store
+        .write(
+            who,
+            &ployz_store::AddDomain {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                hostname: Some(ployz_store::Hostname::parse(hostname).unwrap()),
+                prefix: None,
+                port: None,
+            },
         )
-        .unwrap_err();
+        .unwrap();
+}
+
+fn remove_domain(store: &ConfigStore, who: &Actor, hostname: &str) {
+    store
+        .write(
+            who,
+            &ployz_store::RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: hostname.into(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_protectors_retry_removing_a_domain_an_unknown_deployment_may_have_left_still_asks_an_admin() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    add_web_domain(&store, &who, "app.example.com");
+    // #2 lost track after preparing: it may have put the domain in place.
+    lose_track(&store, &who, 2);
+    remove_domain(&store, &who, "app.example.com");
+    deploy_as(&store, &who, 3, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 3).unwrap();
+    let refused = retry_as(&store, &who, (4, 3), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+/// Admit Deployment `n` of every Service, then lose track of it after preparing.
+fn lose_track(store: &ConfigStore, who: &Actor, n: u8) {
+    deploy_as(store, who, n, Approval::NotRequired).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(n), &a).unwrap();
+    store
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store.record(&id(n), &a, RunEvidence::Abandoned).unwrap();
+}
+
+#[test]
+fn a_protectors_retry_weighs_every_unknown_deployment_of_a_service() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    add_web_domain(&store, &who, "a.example.com");
+    lose_track(&store, &who, 2);
+    add_web_domain(&store, &who, "b.example.com");
+    lose_track(&store, &who, 3);
+    remove_domain(&store, &who, "b.example.com");
+    deploy_as(&store, &who, 4, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 4).unwrap();
+    let refused = retry_as(&store, &who, (5, 4), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+#[test]
+fn a_protectors_retry_replaying_a_teardown_still_asks_an_admin() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let refused = retry_as(&store, &who, (3, 2), &admins_token(nothing_else_runs())).unwrap_err();
     assert_admin_asked(&refused);
 }
 

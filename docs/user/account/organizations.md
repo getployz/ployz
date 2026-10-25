@@ -167,7 +167,9 @@ How you answer depends on where the command runs:
   dashboard never asks, except from the CLI when it takes something off: redeploying a
   `ployz env shutdown`, or rolling back to a deploy from before a service was added, asks as a
   deploy that removes the same would. In a Protected environment, a member's save, deploy or
-  redeploy asks an admin even when it removes nothing.
+  redeploy asks an admin even when it removes nothing. An owner's or admin's Deploy token there
+  redeploys unasked when the redeploy destroys nothing; a rollback, or a redeploy that takes
+  something off or prunes, asks an admin.
 - `ployz project rm`, `ployz env rm` and `ployz env shutdown` ask when they would take something
   off the servers. `ployz org rm`, `ployz server forget` with no server named and
   `ployz env protect --off` always ask.

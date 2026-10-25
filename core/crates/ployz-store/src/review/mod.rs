@@ -262,7 +262,7 @@ pub(crate) struct Head {
     pub(crate) in_flight: Vec<InFlight>,
     /// The Services a Deployment of unknown outcome since the last applied Deployment
     /// of every Service may have started: its runner lost track of it, so they may run though Applied State
-    /// lacks them.
+    /// lacks them. A Service comes once for each such Deployment.
     pub(crate) may_run: Vec<SavedServiceIntent>,
 }
 

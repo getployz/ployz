@@ -117,31 +117,46 @@ pub(crate) fn deployed(head: &Head) -> SavedEnvironmentIntent {
             })
         });
         add_missing(&mut deployed.volumes, mounted, |volume| &volume.resource_id);
-        for service in &target.services {
-            let Some(running) = deployed
-                .services
-                .iter_mut()
-                .find(|running| running.id == service.id)
-            else {
-                deployed.services.push(service.clone());
-                continue;
-            };
-            let (into, from) = (&mut running.config, &service.config);
-            add_missing(&mut into.routes, &from.routes, |route| &route.hostname);
-            add_missing(
-                &mut into.managed_hostnames,
-                &from.managed_hostnames,
-                |managed| &managed.prefix,
-            );
-            add_missing(
-                &mut running.volume_attachments,
-                &service.volume_attachments,
-                |attachment| &attachment.volume_resource_id,
-            );
-        }
+        put_in_place(&mut deployed, &target.services);
     }
     add_missing(&mut deployed.services, &head.may_run, |service| &service.id);
     deployed
+}
+
+/// What the Servers may hold: [`deployed`], plus each route, generated domain and
+/// mount that any Deployment whose outcome is unknown may have put in place on a
+/// Service Applied State already holds.
+pub(crate) fn may_hold(head: &Head) -> SavedEnvironmentIntent {
+    let mut held = deployed(head);
+    put_in_place(&mut held, &head.may_run);
+    held
+}
+
+/// Add each of `services` to `deployed`, or to the one it holds, each route,
+/// generated domain and mount it lacks.
+fn put_in_place(deployed: &mut SavedEnvironmentIntent, services: &[SavedServiceIntent]) {
+    for service in services {
+        let Some(running) = deployed
+            .services
+            .iter_mut()
+            .find(|running| running.id == service.id)
+        else {
+            deployed.services.push(service.clone());
+            continue;
+        };
+        let (into, from) = (&mut running.config, &service.config);
+        add_missing(&mut into.routes, &from.routes, |route| &route.hostname);
+        add_missing(
+            &mut into.managed_hostnames,
+            &from.managed_hostnames,
+            |managed| &managed.prefix,
+        );
+        add_missing(
+            &mut running.volume_attachments,
+            &service.volume_attachments,
+            |attachment| &attachment.volume_resource_id,
+        );
+    }
 }
 
 fn add_missing<'a, T: Clone + 'a, K: PartialEq + ?Sized>(
@@ -329,11 +344,14 @@ fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
 ///
 /// A protector's token is `exempt` rather than unasked everywhere: its grant still
 /// decides what it may destroy, and a retry, which may replay what someone else
-/// destroyed, still asks.
+/// destroyed, still asks unless it destroys nothing.
 pub(crate) struct Gate<'a> {
     trusted: &'a Trusted,
     protected: bool,
     exempt: bool,
+    /// A retry gate whose caller was `exempt`: its retry that destroys nothing passes
+    /// as its plain Deploy does.
+    spares_harmless: bool,
 }
 
 impl<'a> Gate<'a> {
@@ -354,14 +372,17 @@ impl<'a> Gate<'a> {
             trusted,
             protected: asks && !protector,
             exempt: asks && protector,
+            spares_harmless: false,
         })
     }
 
-    /// The gate a Deploy's retry passes: a protector's token asks there too.
+    /// The gate a Deploy's retry passes: a protector's token asks there too, unless
+    /// its retry destroys nothing.
     pub(crate) const fn retrying(self) -> Self {
         Self {
             protected: self.protected || self.exempt,
             exempt: false,
+            spares_harmless: self.exempt,
             ..self
         }
     }
@@ -739,6 +760,17 @@ pub(crate) fn approve_retry(
         effects.into_iter().chain(pruning.removes()).collect();
     // Beyond where every retry asks, a retry asks only when it takes something off.
     if !gate.asks_retry() && effects.is_empty() && !pruning.unseen() {
+        return Ok(());
+    }
+    // A protector's retry that destroys nothing, nor replays anything its source's
+    // review accepted destroying, passes as its plain Deploy does.
+    if gate.spares_harmless
+        && effects.is_empty()
+        && !pruning.unseen()
+        && rollback.rolls_back.is_empty()
+        && !rollback.replays_destruction
+        && retry.accept_volume_loss.is_empty()
+    {
         return Ok(());
     }
     if !effects.is_empty() {
