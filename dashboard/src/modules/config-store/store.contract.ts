@@ -31,7 +31,7 @@ export const isProtectedAsk = ({ code, details }: StoreRefusal) => code === "app
 
 const resealDetails = Schema.is(Schema.Struct({ reseal: Schema.Literal("pending") }));
 /** The Store's refusal of a Deploy that reads a Legacy value: it waits for the reseal. */
-export const isResealPending = ({ code, details }: StoreRefusal) => code === "conflict" && resealDetails(details);
+export const isResealPending = ({ code, details }: StoreRefusal) => code === "invalid_argument" && resealDetails(details);
 
 /**
  * What a Store read or write returns across the server-function boundary. A refusal is an outcome, not a failure:

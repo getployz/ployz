@@ -215,7 +215,7 @@ describe("variables/reseal.requested", () => {
         services: [], version: null, accept_volume_loss: [],
       } });
       if (refused.ok) return expect.unreachable("a Deploy that reads a Legacy value waits for the reseal");
-      expect(refused.refusal.code).toBe("conflict");
+      expect(refused.refusal.code).toBe("invalid_argument");
       expect(refused.refusal.message).toContain("reseal");
       expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "variables/reseal.requested", data: { organizationId: ORGANIZATION } }));
 

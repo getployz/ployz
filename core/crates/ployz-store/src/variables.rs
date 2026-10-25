@@ -923,36 +923,45 @@ pub(crate) struct Resolved {
     /// Each Service's variables left out because they reference, directly or through
     /// another variable, a Service or variable that isn't there, by Service ID.
     pub(crate) broken: BTreeMap<String, Vec<String>>,
+    /// Each Legacy secret, by the ID of the Service that owns it: Not set here, and
+    /// a Deploy that ships its Service waits for the reseal instead.
+    pub(crate) legacy: Vec<(String, String)>,
 }
 
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers, for a Deploy of Environment
 /// `environment`. Nothing opens a secret here. One sealed for `environment` reaches
-/// its Service as a Sealed part; one sealed for another Environment is Not set. A
-/// variable a secret without a value, or a broken reference, reaches is left out; in
-/// a file either is empty.
+/// its Service as a Sealed part; one sealed for another Environment, or Legacy, is
+/// Not set, and a Legacy one is listed. A variable a secret without a value, or a broken reference, reaches is
+/// left out; in a file either is empty.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a reference cycle, a value too long for the
-/// environment or a Config file that reads a value sealed in the browser, and
-/// `conflict` for a Legacy secret, which waits for the reseal.
+/// environment or a Config file that reads a value sealed in the browser.
 pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
     environment: &str,
 ) -> Result<Resolved, RpcError> {
     let environment = uuid::Uuid::parse_str(environment).ok();
-    let stored = |sealed: Option<&SecretCiphertext>, owner: &str, key: &str| match sealed {
+    let stored = |sealed: Option<&SecretCiphertext>| match sealed {
         Some(SecretCiphertext::ClientSealed(client)) => match environment {
             Some(id) if client.sealed_for == id => Ok(ResolverValue::Sealed {
                 value: client.value.clone(),
             }),
             _ => Ok(ResolverValue::NotSet),
         },
-        Some(SecretCiphertext::Legacy(_)) => Err(awaiting_reseal(compiled, owner, key)),
+        Some(SecretCiphertext::Legacy(_)) => Ok(ResolverValue::NotSet),
         None => Err(error::corrupt("sealed secret")),
     };
     let mut producers = Vec::new();
+    let mut legacy = Vec::new();
     for producer in &compiled.variable_producers {
+        if let SavedVariableValue::Secret {
+            encrypted_value: Some(SecretCiphertext::Legacy(_)),
+        } = &producer.value
+        {
+            legacy.push((producer.owner_id.clone(), producer.key.clone()));
+        }
         let value = match &producer.value {
             SavedVariableValue::Literal { value } => ResolverValue::Literal {
                 value: value.clone(),
@@ -960,9 +969,7 @@ pub(crate) fn resolve(
             SavedVariableValue::Template { parts } => ResolverValue::Template {
                 parts: parts.clone(),
             },
-            SavedVariableValue::Secret { encrypted_value } => {
-                stored(encrypted_value.as_ref(), &producer.owner_id, &producer.key)?
-            }
+            SavedVariableValue::Secret { encrypted_value } => stored(encrypted_value.as_ref())?,
             SavedVariableValue::SecretWithoutValue => ResolverValue::NotSet,
         };
         producers.push(VariableProducer {
@@ -979,6 +986,7 @@ pub(crate) fn resolve(
         configs: BTreeMap::new(),
         not_set: BTreeMap::new(),
         broken: BTreeMap::new(),
+        legacy,
     };
     for node in &compiled.node_snapshots {
         let config = match &node.snapshot.0 {
@@ -1040,7 +1048,7 @@ pub(crate) fn resolve(
                 }
                 ServiceEnvValue::Secret {
                     encrypted_value, ..
-                } => match stored(encrypted_value.as_ref(), &node.node_id, key)? {
+                } => match stored(encrypted_value.as_ref())? {
                     // Only a value sealed for this very variable is bound to its name. A
                     // renamed one keeps the key it was sealed under, so it reaches the
                     // Machine as a Template part, which opens under that key.
@@ -1136,22 +1144,6 @@ fn service_name(compiled: &CompiledEnvironmentIntent, node_id: &str) -> Option<S
             CompiledNodeConfig::Service(config) => Some(config.settings.private_dns.to_string()),
             CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
         })
-}
-
-/// A Legacy secret, which no Machine opens: a Deploy that left it out would drop a
-/// value the reseal is about to seal for the Cluster.
-fn awaiting_reseal(compiled: &CompiledEnvironmentIntent, owner: &str, key: &str) -> RpcError {
-    let variable = match service_name(compiled, owner) {
-        Some(service) => format!("{service}.{key}"),
-        None => key.to_owned(),
-    };
-    error::conflict(
-        format!(
-            "{variable} is waiting for Ployz Cloud to reseal it for the Cluster, and this Deploy would leave it out. \
-             Cloud reseals such values when its worker starts. Deploy again in a minute, or set {variable} again"
-        ),
-        json!({ "variable": variable, "reseal": "pending" }),
-    )
 }
 
 /// A reference cycle, named by Service and variable.
@@ -1258,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_secret_waits_for_its_reseal_instead_of_reading_as_not_set() {
+    fn a_config_file_that_reads_a_legacy_secret_reads_it_as_not_set_and_lists_it() {
         let file = |text: &str| SavedConfigFile {
             content: parse_variable_template(text, |_, _| Some("web-lineage".to_owned())).parts,
             mode: FileMode::READ_ONLY,
@@ -1299,13 +1291,23 @@ mod tests {
                 },
             }],
         };
-        let error = resolve(&compiled, "env").map(|_| ()).unwrap_err();
-        assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
+        let mut resolved = resolve(&compiled, "env").unwrap();
+        assert_eq!(resolved.legacy, [("web".to_owned(), "P".to_owned())]);
+        let files = resolved.configs.remove("sentry").unwrap();
         assert_eq!(
-            error.details.get("variable"),
-            Some(&json!("P")),
-            "{error:?}"
+            files
+                .iter()
+                .map(|(name, file)| (name.to_string(), file.content.clone()))
+                .collect::<Vec<_>>(),
+            [
+                ("plain.yml".into(), "plain".into()),
+                ("secret.yml".into(), "p: ".into())
+            ]
         );
-        assert!(error.message.contains("reseal"), "{error:?}");
+        let secret = files
+            .get(&ConfigFileName::parse("secret.yml").unwrap())
+            .unwrap();
+        assert!(secret.secret);
+        assert_eq!(secret.not_set.len(), 1);
     }
 }

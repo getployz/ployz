@@ -1149,14 +1149,17 @@ mod tests {
         set_mode(&store, &who);
     }
 
-    fn deploy(store: &ConfigStore, who: &Actor, n: u8) -> Result<(), RpcError> {
+    fn deploy(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Result<(), RpcError> {
         store
             .write(
                 who,
                 &crate::Admit::Deploy(crate::Deploy {
                     id: crate::DeploymentId::parse(uuid(10 + n)).unwrap(),
                     environment: EnvironmentRef::default(),
-                    services: Vec::new(),
+                    services: services
+                        .iter()
+                        .map(|name| ServiceName::parse(*name).unwrap())
+                        .collect(),
                     version: None,
                     upload: None,
                     accept_volume_loss: Vec::new(),
@@ -1168,6 +1171,13 @@ mod tests {
             .map(|_| ())
     }
 
+    fn assert_waits(error: &RpcError, variable: &str) {
+        assert_eq!(error.code, ployz_core::RpcErrorCode::InvalidArgument);
+        assert!(error.message.contains(variable), "{error:?}");
+        assert!(error.message.contains("reseal"), "{error:?}");
+        assert!(!format!("{error:?}").contains("hunter2"), "{error:?}");
+    }
+
     #[test]
     fn a_deploy_waits_for_the_reseal_of_a_legacy_value_instead_of_leaving_it_out() {
         let (store, who) = shop();
@@ -1177,14 +1187,44 @@ mod tests {
             vec![secret("TOKEN", legacy(&store.sealing, "hunter2"))],
         );
 
-        let error = deploy(&store, &who, 1).unwrap_err();
-        assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
-        assert!(error.message.contains("web.TOKEN"), "{error:?}");
-        assert!(error.message.contains("reseal"), "{error:?}");
-        assert!(!format!("{error:?}").contains("hunter2"), "{error:?}");
+        assert_waits(&deploy(&store, &who, 1, &[]).unwrap_err(), "web.TOKEN");
+        assert_waits(&deploy(&store, &who, 2, &["web"]).unwrap_err(), "web.TOKEN");
 
         let keypair = ployz_core::Keypair::generate();
         store.reseal(&environment(), &recipient(&keypair)).unwrap();
-        deploy(&store, &who, 2).unwrap();
+        deploy(&store, &who, 3, &[]).unwrap();
+    }
+
+    #[test]
+    fn a_targeted_deploy_ships_past_a_legacy_value_of_a_service_it_leaves_alone() {
+        let (store, who) = shop();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(4)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("db").unwrap(),
+                    image: Some("postgres:16".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        crate::rules::tests::seed(&store, &who, |working| {
+            let db = working
+                .services
+                .iter_mut()
+                .find(|service| service.slug == "db")
+                .unwrap();
+            db.variables
+                .push(secret("PASSWORD", legacy(&store.sealing, "hunter2")));
+        });
+
+        deploy(&store, &who, 1, &["web"]).unwrap();
+        assert_waits(&deploy(&store, &who, 2, &[]).unwrap_err(), "db.PASSWORD");
+        assert_waits(
+            &deploy(&store, &who, 3, &["db"]).unwrap_err(),
+            "db.PASSWORD",
+        );
     }
 }
