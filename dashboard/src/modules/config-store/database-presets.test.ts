@@ -31,7 +31,7 @@ describe("databaseCommand", () => {
       mounts: [{ service: "postgres-2", path: "/var/lib/postgresql/data" }] });
     expect(patch.path).toBe("postgres-2");
     expect(patch.value).toMatchObject({ env: {
-      POSTGRES_PASSWORD: { value: { secret: "secretpassword" }, exported: true },
+      POSTGRES_PASSWORD: { value: "secretpassword", exported: true },
       PGHOST: { value: "${{ PLOYZ_PRIVATE_DOMAIN }}", exported: true },
       DATABASE_URL: {
         value: "postgresql://${{ PGUSER }}:${{ POSTGRES_PASSWORD }}@${{ PLOYZ_PRIVATE_DOMAIN }}:5432/${{ PGDATABASE }}",
@@ -44,6 +44,16 @@ describe("databaseCommand", () => {
   it.each(DATABASE_PRESETS.map((preset) => [preset.id, preset]))("checks %s's health with a command, at the default timeout", (_, preset) => {
     const { patch } = parts(databaseCommand(preset, { ...ids, environment, name: preset.id, password: "p" }));
     expect(patch.value).toHaveProperty("healthcheck", { command: preset.healthcheck });
+  });
+
+  // A Branch copy or PR Environment starts with every sealed value Not set, so a sealed password would leave its
+  // database unable to initialize. The copy gets a New, empty Volume, which the carried password initializes.
+  it.each(DATABASE_PRESETS.map((preset) => [preset.id, preset]))("stores %s's generated password plain, so Branch copies carry it", (_, preset) => {
+    const { patch } = parts(databaseCommand(preset, { ...ids, environment, name: preset.id, password: "generated" }));
+    const plain = Object.fromEntries(Object.entries(preset.env("generated"))
+      .map(([key, value]) => [key, { value, exported: true }]));
+    expect(Object.values(plain)).toContainEqual({ value: "generated", exported: true });
+    expect(patch.value).toHaveProperty("env", plain);
   });
 
   it("starts Redis with its password", () => {
