@@ -496,8 +496,9 @@ fn a_mixed_deploy_updates_one_service_retires_another_and_leaves_drift() {
     );
 }
 
+/// Absence from a partial snapshot proves nothing, so a full Deploy prunes none of it.
 #[test]
-fn an_incomplete_snapshot_retires_nothing() {
+fn an_incomplete_snapshot_prunes_nothing() {
     let (web, snapshot) = shop_with_obsolete_debug();
     let snapshot = DeploySnapshot {
         volume_snapshot: VolumeSnapshot::try_from_parts(
@@ -509,13 +510,23 @@ fn an_incomplete_snapshot_retires_nothing() {
         .expect("valid Volume Snapshot fixture"),
         ..snapshot
     };
-    let plan = preview_deploy(&retiring(&[web], &["debug"], &["debug"]), &snapshot).unwrap();
+    let plan = preview_deploy(
+        &DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [&web],
+            PlanOptions::default(),
+        ),
+        &snapshot,
+    )
+    .unwrap();
     assert!(operations(&plan).is_empty());
     assert_eq!(plan.prune_refusal, Some(PruneRefusal::IncompleteSnapshot));
 }
 
+/// A named removal goes ahead on the Servers the snapshot observed. The copy on the
+/// Server it couldn't check is the next full Deploy's to prune.
 #[test]
-fn a_removal_on_an_incomplete_snapshot_is_blocked_naming_the_server_not_checked() {
+fn a_removal_on_an_incomplete_snapshot_is_planned_on_the_servers_observed() {
     let (web, mut snapshot) = shop_with_obsolete_debug();
     snapshot.machines.push(machine('2', "second"));
     snapshot.container_failures.push(MachineFailure {
@@ -528,15 +539,48 @@ fn a_removal_on_an_incomplete_snapshot_is_blocked_naming_the_server_not_checked(
         },
     });
     let plan = preview_deploy(&retiring(&[web], &["debug"], &["debug"]), &snapshot).unwrap();
-    assert!(!removes(&plan, 'd'));
-    let [blocked] = plan.blocked.as_slice() else {
-        panic!("{:?}", plan.blocked);
+    assert!(removes(&plan, 'd'));
+    assert!(plan.blocked.is_empty(), "{:?}", plan.blocked);
+}
+
+/// A Server back after its Service was recorded Removed still runs that Service's
+/// copy. A default full Deploy prunes it, and one with no-prune keeps it and says so.
+#[test]
+fn a_copy_on_a_returned_server_of_a_removed_service_is_pruned_by_the_next_full_deploy() {
+    let web = spec("web");
+    let debug = spec("debug");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('3', "third")],
+        containers: vec![
+            container('c', '1', &web, &service_id('a')),
+            container('d', '3', &debug, &service_id('b')),
+        ],
+        ..Default::default()
     };
-    assert_eq!(blocked.service, ServiceName::parse("debug").unwrap());
+    let full = |prune| {
+        DeployIntent::new(
+            Namespace::parse("app").unwrap(),
+            vec![web.clone()],
+            PlanOptions {
+                prune,
+                ..PlanOptions::default()
+            },
+        )
+    };
+    let leftover = QualifiedService::parse("app/debug").unwrap();
+
+    let plan = preview_deploy(&full(PruneScope::Namespace), &snapshot).unwrap();
+    assert!(removes(&plan, 'd'));
+    assert_eq!(plan.would_remove, std::slice::from_ref(&leftover));
+
+    let plan = preview_deploy(&full(PruneScope::Removals), &snapshot).unwrap();
+    assert!(!removes(&plan, 'd'));
+    assert_eq!(plan.would_remove, std::slice::from_ref(&leftover));
     assert!(
-        blocked.error.message.contains("second"),
-        "{}",
-        blocked.error.message
+        plan.warnings
+            .contains(&DeployWarning::NotInStore { service: leftover }),
+        "{:?}",
+        plan.warnings
     );
 }
 
