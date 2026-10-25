@@ -79,6 +79,10 @@ service still gets the real value when it deploys.
 
 - New variables are plain unless you tick **Sealed**.
 - A new sealed value needs a server in your organization first. Add one with `ployz server add`.
+- Every server needs Ployz 0.3.4 or later to open sealed values, including a server you add
+  after you seal one. Install a current `ployz` on the new server before you add it: an older one
+  joins, but can't start your services there. See
+  [A new server joined, but Global catch-up can't read another server](../troubleshooting/servers.md#a-new-server-joined-but-global-catch-up-cant-read-another-server).
 - Your sealed values open only on your servers. Keep your organization's
   [recovery code](../servers/recovery-code.md): if you lose every server, it's the only way to
   open them again.

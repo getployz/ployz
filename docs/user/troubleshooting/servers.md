@@ -211,6 +211,26 @@ your first server.
    `UDP port 51820 is in use`, follow
    [Another program holds UDP port 51820](#another-program-holds-udp-port-51820).
 
+## A new server joined, but Global catch-up can't read another server
+
+```text
+Joined Server MY-SERVER.
+error: Server joined, but Global catch-up is incomplete; it remains a Cluster member.
+  cause: Global catch-up cannot plan from partial Service observations: web-1: Machine RPC payload failed: Could not decode the JSON payload: ...
+```
+
+The new server runs a `ployz` older than web-1, and it can't read what web-1 runs. Usually web-1
+runs a service with a [sealed variable](../services/variables.md#seal-a-secret), and the new server
+runs Ployz 0.3.3 or earlier. Ployz 0.3.3 also says `restore peer connectivity and redeploy`, but
+your network is fine. A newer `ployz` says `this ployz can't read web-1's answer, so update ployz
+on this host` instead.
+
+The server has joined and stays joined. To finish:
+
+1. [Upgrade Ployz on the new server](../servers/manage-servers.md#upgrade-ployz-on-a-server) to the
+   release your other servers run, 0.3.4 or later.
+2. Redeploy, so its global services start on it.
+
 ## A server waits for approval and never shows up
 
 A server you started with a Fleet Token runs `ployz server checkin --install`. That installs a

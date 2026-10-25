@@ -15,7 +15,7 @@ use ployz_core::{
     AnonymousVolumes, BridgeEndpointCapacity, ContainerKind, ContainerObservation,
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
     EnvironmentValues, HealthFailure, HealthVerdict, InspectRequest, ListContainersRequest,
-    LiveServices, Machine, MachineId, MachineTarget, NewContainer, QualifiedService,
+    LiveServices, Machine, MachineId, MachineTarget, NewContainer, PartialResult, QualifiedService,
     ResolvedServiceSpec, RpcError, RunRotation, RunTarget, ServiceMode, ServiceObservation,
     ServicePlacementEligibility, SlotKey, op,
 };
@@ -25,7 +25,11 @@ use crate::deploy::cleanup::{self, BroughtIn, Copy, Step};
 use crate::drain::retirement::{Names, server_name};
 use crate::failure::partial_failure_details;
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
-use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
+use crate::{
+    connect::{Client, unreadable_answer},
+    deploy::endpoint_capacity_error,
+    failure::Failure,
+};
 
 /// Catch-up failed after membership committed.
 #[derive(Debug)]
@@ -581,6 +585,35 @@ fn not_in_message(health: Option<HealthVerdict>) -> String {
         .to_string()
 }
 
+/// What fixes a partial listing. An answer this ployz can't read comes from a newer
+/// release, so connectivity is named only for the Servers that didn't answer.
+fn partial_next_step<T>(
+    result: &PartialResult<T, RpcError>,
+    server: impl Fn(&MachineId) -> String,
+) -> String {
+    let (unreadable, unanswered): (Vec<_>, Vec<_>) = result
+        .failures
+        .iter()
+        .partition(|failure| unreadable_answer(&failure.error));
+    let reconnect = "restore peer connectivity and redeploy";
+    if unreadable.is_empty() {
+        return reconnect.to_owned();
+    }
+    let names: Vec<_> = unreadable
+        .iter()
+        .map(|failure| server(&failure.machine_id))
+        .collect();
+    let update = format!(
+        "this ployz can't read {}'s answer, so update ployz on this host",
+        names.join(", ")
+    );
+    if unanswered.is_empty() && result.omissions.is_empty() {
+        format!("{update} and redeploy")
+    } else {
+        format!("{update}; {reconnect}")
+    }
+}
+
 async fn observe_complete<C: CatchUpClient>(
     client: &mut C,
     this_machine: &MachineId,
@@ -612,10 +645,11 @@ async fn observe_complete<C: CatchUpClient>(
         if attempt == OBSERVATION_ATTEMPTS {
             observe(CatchUpFact::NotArrived(unarrived));
             let details = partial_failure_details(&live.containers, |id| server_name(&names, id));
+            let next = partial_next_step(&live.containers, |id| server_name(&names, id));
             return Err(CatchUpError::new(
                 Failure::unavailable(format!(
                     "Global catch-up cannot plan from partial Service observations: {details}; \
-                     restore peer connectivity and redeploy"
+                     {next}"
                 )),
                 Vec::new(),
             ));

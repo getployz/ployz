@@ -560,6 +560,10 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             details: Value::Null,
             cause: Vec::new(),
         },
+        error @ ConnectError::Codec(CodecError::DecodeJson(_)) => RpcError {
+            details: json!({ "answer": UNREADABLE_ANSWER }),
+            ..crate::ui::rpc_error(RpcErrorCode::Internal, &error)
+        },
         error @ (ConnectError::Attempt(_)
         | ConnectError::Exhausted(_)
         | ConnectError::EntryNotReady
@@ -581,6 +585,14 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::Framing(_)
         | ConnectError::Value(_)) => crate::ui::rpc_error(RpcErrorCode::Internal, &error),
     }
+}
+
+const UNREADABLE_ANSWER: &str = "unreadable";
+
+/// A daemon answered in a form this ployz can't decode, as a newer release's
+/// answer can be: updating ployz here fixes it, not the network.
+pub(crate) fn unreadable_answer(error: &RpcError) -> bool {
+    error.details.get("answer").and_then(Value::as_str) == Some(UNREADABLE_ANSWER)
 }
 
 impl From<ConnectError> for RpcError {
