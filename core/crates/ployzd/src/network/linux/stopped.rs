@@ -11,8 +11,6 @@ use std::{
 use bollard::Docker;
 use futures_util::StreamExt as _;
 
-use crate::docker_image::is_not_found;
-
 use super::DOCKER_NETWORK_NAME;
 
 const FILE: &str = "bridge-stopped-members.json";
@@ -65,7 +63,7 @@ impl Stopped {
             .map(|id| async move {
                 match docker.start_container(&id, None).await {
                     Ok(()) => None,
-                    Err(error) if is_not_found(&error) => None,
+                    Err(error) if gone(&error) => None,
                     Err(error) => {
                         eprintln!(
                             "container {id} stayed stopped after rejoining the {DOCKER_NETWORK_NAME} network: {error}",
@@ -101,6 +99,16 @@ impl Stopped {
     }
 }
 
+/// Docker answers 404 for a container whose network it can't find too, and that
+/// container is still there to start once its network is back.
+fn gone(error: &bollard::errors::Error) -> bool {
+    matches!(
+        error,
+        bollard::errors::Error::DockerResponseServerError { status_code: 404, message }
+            if message.starts_with("No such container")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -114,24 +122,33 @@ mod tests {
 
     use super::*;
 
-    /// A Docker that starts `ok`, has never heard of `gone`, and refuses anything else.
+    /// A Docker that starts `ok`, has never heard of `gone`, can't find the network of
+    /// `netless`, and refuses anything else.
     async fn docker(started: Arc<Mutex<Vec<String>>>) -> Docker {
         async fn start(
             State(started): State<Arc<Mutex<Vec<String>>>>,
             UrlPath(path): UrlPath<String>,
-        ) -> StatusCode {
+        ) -> (StatusCode, axum::Json<serde_json::Value>) {
             let Some(id) = path
                 .strip_suffix("/start")
                 .and_then(|path| path.rsplit('/').next())
             else {
-                return StatusCode::BAD_REQUEST;
+                return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({})));
             };
             started.lock().unwrap().push(id.to_owned());
-            match id {
-                "ok" => StatusCode::NO_CONTENT,
-                "gone" => StatusCode::NOT_FOUND,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            }
+            let (status, message) = match id {
+                "ok" => (StatusCode::OK, String::new()),
+                "gone" => (StatusCode::NOT_FOUND, format!("No such container: {id}")),
+                "netless" => (
+                    StatusCode::NOT_FOUND,
+                    "failed to set up container networking: network 6d85cc7fe1c5 not found".into(),
+                ),
+                _ => (StatusCode::INTERNAL_SERVER_ERROR, "refused".into()),
+            };
+            (
+                status,
+                axum::Json(serde_json::json!({ "message": message })),
+            )
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -185,5 +202,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         drop(Stopped::load(dir.path()));
         assert!(!dir.path().join(FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn a_member_whose_network_docker_cannot_find_stays_written_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stopped = Stopped::load(dir.path());
+        stopped.note("netless").unwrap();
+        stopped.note("gone").unwrap();
+        stopped
+            .start(&docker(Arc::new(Mutex::new(Vec::new()))).await)
+            .await;
+        assert_eq!(
+            Stopped::load(dir.path()).ids,
+            BTreeSet::from(["netless".into()])
+        );
     }
 }
