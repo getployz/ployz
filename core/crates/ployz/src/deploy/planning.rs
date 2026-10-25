@@ -1787,6 +1787,7 @@ fn storage_eligibility_warnings(
         .filter(|machine| warned.insert(machine.machine.id))
         .map(|machine| DeployWarning::StorageObservationUnknown {
             machine_id: machine.machine.id,
+            machine_name: Some(machine.machine.name.clone()),
         })
         .collect()
 }

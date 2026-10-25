@@ -870,6 +870,10 @@ pub enum DeployWarning {
     StorageObservationUnknown {
         /// Machine whose storage capability could not be checked.
         machine_id: MachineId,
+        /// The Machine's name. Absent from previews written before 0.3.6.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        machine_name: Option<MachineName>,
     },
     /// An Ingress Hostname misses this Cluster. `message` is the CLI warning body.
     IngressHostname { message: String },
@@ -962,10 +966,16 @@ impl Display for DeployWarning {
                 Some(gap) => write!(f, "Server {} was observed Down by this Entry; deployment observations are incomplete.", gap.machine_name),
                 None => write!(f, "{kind} observation omitted {machine_id}"),
             },
-            Self::StorageObservationUnknown { machine_id } => write!(
-                f,
-                "storage could not be checked on Machine {machine_id}; Provisioned Volume placement ignored that Machine"
-            ),
+            Self::StorageObservationUnknown { machine_id, machine_name } => match machine_name {
+                Some(name) => write!(
+                    f,
+                    "Server {name} did not report its storage, so this deploy placed no Managed volume on it. Bring {name} back to place Managed volumes there again."
+                ),
+                None => write!(
+                    f,
+                    "storage could not be checked on Machine {machine_id}; Provisioned Volume placement ignored that Machine"
+                ),
+            },
             Self::IngressHostname { message } => f.write_str(message),
             Self::ObserverRelativeHostnameConflict => f.write_str(
                 "Some Server observations are incomplete, so hostname conflicts weren't fully checked. Resolve the observation warnings, then deploy again.",
@@ -1482,6 +1492,25 @@ mod tests {
             written.get("block_unmountable"),
             Some(&serde_json::json!(true))
         );
+    }
+
+    #[test]
+    fn unknown_storage_warning_without_a_name_reads_as_before() {
+        let machine_id = MachineId::random();
+        let before = serde_json::json!({
+            "type": "storage_observation_unknown",
+            "machine_id": machine_id,
+        });
+        let warning: DeployWarning = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(
+            warning,
+            DeployWarning::StorageObservationUnknown {
+                machine_id,
+                machine_name: None,
+            }
+        );
+        assert_eq!(serde_json::to_value(&warning).unwrap(), before);
+        assert!(warning.to_string().contains(&machine_id.to_string()));
     }
 
     #[test]
