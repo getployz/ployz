@@ -32,11 +32,16 @@ fn dockerd_args() -> Option<Vec<String>> {
     if daemons.next().is_some() {
         return None;
     }
-    let cmdline = fs::read(daemon.path().join("cmdline")).ok()?;
+    cmdline_args(&fs::read(daemon.path().join("cmdline")).ok()?)
+}
+
+/// `/proc/<pid>/cmdline` ends each argument with a NUL. An empty argument, as in
+/// `--config-file ""`, is a value and stays. A zombie's is empty: `None`.
+fn cmdline_args(cmdline: &[u8]) -> Option<Vec<String>> {
+    let cmdline = cmdline.strip_suffix(&[0])?;
     Some(
         cmdline
             .split(|byte| *byte == 0)
-            .filter(|arg| !arg.is_empty())
             .map(|arg| String::from_utf8_lossy(arg).into_owned())
             .collect(),
     )
@@ -210,6 +215,14 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_config_file_argument_loads_no_file() {
+        let args = cmdline_args(b"/usr/bin/dockerd\0--config-file\0\0").unwrap();
+        assert!(filters_ipv6(&args, |_| unreachable!(
+            "dockerd read no file"
+        )));
+    }
+
+    #[test]
     fn named_config_file_is_read() {
         let args = ["dockerd", "--config-file", "/srv/docker.json"]
             .map(str::to_owned)
@@ -224,6 +237,7 @@ mod tests {
 
     #[test]
     fn unknown_state_fails_closed() {
+        assert_eq!(cmdline_args(b""), None);
         assert!(!decide(
             &["dockerd", "--config-file=/srv/docker.json"],
             None
