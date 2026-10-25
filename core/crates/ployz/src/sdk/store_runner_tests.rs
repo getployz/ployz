@@ -1290,10 +1290,24 @@ async fn a_failed_services_left_copy_is_kept_on_every_try_without_a_retry() {
     }
 }
 
+/// A removed Service's left copy goes exactly as a plain Service removal takes
+/// one out: it may leave the Service empty, and its anonymous volumes stay, since
+/// nothing of the Service remains to own them. A replaced copy's go with it.
 #[tokio::test]
-async fn only_a_removed_services_left_copy_may_leave_it_empty() {
+async fn only_a_removed_services_left_copy_may_leave_it_empty_and_keeps_its_anonymous_volumes() {
     let (run, actor) = run();
-    for (outcome, allow_empty) in [(NodeStatus::Removed, true), (NodeStatus::Deployed, false)] {
+    for (outcome, allow_empty, anonymous_volumes) in [
+        (
+            NodeStatus::Removed,
+            true,
+            ployz_core::AnonymousVolumes::Keep,
+        ),
+        (
+            NodeStatus::Deployed,
+            false,
+            ployz_core::AnonymousVolumes::Remove,
+        ),
+    ] {
         let view = left_running(&run, &actor, &[("web", outcome, 'c')]);
         let retired = retire(&view, holding_c()).await;
         assert_eq!(retired.outcome, RetireOutcome::default(), "{outcome:?}");
@@ -1301,6 +1315,14 @@ async fn only_a_removed_services_left_copy_may_leave_it_empty() {
             matches!(
                 retired.wants.first(),
                 Some(ployz_core::ContainerWant::Out { allow_empty: sent, .. }) if *sent == allow_empty
+            ),
+            "{outcome:?}: {:?}",
+            retired.wants
+        );
+        assert!(
+            matches!(
+                retired.wants.last(),
+                Some(ployz_core::ContainerWant::Gone { anonymous_volumes: sent, .. }) if *sent == anonymous_volumes
             ),
             "{outcome:?}: {:?}",
             retired.wants

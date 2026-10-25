@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError,
-    FailedOperation, HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator,
-    QualifiedService, RpcError, RpcErrorCode, ServiceName,
+    ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
+    HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator, QualifiedService,
+    RemoveContainerPurpose, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
@@ -370,7 +370,9 @@ struct LeftCopy {
     service: ServiceName,
     container_id: ContainerId,
     machine: String,
-    service_removed: bool,
+    /// Retire when the Deploy removed its Service, so it goes exactly as a plain
+    /// Service removal takes a copy out; Rollout when a new copy replaced it.
+    purpose: RemoveContainerPurpose,
 }
 
 /// Each copy the Deploy reported left running, with its Service's outcome.
@@ -406,7 +408,11 @@ fn reported_copies(view: &DeploymentView) -> impl Iterator<Item = (LeftCopy, Nod
             service: name.clone(),
             container_id: *container_id,
             machine: machine.clone(),
-            service_removed: outcome == NodeStatus::Removed,
+            purpose: if outcome == NodeStatus::Removed {
+                RemoveContainerPurpose::Retire
+            } else {
+                RemoveContainerPurpose::Rollout
+            },
         };
         Some((copy, outcome))
     })
@@ -506,8 +512,8 @@ async fn retire_copy<C: MachineOperations>(
     let step = cleanup::retire(
         client,
         &Copy::observed(&observed),
-        copy.service_removed,
-        AnonymousVolumes::Remove,
+        matches!(copy.purpose, RemoveContainerPurpose::Retire),
+        copy.purpose.into(),
         &CancellationToken::new(),
     )
     .await;
