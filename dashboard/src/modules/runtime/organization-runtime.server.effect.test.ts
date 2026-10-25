@@ -18,7 +18,7 @@ import {
   settledByName,
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
-import { runtimeFrameDigest } from "#/modules/runtime/runtime-frame-record.server";
+import { runtimeSealingDigest } from "#/modules/runtime/runtime-frame-record.server";
 import { OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { type ConnectionAborts, connectionAborts } from "#/test/connection-aborts";
@@ -39,17 +39,17 @@ const sealing = (kind: "awaits_recovery" | "held") => asTestDouble<RuntimeWatchV
 });
 
 /** A runtime whose one Cluster streams what `frames` returns on each watch, writing each frame with `write`. */
-const streamingRuntime = (
-  frames: () => readonly RuntimeWatchView[],
-  write: FrameRecord["write"],
-  digest = settledByName.digest,
-) => makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections }), noPairingChanges, { digest, write })
+const streamingRecords = (frames: () => readonly RuntimeWatchView[], records: readonly FrameRecord[]) =>
+  makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections }), noPairingChanges, records)
   .pipe(Layer.provide(makePloyzLayer({
     connect: async () => asTestDouble<Client>()({
       close: async () => {},
       runtime: { watch: async function* () { yield* frames(); } },
     }),
   })));
+
+const streamingRuntime = (frames: () => readonly RuntimeWatchView[], write: FrameRecord["write"], digest = settledByName.digest) =>
+  streamingRecords(frames, [{ digest, write }]);
 
 it.effect("passes ordered candidates to one SDK connection and finalizes the session", () =>
   Effect.gen(function* () {
@@ -512,7 +512,7 @@ it.live("records a frame whose only change is a Server's Sealing Key state", () 
     let reported = sealing("awaits_recovery");
     const written = yield* Queue.unbounded<string>();
     const runtime = streamingRuntime(() => [reported], (_organizationId, _generation, frame) =>
-      Queue.offer(written, frame.machines[0]?.machine.runtime.sealing?.kind ?? "").pipe(Effect.as("settled" as const)), runtimeFrameDigest);
+      Queue.offer(written, frame.machines[0]?.machine.runtime.sealing?.kind ?? "").pipe(Effect.as("settled" as const)), runtimeSealingDigest);
     const nextWrite = Queue.take(written).pipe(Effect.timeout("1 second"));
     yield* Effect.gen(function* () {
       yield* firstRuntimeFrame("org-1");
@@ -566,22 +566,66 @@ it.effect("waits twice as long before each re-ask of a frame, up to the ceiling"
   }),
 );
 
-it.effect("keeps a wait per frame, so readers that see different names don't ask on every read", () =>
+it.effect("names every read whose names differ, and asks once while those reads report the same Sealing Key state", () =>
+  Effect.gen(function* () {
+    let reported = named("web-1");
+    const names = yield* Queue.unbounded<string>();
+    const asks = yield* Queue.unbounded<string>();
+    const runtime = streamingRecords(() => [reported], [
+      { digest: settledByName.digest, write: (_organizationId, _generation, frame) =>
+        Queue.offer(names, frame.machines[0]?.machine.name ?? "").pipe(Effect.as("settled" as const)) },
+      { digest: runtimeSealingDigest, write: () => Queue.offer(asks, "asked").pipe(Effect.as("asked" as const)) },
+    ]);
+    yield* Effect.gen(function* () {
+      for (const name of ["web-1", "web-2", "web-1", "web-2"]) {
+        reported = named(name);
+        yield* firstRuntimeFrame("org-1");
+        assert.strictEqual(yield* Queue.take(names), name);
+      }
+      assert.strictEqual(yield* Queue.size(asks), 1);
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("names a Server again when its name goes back to one it had", () =>
   Effect.gen(function* () {
     let reported = named("web-1");
     const writes = yield* Queue.unbounded<string>();
     const runtime = streamingRuntime(() => [reported], (_organizationId, _generation, frame) =>
-      Queue.offer(writes, frame.machines[0]?.machine.name ?? "").pipe(Effect.as("asked" as const)));
+      Queue.offer(writes, frame.machines[0]?.machine.name ?? "").pipe(Effect.as("settled" as const)));
+    yield* Effect.gen(function* () {
+      for (const name of ["web-1", "web-2", "web-1"]) {
+        reported = named(name);
+        yield* firstRuntimeFrame("org-1");
+        assert.strictEqual(yield* Queue.take(writes), name);
+      }
+      assert.strictEqual(yield* writesOfAnotherRead(writes), 0);
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("asks at once, with a fresh wait, for a frame that asked before once another frame settled in between", () =>
+  Effect.gen(function* () {
+    let reported = named("web-1");
+    const writes = yield* Queue.unbounded<string>();
+    const runtime = streamingRuntime(() => [reported], (_organizationId, _generation, frame) => {
+      const name = frame.machines[0]?.machine.name ?? "";
+      return Queue.offer(writes, name).pipe(Effect.as(name === "web-1" ? ("asked" as const) : ("settled" as const)));
+    });
     yield* Effect.gen(function* () {
       yield* firstRuntimeFrame("org-1");
       assert.strictEqual(yield* Queue.take(writes), "web-1");
       reported = named("web-2");
       yield* firstRuntimeFrame("org-1");
       assert.strictEqual(yield* Queue.take(writes), "web-2");
+      // The gap the first frame reported closed, so the same frame coming back is a new gap, asked at once.
       reported = named("web-1");
+      assert.strictEqual(yield* writesOfAnotherRead(writes), 1);
+      yield* Queue.take(writes);
+      yield* TestClock.adjust(FRAME_REASK_MS - 1);
       assert.strictEqual(yield* writesOfAnotherRead(writes), 0);
-      reported = named("web-2");
-      assert.strictEqual(yield* writesOfAnotherRead(writes), 0);
+      yield* TestClock.adjust(1);
+      assert.strictEqual(yield* writesOfAnotherRead(writes), 1);
     }).pipe(Effect.provide(runtime));
   }),
 );
@@ -593,7 +637,7 @@ it.effect("forgets what it settled once the Organization's pairing generation ch
     const runtime = makeOrganizationRuntimeLayer(
       () => Effect.succeed({ kind: "ready", generation, connections }),
       noPairingChanges,
-      { digest: settledByName.digest, write: (_organizationId, written) => Queue.offer(writes, written).pipe(Effect.as("settled" as const)) },
+      [{ digest: settledByName.digest, write: (_organizationId, written) => Queue.offer(writes, written).pipe(Effect.as("settled" as const)) }],
     ).pipe(Layer.provide(makePloyzLayer({
       connect: async () => asTestDouble<Client>()({
         close: async () => {},
@@ -634,7 +678,7 @@ it.effect("coalesces the frames a slow write outlasts, writing only the latest n
     const runtime = makeOrganizationRuntimeLayer(
       () => Effect.succeed({ kind: "ready", generation: "current", connections }),
       noPairingChanges,
-      {
+      [{
         digest: settledByName.digest,
         write: (_organizationId, _generation, frame) => Effect.gen(function* () {
           const name = frame.machines[0]?.machine.name ?? "";
@@ -644,7 +688,7 @@ it.effect("coalesces the frames a slow write outlasts, writing only the latest n
           yield* Queue.offer(landed, name);
           return "settled" as const;
         }),
-      },
+      }],
     ).pipe(Layer.provide(makePloyzLayer({
       connect: async () => asTestDouble<Client>()({
         close: async () => {},

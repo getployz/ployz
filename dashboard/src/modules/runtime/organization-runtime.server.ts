@@ -9,7 +9,7 @@ import {
 import {
   loadOrganizationConnections,
 } from "#/modules/machines/connections.server";
-import { runtimeFrameRecord } from "#/modules/runtime/runtime-frame-record.server";
+import { runtimeFrameRecords } from "#/modules/runtime/runtime-frame-record.server";
 import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -134,20 +134,19 @@ export type PairingChanges = {
 };
 
 /**
- * What Cloud keeps from a Runtime Watch frame its Organization's session read. `digest` covers every field of the
- * frame `write` reads; `generation` is the pairing the session read it under. `write` settles the frame, or asks a
- * job to finish what it can't observe, as an Inngest send does.
+ * One thing Cloud keeps from a Runtime Watch frame its Organization's session read. `digest` covers every field of
+ * the frame `write` reads, and nothing else, so frames alike in what this record keeps are one frame to it;
+ * `generation` is the pairing the session read it under. `write` settles the frame, or asks a job to finish what it
+ * can't observe, as an Inngest send does.
  */
 export type FrameRecord = {
   readonly digest: (frame: RuntimeWatchView) => string;
   readonly write: (organizationId: string, generation: string, frame: RuntimeWatchView) => Effect.Effect<"settled" | "asked", Error>;
 };
 
-/** How long an asked frame waits before it is written again, doubling each time it asks again, up to the ceiling. */
+/** How long an asked frame waits before it is written again, doubling each time the same frame asks again, up to the ceiling. */
 export const FRAME_REASK_MS = 60_000;
 export const FRAME_REASK_CEILING_MS = 3_600_000;
-/** Frames an Organization remembers; past that the oldest is forgotten and written again when read. */
-const FRAMES_REMEMBERED = 16;
 
 export const settledByName: FrameRecord = {
   digest: (frame) => JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name])),
@@ -155,33 +154,27 @@ export const settledByName: FrameRecord = {
 };
 
 /**
- * Hands each frame to `record.write` off the read that carried it: the read never waits on the write, so no deadline
+ * Hands each frame to every record off the read that carried it: the read never waits on the write, so no deadline
  * of the read's reaches the SQL. Each Organization writes in one fiber of the layer's scope at a time; frames read
- * during a write coalesce into the latest, written next. A frame whose digest settled is skipped for good, and one
- * whose digest asked is skipped for `FRAME_REASK_MS`, twice that the next time, up to `FRAME_REASK_CEILING_MS`, then
- * written again in case the job never finished. Each digest keeps its own wait, so readers whose frames differ don't
- * ask on every read. A new pairing generation forgets every digest. A failed write is logged and retried by the next
- * frame. When the layer closes, the write in flight finishes and a coalesced one is dropped, for the Cluster's next
- * frame to write.
+ * during a write coalesce into the latest, written next. Each record remembers the frame it wrote last. One whose
+ * write settled is skipped until a frame digests differently, since what a record keeps is the last frame's. One
+ * whose write asked is skipped for `FRAME_REASK_MS`, twice that each time the same frame asks again, up to
+ * `FRAME_REASK_CEILING_MS`, then written again in case the job never finished; a frame that digests differently is
+ * written at once with a fresh wait, since the gap it reports is a new one. A new pairing generation forgets the
+ * written frames. A failed write is logged and retried by the next frame, while a write that reports `asked`
+ * because its ask failed waits like any other ask. When the layer closes, the write in flight finishes and a
+ * coalesced one is dropped, for the Cluster's next frame to write.
  */
-const makeFrameRecorder = Effect.fnUntraced(function* (record: FrameRecord) {
+const makeFrameRecorder = Effect.fnUntraced(function* (records: readonly FrameRecord[]) {
   const run = yield* FiberSet.makeRuntime<never>();
   const clock = yield* Clock.Clock;
-  type Pending = { readonly digest: string; readonly generation: string; readonly frame: RuntimeWatchView };
-  type Written = { readonly until: number; readonly wait: number };
-  type Organization = { generation?: string; written: Map<string, Written>; next?: Pending; writing: boolean };
+  type Pending = { readonly digests: ReadonlyMap<FrameRecord, string>; readonly generation: string; readonly frame: RuntimeWatchView };
+  type Written = { readonly digest: string; readonly until: number; readonly wait: number };
+  type Organization = { generation?: string; written: Map<FrameRecord, Written>; next?: Pending; writing: boolean };
   const organizations = new Map<string, Organization>();
-  const current = (organization: Organization, digest: string) => {
-    const written = organization.written.get(digest);
-    return written !== undefined && clock.currentTimeMillisUnsafe() < written.until;
-  };
-  const remember = (organization: Organization, digest: string, written: Written) => {
-    organization.written.delete(digest);
-    organization.written.set(digest, written);
-    for (const oldest of organization.written.keys()) {
-      if (organization.written.size <= FRAMES_REMEMBERED) break;
-      organization.written.delete(oldest);
-    }
+  const current = (organization: Organization, record: FrameRecord, digest: string) => {
+    const written = organization.written.get(record);
+    return written !== undefined && written.digest === digest && clock.currentTimeMillisUnsafe() < written.until;
   };
   const writeAll = (organizationId: string, organization: Organization) => {
     // Clears `writing` in the same step that finds nothing left, so a frame read meanwhile starts a new write.
@@ -193,33 +186,36 @@ const makeFrameRecorder = Effect.fnUntraced(function* (record: FrameRecord) {
     });
     return Effect.gen(function* () {
       for (let next = yield* take; next !== undefined; next = yield* take) {
-        if (current(organization, next.digest)) continue;
-        const outcome = yield* record.write(organizationId, next.generation, next.frame).pipe(
-          Effect.catchCause((cause) => Effect.logWarning("Runtime frame not recorded", cause).pipe(Effect.as("failed" as const))),
-          // Uninterruptible like the pairing check, since interrupting pooled SQL can cancel a later statement.
-          Effect.uninterruptible,
-        );
-        // Advanced only once the write lands, so a failed write is retried by the next frame.
-        if (organization.generation !== next.generation) continue;
-        if (outcome === "settled") remember(organization, next.digest, { until: Infinity, wait: 0 });
-        if (outcome === "asked") {
-          const previous = organization.written.get(next.digest)?.wait ?? 0;
-          const wait = Math.min(Math.max(2 * previous, FRAME_REASK_MS), FRAME_REASK_CEILING_MS);
-          remember(organization, next.digest, { until: clock.currentTimeMillisUnsafe() + wait, wait });
+        for (const [record, digest] of next.digests) {
+          if (current(organization, record, digest)) continue;
+          const outcome = yield* record.write(organizationId, next.generation, next.frame).pipe(
+            Effect.catchCause((cause) => Effect.logWarning("Runtime frame not recorded", cause).pipe(Effect.as("failed" as const))),
+            // Uninterruptible like the pairing check, since interrupting pooled SQL can cancel a later statement.
+            Effect.uninterruptible,
+          );
+          // Advanced only once the write lands, so a failed write is retried by the next frame.
+          if (outcome === "failed" || organization.generation !== next.generation) continue;
+          if (outcome === "settled") {
+            organization.written.set(record, { digest, until: Infinity, wait: 0 });
+            continue;
+          }
+          const previous = organization.written.get(record);
+          const wait = previous?.digest === digest ? Math.min(Math.max(2 * previous.wait, FRAME_REASK_MS), FRAME_REASK_CEILING_MS) : FRAME_REASK_MS;
+          organization.written.set(record, { digest, until: clock.currentTimeMillisUnsafe() + wait, wait });
         }
       }
     });
   };
   return (organizationId: string, generation: string, frame: RuntimeWatchView) => {
-    const digest = record.digest(frame);
+    const digests = new Map(records.map((record) => [record, record.digest(frame)] as const));
     const organization: Organization = organizations.get(organizationId) ?? { written: new Map(), writing: false };
     organizations.set(organizationId, organization);
     if (organization.generation !== generation) {
       organization.generation = generation;
       organization.written.clear();
     }
-    if (!organization.writing && current(organization, digest)) return;
-    organization.next = { digest, generation, frame };
+    if (!organization.writing && [...digests].every(([record, digest]) => current(organization, record, digest))) return;
+    organization.next = { digests, generation, frame };
     if (organization.writing) return;
     organization.writing = true;
     run(writeAll(organizationId, organization));
@@ -244,13 +240,13 @@ function recordingFrames(session: PloyzSession, record: (frame: RuntimeWatchView
 export function makeOrganizationRuntimeLayer(
   loadConnections: LoadConnections,
   pairingChanges: PairingChanges,
-  frameRecord: FrameRecord = settledByName,
+  frameRecords: readonly FrameRecord[] = [settledByName],
 ) {
   return Layer.effect(
     OrganizationRuntime,
     Effect.gen(function* () {
       const ployz = yield* Ployz;
-      const record = yield* makeFrameRecorder(frameRecord);
+      const record = yield* makeFrameRecorder(frameRecords);
       type Session = {
         scope: Scope.Closeable;
         generation?: string;
@@ -390,7 +386,7 @@ export const OrganizationRuntimeLive = Layer.unwrap(
           Effect.provideService(Database, database),
         ),
       },
-      yield* runtimeFrameRecord,
+      yield* runtimeFrameRecords,
     );
   }),
 );

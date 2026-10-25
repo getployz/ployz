@@ -9,7 +9,7 @@ import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { firstRuntimeFrame, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
-import { runtimeFrameDigest, runtimeFrameRecord } from "#/modules/runtime/runtime-frame-record.server";
+import { runtimeFrameRecords, runtimeSealingDigest } from "#/modules/runtime/runtime-frame-record.server";
 import {
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,
@@ -45,8 +45,11 @@ const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 describe("runtimeFrameRecord", () => {
   let harness: PostgresTestHarness;
-  const write = (reported: RuntimeWatchView) => harness.runEffect(runtimeFrameRecord.pipe(
-    Effect.flatMap((record) => record.write(organizationId, clusterKey, reported)),
+  /** Writes `reported` through both records, as the recorder does for a frame it never saw, and reports the ask. */
+  const write = (reported: RuntimeWatchView) => harness.runEffect(runtimeFrameRecords.pipe(
+    Effect.flatMap(([names, sealing]) => names.write(organizationId, clusterKey, reported).pipe(
+      Effect.andThen(sealing.write(organizationId, clusterKey, reported)),
+    )),
     Effect.provideService(SecretEncryption, encryption),
     Effect.provideService(InngestClient, inngest),
   ));
@@ -112,7 +115,7 @@ describe("runtimeFrameRecord", () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the names it wrote and asks again later when the send fails", async () => {
+  it("keeps the names it wrote and reports asked when the send fails", async () => {
     send.mockRejectedValueOnce(new Error("Inngest unreachable"));
     expect(await write(frame("web-1", held))).toBe("asked");
     expect(await machineName()).toBe("web-1");
@@ -136,7 +139,8 @@ describe("runtimeFrameRecord", () => {
     expect(await machineName()).toBe("web-1");
   });
 
-  it("digests a change in a Server's Sealing Key state alone", () => {
-    expect(runtimeFrameDigest(frame("web-1", held))).not.toBe(runtimeFrameDigest(frame("web-1", awaitsRecovery)));
+  it("digests a Server's Sealing Key state apart from its name, so a rename alone asks nothing", () => {
+    expect(runtimeSealingDigest(frame("web-1", held))).not.toBe(runtimeSealingDigest(frame("web-1", awaitsRecovery)));
+    expect(runtimeSealingDigest(frame("web-1", held))).toBe(runtimeSealingDigest(frame("web-2", held)));
   });
 });

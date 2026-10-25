@@ -56,7 +56,7 @@ describe("requestSealingKeyEnsure", () => {
      values ($1, $2, $3, $3)`,
     [organizationId, JSON.stringify(encryption.encrypt(pairingSecret)), "1".repeat(32)],
   );
-  const recordKey = () => harness.runEffect(recordSealingPublicKey(organizationId, clusterKey, publicKey).pipe(
+  const recordKey = (generation = clusterKey) => harness.runEffect(recordSealingPublicKey(organizationId, generation, publicKey).pipe(
     Effect.provideService(InngestClient, sendsNowhere()),
     Effect.provide(testConfigLayer({ DATABASE_URL: harness.databaseUrl })),
   ));
@@ -95,6 +95,13 @@ describe("requestSealingKeyEnsure", () => {
   it("asks to share the key when one Server holds it and another still lacks it", async () => {
     await recordKey();
     await ensure({ m1: "held", m2: "needs_access" });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(ensureRequested);
+  });
+
+  it("asks to record the key when Cloud holds one only for an earlier pairing of the same Servers", async () => {
+    await recordKey(hashEnrollmentToken("an-earlier-pairing-secret"));
+    await ensure({ m1: "held", m2: "held" });
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(ensureRequested);
   });
