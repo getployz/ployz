@@ -471,6 +471,10 @@ pub(crate) fn approve(
         if *pruning != Pruning::Off {
             bound.insert("prunes".to_owned(), json!(true));
         }
+        // An approval of a prune every Server answered for doesn't cover one they didn't.
+        if pruning.unseen() {
+            bound.insert("unseen".to_owned(), json!(true));
+        }
     }
     let message = gate.message(diff, "deploy", || {
         if effects.is_empty() {
@@ -751,6 +755,7 @@ pub(crate) fn approve_retry(
         "effects": effects,
         "accept_volume_loss": accepted,
         "prunes": *pruning != Pruning::Off,
+        "unseen": pruning.unseen(),
     });
     // The retry ships its source's frozen state: none of the staged changes, and it
     // destroys only what its source's review or the caller's acceptance covered.

@@ -5033,6 +5033,44 @@ fn a_deploy_token_cant_redeploy_a_prune_that_removes_what_runs_now() {
     assert!(redeploy(2, running(&["web", "api"])).unwrap().prune);
 }
 
+#[test]
+fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let agent = |approval, running| Trusted {
+        approval,
+        asks: Asks::EveryDeploy,
+        running,
+        ..Trusted::default()
+    };
+    let seen = deploy_trusted(
+        &store,
+        &who,
+        2,
+        &agent(Approval::Required, running(&["web", "api"])),
+    )
+    .unwrap_err();
+    let unseen = deploy_trusted(&store, &who, 2, &agent(approved(&seen), None)).unwrap_err();
+    assert_eq!(unseen.code.as_str(), "approval_required", "{unseen:?}");
+    assert_eq!(unseen.details["prunes"], true);
+    let redeploy = |approval, running| {
+        store.write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &agent(approval, running),
+        )
+    };
+    let seen = redeploy(Approval::Required, running(&["web", "api"])).unwrap_err();
+    let unseen = redeploy(approved(&seen), None).unwrap_err();
+    assert_eq!(unseen.code.as_str(), "approval_required", "{unseen:?}");
+}
+
 fn apply_both(store: &ConfigStore, who: &Actor, n: u8) {
     admit(store, who, n, &[], None).unwrap();
     let a = runner("runner-a");
