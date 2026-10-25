@@ -203,7 +203,7 @@ impl Projection {
                         .unwrap_or_default(),
                     false,
                 ),
-                None if matches!(source, IpAddr::V4(address) if local_subnet.contains(&address)) => {
+                None if may_be_projected(local_subnet, source) => {
                     return ResponsePlan::UnknownCaller;
                 }
                 None => (Vec::new(), false),
@@ -252,6 +252,16 @@ impl Projection {
         };
         self.caller_namespaces.get(&address)
     }
+}
+
+/// Whether `source` is a container address on this Machine's bridge, which a later
+/// projection may name. The gateway is the host itself and never is.
+fn may_be_projected(local_subnet: Ipv4Net, source: IpAddr) -> bool {
+    let IpAddr::V4(address) = source else {
+        return false;
+    };
+    let gateway = Ipv4Addr::from(u32::from(local_subnet.network()) + 1);
+    local_subnet.contains(&address) && address != gateway
 }
 
 fn unique_caller_namespaces(containers: &[ContainerObservation]) -> HashMap<Ipv4Addr, Namespace> {

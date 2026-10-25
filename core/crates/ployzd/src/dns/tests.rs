@@ -365,6 +365,13 @@ fn caller_service_from_an_unprojected_bridge_address_waits_for_its_caller() {
         ),
         ResponsePlan::UnknownCaller
     );
+    // The gateway is the host, which no projection names.
+    assert_nxdomain(plan_from(
+        &projection,
+        "api.internal.",
+        RecordType::A,
+        Ipv4Addr::new(10, 210, 1, 1),
+    ));
     // Off the bridge no projection will ever name the caller.
     assert_nxdomain(plan_from(
         &projection,
