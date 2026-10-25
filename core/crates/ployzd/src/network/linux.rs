@@ -1003,7 +1003,7 @@ fn bridge_ipv6_allowed() -> bool {
     }
     if !docker_ipv6_firewall() {
         eprintln!(
-            "the {DOCKER_NETWORK_NAME} network stays IPv4-only, so apps see IPv6 visitors as its gateway: \
+            "the {DOCKER_NETWORK_NAME} network stays IPv4-only, so Services have no IPv6 egress and apps see IPv6 visitors as its gateway: \
              Docker's ip6tables is off or uses nftables, so Ployz can't fence container IPv6 out of the mesh."
         );
         return false;
@@ -1032,7 +1032,7 @@ fn bridge_ipv6_allowed() -> bool {
         .collect::<Vec<_>>()
         .join(" ");
     eprintln!(
-        "the {DOCKER_NETWORK_NAME} network stays IPv4-only, so apps see IPv6 visitors as its gateway: \
+        "the {DOCKER_NETWORK_NAME} network stays IPv4-only, so Services have no IPv6 egress and apps see IPv6 visitors as its gateway: \
          {interfaces} learn IPv6 from router advertisements, which IPv6 forwarding would stop. \
          Run `sysctl -w {settings}`, persist it in /etc/sysctl.d, then `systemctl restart ployz`.",
         interfaces = exposed.join(", "),
