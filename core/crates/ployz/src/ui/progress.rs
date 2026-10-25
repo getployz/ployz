@@ -1,13 +1,13 @@
 //! A single stderr owner for live Deployment evidence and its settled summary.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ployz_core::{DeployWarning, MachineId, Namespace, QualifiedService, ServiceName};
+use ployz_core::{ContainerId, DeployWarning, MachineId, Namespace, QualifiedService, ServiceName};
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
@@ -695,10 +695,24 @@ fn paint(text: &str, tone: Tone, color: bool) -> String {
 
 fn word(row: &Row, frame: &Frame) -> String {
     match &row.subject {
-        Subject::Service(graph) => match left_running(row, frame) {
-            0 => graph.word(&row.state),
-            left => format!("{}, {left} left running", graph.word(&row.state)),
-        },
+        Subject::Service(graph) => {
+            let left = left_running(row, frame);
+            if left.is_empty() {
+                graph.word(&row.state)
+            } else if graph.work == Work::Remove {
+                // A removal counts the copies it could not reach among the Service's,
+                // and says why each stays, once per reason.
+                let why: BTreeSet<&str> = left.values().map(|reason| reason.as_str()).collect();
+                format!(
+                    "removed {}/{}; {}",
+                    graph.ready,
+                    graph.total + left.len(),
+                    why.into_iter().collect::<Vec<_>>().join("; ")
+                )
+            } else {
+                format!("{}, {} left running", graph.word(&row.state), left.len())
+            }
+        }
         Subject::ServiceOnServer { .. }
         | Subject::Unlocated(_)
         | Subject::Operation { .. }
@@ -706,13 +720,14 @@ fn word(row: &Row, frame: &Frame) -> String {
     }
 }
 
-/// Copies a switched Service's cleanup left running: its Deploy did not finish.
-fn left_running(row: &Row, frame: &Frame) -> usize {
+/// Copies a completed Service's cleanup left running, with why: a switch whose
+/// Deploy did not finish, or a removal that could not reach a Server.
+fn left_running<'a>(row: &Row, frame: &'a Frame) -> BTreeMap<&'a ContainerId, &'a String> {
     let Subject::Service(graph) = &row.subject else {
-        return 0;
+        return BTreeMap::new();
     };
     if row.state != State::Completed {
-        return 0;
+        return BTreeMap::new();
     }
     frame
         .notices
@@ -721,8 +736,9 @@ fn left_running(row: &Row, frame: &Frame) -> usize {
             DeployWarning::LeftRunning {
                 service,
                 container_id,
+                reason,
                 ..
-            } if *service == graph.service => Some(container_id),
+            } if *service == graph.service => Some((container_id, reason)),
             DeployWarning::LeftRunning { .. }
             | DeployWarning::StorageHeadroom { .. }
             | DeployWarning::UnbudgetedDiskUsage
@@ -736,12 +752,11 @@ fn left_running(row: &Row, frame: &Frame) -> usize {
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::NotInStore { .. } => None,
         })
-        .collect::<BTreeSet<_>>()
-        .len()
+        .collect()
 }
 
 fn tone(row: &Row, frame: &Frame) -> Tone {
-    if left_running(row, frame) > 0 {
+    if !left_running(row, frame).is_empty() {
         Tone::Change
     } else {
         row.state.tone()
@@ -757,7 +772,7 @@ fn row_text(row: &Row, frame: &Frame, tick: usize, width: usize) -> String {
         | Subject::Node { .. } => None,
     }
     .unwrap_or_else(|| {
-        if left_running(row, frame) > 0 {
+        if !left_running(row, frame).is_empty() {
             "!"
         } else {
             mark(&row.state, tick)
@@ -1296,7 +1311,11 @@ fn finish(
             counts.push(format!("{count} {word}"));
         }
         if word == "deployed" {
-            let left: usize = frame.rows.iter().map(|row| left_running(row, frame)).sum();
+            let left: usize = frame
+                .rows
+                .iter()
+                .map(|row| left_running(row, frame).len())
+                .sum();
             match left {
                 0 => {}
                 1 => counts.push("1 copy left running".into()),
