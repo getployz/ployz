@@ -6,9 +6,9 @@ use ployz_core::ServiceName;
 use ployz_core::config::{ChangeKind, ReviewLifecycleKind, ServiceSettingChange};
 use ployz_store::{
     Branched, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId, EnvironmentName,
-    EnvironmentRef, HintSource, KeepBranch, NodeName, RowRef, ServicesQuery, SetupCommand,
-    SourceKind, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, Take, Taken,
-    UndoSync, Undone,
+    EnvironmentRef, HintSource, KeepBranch, NodeName, NotSetVariable, ProjectName, RowRef,
+    ServicesQuery, SetupCommand, SourceKind, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow,
+    SyncView, Synced, Take, Taken, UndoSync, Undone,
 };
 
 use super::super::config::expected;
@@ -560,6 +560,13 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
                 crate::handlers::joined(&result.staged)
             ));
         }
+        if let Some(note) = not_set_note(
+            &branch.environment.project,
+            &branch.environment.name,
+            &result.not_set,
+        ) {
+            crate::ui::stream(crate::ui::escaped(&note));
+        }
         for live in &branch.live {
             match &live.owner {
                 Some(owner) => {
@@ -575,6 +582,38 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
             crate::ui::hint(&crate::ui::Hint::Next(next));
         }
     })
+}
+
+/// How many secrets a Branch holds without a value, which they are, and how to set
+/// one: a copy never carries a secret's value.
+fn not_set_note(
+    project: &ProjectName,
+    branch: &EnvironmentName,
+    not_set: &[NotSetVariable],
+) -> Option<String> {
+    let first = not_set.first()?;
+    let path = |variable: &NotSetVariable| format!("{}.env.{}", variable.service, variable.key);
+    let paths: Vec<String> = not_set.iter().map(path).collect();
+    let (secrets, them, each) = match not_set.len() {
+        1 => ("secret", "it", "it"),
+        _ => ("secrets", "them", "each"),
+    };
+    let set = shell_words::join([
+        "ployz",
+        "set",
+        &path(first),
+        "--secret",
+        "--project",
+        project.as_str(),
+        "--env",
+        branch.as_str(),
+    ]);
+    Some(format!(
+        "{} {secrets} not set in {branch}: {}. Deploys leave {them} out until you set {each}: \
+         printf %s \"$VALUE\" | {set}",
+        not_set.len(),
+        paths.join(", "),
+    ))
 }
 
 /// `--setup SERVICE=COMMAND` values.
@@ -595,4 +634,53 @@ pub(super) fn setups(values: &[String]) -> Result<Vec<SetupCommand>, Error> {
                 })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::ServiceName;
+    use ployz_store::{EnvironmentName, NotSetVariable, ProjectName};
+
+    use super::not_set_note;
+
+    fn secret(service: &str, key: &str) -> NotSetVariable {
+        NotSetVariable {
+            service: ServiceName::parse(service).unwrap(),
+            key: key.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_branch_with_every_secret_set_says_nothing() {
+        let shop = ProjectName::parse("shop").unwrap();
+        let feat = EnvironmentName::parse("feat").unwrap();
+        assert_eq!(not_set_note(&shop, &feat, &[]), None);
+    }
+
+    #[test]
+    fn a_branch_counts_its_secrets_without_a_value_and_says_how_to_set_one() {
+        let shop = ProjectName::parse("shop").unwrap();
+        let feat = EnvironmentName::parse("feat").unwrap();
+        assert_eq!(
+            not_set_note(&shop, &feat, &[secret("web", "TOKEN")]).as_deref(),
+            Some(
+                "1 secret not set in feat: web.env.TOKEN. Deploys leave it out until you \
+                 set it: printf %s \"$VALUE\" | ployz set web.env.TOKEN --secret --project shop \
+                 --env feat"
+            )
+        );
+        assert_eq!(
+            not_set_note(
+                &shop,
+                &feat,
+                &[secret("web", "TOKEN"), secret("worker", "API_KEY")]
+            )
+            .as_deref(),
+            Some(
+                "2 secrets not set in feat: web.env.TOKEN, worker.env.API_KEY. Deploys leave \
+                 them out until you set each: printf %s \"$VALUE\" | ployz set web.env.TOKEN \
+                 --secret --project shop --env feat"
+            )
+        );
+    }
 }

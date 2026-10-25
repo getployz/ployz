@@ -369,6 +369,52 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
 }
 
 #[test]
+fn a_branch_names_the_secrets_it_copied_without_a_value() {
+    let (store, who) = shop();
+    let made = store
+        .write(&who, &branch("fix-web", "production", &["web"]))
+        .unwrap();
+    let not_set = |branched: &Branched| -> Vec<String> {
+        branched
+            .not_set
+            .iter()
+            .map(|variable| format!("{}.env.{}", variable.service, variable.key))
+            .collect()
+    };
+    assert_eq!(not_set(&made), ["web.env.TOKEN"]);
+
+    let only_db = store
+        .write(&who, &branch("fix-db", "production", &["db"]))
+        .unwrap();
+    assert!(only_db.not_set.is_empty());
+
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[(
+            "web.env.TOKEN",
+            backend::sealed_secret(
+                &made.branch.environment.id.to_string(),
+                &id_of(&store, &who, "fix-web", "web"),
+                "TOKEN",
+                2,
+            ),
+        )],
+    );
+    let kept = store
+        .write(
+            &who,
+            &KeepBranch {
+                environment: at("fix-web"),
+                kept: true,
+            },
+        )
+        .unwrap();
+    assert!(kept.not_set.is_empty());
+}
+
+#[test]
 fn a_branch_is_refused_before_anything_is_written() {
     let (store, who) = shop();
     store

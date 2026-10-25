@@ -223,6 +223,7 @@ pub(crate) fn create_branch(
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
+        not_set: not_set(&branch.working)?,
     })
 }
 
@@ -320,6 +321,7 @@ pub(crate) fn copy_node(
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
+        not_set: not_set(&branch.working)?,
     })
 }
 
@@ -365,6 +367,7 @@ pub(crate) fn keep_branch(
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged: Vec::new(),
+        not_set: not_set(&branch.working)?,
     })
 }
 

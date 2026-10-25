@@ -143,7 +143,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         <p className="text-sm break-words text-muted-foreground">From {parent.name}{fix ? ", with the change that failed" : null}</p>
       </CanvasInspectorHeader>
       <div className="min-h-0 flex-1 overflow-y-auto p-4"><FieldGroup>
-        <FieldDescription>A copy of {parent.name} to change things in without touching it.</FieldDescription>
+        <FieldDescription>A copy of {parent.name} to change things in without touching it. Its secrets start Not set: set them in its Variables.</FieldDescription>
         <NameSection name={branchName} onName={setName} error={nameError} addresses={[]} />
         <ServicesSection picking={picking} nameOf={nameOf} target={branchName || "this branch"} who="This branch" />
         <SetupSection plan={plan} nameOf={nameOf} setupCommands={setupCommands} onSetupCommands={setSetupCommands} />

@@ -89,7 +89,7 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
         {plan.enabled && <>
           <FieldSet>
             <FieldLegend>Start from</FieldLegend>
-            <FieldDescription>Each pull request starts from this environment's services and variables.</FieldDescription>
+            <FieldDescription>Each pull request starts from this environment's services and variables. Secrets start Not set in each preview.</FieldDescription>
             <Field data-invalid={!plan.start_from || undefined}>
               <Select value={plan.start_from} onValueChange={(next) => {
                 if (!next || next === plan.start_from) return;

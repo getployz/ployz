@@ -156,10 +156,13 @@ can't reference it, and it replaces a variable of yours with that name.
 - **Builds see your variables, sealed ones included.** A Dockerfile can keep what it reads in
   the image, so don't pass long-lived secrets to it as `ARG`s. See
   [Use variables at build time](../builds/railpack-and-dockerfiles.md#use-variables-at-build-time).
-- **Branches copy variables.** A separate copy of a service in a
-  [branch](../environments/environments.md) starts with its parent's variables, sealed values
-  included, and changing them leaves the parent alone. A reference to a service the branch
-  shares with its parent reads the parent's values.
+- **Branches copy variables, not secrets.** A separate copy of a service in a
+  [branch](../environments/environments.md) or a
+  [preview](../environments/preview-environments.md) starts with its parent's variables, and
+  changing them leaves the parent alone. By design, a branch never gets its parent's secret
+  values: its sealed variables start **Not set**, and deploys leave each out until you choose
+  **Set value** on it in the branch. A reference to a service the branch shares with its parent reads the
+  parent's values.
 - **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
   `invalid_argument` and the limit. Split it into smaller changes.
 - **The CLI reads at most 32 MiB of an env file or a `--secret` on stdin.** A wrong path such

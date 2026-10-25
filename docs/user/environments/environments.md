@@ -28,13 +28,19 @@ database, so staging gets its own copy of both and its own data. Use your own se
 3. Optional: if your app has a command that fills a database with test data, click **Add a
    command** under **Setup command**, enter it, like `pnpm db:seed`, and pick `web` to run it in.
 4. Turn on **Keep it after syncing into production**, so staging stays after you sync from it.
-   Click **Create and deploy**, or **Just create** to deploy it later.
+   Click **Create and deploy**, or **Just create** to set its secrets before it first deploys.
 
 ![The New branch panel set to Everything: each service is Separate](../images/new-branch-panel.png)
 
 Ployz never copies data, so staging's database starts empty. A setup command runs before `web`
-first starts, to fill it, and again on each deploy until `web` first deploys successfully. To give every new branch of production the same commands, add
-them under **Branch setup** in production's **Settings → Environment**.
+first starts, to fill the database, and again on each deploy until `web` first deploys
+successfully. To give every new branch of production the same commands, add them under **Branch
+setup** in production's **Settings → Environment**.
+
+Nor does Ployz copy secrets: by design, a branch never gets its parent's secret values. Each
+sealed variable in staging starts **Not set**, and deploys leave it out until you set it. Each
+service's card says how many, like `1 not set`: open its **Variables** and choose **Set value**
+on each. If staging already deployed, deploy it again.
 
 From the CLI, add the command when you branch, with `ployz env branch staging --copy web --copy
 postgres --setup 'web=pnpm db:seed'`. In the branch, `ployz get setup.web` shows it, `ployz set
@@ -142,7 +148,7 @@ Click a service in the **New branch** panel to change what the branch gets:
 
 | Row says | What the branch gets |
 | --- | --- |
-| **Separate** | Its own copy of the service, with the parent's settings and variables. |
+| **Separate** | Its own copy of the service, with the parent's settings and variables. Its secrets start **Not set**. |
 | **New, empty** | Its own volume, with no data. |
 | **production's** | No copy: the branch uses production's running service. |
 | **Not included** | Nothing. Anything that uses it breaks. |
