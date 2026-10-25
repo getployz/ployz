@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use ployz_core::{
     BUILD_SEALED_CAPABILITY, ContainerWant, ENV_SEALED_CAPABILITY, EnvValue,
     MANAGEMENT_SCOPE_CAPABILITY, MachineObservation, MachineTarget, RpcError, RpcErrorCode,
-    RunTarget, machine_matches_target,
+    RunTarget, config::BuildMethod, machine_matches_target,
 };
 
 use crate::{cluster::Client, connect::ConnectError};
@@ -67,15 +67,16 @@ pub(crate) async fn admit(
     )))
 }
 
-/// The Machines a Build may run on. One that reads a Sealed value runs only
-/// where the daemon opens them; without one, every visible Machine stays.
+/// The Machines a Build may run on. One that reads a Sealed value, built by
+/// `reads`, runs only where the daemon opens them; without one, every visible
+/// Machine stays.
 pub(crate) fn builders(
     visible: &[MachineObservation],
-    sealed: bool,
+    reads: Option<BuildMethod>,
 ) -> Result<Cow<'_, [MachineObservation]>, ConnectError> {
-    if !sealed {
+    let Some(method) = reads else {
         return Ok(Cow::Borrowed(visible));
-    }
+    };
     let (able, behind): (Vec<_>, Vec<_>) = visible.iter().cloned().partition(|observation| {
         observation
             .machine
@@ -93,10 +94,17 @@ pub(crate) fn builders(
             .iter()
             .map(|observation| observation.machine.name.to_string())
             .collect();
-        format!(
-            "{} cannot open sealed values; upgrade every Server first.",
-            names.join(", ")
-        )
+        let names = names.join(", ");
+        match method {
+            BuildMethod::Dockerfile => {
+                format!("{names} cannot open sealed values; upgrade every Server first.")
+            }
+            // A Dockerfile reading none builds anywhere; Railpack can't read none.
+            BuildMethod::Railpack => format!(
+                "{names} cannot open sealed values. Railpack gives the build every variable, \
+                 sealed ones included, so upgrade a Server to build there."
+            ),
+        }
     };
     let mut error = unsupported(reason.clone());
     error.details = serde_json::json!({

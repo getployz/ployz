@@ -48,6 +48,13 @@ impl SealedRecord {
         Ok(Some(Self { identity, values }))
     }
 
+    /// Only the values `read` keeps, or `None` when it keeps none.
+    #[must_use]
+    pub fn only(mut self, read: impl Fn(&str) -> bool) -> Option<Self> {
+        self.values.retain(|name, _| read(name));
+        (!self.values.is_empty()).then_some(self)
+    }
+
     #[must_use]
     pub const fn identity(&self) -> &SealedIdentity {
         &self.identity

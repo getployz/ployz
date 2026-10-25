@@ -1138,7 +1138,10 @@ async fn a_sealed_value_opens_into_a_private_file_and_never_into_the_output() {
 async fn a_sealed_value_read_only_by_mount_builds_with_no_arg_override() {
     let cluster = crate::sealed_env::test_support::Cluster::new();
     let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
-    let capture = fixture.capture_from(Some(&cluster), "FROM scratch\nCOPY payload /payload\n");
+    let capture = fixture.capture_from(
+        Some(&cluster),
+        "FROM scratch\nRUN --mount=type=secret,id=NPM_TOKEN true\nCOPY payload /payload\n",
+    );
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
         Some(&fixture.address.replace("http://", "tcp://")),
