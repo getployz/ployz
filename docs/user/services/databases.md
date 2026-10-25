@@ -34,7 +34,10 @@ variables, its environment's History or a sync's changes can read it. That's wha
 sealed values Not set, but they copy plain ones, so a copy of the database sets up its new,
 empty volume with the password its connection variables already hold. To keep a database's
 password sealed, seal it from its menu in **Variables**, and set it in each new branch yourself.
-Branches made before you seal it keep their plain copy.
+The seal also follows into branches made before it, and those that use the database from their
+parent: unless a branch changed the password itself, its password turns **Not set** once you
+deploy the seal. A copy of the database that hasn't set up its volume yet can't start until you
+set the password in the branch's **Variables**.
 
 | | Version | Service | URL variable | Port | User |
 | --- | --- | --- | --- | --- | --- |
