@@ -107,9 +107,14 @@ fn filters_ipv6(pid: &str, args: &[String], files: &impl Files) -> bool {
 
 /// dockerd writes its pidfile once it has loaded its config, so a config that
 /// changed later is one the running dockerd never read (#3463). A pidfile that
-/// isn't this dockerd's can't say when it started.
+/// isn't this dockerd's can't say when it started. A relative one is in
+/// dockerd's working directory.
 fn started_since(pid: &str, pidfile: Option<&str>, changed: i128, files: &impl Files) -> bool {
-    let pidfile = Path::new(pidfile.unwrap_or(DEFAULT_PIDFILE));
+    let pidfile = Path::new("/proc")
+        .join(pid)
+        .join("cwd")
+        .join(pidfile.unwrap_or(DEFAULT_PIDFILE));
+    let pidfile = pidfile.as_path();
     files
         .read(pidfile)
         .is_ok_and(|contents| contents.trim() == pid)
@@ -150,12 +155,25 @@ impl Settings {
 
 /// The firewall flags, the pidfile and `--config-file`, or `None` for a value
 /// dockerd would reject. Booleans take only `--flag` or `--flag=value`; strings
-/// also take the next argument.
+/// also take the next argument. `-p` also takes `-pVALUE`, after `-D`.
 fn flag_settings(args: &[String]) -> Option<(Settings, Option<&str>)> {
     let mut settings = Settings::default();
     let mut config_file = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
+        let shorthand = arg
+            .strip_prefix('-')
+            .filter(|arg| !arg.starts_with('-'))
+            .map(|arg| arg.trim_start_matches('D'));
+        if let Some(value) = shorthand.and_then(|arg| arg.strip_prefix('p')) {
+            let value = value.strip_prefix('=').unwrap_or(value);
+            let value = match value {
+                "" => args.next()?.as_str(),
+                value => value,
+            };
+            settings.pidfile = Some(value.to_owned());
+            continue;
+        }
         let (name, value) = match arg.split_once('=') {
             Some((name, value)) => (name, Some(value)),
             None => (arg.as_str(), None),
@@ -167,7 +185,7 @@ fn flag_settings(args: &[String]) -> Option<(Settings, Option<&str>)> {
                 let value = value.or_else(|| args.next().map(String::as_str))?;
                 settings.firewall_backend = Some(value.to_owned());
             }
-            "--pidfile" | "-p" => {
+            "--pidfile" => {
                 let value = value.or_else(|| args.next().map(String::as_str))?;
                 settings.pidfile = Some(value.to_owned());
             }
@@ -196,7 +214,7 @@ fn file_settings(contents: &str) -> Option<Settings> {
         Some(value) => value.as_bool().map(Some),
     };
     let string = |key: &str| match config.get(key) {
-        None => Some(None),
+        None | Some(serde_json::Value::Null) => Some(None),
         Some(value) => value.as_str().map(|value| Some(value.to_owned())),
     };
     Some(Settings {
@@ -386,6 +404,12 @@ mod tests {
         );
         assert!(moved.decide(&["dockerd", "--pidfile", "/run/dockerd.pid"]));
         assert!(moved.decide(&["dockerd", "-p=/run/dockerd.pid"]));
+        assert!(moved.decide(&["dockerd", "-p/run/dockerd.pid"]));
+        assert!(moved.decide(&["dockerd", "-Dp", "/run/dockerd.pid"]));
+        let relative = config(Fake::with_pidfile()).file("/proc/4242/cwd/docker.pid", PID, 100);
+        assert!(relative.decide(&["dockerd", "--pidfile=docker.pid"]));
+        assert!(config(Fake::with_pidfile()).decide(&["dockerd", "-H", "fd://"]));
+        assert!(decide(&["dockerd"], Some(r#"{"pidfile": null}"#)));
         let moved = moved.file(
             DEFAULT_CONFIG_FILE,
             r#"{"pidfile": "/run/dockerd.pid"}"#,
