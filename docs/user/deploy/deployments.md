@@ -48,8 +48,10 @@ running in the environment that the environment doesn't hold: the ones you remov
 `ployz service rm`, and any other, such as one started by another tool. A deploy a Git push starts
 does the same when it ships every service. `ployz deploy` and `ployz deployment show` name each
 service it removes, such as `db: removed 1/1 (not in this environment)`, and `ployz deploy --plan`
-warns that it will. Their volumes and data stay. A deploy that can't check every server
-skips pruning, still deploys, and says `Prune skipped: not every Server answered`.
+warns that it will. Their volumes and data stay. A deploy that can't check a server that should
+answer skips pruning, still deploys, and says `Prune skipped: not every Server answered`. A server
+Ployz already knows is down doesn't stop the prune: the replicas on the other servers are removed,
+as below.
 
 Removing a service while a server that may run one of its replicas is down, or can't be checked,
 still removes the replicas on the servers that answer. The service reads removed and names that
@@ -61,8 +63,8 @@ Either way the service is removed from the environment. A replica on web-2 may s
 that server is back, until your next deploy of the whole environment removes it.
 
 To keep those other services, pick **Deploy, keep other services** in the bottom bar's **⋮** menu,
-or run `ployz deploy --no-prune` (`ployz up --no-prune` too). It still removes the services you removed, and names each one it
-keeps, such as `postgres: running, not in this environment; kept.`
+or run `ployz deploy --no-prune` (`ployz up --no-prune` too). It still removes the services you
+removed, and names each one it keeps, such as `postgres: running, not in this environment; kept.`
 
 Deploying only some services never removes another: after `ployz service rm big`,
 `ployz deploy big` fails with `Service big is staged for removal; a full Deploy removes it`, and
