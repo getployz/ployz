@@ -147,6 +147,15 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0027_drop_sealed_variables",
         Step::Sql(include_str!("migrations/0027_drop_sealed_variables.sql")),
     ),
+    (
+        "0028_unkept_arrival_was",
+        Step::Rust(|tx, _| {
+            for row in tx.query("SELECT id FROM config_environment", &[])? {
+                crate::branch::forget_unclaimed(tx, row.text(0)?)?;
+            }
+            Ok(None)
+        }),
+    ),
 ];
 
 enum Step {

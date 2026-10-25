@@ -262,3 +262,69 @@ pub fn finish(
         .unwrap();
     claimed.input
 }
+
+/// The tables of the database at `url` with a row whose text holds `marker`.
+pub fn tables_holding(url: &str, marker: &str) -> Vec<String> {
+    let mut tables = Vec::new();
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            let connection = rusqlite::Connection::open(path).unwrap();
+            let names: Vec<String> = connection
+                .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            for name in names {
+                let mut statement = connection
+                    .prepare(&format!("SELECT * FROM \"{name}\""))
+                    .unwrap();
+                let width = statement.column_count();
+                let mut rows = statement.query([]).unwrap();
+                while let Some(row) = rows.next().unwrap() {
+                    let held = (0..width).any(|i| match row.get_ref(i).unwrap() {
+                        rusqlite::types::ValueRef::Text(text)
+                        | rusqlite::types::ValueRef::Blob(text) => {
+                            String::from_utf8_lossy(text).contains(marker)
+                        }
+                        rusqlite::types::ValueRef::Null
+                        | rusqlite::types::ValueRef::Integer(_)
+                        | rusqlite::types::ValueRef::Real(_) => false,
+                    });
+                    if held {
+                        tables.push(name.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        None => {
+            let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
+            let names: Vec<String> = client
+                .query(
+                    "SELECT table_name::text FROM information_schema.tables \
+                     WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+                    &[],
+                )
+                .unwrap()
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            for name in names {
+                let held: bool = client
+                    .query_one(
+                        &format!("SELECT EXISTS (SELECT 1 FROM \"{name}\" t WHERE t::text LIKE '%' || $1 || '%')"),
+                        &[&marker],
+                    )
+                    .unwrap()
+                    .get(0);
+                if held {
+                    tables.push(name);
+                }
+            }
+        }
+    }
+    tables.sort();
+    tables
+}

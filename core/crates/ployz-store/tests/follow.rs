@@ -38,7 +38,10 @@ fn at(environment: &str) -> EnvironmentRef {
 /// production runs `web` (image `web:1`, `PLAIN=1`) and `db`; Branch `fix-web` has
 /// its own `web` and uses `db` live.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open())
+}
+
+fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -1120,4 +1123,85 @@ fn a_secret_the_parent_synced_into_its_branch_with_the_branchs_value_does_not_fo
         deployed_env(&store, &who, "fix-web", 4)["TOKEN"],
         own["value"]
     );
+}
+
+/// Sealing a plain value a Branch follows leaves no copy of it beside the Branch.
+#[test]
+fn a_seal_that_follows_leaves_no_plain_text_in_the_arrival() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    seal_token(&store, &who, 3);
+    assert_eq!(
+        incoming(&store, &who, "fix-web"),
+        ["web.env.TOKEN production"]
+    );
+    assert_eq!(
+        web(&store, &who, "fix-web")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    assert!(backend::tables_holding(&url, "plain-private").is_empty());
+}
+
+/// A Branch made while the value was plain keeps it only in what it compares with:
+/// what it was made with, its Node Introduction, and the pending arrival's base cell
+/// until it deploys. Its review still lists the seal that followed.
+#[test]
+fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_only_its_bases() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    seal_token(&store, &who, 3);
+    assert_eq!(incoming(&store, &who, "qa"), ["web.env.TOKEN production"]);
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    assert!(
+        diff(&store, &who, "qa")
+            .changes
+            .iter()
+            .flat_map(|change| &change.settings)
+            .any(|setting| setting.path == "web.env.TOKEN")
+    );
+    assert_eq!(
+        backend::tables_holding(&url, "plain-private"),
+        [
+            "config_environment_branch",
+            "config_node_introduction",
+            "config_sync_arrival"
+        ]
+    );
+    deploy(&store, &who, "qa", 4);
+    assert_eq!(
+        backend::tables_holding(&url, "plain-private"),
+        ["config_environment_branch", "config_node_introduction"]
+    );
+}
+
+/// Seal production's `web.env.TOKEN` and deploy it as `n`.
+fn seal_token(store: &ConfigStore, who: &Actor, n: u8) {
+    let sealed = token(store, who, "production", 1);
+    set(
+        store,
+        who,
+        "production",
+        &[("web.env.TOKEN", json!({ "secret": sealed }))],
+    );
+    deploy(store, who, "production", n);
 }
