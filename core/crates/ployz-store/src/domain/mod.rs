@@ -698,6 +698,29 @@ fn refuse_too_long(
     ))
 }
 
+/// Refuses copying the new Services `picks` names when a suffix makes a generated
+/// domain's subdomain longer than a DNS label's 63 characters, which no hostname can
+/// carry. A Branch adds its name to the prefixes it copies.
+pub(crate) fn refuse_long_subdomains(
+    plan: &ployz_core::config::Plan,
+    picks: &std::collections::BTreeSet<ployz_core::config::RowId>,
+) -> Result<(), RpcError> {
+    match plan
+        .copied_prefixes(picks)
+        .into_iter()
+        .find(|prefix| prefix.len() > 63)
+    {
+        Some(prefix) => Err(error::invalid(
+            format!(
+                "{prefix} is {} characters, over a subdomain's 63: choose a shorter branch name",
+                prefix.len()
+            ),
+            json!({ "prefix": prefix }),
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Refuse each generated prefix `after` gives a Service that `before` didn't, when the
 /// hostname it makes is too long. A Branch adds its name to the prefixes it copies, so a
 /// hostname that fits its Parent can be too long on the Branch. The Cluster Domain is

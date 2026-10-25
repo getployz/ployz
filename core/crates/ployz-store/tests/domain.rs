@@ -1134,6 +1134,45 @@ fn a_branch_whose_name_makes_a_generated_hostname_too_long_is_refused() {
     store.write(&who, &branch("fix")).unwrap();
 }
 
+/// A Branch's name can make a copied subdomain longer than a DNS label: refused with
+/// the subdomain and what to shorten, not as an invalid prefix.
+#[test]
+fn a_branch_whose_name_makes_a_generated_subdomain_too_long_is_refused() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &add_prefix("abcdefghijkl"), &cloud())
+        .unwrap();
+    let branch = |name: &str| ployz_store::CreateBranch {
+        id: EnvironmentId::parse(
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()).to_string(),
+        )
+        .unwrap(),
+        from: at(None),
+        name: EnvironmentName::parse(name).unwrap(),
+        copy: vec![ployz_store::NodeName::Service(
+            ServiceName::parse("web").unwrap(),
+        )],
+        live: Vec::new(),
+        setup: Vec::new(),
+        keep: false,
+        fix: None,
+    };
+
+    // `abcdefghijkl-` and 51 characters make 64.
+    let long = "n".repeat(51);
+    let refused = store.write(&who, &branch(&long)).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        format!(
+            "abcdefghijkl-{long} is 64 characters, over a subdomain's 63: choose a shorter branch name"
+        )
+    );
+    assert_eq!(refused.details["prefix"], format!("abcdefghijkl-{long}"));
+
+    store.write(&who, &branch(&"n".repeat(50))).unwrap();
+}
+
 #[test]
 fn a_new_generated_prefix_avoids_published_hostnames() {
     let (store, who) = shop();

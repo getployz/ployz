@@ -171,6 +171,7 @@ pub(crate) fn create_branch(
         .map(|row| row.id.clone())
         .collect();
     let none = BTreeMap::new();
+    crate::domain::refuse_long_subdomains(&creating(&from), &picks)?;
     let applied = creating(&from).apply(&picks, &none).map_err(config)?;
     // A fix's base is what the Parent runs, so the failed change shows as staged.
     let base = match create.fix {
