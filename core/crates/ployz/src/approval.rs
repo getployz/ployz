@@ -38,6 +38,10 @@ pub(crate) struct Asked {
     /// person, an owner or admin, can approve, so even a terminal waits.
     #[serde(default)]
     protected: Option<serde_json::Value>,
+    /// Set when the Deploy also removes every other Service running in its
+    /// Environment, which only the Servers can name.
+    #[serde(default)]
+    prunes: bool,
 }
 
 impl Asked {
@@ -251,6 +255,9 @@ impl Asked {
                     lost.restored
                 ));
             }
+        }
+        if self.prunes {
+            lines.push("  ✕ removes any other Service running in this environment".to_owned());
         }
         let others = match &self.subject {
             Subject::Diff(diff) => diff.total_count.saturating_sub(self.effects.len()),
@@ -663,6 +670,38 @@ mod tests {
         assert_eq!(
             asked.review(Verb::Deploy),
             ["This deploy:", "  + 2 other changes"]
+        );
+    }
+
+    #[test]
+    fn a_deploy_that_prunes_says_it_removes_any_other_service() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1",
+            "approval": "d1",
+            "effects": [],
+            "prunes": true,
+            "diff": {
+                "environment": {
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "project": "shop",
+                    "name": "production",
+                    "revision": 3,
+                },
+                "version": "3:2:0.1",
+                "saved": 2,
+                "holds_staged": false,
+                "changes": [],
+                "total_count": 1,
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            asked.review(Verb::Deploy),
+            [
+                "This deploy:",
+                "  ✕ removes any other Service running in this environment",
+                "  + 1 other change",
+            ]
         );
     }
 
