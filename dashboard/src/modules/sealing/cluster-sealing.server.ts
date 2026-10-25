@@ -15,3 +15,5 @@ export const readClusterSealing = Effect.fn("ClusterSealing.read")(function* (or
   const publicKey = generation === null ? undefined : yield* readSealingPublicKey(organizationId, generation);
   return (publicKey === undefined ? { state: "no_server" } : { state: "ready", publicKey }) satisfies ClusterSealing;
 });
+
+export const readClusterSealingToSeal = readClusterSealing;
