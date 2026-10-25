@@ -51,6 +51,12 @@ service it removes, such as `db: removed 1/1 (not in this environment)`, and `pl
 warns that it will. Their volumes and data stay. A deploy that can't check every server
 skips pruning, and still deploys.
 
+Removing a service while a server that runs one of its replicas is down, or can't be checked,
+still removes the replicas on the servers that answer. The service reads removed, such as
+`rmme: removed 2/3; web-2 didn't answer, the next full deploy removes its copy once it is back`,
+and the deploy exits 3. The replica on web-2 may serve again once that server is back, until your
+next deploy of the whole environment removes it.
+
 To keep those other services, pick **Deploy, keep other services** in the bottom bar's **⋮** menu,
 or run `ployz deploy --no-prune`. It still removes the services you removed, and names each one it
 keeps, such as `postgres: running, not in this environment; kept.`
@@ -143,7 +149,7 @@ its new containers printed. A failed deployment opens on the card that failed.
 | **Preparing** | Started: Ployz unpacks its upload, builds and plans. `ployz deployment ls` says `preparing`. |
 | **Deploying** | Rolling out |
 | **Deployed** | Every change applied |
-| **Failed** | Something stopped it. A service marked **Not attempted** never started: it waited on a failed service, mounts a [volume with no writer](../services/volumes.md#when-a-volume-has-no-writer), mounts a volume on a [server that doesn't run services](../services/scaling.md#give-servers-different-jobs) or on one that is [down or not answering](../services/scaling.md#when-a-server-goes-down), or depends on one of those. A service you removed reads **Not attempted** when Ployz couldn't check a server that may still run it, and **Failed** when that server is down and still lists a replica in traffic. |
+| **Failed** | Something stopped it. A service marked **Not attempted** never started: it waited on a failed service, mounts a [volume with no writer](../services/volumes.md#when-a-volume-has-no-writer), mounts a volume on a [server that doesn't run services](../services/scaling.md#give-servers-different-jobs) or on one that is [down or not answering](../services/scaling.md#when-a-server-goes-down), or depends on one of those. |
 | **Cancelling** | A cancel is on its way. |
 | **Cancelled** | Someone cancelled it. A service it stopped partway reads **Cancelled**, not **Failed**. |
 | **Superseded** | A newer deployment took its place while it was queued. |
