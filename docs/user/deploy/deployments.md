@@ -51,11 +51,14 @@ service it removes, such as `db: removed 1/1 (not in this environment)`, and `pl
 warns that it will. Their volumes and data stay. A deploy that can't check every server
 skips pruning, still deploys, and says `Prune skipped: not every Server answered`.
 
-Removing a service while a server that runs one of its replicas is down, or can't be checked,
-still removes the replicas on the servers that answer. The service reads removed, such as
+Removing a service while a server that may run one of its replicas is down, or can't be checked,
+still removes the replicas on the servers that answer. The service reads removed and names that
+server, such as
 `rmme: removed 2/3; web-2 didn't answer, the next full deploy removes its copy once it is back`,
-and the deploy exits 3. The replica on web-2 may serve again once that server is back, until your
-next deploy of the whole environment removes it.
+and the deploy exits 3. When Ployz found no replica on the servers it could check, the service
+reads `rmme: removed 0/0; couldn't check web-2, the next full deploy removes any copy there`.
+Either way the service is removed from the environment. A replica on web-2 may serve again once
+that server is back, until your next deploy of the whole environment removes it.
 
 To keep those other services, pick **Deploy, keep other services** in the bottom bar's **⋮** menu,
 or run `ployz deploy --no-prune` (`ployz up --no-prune` too). It still removes the services you removed, and names each one it
@@ -149,7 +152,7 @@ its new containers printed. A failed deployment opens on the card that failed.
 | **Preparing** | Started: Ployz unpacks its upload, builds and plans. `ployz deployment ls` says `preparing`. |
 | **Deploying** | Rolling out |
 | **Deployed** | Every change applied |
-| **Failed** | Something stopped it. A service marked **Not attempted** never started: it waited on a failed service, mounts a [volume with no writer](../services/volumes.md#when-a-volume-has-no-writer), mounts a volume on a [server that doesn't run services](../services/scaling.md#give-servers-different-jobs) or on one that is [down or not answering](../services/scaling.md#when-a-server-goes-down), or depends on one of those. |
+| **Failed** | Something stopped it. A service marked **Not attempted** never started: it waited on a failed service, mounts a [volume with no writer](../services/volumes.md#when-a-volume-has-no-writer), mounts a volume on a [server that doesn't run services](../services/scaling.md#give-servers-different-jobs) or on one that is [down or not answering](../services/scaling.md#when-a-server-goes-down), or depends on one of those. A service you removed reads **Removed** even when a server that may run it is down or couldn't be checked: the deployment names that server, exits 3, and your next deploy of the whole environment removes the replica there. |
 | **Cancelling** | A cancel is on its way. |
 | **Cancelled** | Someone cancelled it. A service it stopped partway reads **Cancelled**, not **Failed**. |
 | **Superseded** | A newer deployment took its place while it was queued. |

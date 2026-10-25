@@ -67,13 +67,20 @@ When web-2 stopped answering during the deploy:
 
 Removing a service while a server that may run one of its replicas is down, or Ployz couldn't
 check it, removes the replicas on the servers that answer, without waiting for the proxies to
-drop them. The deploy names that server and exits 3:
+drop them. The service reads removed, the deploy names that server and exits 3:
 
 ```text
 rmme: removed 2/3; web-2 didn't answer, the next full deploy removes its copy once it is back
 ```
 
-The replica on web-2 may serve again once that server is back. Your next deploy of the whole
+When Ployz found no replica on the servers it could check, the service still reads removed and
+names the server it couldn't check:
+
+```text
+rmme: removed 0/0; couldn't check web-2, the next full deploy removes any copy there
+```
+
+A replica on web-2 may serve again once that server is back. Your next deploy of the whole
 environment, with pruning on, removes it and names it.
 
 If web-2 stops answering in the middle of the switch, the deploy can fail instead, with
