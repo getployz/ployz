@@ -912,14 +912,34 @@ fn a_member_between_restarts_rejoins_at_the_address_it_is_pinned_to() {
 }
 
 #[test]
-fn only_a_container_docker_would_run_again_is_noted_to_start_again() {
+fn a_member_between_restarts_is_stopped_and_noted_only_when_docker_would_run_it_again() {
     use bollard::models::RestartPolicyNameEnum as Policy;
-    assert!(runs_again(true, Some(Policy::ON_FAILURE)));
-    assert!(runs_again(true, None));
-    assert!(runs_again(false, Some(Policy::ALWAYS)));
-    assert!(runs_again(false, Some(Policy::UNLESS_STOPPED)));
-    assert!(runs_again(false, Some(Policy::ON_FAILURE)));
-    assert!(!runs_again(false, Some(Policy::NO)));
-    assert!(!runs_again(false, Some(Policy::EMPTY)));
-    assert!(!runs_again(false, None));
+    let settle = |running, restarting, policy| settle(running, restarting, policy);
+    // Docker is restarting it, whatever its policy.
+    assert_eq!(
+        settle(true, true, Some(Policy::ON_FAILURE)),
+        Settle::StopAndNote
+    );
+    assert_eq!(settle(false, true, None), Settle::StopAndNote);
+    // Exiting under a policy that restarts it whatever its exit.
+    assert_eq!(
+        settle(true, false, Some(Policy::ALWAYS)),
+        Settle::StopAndNote
+    );
+    assert_eq!(
+        settle(true, false, Some(Policy::UNLESS_STOPPED)),
+        Settle::StopAndNote
+    );
+    // Exiting for good.
+    assert_eq!(settle(true, false, Some(Policy::NO)), Settle::Stop);
+    assert_eq!(settle(true, false, Some(Policy::EMPTY)), Settle::Stop);
+    assert_eq!(settle(true, false, None), Settle::Stop);
+    // Exiting under on-failure, before Docker knows its exit code.
+    assert_eq!(settle(true, false, Some(Policy::ON_FAILURE)), Settle::Leave);
+    // Already exited, for good or with its retries spent.
+    assert_eq!(
+        settle(false, false, Some(Policy::ON_FAILURE)),
+        Settle::Leave
+    );
+    assert_eq!(settle(false, false, Some(Policy::ALWAYS)), Settle::Leave);
 }

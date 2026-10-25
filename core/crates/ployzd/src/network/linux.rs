@@ -767,10 +767,11 @@ impl NetworkPlane {
         }
     }
 
-    /// Stops `id` at once, which drops a restart Docker has pending and settles the
-    /// container, so Docker's own restart can't attach it behind a detach. One Docker
-    /// would run again is noted in `stopped` first, and left alone when that note
-    /// can't be written. One that is exiting for good is stopped and left stopped.
+    /// Settles `id`, which Docker holds between restarts, so the operation Docker
+    /// refused can be retried; see `settle`. A stop drops a restart Docker has
+    /// pending and waits out its own, so Docker can't attach the member behind a
+    /// detach. A member is noted in `stopped` before its stop, and left alone when
+    /// that note can't be written.
     async fn stop(&self, id: &str, stopped: &mut Stopped) {
         let inspected = match self.docker.inspect_container(id, None).await {
             Ok(inspected) => inspected,
@@ -781,16 +782,24 @@ impl NetworkPlane {
                 return;
             }
         };
-        let restarting = inspected.state.and_then(|state| state.restarting) == Some(true);
+        let state = inspected.state.unwrap_or_default();
         let policy = inspected
             .host_config
             .and_then(|host| host.restart_policy)
             .and_then(|policy| policy.name);
-        if runs_again(restarting, policy)
-            && let Err(error) = stopped.note(id)
-        {
-            report_stop(id, &error);
-            return;
+        match settle(
+            state.running == Some(true),
+            state.restarting == Some(true),
+            policy,
+        ) {
+            Settle::Leave => return,
+            Settle::Stop => {}
+            Settle::StopAndNote => {
+                if let Err(error) = stopped.note(id) {
+                    report_stop(id, &error);
+                    return;
+                }
+            }
         }
         let options = StopContainerOptionsBuilder::default().t(0).build();
         if let Err(error) = self.docker.stop_container(id, Some(options)).await
@@ -898,15 +907,35 @@ fn between_restarts(error: &bollard::errors::Error) -> bool {
             && message.ends_with(" not found"))
 }
 
-/// Whether Docker would run again a container it holds between restarts: one it is
-/// restarting, or one with a policy that restarts it. A container with no policy is
-/// exiting for good.
-fn runs_again(restarting: bool, policy: Option<RestartPolicyNameEnum>) -> bool {
-    restarting
-        || !matches!(
-            policy,
-            None | Some(RestartPolicyNameEnum::NO | RestartPolicyNameEnum::EMPTY)
-        )
+/// What to do with a member Docker refused as being between restarts.
+#[derive(Debug, PartialEq, Eq)]
+enum Settle {
+    /// Docker would run it again, so Ployz starts it again once it has moved.
+    StopAndNote,
+    /// It is exiting for good, so it stays stopped, as Docker would leave it.
+    Stop,
+    /// Whether Docker runs it again can't be told yet, or it has exited already:
+    /// the refused operation is only retried.
+    Leave,
+}
+
+/// Docker restarts a container it is restarting, and one exiting under `always`
+/// or `unless-stopped`. One exiting under `on-failure` restarts only on a failing
+/// exit code, which Docker records once it has exited, so Ployz doesn't stop it.
+fn settle(running: bool, restarting: bool, policy: Option<RestartPolicyNameEnum>) -> Settle {
+    if restarting {
+        return Settle::StopAndNote;
+    }
+    if !running {
+        return Settle::Leave;
+    }
+    match policy {
+        Some(RestartPolicyNameEnum::ALWAYS | RestartPolicyNameEnum::UNLESS_STOPPED) => {
+            Settle::StopAndNote
+        }
+        Some(RestartPolicyNameEnum::ON_FAILURE) => Settle::Leave,
+        None | Some(RestartPolicyNameEnum::NO | RestartPolicyNameEnum::EMPTY) => Settle::Stop,
+    }
 }
 
 /// A container on the ployz bridge, or created for it.
