@@ -159,10 +159,9 @@ can't reference it, and it replaces a variable of yours with that name.
 - **Branches copy variables, not secrets.** A separate copy of a service in a
   [branch](../environments/environments.md) or a
   [preview](../environments/preview-environments.md) starts with its parent's variables, and
-  changing them leaves the parent alone. A branch never gets its parent's secret values, by
-  design: each sealed value opens only in the environment it was sealed for. So the branch's
-  sealed variables start **Not set**, and deploys leave each out until you choose **Set value**
-  on it in the branch. A reference to a service the branch shares with its parent reads the
+  changing them leaves the parent alone. By design, a branch never gets its parent's secret
+  values: its sealed variables start **Not set**, and deploys leave each out until you choose
+  **Set value** on it in the branch. A reference to a service the branch shares with its parent reads the
   parent's values.
 - **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
   `invalid_argument` and the limit. Split it into smaller changes.

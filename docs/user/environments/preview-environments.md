@@ -79,8 +79,9 @@ When a pull request opens, Ployz deploys its preview, named like `pr-142`:
 - A push deploys the new commit, even if production doesn't deploy on push, once the pull request
   [deploys automatically](#who-deploys-automatically) or a member approves that commit. **Wait
   for CI** and **Watch paths** still apply.
-- Secrets don't carry into a preview: by design, a branch never gets real secret values. Each
-  sealed variable starts **Not set**, and the preview deploys without it. See [Set a preview's secrets](#set-a-previews-secrets).
+- Secrets don't carry into a preview: by design, a branch never gets its parent's secret
+  values. Each sealed variable starts **Not set**, and the preview deploys without it. See
+  [Set a preview's secrets](#set-a-previews-secrets).
 
 Open previews are listed under **Open now** in the panel, and in the environment switcher under
 the environment they start from. Each one is a [branch](environments.md) of that environment, so
