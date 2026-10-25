@@ -674,7 +674,7 @@ pub(crate) fn retry(
         removes: Vec::new(),
         retires: Vec::new(),
         ships: None,
-        replays_teardown: false,
+        replays_destruction: false,
     };
     if let Some(confirmed) = &retry.rolls_back
         && *confirmed != rollback.rolls_back
@@ -737,11 +737,15 @@ pub(crate) fn retry(
             })
             .collect()
     });
-    rollback.replays_teardown = nodes.iter().any(|node| match node {
-        TargetNode::Service { removals, .. } => !removals.is_empty(),
-        TargetNode::Volume { deletes, .. } => deletes.is_some(),
-        TargetNode::Config { .. } => false,
-    });
+    let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
+    let running = crate::review::approval::deployed(&head(tx, &environment)?);
+    rollback.replays_destruction =
+        nodes.iter().any(|node| match node {
+            TargetNode::Service { removals, .. } => !removals.is_empty(),
+            TargetNode::Volume { deletes, .. } => deletes.is_some(),
+            TargetNode::Config { .. } => false,
+        }) || !crate::review::approval::destructive_effects(&running, &revision, &BTreeMap::new())
+            .is_empty();
     // A retry builds from what its source did, but sends nothing.
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
         json_text(&super::uploads::ServiceUploads {
@@ -832,9 +836,10 @@ pub(crate) struct Rollback {
     /// Service that runs, or may. None for one of some Services, which leaves the
     /// rest as they are.
     pub(crate) ships: Option<Vec<ServiceLineageId>>,
-    /// Whether what it queues takes a runtime Service off or deletes a Docker Volume,
-    /// as its source's review accepted.
-    pub(crate) replays_teardown: bool,
+    /// Whether it may destroy what runs now, as its source's review accepted: what it
+    /// queues takes a runtime Service off or deletes a Docker Volume, or its revision
+    /// drops a Service, Volume, mount or domain that runs.
+    pub(crate) replays_destruction: bool,
 }
 
 /// The Deployments of `deployment`'s Environment after it that may have changed

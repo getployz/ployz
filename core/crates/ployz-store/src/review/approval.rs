@@ -747,13 +747,13 @@ pub(crate) fn approve_retry(
     if !gate.asks_retry() && effects.is_empty() && !pruning.unseen() {
         return Ok(());
     }
-    // A protector's retry that destroys nothing, nor replays what its source did,
-    // passes as its plain Deploy does.
+    // A protector's retry that destroys nothing, nor replays anything its source's
+    // review accepted destroying, passes as its plain Deploy does.
     if gate.spares_harmless
         && effects.is_empty()
         && !pruning.unseen()
         && rollback.rolls_back.is_empty()
-        && !rollback.replays_teardown
+        && !rollback.replays_destruction
         && retry.accept_volume_loss.is_empty()
     {
         return Ok(());

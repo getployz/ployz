@@ -5974,6 +5974,37 @@ fn a_protectors_rollback_that_takes_a_service_off_still_asks_an_admin() {
 }
 
 #[test]
+fn a_protectors_retry_whose_revision_removes_a_domain_still_asks_an_admin() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::AddDomain {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                hostname: Some(ployz_store::Hostname::parse("app.example.com").unwrap()),
+                prefix: None,
+                port: None,
+            },
+        )
+        .unwrap();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "app.example.com".into(),
+            },
+        )
+        .unwrap();
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let refused = retry_as(&store, &who, (3, 2), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+#[test]
 fn a_protectors_retry_replaying_a_teardown_still_asks_an_admin() {
     let (store, who) = shop();
     apply_both(&store, &who, 1);
