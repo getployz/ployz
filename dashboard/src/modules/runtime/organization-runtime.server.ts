@@ -9,7 +9,7 @@ import {
 import {
   loadOrganizationConnections,
 } from "#/modules/machines/connections.server";
-import { runtimeFrameRecords } from "#/modules/runtime/runtime-frame-record.server";
+import { runtimeFrameRecords, runtimeNamesDigest } from "#/modules/runtime/runtime-frame-record.server";
 import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -148,10 +148,7 @@ export type FrameRecord = {
 export const FRAME_REASK_MS = 60_000;
 export const FRAME_REASK_CEILING_MS = 3_600_000;
 
-export const settledByName: FrameRecord = {
-  digest: (frame) => JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name])),
-  write: () => Effect.succeed("settled"),
-};
+export const settledByName: FrameRecord = { digest: runtimeNamesDigest, write: () => Effect.succeed("settled") };
 
 /**
  * Hands each frame to every record off the read that carried it: the read never waits on the write, so no deadline
@@ -160,8 +157,9 @@ export const settledByName: FrameRecord = {
  * write settled is skipped until a frame digests differently, since what a record keeps is the last frame's. One
  * whose write asked is skipped for `FRAME_REASK_MS`, twice that each time the same frame asks again, up to
  * `FRAME_REASK_CEILING_MS`, then written again in case the job never finished; a frame that digests differently is
- * written at once with a fresh wait, since the gap it reports is a new one. A new pairing generation forgets the
- * written frames. A failed write is logged and retried by the next frame, while a write that reports `asked`
+ * written at once with a fresh wait, since the gap it reports is a new one; readers whose frames disagree on what a
+ * record keeps, as Servers' views do while a change replicates, write on every read, and the job each ask reaches is
+ * debounced. A new pairing generation forgets the written frames. A failed write is logged and retried by the next frame, while a write that reports `asked`
  * because its ask failed waits like any other ask. When the layer closes, the write in flight finishes and a
  * coalesced one is dropped, for the Cluster's next frame to write.
  */

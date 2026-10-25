@@ -587,6 +587,30 @@ it.effect("names every read whose names differ, and asks once while those reads 
   }),
 );
 
+it.effect("asks from a frame whose names failed to write, and writes the names on the next read", () =>
+  Effect.gen(function* () {
+    let failNames = true;
+    const names = yield* Queue.unbounded<string>();
+    const asks = yield* Queue.unbounded<string>();
+    const runtime = streamingRecords(() => [named("web-1")], [
+      { digest: settledByName.digest, write: () => Effect.suspend(() => {
+        if (!failNames) return Queue.offer(names, "web-1").pipe(Effect.as("settled" as const));
+        failNames = false;
+        return Effect.fail(new Error("database unavailable"));
+      }) },
+      { digest: runtimeSealingDigest, write: () => Queue.offer(asks, "asked").pipe(Effect.as("asked" as const)) },
+    ]);
+    yield* Effect.gen(function* () {
+      yield* firstRuntimeFrame("org-1");
+      assert.strictEqual(yield* Queue.take(asks), "asked");
+      assert.strictEqual(yield* Queue.size(names), 0);
+      yield* firstRuntimeFrame("org-1");
+      assert.strictEqual(yield* Queue.take(names), "web-1");
+      assert.strictEqual(yield* Queue.size(asks), 0);
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
 it.effect("names a Server again when its name goes back to one it had", () =>
   Effect.gen(function* () {
     let reported = named("web-1");
