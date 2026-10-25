@@ -310,12 +310,19 @@ impl CapturedBuild {
         self.targets().cloned().collect()
     }
 
-    /// Whether any Build reads a Sealed value, which only a Builder that opens them can run.
+    /// How a Build that reads a Sealed value builds, which only a Builder that
+    /// opens them can run. Railpack names it first: its refusal explains more.
     #[must_use]
-    pub fn reads_sealed(&self) -> bool {
-        self.targets
+    pub fn reads_sealed(&self) -> Option<BuildMethod> {
+        let reading = self
+            .targets
             .iter()
-            .any(|captured| !captured.sealed.is_empty())
+            .filter(|captured| !captured.sealed.is_empty());
+        reading
+            .clone()
+            .find(|captured| captured.build_method == BuildMethod::Railpack)
+            .or_else(|| reading.clone().next())
+            .map(|captured| captured.build_method)
     }
 
     /// Run each Build in order on one resolved Machine over the authenticated

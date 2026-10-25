@@ -205,7 +205,7 @@ async fn a_sealed_value_is_refused_when_the_target_shows_no_capability_evidence(
 
 #[test]
 fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
-    use ployz_core::BUILD_SEALED_CAPABILITY;
+    use ployz_core::{BUILD_SEALED_CAPABILITY, config::BuildMethod};
     let mut able = machine('a', "able");
     able.runtime.capabilities = [BUILD_SEALED_CAPABILITY].map(String::from).into();
     let behind = machine('b', "behind");
@@ -214,31 +214,42 @@ fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
         MachineObservation::new(able.clone(), MembershipObservation::Up),
     ];
 
-    let plain = crate::sealed_compat::builders(&visible, false).unwrap();
+    let plain = crate::sealed_compat::builders(&visible, None).unwrap();
     assert_eq!(plain.len(), 2);
 
-    let sealed = crate::sealed_compat::builders(&visible, true).unwrap();
-    let names: Vec<_> = sealed
-        .iter()
-        .map(|observation| observation.machine.name.to_string())
-        .collect();
-    assert_eq!(names, ["able"]);
+    for method in [BuildMethod::Dockerfile, BuildMethod::Railpack] {
+        let sealed = crate::sealed_compat::builders(&visible, Some(method)).unwrap();
+        let names: Vec<_> = sealed
+            .iter()
+            .map(|observation| observation.machine.name.to_string())
+            .collect();
+        assert_eq!(names, ["able"]);
+    }
 
     let only_behind = vec![MachineObservation::new(behind, MembershipObservation::Up)];
-    let crate::connect::ConnectError::Remote(error) =
-        crate::sealed_compat::builders(&only_behind, true).unwrap_err()
-    else {
-        panic!("expected a remote refusal");
-    };
-    assert_eq!(error.code, RpcErrorCode::Unsupported);
-    assert_eq!(
-        error.message,
-        "behind cannot open sealed values; upgrade every Server first."
-    );
-    assert_eq!(
-        error
-            .details
-            .pointer("/rejections/cannot open sealed values"),
-        Some(&serde_json::json!(1))
-    );
+    for (method, message) in [
+        (
+            BuildMethod::Dockerfile,
+            "behind cannot open sealed values; upgrade every Server first.",
+        ),
+        (
+            BuildMethod::Railpack,
+            "behind cannot open sealed values. Railpack gives the build every variable, \
+             sealed ones included, so upgrade a Server to build there.",
+        ),
+    ] {
+        let crate::connect::ConnectError::Remote(error) =
+            crate::sealed_compat::builders(&only_behind, Some(method)).unwrap_err()
+        else {
+            panic!("expected a remote refusal");
+        };
+        assert_eq!(error.code, RpcErrorCode::Unsupported);
+        assert_eq!(error.message, message);
+        assert_eq!(
+            error
+                .details
+                .pointer("/rejections/cannot open sealed values"),
+            Some(&serde_json::json!(1))
+        );
+    }
 }

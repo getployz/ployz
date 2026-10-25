@@ -102,6 +102,11 @@ value it doesn't read, like a runtime-only database password, stays out of the b
 open a sealed value for a build only from Ployz 0.3.5. A build that reads one needs a server on
 0.3.5 or later, and it won't start until you upgrade one.
 
+Railpack gives the build every variable, so a Railpack build reads every sealed value, even one
+only your app uses at runtime. A Railpack service with any sealed value needs a server on 0.3.5
+or later to build. To build one on older servers, switch it to a Dockerfile that doesn't read
+the value.
+
 A changed sealed value doesn't rerun a cached secret mount step. To rerun it, add
 `ARG PLOYZ_SEALED_HASH` right above it.
 
