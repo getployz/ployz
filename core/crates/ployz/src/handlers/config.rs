@@ -529,9 +529,9 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         changes,
     };
     let store = store(root)?;
-    let edited = store
-        .try_write(&edit)
-        .map_err(|error| store.fail(with_refresh_hint(error, matches, "get")))?;
+    let fail = |error| store.fail(with_refresh_hint(error, matches, "get"));
+    let edit = store.seal_edit(edit, fail)?;
+    let edited = store.try_write(&edit).map_err(fail)?;
     let hint = (!edited.staged.is_empty()).then(|| next(matches, &["deploy"]));
     ui::finish(&Next::new(&edited, hint.clone()), || {
         let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
