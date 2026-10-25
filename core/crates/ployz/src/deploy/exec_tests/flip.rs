@@ -1506,6 +1506,16 @@ async fn reported<C: MachineOperations>(
     client: &C,
     cancellation: &CancellationToken,
 ) -> (DeployOutcome<ExecutionError>, Vec<String>) {
+    let (outcome, warnings) = reported_warnings(plan, client, cancellation).await;
+    let warnings = warnings.iter().map(ToString::to_string).collect();
+    (outcome, warnings)
+}
+
+pub(super) async fn reported_warnings<C: MachineOperations>(
+    plan: &crate::deploy::DeployPlan,
+    client: &C,
+    cancellation: &CancellationToken,
+) -> (DeployOutcome<ExecutionError>, Vec<DeployWarning>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let outcome =
         super::super::execute_operation_sequence(plan, &run_id(), client, cancellation, Some(tx))
@@ -1513,7 +1523,7 @@ async fn reported<C: MachineOperations>(
     let mut warnings = Vec::new();
     while let Ok(event) = rx.try_recv() {
         if let DeployEvent::Warning { warning } = event {
-            warnings.push(warning.to_string());
+            warnings.push(warning);
         }
     }
     (outcome, warnings)

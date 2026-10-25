@@ -1182,14 +1182,6 @@ fn dependency_blocked(dependency: &ServiceName) -> RpcError {
     }
 }
 
-pub(super) fn removal_unobserved_message(names: &[impl AsRef<str>]) -> String {
-    let names: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
-    format!(
-        "couldn't check {} for its copies. Deploy again once every Server answers.",
-        names.join(", ")
-    )
-}
-
 /// Why a Service handing a hostname to a blocked one is blocked too: replacing its copies
 /// would take the hostname from the only copies that answer.
 fn handover_blocked(handover: &HostnameHandover) -> RpcError {

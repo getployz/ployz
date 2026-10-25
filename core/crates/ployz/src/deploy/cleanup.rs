@@ -329,6 +329,21 @@ pub(crate) async fn retire<C: MachineOperations>(
     }
 }
 
+/// Retires the copy without waiting for proxies to drop it. A removal beside a
+/// copy on a Server this Deploy cannot reach: every proxy keeps the route while
+/// its store lists that copy In, so the drain would never confirm.
+pub(crate) async fn retire_unconfirmed<C: MachineOperations>(
+    client: &C,
+    copy: &Copy,
+    allow_empty: bool,
+    anonymous_volumes: AnonymousVolumes,
+) -> Result<Step, RpcError> {
+    match send_out(client, copy, allow_empty).await? {
+        Step::Done => remove(client, copy, anonymous_volumes).await,
+        step @ (Step::Refused(_) | Step::NotConfirmed(_) | Step::Cancelled) => Ok(step),
+    }
+}
+
 pub(crate) async fn remove<C: MachineOperations>(
     client: &C,
     copy: &Copy,
