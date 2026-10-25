@@ -18,7 +18,7 @@ use ployz_core::{
 use std::{
     io,
     pin::Pin,
-    sync::{Arc, OnceLock, Weak},
+    sync::Arc,
     task::{Context as TaskContext, Poll},
     time::Duration,
 };
@@ -34,29 +34,24 @@ const TUNNEL_CLOSE_GRACE: Duration = Duration::from_secs(2);
 /// The relay the management transport dials through. Production uses the compiled
 /// [`DEFAULT_RELAY_URL`] with the embedded WebPKI roots; tests point at an in-process relay.
 ///
-/// A relay also owns the endpoint dialed through it, under a key minted for this process
-/// alone, so no other process holding the same capability can take its relay traffic.
-/// Every default relay in a process shares one endpoint; each [`ManagementRelay::custom`]
-/// relay has its own, as a separate process would.
+/// Each dial binds its own endpoint under a key minted for it alone, so no other process
+/// holding the same capability can take its relay traffic, and no dial waits on another
+/// session's relay connection or path: a held session's relay connection can go silent,
+/// and iroh notices only at its next relay ping (#3309).
 #[derive(Clone, Debug)]
 pub struct ManagementRelay {
     pub(super) url: RelayUrl,
     pub(super) tls: CaTlsConfig,
-    endpoints: Arc<Endpoints>,
     relay_only: bool,
 }
 
-type Endpoints = tokio::sync::Mutex<Weak<ManagementEndpoint>>;
-
 impl Default for ManagementRelay {
     fn default() -> Self {
-        static ENDPOINTS: OnceLock<Arc<Endpoints>> = OnceLock::new();
         Self {
             url: DEFAULT_RELAY_URL
                 .parse()
                 .expect("the compiled relay URL is valid"),
             tls: CaTlsConfig::default(),
-            endpoints: Arc::clone(ENDPOINTS.get_or_init(Arc::default)),
             relay_only: false,
         }
     }
@@ -71,7 +66,6 @@ impl ManagementRelay {
         Self {
             url,
             tls,
-            endpoints: Arc::default(),
             relay_only: false,
         }
     }
@@ -106,11 +100,6 @@ impl Drop for ManagementEndpoint {
 async fn management_endpoint(
     relay: &ManagementRelay,
 ) -> Result<Arc<ManagementEndpoint>, ConnectError> {
-    // Binds serialize so concurrent first dials share one endpoint.
-    let mut slot = relay.endpoints.lock().await;
-    if let Some(endpoint) = slot.upgrade() {
-        return Ok(endpoint);
-    }
     let mut builder = IrohEndpoint::builder(presets::Minimal)
         .secret_key(SecretKey::generate())
         .relay_mode(RelayMode::custom([relay.url.clone()]))
@@ -122,12 +111,10 @@ async fn management_endpoint(
         .bind()
         .await
         .map_err(|error| ConnectError::Attempt(format!("management bind: {error}").into()))?;
-    let endpoint = Arc::new(ManagementEndpoint {
+    Ok(Arc::new(ManagementEndpoint {
         endpoint,
         runtime: tokio::runtime::Handle::current(),
-    });
-    *slot = Arc::downgrade(&endpoint);
-    Ok(endpoint)
+    }))
 }
 
 /// TLS `no_application_protocol`: the Machine offers none of this release's ALPNs, which
