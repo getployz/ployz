@@ -391,10 +391,10 @@ describe("organization enrollment coordinator", () => {
       expect(recoveryOf(await found(1))).toEqual(seed);
     });
 
-    it("seeds the key alone before any backup is stored", async () => {
+    it("asks for a new key and its backup when no backup holds the Organization's key", async () => {
       await storeOrganizationKey(null);
 
-      expect(recoveryOf(await found(1))).toEqual({ kind: "seed", expectedPublicKey: sealingKey, backup: null });
+      expect(recoveryOf(await found(1))).toEqual({ kind: "back_up" });
     });
 
     it("refuses an older ployz when its Organization has a key, and keeps no claim", async () => {
@@ -1272,8 +1272,16 @@ describe("organization enrollment coordinator", () => {
       expect(await organizationKey()).toEqual([{ public_key: held("A").publicKey, recovery_blob: backup(2) }]);
     });
 
-    it("refuses another backup or another key, writes nothing and leaves the founder uncommitted", async () => {
-      for (const [letter, stored] of [["A", backup(3)], ["B", null]] as const) {
+    it("replaces another key that has no backup", async () => {
+      const { complete } = await completeWithBackup({ publicKey: held("A").publicKey, backup: backup(2) });
+      await storeOrganizationKey("B", null);
+
+      expect(await complete()).toMatchObject({ success: { recoveryBackupDigest: recoveryDigest(backup(2)) } });
+      expect(await organizationKey()).toEqual([{ public_key: held("A").publicKey, recovery_blob: backup(2) }]);
+    });
+
+    it("refuses another backup or another backed-up key, writes nothing and leaves the founder uncommitted", async () => {
+      for (const [letter, stored] of [["A", backup(3)], ["B", backup(2)]] as const) {
         await harness.pool.query("delete from organization_sealing_key");
         const { complete } = await completeWithBackup({ publicKey: held("A").publicKey, backup: backup(2) });
         await storeOrganizationKey(letter, stored);
