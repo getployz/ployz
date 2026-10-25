@@ -138,16 +138,14 @@ impl EverSealed {
     }
 }
 
-/// Record each variable `working` holds sealed, at the write that seals it, and
-/// scrub the plain text it held from the Node Introductions.
+/// Record each variable `working` holds sealed, at the write that seals it.
 pub(crate) fn record(
     tx: &mut dyn Tx,
     environment: &str,
     working: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
-    let mut sealing = false;
     for (service, variable) in sealed_in(working) {
-        sealing |= tx.execute(
+        tx.execute(
             "INSERT INTO config_sealed_variable (environment_id, service_id, variable_id, key) \
              VALUES (?1, ?2, ?3, ?4) ON CONFLICT DO NOTHING",
             &[
@@ -156,26 +154,23 @@ pub(crate) fn record(
                 variable.id.as_str().into(),
                 variable.key.as_str().into(),
             ],
-        )? > 0;
-    }
-    if sealing {
-        scrub_introductions(tx, environment)?;
+        )?;
     }
     Ok(())
 }
 
-/// Seal, without its value, each plain value in `environment`'s Node Introductions of
-/// a variable it ever held sealed. A node never deployed compares with its
-/// introduction, so the seal still shows as a change, and Discard brings back no
-/// plain text.
+/// Seal, without its value, each plain value in the Node Introduction of a node
+/// `environment` deployed, of a variable it ever held sealed. A node never deployed
+/// compares with its introduction, as Discard does, so it keeps its plain value.
 pub(crate) fn scrub_introductions(tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
     let ever = EverSealed::load(tx, environment)?;
     if ever.is_empty() {
         return Ok(());
     }
     for row in tx.query(
-        "SELECT node_id, node FROM config_node_introduction \
-         WHERE environment_id = ?1 AND node_type = ?2",
+        "SELECT node_id, node FROM config_node_introduction i \
+         WHERE environment_id = ?1 AND node_type = ?2 AND EXISTS (SELECT 1 FROM config_applied a \
+         WHERE a.environment_id = i.environment_id AND a.node_id = i.node_id)",
         &[
             environment.into(),
             crate::storage::name_of(EnvironmentNodeType::Service)
@@ -210,8 +205,8 @@ pub(crate) fn scrub_introductions(tx: &mut dyn Tx, environment: &str) -> Result<
 /// Scrub what an earlier Store kept beside sealed values: the receiver's own in each
 /// arrival no Sync claims, and every Environment's Node Introductions.
 pub(crate) fn scrub_kept(tx: &mut dyn Tx) -> Result<(), RpcError> {
-    crate::branch::forget_unclaimed(tx)?;
     for row in tx.query("SELECT id FROM config_environment", &[])? {
+        crate::branch::forget_unclaimed(tx, row.text(0)?)?;
         scrub_introductions(tx, row.text(0)?)?;
     }
     Ok(())

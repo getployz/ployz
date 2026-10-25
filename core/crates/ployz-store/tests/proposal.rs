@@ -509,7 +509,10 @@ fn literal(cell: &str) -> String {
     }
     let cell: Value = serde_json::from_str(cell).unwrap();
     let cell = cell.get("cell").unwrap_or(&cell);
-    cell["value"]["value"].as_str().unwrap().to_owned()
+    cell.as_str().map_or_else(
+        || cell["value"]["value"].as_str().unwrap().to_owned(),
+        str::to_owned,
+    )
 }
 
 /// production's arrivals of `api`'s variables, by key, their cells as literals and
@@ -1295,6 +1298,24 @@ fn a_save_ends_proposals_and_keeps_what_arrived() {
     );
     assert_eq!(db.remove("production", &a), Ok(false));
     assert_eq!(db.env("production", "api")["X"], "1");
+}
+
+/// A refreshed proposal's rows no Sync undoes once a save ends it, so they keep no
+/// value of production's own.
+#[test]
+fn a_refreshed_proposal_a_save_ends_keeps_no_value_to_undo_to() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    db.include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    db.set("dev", &[("api.env.X", "2")]);
+    db.include(("dev", "production"), &sync_id(2), None)
+        .unwrap();
+    db.save("production");
+    assert_eq!(
+        arrivals(&db)["X"],
+        stored(["pending", "2", "0", "absent", "NULL", "unowned", "-"])
+    );
 }
 
 #[test]

@@ -864,6 +864,7 @@ pub(crate) fn end_included(
         ),
         &params,
     )?;
+    pair::forget_unclaimed(tx, environment.as_str())?;
     let ended = tx.execute(
         &format!("DELETE FROM config_proposal WHERE id IN ({of})"),
         &params,

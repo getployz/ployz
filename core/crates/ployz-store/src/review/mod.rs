@@ -1088,8 +1088,9 @@ impl Scrub {
 }
 
 /// Write [`Scrub`] into every earlier saved version, so storage holds no copy
-/// History hides.
+/// History hides, and scrub the Node Introductions.
 pub(crate) fn scrub_sealed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
+    sealed::scrub_introductions(tx, environment.as_str())?;
     let scrub = Scrub::load(tx, environment)?;
     let Some(latest) = &scrub.latest else {
         return Ok(());

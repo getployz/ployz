@@ -767,13 +767,12 @@ pub(super) struct Arrived {
 /// during a rolling deploy reads it on every pending row, so it is Absent, not NULL.
 const UNKEPT: SealedCell = SealedCell::Cell(Cell::Absent);
 
-/// Forget the receiver's own an earlier Store kept in each row no Sync claims.
-pub(crate) fn forget_unclaimed(tx: &mut dyn Tx) -> Result<(), RpcError> {
-    let unkept = json_of(&UNKEPT);
+/// Forget the receiver's own kept in each row of `receiver` no Sync claims.
+pub(crate) fn forget_unclaimed(tx: &mut dyn Tx, receiver: &str) -> Result<(), RpcError> {
     tx.execute(
-        "UPDATE config_sync_arrival SET was = ?1 \
-         WHERE sync_id IS NULL AND was IS NOT NULL AND was <> ?1",
-        &[unkept.as_str().into()],
+        "UPDATE config_sync_arrival SET was = ?2 \
+         WHERE environment_id = ?1 AND sync_id IS NULL AND was IS NOT NULL AND was <> ?2",
+        &[receiver.into(), json_of(&UNKEPT).as_str().into()],
     )?;
     Ok(())
 }

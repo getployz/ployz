@@ -769,6 +769,7 @@ fn plain_text_kept_beside_a_branch_before_the_scrub_is_gone_after_upgrade() {
         let [id, node] = introduced.as_slice() else {
             panic!("{introduced:?}")
         };
+        backend::deploy(&store, &who, "fix-web", 2);
         set(
             &store,
             &who,
@@ -778,7 +779,7 @@ fn plain_text_kept_beside_a_branch_before_the_scrub_is_gone_after_upgrade() {
                 backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
             )],
         );
-        backend::deploy(&store, &who, "production", 2);
+        backend::deploy(&store, &who, "production", 3);
         run(
             &url,
             &format!(
@@ -795,8 +796,10 @@ fn plain_text_kept_beside_a_branch_before_the_scrub_is_gone_after_upgrade() {
         assert_eq!(
             backend::tables_holding(&url, "plain-private"),
             [
+                "config_applied",
                 "config_environment_branch",
                 "config_node_introduction",
+                "config_saved",
                 "config_sync_arrival"
             ]
         );
