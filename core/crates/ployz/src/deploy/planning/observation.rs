@@ -24,6 +24,9 @@ pub(super) fn warnings(
         &snapshot.container_omissions,
     );
     warnings.extend(snapshot.volume_snapshot.deploy_warnings());
+    // Machines whose old copies may serve beside this Deploy's new ones; a gap
+    // that only a removal opened starts no new copy there.
+    let mut serving_beside = std::collections::BTreeSet::new();
     for warning in &mut warnings {
         let (kind, machine_id, gap, failed) = match warning {
             DeployWarning::ObservationFailed {
@@ -71,7 +74,12 @@ pub(super) fn warnings(
         });
         let removing =
             kind == ObservationKind::Container && (!removals.is_empty() || !retiring.is_empty());
-        if candidate
+        let replacing =
+            candidate || affected_existing(kind, machine_id, namespace, requested, &[], snapshot);
+        if replacing && kind == ObservationKind::Container {
+            serving_beside.insert(machine_id);
+        }
+        if replacing
             || removing
             || affected_existing(kind, machine_id, namespace, requested, retiring, snapshot)
         {
@@ -93,17 +101,21 @@ pub(super) fn warnings(
         .filter_map(|warning| {
             let (DeployWarning::ObservationFailed {
                 kind: ObservationKind::Container,
+                machine_id,
                 gap: Some(gap),
                 ..
             }
             | DeployWarning::ObservationOmitted {
                 kind: ObservationKind::Container,
+                machine_id,
                 gap: Some(gap),
-                ..
             }) = warning
             else {
                 return None;
             };
+            if !serving_beside.contains(machine_id) {
+                return None;
+            }
             Some(DeployWarning::MixedAfterReturn {
                 machine: gap.machine_name.to_string(),
             })

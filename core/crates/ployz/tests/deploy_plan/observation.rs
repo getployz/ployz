@@ -206,10 +206,12 @@ fn a_named_removal_makes_every_server_the_deploy_could_not_check_a_gap() {
         gaps(&preview),
         [(machine_id('2'), ObservationGapReason::Down)]
     );
+    // A removal starts no new copy, so nothing on that Server can serve beside one.
     assert!(
-        preview.warnings.contains(&DeployWarning::MixedAfterReturn {
-            machine: "unobserved".into(),
-        }),
+        !preview
+            .warnings
+            .iter()
+            .any(|warning| matches!(warning, DeployWarning::MixedAfterReturn { .. })),
         "{:?}",
         preview.warnings
     );
