@@ -205,7 +205,8 @@ fn drive_as(
     }
 }
 
-/// Drive `tool` against the Store alone; a refusal retries the same tool.
+/// Drive `tool` against the Store alone; a refusal retries the same tool, unless
+/// the call sent a secret's value.
 fn call(store: &ConfigStore, tool: &str, input: Value, call_key: &str) -> Run {
     let run = drive(
         store,
@@ -217,6 +218,7 @@ fn call(store: &ConfigStore, tool: &str, input: Value, call_key: &str) -> Run {
     );
     if let ToolResult::Refused(refusal) = &run.result
         && refusal.code != RpcErrorCode::Ambiguous
+        && !refusal.secret_sent
     {
         assert_eq!(refusal.retry.tool, tool, "a retry calls the same tool");
         if refusal.code != RpcErrorCode::ConfirmationRequired && refusal.writes != Writes::Unknown {
