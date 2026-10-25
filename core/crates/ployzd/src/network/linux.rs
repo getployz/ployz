@@ -1072,7 +1072,8 @@ fn ipv6_firewall_off(host_has_ipv6: bool, firewall: bool) -> Option<String> {
             "the {DOCKER_NETWORK_NAME} network stays IPv4-only, so Services have no IPv6 egress and apps see IPv6 visitors as its gateway: \
              Docker's ip6tables is off or uses nftables, so Ployz can't fence container IPv6 out of the mesh. \
              Remove \"ip6tables\": false and \"firewall-backend\": \"nftables\" from /etc/docker/daemon.json, \
-             then `systemctl restart docker` and `systemctl restart ployz`."
+             then `systemctl restart docker` and `systemctl restart ployz`. \
+             Ployz also reads it as off while daemon.json is newer than Docker's start."
         )
     })
 }
