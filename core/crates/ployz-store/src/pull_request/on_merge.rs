@@ -373,6 +373,11 @@ fn merge_names(from: &Environment, into: &Environment) -> BTreeMap<String, Strin
 fn shown_edit(edit: &SealedCell, names: &BTreeMap<String, String>) -> Value {
     match edit {
         SealedCell::Secret(_) => json!({ "secret": true }),
+        SealedCell::Cell(cell @ Cell::Value(_))
+            if let Some(generator) = ployz_core::config::cell_generator(cell) =>
+        {
+            json!(generator.to_string())
+        }
         SealedCell::Cell(Cell::Value(value)) => {
             let mut value = value.clone();
             if let Some(object) = value.as_object_mut() {
@@ -505,6 +510,14 @@ pub(crate) fn set_merge_value(
                     format!("{label}: only a secret takes a value sealed in the browser"),
                     json!({ "row": row }),
                 ));
+            }
+            (SecretValue::Text(value), false)
+                if let Some(generator) =
+                    ployz_core::config::Generator::parse(value).map_err(|refused| {
+                        error::invalid(format!("{label}: {refused}"), json!({ "row": row }))
+                    })? =>
+            {
+                SealedCell::Cell(ployz_core::config::generated_cell(&generator))
             }
             (SecretValue::Text(value), false) => {
                 let old: Vec<ValuePart> = [&planned.from, &planned.into]
@@ -777,6 +790,8 @@ fn land_one(
     let into = destination.summary.id.clone();
     let values = edited_values(edits(tx, &from.summary.id, &into)?, &rows);
     let mut applied = plan.apply(&picks, &values).map_err(config)?;
+    // Saved State publishes here, past the Working State write that makes values.
+    variables::make_generated(&mut applied.next)?;
     let (removed, arriving): (BTreeSet<&str>, BTreeSet<&str>) = picks
         .iter()
         .filter(|pick| *pick.at() == At::Node)
@@ -908,6 +923,7 @@ fn land_one(
         let next = mirror.apply(&staged, &values).map_err(config)?.next;
         working = with_variable_ids_of(&saved, &working, next);
     }
+    variables::take_generated(&mut working, &saved);
     let consumed = end_included(tx, &into, Some(&from.summary.id))?;
     // Saved took the merge whatever Working keeps, so the record takes each removal
     // the list showed, by the label it showed, and names each Service only the

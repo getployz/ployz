@@ -10,8 +10,9 @@ use serde_json::{Value, json};
 use crate::ConfigFileName;
 use crate::config::service_changes::{at, default_value, source_cell};
 use crate::config::{
-    ConfigError, SavedConfigIntent, SavedEnvironmentIntent as Intent, SavedServiceIntent,
-    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, SecretCiphertext,
+    ConfigError, Generator, SavedConfigIntent, SavedEnvironmentIntent as Intent,
+    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, SavedVolumeIntent,
+    SecretCiphertext,
 };
 
 /// One row's address: a lineage and a place in its node. The only row address anywhere;
@@ -605,6 +606,9 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
 }
 
 fn variable_cell(variable: &SavedVariableIntent) -> Cell {
+    if let Some(generator) = variable.generator() {
+        return generated_cell(generator);
+    }
     match &variable.value {
         SavedVariableValue::Literal { .. } | SavedVariableValue::Template { .. } => {
             let mut value = json!(variable.value);
@@ -617,5 +621,62 @@ fn variable_cell(variable: &SavedVariableIntent) -> Cell {
             fingerprint: variable.value_fingerprint.clone(),
         },
         SavedVariableValue::SecretWithoutValue => Cell::SecretWithoutValue,
+    }
+}
+
+/// A generated variable's cell: its [`Generator`], never its value, so two
+/// Environments that each made their own compare equal and the value never moves.
+#[must_use]
+pub fn generated_cell(generator: &Generator) -> Cell {
+    Cell::Value(json!({ "generated": generator }))
+}
+
+/// The [`Generator`] a cell from [`generated_cell`] or [`held_cell`] holds.
+#[must_use]
+pub fn cell_generator(cell: &Cell) -> Option<Generator> {
+    let Cell::Value(Value::Object(fields)) = cell else {
+        return None;
+    };
+    let only_held = fields
+        .keys()
+        .all(|key| matches!(key.as_str(), "generated" | "value" | "fingerprint"));
+    match fields.get("generated") {
+        Some(generator) if only_held => serde_json::from_value(generator.clone()).ok(),
+        Some(_) | None => None,
+    }
+}
+
+/// The value and fingerprint a cell from [`held_cell`] keeps beside its generator.
+pub(super) fn held_value(cell: &Cell) -> Option<(String, String)> {
+    let Cell::Value(Value::Object(fields)) = cell else {
+        return None;
+    };
+    Some((
+        fields.get("value")?.as_str()?.to_owned(),
+        fields.get("fingerprint")?.as_str()?.to_owned(),
+    ))
+}
+
+/// [`sealed_cell`], for what a landing replaces: a generated variable keeps its own value
+/// beside its generator, so undoing the landing puts that value back rather than making
+/// a new one a database never initialized with.
+pub(super) fn held_cell(env: &Intent, cells: &Cells, row: &RowId) -> SealedCell {
+    let At::Variable(key) = &row.at else {
+        return sealed_cell(env, cells, row);
+    };
+    let held = service(env, &row.lineage)
+        .and_then(|service| service.variables.iter().find(|v| v.key == *key));
+    match held {
+        Some(SavedVariableIntent {
+            generated: Some(generator),
+            value: SavedVariableValue::Literal { value },
+            value_fingerprint,
+            ..
+        }) => SealedCell::Cell(Cell::Value(json!({
+            "generated": generator,
+            "value": value,
+            "fingerprint": value_fingerprint,
+        }))),
+        Some(_) | None => sealed_cell(env, cells, row),
     }
 }

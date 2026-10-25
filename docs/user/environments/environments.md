@@ -96,7 +96,9 @@ replaces production's value when you sync it. A secret's value never syncs: one 
 arrives in production **Not set**, in its variables, in **Changes**, and as `TOKEN not set` on the
 service's card. Production still deploys: the deploy skips that variable, and any variable that
 references it, and warns. To set it as you sync, type production's value in the secret's row of
-the dialog. For a service that's new to production, set its sealed values after it arrives.
+the dialog. For a service that's new to production, set its sealed values after it arrives. A
+[generated value](../services/variables.md#generate-a-value) never syncs either: each environment
+keeps its own, and a new one arrives as `${{ secret(…) }}` for production to make its own.
 
 To keep a setting out of every sync, like a variable each environment sets its own way, click
 **Never sync** beside it in the dialog, or in the variable's ⋮ menu.

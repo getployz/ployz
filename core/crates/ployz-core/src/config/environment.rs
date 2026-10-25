@@ -9,7 +9,7 @@ use ts_rs::TS;
 use crate::{ConfigFileName, ConfigName, ContainerPath};
 
 use super::{
-    AuthoredServiceConfig, ConfigError, SecretCiphertext, ValuePart, ValuePartOwner,
+    AuthoredServiceConfig, ConfigError, Generator, SecretCiphertext, ValuePart, ValuePartOwner,
     parse_service_config,
 };
 
@@ -274,6 +274,42 @@ pub struct SavedVariableIntent {
     /// moving it would reshape every stored Working State and Applied State.
     pub value_fingerprint: String,
     pub value: SavedVariableValue,
+    /// How the Store makes this variable's value, which each Environment holds its own
+    /// of. It counts only on a literal: read it through [`Self::generator`], and
+    /// canonicalizing drops it from any other value, so a document that sealed the value
+    /// and kept the marker still reads. Written only when set, so other documents keep
+    /// their bytes and fingerprints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub generated: Option<Generator>,
+}
+
+impl SavedVariableIntent {
+    /// How the Store makes this variable's value: only a literal is generated.
+    #[must_use]
+    pub fn generator(&self) -> Option<&Generator> {
+        match self.value {
+            SavedVariableValue::Literal { .. } => self.generated.as_ref(),
+            SavedVariableValue::Template { .. }
+            | SavedVariableValue::Secret { .. }
+            | SavedVariableValue::SecretWithoutValue => None,
+        }
+    }
+
+    /// Drop a generator from a value it doesn't count on, such as one sealed since.
+    pub fn drop_stale_generator(&mut self) {
+        if self.generator().is_none() {
+            self.generated = None;
+        }
+    }
+
+    /// Whether this generated variable arrived without its own value yet: a copy or Sync
+    /// brought its [`Generator`], and the Store makes the value before it saves.
+    #[must_use]
+    pub fn awaits_value(&self) -> bool {
+        self.generator().is_some()
+            && matches!(&self.value, SavedVariableValue::Literal { value } if value.is_empty())
+    }
 }
 
 /// Literal text, structured references, or a privately stored sealed value.
@@ -648,6 +684,9 @@ pub fn canonicalize_environment_intent(
             (&a.mount_dir, &a.config_resource_id).cmp(&(&b.mount_dir, &b.config_resource_id))
         });
         service.variables.sort_by(|a, b| a.id.cmp(&b.id));
+        for variable in &mut service.variables {
+            variable.drop_stale_generator();
+        }
         service.volume_attachments.sort_by(|a, b| {
             (&a.mount_path, &a.volume_resource_id).cmp(&(&b.mount_path, &b.volume_resource_id))
         });

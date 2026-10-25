@@ -5,9 +5,9 @@ use serde_json::{Value, json};
 use super::*;
 use crate::config::service_changes::{default_value, keep_branch};
 use crate::config::{
-    ConfigAttachment, ConfigError, SavedEnvironmentIntent as Intent, SavedServiceIntent,
-    SavedVariableIntent, SavedVariableValue, ServiceGitBranch, ServiceImageCredentials,
-    ServiceSource, VolumeAttachment,
+    AWAITING_FINGERPRINT, ConfigAttachment, ConfigError, SavedEnvironmentIntent as Intent,
+    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, ServiceGitBranch,
+    ServiceImageCredentials, ServiceSource, VolumeAttachment,
 };
 
 /// Give `intent` `cell` at `row`, the inverse of the projection a plan's cells come
@@ -197,10 +197,18 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
             let Some(service) = service_mut(env, lineage) else {
                 return missing();
             };
+            let generated = cell_generator(cell);
             let (value, fingerprint) = match cell {
                 Cell::Absent => {
                     service.variables.retain(|v| v.key != *key);
                     return Ok(());
+                }
+                // Each Environment makes its own value; the Store makes this one, unless
+                // an undo puts back the value it held.
+                Cell::Value(_) if generated.is_some() => {
+                    let (value, fingerprint) = held_value(cell)
+                        .unwrap_or_else(|| (String::new(), AWAITING_FINGERPRINT.to_owned()));
+                    (SavedVariableValue::Literal { value }, fingerprint)
                 }
                 Cell::Value(value) => {
                     plain(value).ok_or_else(|| invalid("Not a variable's value"))?
@@ -217,6 +225,7 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
                 Some(variable) => {
                     variable.value = value;
                     variable.value_fingerprint = fingerprint;
+                    variable.generated = generated;
                 }
                 None => service.variables.push(SavedVariableIntent {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -225,6 +234,7 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
                     exported: false,
                     value_fingerprint: fingerprint,
                     value,
+                    generated,
                 }),
             }
         }

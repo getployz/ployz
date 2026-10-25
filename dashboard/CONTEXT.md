@@ -222,7 +222,7 @@ One unit of an Image Build: a BuildKit step (a Dockerfile instruction, image res
 _Avoid_: Build log line, vertex, build stage (a Cloud Deployment Stage is not a Build Step)
 
 **Database Preset**:
-A built-in shortcut that creates an ordinary image Service, its Volume, and its variables for a common database (PostgreSQL, Redis, MongoDB, MySQL), mirroring Railway's templates. Nothing records the preset afterwards; the result is edited, deployed, and removed like any other Service.
+A built-in shortcut that creates an ordinary image Service, its Volume, and its variables for a common database (PostgreSQL, Redis, MongoDB, MySQL), mirroring Railway's templates. Its password is a Generated Value, so each Environment's copy makes its own. Nothing records the preset afterwards; the result is edited, deployed, and removed like any other Service.
 _Avoid_: Database (as a resource kind), template, add-on
 
 **Approval**:

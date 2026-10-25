@@ -363,8 +363,12 @@ _Avoid_: Conditional Save, auto-promote, Apply
 The Environment a Branch was made from, whose Namespace lends the Branch its Live Nodes. An Environment without one, such as production, is a root.
 _Avoid_: Base, upstream
 
+**Generated Value**:
+A plain variable value the Config Store makes from `${{ secret(LENGTH, "CHARSET") }}`, written as the whole value. Each Environment holds its own: an Own Copy, a Sync, a Follow or a merge carries only the generator, and the receiver makes its value when it saves. Deploys, History and Discard never make a new one; asking again for the same generator, or setting back the value reads show, keeps it. It is not sealed.
+_Avoid_: Generated secret (that is a sealed value the Store makes), random variable
+
 **Own Copy**:
-A node a Branch deploys in its own Namespace, made from its Parent's configuration with the same lineage. An Own Copy of a Volume starts empty. A Config that an Own Copy mounts is always an Own Copy too, never a Live Node.
+A node a Branch deploys in its own Namespace, made from its Parent's configuration with the same lineage. An Own Copy of a Volume starts empty. A Generated Value in an Own Copy gets a new value. A Config that an Own Copy mounts is always an Own Copy too, never a Live Node.
 _Avoid_: Clone (a copy of data)
 
 **Live Node**:

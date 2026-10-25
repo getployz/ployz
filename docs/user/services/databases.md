@@ -28,11 +28,13 @@ You get a service named after the database. Its connection variables are exporte
 other services to reference. They use Railway's names, like `PGHOST` and `PGPASSWORD`, so an
 app moving from Railway can keep reading them.
 
-The generated password is a plain variable, not sealed, so anyone who can see the service's
-variables, its environment's History or a sync's changes can read it. That's what lets a [branch](../environments/environments.md) or a
-[pull request's preview](../environments/preview-environments.md) work: they start with
-sealed values Not set, but they copy plain ones, so a copy of the database sets up its new,
-empty volume with the password its connection variables already hold. To keep a database's
+The password is a [generated value](variables.md#generate-a-value), `${{ secret(32, "a-zA-Z") }}`:
+32 random letters, plain, not sealed, so anyone who can see the service's variables, its
+environment's History or a sync's changes can read it. Each environment makes its own. A
+[branch](../environments/environments.md) or a
+[pull request's preview](../environments/preview-environments.md) that copies the database gets a
+new password, which its new, empty volume sets up with, and its connection variables reference it.
+A branch that shares production's database reads production's password. To keep a database's
 password sealed, seal it from its menu in **Variables**, and set it in each new branch yourself.
 The seal also follows into branches that copied the database before it: unless a branch changed
 the password itself, its copy's password turns **Not set** once you deploy the seal. Set it in
@@ -119,6 +121,9 @@ IPs.
 - **The password is set once.** PostgreSQL, MySQL and MongoDB read their password only when
   they first set up their volume. If you change the password variable later, change it in the
   database too, or your app can't connect. Redis reads `REDIS_PASSWORD` each time it starts.
+- **A database added before Ployz 0.3.6 keeps its password as it is.** Its branches and previews
+  copy a plain password rather than making a new one. To give each branch its own, set the
+  password to `${{ secret(32, "a-zA-Z") }}` in the branch before its copy first deploys.
 - **A database added while Ployz sealed its password keeps it sealed.** Ployz can't read a sealed
   value, so it never unseals one. Its branches and previews show the password **Not set**, and
   their copy of the database can't start until you set it in the branch's **Variables**.

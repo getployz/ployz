@@ -4,16 +4,18 @@
 //! it; a new secret arrives as `{"secret": "…"}` and is sealed before it is stored.
 //! `{"secret": {"generate": true}}` has the Store make a random secret and seal it, so
 //! its value never leaves the Store; a variable that already holds a sealed secret keeps it.
+//! `${{ secret(32, "a-zA-Z") }}` as the whole value has the Store make a plain value,
+//! once per Environment: a copy, Sync or Follow brings only the [`Generator`].
 //! `exported` marks a variable other Services are meant to reference.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 use ployz_core::config::{
-    ClientSealedValue, CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput,
-    ResolveVariablesResult, ResolvedConfigFile, ResolverValue, SavedServiceIntent,
-    SavedVariableIntent, SavedVariableValue, SecretCiphertext, ServiceEnvValue, ValuePart,
-    ValuePartOwner, VariableProducer, is_deleted_owner, parse_variable_template,
+    ClientSealedValue, CompiledEnvironmentIntent, CompiledNodeConfig, Generator,
+    ResolveVariablesInput, ResolveVariablesResult, ResolvedConfigFile, ResolverValue,
+    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, SecretCiphertext, ServiceEnvValue,
+    ValuePart, ValuePartOwner, VariableProducer, is_deleted_owner, parse_variable_template,
     render_variable_parts, resolve_config_file, resolve_variables,
 };
 use ployz_core::{ConfigFileName, EnvPart, EnvValue, RpcError, SealedScope, ServiceName, Template};
@@ -66,6 +68,8 @@ enum Input {
     ClientSealed(ClientSealedValue),
     /// `{"secret": {"generate": true}}`: a random secret, unless one is stored already.
     Generate,
+    /// `${{ secret(…) }}`: a plain value the Store makes, unless one is stored already.
+    Generated(Generator),
 }
 
 /// A variable's value as reads show it: text with references by Service name,
@@ -165,28 +169,24 @@ pub(crate) fn set(
         .variables
         .iter()
         .find(|variable| variable.key == key.as_str());
-    let (value, fingerprint, typed) = match (input, current) {
+    let kept = |current: &SavedVariableIntent| {
+        (
+            current.value.clone(),
+            current.value_fingerprint.clone(),
+            current.generator().cloned(),
+            None,
+        )
+    };
+    let (value, fingerprint, generated, typed) = match (input, current) {
         (None, None) => return Err(invalid(key, "a new variable needs a value")),
-        (None, Some(current)) => (
-            current.value.clone(),
-            current.value_fingerprint.clone(),
-            None,
-        ),
-        (Some(Input::Keep), Some(current)) if secret(current) => (
-            current.value.clone(),
-            current.value_fingerprint.clone(),
-            None,
-        ),
+        (None, Some(current)) => kept(current),
+        (Some(Input::Keep), Some(current)) if secret(current) => kept(current),
         (Some(Input::Keep), _) => return Err(invalid(key, "it holds no secret to keep")),
         // A retried edit must not rotate a secret its referrers and a database already use.
         (Some(Input::Generate), Some(current))
             if matches!(current.value, SavedVariableValue::Secret { .. }) =>
         {
-            (
-                current.value.clone(),
-                current.value_fingerprint.clone(),
-                None,
-            )
+            kept(current)
         }
         (Some(Input::Generate), _) => {
             let sealed = sealer.seal(
@@ -201,15 +201,27 @@ pub(crate) fn set(
                 },
                 sealed.fingerprint,
                 None,
+                None,
             )
         }
-        (Some(Input::Text(_)), Some(current)) if secret(current) => {
+        (Some(Input::Text(_) | Input::Generated(_)), Some(current)) if secret(current) => {
             return Err(error::conflict(
                 format!(
                     "{key} is a secret, and a secret never becomes plain text: set a new secret, or unset it first"
                 ),
                 json!({ "variable": key.as_str() }),
             ));
+        }
+        // Asking again for the generator a variable has keeps its value: a retried edit or
+        // a re-applied patch must not rotate a password a database already initialized with.
+        (Some(Input::Generated(generator)), Some(current))
+            if current.generator() == Some(&generator) && !current.awaits_value() =>
+        {
+            kept(current)
+        }
+        (Some(Input::Generated(generator)), _) => {
+            let (value, fingerprint) = generated_value(&generator)?;
+            (value, fingerprint, Some(generator), None)
         }
         (Some(Input::Text(text)), _) => {
             let old = current.map_or(&[][..], |current| current.value.parts());
@@ -220,7 +232,14 @@ pub(crate) fn set(
             };
             let (parts, fingerprint) = text_parts(key, &text, &names, shown, old)?;
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
-            (stored(parts), fingerprint, typed)
+            let value = stored(parts);
+            // A generated variable's own value, as reads show it, set back stays generated.
+            match current {
+                Some(current) if current.generator().is_some() && current.value == value => {
+                    kept(current)
+                }
+                Some(_) | None => (value, fingerprint, None, typed),
+            }
         }
         (Some(Input::Seal(_)), _) => {
             return Err(guard.refuse(key.as_str(), invalid(key, client_sealed::PLAINTEXT_REFUSED)));
@@ -238,6 +257,7 @@ pub(crate) fn set(
                 },
                 sealed.fingerprint,
                 None,
+                None,
             )
         }
     };
@@ -251,6 +271,7 @@ pub(crate) fn set(
         exported: exported.unwrap_or_else(|| current.is_some_and(|current| current.exported)),
         value_fingerprint: fingerprint,
         value,
+        generated,
     };
     if current == Some(&next) {
         return Ok((false, typed));
@@ -783,7 +804,14 @@ pub(crate) fn new_secret(key: &VariableKey, value: &Value) -> Result<Option<NewS
     match parse(key, value.clone())? {
         (Some(Input::Seal(text)), exported) => Ok(Some(NewSecret { text, exported })),
         (
-            Some(Input::Text(_) | Input::Keep | Input::ClientSealed(_) | Input::Generate) | None,
+            Some(
+                Input::Text(_)
+                | Input::Keep
+                | Input::ClientSealed(_)
+                | Input::Generate
+                | Input::Generated(_),
+            )
+            | None,
             _,
         ) => Ok(None),
     }
@@ -810,7 +838,11 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
         return Ok(Input::Seal(plaintext.to_owned()));
     }
     match value {
-        Value::String(text) => Ok(Input::Text(text)),
+        Value::String(text) => match Generator::parse(&text) {
+            Ok(Some(generator)) => Ok(Input::Generated(generator)),
+            Ok(None) => Ok(Input::Text(text)),
+            Err(refused) => Err(invalid(key, &refused.to_string())),
+        },
         Value::Object(fields) if fields.len() == 1 => match fields.get("secret") {
             Some(Value::Bool(_)) => Ok(Input::Keep),
             Some(Value::Object(asked))
@@ -837,25 +869,117 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
 
 /// 32 random letters, the shape of the dashboard's database passwords.
 fn generated_secret() -> Result<String, RpcError> {
-    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    // 208 is the largest multiple of 52 a byte holds, so every letter is equally likely.
-    const LIMIT: u8 = 208;
+    let letters = Generator::new(32, "a-zA-Z")
+        .map_err(|_| error::internal("the letters generator is valid"))?;
+    generate(&letters)
+}
+
+/// A new value `generator` makes, with its fingerprint.
+fn generated_value(generator: &Generator) -> Result<(SavedVariableValue, String), RpcError> {
+    let value = generate(generator)?;
+    let fingerprint = plain_fingerprint(&[ValuePart::Text {
+        value: value.clone(),
+    }]);
+    Ok((SavedVariableValue::Literal { value }, fingerprint))
+}
+
+/// Make the value of every generated variable in `working` that awaits one: what a
+/// copy, Sync or Follow brought arrives with only its [`Generator`], and each
+/// Environment makes its own.
+///
+/// # Errors
+/// `unavailable` when there is no randomness to make one from.
+pub(crate) fn make_generated(
+    working: &mut ployz_core::config::SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    for variable in working
+        .services
+        .iter_mut()
+        .flat_map(|service| service.variables.iter_mut())
+    {
+        if let (true, Some(generator)) = (variable.awaits_value(), variable.generator().cloned()) {
+            (variable.value, variable.value_fingerprint) = generated_value(&generator)?;
+        }
+    }
+    Ok(())
+}
+
+/// Give each generated variable in `working` that awaits a value the one `made` holds
+/// for the same Service lineage, key and generator: what Working State takes from the
+/// Saved State a merge published, so the two hold one value.
+pub(crate) fn take_generated(
+    working: &mut ployz_core::config::SavedEnvironmentIntent,
+    made: &ployz_core::config::SavedEnvironmentIntent,
+) {
+    for service in &mut working.services {
+        let Some(source) = made
+            .services
+            .iter()
+            .find(|made| made.lineage_id == service.lineage_id)
+        else {
+            continue;
+        };
+        for variable in service.variables.iter_mut().filter(|v| v.awaits_value()) {
+            if let Some(made) = source.variables.iter().find(|made| {
+                made.key == variable.key
+                    && made.generator() == variable.generator()
+                    && !made.awaits_value()
+            }) {
+                variable.value.clone_from(&made.value);
+                variable
+                    .value_fingerprint
+                    .clone_from(&made.value_fingerprint);
+            }
+        }
+    }
+}
+
+/// Refuse to publish a generated variable that awaits its value: Saved State and what
+/// deploys from it never hold one.
+///
+/// # Errors
+/// `internal` naming the variable, never a value.
+pub(crate) fn refuse_awaiting(
+    intent: &ployz_core::config::SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    for service in &intent.services {
+        if let Some(variable) = service.variables.iter().find(|v| v.awaits_value()) {
+            return Err(error::internal(format!(
+                "{}.{} would be saved before its generated value was made",
+                service.slug, variable.key
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A value `generator` makes: each character drawn uniformly from its alphabet.
+pub(crate) fn generate(generator: &Generator) -> Result<String, RpcError> {
+    let alphabet = generator.alphabet();
+    let length = usize::from(generator.length());
+    if alphabet.is_empty() {
+        return Err(error::internal("a generator without characters"));
+    }
+    // Bytes at or past the largest multiple of the alphabet's size a byte holds are
+    // dropped, so every character is equally likely.
+    let limit = 256 - 256 % alphabet.len();
     let random = SystemRandom::new();
-    let mut secret = String::with_capacity(32);
+    let mut value = String::with_capacity(length);
     let mut bytes = [0_u8; 64];
-    while secret.len() < 32 {
+    while value.len() < length {
         random
             .fill(&mut bytes)
             .map_err(|_| error::unavailable("No randomness to make a secret from"))?;
-        secret.extend(
+        value.extend(
             bytes
                 .iter()
-                .filter(|byte| **byte < LIMIT)
-                .filter_map(|byte| LETTERS.get(usize::from(byte % 52)).copied().map(char::from))
-                .take(32_usize.saturating_sub(secret.len())),
+                .map(|byte| usize::from(*byte))
+                .filter(|byte| *byte < limit)
+                .filter_map(|byte| alphabet.get(byte % alphabet.len()).copied().map(char::from))
+                .take(length.saturating_sub(value.len())),
         );
     }
-    Ok(secret)
+    Ok(value)
 }
 
 fn exported_flag(key: &VariableKey, value: Value) -> Result<bool, RpcError> {
@@ -1283,6 +1407,35 @@ fn cycle(compiled: &CompiledEnvironmentIntent, path: &[String]) -> RpcError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_generated_value_has_the_length_and_charset_asked() {
+        let generator = Generator::new(64, "a-f0-9").unwrap();
+        let alphabet = generator.alphabet();
+        let value = super::generate(&generator).unwrap();
+        assert_eq!(value.len(), 64);
+        assert!(value.bytes().all(|byte| alphabet.contains(&byte)));
+    }
+
+    #[test]
+    fn generated_values_differ_and_reach_every_character() {
+        // 3 characters over 256 × 256 draws: a skewed or stuck draw misses one or
+        // repeats a value. Asserted without printing either value.
+        let generator = Generator::new(256, "abc").unwrap();
+        let first = super::generate(&generator).unwrap();
+        let second = super::generate(&generator).unwrap();
+        assert!(first != second, "two draws matched");
+        let mut counts = [0_usize; 3];
+        for _ in 0..256 {
+            for byte in super::generate(&generator).unwrap().bytes() {
+                if let Some(count) = counts.get_mut(usize::from(byte - b'a')) {
+                    *count += 1;
+                }
+            }
+        }
+        // Each expects 21845 of 65536; 5% either way is far past any fair draw.
+        assert!(counts.iter().all(|count| (20_750..=22_950).contains(count)));
+    }
+
     use ployz_core::ConfigName;
     use ployz_core::config::{
         CompiledEnvironmentNode, CompiledNodeSnapshot, ConfigNodeConfig, EncryptedSecretValue,

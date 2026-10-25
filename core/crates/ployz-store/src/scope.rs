@@ -788,6 +788,8 @@ pub(crate) fn persist_working(
     let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
     let before = row.intent(0, "Working State")?;
     let mut removed: RemovedServices = row.json(1, "removed Services")?;
+    // A write that skipped validation still never stores a value it owes.
+    crate::variables::make_generated(&mut environment.working)?;
     crate::storage::admit_protect(tx, |tx| {
         crate::review::touches_source(
             tx,
@@ -895,6 +897,7 @@ pub(crate) fn validate_and_refresh_working_from(
         .ok_or_else(|| error::corrupt("Environment"))?
         .intent(0, "Working State")?;
     // Every write of Working State, whole or not, comes through here.
+    crate::variables::make_generated(&mut environment.working)?;
     crate::names::refuse_new_reserved(&before, &environment.working)?;
     crate::client_sealed::refuse_port(&environment.working)?;
     let (working, live) = checked(

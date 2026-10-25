@@ -82,6 +82,9 @@ When a pull request opens, Ployz deploys its preview, named like `pr-142`:
 - Secrets don't carry into a preview: by design, a branch never gets its parent's secret
   values. Each sealed variable starts **Not set**, and the preview deploys without it. See
   [Set a preview's secrets](#set-a-previews-secrets).
+- A [generated value](../services/variables.md#generate-a-value), such as a database's password,
+  gets a new value in each preview that copies its service, so a database added on the canvas
+  starts in the preview with nothing to set.
 
 Open previews are listed under **Open now** in the panel, and in the environment switcher under
 the environment they start from. Each one is a [branch](environments.md) of that environment, so

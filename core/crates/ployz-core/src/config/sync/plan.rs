@@ -579,7 +579,7 @@ impl Plan {
             landed.push(Landed {
                 row: row.id.clone(),
                 prior: row.base.clone(),
-                was: sealed_cell(&self.into, &into_cells, &row.id),
+                was: held_cell(&self.into, &into_cells, &row.id),
                 value: Cell::Absent,
             });
         }
@@ -681,7 +681,7 @@ impl Plan {
                 waiting.push(id.clone());
                 value = SealedCell::Cell(Cell::SecretWithoutValue);
             }
-            let mut was = sealed_cell(&self.into, &into_cells, id);
+            let mut was = held_cell(&self.into, &into_cells, id);
             // Undo puts the receiver's git branch back with its source; a Sync never moves one.
             if let (At::Setting(Setting::Source), SealedCell::Cell(Cell::Value(source))) =
                 (&id.at, &mut was)

@@ -849,6 +849,7 @@ pub(crate) fn publish(
     (message, accepted): (Option<&str>, &[crate::VolumeLoss]),
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
+    crate::variables::refuse_awaiting(&intent)?;
     crate::volume::check_storage(
         tx,
         environment,
@@ -1079,6 +1080,8 @@ impl Scrub {
                 if was.value != *value {
                     was.value = value.clone();
                     fingerprint.clone_into(&mut was.value_fingerprint);
+                    // A sealed value is never generated.
+                    was.generated = None;
                     scrubbed = true;
                 }
             }
