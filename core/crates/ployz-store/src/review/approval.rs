@@ -329,11 +329,14 @@ fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
 ///
 /// A protector's token is `exempt` rather than unasked everywhere: its grant still
 /// decides what it may destroy, and a retry, which may replay what someone else
-/// destroyed, still asks.
+/// destroyed, still asks unless it destroys nothing.
 pub(crate) struct Gate<'a> {
     trusted: &'a Trusted,
     protected: bool,
     exempt: bool,
+    /// A retry gate whose caller was `exempt`: its retry that destroys nothing passes
+    /// as its plain Deploy does.
+    spares_harmless: bool,
 }
 
 impl<'a> Gate<'a> {
@@ -354,14 +357,17 @@ impl<'a> Gate<'a> {
             trusted,
             protected: asks && !protector,
             exempt: asks && protector,
+            spares_harmless: false,
         })
     }
 
-    /// The gate a Deploy's retry passes: a protector's token asks there too.
+    /// The gate a Deploy's retry passes: a protector's token asks there too, unless
+    /// its retry destroys nothing.
     pub(crate) const fn retrying(self) -> Self {
         Self {
             protected: self.protected || self.exempt,
             exempt: false,
+            spares_harmless: self.exempt,
             ..self
         }
     }
@@ -739,6 +745,17 @@ pub(crate) fn approve_retry(
         effects.into_iter().chain(pruning.removes()).collect();
     // Beyond where every retry asks, a retry asks only when it takes something off.
     if !gate.asks_retry() && effects.is_empty() && !pruning.unseen() {
+        return Ok(());
+    }
+    // A protector's retry that destroys nothing, nor replays what its source did,
+    // passes as its plain Deploy does.
+    if gate.spares_harmless
+        && effects.is_empty()
+        && !pruning.unseen()
+        && rollback.rolls_back.is_empty()
+        && !rollback.replays_teardown
+        && retry.accept_volume_loss.is_empty()
+    {
         return Ok(());
     }
     if !effects.is_empty() {

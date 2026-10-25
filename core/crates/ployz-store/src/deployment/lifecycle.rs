@@ -674,6 +674,7 @@ pub(crate) fn retry(
         removes: Vec::new(),
         retires: Vec::new(),
         ships: None,
+        replays_teardown: false,
     };
     if let Some(confirmed) = &retry.rolls_back
         && *confirmed != rollback.rolls_back
@@ -735,6 +736,11 @@ pub(crate) fn retry(
                 | TargetNode::Config { .. } => None,
             })
             .collect()
+    });
+    rollback.replays_teardown = nodes.iter().any(|node| match node {
+        TargetNode::Service { removals, .. } => !removals.is_empty(),
+        TargetNode::Volume { deletes, .. } => deletes.is_some(),
+        TargetNode::Config { .. } => false,
     });
     // A retry builds from what its source did, but sends nothing.
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
@@ -826,6 +832,9 @@ pub(crate) struct Rollback {
     /// Service that runs, or may. None for one of some Services, which leaves the
     /// rest as they are.
     pub(crate) ships: Option<Vec<ServiceLineageId>>,
+    /// Whether what it queues takes a runtime Service off or deletes a Docker Volume,
+    /// as its source's review accepted.
+    pub(crate) replays_teardown: bool,
 }
 
 /// The Deployments of `deployment`'s Environment after it that may have changed
