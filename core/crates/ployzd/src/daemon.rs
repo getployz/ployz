@@ -239,7 +239,7 @@ impl Daemon {
             &local_record,
         )
         .await?;
-        let mut network = NetworkPlane::start(&local_record).await?;
+        let mut network = NetworkPlane::start(&local_record, &config.data_dir).await?;
         let machine_api_listener = match config
             .machine_api_address
             .or_else(|| network.as_ref().map(NetworkPlane::machine_api_address))
@@ -880,7 +880,7 @@ const _: () = assert!(
 );
 
 #[must_use]
-struct SystemdStartTimeoutExtend {
+pub(crate) struct SystemdStartTimeoutExtend {
     task: JoinHandle<()>,
 }
 
@@ -891,7 +891,7 @@ impl Drop for SystemdStartTimeoutExtend {
 }
 
 /// Keeps extending the start timeout while `what` runs, up to MACHINE_START_WAIT.
-fn extend_systemd_start_timeout(what: &'static str) -> SystemdStartTimeoutExtend {
+pub(crate) fn extend_systemd_start_timeout(what: &'static str) -> SystemdStartTimeoutExtend {
     let usec = u32::try_from(SYSTEMD_START_TIMEOUT_EXTENSION.as_micros())
         .expect("30s start-timeout extension fits u32 microseconds");
     let deadline = Instant::now() + MACHINE_START_WAIT;

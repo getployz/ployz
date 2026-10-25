@@ -859,3 +859,87 @@ default via 2001:db8::1 dev ens4 proto static metric 1024 onlink pref medium
     );
     assert!(router_advertised_interfaces("", "").is_empty());
 }
+
+#[test]
+fn a_readdress_names_the_family_it_could_not_reach() {
+    assert!(readdress_failure(true).contains("could not take IPv6"));
+    assert!(readdress_failure(false).contains("could not drop IPv6"));
+}
+
+#[test]
+fn docker_refuses_a_container_between_restarts_both_ways() {
+    let answer = |status_code, message: &str| bollard::errors::Error::DockerResponseServerError {
+        status_code,
+        message: message.into(),
+    };
+    assert!(between_restarts(&answer(
+        500,
+        "container ec5dce3c is not connected to network ployz",
+    )));
+    assert!(between_restarts(&answer(
+        404,
+        "network sandbox for container ec5dce3c not found",
+    )));
+    assert!(!between_restarts(&answer(404, "No such container: gone")));
+    assert!(!between_restarts(&answer(
+        500,
+        "container ec5dce3c is not connected to network other",
+    )));
+    assert!(!between_restarts(&answer(500, "Address already in use",)));
+}
+
+#[test]
+fn a_member_between_restarts_rejoins_at_the_address_it_is_pinned_to() {
+    use bollard::models::{ContainerSummaryHostConfig, ContainerSummaryNetworkSettings};
+    let crash_looping = ContainerSummary {
+        id: Some("crash-looping".into()),
+        host_config: Some(ContainerSummaryHostConfig {
+            network_mode: Some(DOCKER_NETWORK_NAME.into()),
+            ..Default::default()
+        }),
+        network_settings: Some(ContainerSummaryNetworkSettings {
+            networks: Some(HashMap::from([(
+                DOCKER_NETWORK_NAME.to_owned(),
+                crate::docker::bridge_address::endpoint(false, Some("10.210.1.7".parse().unwrap())),
+            )])),
+        }),
+        ..Default::default()
+    };
+    let ipv4 = bridge_members(&[crash_looping])
+        .first()
+        .and_then(|member| member.ipv4);
+    assert_eq!(ipv4, Some("10.210.1.7".parse().unwrap()));
+}
+
+#[test]
+fn a_member_between_restarts_is_stopped_and_noted_only_when_docker_would_run_it_again() {
+    use bollard::models::RestartPolicyNameEnum as Policy;
+    let settle = |running, restarting, policy| settle(running, restarting, policy);
+    // Docker is restarting it, whatever its policy.
+    assert_eq!(
+        settle(true, true, Some(Policy::ON_FAILURE)),
+        Settle::StopAndNote
+    );
+    assert_eq!(settle(false, true, None), Settle::StopAndNote);
+    // Exiting under a policy that restarts it whatever its exit.
+    assert_eq!(
+        settle(true, false, Some(Policy::ALWAYS)),
+        Settle::StopAndNote
+    );
+    assert_eq!(
+        settle(true, false, Some(Policy::UNLESS_STOPPED)),
+        Settle::StopAndNote
+    );
+    // Exiting for good.
+    assert_eq!(settle(true, false, Some(Policy::NO)), Settle::Stop);
+    assert_eq!(settle(true, false, Some(Policy::EMPTY)), Settle::Stop);
+    assert_eq!(settle(true, false, None), Settle::Stop);
+    // Exiting under on-failure, before Docker knows its exit code.
+    assert_eq!(settle(true, false, Some(Policy::ON_FAILURE)), Settle::Leave);
+    // Already exited, for good or with its retries spent.
+    assert_eq!(
+        settle(false, false, Some(Policy::ON_FAILURE)),
+        Settle::Leave
+    );
+    assert_eq!(settle(false, false, Some(Policy::ALWAYS)), Settle::Leave);
+}
