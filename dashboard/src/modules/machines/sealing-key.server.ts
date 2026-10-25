@@ -1,10 +1,11 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { MachineId, SealingPublicKey } from "@ployz/sdk";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createClusterResealRequestedEvent } from "#/modules/inngest/events";
+import { currentGeneration } from "#/modules/machines/connections.server";
 import type { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
 import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey } from "#/modules/machines/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -29,7 +30,10 @@ export const readSealingPublicKey = Effect.fn("SealingKey.readPublicKey")(functi
   return row?.publicKey;
 });
 
-/** Keeps the first Sealing Key a Cluster reports; the first one asks for its Organization's Legacy secrets to be resealed to it. */
+/**
+ * Keeps the first Sealing Key a Cluster reports, and gives it to the Organization unless a backup holds another; the first
+ * one asks for its Organization's Legacy secrets to be resealed to it.
+ */
 export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(function* (
   organizationId: string, clusterKey: string, publicKey: SealingPublicKey,
 ) {
@@ -46,7 +50,7 @@ export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(fu
       Effect.annotateLogs({ organizationId, recorded, reported: publicKey }),
     );
   }
-  yield* recordOrganizationSealingKey(organizationId, publicKey);
+  yield* recordOrganizationSealingKey(organizationId, recorded ?? publicKey);
 });
 
 export const recoveryDigest = (backup: string) => createHash("sha256").update(Buffer.from(backup, "base64")).digest("hex");
@@ -60,14 +64,22 @@ export const readOrganizationSealingKey = Effect.fn("SealingKey.readOrganization
   return row;
 });
 
+/**
+ * Keeps the Organization's key once a backup holds it. Before then no Server outside the current Cluster can be given
+ * that key, so the Cluster's key replaces it.
+ */
 const recordOrganizationSealingKey = Effect.fn("SealingKey.recordOrganizationKey")(function* (
   organizationId: string, publicKey: SealingPublicKey,
 ) {
   const { drizzle } = yield* Database;
-  yield* drizzle.insert(organizationSealingKey).values({ organizationId, publicKey }).onConflictDoNothing();
+  yield* drizzle.insert(organizationSealingKey).values({ organizationId, publicKey }).onConflictDoUpdate({
+    target: organizationSealingKey.organizationId,
+    set: { publicKey, updatedAt: new Date() },
+    setWhere: and(isNull(organizationSealingKey.recoveryBlob), ne(organizationSealingKey.publicKey, publicKey)),
+  });
   const recorded = (yield* readOrganizationSealingKey(organizationId))?.publicKey;
   if (recorded !== undefined && recorded !== publicKey) {
-    yield* Effect.logError("A Server reported a Sealing Key unlike the one its Organization first reported.").pipe(
+    yield* Effect.logError("A Server reported a Sealing Key unlike the one its Organization's recovery backup holds.").pipe(
       Effect.annotateLogs({ organizationId, recorded, reported: publicKey }),
     );
   }
@@ -88,6 +100,9 @@ export const recordFirstRecoveryBackup = Effect.fn("SealingKey.recordFirstRecove
 });
 
 export const readSealingRecovery = Effect.fn("SealingKey.readRecovery")(function* (organizationId: string) {
+  const generation = yield* currentGeneration(organizationId);
+  const clusterKey = generation === null ? undefined : yield* readSealingPublicKey(organizationId, generation);
+  if (clusterKey !== undefined) yield* recordOrganizationSealingKey(organizationId, clusterKey);
   const stored = yield* readOrganizationSealingKey(organizationId);
   if (stored === undefined) return yield* new NotFound({ message: "This Organization has no Sealing Key." });
   return {

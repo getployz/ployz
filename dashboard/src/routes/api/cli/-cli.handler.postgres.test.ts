@@ -1939,16 +1939,16 @@ const sealing = Effect.fn(function* (path: "recovery" | "rotate", as: As, body: 
   const bearer = as.session ?? as.bearer;
   if (bearer !== undefined) headers.set("authorization", `Bearer ${bearer}`);
   const request = new Request(`${origin}/api/cli/sealing/${path}`, { method: "POST", headers, body: JSON.stringify(body) });
-  const handled = path === "recovery"
-    ? handleOrganizationCliRequest(request, CliReadSealingRecoveryInput, readCliSealingRecovery)
-    : handleOrganizationCliRequest(request, CliRotateSealingRecoveryInput, rotateCliSealingRecovery);
-  return yield* handled.pipe(
+  const respond = <E, R>(handled: Effect.Effect<Response, E, R>) => handled.pipe(
     Effect.flatMap((response) => Effect.promise(async (): Promise<{ status: number; json?: unknown }> => ({
       status: response.status,
       json: await response.json(),
     }))),
     Effect.catch((error) => Effect.succeed({ status: statusForPublicError(encodePublicError(error)) })),
   );
+  return yield* path === "recovery"
+    ? respond(handleOrganizationCliRequest(request, CliReadSealingRecoveryInput, readCliSealingRecovery))
+    : respond(handleOrganizationCliRequest(request, CliRotateSealingRecoveryInput, rotateCliSealingRecovery));
 });
 
 it.live(
