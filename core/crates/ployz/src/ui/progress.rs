@@ -7,7 +7,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ployz_core::{ContainerId, DeployWarning, MachineId, Namespace, QualifiedService, ServiceName};
+use ployz_core::{
+    ContainerId, DeployWarning, MachineId, Namespace, ObservationKind, QualifiedService,
+    ServiceName,
+};
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
@@ -697,12 +700,17 @@ fn word(row: &Row, frame: &Frame) -> String {
     match &row.subject {
         Subject::Service(graph) => {
             let left = left_running(row, frame);
-            if left.is_empty() {
+            let unchecked = unchecked(row, frame, &left);
+            if left.is_empty() && unchecked.is_empty() {
                 graph.word(&row.state)
             } else if graph.work == Work::Remove {
                 // A removal counts the copies it could not reach among the Service's,
-                // and says why each stays, once per reason.
-                let why: BTreeSet<&str> = left.values().map(|reason| reason.as_str()).collect();
+                // and says why each stays, once per reason. A Server it could not
+                // check at all may hold a copy it never saw.
+                let mut why: BTreeSet<String> = left.values().map(ToString::to_string).collect();
+                why.extend(unchecked.into_iter().map(|machine| {
+                    format!("couldn't check {machine}, the next full deploy removes any copy there")
+                }));
                 format!(
                     "removed {}/{}; {}",
                     graph.ready,
@@ -752,6 +760,69 @@ fn left_running<'a>(row: &Row, frame: &'a Frame) -> BTreeMap<&'a ContainerId, &'
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::NotInStore { .. } => None,
         })
+        .collect()
+}
+
+/// Servers a completed removal could not check for a copy of its Service, by name,
+/// less those a copy left running already names.
+fn unchecked(row: &Row, frame: &Frame, left: &BTreeMap<&ContainerId, &String>) -> BTreeSet<String> {
+    let Subject::Service(graph) = &row.subject else {
+        return BTreeSet::new();
+    };
+    if graph.work != Work::Remove || row.state != State::Completed {
+        return BTreeSet::new();
+    }
+    let named: BTreeSet<&str> = frame
+        .notices
+        .iter()
+        .filter_map(|warning| match warning {
+            DeployWarning::LeftRunning {
+                container_id,
+                machine,
+                ..
+            } if left.contains_key(container_id) => Some(machine.as_str()),
+            DeployWarning::LeftRunning { .. }
+            | DeployWarning::StorageHeadroom { .. }
+            | DeployWarning::UnbudgetedDiskUsage
+            | DeployWarning::ObservationFailed { .. }
+            | DeployWarning::ObservationOmitted { .. }
+            | DeployWarning::StorageObservationUnknown { .. }
+            | DeployWarning::IngressHostname { .. }
+            | DeployWarning::ObserverRelativeHostnameConflict
+            | DeployWarning::SkippedDependencyHealth { .. }
+            | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::MixedAfterReturn { .. }
+            | DeployWarning::NotInStore { .. } => None,
+        })
+        .collect();
+    frame
+        .notices
+        .iter()
+        .filter_map(|warning| match warning {
+            DeployWarning::ObservationFailed {
+                kind: ObservationKind::Container,
+                gap: Some(gap),
+                ..
+            }
+            | DeployWarning::ObservationOmitted {
+                kind: ObservationKind::Container,
+                gap: Some(gap),
+                ..
+            } => Some(gap.machine_name.to_string()),
+            DeployWarning::ObservationFailed { .. }
+            | DeployWarning::ObservationOmitted { .. }
+            | DeployWarning::LeftRunning { .. }
+            | DeployWarning::StorageHeadroom { .. }
+            | DeployWarning::UnbudgetedDiskUsage
+            | DeployWarning::StorageObservationUnknown { .. }
+            | DeployWarning::IngressHostname { .. }
+            | DeployWarning::ObserverRelativeHostnameConflict
+            | DeployWarning::SkippedDependencyHealth { .. }
+            | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::MixedAfterReturn { .. }
+            | DeployWarning::NotInStore { .. } => None,
+        })
+        .filter(|machine| !named.contains(machine.as_str()))
         .collect()
 }
 
