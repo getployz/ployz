@@ -51,8 +51,9 @@ An accepted deployment and its redeploys keep their original snapshot while you 
 ## Redeploy or cancel a deployment
 
 - **Redeploy**, on any finished deployment, ships that deployment's commit and settings again.
-  It never prunes, even when the deployment it ships again did: services that aren't the
-  environment's are kept and named, as by a deploy without `--prune`.
+  It removes services that aren't the environment's when the deployment it ships again did, and
+  keeps and names them when that one was a **Deploy, keep other services**, a
+  `ployz deploy --no-prune`, or made before deploys removed them.
   Your staged changes, volume changes included, wait for your next deploy, and **Copies wait
   for Deploy** beside the button says so when volume changes are staged. To ship a fix, change it
   and deploy instead. A deployment whose restore failed can't be redeployed, because it would mount

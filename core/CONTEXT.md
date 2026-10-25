@@ -221,7 +221,7 @@ The complete desired Services for one Deploy together with which of those Servic
 It is derived from an Environment's Saved State when a Deploy is admitted, never authored directly. Compose files are not an input.
 
 **Prune Scope**:
-How far a full reconciliation removes what its target lacks. `namespace` removes every observer-visible Service of the resolved user Namespace the target lacks: the direct Deploy's default, and what a Config Store Deploy admitted with prune lowers. `removals` removes only the Deploy's removals: the Services this Config Store held and since dropped, and the runtime names its Services ran as and no longer do; every other running Service is kept and reported as a Deploy Warning. A Config Store lowers a full Deploy as `removals` unless it was admitted with prune, so two Stores driving one Cluster never remove each other's Services. A targeted Deploy has no Prune Scope to apply.
+How far a full reconciliation removes what its target lacks. `namespace` removes every observer-visible Service of the resolved user Namespace the target lacks: the direct Deploy's default, and what a Config Store lowers a full Deploy as unless it was admitted with no-prune. `removals` removes only the Deploy's removals: the Services this Config Store held and since dropped, and the runtime names its Services ran as and no longer do; every other running Service is kept and reported as a Deploy Warning. It is the no-prune scope, and what a Deployment admitted before Config Store Deploys pruned by default lowers. Two Stores driving one Cluster's Namespace remove each other's Services; only a local PLOYZ_STORE, which tests use, makes a second Store, so this is stated rather than guarded. A targeted Deploy has no Prune Scope to apply.
 _Avoid_: prune flag on Service Attempt, ownership of a Service by a Store, orphan
 _Avoid_: leftover filtered Compose project, Compose as an authoring format, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 
@@ -405,7 +405,7 @@ The observer-relative Machine, Service Container, and Docker Volume observations
 _Avoid_: current cluster state, desired state, cluster snapshot, authoritative Cluster completeness
 
 **Prune Refusal**:
-Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. Absence means this Deploy may remove obsolete Services owned by the resolved user Namespace. A Prune Scope of `removals` is one such refusal: the Deploy retires its removals and keeps the rest.
+Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. Absence means this Deploy may remove obsolete Services owned by the resolved user Namespace. A Prune Scope of `removals`, chosen with no-prune, is one such refusal: the Deploy retires its removals and keeps the rest.
 _Avoid_: prune flag, Cluster-complete snapshot
 
 **Deploy Plan**:
