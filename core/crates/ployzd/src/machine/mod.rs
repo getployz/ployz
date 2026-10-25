@@ -13,8 +13,9 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
-    ManagementClientLabel, PinnedAddresses, RecoverySeed, SelectedEndpoint,
+    DeviceCode, DeviceKey, LocalMachinePhase, Machine, MachineId, MachineRuntime,
+    MachineStorageObservation, ManagementClientLabel, PinnedAddresses, RecoverySeed,
+    SelectedEndpoint,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -169,6 +170,10 @@ pub struct LocalMachineRecord {
     /// Where the observe process pushes crash events. Absent means buffer only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     push_target: Option<Url>,
+    /// Whether every live `device-` slot was written through Device approval. Absent on
+    /// records from before Devices were Full-only, when any client could name one.
+    #[serde(default)]
+    device_slots_vetted: bool,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -259,6 +264,14 @@ impl LocalMachineRecord {
             .map(|(label, _)| label)
     }
 
+    /// Keys of the approved Devices: accepted slots whose `device-` label names their key.
+    pub fn devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
+        self.management_clients.iter().filter_map(|(label, slot)| {
+            let key = DeviceKey::from_bytes(slot.accepted()?);
+            (DeviceCode::named_by(label) == Some(key.code())).then_some(key)
+        })
+    }
+
     /// Whether `remote` is a key some Clear left in a tombstone.
     #[must_use]
     pub fn clears_management_client(&self, remote: &[u8; 32]) -> bool {
@@ -318,7 +331,7 @@ impl LocalMachineRecord {
             .filter(|(_, slot)| {
                 slot.accepted().as_ref() == Some(remote) || slot.pending().as_ref() == Some(remote)
             })
-            .map(|(label, _)| ployz_core::ManagementScope::of(label))
+            .map(|(label, _)| ployz_core::ManagementScope::of(label, remote))
             .max()
     }
 
@@ -484,6 +497,7 @@ impl LocalMachineRecord {
             selected_endpoints: BTreeMap::new(),
             pinned_addresses: PinnedAddresses::default(),
             push_target: None,
+            device_slots_vetted: true,
         })
     }
 
@@ -580,6 +594,7 @@ impl LocalMachineRecord {
             selected_endpoints: self.selected_endpoints,
             pinned_addresses: self.pinned_addresses,
             push_target: self.push_target,
+            device_slots_vetted: self.device_slots_vetted,
         }
     }
 }

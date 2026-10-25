@@ -36,7 +36,7 @@ use crate::{
 
 use super::{
     Error, cancellation_on_ctrl_c, leaf_matches, store::scoped, string_values, with_client,
-    with_reader,
+    with_full_client, with_reader,
 };
 
 pub(super) fn exec_command(command: Command) -> Command {
@@ -327,7 +327,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             std::io::stdin().is_terminal(),
         )?,
     );
-    with_client(root, |client| {
+    with_full_client(root, |client| {
         Box::pin(async move {
             let tty = options.tty;
             let detach = options.detach;
@@ -854,7 +854,7 @@ pub fn port_forward(root: &ArgMatches) -> Result<(), Error> {
         leaf.get_one::<String>("port")
             .ok_or_else(|| Error::usage("port is required"))?,
     )?;
-    with_client(root, |client| {
+    with_full_client(root, |client| {
         Box::pin(async move { run_port_forward(client, &service, ports).await })
     })
 }
@@ -911,7 +911,12 @@ async fn run_port_forward(
                                 crate::ui::warn_cause(format_args!("port-forward connection to {remote} failed"), &error);
                             }
                         }
-                        Err(error) => crate::ui::warn_cause(format_args!("port-forward connection to {remote} failed"), &error),
+                        Err(error) => {
+                            crate::ui::warn_cause(format_args!("port-forward connection to {remote} failed"), &error);
+                            if matches!(error, crate::connect::ConnectError::TunnelNeedsFull) {
+                                crate::ui::hint(&super::device::request_hint());
+                            }
+                        }
                     }
                 });
             }

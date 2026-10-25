@@ -207,6 +207,37 @@ and `metrics` still work for them in the CLI: Ployz Cloud reads the servers for 
 each server's newest 200 lines at most, so `logs --follow` needs an owner or admin. An admin
 moved to member loses this access within 5 minutes.
 
+### Approve a device
+
+`exec` and `service port-forward` need an approved device. Until yours is approved, they refuse
+and point you at `ployz device request`. Every other command works as before.
+
+```sh
+ployz device request
+```
+
+It prints a code, such as `mmg42klgyq`. Anyone in the Organization can request one. An owner or
+admin approves it from a device that's already approved:
+
+```sh
+ployz device approve mmg42klgyq
+```
+
+For your first device, approve it over SSH on a server. Run `ployz login` there first, then the
+same `ployz device approve`. A request lasts 24 hours.
+
+`approve` checks that the key Ployz Cloud returns matches the code, then adds it to every server
+and lists what each server did. A server that's down when you approve doesn't get the device.
+Run `approve` again once it's back.
+
+```sh
+ployz device ls
+ployz device rm mmg42klgyq
+```
+
+`device ls` shows each device and the servers missing it. `device rm` takes it off every server
+that answers.
+
 ## Change what a server does
 
 Every server runs builds, runs services and takes web traffic. To turn one off, see

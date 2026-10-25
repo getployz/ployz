@@ -314,7 +314,7 @@ impl Gaps {
         )
     }
 
-    fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         self.failures.is_empty() && self.omitted.is_empty()
     }
 

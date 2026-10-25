@@ -431,7 +431,7 @@ async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: 
 
 /// The Machine API as one management connection serves it: each request carries its
 /// connection, and once the connection drains every stream but `SetManagementClient`
-/// ends.
+/// and `SetDevice` ends.
 #[derive(Clone)]
 struct ConnectionApi<S> {
     api: S,
@@ -456,16 +456,17 @@ where
     }
 
     fn call(&mut self, request: http::Request<hyper::body::Incoming>) -> Self::Future {
-        // Clearing its own slot revokes the caller, and the Clear response is its only
-        // confirmation on this connection, so that response survives the drain.
-        let drain_exempt = request.uri().path() == op::SetManagementClient::PATH;
+        let may_revoke_caller = matches!(
+            request.uri().path(),
+            op::SetManagementClient::PATH | op::SetDevice::PATH
+        );
         let mut request = request.map(Body::new);
         request
             .extensions_mut()
             .insert(self.connection.weak_handle());
         request.extensions_mut().insert(self.client);
         let response = self.api.call(request);
-        if drain_exempt {
+        if may_revoke_caller {
             return Box::pin(response);
         }
         let drain = self.drain.clone();
