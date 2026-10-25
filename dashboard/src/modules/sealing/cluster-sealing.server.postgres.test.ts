@@ -56,9 +56,8 @@ describe("readClusterSealing", () => {
   const config = () => AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(
     ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl } }),
   )));
-  const run = <A, E>(effect: Effect.Effect<A, E, never>) => harness.runEffect(effect);
-  const read = () => run(readClusterSealing(organizationId).pipe(Effect.provideService(SecretEncryption, encryption)));
-  const readToSeal = () => run(readClusterSealingToSeal(organizationId).pipe(
+  const read = () => harness.runEffect(readClusterSealing(organizationId).pipe(Effect.provideService(SecretEncryption, encryption)));
+  const readToSeal = () => harness.runEffect(readClusterSealingToSeal(organizationId).pipe(
     Effect.provideService(SecretEncryption, encryption),
     Effect.provideService(OrganizationRuntime, runtime),
     Effect.provideService(InngestClient, sendsNowhere()),

@@ -10,7 +10,7 @@ import { receiveUpload } from "#/modules/config-store/upload.server";
 import { callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { lacks } from "#/modules/organization/access.server";
-import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
+import { readClusterSealingToSeal } from "#/modules/sealing/cluster-sealing.server";
 import { readCappedBody } from "#/server/capped-body";
 import { NotFound, Validation } from "#/server/public-error";
 
@@ -61,7 +61,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     return refusal({ code: "invalid_argument", message: `Expected a ${expected}.`, details: null });
   }
   // Without a server, the CLI hears so before the Store reads anything.
-  const sealing = operation === "sealing" ? yield* readClusterSealing(caller.organization.id) : undefined;
+  const sealing = operation === "sealing" ? yield* readClusterSealingToSeal(caller.organization.id) : undefined;
   if (sealing !== undefined && sealing.state !== "ready") return Response.json({ state: sealing.state }, { headers: { "cache-control": "no-store" } });
   // An approval the write names must be this Caller's, for this command, even where nobody is asked.
   const named = request.headers.get("x-ployz-approval");
