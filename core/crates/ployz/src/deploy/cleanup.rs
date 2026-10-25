@@ -277,8 +277,8 @@ pub(crate) async fn take_out<C: MachineOperations>(
     allow_empty: bool,
     cancellation: &CancellationToken,
 ) -> Result<Step, RpcError> {
-    if let refused @ Step::Refused(_) = send_out(client, copy, allow_empty).await? {
-        return Ok(refused);
+    if let Some(refusal) = send_out(client, copy, allow_empty).await? {
+        return Ok(Step::Refused(refusal));
     }
     wait_unlisted(
         client,
@@ -291,12 +291,13 @@ pub(crate) async fn take_out<C: MachineOperations>(
     .map(Step::from)
 }
 
-/// Asks the copy Out without waiting for proxies to drop it.
+/// Asks the copy Out without waiting for proxies to drop it, giving the Machine's
+/// refusal when it has one.
 pub(crate) async fn send_out<C: MachineOperations>(
     client: &C,
     copy: &Copy,
     allow_empty: bool,
-) -> Result<Step, RpcError> {
+) -> Result<Option<ContainerRefusal>, RpcError> {
     if matches!(copy.rotation, CopyRotation::In | CopyRotation::Held(_)) {
         let want = ContainerWant::Out {
             container: copy.locator(),
@@ -307,10 +308,10 @@ pub(crate) async fn send_out<C: MachineOperations>(
             .ensure_unsettled(&copy.machine_id, want, Some(TARGET_RPC_TIMEOUT))
             .await?;
         if let EnsuredContainer::Refused { refusal, .. } = answer {
-            return Ok(Step::Refused(refusal));
+            return Ok(Some(refusal));
         }
     }
-    Ok(Step::Done)
+    Ok(None)
 }
 
 pub(crate) async fn retire<C: MachineOperations>(
@@ -339,8 +340,8 @@ pub(crate) async fn retire_unconfirmed<C: MachineOperations>(
     anonymous_volumes: AnonymousVolumes,
 ) -> Result<Step, RpcError> {
     match send_out(client, copy, allow_empty).await? {
-        Step::Done => remove(client, copy, anonymous_volumes).await,
-        step @ (Step::Refused(_) | Step::NotConfirmed(_) | Step::Cancelled) => Ok(step),
+        None => remove(client, copy, anonymous_volumes).await,
+        Some(refusal) => Ok(Step::Refused(refusal)),
     }
 }
 

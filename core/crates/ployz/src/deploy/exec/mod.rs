@@ -1472,11 +1472,9 @@ async fn publish_group<C: MachineOperations>(
     let mut unlisting = Vec::new();
     for (copy, sent) in outs.into_iter().zip(sent) {
         match sent {
-            Ok(cleanup::Step::Done) => unlisting.push(copy),
-            Ok(step) => {
-                if let Some(left) = step.into() {
-                    rows.leave_running(progress, &copy, left);
-                }
+            Ok(None) => unlisting.push(copy),
+            Ok(Some(refusal)) => {
+                rows.leave_running(progress, &copy, Left::Refused(refusal));
             }
             Err(error) => {
                 unconfirmed.get_or_insert_with(|| {
@@ -2534,20 +2532,25 @@ async fn execute_operation<C: MachineOperations>(
                     return Err(error.into());
                 }
             };
+            // A removal names every copy of its Service on a Machine this Deploy
+            // could not reach, once the live copy is gone. A live copy that drains
+            // can't wait for proxies holding a route for one of those.
             let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
-            let unreached = if allow_empty && copy.drains() {
+            let unreached = if allow_empty && !rows.unobserved.is_empty() {
                 rows.unreached(client, &copy.service, cancellation).await?
             } else {
                 Vec::new()
             };
-            let retired = if unreached.is_empty() {
+            let retired = if unreached.is_empty() || !copy.drains() {
                 cleanup::retire(client, &copy, allow_empty, (*purpose).into(), cancellation).await
             } else {
-                rows.leave_unreached(progress, &unreached);
                 cleanup::retire_unconfirmed(client, &copy, allow_empty, (*purpose).into()).await
             };
             match retired {
-                Ok(cleanup::Step::Done) => Ok(Ran::default()),
+                Ok(cleanup::Step::Done) => {
+                    rows.leave_unreached(progress, &unreached);
+                    Ok(Ran::default())
+                }
                 Ok(cleanup::Step::Refused(refusal)) => {
                     rows.leave_running(progress, &copy, Left::Refused(refusal.clone()));
                     Err(machine_error(MachineAction::RemoveContainer, refusal.into_error()).into())

@@ -1210,7 +1210,8 @@ async fn a_removal_beside_a_copy_on_an_unobserved_server_takes_the_live_copy_out
 }
 
 /// A finished pre-deploy hook stays Pending for life, so removing it drains nothing
-/// and a copy of its Service on an unobserved Server can't hold it up.
+/// and a copy of its Service on an unobserved Server can't hold it up. The removal
+/// still names that copy: it is the Service's, and the next full Deploy removes it.
 #[tokio::test(start_paused = true)]
 async fn a_pending_copy_is_removed_beside_a_copy_on_an_unobserved_server() {
     let (live, away) = (machine('1'), machine('3'));
@@ -1237,20 +1238,67 @@ async fn a_pending_copy_is_removed_beside_a_copy_on_an_unobserved_server() {
     .with_copy(&away, &there, CopyRotation::In)
     .routing(&api());
 
-    let outcome = super::execute_operation_sequence(
-        &plan,
-        &run_id(),
-        &client,
-        &CancellationToken::new(),
-        None,
-    )
-    .await;
+    let (outcome, warnings) = reported_warnings(&plan, &client, &CancellationToken::new()).await;
 
     assert!(
         matches!(outcome, DeployOutcome::Success { .. }),
         "{outcome:?}"
     );
     assert_eq!(client.moves(), [Move::Gone(hook)]);
+    assert_eq!(
+        warnings,
+        [DeployWarning::LeftRunning {
+            service: api(),
+            container_id: there,
+            machine: "machine-3".into(),
+            reason:
+                "machine-3 didn't answer, the next full deploy removes its copy once it is back"
+                    .into(),
+        }]
+    );
+    client.assert_done();
+}
+
+/// A copy the removal could not reach is named only once the live copy is gone.
+/// A failed removal names the live copy as left, and a retry names the rest.
+#[tokio::test(start_paused = true)]
+async fn a_failed_removal_does_not_name_the_copy_on_an_unobserved_server() {
+    let (live, away) = (machine('1'), machine('3'));
+    let (here, there) = (container('a'), container('b'));
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![DeployOperation::RemoveContainer {
+            machine_id: live,
+            container_id: here,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+        }],
+        test_namespace(),
+    )
+    .with_machine_names(&[live, away])
+    .with_unobserved(&[away]);
+    let client = Scripted {
+        down: BTreeSet::from([away]),
+        store: Store::Copies,
+        ..Scripted::new(vec![
+            observed(Call::Inspect(live, here), running()),
+            failed(Call::Remove(live, here), "Docker remove failed"),
+        ])
+    }
+    .with_copy(&live, &here, CopyRotation::In)
+    .with_copy(&away, &there, CopyRotation::In)
+    .routing(&api());
+
+    let (outcome, warnings) = reported_warnings(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .all(|warning| !matches!(warning, DeployWarning::LeftRunning { container_id, .. } if *container_id == there)),
+        "{warnings:?}"
+    );
     client.assert_done();
 }
 
