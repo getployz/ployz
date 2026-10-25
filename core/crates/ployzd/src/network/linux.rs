@@ -113,7 +113,9 @@ impl NetworkPlane {
                 Vec::new()
             },
         };
-        let docker_created = match plane.ensure_docker_network(data_dir).await {
+        // Boxed: settling the bridge is a large future, and inline it overflows the
+        // stack of a daemon start.
+        let docker_created = match Box::pin(plane.ensure_docker_network(data_dir)).await {
             Ok(created) => created,
             Err(error) => {
                 if wireguard_created {
