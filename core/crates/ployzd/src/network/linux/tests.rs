@@ -861,6 +861,17 @@ default via 2001:db8::1 dev ens4 proto static metric 1024 onlink pref medium
 }
 
 #[test]
+fn ip6tables_off_says_why_the_bridge_stays_ipv4_only_and_how_to_fix_it() {
+    let line = ipv6_firewall_off(true, false).expect("an IPv6 host with ip6tables off is told why");
+    assert!(line.contains("stays IPv4-only"));
+    assert!(line.contains("Docker's ip6tables is off or uses nftables"));
+    assert!(line.contains("/etc/docker/daemon.json"));
+    assert!(line.contains("systemctl restart ployz"));
+    assert_eq!(ipv6_firewall_off(true, true), None);
+    assert_eq!(ipv6_firewall_off(false, false), None);
+}
+
+#[test]
 fn a_readdress_names_the_family_it_could_not_reach() {
     assert!(readdress_failure(true).contains("could not take IPv6"));
     assert!(readdress_failure(false).contains("could not drop IPv6"));
