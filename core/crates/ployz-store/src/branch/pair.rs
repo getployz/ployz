@@ -324,6 +324,7 @@ impl Checked<'_> {
                 json!({ "version": self.version }),
             ));
         }
+        crate::domain::refuse_long_subdomains(&self.plan, picks)?;
         let applied = self.plan.apply(picks, values).map_err(config)?;
         let carried = Carried::of(tx, &of.source, &of.from)?;
         let how = match of.rules.way {

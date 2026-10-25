@@ -1647,6 +1647,19 @@ it.live(
         assert.strictEqual((yield* request("write", alice, generate)).json.domain?.hostname, hostname);
         assert.strictEqual(reservations(), before, "re-staging reserves nothing more");
 
+        // Before anything deployed, only Cloud's evidence knows the Cluster Domain a Branch's copies land under.
+        const { drizzle: db } = yield* Database;
+        const long = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(53)}`;
+        const reservedName = hostname.slice("web.".length);
+        yield* db.update(organizationClusterDomain).set({ name: long });
+        const branched = yield* request("write", alice, {
+          command: "create_branch", id: "00000000-0000-4000-8000-000000000105", from: { project: null, environment: "production" },
+          name: "fixit", copy: ["web"], live: [], setup: [], keep: false,
+        });
+        yield* db.update(organizationClusterDomain).set({ name: reservedName });
+        assert.strictEqual(branched.json.error?.code, "invalid_argument");
+        assert.include(branched.json.error?.message, "over a hostname's 253: choose a shorter branch name");
+
         const admit: ConfigCommand = {
           command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
           accept_volume_loss: [],

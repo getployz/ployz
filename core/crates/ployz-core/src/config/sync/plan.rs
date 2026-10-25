@@ -795,11 +795,7 @@ impl Plan {
         let config = &mut copy.config;
         config.routes.clear();
         for hostname in &mut config.managed_hostnames {
-            let prefix = hostname
-                .prefix
-                .strip_suffix(self.hostnames.from.as_str())
-                .unwrap_or(&hostname.prefix);
-            hostname.prefix = format!("{prefix}{}", self.hostnames.into);
+            hostname.prefix = self.copied_prefix(&hostname.prefix);
         }
         if let ServiceSource::Image {
             credentials: ServiceImageCredentials::Configured { credential_id },
@@ -817,6 +813,28 @@ impl Plan {
         }
         next.services.push(copy);
         Ok(())
+    }
+
+    /// `from`'s generated-domain `prefix` as a copy in `into` carries it: `from`'s suffix
+    /// swapped for `into`'s.
+    fn copied_prefix(&self, prefix: &str) -> String {
+        let prefix = prefix
+            .strip_suffix(self.hostnames.from.as_str())
+            .unwrap_or(prefix);
+        format!("{prefix}{}", self.hostnames.into)
+    }
+
+    /// The generated-domain prefix of each new Service `picks` copies into `into`, as
+    /// [`Self::apply`] gives it. A suffix can make one longer than a DNS label.
+    #[must_use]
+    pub fn copied_prefixes(&self, picks: &BTreeSet<RowId>) -> Vec<String> {
+        picks
+            .iter()
+            .filter(|pick| pick.at == At::Node && service(&self.into, &pick.lineage).is_none())
+            .filter_map(|pick| service(&self.from, &pick.lineage))
+            .flat_map(|source| &source.config.managed_hostnames)
+            .map(|hostname| self.copied_prefix(&hostname.prefix))
+            .collect()
     }
 
     /// A variable new to `next` takes `from`'s description and export.
