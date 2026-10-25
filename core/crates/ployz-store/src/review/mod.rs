@@ -849,6 +849,7 @@ pub(crate) fn publish(
     (message, accepted): (Option<&str>, &[crate::VolumeLoss]),
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
+    crate::variables::refuse_awaiting(&intent)?;
     crate::volume::check_storage(
         tx,
         environment,

@@ -790,6 +790,8 @@ fn land_one(
     let into = destination.summary.id.clone();
     let values = edited_values(edits(tx, &from.summary.id, &into)?, &rows);
     let mut applied = plan.apply(&picks, &values).map_err(config)?;
+    // Saved State publishes here, past the Working State write that makes values.
+    variables::make_generated(&mut applied.next)?;
     let (removed, arriving): (BTreeSet<&str>, BTreeSet<&str>) = picks
         .iter()
         .filter(|pick| *pick.at() == At::Node)
@@ -921,6 +923,7 @@ fn land_one(
         let next = mirror.apply(&staged, &values).map_err(config)?.next;
         working = with_variable_ids_of(&saved, &working, next);
     }
+    variables::take_generated(&mut working, &saved);
     let consumed = end_included(tx, &into, Some(&from.summary.id))?;
     // Saved took the merge whatever Working keeps, so the record takes each removal
     // the list showed, by the label it showed, and names each Service only the

@@ -203,13 +203,13 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
                     service.variables.retain(|v| v.key != *key);
                     return Ok(());
                 }
-                // Each Environment makes its own value; the Store makes this one.
-                Cell::Value(_) if generated.is_some() => (
-                    SavedVariableValue::Literal {
-                        value: String::new(),
-                    },
-                    AWAITING_FINGERPRINT.to_owned(),
-                ),
+                // Each Environment makes its own value; the Store makes this one, unless
+                // an undo puts back the value it held.
+                Cell::Value(_) if generated.is_some() => {
+                    let (value, fingerprint) = held_value(cell)
+                        .unwrap_or_else(|| (String::new(), AWAITING_FINGERPRINT.to_owned()));
+                    (SavedVariableValue::Literal { value }, fingerprint)
+                }
                 Cell::Value(value) => {
                     plain(value).ok_or_else(|| invalid("Not a variable's value"))?
                 }

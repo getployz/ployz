@@ -904,6 +904,55 @@ pub(crate) fn make_generated(
     Ok(())
 }
 
+/// Give each generated variable in `working` that awaits a value the one `made` holds
+/// for the same Service lineage, key and generator: what Working State takes from the
+/// Saved State a merge published, so the two hold one value.
+pub(crate) fn take_generated(
+    working: &mut ployz_core::config::SavedEnvironmentIntent,
+    made: &ployz_core::config::SavedEnvironmentIntent,
+) {
+    for service in &mut working.services {
+        let Some(source) = made
+            .services
+            .iter()
+            .find(|made| made.lineage_id == service.lineage_id)
+        else {
+            continue;
+        };
+        for variable in service.variables.iter_mut().filter(|v| v.awaits_value()) {
+            if let Some(made) = source.variables.iter().find(|made| {
+                made.key == variable.key
+                    && made.generated == variable.generated
+                    && !made.awaits_value()
+            }) {
+                variable.value.clone_from(&made.value);
+                variable
+                    .value_fingerprint
+                    .clone_from(&made.value_fingerprint);
+            }
+        }
+    }
+}
+
+/// Refuse to publish a generated variable that awaits its value: Saved State and what
+/// deploys from it never hold one.
+///
+/// # Errors
+/// `internal` naming the variable, never a value.
+pub(crate) fn refuse_awaiting(
+    intent: &ployz_core::config::SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    for service in &intent.services {
+        if let Some(variable) = service.variables.iter().find(|v| v.awaits_value()) {
+            return Err(error::internal(format!(
+                "{}.{} would be saved before its generated value was made",
+                service.slug, variable.key
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A value `generator` makes: each character drawn uniformly from its alphabet.
 pub(crate) fn generate(generator: &Generator) -> Result<String, RpcError> {
     let alphabet = generator.alphabet();

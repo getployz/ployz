@@ -1008,3 +1008,25 @@ fn the_check_says_nothing_deploys_from_a_branch_no_environment_tracks() {
         })
     );
 }
+
+#[test]
+fn a_generated_value_lands_made_in_saved_and_working_alike() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.PASS", json!("${{ secret(32, \"a-zA-Z\") }}"))],
+    );
+    let preview = value(&store, &who, "pr-5", "web.env.PASS").unwrap();
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let production = value(&store, &who, "production", "web.env.PASS").unwrap();
+    let production = production.as_str().unwrap();
+    assert!(production.len() == 32 && production.bytes().all(|b| b.is_ascii_alphabetic()));
+    assert!(
+        preview != json!(production),
+        "the merge carried the preview's value"
+    );
+    // Saved and Working hold the same value: nothing is left to save.
+    assert!(production_diff(&store, &who).published);
+}

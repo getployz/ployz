@@ -11,7 +11,7 @@ use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Edit, EnvironmentId,
     EnvironmentName, EnvironmentRef, OrganizationId, ProjectId, ProjectName, ServiceLineageId,
-    ServiceQuery, SettingPath, SyncChanges, SyncQuery, SyncView,
+    ServiceQuery, SettingPath, SyncChanges, SyncQuery, SyncView, UndoSync,
 };
 use serde_json::{Value, json};
 
@@ -416,5 +416,49 @@ fn an_own_copy_of_a_live_node_makes_its_own_value() {
     assert!(
         copy != password(&store, &who, "production"),
         "the copy carried production's value"
+    );
+}
+
+#[test]
+fn undoing_a_sync_puts_back_the_value_the_receiver_held() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1);
+    branch(&store, &who, 9, "fix-db", &["db"]);
+    let before = password(&store, &who, "production");
+    set(
+        &store,
+        &who,
+        "fix-db",
+        &[("db.env.PASSWORD", json!("${{ secret(40, \"a-zA-Z\") }}"))],
+    )
+    .unwrap();
+    let view = offered(&store, &who, "fix-db", "production");
+    let synced = store
+        .write(
+            &who,
+            &SyncChanges {
+                from: at("fix-db"),
+                into: Some(at("production")),
+                close_after: false,
+                version: view.version.clone(),
+                picks: None,
+                skip: Vec::new(),
+                values: std::collections::BTreeMap::new(),
+                id: None,
+            },
+        )
+        .unwrap();
+    assert!(password(&store, &who, "production") != before);
+    store
+        .write(
+            &who,
+            &UndoSync {
+                sync: synced.sync.clone(),
+            },
+        )
+        .unwrap();
+    assert!(
+        password(&store, &who, "production") == before,
+        "undo made a new value"
     );
 }
