@@ -16,7 +16,7 @@ use std::{
 
 use iroh::{
     Endpoint, EndpointAddr, RelayMode, SecretKey,
-    endpoint::{WeakConnectionHandle, presets},
+    endpoint::{VarInt, WeakConnectionHandle, presets},
     test_utils::run_relay_server,
     tls::CaTlsConfig,
 };
@@ -28,7 +28,8 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, DescribeContractRequest, DeviceKey, EnrollAs, EnrollRequest,
     ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN, MachineId,
     MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, ManagementIdentity,
-    RpcErrorCode, SetDeviceRequest, SetManagementClientRequest, op,
+    RpcErrorCode, SetDeviceRequest, SetManagementClientRequest, TUNNEL_ALPN, TUNNEL_FAILED,
+    TUNNEL_OPEN, op,
 };
 use ployzd::{
     corrosion::ReplicatedStore,
@@ -500,6 +501,7 @@ async fn only_a_device_execs_or_tunnels() {
     )
     .await
     .unwrap();
+    let machine = EndpointAddr::new(endpoint.id()).with_relay_url(relay_url.clone());
     let shutdown = CancellationToken::new();
     let server = tokio::spawn(management::serve(
         endpoint,
@@ -510,7 +512,7 @@ async fn only_a_device_execs_or_tunnels() {
         shutdown.clone(),
     ));
     let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
-        relay_url,
+        relay_url.clone(),
         CaTlsConfig::insecure_skip_verify(),
     ));
     let cloud_channel = connector
@@ -530,11 +532,11 @@ async fn only_a_device_execs_or_tunnels() {
     for channel in [cloud_channel, cli_channel] {
         let refused = exec(channel).await.unwrap_err();
         assert_eq!(refused.code(), tonic::Code::PermissionDenied, "{refused:?}");
-        assert!(
-            refused
-                .message()
-                .contains("ployz.container.exec.v1 needs Full access"),
-            "{refused:?}"
+        // A v0.3.4 CLI drops the details and prints only the message.
+        assert_eq!(
+            refused.message(),
+            "ployz.container.exec.v1 needs Full access: run `ployz device request` \
+             (update ployz first if it has no `device` command)",
         );
         assert_eq!(
             ployz_core::rpc::status_details(refused.details()),
@@ -557,6 +559,13 @@ async fn only_a_device_execs_or_tunnels() {
             Err(ConnectError::TunnelNeedsFull) => {}
             other => panic!("an Operator tunnel must be refused, got {:?}", other.err()),
         }
+        let close = v0_3_4_tunnel(&relay_url, &machine, capability, &target).await;
+        assert_eq!(close.error_code, VarInt::from_u32(TUNNEL_FAILED), "{close:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&close.reason),
+            "tunnels need Full access: run `ployz device request` \
+             (update ployz first if it has no `device` command)",
+        );
     }
     connector
         .dial_proxy(&connection(&device_capability), "tcp", &target)
@@ -565,6 +574,36 @@ async fn only_a_device_execs_or_tunnels() {
 
     shutdown.cancel();
     server.await.unwrap();
+}
+
+/// Open a tunnel the way a v0.3.4 CLI does. It prints a close reason only under
+/// [`TUNNEL_FAILED`], and waits two seconds for that close.
+async fn v0_3_4_tunnel(
+    relay_url: &iroh::RelayUrl,
+    machine: &EndpointAddr,
+    capability: &ManagementCapability,
+    target: &str,
+) -> iroh::endpoint::ApplicationClose {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let client = raw_endpoint(relay_url).await;
+    let connection = client.connect(machine.clone(), TUNNEL_ALPN).await.unwrap();
+    let (mut send, mut recv) = connection.open_bi().await.unwrap();
+    let proof = ployz::connect::management_proof(&connection, capability).unwrap();
+    send.write_all(&proof.to_bytes()).await.unwrap();
+    send.write_u8(u8::try_from(target.len()).unwrap())
+        .await
+        .unwrap();
+    send.write_all(target.as_bytes()).await.unwrap();
+    assert_ne!(recv.read_u8().await.ok(), Some(TUNNEL_OPEN));
+    let closed = tokio::time::timeout(Duration::from_secs(2), connection.closed())
+        .await
+        .expect("the refusal must close within a v0.3.4 CLI's grace");
+    client.close().await;
+    match closed {
+        iroh::endpoint::ConnectionError::ApplicationClosed(close) => close,
+        other => panic!("expected an application close, got {other:?}"),
+    }
 }
 
 async fn exec(channel: Channel) -> Result<(), tonic::Status> {
