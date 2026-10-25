@@ -113,6 +113,10 @@ pub struct Refusal {
     pub next: Vec<Call>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub details: Value,
+    /// The call carried a secret's value, so no retry repeats it.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub secret_sent: bool,
 }
 
 impl Refusal {
@@ -129,6 +133,7 @@ impl Refusal {
             writes: Writes::None,
             next: Vec::new(),
             details: Value::Null,
+            secret_sent: false,
         }
     }
 
@@ -203,9 +208,11 @@ impl Refusal {
     }
 
     /// Whether the same call can succeed later: not after a claim, when the
-    /// agent must first pick one of `valid`, nor when what it asks already holds.
+    /// agent must first pick one of `valid`, nor when what it asks already holds,
+    /// nor when it sent a secret's value.
     pub(crate) fn retries(&self) -> bool {
-        !matches!(self.fix(), Some(Fix::Claim { .. }))
+        !self.secret_sent
+            && !matches!(self.fix(), Some(Fix::Claim { .. }))
             && self.code != RpcErrorCode::Ambiguous
             && self.details.get("settled") != Some(&Value::Bool(true))
     }

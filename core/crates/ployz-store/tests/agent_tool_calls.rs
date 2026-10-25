@@ -205,7 +205,8 @@ fn drive_as(
     }
 }
 
-/// Drive `tool` against the Store alone; a refusal retries the same tool.
+/// Drive `tool` against the Store alone; a refusal retries the same tool, unless
+/// the call sent a secret's value.
 fn call(store: &ConfigStore, tool: &str, input: Value, call_key: &str) -> Run {
     let run = drive(
         store,
@@ -217,6 +218,7 @@ fn call(store: &ConfigStore, tool: &str, input: Value, call_key: &str) -> Run {
     );
     if let ToolResult::Refused(refusal) = &run.result
         && refusal.code != RpcErrorCode::Ambiguous
+        && !refusal.secret_sent
     {
         assert_eq!(refusal.retry.tool, tool, "a retry calls the same tool");
         if refusal.code != RpcErrorCode::ConfirmationRequired && refusal.writes != Writes::Unknown {
@@ -3059,6 +3061,13 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 page: DashboardPage::Variables
             })
         );
+        // #3346: the refusal names the variable but never hands its value back,
+        // so it offers no retry to repeat the call.
+        let text = serde_json::to_string(&refused).unwrap();
+        for value in ["sk-live-123", "hunter2"] {
+            assert!(!text.contains(value), "{key} echoes the value: {text}");
+        }
+        assert!(json!(refused).get("retry").is_none(), "{key}: {text}");
     }
     let db = call(
         &store,
