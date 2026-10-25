@@ -94,6 +94,41 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
     }
 }
 
+/// A newer Server's answer this ployz can't decode, as a Sealed `EnvValue` is to
+/// ployz 0.3.3, asks for an update here rather than blaming connectivity.
+#[tokio::test(start_paused = true)]
+async fn unreadable_answer_asks_to_update_ployz_not_connectivity() {
+    let joiner = machine('1', "joiner");
+    let newer = machine('f', "newer");
+    let down = machine('e', "down");
+    let decode = serde_json::from_str::<String>(r#"{"sealed":"..."}"#).unwrap_err();
+    let unreadable = crate::connect::rpc_error(crate::connect::ConnectError::Codec(
+        ployz_core::CodecError::DecodeJson(decode),
+    ));
+    for omitted in [false, true] {
+        let mut client = fake(&joiner, Vec::new());
+        client.names = vec![(newer.id, newer.name.clone()), (down.id, down.name.clone())];
+        client.failures = vec![ployz_core::MachineFailure {
+            machine_id: newer.id,
+            error: unreadable.clone(),
+        }];
+        if omitted {
+            client.omissions = vec![down.id];
+        }
+        let message = message(catch_up(&mut client, &joiner).await.unwrap_err(), &joiner);
+        assert!(
+            message.contains("this ployz can't read newer's answer, so update ployz on this host"),
+            "{message}"
+        );
+        assert_eq!(
+            message.contains("restore peer connectivity"),
+            omitted,
+            "only an unanswering Server asks for connectivity: {message}"
+        );
+        assert!(client.run_calls.is_empty());
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn only_omissions_that_are_not_unarrived_block_catch_up() {
     let joiner = machine('1', "joiner");
