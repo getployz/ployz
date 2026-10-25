@@ -39,6 +39,7 @@ function Deploy({ placementLoss, version = "2:1:0" }: { placementLoss: Placement
   const writer = useStoreWriter("acme");
   return <>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
+    <button type="button" onClick={() => deploy("Keep the rest", { noPrune: true })}>Deploy, keep the rest</button>
     <button type="button" onClick={() => writer.edit({ environment: ref, changes: [{ op: "set", path: "web.replicas", value: 3 }] })}>Stage replicas</button>
     <button type="button" onClick={() => writer.commit({ command: "set_volume_storage", environment: ref, volume: "pg-data", storage: { kind: "docker" } })}>Stage storage</button>
     <button type="button" onClick={() => void save("  Save this draft  ").then((saved) => saves.push(saved))}>Save now</button>
@@ -224,6 +225,25 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   expect(toast.error).not.toHaveBeenCalled();
   expect(admittedIds).toHaveLength(1);
   expect(test.admits()[1]).toMatchObject({ id: admittedIds[0] });
+});
+
+it("keeps other services through the ask before a Deploy deletes Volume data", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(admitted).mockResolvedValueOnce(refusal("confirmation_required", loss)).mockResolvedValueOnce(admitted);
+
+  press("Deploy now");
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  press("Deploy, keep the rest");
+  await screen.findByText("pg-data");
+  fireEvent.change(screen.getByPlaceholderText("shop/production"), { target: { value: "shop/production" } });
+  fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
+
+  await waitFor(() => expect(admittedIds).toHaveLength(2));
+  expect(test.admits()).toMatchObject([
+    { admit: "deploy", no_prune: false },
+    { admit: "deploy", accept_volume_loss: [], no_prune: true },
+    { admit: "deploy", accept_volume_loss: ["pg-data"], no_prune: true },
+  ]);
 });
 
 it("asks before a Deploy deletes a copy, before anything reaches the Store, then admits accepting the Volume", async () => {

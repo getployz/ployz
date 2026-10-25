@@ -22,6 +22,7 @@ import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 import type { Busy } from "#/modules/config-store/store-pending";
 import { AddServersDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog";
+import type { DeployChoice } from "./useStoreChangeActions";
 
 /**
  * Where the bottom bar renders while the agent is closed: the scene, outside the canvas that turns inert under a panel.
@@ -50,7 +51,7 @@ type BottomBarProps = {
   ranNothingSave?: number | null;
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
-  onDeploy: (message: string) => void;
+  onDeploy: (message: string, choice: DeployChoice) => void;
   /** Save only: saves without deploying; resolves true once saved. */
   onSave: (message: string) => Promise<boolean>;
   onDiscardAll: () => void;
@@ -156,10 +157,10 @@ export function BottomBar({
     return () => clearTimeout(timer);
   }, [deployed]);
 
-  function deploy() {
+  function deploy(noPrune = false) {
     if (admitting) return;
     setOpen(false);
-    onDeploy(message);
+    onDeploy(message, { noPrune });
     setMessage("");
   }
 
@@ -242,6 +243,9 @@ export function BottomBar({
           <DropdownMenuItem disabled={!saveable} onClick={save}>
             {busy.has("saving") ? <><Spinner />Saving…</> : "Save only"}
           </DropdownMenuItem>
+          <DropdownMenuItem disabled={!deployable || admitting} onClick={() => deploy(true)}>
+            Deploy, keep other services
+          </DropdownMenuItem>
           {nothingToDiscard ? null : (
             <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
               Discard all changes
@@ -263,7 +267,7 @@ export function BottomBar({
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, asks, canSave: saveable, ranNothingSave,
-    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, busy, discarding,
+    onClose: () => setOpen(false), onDeploy: () => deploy(), message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
     onDiscardAll: nothingToDiscard ? undefined : discardAll,
     onDiscardNode, onDiscardRow,

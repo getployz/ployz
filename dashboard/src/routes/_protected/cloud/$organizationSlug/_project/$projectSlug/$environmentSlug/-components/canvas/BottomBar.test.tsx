@@ -149,6 +149,27 @@ it("saves without deploying from Alt+click on Deploy and from Save only under â‹
   expect(onDeploy).not.toHaveBeenCalled();
 });
 
+it("deploys keeping the other services the Environment runs from â‹®, and pruning them from Deploy", async () => {
+  open(canvasUrl, [replicas], 1);
+  const staged = await bar();
+  fireEvent.click(staged.getByRole("button", { name: "Details" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Ship it" } });
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
+  await act(async () => { fireEvent.click(await screen.findByRole("menuitem", { name: "Deploy, keep other services" })); });
+  expect(onDeploy).toHaveBeenLastCalledWith("Ship it", { noPrune: true });
+  fireEvent.click(staged.getByRole("button", { name: /^Deploy/ }));
+  expect(onDeploy).toHaveBeenLastCalledWith("", { noPrune: false });
+});
+
+it("offers no Deploy that keeps other services while a Deploy is unanswered", async () => {
+  busy = new Set(["deploying"]);
+  open(canvasUrl, [replicas], 1, true);
+  const staged = await bar();
+  await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
+  expect((await screen.findByRole("menuitem", { name: "Deploy, keep other services" })).getAttribute("aria-disabled")).toBe("true");
+});
+
 it("offers no second Save while one is unanswered", async () => {
   busy = new Set(["saving"]);
   open(canvasUrl, [replicas], 1, true);
