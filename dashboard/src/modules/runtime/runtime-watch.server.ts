@@ -6,10 +6,8 @@ import { onIngressChange } from "#/modules/cluster-domain/ingress-running";
 import { InngestClient, sendInngestEvent } from "#/modules/inngest/client";
 import {
   createClusterDomainSyncRequestedEvent,
-  createSealingKeyEnsureRequestedEvent,
   type InngestSendableEvent,
 } from "#/modules/inngest/events";
-import { onSealingGap } from "#/modules/machines/sealing-gap";
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzProviderError } from "#/modules/runtime/ployz.server";
@@ -74,13 +72,9 @@ export const openRuntimeWatchForOrganization = Effect.fn(
     createClusterDomainSyncRequestedEvent({ organizationId }),
     "Cluster Domain sync request failed; the hourly sync covers it.",
   );
-  const requestSealingKey = sendOnChange(
-    createSealingKeyEnsureRequestedEvent({ organizationId }),
-    "Sealing Key ensure request failed; the next change of Servers holding it asks again.",
-  );
   return {
     status: "connected" as const,
-    frames: onSealingGap(onIngressChange(frames, requestDomainSync), requestSealingKey),
+    frames: onIngressChange(frames, requestDomainSync),
     close,
   } satisfies OpenedRuntimeWatch;
 });

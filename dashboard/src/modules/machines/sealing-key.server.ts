@@ -6,6 +6,7 @@ import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createClusterResealRequestedEvent } from "#/modules/inngest/events";
 import { currentGeneration } from "#/modules/machines/connections.server";
+import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
 import type { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
 import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey } from "#/modules/machines/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -13,22 +14,10 @@ import { requireAccessById } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
-const sealingKeyOf = (organizationId: string, clusterKey: string) => and(
-  eq(clusterSealingKey.organizationId, organizationId),
-  eq(clusterSealingKey.clusterKey, clusterKey),
-);
-
 const generatorOf = (organizationId: string, clusterKey: string) => and(
   eq(clusterSealingKeyGenerator.organizationId, organizationId),
   eq(clusterSealingKeyGenerator.clusterKey, clusterKey),
 );
-
-export const readSealingPublicKey = Effect.fn("SealingKey.readPublicKey")(function* (organizationId: string, clusterKey: string) {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ publicKey: clusterSealingKey.publicKey }).from(clusterSealingKey)
-    .where(sealingKeyOf(organizationId, clusterKey));
-  return row?.publicKey;
-});
 
 /**
  * Keeps the first Sealing Key a Cluster reports, and gives it to the Organization unless a backup holds another; the first

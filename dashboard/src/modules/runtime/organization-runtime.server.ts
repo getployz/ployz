@@ -9,7 +9,7 @@ import {
 import {
   loadOrganizationConnections,
 } from "#/modules/machines/connections.server";
-import { recordMachineNames } from "#/modules/machines/machine-names.server";
+import { runtimeFrameRecord } from "#/modules/runtime/runtime-frame-record.server";
 import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -133,21 +133,39 @@ export type PairingChanges = {
   ) => Effect.Effect<{ readonly cursor: string; readonly changed: boolean }, OrganizationChangeLogFailure>;
 };
 
-/** What Cloud keeps from a Runtime Watch frame its Organization's session read. */
-export type RecordFrame = (organizationId: string, frame: RuntimeWatchView) => Effect.Effect<void, Error>;
+/**
+ * What Cloud keeps from a Runtime Watch frame its Organization's session read. `digest` covers every field `write`
+ * reads. `write` settles the frame, or asks a job to finish what it can't observe, as an Inngest send does.
+ */
+export type FrameRecord = {
+  readonly digest: (frame: RuntimeWatchView) => string;
+  readonly write: (organizationId: string, frame: RuntimeWatchView) => Effect.Effect<"settled" | "asked", Error>;
+};
+
+export const RETRY_AFTER_MS = 60_000;
+
+const settledByName: FrameRecord = {
+  digest: (frame) => JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name])),
+  write: () => Effect.succeed("settled"),
+};
 
 /**
- * Hands each frame to `recordFrame` off the read that carried it: the read never waits on the write, so no deadline
+ * Hands each frame to `record.write` off the read that carried it: the read never waits on the write, so no deadline
  * of the read's reaches the SQL. Each Organization writes in one fiber of the layer's scope at a time; frames read
- * during a write coalesce into the latest, written next. Names equal to the last written are skipped, and a failed
- * write is logged and retried by the next frame. When the layer closes, the write in flight finishes and a coalesced
- * one is dropped, for the Cluster's next frame to write.
+ * during a write coalesce into the latest, written next. A frame whose digest equals the last settled one is skipped,
+ * and one equal to the last asked one is skipped for `RETRY_AFTER_MS`, then written again in case the job never
+ * finished. A failed write is logged and retried by the next frame. When the layer closes, the write in flight
+ * finishes and a coalesced one is dropped, for the Cluster's next frame to write.
  */
-const makeFrameRecorder = Effect.fnUntraced(function* (recordFrame: RecordFrame) {
+const makeFrameRecorder = Effect.fnUntraced(function* (record: FrameRecord) {
   const run = yield* FiberSet.makeRuntime<never>();
-  type Pending = { readonly names: string; readonly frame: RuntimeWatchView };
-  type Organization = { written?: string; next?: Pending; writing: boolean };
+  const clock = yield* Clock.Clock;
+  type Pending = { readonly digest: string; readonly frame: RuntimeWatchView };
+  type Written = { readonly digest: string; readonly until: number };
+  type Organization = { written?: Written; next?: Pending; writing: boolean };
   const organizations = new Map<string, Organization>();
+  const current = (organization: Organization, digest: string) =>
+    organization.written?.digest === digest && clock.currentTimeMillisUnsafe() < organization.written.until;
   const writeAll = (organizationId: string, organization: Organization) => {
     // Clears `writing` in the same step that finds nothing left, so a frame read meanwhile starts a new write.
     const take = Effect.sync(() => {
@@ -158,24 +176,24 @@ const makeFrameRecorder = Effect.fnUntraced(function* (recordFrame: RecordFrame)
     });
     return Effect.gen(function* () {
       for (let next = yield* take; next !== undefined; next = yield* take) {
-        if (next.names === organization.written) continue;
-        const written = yield* recordFrame(organizationId, next.frame).pipe(
-          Effect.as(true),
-          Effect.catchCause((cause) => Effect.logWarning("Runtime frame not recorded", cause).pipe(Effect.as(false))),
+        if (current(organization, next.digest)) continue;
+        const outcome = yield* record.write(organizationId, next.frame).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("Runtime frame not recorded", cause).pipe(Effect.as("failed" as const))),
           // Uninterruptible like the pairing check, since interrupting pooled SQL can cancel a later statement.
           Effect.uninterruptible,
         );
         // Advanced only once the write lands, so a failed write is retried by the next frame.
-        if (written) organization.written = next.names;
+        if (outcome === "settled") organization.written = { digest: next.digest, until: Infinity };
+        if (outcome === "asked") organization.written = { digest: next.digest, until: clock.currentTimeMillisUnsafe() + RETRY_AFTER_MS };
       }
     });
   };
   return (organizationId: string, frame: RuntimeWatchView) => {
-    const names = JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name]));
+    const digest = record.digest(frame);
     const organization = organizations.get(organizationId) ?? { writing: false };
     organizations.set(organizationId, organization);
-    if (!organization.writing && names === organization.written) return;
-    organization.next = { names, frame };
+    if (!organization.writing && current(organization, digest)) return;
+    organization.next = { digest, frame };
     if (organization.writing) return;
     organization.writing = true;
     run(writeAll(organizationId, organization));
@@ -200,13 +218,13 @@ function recordingFrames(session: PloyzSession, record: (frame: RuntimeWatchView
 export function makeOrganizationRuntimeLayer(
   loadConnections: LoadConnections,
   pairingChanges: PairingChanges,
-  recordFrame: RecordFrame = () => Effect.void,
+  frameRecord: FrameRecord = settledByName,
 ) {
   return Layer.effect(
     OrganizationRuntime,
     Effect.gen(function* () {
       const ployz = yield* Ployz;
-      const record = yield* makeFrameRecorder(recordFrame);
+      const record = yield* makeFrameRecorder(frameRecord);
       type Session = {
         scope: Scope.Closeable;
         generation?: string;
@@ -346,7 +364,7 @@ export const OrganizationRuntimeLive = Layer.unwrap(
           Effect.provideService(Database, database),
         ),
       },
-      (organizationId, frame) => recordMachineNames(organizationId, frame).pipe(Effect.provideService(Database, database)),
+      yield* runtimeFrameRecord,
     );
   }),
 );

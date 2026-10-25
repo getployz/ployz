@@ -1,19 +1,18 @@
 import type { RuntimeWatchView, Sealing } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { ensureSealingKeyRecorded } from "#/modules/machines/sealing-ensure.server";
+import { requestSealingKeyEnsure } from "#/modules/machines/sealing-ensure.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import {
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { AppConfig } from "#/server/config.server";
-import { testConfigEnvironment } from "#/test/config-environment";
+import { testConfigLayer } from "#/test/config-environment";
 import { sendsNowhere } from "#/test/store-cloud";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -44,10 +43,10 @@ const frame = (servers: Record<string, keyof typeof SEALING>): RuntimeWatchView 
 const inngest = new Inngest({ id: "sealing-ensure-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
-describe("ensureSealingKeyRecorded", () => {
+describe("requestSealingKeyEnsure", () => {
   let harness: PostgresTestHarness;
   const ensure = (servers: Record<string, keyof typeof SEALING>) => harness.runEffect(
-    ensureSealingKeyRecorded(organizationId, frame(servers)).pipe(
+    requestSealingKeyEnsure(organizationId, frame(servers)).pipe(
       Effect.provideService(SecretEncryption, encryption),
       Effect.provideService(InngestClient, inngest),
     ),
@@ -57,16 +56,14 @@ describe("ensureSealingKeyRecorded", () => {
      values ($1, $2, $3, $3)`,
     [organizationId, JSON.stringify(encryption.encrypt(pairingSecret)), "1".repeat(32)],
   );
-  // A Server reporting its key reads Cloud's config, which keeps its shipped default here.
   const recordKey = () => harness.runEffect(recordSealingPublicKey(organizationId, clusterKey, publicKey).pipe(
     Effect.provideService(InngestClient, sendsNowhere()),
-    Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl } }))))),
+    Effect.provide(testConfigLayer({ DATABASE_URL: harness.databaseUrl })),
   ));
   const ensureRequested = { name: "sealing-key/ensure.requested", data: { organizationId } };
 
   beforeAll(async () => {
     harness = await startPostgresTestHarness();
-    // The Config Store's tables live in Cloud's database once Cloud opens the Store.
     await Effect.runPromise(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
   }, 60_000);
 

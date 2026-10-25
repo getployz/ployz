@@ -1,3 +1,6 @@
+import { ConfigProvider, Layer } from "effect";
+import { AppConfig } from "#/server/config.server";
+
 const SERVICE_VARIABLES = [
   "GITHUB_APP_CLIENT_ID",
   "GITHUB_APP_CLIENT_SECRET",
@@ -29,3 +32,6 @@ export function testConfigEnvironment() {
     ...Object.fromEntries(SERVICE_VARIABLES.map(serviceVariable)),
   };
 }
+
+export const testConfigLayer = (overrides: Readonly<Record<string, string>> = {}) =>
+  AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), ...overrides } }))));

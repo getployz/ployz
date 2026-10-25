@@ -2,7 +2,8 @@ import "@tanstack/react-start/server-only";
 import type { SealingPublicKey } from "@ployz/sdk";
 import { Effect } from "effect";
 import { currentGeneration } from "#/modules/machines/connections.server";
-import { readSealingPublicKey, recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
+import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 
 /** The key a client seals an Organization's Sealed values to, once its Cluster has one. */
