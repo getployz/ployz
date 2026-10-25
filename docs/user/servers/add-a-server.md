@@ -368,6 +368,11 @@ images from ghcr.io.
   each such server under `unarrived`, with its `id`, `name` and that command as `next`. You get
   the warning, the command and the list even when the add then fails for another reason, such as
   a down server.
+- **A failed add can be retried with other options.** If `ployz server add` fails after Cloud took
+  the server, for example while downloading or installing the daemon, run it again on the same
+  host with a new token. It may change options such as `--storage`. The retry finishes the same
+  server and keeps its address, even after `ployz server forget`. Once the server has
+  joined, a retry must keep its options; to change them, run `ployz-uninstall` and add it again.
 - **Client IPs stay out of Ployz's web server logs, not your app's.** Caddy passes the client IP to
   your app in `X-Forwarded-For`, over IPv4 and IPv6. If your app logs requests, its logs, and the Log Store's copy of
   them, can hold client IPs and user agents. Those logs are yours to manage.

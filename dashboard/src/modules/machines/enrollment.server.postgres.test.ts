@@ -501,7 +501,7 @@ describe("organization enrollment coordinator", () => {
       .toEqual([{ founder_machine_id: founderMachineId }]);
   });
 
-  it("retains the committed assignment after publication failure and conflicts on changed retry inputs", async () => {
+  it("retains the committed assignment after publication failure and lets an unjoined rerun change its inputs", async () => {
     const fake = fakeSession(harness.database);
     const founder = await fake.coordinator.enroll({ token: (tokens[0] ?? ""), identity: identity(0) });
     if (Result.isFailure(founder) || founder.success.kind !== "initialize") throw new Error("Founder missing");
@@ -520,9 +520,29 @@ describe("organization enrollment coordinator", () => {
     const resumed = await fresh.coordinator.enroll({ token: (tokens[1] ?? ""), identity: identity(1) });
     expect(resumed).toMatchObject({ success: { kind: "join" } });
     expect(fresh.published).toEqual(fake.published);
+    // The Server was registered but its daemon never ran (#3342): a rerun with other options replaces the attempt.
+    fresh.cluster.snapshot = { ...snapshot, machines: [fresh.published[0]?.machine].filter((machine) => machine !== undefined) };
     const changed = await fresh.coordinator.enroll({ token: (tokens[1] ?? ""), identity: { ...identity(1), requestedStorage: "zfs" } });
-    expect(changed).toMatchObject({ failure: { _tag: "Conflict" } });
-    expect(fresh.published).toHaveLength(1);
+    expect(changed).toMatchObject({ success: { kind: "join", storage: "zfs" } });
+    expect(fresh.published).toHaveLength(2);
+    expect(fresh.published[1]?.machine).toEqual(fresh.published[0]?.machine);
+    expect(fresh.published[1]?.request.storage).toBe("zfs");
+    const replaced = await harness.pool.query("select assignments from enrollment_allocation");
+    expect(replaced.rows[0].assignments).toEqual([fresh.published[1]]);
+  });
+
+  it("refuses a joined Server's rerun with other options, and says how to proceed", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    await fake.coordinator.completeFounding(founder);
+    const first = await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) });
+    const registered = fake.published[0]?.machine;
+    if (!Result.isSuccess(first) || !registered) throw new Error("expected a join");
+    fake.cluster.snapshot = { ...snapshot, machines: [{ ...registered, runtime: { ...registered.runtime, daemon_version: "0.9.0" } }] };
+    const changed = await fake.coordinator.enroll({ token: await issueToken(), identity: { ...identity(1), requestedStorage: "zfs" } });
+    expect(changed).toMatchObject({ failure: { _tag: "Conflict", userFacing: true, message: expect.stringContaining("ployz-uninstall") } });
+    expect(fake.registerCalls()).toBe(1);
   });
 
   it("serializes identical requests and keeps organization and Cluster histories independent", async () => {

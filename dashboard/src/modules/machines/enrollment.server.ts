@@ -389,16 +389,37 @@ export const reserveEnrollmentAssignment = Effect.fn(
     const [history] = yield* drizzle.select().from(enrollmentAllocation)
       .where(scope).for("update");
     if (!history) return yield* Effect.die("Enrollment allocation history disappeared");
+    const id = input.identity.machine_id;
+    const saved = history.assignments.find((assignment) => assignment.machine.id === id);
+    const joined = input.snapshot.machines.some((machine) => machine.id === id && machine.runtime.daemon_version !== "");
+    const conflict = new Conflict(joined
+      ? { message: "This host already joined the Cluster with other options. Retry with the same options, or run ployz-uninstall on it to add it as a new Server.", userFacing: true }
+      : { message: "Enrollment inputs conflict with saved assignments or the observed subnet pool is exhausted." });
+    // A rerun under the same WireGuard key whose Machine never ran its daemon in the Cluster may change its inputs:
+    // the earlier attempt's saved assignment and registered row give way, keeping its subnet. Register overwrites the row.
+    const retry = () => saved !== undefined && !joined && isDeepStrictEqual(saved.request.public_key, input.identity.public_key)
+      ? allocateEnrollment(
+        { ...input.identity, assigned_subnet: saved.machine.subnet },
+        { ...input.snapshot, machines: input.snapshot.machines.filter((machine) => machine.id !== id) },
+        history.assignments.filter((other) => other !== saved),
+      )
+      : undefined;
     const assignment = yield* Effect.try({
-      try: () => allocateEnrollment(input.identity, input.snapshot, history.assignments),
-      catch: () => new Conflict({
-        message: "Enrollment inputs conflict with saved assignments or the observed subnet pool is exhausted.",
-      }),
+      try: () => {
+        try {
+          return allocateEnrollment(input.identity, input.snapshot, history.assignments);
+        } catch (error) {
+          const replaced = retry();
+          if (replaced === undefined) throw error;
+          return replaced;
+        }
+      },
+      catch: () => conflict,
     });
-    if (!history.assignments.some((saved) => saved.machine.id === assignment.machine.id)) {
+    if (saved === undefined || !isDeepStrictEqual(saved, assignment)) {
       // ponytail: rewrite the scoped history; normalize rows if enrollment volume makes this costly.
       yield* drizzle.update(enrollmentAllocation).set({
-        assignments: [...history.assignments, assignment],
+        assignments: [...history.assignments.filter((other) => other !== saved), assignment],
       }).where(scope);
     }
     return assignment;
