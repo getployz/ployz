@@ -65,9 +65,10 @@ Ployz included.
   [forget your servers](manage-servers.md#forget-servers-you-deleted) once more and add one
   again. It starts with a new key and a new code, as above. To add the same server again, first
   start Ployz on it with `sudo systemctl start ployz.socket ployz`, then add `--reset`, as in [The server is already initialised](../troubleshooting/servers.md#the-server-is-already-initialised).
-- **You had a code but lost it.** A new server keeps waiting for that code, and forgetting it
-  again doesn't help. Rotate the code while you still have a server, so this never happens.
-
-<!-- TODO: say what to do when the code is lost and every server is gone (contact support?). -->
+- **You had a code but lost it.** There is no way to reset it, and the values you sealed are
+  gone for good. A new server keeps waiting in **Needs recovery** for that code, and forgetting
+  it again doesn't help. On ployz.dev, contact Ployz support for help getting going again, and
+  plan to set every sealed value again. Rotate the code while you still have a server, so this
+  never happens.
 
 Next: [seal a secret](../services/variables.md#seal-a-secret).
