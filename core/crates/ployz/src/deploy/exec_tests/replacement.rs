@@ -1,4 +1,4 @@
-use super::flip::{execute_reported, left_running};
+use super::flip::{execute_reported, left_running, reported_warnings};
 use super::*;
 
 #[tokio::test]
@@ -1149,10 +1149,12 @@ async fn a_removed_service_retires_every_copy_through_out_and_ends_empty() {
     client.assert_done();
 }
 
-/// Every store still lists the In copy on a Down Server, so live proxies would keep
-/// routing a copy sent Out beside it until that Server is back.
+/// Every store still lists the In copy on the Down Server, so proxies would keep the
+/// live copy routed until that Server is back. The removal takes it out without
+/// waiting for that, and names the copy it could not reach for the next full Deploy.
 #[tokio::test(start_paused = true)]
-async fn a_removal_with_a_copy_on_an_unobserved_server_names_it_and_takes_no_copy_out() {
+async fn a_removal_beside_a_copy_on_an_unobserved_server_takes_the_live_copy_out_and_names_the_server()
+ {
     let (live, away) = (machine('1'), machine('3'));
     let (here, there) = (container('a'), container('b'));
     let plan = crate::deploy::DeployPlan::for_execution_test(
@@ -1168,38 +1170,42 @@ async fn a_removal_with_a_copy_on_an_unobserved_server_names_it_and_takes_no_cop
     let client = Scripted {
         down: BTreeSet::from([away]),
         store: Store::Copies,
-        ..Scripted::new(vec![observed(Call::Inspect(live, here), running())])
+        ..Scripted::new(vec![
+            observed(Call::Inspect(live, here), running()),
+            ok(Call::Remove(live, here)),
+        ])
     }
     .with_copy(&live, &here, CopyRotation::In)
     .with_copy(&away, &there, CopyRotation::In)
     .routing(&api());
 
-    let outcome = super::execute_operation_sequence(
-        &plan,
-        &run_id(),
-        &client,
-        &CancellationToken::new(),
-        None,
-    )
-    .await;
+    let started = tokio::time::Instant::now();
+    let (outcome, warnings) = reported_warnings(&plan, &client, &CancellationToken::new()).await;
 
-    let DeployOutcome::Failed {
-        failed:
-            FailedOperation::Operation {
-                error:
-                    ExecutionError::Machine {
-                        action: MachineAction::RemoveContainer,
-                        error,
-                    },
-                ..
-            },
-        ..
-    } = &outcome
-    else {
-        panic!("{outcome:?}");
-    };
-    assert!(error.message.contains("machine-3"), "{}", error.message);
-    assert!(client.moves().is_empty(), "{:?}", client.moves());
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "no drain wait on a route the Down Server holds: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        client.moves(),
+        [Move::To(here, CopyRotation::Out), Move::Gone(here)]
+    );
+    assert_eq!(
+        warnings,
+        [DeployWarning::LeftRunning {
+            service: api(),
+            container_id: there,
+            machine: "machine-3".into(),
+            reason:
+                "machine-3 didn't answer, the next full deploy removes its copy once it is back"
+                    .into(),
+        }]
+    );
     client.assert_done();
 }
 

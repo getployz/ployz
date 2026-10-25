@@ -1777,6 +1777,9 @@ struct Rows<'a> {
     stored: tokio::sync::OnceCell<Result<Vec<ContainerObservation>, RpcError>>,
     /// Machines whose Containers the plan's snapshot did not list.
     unobserved: BTreeSet<MachineId>,
+    /// Copies on those Machines a removal already left to the next full Deploy,
+    /// so a Service losing several live copies names each one once.
+    unreached: std::sync::Mutex<BTreeSet<ContainerId>>,
     stop_first: Vec<StopFirstStep<'a>>,
 }
 
@@ -1901,6 +1904,7 @@ impl<'a> Rows<'a> {
                     Some(*machine_id)
                 })
                 .collect(),
+            unreached: std::sync::Mutex::new(BTreeSet::new()),
             stop_first,
         }
     }
@@ -2169,17 +2173,17 @@ impl<'a> Rows<'a> {
         .copied()
     }
 
-    /// The Machines this Deploy did not observe that hold a copy of `service` in the
-    /// entry Machine's store. Every proxy reads that copy too, so while it is In or
-    /// Pending, one sent Out beside it stays routed and its removal never confirms.
+    /// The copies of `service` the entry Machine's store lists on Machines this
+    /// Deploy did not observe. Every proxy reads those too, so while one is In or
+    /// Pending, a copy sent Out beside it stays routed and its drain never confirms.
     async fn unreached<C: MachineOperations>(
         &self,
         client: &C,
         service: &QualifiedService,
         cancellation: &CancellationToken,
-    ) -> Result<BTreeSet<MachineId>, ExecutionError> {
+    ) -> Result<Vec<cleanup::Copy>, ExecutionError> {
         let Ok(stored) = self.stored(client, cancellation).await? else {
-            return Ok(BTreeSet::new());
+            return Ok(Vec::new());
         };
         Ok(stored
             .iter()
@@ -2188,8 +2192,18 @@ impl<'a> Rows<'a> {
                     && self.unobserved.contains(&copy.machine_id)
                     && copy.rotation().keeps_route()
             })
-            .map(|copy| copy.machine_id)
+            .map(cleanup::Copy::observed)
             .collect())
+    }
+
+    /// Names each copy a removal leaves on a Machine it could not reach, once.
+    fn leave_unreached(&self, progress: &Progress, copies: &[cleanup::Copy]) {
+        let mut named = self.unreached.lock().expect("unreached copies lock");
+        for copy in copies {
+            if named.insert(copy.container_id) {
+                self.leave_running(progress, copy, Left::Unreached);
+            }
+        }
     }
 
     /// The Service Containers in the entry Machine's store, read once per Deploy,
@@ -2310,6 +2324,13 @@ impl<'a> Rows<'a> {
                 Vec::new(),
             ),
             Left::DeployFailed => ("the Deploy failed".into(), Vec::new()),
+            Left::Unreached => (
+                format!(
+                    "{} didn't answer, the next full deploy removes its copy once it is back",
+                    self.machine_name(&copy.machine_id)
+                ),
+                Vec::new(),
+            ),
             Left::NotListed => (
                 format!(
                     "{} did not see the new copies listed",
@@ -2374,6 +2395,9 @@ enum Left {
     NotRestored(Box<Left>, String),
     OlderNotRemoved(Box<Left>),
     DeployFailed,
+    /// A removal could not reach the copy's Machine. It stays until the next full
+    /// Deploy prunes it, and its store row keeps the live copies' drain unconfirmed.
+    Unreached,
 }
 
 impl From<cleanup::Step> for Option<Left> {
@@ -2511,20 +2535,18 @@ async fn execute_operation<C: MachineOperations>(
                 }
             };
             let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
-            if allow_empty && copy.drains() {
-                let unreached = rows.unreached(client, &copy.service, cancellation).await?;
-                if !unreached.is_empty() {
-                    let names: Vec<String> =
-                        unreached.iter().map(|id| rows.machine_name(id)).collect();
-                    return Err(machine_error(
-                        MachineAction::RemoveContainer,
-                        unavailable(super::planning::removal_unobserved_message(&names)),
-                    )
-                    .into());
-                }
-            }
-            match cleanup::retire(client, &copy, allow_empty, (*purpose).into(), cancellation).await
-            {
+            let unreached = if allow_empty && copy.drains() {
+                rows.unreached(client, &copy.service, cancellation).await?
+            } else {
+                Vec::new()
+            };
+            let retired = if unreached.is_empty() {
+                cleanup::retire(client, &copy, allow_empty, (*purpose).into(), cancellation).await
+            } else {
+                rows.leave_unreached(progress, &unreached);
+                cleanup::retire_unconfirmed(client, &copy, allow_empty, (*purpose).into()).await
+            };
+            match retired {
                 Ok(cleanup::Step::Done) => Ok(Ran::default()),
                 Ok(cleanup::Step::Refused(refusal)) => {
                     rows.leave_running(progress, &copy, Left::Refused(refusal.clone()));
