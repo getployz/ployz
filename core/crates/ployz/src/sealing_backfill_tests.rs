@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use super::{
     BackfillClient, BackfillSealingKeyReport, BackfillSealingKeyRequest, Can, Distribution, Listed,
     MachineBackfill, MachineOutcome, Plan, Seen, Sight, SkipReason, distribution, execute, plan,
+    settle,
 };
 
 fn id(n: u8) -> MachineId {
@@ -588,4 +589,55 @@ fn report_and_machine_rows_are_flat_on_result() {
             .unwrap(),
         json!({ "result": "needs_generator", "candidate": id(4).to_string() })
     );
+}
+
+fn settled(fake: &mut Fake) -> Result<SealingPublicKey, Box<BackfillSealingKeyReport>> {
+    settle(fake)
+        .now_or_never()
+        .expect("the fake never waits")
+        .expect("the fake always lists")
+}
+
+#[test]
+fn settling_a_cluster_without_a_key_generates_on_the_candidate_and_carries_it() {
+    let mut fake = Fake {
+        sights: sights(vec![(1, needs(1)), (2, needs(2))]),
+        generate: Some(Ok(key(7))),
+        ..Fake::default()
+    };
+    assert_eq!(settled(&mut fake), Ok(key(7)));
+    assert!(matches!(fake.calls.first(), Some(Call::Generate(generator)) if *generator == id(1)));
+    assert!(
+        fake.calls
+            .iter()
+            .any(|call| matches!(call, Call::Install { recipient, .. } if *recipient == id(2)))
+    );
+}
+
+#[test]
+fn settling_a_cluster_that_holds_a_key_takes_it_and_generates_none() {
+    let mut fake = Fake {
+        sights: sights(vec![(1, holds(1, 4)), (2, needs(2))]),
+        ..Fake::default()
+    };
+    assert_eq!(settled(&mut fake), Ok(key(4)));
+    assert!(
+        !fake
+            .calls
+            .iter()
+            .any(|call| matches!(call, Call::Generate(_)))
+    );
+}
+
+#[test]
+fn settling_a_cluster_awaiting_recovery_makes_no_key() {
+    let mut fake = Fake {
+        sights: sights(vec![(1, awaits(1, 4)), (2, needs(2))]),
+        ..Fake::default()
+    };
+    assert!(matches!(
+        settled(&mut fake),
+        Err(report) if matches!(*report, BackfillSealingKeyReport::AwaitsRecovery { .. })
+    ));
+    assert!(fake.calls.is_empty(), "{:?}", fake.calls);
 }

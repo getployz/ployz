@@ -182,7 +182,7 @@ async fn a_standalone_cli_seals_a_secret_to_the_key_its_servers_hold() {
 }
 
 #[tokio::test]
-async fn a_standalone_cli_refuses_a_secret_while_no_server_holds_a_key() {
+async fn a_standalone_cli_refuses_a_secret_while_its_servers_can_hold_no_key() {
     let (address, server) = server(None).await;
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("store.db");
@@ -190,9 +190,13 @@ async fn a_standalone_cli_refuses_a_secret_while_no_server_holds_a_key() {
     let args = ["set", "web.env.TOKEN", "--secret", "--project", "shop"];
     let (ok, printed) = ployz(&store, address, &args, "standalone-s3cr3t\n").await;
     assert!(!ok, "{printed}");
-    assert_eq!(
-        printed.pointer("/error/message"),
-        Some(&json!("Sealed values need a server.")),
+    let message = printed.pointer("/error/message").and_then(Value::as_str);
+    assert!(
+        message.is_some_and(|message| message.contains("hold no Sealing Key")),
+        "{printed}"
+    );
+    assert!(
+        !printed.to_string().contains("standalone-s3cr3t"),
         "{printed}"
     );
     let (_, intent) = working(&store);
@@ -260,7 +264,11 @@ async fn a_targeted_deploy_at_a_planned_version_is_not_blocked_by_another_servic
     let plan = ["deploy", "web", "--plan", "--project", "shop"];
     let (ok, planned) = ployz(&store, address, &plan, "").await;
     assert!(ok, "{planned}");
-    let version = planned["version"].as_str().unwrap().to_owned();
+    let version = planned
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_owned();
     let deploy = [
         "deploy",
         "web",

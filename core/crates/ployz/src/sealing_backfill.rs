@@ -302,6 +302,40 @@ pub(crate) trait BackfillClient {
     ) -> Result<(), RpcError>;
 }
 
+/// The Cluster's Sealing Key, settled as Cloud settles it: the one its Machines
+/// hold, carried to each that needs it, or one generated on the candidate a pass
+/// names when none holds a key. Any other outcome is the report that stopped it.
+///
+/// # Errors
+///
+/// As [`execute`].
+pub(crate) async fn settle<C: BackfillClient>(
+    client: &mut C,
+) -> Result<Result<SealingPublicKey, Box<BackfillSealingKeyReport>>, RpcError> {
+    let mut request = BackfillSealingKeyRequest::default();
+    loop {
+        let report = execute(client, &request).await?;
+        match &report {
+            BackfillSealingKeyReport::Distributed { public_key, .. } => return Ok(Ok(*public_key)),
+            BackfillSealingKeyReport::NeedsGenerator { candidate }
+                if request.generator.is_none() =>
+            {
+                request.generator = Some(*candidate);
+            }
+            BackfillSealingKeyReport::NeedsGenerator { .. }
+            | BackfillSealingKeyReport::NoHolder { .. }
+            | BackfillSealingKeyReport::Conflicting { .. }
+            | BackfillSealingKeyReport::NoCandidate
+            | BackfillSealingKeyReport::GeneratorGone { .. }
+            | BackfillSealingKeyReport::Waiting { .. }
+            | BackfillSealingKeyReport::AwaitsRecovery { .. }
+            | BackfillSealingKeyReport::GenerationFailed { .. } => {
+                return Ok(Err(Box::new(report)));
+            }
+        }
+    }
+}
+
 pub(crate) async fn execute<C: BackfillClient>(
     client: &mut C,
     request: &BackfillSealingKeyRequest,

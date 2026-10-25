@@ -18,6 +18,7 @@ use uuid::Uuid;
 use super::{Backend, Error, Store};
 use crate::cloud_account::{self, StoreCallError};
 use crate::context::ContextError;
+use crate::sealing_backfill::BackfillSealingKeyReport;
 use crate::ui::Hint;
 
 /// What Cloud answers about sealing one write's secrets.
@@ -60,15 +61,23 @@ type Recipient = Cell<Option<SealingPublicKey>>;
 /// How long the CLI waits for the Cluster's Servers to name their Sealing Key.
 const SEALING_KEY_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long the CLI waits to settle a key no Server holds yet, as Cloud's backfill does.
+const SEALING_KEY_SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl Store<'_> {
     /// The Sealing public key this Standalone Cluster's Servers hold, read from one
-    /// Runtime Watch frame as Cloud reads it; None while no Server holds one, or they
-    /// disagree.
+    /// Runtime Watch frame as Cloud reads it. When no Server holds one, as in a Cluster
+    /// founded before Sealing Keys, the CLI settles it as Cloud does: carried from a
+    /// holder, or generated on the candidate the backfill names. None while no Server
+    /// is known.
     fn cluster_sealing_key(&self) -> Result<Option<SealingPublicKey>, StoreCallError> {
         let runtime = super::runtime().map_err(StoreCallError::Stopped)?;
         let observe = async {
             match super::super::connect_context(self.matches, self.context()).await {
-                Ok(client) => client.runtime_frame().await.map(Some).map_err(Error::from),
+                Ok(client) => {
+                    let frame = client.runtime_frame().await.map_err(Error::from)?;
+                    Ok(Some((client, frame)))
+                }
                 Err(error)
                     if matches!(
                         error.context_error(),
@@ -84,17 +93,15 @@ impl Store<'_> {
                 Err(error) => Err(error),
             }
         };
-        let frame = runtime
+        let observed = runtime
             .block_on(async { tokio::time::timeout(SEALING_KEY_TIMEOUT, observe).await })
-            .unwrap_or_else(|_| {
-                Err(Error::unavailable(
-                    "No Server answered with the Cluster's Sealing Key, so nothing was sealed. \
-                     Start a Server and try again.",
-                ))
-            });
-        let Some(frame) = frame.map_err(StoreCallError::Stopped)? else {
+            .unwrap_or_else(|_| Err(unanswered()));
+        let Some((mut client, frame)) = observed.map_err(StoreCallError::Stopped)? else {
             return Ok(None);
         };
+        if frame.machines.is_empty() {
+            return Ok(None);
+        }
         let mut held =
             frame
                 .machines
@@ -104,7 +111,22 @@ impl Store<'_> {
                     _ => None,
                 });
         let first = held.next();
-        Ok(first.filter(|key| held.all(|other| other == *key)))
+        if let Some(key) = first.filter(|key| held.all(|other| other == *key)) {
+            return Ok(Some(key));
+        }
+        let settled = runtime
+            .block_on(async {
+                tokio::time::timeout(
+                    SEALING_KEY_SETTLE_TIMEOUT,
+                    crate::sealing_backfill::settle(&mut client),
+                )
+                .await
+            })
+            .map_err(|_| StoreCallError::Stopped(unanswered()))?
+            .map_err(|error| StoreCallError::Stopped(Error::from(error)))?;
+        settled
+            .map(Some)
+            .map_err(|stopped| StoreCallError::Stopped(no_key(&stopped)))
     }
 
     /// The key `recipient` names, read from the Cluster on first use.
@@ -275,6 +297,29 @@ impl Store<'_> {
                 Ok(Some((Cell::new(Some(public_key)), targets)))
             }
         }
+    }
+}
+
+fn unanswered() -> Error {
+    Error::unavailable(
+        "No Server answered with the Cluster's Sealing Key, so nothing was sealed. \
+         Start a Server and try again.",
+    )
+}
+
+/// Why the Cluster's Servers have no Sealing Key to seal to, as the backfill stopped.
+fn no_key(stopped: &BackfillSealingKeyReport) -> Error {
+    let why = serde_json::to_value(stopped)
+        .ok()
+        .and_then(|report| report.get("result")?.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let error = Error::conflict(format!(
+        "This Cluster's Servers hold no Sealing Key to seal to ({why}), so nothing was sealed."
+    ));
+    if matches!(stopped, BackfillSealingKeyReport::AwaitsRecovery { .. }) {
+        error.hint(Hint::Next("ployz recover".into()))
+    } else {
+        error
     }
 }
 
