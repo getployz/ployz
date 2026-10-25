@@ -646,7 +646,7 @@ fn prune_limited_to_removals_retires_them_and_keeps_the_rest_with_a_warning() {
     );
     assert_eq!(
         kept.to_string(),
-        "app/debug: running, not in this environment; kept. ployz deploy --prune removes it."
+        "app/debug: running, not in this environment; kept (--no-prune)."
     );
 }
 
