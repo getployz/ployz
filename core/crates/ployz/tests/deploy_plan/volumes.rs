@@ -1018,6 +1018,74 @@ fn a_deployed_volume_no_member_holds_leaves_a_deploy_of_another_service_alone() 
     );
 }
 
+/// Deploys `selected` (all of `web` and `db` when empty) onto one Machine whose `data`
+/// Volume lost its labels.
+fn deploy_over_mismatched_volume(selected: &[&ServiceName]) -> Result<DeployPreview, PlanError> {
+    let (web, db) = web_and_db();
+    let mut existing = observed_volume(machine_id('1'), "data");
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
+    existing.labels.remove(NAMESPACE_LABEL);
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+        used_bytes: 0,
+        role: None,
+        slot_role: None,
+    };
+    let mut target = machine('1', "first");
+    target.storage = Some(MachineStorageObservation::Ready);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions {
+            selected: selected
+                .iter()
+                .map(|name| ServiceAttempt {
+                    name: (*name).clone(),
+                })
+                .collect(),
+            ..PlanOptions::default()
+        },
+    );
+    preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![target],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing])
+                .expect("valid Volume Snapshot fixture"),
+            ..storage_snapshot()
+        },
+    )
+}
+
+#[test]
+fn a_mismatched_volume_leaves_a_deploy_of_another_service_alone() {
+    let (web, db) = web_and_db();
+
+    let preview = deploy_over_mismatched_volume(&[&web.name]).unwrap();
+    let planned: Vec<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(planned, std::slice::from_ref(&web.name));
+    assert!(preview.volumes_to_create.is_empty());
+
+    for selected in [vec![&db.name], vec![]] {
+        let error = deploy_over_mismatched_volume(&selected).unwrap_err();
+        let PlanError::Service { service, source } = &error else {
+            panic!("{error}")
+        };
+        assert_eq!(service, "db");
+        assert!(
+            matches!(
+                **source,
+                PlanError::ExistingProvisionedVolumeMismatch { .. }
+            ),
+            "{source}"
+        );
+    }
+}
+
 /// `web`, which mounts nothing, and `db`, which mounts Managed Volume `data`.
 fn web_and_db() -> (RequestedServiceSpec, RequestedServiceSpec) {
     let mut db = spec("db");

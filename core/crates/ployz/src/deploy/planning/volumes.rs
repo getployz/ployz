@@ -424,7 +424,8 @@ impl VolumePlan<'_> {
             if !spec.volume_graph().has_mounted_provisioned_volume() {
                 continue;
             }
-            // Placement and locality of a Service this Deploy leaves alone must not hold it.
+            // Placement, locality and existing Volumes of a Service this Deploy leaves alone
+            // must not hold it; its definitions still conflict with the applied ones.
             let applied = requested.iter().any(|applied| applied.name == spec.name);
             let result = (|| {
                 let candidates = match super::placement_candidates(spec, &self.namespace, snapshot)
@@ -444,13 +445,11 @@ impl VolumePlan<'_> {
                         ) == ServicePlacementEligibility::Eligible
                     })
                     .collect::<Vec<_>>();
-                if machines.is_empty() {
+                if !applied || machines.is_empty() {
                     return Ok(());
                 }
                 self.validate_provisioned_volumes(spec, &machines, snapshot)?;
-                if applied {
-                    volume_constraints(spec, snapshot, self, &mut machines)?;
-                }
+                volume_constraints(spec, snapshot, self, &mut machines)?;
                 Ok(())
             })();
             match result {
