@@ -8483,6 +8483,74 @@ fn set_refuses_a_secret_holding_a_nul_before_sealing_it() {
     assert_eq!(written, 0);
 }
 
+const SEALED_TEMPLATE: &str = "a sealed value is stored as typed, so `${{` can't generate a value or reference one there: set it as a plain variable, or seal a value you supply";
+
+/// A sealed value is stored as typed, so a generator or a reference in it would reach
+/// the Container as that text: each way the CLI seals refuses it before any write.
+#[test]
+fn set_refuses_to_seal_a_generator_or_a_reference() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_str().unwrap();
+    std::fs::write(file.path(), "LEVEL=info\nGEN=${{ secret(20) }}\n").unwrap();
+    let patch = r#"{"env":{"DB":{"secret":"${{ db.URL }}"}}}"#;
+    let cases: [(&[&str], &str, &str); 5] = [
+        (
+            &["set", "web.env.TOKEN", "--secret"],
+            "${{ secret(32) }}",
+            "TOKEN",
+        ),
+        (
+            &["set", "web.env.TOKEN", "--secret"],
+            "${{ secret() }}\n",
+            "TOKEN",
+        ),
+        (
+            &["set", "web.env.TOKEN", "--secret"],
+            "$${{ secret() }}",
+            "TOKEN",
+        ),
+        (
+            &["set", "web", "--from-env-file", path, "--secret"],
+            "",
+            "GEN",
+        ),
+        (&["set", "web", "--patch", "-"], patch, "DB"),
+    ];
+    for (args, stdin, key) in cases {
+        let (code, refused, written, cloud) = refused_by(one_service, args, stdin);
+        assert_eq!(code, Some(2), "{args:?}: {refused}");
+        assert_eq!(
+            refused["error"]["message"],
+            json!(format!("{key}: {SEALED_TEMPLATE}")),
+            "{args:?}"
+        );
+        assert_eq!(written, 0, "{args:?}");
+        assert!(!refused.to_string().contains("secret("), "{refused}");
+        cloud_never_saw(&cloud, "${{");
+    }
+}
+
+#[test]
+fn env_sync_refuses_to_seal_a_generator() {
+    let args = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--value",
+        "web.env.OTHER_KEY",
+    ];
+    let stdin = "${{ secret(32) }}\n";
+    let (code, refused, written, _) = refused_by(branch_with_a_new_secret, &args, stdin);
+    assert_eq!(code, Some(2), "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        json!(format!("OTHER_KEY: {SEALED_TEMPLATE}"))
+    );
+    assert_eq!(written, 0);
+}
+
 #[test]
 fn env_sync_refuses_an_empty_value_before_sealing_it() {
     let args = [

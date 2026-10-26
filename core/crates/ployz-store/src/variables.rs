@@ -684,10 +684,26 @@ fn opened_len(value: &EnvValue) -> usize {
 /// can't read what it seals.
 ///
 /// # Errors
-/// A name Ployz sets, or text [`validate_text`] refuses.
+/// A name Ployz sets, text [`validate_text`] refuses, or text holding `${{`.
 pub(crate) fn admit_secret(key: &VariableKey, plaintext: &str) -> Result<(), RpcError> {
     refuse_reserved(key)?;
-    validate_text(key, plaintext)
+    validate_text(key, plaintext)?;
+    refuse_template(key, plaintext)
+}
+
+/// Why a sealed value never holds `${{`: what it seals is stored as typed, so a
+/// `${{ secret() }}` would never generate and a reference would never resolve.
+const SEALED_TEMPLATE: &str = "a sealed value is stored as typed, so `${{` can't generate a value or reference one there: set it as a plain variable, or seal a value you supply";
+
+/// Refuse plain text a client would seal that holds `${{`, as the browser does.
+///
+/// # Errors
+/// Returns `invalid_argument` naming `key`, without echoing the text.
+pub(crate) fn refuse_template(key: &VariableKey, plaintext: &str) -> Result<(), RpcError> {
+    if plaintext.contains("${{") {
+        return Err(invalid(key, SEALED_TEMPLATE));
+    }
+    Ok(())
 }
 
 /// Plain and secret values must survive the container's environment unchanged.

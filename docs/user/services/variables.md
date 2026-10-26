@@ -99,7 +99,9 @@ service still gets the real value when it deploys.
   to stays, with its value, on a service that stays. A service added after that version goes,
   with its variables. Delete a sealed variable yourself if you don't want it.
 - A sealed value is stored exactly as typed, so it can't hold a
-  [reference](#reference-another-services-variable).
+  [reference](#reference-another-services-variable) or [generate a value](#generate-a-value).
+  The dashboard and `ployz set ... --secret` refuse a value containing `${{`. Leave the variable
+  plain to use `${{ … }}`, or seal a value you supply.
 - The [Ployz agent](../account/agent-sidebar.md) and `ployz mcp` can have Ployz make and seal
   a new random value, 32 letters, that they never see. They refuse a value you give them and name the
   `ployz set ... --secret` command to run instead. The refusal names the variable but never repeats
