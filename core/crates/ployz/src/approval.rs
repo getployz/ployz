@@ -791,37 +791,40 @@ mod tests {
     }
 
     /// A protected redeploy that destroys nothing still names what it asks about and
-    /// why, rather than an empty `This deploy:` (#3417).
+    /// why, rather than an empty `This deploy:` (#3417), and one that replays a
+    /// teardown names what it removes (#3471).
     #[test]
     fn a_protected_redeploy_names_its_deployment_rollback_and_reason() {
-        let refusal = |rolls_back: serde_json::Value| -> ployz_core::RpcError {
-            serde_json::from_value(serde_json::json!({
-                "code": "approval_required",
-                "message": "production is Protected; an admin must approve this deploy.",
-                "details": {
-                    "approval_id": "a1",
-                    "approval": "d1",
-                    "effects": [],
-                    "diff": {
-                        "environment": {
-                            "id": "00000000-0000-4000-8000-000000000002",
-                            "project": "shop",
-                            "name": "production",
-                            "revision": 3,
+        let refusal =
+            |rolls_back: serde_json::Value, effects: serde_json::Value| -> ployz_core::RpcError {
+                serde_json::from_value(serde_json::json!({
+                    "code": "approval_required",
+                    "message": "production is Protected; an admin must approve this deploy.",
+                    "details": {
+                        "approval_id": "a1",
+                        "approval": "d1",
+                        "effects": effects,
+                        "diff": {
+                            "environment": {
+                                "id": "00000000-0000-4000-8000-000000000002",
+                                "project": "shop",
+                                "name": "production",
+                                "revision": 3,
+                            },
+                            "version": "3:2:0.1",
+                            "saved": 2,
+                            "holds_staged": false,
+                            "changes": [],
+                            "total_count": 0,
                         },
-                        "version": "3:2:0.1",
-                        "saved": 2,
-                        "holds_staged": false,
-                        "changes": [],
-                        "total_count": 0,
+                        "redeploy": { "deployment": 4, "rolls_back": rolls_back },
+                        "protected": true,
                     },
-                    "redeploy": { "deployment": 4, "rolls_back": rolls_back },
-                    "protected": true,
-                },
-            }))
-            .unwrap()
-        };
-        let asked = Asked::of(&refusal(serde_json::json!([]))).unwrap();
+                }))
+                .unwrap()
+            };
+        let none = serde_json::json!([]);
+        let asked = Asked::of(&refusal(serde_json::json!([]), none.clone())).unwrap();
         assert!(asked.for_someone_else());
         assert_eq!(asked.review(Verb::Deploy), ["This redeploy of #4:"]);
         assert_eq!(
@@ -829,12 +832,26 @@ mod tests {
             "production is Protected; an admin must approve this deploy."
         );
 
-        let asked = Asked::of(&refusal(serde_json::json!([5, 6]))).unwrap();
+        let asked = Asked::of(&refusal(serde_json::json!([5, 6]), none)).unwrap();
         assert_eq!(
             asked.review(Verb::Deploy),
             [
                 "This redeploy of #4:",
                 "  ~ rolls back to #4, undoing #5 and #6"
+            ]
+        );
+
+        let teardown = serde_json::json!([
+            { "kind": "removes_service", "name": "extra", "node": "s1", "path": "extra" },
+            { "kind": "removes_domain", "name": "app.example.com", "node": "s2", "path": "web.routes.r1" },
+        ]);
+        let asked = Asked::of(&refusal(serde_json::json!([]), teardown)).unwrap();
+        assert_eq!(
+            asked.review(Verb::Deploy),
+            [
+                "This redeploy of #4 destroys 2 things:",
+                "  ✕ removes Service extra",
+                "  ✕ removes domain app.example.com",
             ]
         );
     }

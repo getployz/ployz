@@ -251,7 +251,10 @@ started. A Deploy token can't destroy, so a deploy that would remove something i
 when an admin already saved the removal. A redeploy that destroys nothing, such as
 `ployz deployment redeploy` of a deploy that only changed an image or variables, runs as its deploy
 did. A rollback, or a redeploy that removes a service, a domain or a volume mount, deletes volume
-data or prunes, still waits for an admin, and so does every deploy an agent makes with it. The token still can't turn protection off, connect a
+data or prunes, still waits for an admin, and so does every deploy an agent makes with it. A
+redeploy whose deploy was approved to remove a service, domain or volume mount isn't refused: the
+admin's approval lists each one, such as `✕ removes Service extra`, and approving lets it remove
+them. The token still can't turn protection off, connect a
 repository or change the deploy branch. If you stop being an owner or admin, the token's deploys
 ask like a member's.
 

@@ -66,7 +66,9 @@ there. A prune that removes a service is destructive, like `ployz service rm`:
   removes any other service running in the environment. A server Ployz already knows is down isn't
   asked.
 - A redeploy of a deploy that pruned prunes again, and asks or is refused the same way, by what runs
-  now.
+  now. `ployz deployment redeploy` takes no `--no-prune`, so a Deploy token's refused redeploy says
+  `Redeploy #16 once every server answers, or have an owner or admin redeploy it.`, or, when it
+  names a service it removes, `Have an owner or admin redeploy #16.`
 
 A service started after the deploy was queued, and before it ran, is removed without being listed.
 

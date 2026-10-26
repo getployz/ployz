@@ -179,7 +179,7 @@ pub(crate) fn admit(
             let asked = retry_review(tx, who, &retry.deployment, trusted)?;
             let (retried, rollback) = deployment::retry(tx, who, retry, trusted)?;
             let pruning = retry_pruning(tx, &retried, trusted)?;
-            pruning.admit(trusted)?;
+            pruning.admit(trusted, Some(rollback.number))?;
             deployment::admitted_by_user(tx, &retried.id, trusted)?;
             let forget = match retried.remove {
                 true => deployment::forgettable(tx, &retried.environment_id, trusted)?,
@@ -423,7 +423,7 @@ fn deploy(
         ),
         false => review::Pruning::Off,
     };
-    pruning.admit(trusted)?;
+    pruning.admit(trusted, None)?;
     let gate = review::Gate::new(tx, id, trusted)?;
     review::approve(who, &review, (&saved_intent, shipping, &pruning), &gate)?;
     let (saved, _) = review::publish(

@@ -222,6 +222,22 @@ it("warns that an agent's rollback deletes Volume data, beside what it undoes", 
   expect(screen.getByRole("list", { name: "Destroys" }).textContent).toBe("Deletes volume data. Not recoverable.");
 });
 
+it("names what a redeploy that replays a teardown removes, beside the Deployment it ships again", () => {
+  const replay = { ...approval, id: "a4", command: "retry", protected: true, yours: false, review: {
+    effects: [
+      { kind: "removes_service" as const, name: "extra", node: "s3", path: "extra" },
+      { kind: "removes_domain" as const, name: "app.example.com", node: "s1", path: "web.routes.r1" },
+    ],
+    diff: asTestDouble<DiffView>()({ environment: { id: "e1", project: "shop", name: "production", revision: 4 }, total_count: 0, changes: [] }),
+    redeploy: { deployment: 14, rolls_back: [] },
+  } };
+  show(replay);
+  expect(screen.getByText("Ships #14 again.")).toBeTruthy();
+  expect(screen.getByText("Redeploys")).toBeTruthy();
+  const destroys = within(screen.getByRole("list", { name: "Destroys" })).getAllByRole("listitem").map((item) => item.textContent);
+  expect(destroys).toEqual([expect.stringMatching(/extra/), expect.stringMatching(/app\.example\.com/)]);
+});
+
 it("words a destroyed thing without a name as its kind, never by its id", () => {
   const review = { ...approval.review, effects: [{ kind: "removes_service" as const, node: "0b9c5d1e-svc", path: "services.0b9c5d1e-svc" }] };
   show(asTestDouble<ApprovalView>()({ ...approval, review }));

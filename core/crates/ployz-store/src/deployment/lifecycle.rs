@@ -675,6 +675,7 @@ pub(crate) fn retry(
         retires: Vec::new(),
         ships: None,
         replays_destruction: false,
+        replays: BTreeSet::new(),
     };
     if let Some(confirmed) = &retry.rolls_back
         && *confirmed != rollback.rolls_back
@@ -738,14 +739,31 @@ pub(crate) fn retry(
             .collect()
     });
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
-    let running = crate::review::approval::may_hold(&head(tx, &environment)?);
-    rollback.replays_destruction =
-        nodes.iter().any(|node| match node {
+    let head = head(tx, &environment)?;
+    let running = crate::review::approval::may_hold(&head);
+    let cluster_domains = match crate::domain::has_generated(&running) {
+        true => cluster_domains(tx, &stored.summary.environment_id, &head)?,
+        false => BTreeMap::new(),
+    };
+    let dropped =
+        crate::review::approval::destructive_effects(&running, &revision, &cluster_domains);
+    rollback.replays_destruction = !dropped.is_empty()
+        || nodes.iter().any(|node| match node {
             TargetNode::Service { removals, .. } => !removals.is_empty(),
             TargetNode::Volume { deletes, .. } => deletes.is_some(),
             TargetNode::Config { .. } => false,
-        }) || !crate::review::approval::destructive_effects(&running, &revision, &BTreeMap::new())
-            .is_empty();
+        });
+    // What its revision dropped, it destroys only on a Service or Volume it ships.
+    rollback.replays = dropped
+        .into_iter()
+        .filter(|effect| {
+            nodes.iter().any(|node| match node {
+                TargetNode::Service { id, .. } => id.as_str() == effect.node,
+                TargetNode::Volume { id, .. } => id.as_str() == effect.node,
+                TargetNode::Config { .. } => false,
+            })
+        })
+        .collect();
     // A retry builds from what its source did, but sends nothing.
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
         json_text(&super::uploads::ServiceUploads {
@@ -840,6 +858,9 @@ pub(crate) struct Rollback {
     /// queues takes a runtime Service off or deletes a Docker Volume, or its revision
     /// drops a Service, Volume, mount or domain the Servers may hold.
     pub(crate) replays_destruction: bool,
+    /// What of that it names: each Service it removes, Volume it deletes or
+    /// detaches, and domain it drops, of what the Servers may hold now.
+    pub(crate) replays: BTreeSet<crate::review::DestructiveEffect>,
 }
 
 /// The Deployments of `deployment`'s Environment after it that may have changed

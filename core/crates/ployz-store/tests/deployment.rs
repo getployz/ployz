@@ -5983,6 +5983,10 @@ fn a_protectors_retry_whose_revision_removes_a_domain_still_asks_an_admin() {
     cancel(&store, &who, 2).unwrap();
     let refused = retry_as(&store, &who, (3, 2), &admins_token(nothing_else_runs())).unwrap_err();
     assert_admin_asked(&refused);
+    assert_eq!(
+        effects(&refused),
+        [("removes_domain".to_owned(), "app.example.com".to_owned())]
+    );
 }
 
 /// Add domain `hostname` to `web`, as staged.
@@ -6062,6 +6066,82 @@ fn a_protectors_retry_replaying_a_teardown_still_asks_an_admin() {
     cancel(&store, &who, 2).unwrap();
     let refused = retry_as(&store, &who, (3, 2), &admins_token(nothing_else_runs())).unwrap_err();
     assert_admin_asked(&refused);
+    assert_eq!(effects(&refused), removes(&["web"]));
+}
+
+#[test]
+fn a_protectors_deploy_token_redeploying_a_teardown_asks_an_admin_naming_what_it_removes() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    // Its source's review let it remove web, so it asks rather than refuses, and
+    // its card names what the admin lets it remove.
+    let refused = retry_as(
+        &store,
+        &who,
+        (3, 2),
+        &protectors_deploy_token(Approval::NotRequired),
+    )
+    .unwrap_err();
+    assert_admin_asked(&refused);
+    assert_eq!(effects(&refused), removes(&["web"]));
+    assert_eq!(
+        refused.details["redeploy"],
+        json!({ "deployment": 2, "rolls_back": [] })
+    );
+    let retried = retry_as(
+        &store,
+        &who,
+        (3, 2),
+        &protectors_deploy_token(approved(&refused)),
+    )
+    .unwrap();
+    assert_eq!(retried.status, DeploymentStatus::Queued);
+}
+
+#[test]
+fn a_deploy_tokens_redeploy_refused_for_an_unseen_prune_names_a_way_out_redeploy_has() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let token = |running| Trusted {
+        running,
+        ..deploy_token()
+    };
+    let unseen = retry_as(&store, &who, (3, 2), &token(None)).unwrap_err();
+    assert_eq!(unseen.code.as_str(), "forbidden", "{unseen:?}");
+    assert!(!unseen.message.contains("--no-prune"), "{}", unseen.message);
+    assert!(
+        unseen.message.ends_with(
+            "Redeploy #2 once every server answers, or have an owner or admin redeploy it."
+        ),
+        "{}",
+        unseen.message
+    );
+    assert_eq!(unseen.details.get("next"), None);
+    let named = retry_as(
+        &store,
+        &who,
+        (3, 2),
+        &token(running(&["web", "api", "extra2"])),
+    )
+    .unwrap_err();
+    assert!(
+        named.message.contains("this redeploy removes extra2"),
+        "{}",
+        named.message
+    );
+    assert!(
+        named
+            .message
+            .ends_with("Have an owner or admin redeploy #2."),
+        "{}",
+        named.message
+    );
 }
 
 /// History's (live, failed) marks.
