@@ -228,7 +228,8 @@ a warning, and requests that need the newer tables fail. Remove it once you run 
 Once you upgrade to 0.3.6, an earlier image refuses to start. Don't override that once a
 [generated value](services/variables.md#generate-a-value) exists: Create → Database makes one for
 every new database's password, and an earlier Ployz Cloud can't read the environments that hold
-one. With `PLOYZ_ALLOW_OLDER_IMAGE=1` it still starts, but every deploy in the organization
+one. With `PLOYZ_ALLOW_OLDER_IMAGE=1` it still starts, but commands on those environments fail,
+and once the organization has a volume, as every database does, every deploy in the organization
 fails, including projects with no generated value. Apps keep running. Upgrading back to 0.3.6 or
 later restores deploys, and every value stays as it was.
 
