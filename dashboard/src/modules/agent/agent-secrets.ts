@@ -14,6 +14,24 @@ function sealedEnvelope(value: JsonValue | undefined): boolean {
   return object !== null && (Object.hasOwn(object, "sealedFor") || Object.values(object).some(sealedEnvelope));
 }
 
+const isText = Schema.is(Schema.String);
+
+/** Text anywhere in `value`. */
+function anyText(value: JsonValue | undefined): boolean {
+  if (isText(value)) return true;
+  if (Array.isArray(value)) return value.some(anyText);
+  return Object.values(asRecord(value) ?? {}).some(anyText);
+}
+
+/**
+ * Whether `value` holds a secret's text: text anywhere under a `secret` field, however deep, as the Rust
+ * `holds_secret_text` reads it. A refusal never hands such a call back as its retry (#3473).
+ */
+export function holdsSecretText(value: JsonValue | undefined): boolean {
+  if (Array.isArray(value)) return value.some(holdsSecretText);
+  return Object.entries(asRecord(value) ?? {}).some(([field, inner]) => (field === "secret" && anyText(inner)) || holdsSecretText(inner));
+}
+
 /** A secret's value as the Rust Service tool finds one in what it sets (`tools/service.rs` `secret_value`). */
 const suppliesSecret = (value: JsonValue | undefined) => holdsText(value) || holdsCredential(value);
 

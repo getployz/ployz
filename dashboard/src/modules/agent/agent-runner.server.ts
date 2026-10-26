@@ -11,7 +11,7 @@ import { type Called, type Command, inputSchema } from "#/modules/commands/comma
 import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
-import { agentSecretRefusal } from "#/modules/agent/agent-secrets";
+import { agentSecretRefusal, holdsSecretText } from "#/modules/agent/agent-secrets";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { JsonObject } from "#/db/tables";
@@ -192,11 +192,14 @@ const repeat = (command: Pick<Command, "input">, call: AgentCall): JsonObject =>
   Object.fromEntries(Object.entries(asRecord(call.input) ?? {}).filter(([key]) => Object.hasOwn(command.input.fields, key)));
 
 /**
- * A published command's answer as the model hears it, its refusal carrying the call to repeat as a Store tool's does;
- * the line `ployz` prints for a human is not for the model.
+ * A published command's answer as the model hears it, its refusal carrying the call to repeat as a Store tool's does,
+ * unless that call holds a secret's text; the line `ployz` prints for a human is not for the model.
  */
-const heard = (command: Pick<Command, "input">, call: AgentCall, ran: Called<unknown>): ToolOutcome =>
-  ran.ok ? { ok: true, value: ran.output } : { ok: false, refusal: { ...ran.refusal, retry: { tool: call.tool, input: repeat(command, call) } } };
+const heard = (command: Pick<Command, "input">, call: AgentCall, ran: Called<unknown>): ToolOutcome => {
+  if (ran.ok) return { ok: true, value: ran.output };
+  const input = repeat(command, call);
+  return { ok: false, refusal: holdsSecretText(input) ? ran.refusal : { ...ran.refusal, retry: { tool: call.tool, input } } };
+};
 
 /** A catalog tool whose input takes a Project: it acts in an Environment, defaulting to the place when a call names none. */
 const ScopedTool = Schema.Struct({ name: Schema.String, input_schema: Schema.Struct({ properties: Schema.Struct({ project: Schema.Struct({}) }) }) });
