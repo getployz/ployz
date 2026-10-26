@@ -45,7 +45,7 @@ pub enum GeneratorError {
     #[error("secret's length is {MIN_LENGTH} to {MAX_LENGTH}")]
     Length,
     #[error(
-        "secret's charset is printable ASCII and ranges such as a-z, without spaces, quotes or backslashes, with at least two different characters"
+        "secret's charset is printable ASCII and ranges such as a-z, with at least two different characters and no spaces, quotes or backslashes, even inside a range"
     )]
     Charset,
 }
@@ -159,13 +159,11 @@ fn quoted(text: &str) -> Result<&str, GeneratorError> {
 }
 
 /// The distinct characters `charset` names: single characters and `x-y` ranges. A
-/// `-` first or last is itself.
+/// `-` first or last is itself. None is a quote or backslash, even inside a range
+/// such as `!-~`, so a value pastes into a shell or connection string unescaped.
 fn expand(charset: &str) -> Result<Vec<u8>, GeneratorError> {
     let bytes = charset.as_bytes();
-    if !bytes
-        .iter()
-        .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'"' | b'\\'))
-    {
+    if !bytes.iter().all(u8::is_ascii_graphic) {
         return Err(GeneratorError::Charset);
     }
     let mut alphabet = Vec::new();
@@ -187,7 +185,11 @@ fn expand(charset: &str) -> Result<Vec<u8>, GeneratorError> {
     }
     alphabet.sort_unstable();
     alphabet.dedup();
-    if alphabet.len() < 2 {
+    if alphabet.len() < 2
+        || alphabet
+            .iter()
+            .any(|byte| matches!(byte, b'"' | b'\'' | b'\\'))
+    {
         return Err(GeneratorError::Charset);
     }
     Ok(alphabet)
@@ -234,6 +236,7 @@ mod tests {
         assert_eq!(stored, Generator::new(32, "a-z").unwrap());
         assert!(serde_json::from_str::<Generator>(r#"{"length":3,"charset":"a-z"}"#).is_err());
         assert!(serde_json::from_str::<Generator>(r#"{"length":32,"charset":"a"}"#).is_err());
+        assert!(serde_json::from_str::<Generator>(r#"{"length":32,"charset":"a'b"}"#).is_err());
     }
 
     #[test]
@@ -293,6 +296,8 @@ mod tests {
             ("${{ secret(32, \"z-a\") }}", GeneratorError::Charset),
             ("${{ secret(32, \"a b\") }}", GeneratorError::Charset),
             ("${{ secret(32, \"é-z\") }}", GeneratorError::Charset),
+            ("${{ secret(32, \"a'b\") }}", GeneratorError::Charset),
+            ("${{ secret(32, \"!-~\") }}", GeneratorError::Charset),
         ] {
             assert_eq!(Generator::parse(text), Err(error), "{text}");
         }
