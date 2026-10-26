@@ -238,3 +238,31 @@ fn an_unnamed_project_refusal_names_the_field_and_each_project() {
     assert_eq!(refusal.field.as_deref(), Some("project"));
     assert_eq!(refusal.valid, ["eval-exit", "eval-oom"]);
 }
+
+// #3473: a retry built for the call, as a confirmation's is, still never repeats a
+// secret's text the call sent.
+#[test]
+fn a_built_retry_never_repeats_a_secret_s_text() {
+    let call = Call::new(
+        "service_update",
+        json!({ "service": "db", "set": { "env": { "API_KEY": { "secret": "SENTINEL-3473" } } } }),
+    );
+    let error = store_error(
+        RpcErrorCode::ConfirmationRequired,
+        "This drops a volume",
+        json!({ "accept": ["data"], "version": "v1" }),
+    );
+    let refusal = from_store(error, &call, Writes::None);
+    assert_eq!(refusal.retry.tool, "service_update");
+    let text = serde_json::to_string(&refusal).unwrap();
+    assert!(!text.contains("SENTINEL-3473"), "{text}");
+    assert!(json!(refusal).get("retry").is_none(), "{text}");
+
+    let plain = Call::new("service_update", json!({ "service": "db" }));
+    let refusal = Refusal::conflict("Busy").with_retry(plain.clone());
+    assert_eq!(
+        json!(refusal).get("retry"),
+        Some(&json!(plain)),
+        "a retry without a secret stays"
+    );
+}

@@ -103,7 +103,8 @@ service still gets the real value when it deploys.
 - The [Ployz agent](../account/agent-sidebar.md) and `ployz mcp` can have Ployz make and seal
   a new random value, 32 letters, that they never see. They refuse a value you give them and name the
   `ployz set ... --secret` command to run instead. The refusal names the variable but never repeats
-  the value, and offers no retry of the call.
+  the value, and offers no retry of the call. The same holds when they refuse such a call for any
+  other reason, such as a field in the wrong shape.
 - Asking for a new random value for a variable that's already sealed keeps the sealed value, so
   a retried change never swaps the password a database already uses. To get a new value, delete
   the variable first. A plain variable gets a new sealed value.
