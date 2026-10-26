@@ -587,7 +587,9 @@ impl Pruning {
     }
 
     /// Refuse a caller who can't destroy a prune that removes a Service, or might.
-    pub(crate) fn admit(&self, trusted: &Trusted) -> Result<(), RpcError> {
+    /// `redeploy` is the number of the Deployment a redeploy ships again, which
+    /// takes no `--no-prune`.
+    pub(crate) fn admit(&self, trusted: &Trusted, redeploy: Option<u64>) -> Result<(), RpcError> {
         let destroy = Permission::ChangesDestroy;
         let Self::On { removes, unseen } = self else {
             return Ok(());
@@ -600,23 +602,43 @@ impl Pruning {
             .map(|effect| effect.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
+        let what = match redeploy {
+            Some(_) => "redeploy",
+            None => "deploy",
+        };
         let removes = match (names.is_empty(), unseen) {
             (false, false) => {
                 format!(
-                    "this deploy removes {names}, running in this environment but not part of it"
+                    "this {what} removes {names}, running in this environment but not part of it"
                 )
             }
             (false, true) => format!(
-                "this deploy removes {names}, running in this environment but not part of it, \
+                "this {what} removes {names}, running in this environment but not part of it, \
                  and Ployz couldn't check every server for others"
             ),
-            (true, _) => "Ployz couldn't check every server for services running in this \
-                 environment but not part of it, which this deploy removes"
-                .to_owned(),
+            (true, _) => format!(
+                "Ployz couldn't check every server for services running in this environment \
+                 but not part of it, which this {what} removes"
+            ),
+        };
+        let Some(number) = redeploy else {
+            return Err(error::forbidden(
+                format!("Needs {destroy}: {removes}. Deploy with --no-prune to keep them."),
+                json!({ "permission": destroy, "next": "ployz deploy --no-prune" }),
+            ));
+        };
+        // A redeploy ships what its Deployment froze, prune and all: only waiting
+        // until every Server answers, or someone who can destroy, gets it through.
+        let way_out = match names.is_empty() {
+            true => format!(
+                "Redeploy #{number} once every server answers, or have an owner or admin \
+                 redeploy it"
+            ),
+            false => format!("Have an owner or admin redeploy #{number}"),
         };
         Err(error::forbidden(
-            format!("Needs {destroy}: {removes}. Deploy with --no-prune to keep them."),
-            json!({ "permission": destroy, "next": "ployz deploy --no-prune" }),
+            format!("Needs {destroy}: {removes}. {way_out}."),
+            json!({ "permission": destroy }),
         ))
     }
 }
@@ -776,6 +798,12 @@ pub(crate) fn approve_retry(
     if !effects.is_empty() {
         gate.trusted.admit(Permission::ChangesDestroy)?;
     }
+    // Its card names what it replays too, which its source's review already let it
+    // destroy: an approval binds what the card shows.
+    let effects: BTreeSet<DestructiveEffect> = effects
+        .into_iter()
+        .chain(rollback.replays.iter().cloned())
+        .collect();
     let accepted: BTreeSet<&VolumeName> = retry.accept_volume_loss.iter().collect();
     let bound = json!({
         "organization": who.organization,
