@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::proposal;
 use super::*;
-use crate::variables::{VariableKey, validate_text};
+use crate::variables::{VariableKey, refuse_template, validate_text};
 use crate::{SecretValue, Trusted, client_sealed, old_cli};
 
 /// Sync one Environment's changes into another of its Project, staged in the
@@ -626,7 +626,8 @@ pub(crate) fn admit_secret_text(
             json!({ "row": row }),
         ));
     }
-    validate_text(key, value)
+    validate_text(key, value)?;
+    refuse_template(key, value)
 }
 
 /// Refuse to close a kept Branch, or one the Store can't remove.
