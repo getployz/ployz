@@ -78,6 +78,12 @@ impl Call {
     pub(crate) const fn is_same(&self) -> bool {
         self.tool.is_empty()
     }
+
+    /// Whether a refusal leaves this retry out: none was set, or its input holds a
+    /// secret's text, which no refusal hands back (#3346), whatever it refused.
+    fn withheld(&self) -> bool {
+        self.is_same() || crate::variables::holds_secret_text(&self.input)
+    }
 }
 
 /// Whether a refused call wrote anything.
@@ -105,7 +111,7 @@ pub struct Refusal {
     pub did_you_mean: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub valid: Vec<String>,
-    #[serde(default = "Call::same", skip_serializing_if = "Call::is_same")]
+    #[serde(default = "Call::same", skip_serializing_if = "Call::withheld")]
     #[ts(as = "Option<Call>", optional)]
     pub retry: Call,
     pub writes: Writes,
@@ -113,7 +119,8 @@ pub struct Refusal {
     pub next: Vec<Call>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub details: Value,
-    /// The call carried a secret's value, so no retry repeats it.
+    /// The call sent text the Store keeps sealed, so no retry repeats it. Text under
+    /// `secret` never reaches a retry anyway; see [`Call::withheld`].
     #[serde(skip)]
     #[ts(skip)]
     pub secret_sent: bool,

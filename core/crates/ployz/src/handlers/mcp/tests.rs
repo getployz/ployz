@@ -1974,6 +1974,25 @@ async fn each_local_call_sweeps_the_store_first() {
     );
 }
 
+// #3473: a Cloud command's refusal never repeats a secret's text it was sent.
+#[test]
+fn a_cloud_command_s_refusal_never_repeats_a_secret_s_text() {
+    let error = RpcError {
+        code: RpcErrorCode::InvalidArgument,
+        message: "This input does not fit".to_owned(),
+        details: json!({ "field": "role", "writes": "none" }),
+        cause: Vec::new(),
+    };
+    let retry = tools::Call::new(
+        "org_member_role",
+        json!({ "role": 7, "credential": { "secret": "SENTINEL-3473-do-not-echo" } }),
+    );
+    let refused = json!(command_refusal(error, retry));
+    assert!(!refused.to_string().contains("SENTINEL-3473"), "{refused}");
+    assert!(refused.get("retry").is_none(), "{refused}");
+    assert_eq!(refused.get("field"), Some(&json!("role")), "{refused}");
+}
+
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 mod published {
     use std::path::Path;

@@ -2906,6 +2906,65 @@ fn metrics_of_an_unknown_server_are_refused_before_any_are_read() {
     assert_eq!(refusal.did_you_mean.as_deref(), Some("web-1"));
 }
 
+// #3473: whatever refuses a call that sends a secret's text, its refusal never hands
+// the text back, in its retry or anywhere else.
+#[test]
+fn no_refusal_echoes_a_secret_s_text_it_was_sent() {
+    const SENTINEL: &str = "SENTINEL-3473-do-not-echo";
+    let store = shop();
+    call(
+        &store,
+        "service_add",
+        json!({ "name": "db", "image": "postgres:17" }),
+        "add-1",
+    )
+    .ok();
+    let sent = json!({ "env": { "API_KEY": { "secret": SENTINEL } } });
+    let exported =
+        json!({ "env": { "API_KEY": { "value": { "secret": SENTINEL }, "exported": true } } });
+    for (key, input, code, field) in [
+        (
+            "shape",
+            json!({ "service": "db", "environment": { "name": "production" }, "set": sent }),
+            RpcErrorCode::InvalidArgument,
+            Some("environment"),
+        ),
+        (
+            "unknown-key",
+            json!({ "service": "db", "bogus": true, "set": sent }),
+            RpcErrorCode::InvalidArgument,
+            Some(""),
+        ),
+        (
+            "out-of-range",
+            json!({ "service": "db", "expect_revision": -1, "set": sent }),
+            RpcErrorCode::InvalidArgument,
+            Some("expect_revision"),
+        ),
+        (
+            "plaintext",
+            json!({ "service": "db", "set": sent }),
+            RpcErrorCode::InvalidArgument,
+            Some("set.env.API_KEY"),
+        ),
+        (
+            "exported-shape",
+            json!({ "service": "db", "environment": 7, "set": exported }),
+            RpcErrorCode::InvalidArgument,
+            Some("environment"),
+        ),
+    ] {
+        let refused = call(&store, "service_update", input, key).refused();
+        let text = serde_json::to_string(&refused).unwrap();
+        assert_eq!(refused.code, code, "{key}: {text}");
+        assert_eq!(refused.field.as_deref(), field, "{key}: {text}");
+        assert!(!text.contains(SENTINEL), "{key} echoes the secret: {text}");
+        assert!(json!(refused).get("retry").is_none(), "{key}: {text}");
+        let wire = serde_json::to_string(&ToolResult::Refused(Box::new(refused))).unwrap();
+        assert!(!wire.contains(SENTINEL), "{key} echoes the secret: {wire}");
+    }
+}
+
 // Catches a generated secret stored as plain text or reaching the agent, and a
 // secret's value an agent sends being sealed instead of refused.
 #[test]

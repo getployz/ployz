@@ -1,6 +1,6 @@
 import type { ConfigCommand, JsonValue, RowId } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import { agentSecretRefusal } from "./agent-secrets";
+import { agentSecretRefusal, holdsSecretText } from "./agent-secrets";
 
 const production = { project: "shop", environment: "production" };
 const preview = { project: "shop", environment: "pr-1" };
@@ -49,4 +49,19 @@ it("passes a Keep, a Not set, a generated secret and plain values", () => {
   ] satisfies ConfigCommand[]) {
     expect(agentSecretRefusal(command)).toBeNull();
   }
+});
+
+it("finds a secret's text anywhere a call holds one, so no refusal hands that call back (#3473)", () => {
+  const held: JsonValue[] = [
+    { env: { TOKEN: { secret: "SENTINEL" } } },
+    { env: { TOKEN: { value: { secret: "SENTINEL" }, exported: true } } },
+    { role: 7, credential: [{ secret: { sealedFor: "x", value: "SENTINEL" } }] },
+  ];
+  const clear: JsonValue[] = [
+    { env: { TOKEN: { secret: true } } },
+    { env: { TOKEN: { secret: { generate: true } } } },
+    { project: "shop", environment: "production" },
+  ];
+  for (const value of held) expect(holdsSecretText(value), JSON.stringify(value)).toBe(true);
+  for (const value of clear) expect(holdsSecretText(value), JSON.stringify(value)).toBe(false);
 });
