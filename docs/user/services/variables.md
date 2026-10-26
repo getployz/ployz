@@ -125,7 +125,8 @@ PIN=${{ secret(8, "0-9") }}
 
 - `secret()` makes 32 letters and digits. Give a length from 8 to 256, and optionally the
   characters to use, in quotes: ranges like `a-z` and single characters, at least two different
-  ones, without spaces, quotes or backslashes.
+  ones. Spaces, quotes (`"` and `'`) and backslashes are refused, even inside a range such as
+  `!-~`, so a value pastes into a shell or connection string as it is.
 - Each environment makes its own value. A separate copy of a service in a branch or a
   [preview](../environments/preview-environments.md) gets a new one, so its new, empty database
   starts with a password of its own. A service the branch shares with its parent keeps the
