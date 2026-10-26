@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Effect } from "effect";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -126,6 +126,21 @@ it("accepts known migration subsets and legacy history without names", async () 
       ]);
     }
     await harness.pool.query("alter table drizzle.__drizzle_migrations rename column saved_name to name");
+  }
+});
+
+it("refuses an image older than Generated Values once the database has them (#3477)", async () => {
+  // v0.3.5 shipped every migration but this one; it can't read a Generated Value, so it must not start silently.
+  const older = await mkdtemp(join(tmpdir(), "ployz-migrations-"));
+  try {
+    await cp(resolve("drizzle"), older, { recursive: true, filter: (source) => !source.endsWith("_generated_variables") });
+    await expect(Effect.runPromise(assertSchemaCompatible({
+      databaseUrl: harness.databaseUrl,
+      imageVersion: "v0.3.5",
+      migrationsFolder: older,
+    }).pipe(Effect.scoped))).rejects.toThrow(/v0\.3\.5 does not ship all migrations.*Use a newer Ployz Cloud image/);
+  } finally {
+    await rm(older, { recursive: true });
   }
 });
 

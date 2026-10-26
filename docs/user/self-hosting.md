@@ -225,6 +225,12 @@ refuse to start. The error names the image version and asks you to use a newer i
 To roll back to an older image anyway, set `PLOYZ_ALLOW_OLDER_IMAGE=1` in `.env`. It starts with
 a warning, and requests that need the newer tables fail. Remove it once you run a newer image.
 
+Don't roll back below 0.3.6 once a [generated value](services/variables.md#generate-a-value) exists.
+Create → Database makes one for every new database's password. An earlier Ployz Cloud can't read
+the environments that hold one. With `PLOYZ_ALLOW_OLDER_IMAGE=1` it still starts, but every
+deploy in the organization fails, including projects with no generated value. Apps keep running.
+Upgrading back to 0.3.6 or later restores deploys, and every value stays as it was.
+
 Set `VERSION` to that release's tag, then run the rest. It refuses a tag older than the one
 you run now:
 
