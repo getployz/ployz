@@ -1,23 +1,39 @@
 import "@tanstack/react-start/server-only";
+import type { OwnedNamespace } from "@ployz/sdk";
+import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
+import { Database } from "#/server/database.server";
 
 /** Every Namespace the Organization owns, with the Project and Environment it belongs to. */
 export const owners = (organizationId: string) =>
   readStore(organizationId, { query: "namespaces" }).pipe(Effect.map(({ namespaces }) => namespaces));
 
 /**
+ * The Namespace Environment `environmentId` owns, or null before its first Deploy. Read by ID, so no other Environment
+ * is read on the way: one the Store can't read fails only its own lookups.
+ */
+export const ownerOf = Effect.fn("ConfigStore.ownerOf")(function* (organizationId: string, environmentId: string) {
+  const { drizzle } = yield* Database;
+  const [owned] = yield* drizzle.execute<OwnedNamespace>(sql`
+    select n.namespace, p.name as project, e.name as environment
+    from config_namespace n
+      join config_environment e on e.id = n.environment_id
+      join config_project p on p.id = e.project_id
+    where n.organization_id = ${organizationId} and n.environment_id = ${environmentId}`, "objects");
+  return owned ?? null;
+});
+
+/**
  * The Namespace and runtime name of a Service in an Environment, with where it lives as `project/environment`, or null
  * when the Environment has no such Service.
  */
 export const findService = Effect.fn("ConfigStore.findService")(function* (organizationId: string, environmentId: string, service: string) {
-  for (const owned of yield* owners(organizationId)) {
-    const view = yield* readStore(organizationId, { query: "namespace", environment: { project: owned.project, environment: owned.environment } });
-    if (view.environment.id !== environmentId) continue;
-    const runtime = view.services[service];
-    return runtime === undefined ? null : { namespace: owned.namespace, runtime, project: owned.project, environment: owned.environment, place: `${owned.project}/${owned.environment}` };
-  }
-  return null;
+  const owned = yield* ownerOf(organizationId, environmentId);
+  if (owned === null) return null;
+  const view = yield* readStore(organizationId, { query: "namespace", environment: { project: owned.project, environment: owned.environment } });
+  const runtime = view.services[service];
+  return runtime === undefined ? null : { namespace: owned.namespace, runtime, project: owned.project, environment: owned.environment, place: `${owned.project}/${owned.environment}` };
 });
 
 /**
