@@ -310,6 +310,13 @@ impl NetworkPlane {
                     "large packets to {name} are dropped: small packets cross the mesh path, but not even {MIN_MTU}-byte ones, so calls with large replies to {name} fail"
                 )
             }
+            (LargePackets::Carried, Some(mtu))
+                if before.is_some_and(|path| path.large_packets == LargePackets::Dropped) =>
+            {
+                eprintln!(
+                    "the mesh path to {name} carries {mtu}-byte packets again; its routes carry at most {mtu} bytes, below the WireGuard MTU of {full}"
+                )
+            }
             (LargePackets::Carried, Some(mtu)) => eprintln!(
                 "large packets to {name} were lost on the mesh path; its routes now carry at most {mtu} bytes, below the WireGuard MTU of {full}"
             ),

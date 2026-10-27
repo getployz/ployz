@@ -9,7 +9,9 @@
 //! MTU back once the path heals.
 //!
 //! The peer's kernel answers the echo, not its daemon, so a peer on any release takes
-//! part. An echo reply is as large as its request, so one round trip tests both ways.
+//! part. An echo reply is as large as its request, so one round trip tests both ways
+//! until the peer lowers its own route and fragments its replies; from then on each side
+//! measures its own direction.
 //! No verdict is drawn from silence alone: a peer whose small echo is lost too keeps
 //! the MTU it had (bet 8).
 //!
