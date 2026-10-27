@@ -172,8 +172,9 @@ How you answer depends on where the command runs:
   deploy that removes the same would. In a Protected environment, a member's save, deploy or
   redeploy asks an admin even when it removes nothing. An owner's or admin's Deploy token there
   redeploys unasked when the redeploy destroys nothing. A rollback, or a redeploy that removes
-  again what its deploy was approved to remove, asks an admin. One that would remove anything else
-  or prune is refused, naming what and that an owner or admin can redeploy it.
+  again what its deploy removed, asks an admin. A rollback that would remove more, or a redeploy
+  that would prune a service or can't check every server for one, is refused, naming what and
+  that an owner or admin can redeploy it.
 - `ployz project rm`, `ployz env rm` and `ployz env shutdown` ask when they would take something
   off the servers. `ployz org rm`, `ployz server forget` with no server named and
   `ployz env protect --off` always ask.

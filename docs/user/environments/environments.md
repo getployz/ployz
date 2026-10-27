@@ -251,15 +251,15 @@ started. A Deploy token can't destroy, so a deploy that would remove something i
 when an admin already saved the removal. The refusal names what it would remove and who can run it:
 `Needs changes:destroy: this deploy would remove Service extra. Have an owner or admin deploy it.`
 A redeploy that destroys nothing, such as `ployz deployment redeploy` of a deploy that only changed
-an image or variables, runs as its deploy did. A rollback, or a redeploy that removes again a
-service, a domain or a volume mount its deploy was approved to remove, waits for an admin, and so
-does every deploy an agent makes with it: the admin's approval lists each one, such as
-`✕ removes Service extra`, and approving lets it remove them. A rollback or redeploy that would
-remove anything else, such as a service added since or a volume and its data, is refused like a
-deploy, naming the deploy to hand over, such as
+an image or variables, runs as its deploy did. A rollback, or a redeploy that removes again what
+its deploy removed (a service, a domain, a volume mount, or a volume and its data), waits for an
+admin, and so does every deploy an agent makes with it: the admin's approval lists each one, such
+as `✕ removes Service extra`, and approving lets it remove them. A rollback that would remove
+more, such as a service added since or a volume and its data, is refused like a deploy, naming the
+deploy to hand over, such as
 `Needs changes:destroy: rolling back to #1 would remove Service extra. Have an owner or admin redeploy #1.`
-So is one that prunes a service running in the environment but not part of it. The token still
-can't turn protection off, connect a
+So is a redeploy that would prune a service running in the environment but not part of it, or
+that can't check every server for one. The token still can't turn protection off, connect a
 repository or change the deploy branch. If you stop being an owner or admin, the token's deploys
 ask like a member's.
 

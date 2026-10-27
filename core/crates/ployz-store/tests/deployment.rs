@@ -7412,3 +7412,22 @@ fn a_deploy_tokens_rollback_that_destroys_names_what_and_who_can() {
          Have an owner or admin redeploy #1."
     );
 }
+
+#[test]
+fn a_deploy_tokens_destroying_deploy_outside_protection_names_any_member() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let token = Trusted {
+        approval: Approval::Required,
+        running: running(&["web", "api"]),
+        ..deploy_token()
+    };
+    let refused = deploy_trusted(&store, &who, 2, &token).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "Needs changes:destroy: this deploy would remove Service web. \
+         Have a member, owner or admin deploy it."
+    );
+}
