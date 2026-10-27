@@ -433,6 +433,29 @@ impl<'a> Gate<'a> {
     }
 }
 
+/// Refuse a caller who can't destroy `effects`, naming what `what` destroys and
+/// `way_out`, who can.
+fn refuse_destroying(
+    gate: &Gate<'_>,
+    effects: &BTreeSet<DestructiveEffect>,
+    what: &str,
+    way_out: &str,
+) -> Result<(), RpcError> {
+    let destroy = Permission::ChangesDestroy;
+    if effects.is_empty() || gate.trusted.holds(destroy) {
+        return Ok(());
+    }
+    let destroys = effects
+        .iter()
+        .map(DestructiveEffect::describe)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(error::forbidden(
+        format!("Needs {destroy}: {what} would {destroys}. {way_out}."),
+        json!({ "permission": destroy }),
+    ))
+}
+
 /// Refuse shipping `target` while it destroys something, unless no approval is
 /// required or Cloud holds a human's approval of exactly this version and set.
 /// Publishing already-Saved State asks nothing: the Publish that saved it did. Under
@@ -464,8 +487,12 @@ pub(crate) fn approve(
         Shipping::Publish => Asks::Destroys,
         Shipping::Deploy { .. } => gate.trusted.asks,
     };
-    if gate.exempt && !effects.is_empty() {
-        gate.trusted.admit(Permission::ChangesDestroy)?;
+    let (what, way_out) = match shipping {
+        Shipping::Publish => ("this publish", "Have an owner or admin publish it"),
+        Shipping::Deploy { .. } => ("this deploy", "Have an owner or admin deploy it"),
+    };
+    if gate.exempt {
+        refuse_destroying(gate, effects, what, way_out)?;
     }
     // A prune's removals, named or not, are new to every Deploy, even one that resaves.
     if asks == Asks::Destroys
@@ -475,9 +502,7 @@ pub(crate) fn approve(
     {
         return Ok(());
     }
-    if !effects.is_empty() {
-        gate.trusted.admit(Permission::ChangesDestroy)?;
-    }
+    refuse_destroying(gate, effects, what, way_out)?;
     let command = match shipping {
         Shipping::Publish => "publish",
         Shipping::Deploy { .. } => "admit",
@@ -795,9 +820,12 @@ pub(crate) fn approve_retry(
     {
         return Ok(());
     }
-    if !effects.is_empty() {
-        gate.trusted.admit(Permission::ChangesDestroy)?;
-    }
+    let what = match rollback.rolls_back.is_empty() {
+        true => format!("redeploying #{}", rollback.number),
+        false => format!("rolling back to #{}", rollback.number),
+    };
+    let way_out = format!("Have an owner or admin redeploy #{}", rollback.number);
+    refuse_destroying(gate, &effects, &what, &way_out)?;
     // Its card names what it replays too, which its source's review already let it
     // destroy: an approval binds what the card shows.
     let effects: BTreeSet<DestructiveEffect> = effects

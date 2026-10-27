@@ -7368,3 +7368,47 @@ fn a_rollback_leaves_alone_a_service_a_failed_deployment_never_attempted() {
     let rolled = rollback_to(&store, &who, (3, 1)).unwrap();
     assert_eq!(rolled.status, DeploymentStatus::Queued);
 }
+
+#[test]
+fn a_deploy_tokens_rollback_that_destroys_names_what_and_who_can() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("extra").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Prepared(preview(&["web", "api", "extra"])),
+        )
+        .unwrap();
+    store
+        .record(&id(2), &a, succeeded(&["web", "api", "extra"]))
+        .unwrap();
+    // Rolling back to #1 takes extra off, which a protector's Deploy token can't
+    // destroy: it names what and who can, rather than a bare permission.
+    let token = Trusted {
+        running: running(&["web", "api", "extra"]),
+        ..protectors_deploy_token(Approval::NotRequired)
+    };
+    let refused = retry_as(&store, &who, (3, 1), &token).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "Needs changes:destroy: rolling back to #1 would remove Service extra. \
+         Have an owner or admin redeploy #1."
+    );
+}
