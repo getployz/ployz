@@ -542,8 +542,9 @@ server's container network has no IPv6. `journalctl -u ployz` says why:
   then run `sudo systemctl restart ployz`. `"iptables": false` and `"firewall-backend":
   "nftables"` read the same way. Restarting Docker is enough, with no reboot.
 - `/etc/docker/daemon.json changed at …, after dockerd started at …`: Ployz can't tell what the
-  running Docker loaded, so the network stays IPv4-only until Docker restarts. A deleted
-  `daemon.json` reads as `was removed`. Run `sudo systemctl restart docker`, then
+  running Docker loaded, so the network stays IPv4-only until Docker restarts. With no
+  `daemon.json`, it reads `/etc/docker changed at … and holds no daemon.json`, as after deleting
+  the file. Run `sudo systemctl restart docker`, then
   `sudo systemctl restart ployz`. `systemctl reload docker` isn't enough. Other lines name what
   Ployz couldn't read, such as `daemon.json` itself, Docker's pidfile, or more than one dockerd,
   and the step that clears it.

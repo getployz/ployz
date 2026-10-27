@@ -20,6 +20,8 @@ const RESTART: &str = "then `systemctl restart docker` and `systemctl restart pl
 /// saw it. Each one fails closed and names the step that clears it.
 #[derive(Debug, PartialEq)]
 pub(super) enum Ipv6Off {
+    /// `/proc` couldn't be read to look for dockerd.
+    UnreadableProc,
     NoDockerd,
     SeveralDockerds,
     /// dockerd's command line couldn't be read, or is a zombie's.
@@ -40,11 +42,11 @@ pub(super) enum Ipv6Off {
         path: PathBuf,
     },
     /// `path` changed after dockerd started, so the running dockerd may not have
-    /// loaded what it says now. `removed` when the file is gone and its directory
-    /// is what changed.
+    /// loaded what it says now. `missing` when there is no file and its directory
+    /// is what changed: the file may have been removed, or something else changed.
     ChangedSinceStart {
         path: PathBuf,
-        removed: bool,
+        missing: bool,
         changed: i128,
         started: i128,
     },
@@ -73,6 +75,10 @@ impl fmt::Display for Ipv6Off {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let unsure = "so Ployz can't tell whether Docker filters IPv6";
         match self {
+            Self::UnreadableProc => write!(
+                f,
+                "Ployz can't read /proc to find dockerd, {unsure}. Run `systemctl restart ployz`."
+            ),
             Self::NoDockerd => write!(
                 f,
                 "no dockerd runs as root here, {unsure}. Start Docker, then `systemctl restart ployz`."
@@ -130,18 +136,19 @@ impl fmt::Display for Ipv6Off {
             ),
             Self::ChangedSinceStart {
                 path,
-                removed,
+                missing,
                 changed,
                 started,
             } => {
                 let changed = when(*changed);
                 let started = when(*started);
-                let what = match removed {
-                    true => format!(
-                        "{} was removed (its directory changed at {changed})",
-                        path.display()
+                let what = match (missing, path.parent(), path.file_name()) {
+                    (true, Some(directory), Some(file)) => format!(
+                        "{} changed at {changed} and holds no {}",
+                        directory.display(),
+                        file.to_string_lossy()
                     ),
-                    false => format!("{} changed at {changed}", path.display()),
+                    _ => format!("{} changed at {changed}", path.display()),
                 };
                 write!(
                     f,
@@ -206,9 +213,9 @@ impl Files for Host {
 /// Docker-in-Docker Service, sits in its own namespace; neither owns the
 /// bridge. Two that could leave unknown which one does.
 fn dockerd() -> Result<(String, Vec<String>), Ipv6Off> {
-    let namespace = fs::read_link("/proc/self/ns/pid").map_err(|_| Ipv6Off::NoDockerd)?;
+    let namespace = fs::read_link("/proc/self/ns/pid").map_err(|_| Ipv6Off::UnreadableProc)?;
     let mut daemons = fs::read_dir("/proc")
-        .map_err(|_| Ipv6Off::NoDockerd)?
+        .map_err(|_| Ipv6Off::UnreadableProc)?
         .filter_map(Result::ok)
         .filter(|entry| {
             fs::read_to_string(entry.path().join("comm"))
@@ -251,10 +258,15 @@ fn filters_ipv6(pid: &str, args: &[String], files: &impl Files) -> Result<(), Ip
         flag_settings(args.get(1..).unwrap_or_default()).ok_or(Ipv6Off::RejectedFlag)?;
     // An empty `--config-file=` loads no file.
     if config_file == Some("") {
-        return flags.off(Source::Flag).map_or(Ok(()), Err);
+        return flags.off().map_or(Ok(()), |setting| {
+            Err(Ipv6Off::Setting {
+                setting,
+                from: Source::Flag,
+            })
+        });
     }
     let path = Path::new(config_file.unwrap_or(DEFAULT_CONFIG_FILE));
-    let (contents, removed, changed) = match files.read(path) {
+    let (contents, missing, changed) = match files.read(path) {
         Ok(contents) => (contents, false, files.changed(path)),
         // Docker starts without its default file; a named one it must have read.
         // Deleting the file changes its directory, and a missing directory held
@@ -276,13 +288,16 @@ fn filters_ipv6(pid: &str, args: &[String], files: &impl Files) -> Result<(), Ip
     let file = file_settings(&contents).ok_or_else(|| Ipv6Off::MalformedConfig {
         path: path.to_owned(),
     })?;
-    if let Some(off) = flags
-        .off(Source::Flag)
-        .or_else(|| file.off(Source::File(path.to_owned())))
-    {
-        return Err(off);
-    }
+    // A flag that sets an option outranks the file, as in `or`.
+    let flagged = flags.off();
     let settings = flags.or(file);
+    if let Some(setting) = settings.off() {
+        let from = match flagged.as_ref() == Some(&setting) {
+            true => Source::Flag,
+            false => Source::File(path.to_owned()),
+        };
+        return Err(Ipv6Off::Setting { setting, from });
+    }
     let changed = changed.map_err(|error| Ipv6Off::UnreadableConfig {
         path: path.to_owned(),
         error: error.to_string(),
@@ -291,7 +306,7 @@ fn filters_ipv6(pid: &str, args: &[String], files: &impl Files) -> Result<(), Ip
     if changed > started {
         return Err(Ipv6Off::ChangedSinceStart {
             path: path.to_owned(),
-            removed,
+            missing,
             changed,
             started,
         });
@@ -339,20 +354,19 @@ impl Settings {
     }
 
     /// Docker 29 turns ip6tables on by default, and only with iptables, whose
-    /// backend is iptables unless set to nftables. What of these settings turns it
-    /// off, as read from `from`.
-    fn off(&self, from: Source) -> Option<Ipv6Off> {
-        let setting = if self.iptables == Some(false) {
-            Setting::Iptables
-        } else if self.ip6tables == Some(false) {
-            Setting::Ip6tables
-        } else {
-            match self.firewall_backend.as_deref() {
-                None | Some("" | "iptables") => return None,
-                Some(backend) => Setting::Backend(backend.to_owned()),
-            }
-        };
-        Some(Ipv6Off::Setting { setting, from })
+    /// backend is iptables unless set to nftables. Which of these settings turns it
+    /// off, if any.
+    fn off(&self) -> Option<Setting> {
+        if self.iptables == Some(false) {
+            return Some(Setting::Iptables);
+        }
+        if self.ip6tables == Some(false) {
+            return Some(Setting::Ip6tables);
+        }
+        match self.firewall_backend.as_deref() {
+            None | Some("" | "iptables") => None,
+            Some(backend) => Some(Setting::Backend(backend.to_owned())),
+        }
     }
 }
 
@@ -687,7 +701,7 @@ mod tests {
                 .cause(&["dockerd"]),
             Err(Ipv6Off::ChangedSinceStart {
                 path: DEFAULT_CONFIG_FILE.into(),
-                removed: false,
+                missing: false,
                 changed: 150,
                 started: 100
             })
@@ -698,7 +712,7 @@ mod tests {
                 .cause(&["dockerd"]),
             Err(Ipv6Off::ChangedSinceStart {
                 path: DEFAULT_CONFIG_FILE.into(),
-                removed: true,
+                missing: true,
                 changed: 150,
                 started: 100
             })
@@ -712,10 +726,24 @@ mod tests {
     }
 
     #[test]
+    fn a_flag_outranks_the_file() {
+        let off = Fake::with_pidfile().file(DEFAULT_CONFIG_FILE, r#"{"ip6tables": false}"#, 50);
+        assert_eq!(off.cause(&["dockerd", "--ip6tables=true"]), Ok(()));
+        let on = Fake::with_pidfile().file(DEFAULT_CONFIG_FILE, r#"{"ip6tables": true}"#, 50);
+        assert_eq!(
+            on.cause(&["dockerd", "--ip6tables=false"]),
+            Err(Ipv6Off::Setting {
+                setting: Setting::Ip6tables,
+                from: Source::Flag
+            })
+        );
+    }
+
+    #[test]
     fn a_stale_daemon_json_says_to_restart_docker_not_that_ip6tables_is_off() {
         let line = Ipv6Off::ChangedSinceStart {
             path: DEFAULT_CONFIG_FILE.into(),
-            removed: false,
+            missing: false,
             changed: 1_761_536_744_000_000_000,
             started: 1_761_536_736_000_000_000,
         }
@@ -727,6 +755,20 @@ mod tests {
              `systemctl restart docker`, then `systemctl restart ployz`."
         );
         assert!(!line.contains("ip6tables"));
+        // No file and a changed directory: maybe removed, maybe something else changed there.
+        let missing = Ipv6Off::ChangedSinceStart {
+            path: DEFAULT_CONFIG_FILE.into(),
+            missing: true,
+            changed: 1_761_536_744_000_000_000,
+            started: 1_761_536_736_000_000_000,
+        }
+        .to_string();
+        assert!(
+            missing.starts_with(
+                "/etc/docker changed at 2025-10-27 03:45:44 UTC and holds no daemon.json, after dockerd started"
+            ),
+            "{missing}"
+        );
         let flag = Ipv6Off::Setting {
             setting: Setting::Ip6tables,
             from: Source::Flag,
