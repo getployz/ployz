@@ -276,6 +276,10 @@ impl NetworkPlane {
             };
         }
         self.paths.set(peer.machine_id, path);
+        // The prober reports every known path each round; log only a change.
+        if before == Some(path) {
+            return;
+        }
         let full = self.mtu;
         match (path.large_packets, lowered) {
             (LargePackets::Dropped, _)
