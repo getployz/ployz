@@ -109,8 +109,6 @@ pub struct NetworkPlane {
     wireguard: WGApi<Kernel>,
     mtu: u32,
     routes: BTreeSet<IpNet>,
-    /// The peer each of [`Self::routes`] leads to.
-    route_owners: BTreeMap<IpNet, MachineId>,
     bootstrap_peers: Vec<MeshPeer>,
     endpoint_peers: Vec<MeshPeer>,
     /// Peers whose path loses packets of the full MTU.
@@ -160,13 +158,6 @@ impl NetworkPlane {
             docker,
             wireguard,
             mtu: record.wireguard_mtu.unwrap_or(NETWORK_MTU),
-            route_owners: retained.as_ref().map_or_else(BTreeMap::new, |host| {
-                route_owners(
-                    &routes,
-                    host.peers.values(),
-                    &peers.iter().collect::<Vec<_>>(),
-                )
-            }),
             routes,
             bootstrap_peers: peers.clone(),
             endpoint_peers: if wireguard_created {
@@ -277,6 +268,28 @@ impl NetworkPlane {
         self.paths.clone()
     }
 
+    /// The peer each installed route leads to now, as the WireGuard device says. A device
+    /// that can't be read owns nothing, so no report or kept MTU passes on a guess.
+    fn route_owners(&self, applied: &[MeshPeer]) -> BTreeMap<IpNet, MachineId> {
+        self.route_owners_of(&self.routes, applied)
+    }
+
+    fn route_owners_of(
+        &self,
+        installed: &BTreeSet<IpNet>,
+        applied: &[MeshPeer],
+    ) -> BTreeMap<IpNet, MachineId> {
+        let Ok(device) = self.wireguard.read_interface_data() else {
+            return BTreeMap::new();
+        };
+        let machines = applied
+            .iter()
+            .chain(&self.endpoint_peers)
+            .chain(&self.bootstrap_peers)
+            .collect::<Vec<_>>();
+        route_owners(installed, device.peers.values(), &machines)
+    }
+
     /// Set the MTU of a peer's routes to what its path carries, and record the path.
     fn apply_path(&mut self, report: PathReport) {
         let Some(peer) = self
@@ -288,8 +301,9 @@ impl NetworkPlane {
         else {
             return;
         };
-        // A report from a round that began before the peer lost its routes is stale.
-        if !owns_routes(&self.route_owners, peer.machine_id, &peer.allowed_ips) {
+        // A report from a round that began before the peer lost its routes is stale. Read the
+        // owners now: an endpoint write can move an overlapping subnet's allowed IP.
+        if !owns_routes(&self.route_owners(&[]), peer.machine_id, &peer.allowed_ips) {
             return;
         }
         let name = &peer.name;
@@ -376,7 +390,6 @@ impl NetworkPlane {
             wireguard,
             mtu: record.wireguard_mtu.unwrap_or(NETWORK_MTU),
             routes: BTreeSet::new(),
-            route_owners: BTreeMap::new(),
             bootstrap_peers: Vec::new(),
             endpoint_peers: Vec::new(),
             lowered: BTreeMap::new(),
@@ -563,13 +576,7 @@ impl NetworkPlane {
             self.wireguard.configure_peer(peer)?;
         }
         let gateway = self.machine.subnet.gateway().0.to_string();
-        let configured = self.wireguard.read_interface_data()?;
-        let machines = peers
-            .iter()
-            .chain(&self.endpoint_peers)
-            .chain(&self.bootstrap_peers)
-            .collect::<Vec<_>>();
-        let route_owners = route_owners(&changes.routes, configured.peers.values(), &machines);
+        let route_owners = self.route_owners_of(&changes.routes, peers);
         self.lowered
             .retain(|machine_id, lowered| owns_routes(&route_owners, *machine_id, &lowered.routes));
         self.paths.retain(|machine_id| {
@@ -591,7 +598,6 @@ impl NetworkPlane {
             delete_route(route);
         }
         self.routes = changes.routes;
-        self.route_owners = route_owners;
         self.probed.send_replace(
             peers
                 .iter()
