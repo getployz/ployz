@@ -724,3 +724,23 @@ async fn a_server_the_entry_reports_silent_reads_dead_without_reconnecting_to_th
     assert_eq!(reconnects.load(std::sync::atomic::Ordering::SeqCst), 0);
     server.abort();
 }
+
+#[test]
+fn an_unanswered_listing_keeps_whether_the_router_could_dial_the_target() {
+    let timed_out = std::io::Error::new(std::io::ErrorKind::TimedOut, "deadline has elapsed");
+    let silent = unanswered_kept(ConnectError::from(
+        ployz_core::rpc::target_unanswered_status(&timed_out),
+    ));
+    assert!(
+        silent.target_unanswered() && !silent.undialed(),
+        "{silent:?}"
+    );
+    let refused = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connect refused");
+    let undialed = unanswered_kept(ConnectError::from(
+        ployz_core::rpc::target_unreached_status(&refused),
+    ));
+    assert!(
+        undialed.target_unanswered() && undialed.undialed(),
+        "{undialed:?}"
+    );
+}

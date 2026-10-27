@@ -1855,6 +1855,22 @@ impl RpcError {
         self
     }
 
+    /// `self`, an [`Self::unanswered_target`] error from a router that couldn't dial the
+    /// target, so only small packets went its way. Read back by [`Self::undialed`].
+    #[must_use]
+    pub fn undialed_target(mut self) -> Self {
+        if let Value::Object(details) = &mut self.details {
+            details.insert(UNDIALED_KEY.into(), Value::Bool(true));
+        }
+        self
+    }
+
+    /// Whether the router couldn't dial the unanswered target.
+    #[must_use]
+    pub fn undialed(&self) -> bool {
+        self.details.get(UNDIALED_KEY).and_then(Value::as_bool) == Some(true)
+    }
+
     /// Whether the call never reached its target.
     #[must_use]
     pub fn never_reached(&self) -> bool {
@@ -2071,6 +2087,7 @@ pub const NO_SUCH_SERVER_REASON: &str = "no_such_server";
 pub const DEPARTING_KEY: &str = "departing";
 const REPLY_LOST_KEY: &str = "reply_lost";
 const REACHED_KEY: &str = "reached";
+const UNDIALED_KEY: &str = "undialed";
 
 /// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
 #[cfg(not(target_arch = "wasm32"))]
