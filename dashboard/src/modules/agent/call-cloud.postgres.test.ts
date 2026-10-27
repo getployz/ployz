@@ -865,6 +865,47 @@ describe("callCloud", () => {
       expect(own).toEqual({ ok: false, refusal: expect.objectContaining({ code: "not_found" }) });
     }));
 
+  // Catches an unreadable Environment answering a Volume lookup with an opaque internal error.
+  it.live("a Volume action refuses naming the Environment the Store can't read, when the Volume may be there", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller } = yield* deployedWeb;
+      yield* drizzle.execute(sql`update config_environment set working = '{"from_the_future":true}' where id = ${ENVIRONMENT}`);
+      const sync: Act = { attempt: "8".repeat(32), digest: "d".repeat(64), action: { action: "volume", volume: VOLUME, run: { run: "sync", full: false } } };
+      const refused = yield* callCloud(caller, { act: sync }).pipe(Effect.provide(services));
+      expect(refused).toEqual({ ok: false, refusal: expect.objectContaining({
+        code: "conflict",
+        message: expect.stringContaining("can't read shop/production"),
+      }) });
+    }));
+
+  // Catches an unreadable Environment stopping the Volume actions of every other Environment.
+  it.live("a Volume action finds its Volume past an Environment the Store can't read", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller, store } = yield* deployedWeb;
+      // zoo sorts after shop, so the lookup meets the unreadable shop first.
+      const zoo = { project: "zoo", environment: null };
+      const volume = "00000000-0000-4000-8000-00000000c3f4";
+      yield* Effect.promise(() => store.write(ORGANIZATION, {
+        command: "create_project", id: "00000000-0000-4000-8000-00000000c3f1", name: "zoo", default_environment: "00000000-0000-4000-8000-00000000c3f2",
+      }));
+      yield* Effect.promise(() => store.write(ORGANIZATION, {
+        command: "create_service", id: "00000000-0000-4000-8000-00000000c3f3", environment: zoo, name: "db", image: "nginx:1",
+      }));
+      yield* Effect.promise(() => store.write(ORGANIZATION, {
+        command: "create_volume", id: volume, environment: zoo, name: "keep", storage: { kind: "docker" }, mounts: [{ service: "db", path: "/data" }],
+      }));
+      yield* Effect.promise(() => store.write(ORGANIZATION, {
+        command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000c3f5", environment: zoo, services: [], version: null, accept_volume_loss: [],
+      }, acmeWeb()));
+      yield* drizzle.execute(sql`update config_environment set working = '{"from_the_future":true}' where id = ${ENVIRONMENT}`);
+      const sync: Act = { attempt: "7".repeat(32), digest: "d".repeat(64), action: { action: "volume", volume, run: { run: "sync", full: false } } };
+      const answered = yield* callCloud(caller, { act: sync }).pipe(Effect.provide(services));
+      // Whatever the sync makes of keep, it was found: neither refused over shop nor missing.
+      const said = answered.ok ? "" : `${answered.refusal.code}: ${answered.refusal.message}`;
+      expect(said).not.toContain("can't read");
+      expect(said).not.toMatch(/^not_found/);
+    }));
+
   // Catches one approved stop authorizing every later stop of the Service, or a dashboard Stop made to wait for a human.
   it.live("one approval runs one stop: a retry with its key replays it, a later stop asks again, and the dashboard never asks", () =>
     Effect.gen(function* () {

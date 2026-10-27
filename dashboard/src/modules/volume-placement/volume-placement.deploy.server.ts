@@ -4,7 +4,7 @@ import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome, OwnedName
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { owners as allOwners, ownerOf } from "#/modules/config-store/store-lookup.server";
+import { owners as allOwners, ownerOf, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor } from "#/modules/identity/actor";
@@ -402,7 +402,9 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
   const blocked: { volume: string; upgrade: string | null }[] = [];
   const volumes: EnvironmentVolume[] = [];
   // A Drain fails while any Environment is unreadable: one skipped could leave its Volumes on the Server being removed.
-  for (const owned of yield* allOwners(organizationId)) volumes.push(...yield* ownedVolumes(organizationId, owned));
+  for (const owned of yield* allOwners(organizationId)) {
+    volumes.push(...yield* ownedVolumes(organizationId, owned).pipe(Effect.catchIf(unreadable, () => Effect.fail(unreadableEnvironment(owned)))));
+  }
   for (const volume of volumes) {
     if (!copies.some((copy) => copy.name === volume.dockerVolume && copy.machine_id === server && copy.role === "writer")) continue;
     const found = rows.find((entry) => entry.volumeId === volume.volumeId);

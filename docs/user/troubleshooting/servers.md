@@ -182,6 +182,18 @@ reason says the command needs Full access, approve this computer as a device. Se
 only Cloud manages slots, make the change from the dashboard instead. Before Ployz 0.3.4, the CLI
 said such a server `did not answer`.
 
+## Removing a server says Ployz Cloud can't read an environment
+
+You'll see `Ployz Cloud can't read shop/production from the Config Store` from `ployz server rm`,
+from **Remove server**, or when you move volumes off a server. Ployz Cloud holds settings for that
+environment it can't read back, as happens when a self-hosted Cloud is rolled back below the
+release that wrote them. Ployz can't
+tell which of that environment's volumes are on the server, so it removes nothing rather than risk
+losing their only copy. The **Remove server** list still names every other environment's volumes,
+and lists that environment's volumes as **Unreadable volume**. If you rolled Ployz Cloud back,
+roll it forward (see [Self-hosting](../self-hosting.md)), then try again. Otherwise, contact
+support.
+
 ## The server's name is invalid
 
 You'll see `invalid Machine Name "Web_1"`, with the closest valid name, `web-1`, below it.
