@@ -174,18 +174,42 @@ pub(super) async fn connect_or_none(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<Option<Client>, Error> {
+    Ok(connect_or_none_held(matches, context)
+        .await?
+        .map(|(client, _)| client))
+}
+
+/// [`connect`], with the connections Cloud handed over when it was Cloud that gave them;
+/// `None` for those of `--connect`, a context or the local socket, which cost nothing to read
+/// again.
+pub(super) async fn connect_held(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<(Client, Option<Vec<Connection>>), Error> {
+    connect_or_none_held(matches, context)
+        .await?
+        .ok_or_else(no_servers)
+}
+
+async fn connect_or_none_held(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Option<(Client, Option<Vec<Connection>>)>, Error> {
     if matches.get_one::<String>("connect").is_none() && context.is_none() {
         let store = CredentialStore::beside(&super::config_path(matches)?);
         match cloud_account::from_env(&store).await {
             Ok(credential) => {
-                return dial(matches, cloud_account::server_access(&credential).await?).await;
+                let access = cloud_account::server_access(&credential).await?;
+                return Ok(dial_held(matches, access)
+                    .await?
+                    .map(|(client, held)| (client, Some(held))));
             }
             Err(LoginError::SignedOut) => {
                 // Signed out with no context or local daemon: the fix is signing in, not a
                 // config file. The hidden test Store is never signed in, so it keeps the cause.
                 return super::connect_context(matches, context)
                     .await
-                    .map(Some)
+                    .map(|client| Some((client, None)))
                     .map_err(|error| {
                         let no_config = std::error::Error::source(&error)
                             .and_then(|source| source.downcast_ref::<ContextError>())
@@ -200,7 +224,9 @@ pub(super) async fn connect_or_none(
             Err(error) => return Err(error.into()),
         }
     }
-    super::connect_context(matches, context).await.map(Some)
+    super::connect_context(matches, context)
+        .await
+        .map(|client| Some((client, None)))
 }
 
 /// [`connect`] through any Server but `leaving`, and the Server it entered by.
@@ -235,13 +261,21 @@ pub(super) async fn connect_avoiding(
 }
 
 /// [`connect`] through `machine` alone, or `None` when no connection names it, as with a
-/// local daemon socket or a context that lists only other Servers.
+/// local daemon socket or a context that lists only other Servers. `held` are the
+/// connections Cloud already handed over, so it isn't asked again.
 pub(super) async fn connect_only(
     matches: &ArgMatches,
     context: Option<&str>,
+    held: Option<&[Connection]>,
     machine: &ployz_core::MachineId,
 ) -> Result<Option<Client>, Error> {
-    let mut selected = entries(matches, context).await?;
+    let mut selected = match held {
+        Some(connections) => SelectedConnections {
+            source: ConnectionSource::Cloud,
+            connections: connections.to_vec(),
+        },
+        None => entries(matches, context).await?,
+    };
     selected
         .connections
         .retain(|connection| connection.machine_id() == Some(machine));
@@ -501,8 +535,16 @@ async fn entries(
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
 async fn dial(
     matches: &ArgMatches,
-    mut access: cloud_account::ServerAccess,
+    access: cloud_account::ServerAccess,
 ) -> Result<Option<Client>, Error> {
+    Ok(dial_held(matches, access).await?.map(|(client, _)| client))
+}
+
+/// [`dial`], with the connections Cloud handed over, so a later dial needs no second ask.
+async fn dial_held(
+    matches: &ArgMatches,
+    mut access: cloud_account::ServerAccess,
+) -> Result<Option<(Client, Vec<Connection>)>, Error> {
     if access.connections.is_empty() {
         if access.unreachable.is_empty() && access.refused.is_empty() {
             return Ok(None);
@@ -511,8 +553,8 @@ async fn dial(
     }
     let held = held_servers(&access.connections);
     let connections = named(std::mem::take(&mut access.connections), &access.names);
-    match dial_connections(matches, connections).await {
-        Ok(client) => Ok(Some(client)),
+    match dial_connections(matches, connections.clone()).await {
+        Ok(client) => Ok(Some((client, connections))),
         Err(error @ ConnectError::AllFailed { reached: false, .. })
             if !held.is_empty() || !access.unreachable.is_empty() || !access.refused.is_empty() =>
         {
