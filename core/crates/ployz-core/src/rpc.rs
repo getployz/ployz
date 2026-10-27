@@ -1868,13 +1868,6 @@ impl RpcError {
         self.details.get(REPLY_LOST_KEY).and_then(Value::as_bool) == Some(true)
     }
 
-    /// Whether the entry Machine that routed this call found that large packets to its
-    /// target are dropped. Older entries never say so.
-    #[must_use]
-    pub fn large_packets_dropped(&self) -> bool {
-        self.details.get("reason").and_then(Value::as_str) == Some(LARGE_PACKETS_DROPPED_REASON)
-    }
-
     /// Whether the target Machine didn't answer, rather than answering with this error.
     #[must_use]
     pub fn target_unanswered(&self) -> bool {
@@ -2109,7 +2102,7 @@ pub fn target_unreached_status(error: &(dyn std::error::Error + 'static)) -> ton
 
 /// The `reason` an entry Machine's router puts in the details of a status it made for a
 /// target that did not answer, when its own path probes found that large packets to that
-/// target are dropped. Read back by [`RpcError::large_packets_dropped`].
+/// target are dropped. Read back by `ConnectError::large_packets_dropped` in the CLI.
 pub const LARGE_PACKETS_DROPPED_REASON: &str = "large_packets_dropped";
 
 /// `status`, a router's [`target_unanswered_status`], marked

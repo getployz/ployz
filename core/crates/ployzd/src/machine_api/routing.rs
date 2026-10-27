@@ -183,13 +183,18 @@ impl MachineProxy {
     }
 
     /// A silent target's status, naming a path this Machine's probes found dropping
-    /// large packets: a reply larger than the path carries never arrives.
+    /// large packets: a reply larger than the path carries never arrives. A failed dial
+    /// sends only small packets, and a backend error never reached the path, so both keep
+    /// their own cause.
     fn explained(&self, status: Status, target: &Machine) -> Status {
+        let metadata = status.metadata();
+        let unanswered = metadata.contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY)
+            && !metadata.contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY);
         let dropped = self
             .paths
             .get(&target.id)
             .is_some_and(|path| path.large_packets == ployz_core::LargePackets::Dropped);
-        if !dropped {
+        if !unanswered || !dropped {
             return status;
         }
         ployz_core::rpc::large_packets_dropped_status(

@@ -65,10 +65,8 @@ pub fn apply_firewall_rules(
         "iptables",
         &ipv4_build_forwarding(),
     )?);
-    if !mss_clamp_present() {
-        ipv4_document.push_str(&format!("*mangle\n-A FORWARD {}\nCOMMIT\n", mss_clamp()));
-    }
     restore("iptables", &ipv4_document)?;
+    add_mss_clamp();
     for rule in LOOSE_BUILD_FORWARDING {
         delete_rule("iptables", "mangle", "FORWARD", rule)?;
     }
@@ -94,11 +92,23 @@ fn mss_clamp() -> String {
     )
 }
 
-fn mss_clamp_present() -> bool {
+/// Add [`mss_clamp`] outside the policy's restore: a kernel without the TCPMSS target
+/// loses only the clamp, and the route MTU still covers the Machine's own TCP.
+fn add_mss_clamp() {
     let rule = mss_clamp();
     let mut check = vec!["-t", "mangle", "-C", "FORWARD"];
     check.extend(rule.split(' '));
-    command_succeeds("iptables", &check)
+    if command_succeeds("iptables", &check) {
+        return;
+    }
+    let mut append = vec!["-t", "mangle", "-A", "FORWARD"];
+    append.extend(rule.split(' '));
+    if let Err(error) = checked_command("iptables", &append) {
+        eprintln!(
+            "failed to clamp container TCP to the mesh path MTU: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        );
+    }
 }
 
 /// Docker's NAT66 would rewrite a container's IPv6 into the mesh to this Machine's

@@ -129,6 +129,10 @@ where
     if !passes(SMALL).await {
         return Finding::Silent;
     }
+    // The path answers, so ask again before blaming the size: one lost round must not lower it.
+    if passes(current).await {
+        return Finding::Carries(current);
+    }
     if current <= MIN_MTU || !passes(MIN_MTU).await {
         return Finding::Dropped;
     }
@@ -281,7 +285,8 @@ fn echo(address: Ipv6Addr, size: u32, wait: Duration) -> io::Result<bool> {
         if left.is_zero() {
             return Ok(false);
         }
-        socket.set_read_timeout(Some(left))?;
+        // Under a microsecond would round to a zero timeout, which blocks.
+        socket.set_read_timeout(Some(left.max(Duration::from_millis(1))))?;
         let (received, _, from) =
             match rustix::net::recvfrom(&socket, &mut reply[..], RecvFlags::empty()) {
                 Ok(received) => received,
@@ -361,7 +366,27 @@ mod tests {
             (1320 - SEARCH_STEP..=1320).contains(&mtu),
             "{mtu} is not within one step of 1320"
         );
-        assert!(sent.len() <= 9, "the search sent {sent:?}");
+        assert!(sent.len() <= 10, "the search sent {sent:?}");
+    }
+
+    #[test]
+    fn one_lost_echo_does_not_lower_a_healthy_path() {
+        let sent = RefCell::new(Vec::new());
+        let finding = futures_util::FutureExt::now_or_never(check(
+            |size| {
+                let first = sent.borrow().is_empty();
+                sent.borrow_mut().push(size);
+                std::future::ready(!first)
+            },
+            FULL,
+            FULL,
+            false,
+        ))
+        .expect("the scripted probes are ready at once");
+        assert_eq!(
+            (finding, sent.into_inner()),
+            (Finding::Carries(FULL), vec![FULL, SMALL, FULL])
+        );
     }
 
     #[test]
