@@ -6102,6 +6102,48 @@ fn a_protectors_deploy_token_redeploying_a_teardown_asks_an_admin_naming_what_it
 }
 
 #[test]
+fn a_protectors_deploy_token_redeploys_an_applied_teardown_unasked() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let trusted = Trusted {
+        approval: Approval::NotRequired,
+        running: nothing_else_runs(),
+        ..Trusted::default()
+    };
+    // No prune, so only its teardown of web can remove anything.
+    deploy_choosing(&store, &who, 2, &trusted, |deploy| deploy.no_prune = true).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let applied = store
+        .record(&id(2), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(applied.status, DeploymentStatus::Applied);
+    let token = |running| Trusted {
+        running,
+        ..protectors_deploy_token(Approval::NotRequired)
+    };
+    // A copy of web on a Server #2 couldn't reach still runs: replaying the
+    // teardown removes it, so it asks.
+    let refused = retry_as(&store, &who, (3, 2), &token(running(&["api", "web"]))).unwrap_err();
+    assert_admin_asked(&refused);
+    assert_eq!(effects(&refused), removes(&["web"]));
+    // So it does while a Server that should answer didn't.
+    let unanswered = Some(RunningObservation {
+        unanswered: vec![MachineId::parse("b".repeat(32)).unwrap()],
+        ..RunningObservation::default()
+    });
+    assert_admin_asked(&retry_as(&store, &who, (3, 2), &token(unanswered)).unwrap_err());
+    // #2 took web off and every Server answered without it: replaying its teardown
+    // destroys nothing.
+    let retried = retry_as(&store, &who, (3, 2), &token(running(&["api"]))).unwrap();
+    assert_eq!(retried.status, DeploymentStatus::Queued);
+}
+
+#[test]
 fn a_deploy_tokens_redeploy_refused_for_an_unseen_prune_names_a_way_out_redeploy_has() {
     let (store, who) = shop();
     apply_both(&store, &who, 1);
