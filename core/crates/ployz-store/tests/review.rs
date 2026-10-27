@@ -4402,7 +4402,10 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
     };
     let refused = publish(&stages).unwrap_err();
     assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
-    assert_eq!(refused.message, "Needs changes:destroy");
+    assert_eq!(
+        refused.message,
+        "Needs changes:destroy: this publish would remove Service web. Have an owner or admin publish it."
+    );
     let asked = publish(&[Permission::ChangesStage, Permission::ChangesDestroy]).unwrap_err();
     assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
 }
