@@ -133,7 +133,9 @@ How you answer depends on where the command runs:
   redeploy's list names the deploy it ships again, such as `This redeploy of #4:`, the later
   deploys it rolls back, and what it removes again that its deploy removed, such as
   `✕ removes Service extra`. When a [Protected environment](../environments/environments.md#protect-an-environment)
-  asks, it prints Ployz Cloud's reason and waits for an owner or admin who didn't ask. It
+  asks, it prints Ployz Cloud's reason, that an owner or admin who didn't ask approves it in
+  Ployz Cloud or with `ployz org approval approve ID`, and `ployz org approval show ID` to follow
+  it, then waits for them. It
   waits until someone approves or denies it in Ployz Cloud, then carries on, or fails naming what
   was denied and the reason given. Ctrl-C, or losing Ployz Cloud, stops waiting and leaves the
   approval pending, and the error names the command to run again with `--approval ID`, except
