@@ -511,6 +511,25 @@ fn is_running(observed: &ContainerObservation) -> bool {
     )
 }
 
+/// How long, in [`OBSERVATION_RETRY`]s, catch-up waits for the copies it started to
+/// run before it calls one not running.
+const STARTING_ATTEMPTS: u32 = 30;
+
+/// Whether `target`, this Machine's Containers, shows `started` running, and a
+/// running copy of its Service in its serving shape.
+fn runs_here(target: &[ContainerObservation], started: &Started, machine: &MachineId) -> bool {
+    let runs = target
+        .iter()
+        .any(|observed| observed.container_id == started.copy.container_id && is_running(observed));
+    let shape_runs = target.iter().any(|observed| {
+        observed.identity() == started.identity
+            && observed.machine_id == *machine
+            && observed.resolved_spec.serving_shape() == started.spec.serving_shape()
+            && is_running(observed)
+    });
+    runs && shape_runs
+}
+
 fn sources(services: &[ServiceObservation]) -> Vec<Source> {
     services
         .iter()
@@ -740,33 +759,38 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             spec,
         });
     }
-    let target = client
-        .target_containers(&this_machine.id)
-        .await
-        .map_err(|error| {
-            let error = if cancel.is_cancelled() {
-                error.interrupted()
-            } else {
-                error
-            };
-            CatchUpError::new(error, unresolved.clone())
-        })?;
-    for Started {
-        identity,
-        copy,
-        spec,
-    } in started
-    {
-        let runs = target
+    // A copy the Machine created may still be starting: give each a moment to run
+    // before calling it not running.
+    let mut waited = 0;
+    let target = loop {
+        let target = client
+            .target_containers(&this_machine.id)
+            .await
+            .map_err(|error| {
+                let error = if cancel.is_cancelled() {
+                    error.interrupted()
+                } else {
+                    error
+                };
+                CatchUpError::new(error, unresolved.clone())
+            })?;
+        let starting = started
             .iter()
-            .any(|observed| observed.container_id == copy.container_id && is_running(observed));
-        let shape_runs = target.iter().any(|observed| {
-            observed.identity() == identity
-                && observed.machine_id == this_machine.id
-                && observed.resolved_spec.serving_shape() == spec.serving_shape()
-                && is_running(observed)
-        });
-        if !runs || !shape_runs {
+            .any(|copy| !runs_here(&target, copy, &this_machine.id));
+        if !starting || waited == STARTING_ATTEMPTS || cancel.is_cancelled() {
+            break target;
+        }
+        waited += 1;
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => {}
+            () = tokio::time::sleep(OBSERVATION_RETRY) => {}
+        }
+    };
+    for started in started {
+        let runs = runs_here(&target, &started, &this_machine.id);
+        let Started { identity, copy, .. } = started;
+        if !runs {
             failures.push((
                 identity.clone(),
                 format!(
