@@ -57,23 +57,29 @@ struct Lowered {
     routes: [IpNet; 2],
 }
 
-/// The peer each installed route leads to. A route the applied `peers` plan goes to the
-/// peer that plans it; one a bootstrap apply keeps for a peer it no longer plans stays
-/// with the owner it had.
-fn route_owners(
+/// The peer each installed route leads to: the Machine whose WireGuard peer holds that
+/// allowed IP. WireGuard gives an allowed IP to one peer only, so when two Machine Subnets
+/// overlap the route leads wherever WireGuard sends it, whatever the plan's order.
+fn route_owners<'a>(
     installed: &BTreeSet<IpNet>,
-    peers: &[MeshPeer],
-    before: &BTreeMap<IpNet, MachineId>,
+    wireguard: impl IntoIterator<Item = &'a Peer>,
+    machines: &[&MeshPeer],
 ) -> BTreeMap<IpNet, MachineId> {
-    installed
-        .iter()
-        .filter_map(|route| {
-            peers
+    wireguard
+        .into_iter()
+        .filter_map(|device| {
+            machines
                 .iter()
-                .find(|peer| peer.allowed_ips.contains(route))
-                .map(|peer| peer.machine_id)
-                .or_else(|| before.get(route).copied())
-                .map(|owner| (*route, owner))
+                .find(|machine| Key::new(machine.public_key.0) == device.public_key)
+                .map(|machine| (device, machine.machine_id))
+        })
+        .flat_map(|(device, owner)| {
+            device
+                .allowed_ips
+                .iter()
+                .filter_map(|address| IpNet::new(address.address, address.cidr).ok())
+                .filter(|route| installed.contains(route))
+                .map(move |route| (route, owner))
         })
         .collect()
 }
@@ -154,7 +160,13 @@ impl NetworkPlane {
             docker,
             wireguard,
             mtu: record.wireguard_mtu.unwrap_or(NETWORK_MTU),
-            route_owners: route_owners(&routes, &peers, &BTreeMap::new()),
+            route_owners: retained.as_ref().map_or_else(BTreeMap::new, |host| {
+                route_owners(
+                    &routes,
+                    host.peers.values(),
+                    &peers.iter().collect::<Vec<_>>(),
+                )
+            }),
             routes,
             bootstrap_peers: peers.clone(),
             endpoint_peers: if wireguard_created {
@@ -551,7 +563,13 @@ impl NetworkPlane {
             self.wireguard.configure_peer(peer)?;
         }
         let gateway = self.machine.subnet.gateway().0.to_string();
-        let route_owners = route_owners(&changes.routes, peers, &self.route_owners);
+        let configured = self.wireguard.read_interface_data()?;
+        let machines = peers
+            .iter()
+            .chain(&self.endpoint_peers)
+            .chain(&self.bootstrap_peers)
+            .collect::<Vec<_>>();
+        let route_owners = route_owners(&changes.routes, configured.peers.values(), &machines);
         self.lowered
             .retain(|machine_id, lowered| owns_routes(&route_owners, *machine_id, &lowered.routes));
         self.paths.retain(|machine_id| {

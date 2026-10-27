@@ -974,32 +974,45 @@ fn a_lowered_mtu_and_probe_reports_stay_with_the_peer_that_owns_the_routes() {
             .flat_map(|peer| peer.allowed_ips)
             .collect::<BTreeSet<_>>()
     };
+    let device = |peers: &[&MeshPeer]| {
+        peers
+            .iter()
+            .map(|peer| wireguard_peer(peer, None))
+            .collect::<Vec<_>>()
+    };
     let old = peer(1, "10.210.1.0/24");
-    let owners = route_owners(
-        &installed(&[&old]),
-        std::slice::from_ref(&old),
-        &BTreeMap::new(),
-    );
+    let owners = route_owners(&installed(&[&old]), &device(&[&old]), &[&old]);
     assert!(owns_routes(&owners, old.machine_id, &old.allowed_ips));
 
-    // A bootstrap apply that keeps the old peer's routes, though it no longer plans the
-    // peer, keeps them with it.
-    let kept = route_owners(&installed(&[&old]), &[], &owners);
-    assert!(owns_routes(&kept, old.machine_id, &old.allowed_ips));
-
-    // The old peer left and a new one took its IPv4 subnet. The new one owns its routes, so
-    // its reports count; a late report from the old one, though a bootstrap list may still
-    // name it, doesn't.
+    // The old peer left and a new one took its IPv4 subnet. WireGuard gives the subnet to the
+    // new one, so its reports count; a late report from the old one, though the bootstrap
+    // peers may still name it, doesn't.
     let replacement = peer(2, "10.210.1.0/24");
-    let owners = route_owners(
-        &installed(&[&replacement]),
-        std::slice::from_ref(&replacement),
-        &kept,
-    );
+    let mut moved = device(&[&old]);
+    moved.extend(device(&[&replacement]));
+    moved
+        .first_mut()
+        .unwrap()
+        .allowed_ips
+        .retain(|ip| ip.cidr == 128);
+    let owners = route_owners(&installed(&[&replacement]), &moved, &[&replacement, &old]);
     assert!(owns_routes(
         &owners,
         replacement.machine_id,
         &replacement.allowed_ips
     ));
+    assert!(!owns_routes(&owners, old.machine_id, &old.allowed_ips));
+
+    // Two current peers whose subnets overlap: the subnet leads to whichever WireGuard peer
+    // holds it, not the first one planned.
+    let other = peer(3, "10.210.1.0/24");
+    let mut overlapping = device(&[&old, &other]);
+    overlapping
+        .first_mut()
+        .unwrap()
+        .allowed_ips
+        .retain(|ip| ip.cidr == 128);
+    let owners = route_owners(&installed(&[&old, &other]), &overlapping, &[&old, &other]);
+    assert!(owns_routes(&owners, other.machine_id, &other.allowed_ips));
     assert!(!owns_routes(&owners, old.machine_id, &old.allowed_ips));
 }
