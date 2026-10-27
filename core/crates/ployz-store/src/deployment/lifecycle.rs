@@ -747,10 +747,24 @@ pub(crate) fn retry(
     };
     let dropped =
         crate::review::approval::destructive_effects(&running, &revision, &cluster_domains);
+    // A teardown it queues destroys only what the Servers may still hold: one an
+    // applied Deployment already ran left nothing to take off.
     rollback.replays_destruction = !dropped.is_empty()
         || nodes.iter().any(|node| match node {
-            TargetNode::Service { removals, .. } => !removals.is_empty(),
-            TargetNode::Volume { deletes, .. } => deletes.is_some(),
+            TargetNode::Service { id, removals, .. } => {
+                !removals.is_empty()
+                    && running
+                        .services
+                        .iter()
+                        .any(|service| service.id == id.as_str())
+            }
+            TargetNode::Volume { id, deletes, .. } => {
+                deletes.is_some()
+                    && running
+                        .volumes
+                        .iter()
+                        .any(|volume| volume.resource_id == id.as_str())
+            }
             TargetNode::Config { .. } => false,
         });
     // What its revision dropped, it destroys only on a Service or Volume it ships.
@@ -855,7 +869,8 @@ pub(crate) struct Rollback {
     /// rest as they are.
     pub(crate) ships: Option<Vec<ServiceLineageId>>,
     /// Whether it may destroy anything, as its source's review accepted: what it
-    /// queues takes a runtime Service off or deletes a Docker Volume, or its revision
+    /// queues takes a runtime Service off or deletes a Docker Volume of a Service or
+    /// Volume the Servers may hold, or its revision
     /// drops a Service, Volume, mount or domain the Servers may hold.
     pub(crate) replays_destruction: bool,
     /// What of that it names: each Service it removes, Volume it deletes or

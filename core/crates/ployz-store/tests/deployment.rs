@@ -6102,6 +6102,32 @@ fn a_protectors_deploy_token_redeploying_a_teardown_asks_an_admin_naming_what_it
 }
 
 #[test]
+fn a_protectors_deploy_token_redeploys_an_applied_teardown_unasked() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let applied = store
+        .record(&id(2), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(applied.status, DeploymentStatus::Applied);
+    // #2 already took web off, so replaying its teardown destroys nothing.
+    let retried = retry_as(
+        &store,
+        &who,
+        (3, 2),
+        &protectors_deploy_token(Approval::NotRequired),
+    )
+    .unwrap();
+    assert_eq!(retried.status, DeploymentStatus::Queued);
+}
+
+#[test]
 fn a_deploy_tokens_redeploy_refused_for_an_unseen_prune_names_a_way_out_redeploy_has() {
     let (store, who) = shop();
     apply_both(&store, &who, 1);
