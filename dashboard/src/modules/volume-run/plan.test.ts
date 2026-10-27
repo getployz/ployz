@@ -465,6 +465,7 @@ describe("plan a resize", () => {
     expect(planFromCopies(resize(20), [...copies, lacking])).toMatchObject({ ok: false, refusal: { message: "Volume resize needs a newer Ployz on fsn-4." } });
     expect(planFromCopies(resize(20, { recordedBytes: 0, refquotaBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data uses Docker storage, which has no size to change; add a Managed Volume for a sized one" } });
     expect(planFromCopies(resize(20, { recordedBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data has no deployed size to change yet; deploy it first" } });
+    expect(planFromCopies(resize(20), [member("fsn-1", "empty")])).toMatchObject({ ok: false, refusal: { code: "no_writer", message: "no Server holds data yet; change its size after the next deploy creates it" } });
   });
 });
 
