@@ -747,27 +747,48 @@ pub(crate) fn retry(
     };
     let dropped =
         crate::review::approval::destructive_effects(&running, &revision, &cluster_domains);
-    // A teardown it queues destroys only what the Servers may still hold: one an
-    // applied Deployment already ran left nothing to take off.
+    // A Service teardown it queues destroys nothing once an applied Deployment took
+    // the Service off and Cloud saw every Server without it. A Volume delete always
+    // counts: a failed Deployment may have left its data where Head can't see.
+    let observed = trusted
+        .running
+        .as_ref()
+        .filter(|running| running.failure.is_none() && running.unanswered.is_empty());
+    let seen = |removals: &ployz_core::ServiceRemovals| {
+        trusted.running.as_ref().is_some_and(|running| {
+            running.services.iter().any(|service| {
+                service.namespace == stored.namespace && removals.contains(&service.name)
+            })
+        })
+    };
+    let gone = |id: &ServiceLineageId, removals: &ployz_core::ServiceRemovals| {
+        running
+            .services
+            .iter()
+            .all(|service| service.id != id.as_str())
+            && observed.is_some()
+            && !seen(removals)
+    };
     rollback.replays_destruction = !dropped.is_empty()
         || nodes.iter().any(|node| match node {
-            TargetNode::Service { id, removals, .. } => {
-                !removals.is_empty()
-                    && running
-                        .services
-                        .iter()
-                        .any(|service| service.id == id.as_str())
-            }
-            TargetNode::Volume { id, deletes, .. } => {
-                deletes.is_some()
-                    && running
-                        .volumes
-                        .iter()
-                        .any(|volume| volume.resource_id == id.as_str())
-            }
+            TargetNode::Service { id, removals, .. } => !removals.is_empty() && !gone(id, removals),
+            TargetNode::Volume { deletes, .. } => deletes.is_some(),
             TargetNode::Config { .. } => false,
         });
-    // What its revision dropped, it destroys only on a Service or Volume it ships.
+    // What its revision dropped, it destroys only on a Service or Volume it ships;
+    // a Service it tears down that Cloud saw running, it removes.
+    let stray = nodes.iter().filter_map(|node| match node {
+        TargetNode::Service {
+            id, name, removals, ..
+        } if seen(removals) => Some(crate::review::DestructiveEffect {
+            kind: crate::review::DestructiveKind::RemovesService,
+            name: name.to_string(),
+            node: id.to_string(),
+            path: name.to_string(),
+            lost_after: None,
+        }),
+        TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => None,
+    });
     rollback.replays = dropped
         .into_iter()
         .filter(|effect| {
@@ -777,6 +798,7 @@ pub(crate) fn retry(
                 TargetNode::Config { .. } => false,
             })
         })
+        .chain(stray)
         .collect();
     // A retry builds from what its source did, but sends nothing.
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
@@ -869,8 +891,8 @@ pub(crate) struct Rollback {
     /// rest as they are.
     pub(crate) ships: Option<Vec<ServiceLineageId>>,
     /// Whether it may destroy anything, as its source's review accepted: what it
-    /// queues takes a runtime Service off or deletes a Docker Volume of a Service or
-    /// Volume the Servers may hold, or its revision
+    /// queues deletes a Docker Volume or takes a runtime Service off that the Servers
+    /// may hold or Cloud saw running, or its revision
     /// drops a Service, Volume, mount or domain the Servers may hold.
     pub(crate) replays_destruction: bool,
     /// What of that it names: each Service it removes, Volume it deletes or
