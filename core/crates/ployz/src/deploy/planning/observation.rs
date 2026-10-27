@@ -31,11 +31,9 @@ pub(super) fn warnings(
             message,
             ..
         } = warning
-            && let Some(name) = dropped_large_packets(snapshot, *kind, *machine_id)
+            && let Some(note) = large_packets_note(snapshot, *kind, *machine_id)
         {
-            message.push_str(&format!(
-                "; large packets to {name} are dropped on its mesh path from the Server this command entered by"
-            ));
+            message.push_str(&note);
         }
     }
     // Machines whose old copies may serve beside this Deploy's new ones; a gap
@@ -177,29 +175,25 @@ fn affected_existing(
     })
 }
 
-/// The name of the Server whose `kind` observation went unanswered while the entry's path
-/// probes find large packets to it dropped: a reply larger than that path carries never
-/// arrives, so that is why it didn't answer.
-fn dropped_large_packets(
+/// [`crate::deploy::large_packets_note`] for the Server's failed `kind` observation,
+/// which [`crate::deploy::unanswered_message`] adds when execution reports it again.
+fn large_packets_note(
     snapshot: &DeploySnapshot,
     kind: ObservationKind,
     machine_id: MachineId,
-) -> Option<&ployz_core::MachineName> {
+) -> Option<String> {
     let failures = match kind {
         ObservationKind::Container => &snapshot.container_failures,
         ObservationKind::Volume => &snapshot.volume_snapshot.machine_failures,
     };
-    let unanswered = failures
+    let failure = failures
         .iter()
-        .any(|failure| failure.machine_id == machine_id && failure.error.target_unanswered());
+        .find(|failure| failure.machine_id == machine_id && failure.error.target_unanswered())?;
     let machine = snapshot
         .machines
         .iter()
         .find(|machine| machine.machine.id == machine_id)?;
-    let dropped = machine
-        .path
-        .is_some_and(|path| path.large_packets == ployz_core::LargePackets::Dropped);
-    (unanswered && dropped).then_some(&machine.machine.name)
+    crate::deploy::large_packets_note(machine, &failure.error)
 }
 
 #[cfg(test)]
@@ -267,6 +261,29 @@ mod tests {
             failed_message(dropped, refused),
             "refused",
             "a Server that answered keeps its own words"
+        );
+    }
+
+    #[test]
+    fn execution_words_an_unanswered_listing_as_planning_did() {
+        let dropped = Some(PathObservation {
+            mtu: 1420,
+            large_packets: LargePackets::Dropped,
+            lowered: false,
+        });
+        let error = RpcError::unanswered_target(
+            RpcErrorCode::Unavailable,
+            "target Machine RPC timed out".into(),
+        );
+        let mut machine = MachineObservation::new(
+            crate::global_fixtures::machine('a', "web-2"),
+            MembershipObservation::Suspect,
+        );
+        machine.path = dropped;
+        // The notices dedupe by message, so the two read as one.
+        assert_eq!(
+            crate::deploy::unanswered_message(&machine, &error),
+            failed_message(dropped, error)
         );
     }
 }

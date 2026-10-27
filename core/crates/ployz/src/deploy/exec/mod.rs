@@ -136,6 +136,8 @@ pub(crate) struct Listed {
 pub(crate) struct Unanswered {
     pub(crate) name: MachineName,
     pub(crate) failure: MachineFailure<RpcError>,
+    /// The failure as planning words it too, so their notices are one.
+    pub(crate) message: String,
 }
 
 impl Unanswered {
@@ -148,7 +150,7 @@ impl Unanswered {
             }),
             kind: ObservationKind::Container,
             machine_id: self.failure.machine_id,
-            message: crate::ui::row(&self.failure.error),
+            message: self.message.clone(),
         });
     }
 }
@@ -293,6 +295,7 @@ impl MachineOperations for Client {
                 Some(machine) if crate::deploy::listing_gap(machine, &failure.error) => {
                     unanswered.push(Unanswered {
                         name: machine.machine.name.clone(),
+                        message: crate::deploy::unanswered_message(machine, &failure.error),
                         failure,
                     });
                 }
