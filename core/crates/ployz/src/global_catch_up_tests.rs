@@ -175,7 +175,84 @@ async fn partial_observation_is_retried_in_run() {
     assert_eq!(client.run_calls.len(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
+async fn a_copy_still_starting_is_waited_for() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let api = |on| global_service(qualified("app", "api"), 'a', Placement::default(), on);
+    let mut client = fake(&joiner, vec![api(running_on(&founder, 'a'))]);
+    client.run_result = Ok(Some(container_id('b')));
+    // The joiner shows the new copy created, not yet running, twice, then running.
+    client.starting = [created_on(&joiner, 'b'), created_on(&joiner, 'b')]
+        .into_iter()
+        .map(|on| vec![api(on)])
+        .collect();
+    client.target_services = Some(vec![api(running_on(&joiner, 'b'))]);
+    catch_up(&mut client, &joiner).await.unwrap();
+    assert!(client.starting.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_copy_that_never_runs_fails_after_the_wait_naming_what_it_is() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let api = |on| global_service(qualified("app", "api"), 'a', Placement::default(), on);
+    let mut client = fake(&joiner, vec![api(running_on(&founder, 'a'))]);
+    client.run_result = Ok(Some(container_id('b')));
+    client.target_services = Some(vec![api(created_on(&joiner, 'b'))]);
+    let began = tokio::time::Instant::now();
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+    assert!(began.elapsed() >= std::time::Duration::from_secs(30));
+    assert!(began.elapsed() < std::time::Duration::from_secs(32));
+    let message = message(error, &joiner);
+    assert!(
+        message.contains(&format!(
+            "copy {} is not running on this Machine after catch-up; it is created",
+            container_id('b').as_str()
+        )),
+        "{message}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_copy_that_is_gone_fails_without_waiting() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let api = |on| global_service(qualified("app", "api"), 'a', Placement::default(), on);
+    let mut client = fake(&joiner, vec![api(running_on(&founder, 'a'))]);
+    client.run_result = Ok(Some(container_id('b')));
+    client.target_services = Some(Vec::new());
+    let began = tokio::time::Instant::now();
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+    assert!(began.elapsed() < std::time::Duration::from_secs(1));
+    assert!(message(error, &joiner).contains("; it is gone"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancel_while_waiting_reports_the_copy_still_starting_unresolved() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let api = |on| global_service(qualified("app", "api"), 'a', Placement::default(), on);
+    let mut client = fake(&joiner, vec![api(running_on(&founder, 'a'))]);
+    client.run_result = Ok(Some(container_id('b')));
+    client.target_services = Some(vec![api(created_on(&joiner, 'b'))]);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancelling = cancel.clone();
+    let stop = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        cancelling.cancel();
+    });
+    let began = tokio::time::Instant::now();
+    let error = catch_up_globals(&mut client, &joiner, &cancel, |_| {})
+        .await
+        .unwrap_err();
+    stop.await.unwrap();
+    assert!(began.elapsed() < std::time::Duration::from_secs(6));
+    assert!(error.cause.is_interrupted(), "{:?}", error.cause);
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn successful_ensure_is_reobserved_before_success() {
     let joiner = machine('1', "joiner");
     let service = global_service(
@@ -189,7 +266,7 @@ async fn successful_ensure_is_reobserved_before_success() {
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn initially_eligible_global_absent_from_target_inspection_remains_missing() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -213,7 +290,7 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -243,7 +320,7 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn initially_eligible_generation_absent_from_target_inspection_remains_missing() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -266,7 +343,7 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -288,7 +365,7 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
     assert_eq!(error.unresolved, [qualified("prod", "api")]);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_held_source_is_outdated() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -305,7 +382,7 @@ async fn a_held_source_is_outdated() {
     assert!(message.contains("redeploy"), "{message}");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn an_out_source_is_outdated() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -319,7 +396,7 @@ async fn an_out_source_is_outdated() {
     assert!(message.contains("redeploy"), "{message}");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_pending_copy_older_than_an_in_gen_is_not_the_source() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -351,7 +428,7 @@ async fn a_pending_copy_older_than_an_in_gen_is_not_the_source() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_copy_keeps_its_sources_label_and_gen() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -390,7 +467,7 @@ async fn a_copy_keeps_its_sources_label_and_gen() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn an_owner_gen_refusal_discards_the_copy() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -425,7 +502,7 @@ async fn an_owner_gen_refusal_discards_the_copy() {
     assert!(message.contains(OUTDATED), "{message}");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn own_superseded_copies_retire_after_in() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -467,7 +544,7 @@ async fn own_superseded_copies_retire_after_in() {
     assert!(client.removed.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_proxy_copy_skips_rotation() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -502,7 +579,7 @@ async fn a_proxy_copy_skips_rotation() {
     assert!(client.removed.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn interruption_settles_started_work_and_only_reports_unresolved_globals() {
     for excluded in [false, true] {
         let joiner = machine('1', "joiner");
@@ -585,6 +662,8 @@ struct FakeCatchUpClient {
     unarrived: crate::drain::retirement::Names,
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
+    /// What the joiner's Containers show, call by call, before `target_services`.
+    starting: std::collections::VecDeque<Vec<ServiceObservation>>,
 }
 
 fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClient {
@@ -604,6 +683,7 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         unarrived: Vec::new(),
         relisted: None,
         listings: 0,
+        starting: std::collections::VecDeque::new(),
     }
 }
 
@@ -711,6 +791,9 @@ impl CatchUpClient for FakeCatchUpClient {
         &mut self,
         _machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Failure> {
+        if let Some(starting) = self.starting.pop_front() {
+            return Ok(flatten(&starting));
+        }
         Ok(flatten(
             self.target_services.as_ref().unwrap_or(&self.services),
         ))
@@ -750,7 +833,7 @@ fn provisioned_global_spec() -> RequestedServiceSpec {
     spec
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn failed_placement_is_reported_even_if_final_observation_is_running() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
