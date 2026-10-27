@@ -1,4 +1,5 @@
-import { type ConfigStore, type MachineId, RpcError, type RuntimeWatchView } from "@ployz/sdk";
+import type { ConfigStore, MachineId, RuntimeWatchView } from "@ployz/sdk";
+import { RpcError } from "#/modules/runtime/ployz.server";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { operationDigest } from "#/modules/approvals/approvals.server";
