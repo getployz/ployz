@@ -270,7 +270,13 @@ fn deploying_a_staged_destroy_needs_changes_destroy() {
     let refused = store
         .write_trusted(&who, &keeping, &holding(&[Permission::ChangesDeploy]))
         .unwrap_err();
-    needs(&refused, "changes:destroy");
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "Needs changes:destroy: this deploy would remove Service web. \
+         Have an owner or admin deploy it."
+    );
+    assert_eq!(refused.details, json!({ "permission": "changes:destroy" }));
     assert_eq!(revision(&store, &who), before);
     store
         .write_trusted(
