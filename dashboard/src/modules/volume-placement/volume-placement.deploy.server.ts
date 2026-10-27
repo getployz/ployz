@@ -366,11 +366,13 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
   const synced: MirrorSyncAnswer[] = [];
   for (const owned of owners) {
     if (owned === null) continue;
-    // An Environment the Store can't read keeps its mirrors as they are; it stops no other Environment's refresh.
+    // In the organization-wide pass, an Environment the Store can't read keeps its mirrors as they are; it stops no
+    // other Environment's refresh. A Deploy's own Environment still fails its Deploy.
     const volumes = yield* ownedVolumes(organizationId, owned).pipe(
-      Effect.catchTag("StoreRefused", (refused) => Effect.logWarning("Mirror refresh skipped an Environment the Store can't read.", {
-        organizationId, project: owned.project, environment: owned.environment, reason: refused.message,
-      }).pipe(Effect.as([]))),
+      Effect.catchTag("StoreRefused", (refused) => onlyEnvironmentId !== null ? Effect.fail(refused) : Effect.logWarning(
+        "Mirror refresh skipped an Environment the Store can't read.",
+        { organizationId, project: owned.project, environment: owned.environment, reason: refused.message },
+      ).pipe(Effect.as([]))),
     );
     for (const volume of volumes) {
       if (!syncs(copies.filter((copy) => copy.name === volume.dockerVolume))) continue;

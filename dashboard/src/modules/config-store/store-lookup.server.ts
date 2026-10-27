@@ -32,6 +32,8 @@ export const findService = Effect.fn("ConfigStore.findService")(function* (organ
   const owned = yield* ownerOf(organizationId, environmentId);
   if (owned === null) return null;
   const view = yield* readStore(organizationId, { query: "namespace", environment: { project: owned.project, environment: owned.environment } });
+  // A rename between the two reads can put another Environment under these names.
+  if (view.environment.id !== environmentId) return null;
   const runtime = view.services[service];
   return runtime === undefined ? null : { namespace: owned.namespace, runtime, project: owned.project, environment: owned.environment, place: `${owned.project}/${owned.environment}` };
 });
