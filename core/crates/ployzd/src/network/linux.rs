@@ -57,25 +57,21 @@ struct Lowered {
     routes: [IpNet; 2],
 }
 
-impl Lowered {
-    /// Whether the MTU `machine_id` proved still applies: all its routes stay installed, and no
-    /// other peer took one over. A replacement Machine that takes a freed IPv4 subnet starts at the
-    /// full MTU, and its own probe lowers it again.
-    fn still_held(
-        &self,
-        machine_id: MachineId,
-        installed: &BTreeSet<IpNet>,
-        peers: &[MeshPeer],
-    ) -> bool {
-        self.routes.iter().all(|route| installed.contains(route))
-            && !peers.iter().any(|peer| {
-                peer.machine_id != machine_id
-                    && peer
-                        .allowed_ips
-                        .iter()
-                        .any(|route| self.routes.contains(route))
-            })
-    }
+/// Whether `machine_id` still owns `routes`: all are installed, and no other peer took one
+/// over. A lowered MTU, or a probe report, of a peer that lost them never touches the routes
+/// of the replacement Machine that took a freed IPv4 subnet; that Machine starts at the full
+/// MTU, and its own probe lowers it again.
+fn owns_routes<'a>(
+    machine_id: MachineId,
+    routes: &[IpNet; 2],
+    installed: &BTreeSet<IpNet>,
+    peers: impl IntoIterator<Item = &'a MeshPeer>,
+) -> bool {
+    routes.iter().all(|route| installed.contains(route))
+        && !peers.into_iter().any(|peer| {
+            peer.machine_id != machine_id
+                && peer.allowed_ips.iter().any(|route| routes.contains(route))
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,6 +256,11 @@ impl NetworkPlane {
         else {
             return;
         };
+        // A report from a round that began before the peer left is stale.
+        let current = self.endpoint_peers.iter().chain(&self.bootstrap_peers);
+        if !owns_routes(peer.machine_id, &peer.allowed_ips, &self.routes, current) {
+            return;
+        }
         let name = &peer.name;
         let path = report.path;
         let before = self.paths.get(&peer.machine_id);
@@ -530,8 +531,9 @@ impl NetworkPlane {
             self.wireguard.configure_peer(peer)?;
         }
         let gateway = self.machine.subnet.gateway().0.to_string();
-        self.lowered
-            .retain(|machine_id, lowered| lowered.still_held(*machine_id, &changes.routes, peers));
+        self.lowered.retain(|machine_id, lowered| {
+            owns_routes(*machine_id, &lowered.routes, &changes.routes, peers)
+        });
         self.paths.retain(|machine_id| {
             self.lowered.contains_key(machine_id)
                 || peers.iter().any(|peer| peer.machine_id == *machine_id)

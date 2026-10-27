@@ -957,7 +957,7 @@ fn a_member_between_restarts_is_stopped_and_noted_only_when_docker_would_run_it_
 }
 
 #[test]
-fn a_lowered_mtu_stays_with_the_peer_that_proved_it() {
+fn a_lowered_mtu_and_probe_reports_stay_with_the_peer_that_owns_the_routes() {
     let peer = |seed: u8, subnet: &str| MeshPeer {
         machine_id: MachineId::random(),
         name: ployz_core::MachineName::parse("peer").unwrap(),
@@ -969,31 +969,24 @@ fn a_lowered_mtu_stays_with_the_peer_that_proved_it() {
         selection: super::super::EndpointSelection::new(&[], None, SystemTime::now()),
     };
     let old = peer(1, "10.210.1.0/24");
-    let lowered = Lowered {
-        mtu: 1310,
-        routes: old.allowed_ips,
+    let owns = |installed: &[&MeshPeer], peers: &[&MeshPeer]| {
+        owns_routes(
+            old.machine_id,
+            &old.allowed_ips,
+            &installed.iter().flat_map(|peer| peer.allowed_ips).collect(),
+            peers.iter().copied(),
+        )
     };
-    let installed = |peers: &[&MeshPeer]| {
-        peers
-            .iter()
-            .flat_map(|peer| peer.allowed_ips)
-            .collect::<BTreeSet<_>>()
-    };
-
-    assert!(lowered.still_held(
-        old.machine_id,
-        &installed(&[&old]),
-        std::slice::from_ref(&old)
-    ));
+    assert!(owns(&[&old], &[&old]));
 
     // The old peer left and a new one took its IPv4 subnet in the same snapshot.
     let replacement = peer(2, "10.210.1.0/24");
-    assert!(!lowered.still_held(
-        old.machine_id,
-        &installed(&[&replacement]),
-        std::slice::from_ref(&replacement)
-    ));
+    assert!(!owns(&[&replacement], &[&replacement]));
+
+    // A late report from the old peer, still listed among the bootstrap peers beside its
+    // replacement, doesn't lower the replacement's route.
+    assert!(!owns(&[&old, &replacement], &[&old, &replacement]));
 
     // A bootstrap apply that keeps the old peer's routes keeps its MTU.
-    assert!(lowered.still_held(old.machine_id, &installed(&[&old]), &[]));
+    assert!(owns(&[&old], &[]));
 }
