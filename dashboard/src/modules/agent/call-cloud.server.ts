@@ -108,7 +108,8 @@ const copies = Effect.fn("CallCloud.copies")(function* (caller: Caller, namespac
   const refused = unheld(caller, "volumes:read", owned?.environment ?? null);
   if (refused !== null) return refused;
   if (owned === undefined) return noSuch("Namespace");
-  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment: { project: owned.project, environment: owned.environment } });
+  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment: { project: owned.project, environment: owned.environment } })
+    .pipe(Effect.catchIf(unreadable, () => Effect.fail(unreadableEnvironment(owned))));
   const named = volumes.filter(({ name }) => only === null || name === only);
   const loaded = yield* loadOrganizationConnections(organizationId);
   if (loaded.kind !== "ready" || loaded.connections.length === 0) return yield* notConnected(organizationId);
