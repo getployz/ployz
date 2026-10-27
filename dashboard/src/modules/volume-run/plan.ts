@@ -189,6 +189,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
 
   if (root === undefined) {
     if (mirrors.length > 0) return refuse("no_writer", `${name} has no writer; ployz volume release ${name} ends a move cut short`);
+    if (input.kind === "resize") return refuse("no_writer", `no Server holds ${name} yet; change its size after the next deploy creates it`);
     return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
   }
   if (roleOf(root) === "cutting") return midRun(name, mirrors, root);
