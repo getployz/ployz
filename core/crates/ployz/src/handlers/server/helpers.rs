@@ -15,7 +15,7 @@ use crate::{
     handlers::{Error, string_values},
 };
 
-pub(super) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Error> {
+pub(in crate::handlers) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Error> {
     let public_ip = match matches
         .get_one::<String>("public-ip")
         .map(String::as_str)
@@ -64,7 +64,7 @@ pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
     Ok(ip)
 }
 
-pub(super) fn pinned(request: &InspectRequest) -> PinnedAddresses {
+pub(in crate::handlers) fn pinned(request: &InspectRequest) -> PinnedAddresses {
     PinnedAddresses::chosen(
         request
             .token
