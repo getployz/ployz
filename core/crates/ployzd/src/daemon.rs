@@ -312,8 +312,13 @@ impl Daemon {
         let (endpoint_chooser, endpoint_choices) = tokio::sync::mpsc::channel(8);
         let (route_publishes, published_routes) =
             tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+        let paths = network
+            .as_ref()
+            .map(NetworkPlane::paths)
+            .unwrap_or_default();
         let machine_api = MachineApi::builder(local.clone())
             .with_endpoint_chooser(endpoint_chooser)
+            .with_paths(paths)
             .with_volume_plugin(plugin.clone())
             .with_build_grants(Arc::clone(&grants))
             .with_builds(builds)

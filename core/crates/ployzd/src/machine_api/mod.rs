@@ -107,6 +107,13 @@ impl MachineApiBuilder {
         self
     }
 
+    /// Where list and inspect answers read this Machine's path to each peer.
+    #[must_use]
+    pub(crate) fn with_paths(mut self, paths: crate::network::PathBook) -> Self {
+        self.service.paths = paths;
+        self
+    }
+
     #[must_use]
     pub(crate) fn with_published_routes(
         mut self,
@@ -134,7 +141,8 @@ fn wrap(service: local::MachineService) -> MachineApi {
     let machine_id = local.record().id();
     let port = service.machine_api_port();
     let replicated = local.replicated().ok().cloned();
-    let proxy = MachineProxy::new(routes(service.clone()), machine_id, port, replicated);
+    let proxy = MachineProxy::new(routes(service.clone()), machine_id, port, replicated)
+        .with_paths(service.paths.clone());
     MachineApi {
         proxy,
         machine_id,

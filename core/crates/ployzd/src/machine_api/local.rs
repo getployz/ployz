@@ -45,6 +45,8 @@ pub struct MachineService {
     pub(crate) grants: Arc<crate::management::BuildGrants>,
     pub(crate) endpoint_chooser: Option<crate::network::EndpointChooser>,
     pub(crate) published_routes: tokio::sync::watch::Receiver<crate::ingress::PublishedRoutes>,
+    /// This Machine's observation of its mesh path to each peer.
+    pub(crate) paths: crate::network::PathBook,
 }
 
 impl MachineService {
@@ -64,6 +66,7 @@ impl MachineService {
                 .expect("default Build policy"),
             grants: Arc::default(),
             endpoint_chooser: None,
+            paths: crate::network::PathBook::default(),
             published_routes: tokio::sync::watch::channel(
                 crate::ingress::PublishedRoutes::default(),
             )
@@ -286,7 +289,16 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.inspect(expect::<op::Inspect>(request)?).await)
+        let details = self.local.inspect(expect::<op::Inspect>(request)?).await;
+        finish(details.map(|mut details| {
+            for rtt in &mut details.rtts {
+                rtt.path = rtt
+                    .machine
+                    .as_ref()
+                    .and_then(|machine| self.paths.get(&machine.id));
+            }
+            details
+        }))
     }
 
     async fn enroll(
@@ -384,7 +396,12 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::ListMachines>(request)?;
-        finish(self.local.list_machines().await)
+        finish(self.local.list_machines().await.map(|mut list| {
+            for machine in &mut list.machines {
+                machine.path = self.paths.get(&machine.machine.id);
+            }
+            list
+        }))
     }
 
     async fn list_containers(

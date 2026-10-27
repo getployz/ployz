@@ -136,6 +136,7 @@ fn decode_member_rtt(value: Value) -> Result<Option<RttObservation>, Error> {
         address: raw.state.addr,
         machine: None,
         statistics,
+        path: None,
     }))
 }
 

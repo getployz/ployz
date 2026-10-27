@@ -65,6 +65,9 @@ pub fn apply_firewall_rules(
         "iptables",
         &ipv4_build_forwarding(),
     )?);
+    if !mss_clamp_present() {
+        ipv4_document.push_str(&format!("*mangle\n-A FORWARD {}\nCOMMIT\n", mss_clamp()));
+    }
     restore("iptables", &ipv4_document)?;
     for rule in LOOSE_BUILD_FORWARDING {
         delete_rule("iptables", "mangle", "FORWARD", rule)?;
@@ -78,6 +81,24 @@ pub fn apply_firewall_rules(
         &ipv6_build_forwarding(),
     )?);
     restore("ip6tables", &ipv6_document)
+}
+
+/// A Service Container's TCP to a peer's Service crosses this Machine's router. Its SYN
+/// and SYN-ACK leave over WireGuard clamped to the MTU of the peer's route, which the
+/// path probe lowers on a path that loses large packets, so both ends send segments
+/// that cross. On a full route it changes nothing. Container IPv6 never enters the mesh
+/// (see [`container_mesh_fence`]), so IPv4 is the whole of it.
+fn mss_clamp() -> String {
+    format!(
+        "-o {WIREGUARD_INTERFACE_NAME} -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
+    )
+}
+
+fn mss_clamp_present() -> bool {
+    let rule = mss_clamp();
+    let mut check = vec!["-t", "mangle", "-C", "FORWARD"];
+    check.extend(rule.split(' '));
+    command_succeeds("iptables", &check)
 }
 
 /// Docker's NAT66 would rewrite a container's IPv6 into the mesh to this Machine's
@@ -489,6 +510,9 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     for rule in LOOSE_BUILD_FORWARDING {
         attempt(delete_rule("iptables", "mangle", "FORWARD", rule));
     }
+    let clamp = mss_clamp();
+    let clamp = clamp.split(' ').collect::<Vec<_>>();
+    attempt(delete_rule("iptables", "mangle", "FORWARD", &clamp));
     // A fence left in a chain Docker abandoned is still ours to remove.
     if docker_user_chain() {
         let fence = container_mesh_fence();

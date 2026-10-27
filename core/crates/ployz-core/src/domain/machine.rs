@@ -661,6 +661,11 @@ pub struct MachineObservation {
     /// Entry-local RTT. `ListMachines` omits it; Runtime Watch may include it.
     #[serde(default)]
     pub rtt: Option<RttStatistics>,
+    /// The entry's mesh path to this Machine. Absent from the entry's own row, before the
+    /// entry has probed the path, and from daemons before 0.3.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub path: Option<PathObservation>,
 }
 
 impl MachineObservation {
@@ -694,6 +699,7 @@ impl MachineObservation {
             storage: None,
             selected_endpoint: None,
             rtt: None,
+            path: None,
         }
     }
 }
@@ -825,6 +831,34 @@ pub struct RttObservation {
     #[serde(default)]
     pub machine: Option<MachineIdentity>,
     pub statistics: RttStatistics,
+    /// The observing Machine's mesh path to this peer. Absent before it has probed the
+    /// path, for a peer it can't name, and from daemons before 0.3.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub path: Option<PathObservation>,
+}
+
+/// One Machine's observation of its WireGuard path to a peer, from the full-size probes
+/// it sends that peer's management address.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PathObservation {
+    /// Bytes in the largest inner packet this Machine sends the peer: the full
+    /// WireGuard MTU, or the lower route MTU it set when larger packets were lost.
+    pub mtu: u32,
+    pub large_packets: LargePackets,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum LargePackets {
+    /// Packets of `mtu` bytes cross the path both ways.
+    Carried,
+    /// Small packets cross, but even a 1280-byte packet, the smallest MTU IPv6 allows,
+    /// is lost: no MTU this Machine can set carries a large reply.
+    Dropped,
+    /// A value introduced after this build.
+    #[serde(other)]
+    Unrecognized,
 }
 
 #[must_use]

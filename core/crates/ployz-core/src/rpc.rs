@@ -1868,6 +1868,13 @@ impl RpcError {
         self.details.get(REPLY_LOST_KEY).and_then(Value::as_bool) == Some(true)
     }
 
+    /// Whether the entry Machine that routed this call found that large packets to its
+    /// target are dropped. Older entries never say so.
+    #[must_use]
+    pub fn large_packets_dropped(&self) -> bool {
+        self.details.get("reason").and_then(Value::as_str) == Some(LARGE_PACKETS_DROPPED_REASON)
+    }
+
     /// Whether the target Machine didn't answer, rather than answering with this error.
     #[must_use]
     pub fn target_unanswered(&self) -> bool {
@@ -2098,6 +2105,37 @@ pub fn target_unreached_status(error: &(dyn std::error::Error + 'static)) -> ton
         tonic::metadata::MetadataValue::from_static("1"),
     );
     status
+}
+
+/// The `reason` an entry Machine's router puts in the details of a status it made for a
+/// target that did not answer, when its own path probes found that large packets to that
+/// target are dropped. Read back by [`RpcError::large_packets_dropped`].
+pub const LARGE_PACKETS_DROPPED_REASON: &str = "large_packets_dropped";
+
+/// `status`, a router's [`target_unanswered_status`], marked
+/// [`LARGE_PACKETS_DROPPED_REASON`] with `sentence` as its deepest cause. Code, message
+/// and metadata stay.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn large_packets_dropped_status(status: tonic::Status, sentence: String) -> tonic::Status {
+    let mut details = match serde_json::from_slice::<Value>(status.details()) {
+        Ok(Value::Object(details)) => details,
+        _ => serde_json::Map::new(),
+    };
+    details.insert("reason".into(), LARGE_PACKETS_DROPPED_REASON.into());
+    match details.get_mut("cause") {
+        Some(Value::Array(causes)) => causes.push(sentence.into()),
+        _ => {
+            details.insert("cause".into(), Value::Array(vec![sentence.into()]));
+        }
+    }
+    let details = serde_json::to_vec(&details).expect("a JSON object serializes");
+    tonic::Status::with_details_and_metadata(
+        status.code(),
+        status.message(),
+        details.into(),
+        status.metadata().clone(),
+    )
 }
 
 /// A gRPC status with `error`'s own sentence as the message and its sources in

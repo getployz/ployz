@@ -8,7 +8,9 @@ use std::{
 };
 
 use ipnet::{IpNet, Ipv4Net};
-use ployz_core::{AdvertisedEndpoint, Machine, MachineId, SelectedEndpoint, WireGuardPublicKey};
+use ployz_core::{
+    AdvertisedEndpoint, Machine, MachineId, MachineName, SelectedEndpoint, WireGuardPublicKey,
+};
 pub use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, UNREGISTRY_PORT, WIREGUARD_PORT};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -18,11 +20,13 @@ mod docker_firewall;
 mod endpoints;
 mod firewall;
 mod linux;
+mod path;
 
 pub(crate) use endpoints::interface_addresses;
 pub use endpoints::{DiscoveredNetwork, discover_network};
 pub use firewall::{apply_firewall_rules, fence_builder};
 pub use linux::NetworkPlane;
+pub(crate) use path::PathBook;
 
 pub const DOCKER_NETWORK_NAME: &str = "ployz";
 pub const WIREGUARD_INTERFACE_NAME: &str = "ployz-wg";
@@ -123,6 +127,7 @@ pub use ployz_core::allocate_machine_subnet;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MeshPeer {
     pub machine_id: MachineId,
+    pub name: MachineName,
     pub public_key: WireGuardPublicKey,
     pub allowed_ips: [IpNet; 2],
     selection: EndpointSelection,
@@ -185,6 +190,7 @@ pub fn peers_for(observer_id: &MachineId, machines: &[Machine]) -> Vec<MeshPeer>
         .filter(|machine| machine.id != *observer_id)
         .map(|machine| MeshPeer {
             machine_id: machine.id,
+            name: machine.name.clone(),
             public_key: machine.public_key,
             allowed_ips: [
                 IpNet::new(IpAddr::V6(machine.management_address().0), 128)

@@ -1374,6 +1374,7 @@ mod tests {
                     .unwrap(),
                 machine: None,
                 statistics: rtt.clone(),
+                path: None,
             }],
         }
         .overlay(vec![entry.clone(), peer.clone()], &entry.id);

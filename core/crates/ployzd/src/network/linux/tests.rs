@@ -293,6 +293,7 @@ fn incomplete_snapshot_holds_peers_and_joining_keeps_bootstrap() {
     let bootstrap_id = MachineId::random();
     let bootstrap = MeshPeer {
         machine_id: bootstrap_id,
+        name: ployz_core::MachineName::parse("bootstrap").unwrap(),
         public_key: WireGuardPublicKey([1; 32]),
         allowed_ips: [
             "fdcc::1/128".parse().unwrap(),
