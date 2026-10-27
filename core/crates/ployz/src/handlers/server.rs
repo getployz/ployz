@@ -234,6 +234,26 @@ pub(super) async fn connect_avoiding(
     )))
 }
 
+/// [`connect`] through `machine` alone, or `None` when no connection names it, as with a
+/// local daemon socket or a context that lists only other Servers.
+pub(super) async fn connect_only(
+    matches: &ArgMatches,
+    context: Option<&str>,
+    machine: &ployz_core::MachineId,
+) -> Result<Option<Client>, Error> {
+    let mut selected = entries(matches, context).await?;
+    selected
+        .connections
+        .retain(|connection| connection.machine_id() == Some(machine));
+    if selected.connections.is_empty() {
+        return Ok(None);
+    }
+    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+    Ok(Some(
+        crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
+    ))
+}
+
 /// The credential Cloud runs a Server operation under: signed in, with neither `--connect`
 /// nor `--context` naming a Cluster to dial, the same rule [`connect`] follows.
 pub(super) fn cloud_runs(
