@@ -527,11 +527,16 @@ Run it from your computer with Ployz Cloud, or on one of the other servers itsel
 ## Large packets to a server are dropped
 
 You'll see `! Large packets to web-2 are dropped on its mesh path from the Server that answered, so
-calls with large replies to web-2 fail.` in `ployz server ls`, or `ployz server show web-2` fails
-with `large packets to web-2 are dropped on the mesh path from the Server that routed this call`.
-Small requests still reach `web-2`, so it answers pings, but its rows may read `Volume support
-unknown` or `did not answer`. If the command gives up first, it says `target Machine RPC timed out`
-instead, and the warning above still names the cause.
+calls with large replies to web-2 fail.` in `ployz server ls`. Small requests still reach `web-2`, so
+it answers pings, but its rows may read `Volume support unknown` or `did not answer`.
+
+`ployz server show web-2` still shows it. When `web-2` doesn't answer through the server the command
+entered by within 3 seconds, the CLI reads it over its own connection and prints `! web-2 did not
+answer through the Server this command entered by, so it was read over its own connection.` This
+works signed in to Ployz Cloud, or with a context that lists `web-2`. Without a connection of its
+own, the command fails with `large packets to web-2 are dropped on the mesh path from the Server
+that routed this call`, or `target Machine RPC timed out` if it gives up first; the warning above
+still names the cause.
 
 Something between your servers, often a provider's network or a VPN with a smaller packet size,
 drops packets above a size. From 0.3.7, each server checks every minute that a full-size packet
