@@ -83,8 +83,9 @@ pub fn apply_firewall_rules(
 
 /// A Service Container's TCP to a peer's Service crosses this Machine's router. Its SYN
 /// and SYN-ACK leave over WireGuard clamped to the MTU of the peer's route, which the
-/// path probe lowers on a path that loses large packets, so both ends send segments
-/// that cross. On a full route it changes nothing. Container IPv6 never enters the mesh
+/// path probe lowers on a path that loses large packets, so the far end sends this
+/// container segments that cross. The container's own segments are bounded by the
+/// route MTU as they're forwarded. On a full route it changes nothing. Container IPv6 never enters the mesh
 /// (see [`container_mesh_fence`]), so IPv4 is the whole of it.
 fn mss_clamp() -> String {
     format!(
