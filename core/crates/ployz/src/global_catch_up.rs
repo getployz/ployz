@@ -511,9 +511,9 @@ fn is_running(observed: &ContainerObservation) -> bool {
     )
 }
 
-/// How long, in [`OBSERVATION_RETRY`]s, catch-up waits for the copies it started to
-/// run before it calls one not running.
-const STARTING_ATTEMPTS: u32 = 30;
+/// How long catch-up waits for the copies it started to run before it calls one not
+/// running.
+const STARTING_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Whether `target`, this Machine's Containers, shows `started` running, and a
 /// running copy of its Service in its serving shape.
@@ -528,6 +528,18 @@ fn runs_here(target: &[ContainerObservation], started: &Started, machine: &Machi
             && is_running(observed)
     });
     runs && shape_runs
+}
+
+/// Whether `started` may yet run: its Container is still there and isn't on its way
+/// out. An exited one may: the daemon starts a stranded ingress again.
+fn may_still_run(target: &[ContainerObservation], started: &Started) -> bool {
+    target.iter().any(|observed| {
+        observed.container_id == started.copy.container_id
+            && !matches!(
+                observed.runtime,
+                ContainerRuntimeObservation::Removing | ContainerRuntimeObservation::Dead
+            )
+    })
 }
 
 fn sources(services: &[ServiceObservation]) -> Vec<Source> {
@@ -759,9 +771,10 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             spec,
         });
     }
-    // A copy the Machine created may still be starting: give each a moment to run
-    // before calling it not running.
-    let mut waited = 0;
+    // A copy that started may have stopped again, as an ingress whose port or network
+    // wasn't ready right after the join does until the daemon starts it again: give
+    // each a moment to run before calling it not running.
+    let deadline = tokio::time::Instant::now() + STARTING_WAIT;
     let target = loop {
         let target = client
             .target_containers(&this_machine.id)
@@ -774,13 +787,12 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 };
                 CatchUpError::new(error, unresolved.clone())
             })?;
-        let starting = started
-            .iter()
-            .any(|copy| !runs_here(&target, copy, &this_machine.id));
-        if !starting || waited == STARTING_ATTEMPTS || cancel.is_cancelled() {
+        let starting = started.iter().any(|copy| {
+            !runs_here(&target, copy, &this_machine.id) && may_still_run(&target, copy)
+        });
+        if !starting || tokio::time::Instant::now() >= deadline || cancel.is_cancelled() {
             break target;
         }
-        waited += 1;
         tokio::select! {
             biased;
             () = cancel.cancelled() => {}
@@ -791,10 +803,17 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         let runs = runs_here(&target, &started, &this_machine.id);
         let Started { identity, copy, .. } = started;
         if !runs {
+            let seen = target
+                .iter()
+                .find(|observed| observed.container_id == copy.container_id)
+                .map_or_else(
+                    || "gone".to_owned(),
+                    |observed| observed.runtime.to_string(),
+                );
             failures.push((
                 identity.clone(),
                 format!(
-                    "copy {} is not running on this Machine after catch-up",
+                    "copy {} is not running on this Machine after catch-up; it is {seen}",
                     copy.container_id.as_str()
                 ),
             ));
