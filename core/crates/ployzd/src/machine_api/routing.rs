@@ -92,6 +92,7 @@ pub struct MachineProxy {
     replicated: Option<ReplicatedStore>,
     // TODO: stale remote backends intentionally reconnect until ployzd restarts.
     remote_backends: Arc<Mutex<HashMap<ManagementAddress, Channel>>>,
+    paths: crate::network::PathBook,
 }
 
 impl MachineProxy {
@@ -108,7 +109,15 @@ impl MachineProxy {
             remote_port,
             replicated,
             remote_backends: Arc::new(Mutex::new(HashMap::new())),
+            paths: crate::network::PathBook::default(),
         }
+    }
+
+    /// Where the router reads this Machine's path to each target, to say why one is silent.
+    #[must_use]
+    pub(crate) fn with_paths(mut self, paths: crate::network::PathBook) -> Self {
+        self.paths = paths;
+        self
     }
 
     pub(super) fn with_local(mut self, local: Routes) -> Self {
@@ -169,8 +178,32 @@ impl MachineProxy {
         }
         match self.call_remote(request, target.management_address()).await {
             Ok(response) => without_router_marks(response),
-            Err(status) => status.into_http(),
+            Err(status) => self.explained(status, target).into_http(),
         }
+    }
+
+    /// A silent target's status, naming a path this Machine's probes found dropping
+    /// large packets: a reply larger than the path carries never arrives. A failed dial
+    /// sends only small packets, and a backend error never reached the path, so both keep
+    /// their own cause.
+    fn explained(&self, status: Status, target: &Machine) -> Status {
+        let metadata = status.metadata();
+        let unanswered = metadata.contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY)
+            && !metadata.contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY);
+        let dropped = self
+            .paths
+            .get(&target.id)
+            .is_some_and(|path| path.large_packets == ployz_core::LargePackets::Dropped);
+        if !unanswered || !dropped {
+            return status;
+        }
+        ployz_core::rpc::large_packets_dropped_status(
+            status,
+            format!(
+                "large packets to {} are dropped on the mesh path from the Server that routed this call",
+                target.name
+            ),
+        )
     }
 
     async fn call_many(

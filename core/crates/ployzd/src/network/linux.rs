@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
@@ -24,8 +24,8 @@ use defguard_wireguard_rs::{
 };
 use ipnet::IpNet;
 use ployz_core::{
-    DOCKER_NETWORK_CONFLICT_RECOVERY, LocalMachinePhase, Machine, MachineId, MachineSubnet,
-    SelectedEndpoint, WireGuardPublicKey,
+    DOCKER_NETWORK_CONFLICT_RECOVERY, LargePackets, LocalMachinePhase, Machine, MachineId,
+    MachineSubnet, SelectedEndpoint, WireGuardPublicKey,
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
@@ -39,6 +39,7 @@ use super::{
     attach_peer_selections, checked_command, choose_endpoint,
     docker_firewall::Ipv6Off,
     firewall::{docker_ipv6_firewall, fence_container_ipv6, remove_firewall_rules},
+    path::{self, MIN_MTU, PathBook, PathReport, ProbedPeer},
     peers_for, port_held_elsewhere,
 };
 use crate::{
@@ -48,6 +49,54 @@ use crate::{
 
 const NETWORK_MTU: u32 = 1420;
 const DOCKER_NETWORK_MANAGED_LABEL: &str = "ployzd.managed";
+
+/// A peer's routes and the MTU set on them, kept while those routes are installed:
+/// a bootstrap apply keeps routes of peers it no longer plans.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Lowered {
+    mtu: u32,
+    routes: [IpNet; 2],
+}
+
+/// The peer each installed route leads to: the Machine whose WireGuard peer holds that
+/// allowed IP. WireGuard gives an allowed IP to one peer only, so when two Machine Subnets
+/// overlap the route leads wherever WireGuard sends it, whatever the plan's order.
+fn route_owners<'a>(
+    installed: &BTreeSet<IpNet>,
+    wireguard: impl IntoIterator<Item = &'a Peer>,
+    machines: &[&MeshPeer],
+) -> BTreeMap<IpNet, MachineId> {
+    wireguard
+        .into_iter()
+        .filter_map(|device| {
+            machines
+                .iter()
+                .find(|machine| Key::new(machine.public_key.0) == device.public_key)
+                .map(|machine| (device, machine.machine_id))
+        })
+        .flat_map(|(device, owner)| {
+            device
+                .allowed_ips
+                .iter()
+                .filter_map(|address| IpNet::new(address.address, address.cidr).ok())
+                .filter(|route| installed.contains(route))
+                .map(move |route| (route, owner))
+        })
+        .collect()
+}
+
+/// Whether every one of `routes` leads to `machine_id`. A lowered MTU, or a probe report,
+/// of a peer that lost a route never touches the replacement Machine that took its freed
+/// IPv4 subnet; that Machine starts at the full MTU, and its own probe lowers it again.
+fn owns_routes(
+    owners: &BTreeMap<IpNet, MachineId>,
+    machine_id: MachineId,
+    routes: &[IpNet; 2],
+) -> bool {
+    routes
+        .iter()
+        .all(|route| owners.get(route) == Some(&machine_id))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PeerSet {
@@ -63,6 +112,10 @@ pub struct NetworkPlane {
     routes: BTreeSet<IpNet>,
     bootstrap_peers: Vec<MeshPeer>,
     endpoint_peers: Vec<MeshPeer>,
+    /// Peers whose path loses packets of the full MTU.
+    lowered: BTreeMap<MachineId, Lowered>,
+    paths: PathBook,
+    probed: watch::Sender<Vec<ProbedPeer>>,
 }
 
 impl NetworkPlane {
@@ -113,6 +166,9 @@ impl NetworkPlane {
             } else {
                 Vec::new()
             },
+            lowered: BTreeMap::new(),
+            paths: PathBook::default(),
+            probed: watch::Sender::new(Vec::new()),
         };
         // Boxed: settling the bridge is a large future, and inline it overflows the
         // stack of a daemon start.
@@ -164,6 +220,15 @@ impl NetworkPlane {
         };
         let mut machines = machines.watch();
         machines.mark_changed();
+        let probing = shutdown.child_token();
+        let _stop_probing = probing.clone().drop_guard();
+        let (reports, mut path_reports) = mpsc::channel(16);
+        tokio::spawn(path::probe_paths(
+            self.probed.subscribe(),
+            self.mtu,
+            reports,
+            probing,
+        ));
         let mut previous = None;
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         // A slow store read must not leave ticks queued ahead of operator choices.
@@ -183,6 +248,7 @@ impl NetworkPlane {
                         .await?;
                 }
                 Some(choice) = choices.recv() => self.apply_choice(choice, &local).await,
+                Some(report) = path_reports.recv() => self.apply_path(report),
                 _ = ticker.tick() => {
                     // A rebuild that couldn't read the store, or only added, tries again here.
                     self.rebuild_when_changed(&replicated, &machines, &mut previous, &local)
@@ -195,6 +261,123 @@ impl NetworkPlane {
             self.cleanup().await.map_err(io::Error::other)?;
         }
         Ok(())
+    }
+
+    /// This Machine's path observation of each peer, kept current while [`Self::run`] runs.
+    #[must_use]
+    pub(crate) fn paths(&self) -> PathBook {
+        self.paths.clone()
+    }
+
+    /// The peer each installed route leads to now, as the WireGuard device says. A device
+    /// that can't be read owns nothing, so no report or kept MTU passes on a guess.
+    fn route_owners(&self, applied: &[MeshPeer]) -> BTreeMap<IpNet, MachineId> {
+        self.route_owners_of(&self.routes, applied)
+    }
+
+    fn route_owners_of(
+        &self,
+        installed: &BTreeSet<IpNet>,
+        applied: &[MeshPeer],
+    ) -> BTreeMap<IpNet, MachineId> {
+        let Ok(device) = self.wireguard.read_interface_data() else {
+            return BTreeMap::new();
+        };
+        let machines = applied
+            .iter()
+            .chain(&self.endpoint_peers)
+            .chain(&self.bootstrap_peers)
+            .collect::<Vec<_>>();
+        route_owners(installed, device.peers.values(), &machines)
+    }
+
+    /// Set the MTU of a peer's routes to what its path carries, and record the path.
+    fn apply_path(&mut self, report: PathReport) {
+        let Some(peer) = self
+            .endpoint_peers
+            .iter()
+            .chain(&self.bootstrap_peers)
+            .find(|peer| peer.machine_id == report.machine_id)
+            .cloned()
+        else {
+            return;
+        };
+        // A report from a round that began before the peer lost its routes is stale. Read the
+        // owners now: an endpoint write can move an overlapping subnet's allowed IP.
+        if !owns_routes(&self.route_owners(&[]), peer.machine_id, &peer.allowed_ips) {
+            return;
+        }
+        let name = &peer.name;
+        let path = report.path;
+        let before = self.paths.get(&peer.machine_id);
+        let lowered = (path.mtu < self.mtu).then_some(path.mtu);
+        if self
+            .lowered
+            .get(&peer.machine_id)
+            .map(|lowered| lowered.mtu)
+            != lowered
+        {
+            let gateway = self.machine.subnet.gateway().0.to_string();
+            for route in peer
+                .allowed_ips
+                .iter()
+                .filter(|route| self.routes.contains(route))
+            {
+                let source = route.addr().is_ipv4().then_some(gateway.as_str());
+                if let Err(error) = replace_route(*route, source, lowered) {
+                    eprintln!(
+                        "failed to set the MTU of the route to {name} ({route}): {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    );
+                    return;
+                }
+            }
+            match lowered {
+                Some(mtu) => self.lowered.insert(
+                    peer.machine_id,
+                    Lowered {
+                        mtu,
+                        routes: peer.allowed_ips,
+                    },
+                ),
+                None => self.lowered.remove(&peer.machine_id),
+            };
+        }
+        self.paths.set(peer.machine_id, path);
+        // The prober reports every known path each round; log only a change.
+        if before == Some(path) {
+            return;
+        }
+        let full = self.mtu;
+        match (path.large_packets, lowered) {
+            (LargePackets::Dropped, _)
+                if before.map(|path| path.large_packets) != Some(LargePackets::Dropped) =>
+            {
+                eprintln!(
+                    "large packets to {name} are dropped: small packets cross the mesh path, but not even {MIN_MTU}-byte ones, so calls with large replies to {name} fail"
+                )
+            }
+            (LargePackets::Carried, Some(mtu))
+                if before.is_some_and(|path| path.large_packets == LargePackets::Dropped) =>
+            {
+                eprintln!(
+                    "the mesh path to {name} carries {mtu}-byte packets again; its routes carry at most {mtu} bytes, below the WireGuard MTU of {full}"
+                )
+            }
+            (LargePackets::Carried, Some(mtu)) => eprintln!(
+                "large packets to {name} were lost on the mesh path; its routes now carry at most {mtu} bytes, below the WireGuard MTU of {full}"
+            ),
+            (LargePackets::Carried, None)
+                if before.is_some_and(|path| {
+                    path.mtu < full || path.large_packets != LargePackets::Carried
+                }) =>
+            {
+                eprintln!(
+                    "the mesh path to {name} carries {full}-byte packets again; its routes use the WireGuard MTU"
+                )
+            }
+            _ => {}
+        }
     }
 
     pub(crate) async fn cleanup_retained(record: &LocalMachineRecord) -> Result<(), NetworkError> {
@@ -210,6 +393,9 @@ impl NetworkPlane {
             routes: BTreeSet::new(),
             bootstrap_peers: Vec::new(),
             endpoint_peers: Vec::new(),
+            lowered: BTreeMap::new(),
+            paths: PathBook::default(),
+            probed: watch::Sender::new(Vec::new()),
         }
         .cleanup()
         .await
@@ -391,8 +577,20 @@ impl NetworkPlane {
             self.wireguard.configure_peer(peer)?;
         }
         let gateway = self.machine.subnet.gateway().0.to_string();
+        let route_owners = self.route_owners_of(&changes.routes, peers);
+        self.lowered
+            .retain(|machine_id, lowered| owns_routes(&route_owners, *machine_id, &lowered.routes));
+        self.paths.retain(|machine_id| {
+            self.lowered.contains_key(machine_id)
+                || peers.iter().any(|peer| peer.machine_id == *machine_id)
+        });
         for route in &changes.routes {
-            replace_route(*route, route.addr().is_ipv4().then_some(&gateway))?;
+            let mtu = self
+                .lowered
+                .values()
+                .find(|lowered| lowered.routes.contains(route))
+                .map(|lowered| lowered.mtu);
+            replace_route(*route, route.addr().is_ipv4().then_some(&gateway), mtu)?;
         }
         for key in changes.removals {
             self.wireguard.remove_peer(key)?;
@@ -401,6 +599,16 @@ impl NetworkPlane {
             delete_route(route);
         }
         self.routes = changes.routes;
+        self.probed.send_replace(
+            peers
+                .iter()
+                .map(|peer| ProbedPeer {
+                    machine_id: peer.machine_id,
+                    name: peer.name.clone(),
+                    address: ployz_core::management_address(peer.public_key).0,
+                })
+                .collect(),
+        );
         Ok(())
     }
 
@@ -1599,7 +1807,9 @@ async fn persist_selection(local: &RecordOwner, machine_id: MachineId, endpoint:
     }
 }
 
-fn replace_route(route: IpNet, source: Option<&str>) -> Result<(), NetworkError> {
+/// Route `route` over WireGuard. `mtu` caps the packets sent on it below the device MTU;
+/// the kernel also derives the TCP MSS it advertises to that peer from it.
+fn replace_route(route: IpNet, source: Option<&str>, mtu: Option<u32>) -> Result<(), NetworkError> {
     let mut args = Vec::new();
     if route.addr().is_ipv6() {
         args.push("-6");
@@ -1614,6 +1824,10 @@ fn replace_route(route: IpNet, source: Option<&str>) -> Result<(), NetworkError>
     ]);
     if let Some(source) = source {
         args.extend(["src", source]);
+    }
+    let mtu = mtu.map(|mtu| mtu.to_string());
+    if let Some(mtu) = &mtu {
+        args.extend(["mtu", mtu.as_str()]);
     }
     checked_command("ip", &args).map(|_| ())
 }

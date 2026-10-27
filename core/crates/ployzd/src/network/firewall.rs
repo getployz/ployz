@@ -66,6 +66,7 @@ pub fn apply_firewall_rules(
         &ipv4_build_forwarding(),
     )?);
     restore("iptables", &ipv4_document)?;
+    add_mss_clamp();
     for rule in LOOSE_BUILD_FORWARDING {
         delete_rule("iptables", "mangle", "FORWARD", rule)?;
     }
@@ -78,6 +79,37 @@ pub fn apply_firewall_rules(
         &ipv6_build_forwarding(),
     )?);
     restore("ip6tables", &ipv6_document)
+}
+
+/// A Service Container's TCP to a peer's Service crosses this Machine's router. Its SYN
+/// and SYN-ACK leave over WireGuard clamped to the MTU of the peer's route, which the
+/// path probe lowers on a path that loses large packets, so the far end sends this
+/// container segments that cross. The container's own segments are bounded by the
+/// route MTU as they're forwarded. On a full route it changes nothing. Container IPv6 never enters the mesh
+/// (see [`container_mesh_fence`]), so IPv4 is the whole of it.
+fn mss_clamp() -> String {
+    format!(
+        "-o {WIREGUARD_INTERFACE_NAME} -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
+    )
+}
+
+/// Add [`mss_clamp`] outside the policy's restore: a kernel without the TCPMSS target
+/// loses only the clamp, and the route MTU still covers the Machine's own TCP.
+fn add_mss_clamp() {
+    let rule = mss_clamp();
+    let mut check = vec!["-t", "mangle", "-C", "FORWARD"];
+    check.extend(rule.split(' '));
+    if command_succeeds("iptables", &check) {
+        return;
+    }
+    let mut append = vec!["-t", "mangle", "-A", "FORWARD"];
+    append.extend(rule.split(' '));
+    if let Err(error) = checked_command("iptables", &append) {
+        eprintln!(
+            "failed to clamp container TCP to the mesh path MTU: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        );
+    }
 }
 
 /// Docker's NAT66 would rewrite a container's IPv6 into the mesh to this Machine's
@@ -494,6 +526,9 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     for rule in LOOSE_BUILD_FORWARDING {
         attempt(delete_rule("iptables", "mangle", "FORWARD", rule));
     }
+    let clamp = mss_clamp();
+    let clamp = clamp.split(' ').collect::<Vec<_>>();
+    attempt(delete_rule("iptables", "mangle", "FORWARD", &clamp));
     // A fence left in a chain Docker abandoned is still ours to remove.
     if docker_user_chain() {
         let fence = container_mesh_fence();

@@ -1137,6 +1137,13 @@ impl ConnectError {
             if error.unanswered || error.budget_expired || error.routed_unanswered)
     }
 
+    /// The entry's router said its path to the target drops large packets.
+    pub(crate) fn large_packets_dropped(&self) -> bool {
+        matches!(self, Self::Rpc(error)
+            if error.details.get("reason").and_then(Value::as_str)
+                == Some(ployz_core::rpc::LARGE_PACKETS_DROPPED_REASON))
+    }
+
     /// The entry's router could not dial the target, so the target never got the call.
     /// An entry Machine too old to say so leaves this false.
     pub(crate) fn target_unreached(&self) -> bool {

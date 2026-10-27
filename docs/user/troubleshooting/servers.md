@@ -524,6 +524,29 @@ server that still shows as not answering.
 
 Run it from your computer with Ployz Cloud, or on one of the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
 
+## Large packets to a server are dropped
+
+You'll see `! Large packets to web-2 are dropped on its mesh path from the Server that answered, so
+calls with large replies to web-2 fail.` in `ployz server ls`, or `ployz server show web-2` fails
+with `large packets to web-2 are dropped on the mesh path from the Server that routed this call`.
+Small requests still reach `web-2`, so it answers pings, but its rows may read `Volume support
+unknown` or `did not answer`. If the command gives up first, it says `target Machine RPC timed out`
+instead, and the warning above still names the cause.
+
+Something between your servers, often a provider's network or a VPN with a smaller packet size,
+drops packets above a size. From 0.3.7, each server checks every minute that a full-size packet
+reaches each other server. When it doesn't, the server finds the largest size that does and sends
+to that server in packets of that size, so nothing fails. `ployz server show` on that server then
+lists the peer with its smaller size, as in `peer = web-2 0.4 ms, mtu 1310`. The server tries full
+size again every 10 minutes and goes back to it once the path carries it, logging
+`the mesh path to web-2 carries 1420-byte packets again`.
+
+The warning above means even 1280-byte packets, the smallest IPv6 allows, are lost, so Ployz can't
+work around it. Ask your provider why UDP packets on port 51820 above that size are dropped between
+the two servers, or move one of them. Once full-size packets cross again, the warning goes away
+within a minute. A server on 0.3.6 or earlier doesn't check, so it can't name the cause; a call
+routed through it says `target Machine RPC timed out` instead.
+
 ## Apps see IPv6 visitors as 10.210.x.1, or services can't reach IPv6 addresses
 
 Through a domain, your app's `X-Forwarded-For` should show each visitor's own address, and a

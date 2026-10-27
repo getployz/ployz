@@ -2,7 +2,7 @@ use std::fmt;
 
 use clap::ArgMatches;
 use ployz_core::{
-    ByteCapacity, InspectRequest, Machine, MachineDetails, MachineId, MachineName,
+    ByteCapacity, InspectRequest, LargePackets, Machine, MachineDetails, MachineId, MachineName,
     MachineObservation, MachineRuntime, MachineStorageObservation, MachineTarget,
     MachineUpgradeAttempt, MachineUpgradeOutcome, MembershipObservation, RpcErrorCode,
     TelemetryObservation, op,
@@ -45,6 +45,12 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         }
         for full in full_disks(&machines, &disks) {
             ui::warn(full.to_string());
+        }
+        for observed in machines
+            .iter()
+            .filter(|observed| drops_large_packets(observed))
+        {
+            ui::warn(dropped_path(&observed.machine.name));
         }
         let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
         let mut gaps = Gaps::default().named(
@@ -336,7 +342,7 @@ async fn inspect(
     selector: &MachineTarget,
 ) -> Result<(), Error> {
     let details = client
-        .invoke::<op::Inspect>(
+        .invoke_answered::<op::Inspect>(
             InspectRequest {
                 telemetry: ployz_core::InspectTelemetry::Full,
                 include_rtts: true,
@@ -346,10 +352,20 @@ async fn inspect(
             selector,
             Some(TARGET_RPC_TIMEOUT),
         )
-        .await
-        .map_err(|error| {
-            Error::from(error).context(format!("Could not show Server {}.", selector.as_str()))
-        })?;
+        .await;
+    let details = match details {
+        Ok(details) => details,
+        Err(error) => {
+            if error.target_unanswered()
+                && !error.large_packets_dropped()
+                && let Some(name) = dropped_target(client, selector).await
+            {
+                ui::warn(dropped_path(&name));
+            }
+            return Err(Error::from(crate::connect::rpc_error(error))
+                .context(format!("Could not show Server {}.", selector.as_str())));
+        }
+    };
     let mut server = serde_json::to_value(&details)?;
     if let Value::Object(fields) = &mut server {
         fields.remove("upgrade");
@@ -362,6 +378,37 @@ async fn inspect(
         &json!({ "server": server, "upgrade": details.upgrade }),
         &record(&details),
     )
+}
+
+/// Whether the entry's path probes found that large packets to this Server are dropped.
+fn drops_large_packets(observed: &MachineObservation) -> bool {
+    observed
+        .path
+        .is_some_and(|path| path.large_packets == LargePackets::Dropped)
+}
+
+fn dropped_path(name: &MachineName) -> String {
+    format!(
+        "Large packets to {name} are dropped on its mesh path from the Server that answered, so calls with large replies to {name} fail."
+    )
+}
+
+/// The Server `selector` names, when the entry lists its path as dropping large packets.
+/// A target that didn't answer may be silent for that reason alone.
+async fn dropped_target(
+    client: &mut crate::connect::Client,
+    selector: &MachineTarget,
+) -> Option<MachineName> {
+    let machines = client.machines().await.ok()?;
+    let ployz_core::NameMatches::One(target) =
+        selector.resolve(machines.iter().map(|observed| &observed.machine))
+    else {
+        return None;
+    };
+    machines
+        .iter()
+        .find(|observed| observed.machine.id == target.id && drops_large_packets(observed))
+        .map(|observed| observed.machine.name.clone())
 }
 
 /// The human `server show`: who the Server is, what it runs, how full it is, and
@@ -461,7 +508,17 @@ fn record(details: &MachineDetails) -> Fields {
             .as_ref()
             .map_or_else(|| rtt.address.to_string(), |peer| peer.name.to_string());
         let tenths = rtt.statistics.median_ns / 100_000;
-        ("peer", format!("{peer} {}.{} ms", tenths / 10, tenths % 10))
+        let path = match rtt.path {
+            Some(path) if path.large_packets == LargePackets::Dropped => {
+                ", large packets dropped".to_owned()
+            }
+            Some(path) => format!(", mtu {}", path.mtu),
+            None => String::new(),
+        };
+        (
+            "peer",
+            format!("{peer} {}.{} ms{path}", tenths / 10, tenths % 10),
+        )
     }));
     lines.push(("management", joined(&details.management_clients)));
     if let Some(attempt) = &details.upgrade {

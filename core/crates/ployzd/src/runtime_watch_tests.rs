@@ -342,6 +342,7 @@ fn rtt_on(machine: &Machine, statistics: RttStatistics) -> RttObservation {
         .unwrap(),
         machine: None,
         statistics,
+        path: None,
     }
 }
 
