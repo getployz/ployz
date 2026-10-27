@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use clap::ArgMatches;
 use ployz_core::{
@@ -305,8 +305,15 @@ fn server(root: &ArgMatches, selector: &str) -> Result<(), Unshown> {
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime().map_err(Unshown::Failed)?.block_on(async {
-        let mut client = super::connect(leaf, context).await.map_err(Unshown::of)?;
-        inspect(&mut client, &selector)
+        let (mut client, held) = super::connect_held(leaf, context)
+            .await
+            .map_err(Unshown::of)?;
+        let direct = Direct {
+            leaf,
+            context,
+            held: held.as_deref(),
+        };
+        inspect(&direct, &mut client, &selector)
             .await
             .map_err(Unshown::Failed)
     })
@@ -338,22 +345,11 @@ impl Unshown {
 }
 
 async fn inspect(
+    direct: &Direct<'_>,
     client: &mut crate::connect::Client,
     selector: &MachineTarget,
 ) -> Result<(), Error> {
-    let details = client
-        .invoke_answered::<op::Inspect>(
-            InspectRequest {
-                telemetry: ployz_core::InspectTelemetry::Full,
-                include_rtts: true,
-                include_storage: true,
-                ..Default::default()
-            },
-            selector,
-            Some(TARGET_RPC_TIMEOUT),
-        )
-        .await;
-    let details = match details {
+    let details = match read_details(direct, client, selector).await {
         Ok(details) => details,
         Err(error) => {
             if error.target_unanswered()
@@ -378,6 +374,123 @@ async fn inspect(
         &json!({ "server": server, "upgrade": details.upgrade }),
         &record(&details),
     )
+}
+
+/// How long a read routed through the entry runs alone before the same read starts on the
+/// Server itself. A mesh path that loses large replies stalls the routed read until its budget
+/// runs out, while the Server still answers over its own connection.
+const DIRECT_AFTER: Duration = Duration::from_secs(3);
+
+fn inspect_request() -> InspectRequest {
+    InspectRequest {
+        telemetry: ployz_core::InspectTelemetry::Full,
+        include_rtts: true,
+        include_storage: true,
+        ..Default::default()
+    }
+}
+
+/// What a direct read dials from: the command's connection flags, and the connections Cloud
+/// already handed over, if it was Cloud.
+struct Direct<'a> {
+    leaf: &'a ArgMatches,
+    context: Option<&'a str>,
+    held: Option<&'a [crate::context::Connection]>,
+}
+
+/// Inspect the Server `selector` names through the entry. Once that runs past
+/// [`DIRECT_AFTER`], or the entry says large packets to the Server are dropped, read it once
+/// more over a connection to the Server itself. Both share one [`TARGET_RPC_TIMEOUT`] and the
+/// first answer wins; when neither answers, the routed error says why. Any other routed error
+/// returns at once, as a direct dial to a Server that just reset or went down only waits.
+/// Inspect only reads, so asking twice changes nothing.
+async fn read_details(
+    direct: &Direct<'_>,
+    client: &crate::connect::Client,
+    selector: &MachineTarget,
+) -> Result<MachineDetails, ConnectError> {
+    let deadline = tokio::time::Instant::now() + TARGET_RPC_TIMEOUT;
+    let routed = tokio::time::timeout_at(
+        deadline,
+        client.invoke_answered::<op::Inspect>(inspect_request(), selector, None),
+    );
+    tokio::pin!(routed);
+    let routed_error = tokio::select! {
+        outcome = &mut routed => match budgeted(outcome) {
+            Err(error) if error.large_packets_dropped() => error,
+            outcome => return outcome,
+        },
+        () = tokio::time::sleep(DIRECT_AFTER) => {
+            let read = tokio::time::timeout_at(deadline, read_direct(direct, client, selector));
+            tokio::pin!(read);
+            tokio::select! {
+                outcome = &mut routed => match budgeted(outcome) {
+                    Err(error) if error.large_packets_dropped() => {
+                        return read_directly(read.await).ok_or(error);
+                    }
+                    outcome => return outcome,
+                },
+                outcome = &mut read => match read_directly(outcome) {
+                    Some(details) => return Ok(details),
+                    None => return budgeted(routed.await),
+                },
+            }
+        }
+    };
+    read_directly(tokio::time::timeout_at(deadline, read_direct(direct, client, selector)).await)
+        .ok_or(routed_error)
+}
+
+/// A routed outcome whose shared deadline ran out reads as the Server not answering in time.
+fn budgeted(
+    outcome: Result<Result<MachineDetails, ConnectError>, tokio::time::error::Elapsed>,
+) -> Result<MachineDetails, ConnectError> {
+    outcome.unwrap_or_else(|_| {
+        Err(ConnectError::Rpc(
+            crate::connect::TransportError::budget_expired("target Machine RPC timed out"),
+        ))
+    })
+}
+
+/// The Server's details read over a connection to it alone, or `None` when there is no such
+/// connection, it is the entry already asked, or it doesn't answer.
+async fn read_direct(
+    direct: &Direct<'_>,
+    client: &crate::connect::Client,
+    selector: &MachineTarget,
+) -> Option<(MachineDetails, MachineName)> {
+    let machines = client.clone().machines().await.ok()?;
+    let ployz_core::NameMatches::One(target) =
+        selector.resolve(machines.iter().map(|observed| &observed.machine))
+    else {
+        return None;
+    };
+    let target_id = target.id;
+    if client.entry_machine() == Some(target_id) {
+        return None;
+    }
+    let name = target.name.clone();
+    let server = super::connect_only(direct.leaf, direct.context, direct.held, &target_id)
+        .await
+        .ok()??;
+    // Untargeted, so the Server answers for itself rather than resolving the selector again
+    // against its own view, where the name may lead elsewhere.
+    let details = server
+        .invoke_entry::<op::Inspect>(inspect_request(), None)
+        .await
+        .ok()?;
+    (details.id == target_id).then_some((details, name))
+}
+
+/// The details a direct read returned, saying where they came from.
+fn read_directly(
+    outcome: Result<Option<(MachineDetails, MachineName)>, tokio::time::error::Elapsed>,
+) -> Option<MachineDetails> {
+    let (details, name) = outcome.ok()??;
+    ui::warn(format!(
+        "{name} did not answer through the Server this command entered by, so it was read over its own connection."
+    ));
+    Some(details)
 }
 
 /// Whether the entry's path probes found that large packets to this Server are dropped.
