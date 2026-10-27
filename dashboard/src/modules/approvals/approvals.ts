@@ -76,6 +76,20 @@ export function droppedLine(review: ApprovalReview) {
   return `Couldn't check every server: large packets to ${review.dropped?.join(", ")} are dropped on the mesh path`;
 }
 
+/**
+ * Every line the card lists under what the plan destroys, as `ployz org approval show` prints them: each effect, then a
+ * pruning Deploy's removal of the other Services, with the Servers it couldn't check.
+ */
+export function destroyedLines(command: string, review: ApprovalReview) {
+  const lines = review.effects.map((effect) => {
+    const { verb, name, after } = destroyedLine(effect, command, review);
+    return `${verb}${name === null ? "" : ` ${name}`}${after}`;
+  });
+  if (!prunes(review)) return lines;
+  const dropped = droppedLine(review);
+  return [...lines, `Also removes any other service running in this environment${dropped === null ? "" : `. ${dropped}`}`];
+}
+
 /** A Server removal: its Volumes' data stays on the disk, so the card lists effects rather than destruction. */
 export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
   && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
