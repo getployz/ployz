@@ -327,6 +327,33 @@ pub(crate) fn listing_gap(machine: &MachineObservation, error: &RpcError) -> boo
     machine.membership == MembershipObservation::Suspect && error.target_unanswered()
 }
 
+/// `error`, `machine`'s unanswered observation, as a notice words it: with
+/// [`large_packets_note`]. Planning and execution word the same failure alike, so its
+/// notice shows once.
+pub(crate) fn unanswered_message(machine: &MachineObservation, error: &RpcError) -> String {
+    let message = crate::ui::row(error);
+    match large_packets_note(machine, error) {
+        Some(note) => format!("{message}{note}"),
+        None => message,
+    }
+}
+
+/// Why `machine` left an observation unanswered with `error`, when the entry's path
+/// probes find large packets to it dropped: a reply larger than that path carries
+/// never arrives.
+pub(crate) fn large_packets_note(machine: &MachineObservation, error: &RpcError) -> Option<String> {
+    let dropped = machine
+        .path
+        .is_some_and(|path| path.large_packets == ployz_core::LargePackets::Dropped);
+    (error.target_unanswered() && dropped).then(|| {
+        format!(
+            "; large packets to {} are dropped on its mesh path from the Server this command \
+             entered by",
+            machine.machine.name
+        )
+    })
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,

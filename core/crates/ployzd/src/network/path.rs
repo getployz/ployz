@@ -179,10 +179,12 @@ impl PeerState {
             Finding::Carries(mtu) => PathObservation {
                 mtu,
                 large_packets: LargePackets::Carried,
+                lowered: mtu < full,
             },
             Finding::Dropped => PathObservation {
                 mtu: self.mtu(full),
                 large_packets: LargePackets::Dropped,
+                lowered: self.mtu(full) < full,
             },
         };
         if next.mtu < full && self.mtu(full) == full {
@@ -429,6 +431,7 @@ mod tests {
         let carried = |mtu| PathObservation {
             mtu,
             large_packets: LargePackets::Carried,
+            lowered: mtu < FULL,
         };
         assert!(
             !state.raise_due(FULL, now),
@@ -454,6 +457,7 @@ mod tests {
             Some(PathObservation {
                 mtu: 1320,
                 large_packets: LargePackets::Dropped,
+                lowered: true,
             })
         );
         state.after(Finding::Carries(FULL), FULL, now);
