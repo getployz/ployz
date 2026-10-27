@@ -57,6 +57,27 @@ struct Lowered {
     routes: [IpNet; 2],
 }
 
+impl Lowered {
+    /// Whether the MTU `machine_id` proved still applies: all its routes stay installed, and no
+    /// other peer took one over. A replacement Machine that takes a freed IPv4 subnet starts at the
+    /// full MTU, and its own probe lowers it again.
+    fn still_held(
+        &self,
+        machine_id: MachineId,
+        installed: &BTreeSet<IpNet>,
+        peers: &[MeshPeer],
+    ) -> bool {
+        self.routes.iter().all(|route| installed.contains(route))
+            && !peers.iter().any(|peer| {
+                peer.machine_id != machine_id
+                    && peer
+                        .allowed_ips
+                        .iter()
+                        .any(|route| self.routes.contains(route))
+            })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PeerSet {
     Bootstrap,
@@ -502,12 +523,8 @@ impl NetworkPlane {
             self.wireguard.configure_peer(peer)?;
         }
         let gateway = self.machine.subnet.gateway().0.to_string();
-        self.lowered.retain(|_, lowered| {
-            lowered
-                .routes
-                .iter()
-                .any(|route| changes.routes.contains(route))
-        });
+        self.lowered
+            .retain(|machine_id, lowered| lowered.still_held(*machine_id, &changes.routes, peers));
         self.paths.retain(|machine_id| {
             self.lowered.contains_key(machine_id)
                 || peers.iter().any(|peer| peer.machine_id == *machine_id)

@@ -955,3 +955,45 @@ fn a_member_between_restarts_is_stopped_and_noted_only_when_docker_would_run_it_
     );
     assert_eq!(settle(false, false, Some(Policy::ALWAYS)), Settle::Leave);
 }
+
+#[test]
+fn a_lowered_mtu_stays_with_the_peer_that_proved_it() {
+    let peer = |seed: u8, subnet: &str| MeshPeer {
+        machine_id: MachineId::random(),
+        name: ployz_core::MachineName::parse("peer").unwrap(),
+        public_key: WireGuardPublicKey([seed; 32]),
+        allowed_ips: [
+            format!("fdcc::{seed}/128").parse().unwrap(),
+            subnet.parse().unwrap(),
+        ],
+        selection: super::super::EndpointSelection::new(&[], None, SystemTime::now()),
+    };
+    let old = peer(1, "10.210.1.0/24");
+    let lowered = Lowered {
+        mtu: 1310,
+        routes: old.allowed_ips,
+    };
+    let installed = |peers: &[&MeshPeer]| {
+        peers
+            .iter()
+            .flat_map(|peer| peer.allowed_ips)
+            .collect::<BTreeSet<_>>()
+    };
+
+    assert!(lowered.still_held(
+        old.machine_id,
+        &installed(&[&old]),
+        std::slice::from_ref(&old)
+    ));
+
+    // The old peer left and a new one took its IPv4 subnet in the same snapshot.
+    let replacement = peer(2, "10.210.1.0/24");
+    assert!(!lowered.still_held(
+        old.machine_id,
+        &installed(&[&replacement]),
+        std::slice::from_ref(&replacement)
+    ));
+
+    // A bootstrap apply that keeps the old peer's routes keeps its MTU.
+    assert!(lowered.still_held(old.machine_id, &installed(&[&old]), &[]));
+}
