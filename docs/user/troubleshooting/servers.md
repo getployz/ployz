@@ -528,7 +528,10 @@ Run it from your computer with Ployz Cloud, or on one of the other servers itsel
 
 You'll see `! Large packets to web-2 are dropped on its mesh path from the Server that answered, so
 calls with large replies to web-2 fail.` in `ployz server ls`. Small requests still reach `web-2`, so
-it answers pings, but its rows may read `Volume support unknown` or `did not answer`.
+it answers pings, but its rows may read `Volume support unknown` or `did not answer`. A deploy says
+`! Server web-2: deployment observations are incomplete (containers: target Machine RPC timed out;
+large packets to web-2 are dropped on its mesh path from the Server this command entered by)` and
+leaves `web-2` as it is.
 
 `ployz server show web-2` still shows it. When `web-2` doesn't answer through the server the command
 entered by within 3 seconds, the CLI reads it over its own connection and prints `! web-2 did not
@@ -542,7 +545,8 @@ Something between your servers, often a provider's network or a VPN with a small
 drops packets above a size. From 0.3.7, each server checks every minute that a full-size packet
 reaches each other server. When it doesn't, the server finds the largest size that does and sends
 to that server in packets of that size, so nothing fails. `ployz server show` on that server then
-lists the peer with its smaller size, as in `peer = web-2 0.4 ms, mtu 1310`. The server tries full
+lists the peer with its smaller size, as in `peer = web-2 0.4 ms, mtu 1310`; a peer at full size
+shows no size. The server tries full
 size again every 10 minutes and goes back to it once the path carries it, logging
 `the mesh path to web-2 carries 1420-byte packets again`.
 

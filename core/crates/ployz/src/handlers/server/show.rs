@@ -625,7 +625,8 @@ fn record(details: &MachineDetails) -> Fields {
             Some(path) if path.large_packets == LargePackets::Dropped => {
                 ", large packets dropped".to_owned()
             }
-            Some(path) => format!(", mtu {}", path.mtu),
+            Some(path) if path.lowered => format!(", mtu {}", path.mtu),
+            Some(_) => String::new(),
             None => String::new(),
         };
         (

@@ -846,6 +846,11 @@ pub struct PathObservation {
     /// WireGuard MTU, or the lower route MTU it set when larger packets were lost.
     pub mtu: u32,
     pub large_packets: LargePackets,
+    /// Whether `mtu` is below this Machine's WireGuard MTU, because larger packets were lost.
+    /// Absent from Machines before it was added, which read as not lowered.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub lowered: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

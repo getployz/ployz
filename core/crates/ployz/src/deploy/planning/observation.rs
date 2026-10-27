@@ -24,6 +24,20 @@ pub(super) fn warnings(
         &snapshot.container_omissions,
     );
     warnings.extend(snapshot.volume_snapshot.deploy_warnings());
+    for warning in &mut warnings {
+        if let DeployWarning::ObservationFailed {
+            kind,
+            machine_id,
+            message,
+            ..
+        } = warning
+            && let Some(name) = dropped_large_packets(snapshot, *kind, *machine_id)
+        {
+            message.push_str(&format!(
+                "; large packets to {name} are dropped on its mesh path from the Server this command entered by"
+            ));
+        }
+    }
     // Machines whose old copies may serve beside this Deploy's new ones; a gap
     // that only a removal opened starts no new copy there.
     let mut serving_beside = std::collections::BTreeSet::new();
@@ -161,4 +175,98 @@ fn affected_existing(
                     .any(|volume| volume.source.docker_volume_name().is_some()),
             }
     })
+}
+
+/// The name of the Server whose `kind` observation went unanswered while the entry's path
+/// probes find large packets to it dropped: a reply larger than that path carries never
+/// arrives, so that is why it didn't answer.
+fn dropped_large_packets(
+    snapshot: &DeploySnapshot,
+    kind: ObservationKind,
+    machine_id: MachineId,
+) -> Option<&ployz_core::MachineName> {
+    let failures = match kind {
+        ObservationKind::Container => &snapshot.container_failures,
+        ObservationKind::Volume => &snapshot.volume_snapshot.machine_failures,
+    };
+    let unanswered = failures
+        .iter()
+        .any(|failure| failure.machine_id == machine_id && failure.error.target_unanswered());
+    let machine = snapshot
+        .machines
+        .iter()
+        .find(|machine| machine.machine.id == machine_id)?;
+    let dropped = machine
+        .path
+        .is_some_and(|path| path.large_packets == ployz_core::LargePackets::Dropped);
+    (unanswered && dropped).then_some(&machine.machine.name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::{
+        LargePackets, MachineFailure, MachineObservation, MembershipObservation, PathObservation,
+        RpcError, RpcErrorCode,
+    };
+
+    fn failed_message(path: Option<PathObservation>, error: RpcError) -> String {
+        let machine = crate::global_fixtures::machine('a', "web-2");
+        let mut observed = MachineObservation::new(machine.clone(), MembershipObservation::Up);
+        observed.path = path;
+        let snapshot = DeploySnapshot {
+            machines: vec![observed],
+            container_failures: vec![MachineFailure {
+                machine_id: machine.id,
+                error,
+            }],
+            ..Default::default()
+        };
+        let warnings = warnings(
+            &Namespace::system(),
+            &[],
+            &[],
+            &ServiceRemovals::default(),
+            &snapshot,
+        );
+        let [DeployWarning::ObservationFailed { message, .. }] = warnings.as_slice() else {
+            panic!("expected one observation failure, got {warnings:?}");
+        };
+        message.clone()
+    }
+
+    #[test]
+    fn an_unanswered_observation_names_large_packets_the_entry_finds_dropped() {
+        let timed_out = || {
+            RpcError::unanswered_target(
+                RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            )
+        };
+        let dropped = Some(PathObservation {
+            mtu: 1420,
+            large_packets: LargePackets::Dropped,
+            lowered: false,
+        });
+        assert_eq!(
+            failed_message(dropped, timed_out()),
+            "target Machine RPC timed out; large packets to web-2 are dropped on its mesh path from the Server this command entered by"
+        );
+        assert_eq!(
+            failed_message(None, timed_out()),
+            "target Machine RPC timed out",
+            "a path the entry didn't find dropping large packets names no cause"
+        );
+        let refused = RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "refused".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        };
+        assert_eq!(
+            failed_message(dropped, refused),
+            "refused",
+            "a Server that answered keeps its own words"
+        );
+    }
 }
