@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { getApproval, operationDigest, type OperationDigest, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import { readStore } from "#/modules/config-store/config-store.server";
+import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
 import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules/machines/server-policy";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
@@ -261,26 +262,34 @@ export const planClean = Effect.fn("ServerOperations.planClean")(function* (orga
   return cleanPlan(frame, namespace, lost.data_loss);
 }, Effect.scoped);
 
+type Unreadable = { readonly namespace: string; readonly project: string; readonly environment: string };
+
+/** Who owns each doomed Docker volume, and the Environments holding one that the Store can't read back. */
 const volumeOwners = Effect.fn("ServerOperations.volumeOwners")(function* (
   organizationId: string,
   doomed: readonly DataLossIdentity[],
 ) {
   const names = new Set(doomed.map(({ id }) => id.name));
   const owners: VolumeOwner[] = [];
-  if (names.size === 0) return owners;
+  const unreadables: Unreadable[] = [];
+  if (names.size === 0) return { owners, unreadables };
   const { namespaces } = yield* readStore(organizationId, { query: "namespaces" });
   for (const owned of namespaces) {
     if (![...names].some((name) => name.startsWith(`${owned.namespace}_`))) continue;
-    const { volumes } = yield* readStore(organizationId, {
+    const read = yield* readStore(organizationId, {
       query: "volumes",
       environment: { project: owned.project, environment: owned.environment },
-    });
-    for (const volume of volumes) {
+    }).pipe(Effect.map(({ volumes }) => volumes), Effect.catchIf(unreadable, () => Effect.succeed(null)));
+    if (read === null) {
+      unreadables.push(owned);
+      continue;
+    }
+    for (const volume of read) {
       const docker = dockerVolumeName(owned.namespace, volume.id);
       if (names.has(docker)) owners.push({ dockerName: docker, project: owned.project, environment: owned.environment, volume: volume.name });
     }
   }
-  return owners;
+  return { owners, unreadables };
 });
 
 /** A lost Docker volume as the Remove server dialog lists it: an Environment's Volume by its name, and where it lives. */
@@ -295,12 +304,14 @@ export const nameLostVolumes = Effect.fn("ServerOperations.nameLostVolumes")(fun
 ) {
   // Names only label what the Server answered; a Config Store that can't be read leaves the Docker names, not no list.
   const found = yield* volumeOwners(organizationId, lost).pipe(
-    Effect.catch((error) => Effect.logWarning("Could not name lost volumes.", { error }).pipe(Effect.as([]))),
+    Effect.catch((error) => Effect.logWarning("Could not name lost volumes.", { error }).pipe(Effect.as({ owners: [], unreadables: [] }))),
   );
-  const owners = new Map(found.map((owner) => [owner.dockerName, owner]));
+  const owners = new Map(found.owners.map((owner) => [owner.dockerName, owner]));
   return lost.map(({ id: { name: docker } }): LostVolumeName => {
     const owner = owners.get(docker);
     if (owner !== undefined) return { docker, name: owner.volume, detail: `${owner.project}/${owner.environment}` };
+    const unread = found.unreadables.find(({ namespace }) => docker.startsWith(`${namespace}_`));
+    if (unread !== undefined) return { docker, name: "Unreadable volume", detail: `${unread.project}/${unread.environment}` };
     return ANONYMOUS_VOLUME.test(docker) ? { docker, name: "Anonymous volume", detail: docker.slice(0, 12) } : { docker, name: docker };
   });
 });
@@ -314,7 +325,10 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
   const name = serverName(frame, machineId);
   if (name === undefined) return null;
   const removal = confirmed === null ? { reset: false, volumes: forgetLoses(frame, machineId) } : { reset: true, volumes: confirmed };
-  const owned = volumeLabels(yield* volumeOwners(organizationId, removal.volumes));
+  const { owners, unreadables: [unread] } = yield* volumeOwners(organizationId, removal.volumes);
+  // Fail closed: the Server may hold the only copy of a Volume nobody can name.
+  if (unread !== undefined) return yield* unreadableEnvironment(unread);
+  const owned = volumeLabels(owners);
   const labels = new Map(removal.volumes.map((identity) =>
     [identity.id.name, owned.get(identity.id.name) ?? volumeMountLabel(frame, identity)]));
   return removePlan(machineId, name, removal, labels);

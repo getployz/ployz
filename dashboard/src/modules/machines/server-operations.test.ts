@@ -1,4 +1,4 @@
-import type { MachineId, RuntimeWatchView } from "@ployz/sdk";
+import { type ConfigStore, type MachineId, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { operationDigest } from "#/modules/approvals/approvals.server";
@@ -279,5 +279,24 @@ describe("nameLostVolumes", () => {
     const docker = "shop-production_vol-1";
     const named = await Effect.runPromise(nameLostVolumes("org", [{ kind: "docker_volume", id: { machine_id: here as MachineId, name: docker } }]).pipe(Effect.provide(down)));
     expect(named).toEqual([{ docker, name: docker }]);
+  });
+
+  it("names the readable Environments' volumes and says which Environment Ployz Cloud can't read", async () => {
+    const store = asTestDouble<ConfigStore>()({
+      read: async (_organization: string, query: { query: string; environment?: { project: string } }) => {
+        if (query.query === "namespaces") {
+          return { namespaces: [{ namespace: "p1-production", project: "p1", environment: "production" }, { namespace: "p3-production", project: "p3", environment: "production" }] };
+        }
+        if (query.environment?.project === "p3") throw new RpcError({ code: "internal", message: "The Config Store holds an unreadable Working State", details: null });
+        return { volumes: [{ id: "1", name: "data" }] };
+      },
+    });
+    const lost = (name: string) => ({ kind: "docker_volume" as const, id: { machine_id: here as MachineId, name } });
+    const named = await Effect.runPromise(nameLostVolumes("org", [lost("p1-production_vol-1"), lost("p3-production_vol-9")])
+      .pipe(Effect.provide(Layer.succeed(CloudStore, { open: Effect.succeed(store) }))));
+    expect(named).toEqual([
+      { docker: "p1-production_vol-1", name: "data", detail: "p1/production" },
+      { docker: "p3-production_vol-9", name: "Unreadable volume", detail: "p3/production" },
+    ]);
   });
 });
