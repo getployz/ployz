@@ -64,7 +64,10 @@ there. A prune that removes a service is destructive, like `ployz service rm`:
 - When Cloud can't ask every server that should answer, a Deploy token's deploy is refused the same
   way. Any other deploy asks first where destructive actions do, and its approval says it also
   removes any other service running in the environment. A server Ployz already knows is down isn't
-  asked.
+  asked. When a server didn't answer because large packets to it are dropped, the refusal and the
+  approval say so, such as
+  `Couldn't check every server: large packets to web-3 are dropped on the mesh path`. See
+  [Large packets to a server are dropped](../troubleshooting/servers.md#large-packets-to-a-server-are-dropped).
 - A redeploy of a deploy that pruned prunes again, and asks or is refused the same way, by what runs
   now. `ployz deployment redeploy` takes no `--no-prune`, so a Deploy token's refused redeploy says
   `Redeploy #16 once every server answers, or have an owner or admin redeploy it.`, or, when it
