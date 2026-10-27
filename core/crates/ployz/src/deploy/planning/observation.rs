@@ -286,4 +286,63 @@ mod tests {
             failed_message(dropped, error)
         );
     }
+
+    #[test]
+    fn a_silent_server_is_a_listing_gap_only_when_its_silence_is_explained() {
+        let dropped = Some(PathObservation {
+            mtu: 1420,
+            large_packets: LargePackets::Dropped,
+            lowered: false,
+        });
+        let observed = |membership, path| {
+            let mut machine =
+                MachineObservation::new(crate::global_fixtures::machine('a', "web-2"), membership);
+            machine.path = path;
+            machine
+        };
+        let silent = || {
+            RpcError::unanswered_target(
+                RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            )
+        };
+        let gap = crate::deploy::listing_gap;
+        assert!(gap(
+            &observed(MembershipObservation::Suspect, None),
+            &silent()
+        ));
+        assert!(gap(
+            &observed(MembershipObservation::Up, dropped),
+            &silent()
+        ));
+        assert!(!gap(&observed(MembershipObservation::Up, None), &silent()));
+        // A router that couldn't dial it sent only small packets.
+        let undialed = silent().undialed_target();
+        assert!(!gap(
+            &observed(MembershipObservation::Up, dropped),
+            &undialed
+        ));
+        assert!(gap(
+            &observed(MembershipObservation::Suspect, dropped),
+            &undialed
+        ));
+        assert_eq!(
+            crate::deploy::unanswered_message(
+                &observed(MembershipObservation::Up, dropped),
+                &undialed
+            ),
+            "target Machine RPC timed out",
+            "nor does its notice blame large packets"
+        );
+        let refused = RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "refused".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        };
+        assert!(!gap(
+            &observed(MembershipObservation::Up, dropped),
+            &refused
+        ));
+    }
 }

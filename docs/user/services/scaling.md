@@ -103,7 +103,10 @@ To bring services back:
    A service with a Docker volume isn't attempted when no answering server holds the volume,
    because it may be on that server. Any service fails before it changes anything when the deploy
    can't read which replicas that server runs.
-   A server the others still count as online but that doesn't answer fails the deploy.
+   A server the others still count as online but that doesn't answer fails the deploy. From 0.3.8,
+   one whose silence is explained, because
+   [large packets to it are dropped](../troubleshooting/servers.md#large-packets-to-a-server-are-dropped),
+   is skipped the same way instead.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your
    next deploy removes it. It takes out only its own replicas, so an extra one on another server
