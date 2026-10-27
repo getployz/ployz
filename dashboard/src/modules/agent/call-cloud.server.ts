@@ -1,10 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { carriedInto } from "#/modules/approvals/approvals.server";
-import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, ServersAnswer, Subject, VolumeRun } from "@ployz/sdk";
+import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, OwnedNamespace, ServersAnswer, Subject, VolumeRun } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { findService, owners, sealedNames } from "#/modules/config-store/store-lookup.server";
+import { findService, owners, sealedNames, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, callerEnvironments } from "#/modules/identity/actor";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
@@ -78,13 +78,26 @@ const runtimeAsk = (organizationId: string, query: CloudQuery, readable: Readonl
     );
   }).pipe(Effect.scoped);
 
+/**
+ * Volume `volumeId` and its Environment, or null when no Environment has it. An Environment the Store can't read stops
+ * no other's Volumes; only a Volume found nowhere else, which may be in it, refuses naming it.
+ */
 const findVolume = Effect.fn("CallCloud.findVolume")(function* (organizationId: string, volumeId: string) {
+  let unread: OwnedNamespace | undefined;
   for (const owned of yield* owners(organizationId)) {
     const environment: EnvironmentRef = { project: owned.project, environment: owned.environment };
-    const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
+    const volumes = yield* readStore(organizationId, { query: "volumes", environment }).pipe(
+      Effect.map((read) => read.volumes),
+      Effect.catchIf(unreadable, () => Effect.succeed(null)),
+    );
+    if (volumes === null) {
+      unread ??= owned;
+      continue;
+    }
     const volume = volumes.find(({ id }) => id === volumeId);
     if (volume !== undefined) return { environment, name: volume.name };
   }
+  if (unread !== undefined) return yield* unreadableEnvironment(unread);
   return null;
 });
 

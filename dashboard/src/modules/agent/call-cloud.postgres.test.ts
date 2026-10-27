@@ -865,6 +865,19 @@ describe("callCloud", () => {
       expect(own).toEqual({ ok: false, refusal: expect.objectContaining({ code: "not_found" }) });
     }));
 
+  // Catches an unreadable Environment answering a Volume lookup with an opaque internal error.
+  it.live("a Volume action refuses naming the Environment the Store can't read, when the Volume may be there", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller } = yield* deployedWeb;
+      yield* drizzle.execute(sql`update config_environment set working = '{"from_the_future":true}' where id = ${ENVIRONMENT}`);
+      const sync: Act = { attempt: "8".repeat(32), digest: "d".repeat(64), action: { action: "volume", volume: VOLUME, run: { run: "sync", full: false } } };
+      const refused = yield* callCloud(caller, { act: sync }).pipe(Effect.provide(services));
+      expect(refused).toEqual({ ok: false, refusal: expect.objectContaining({
+        code: "conflict",
+        message: expect.stringContaining("can't read shop/production"),
+      }) });
+    }));
+
   // Catches one approved stop authorizing every later stop of the Service, or a dashboard Stop made to wait for a human.
   it.live("one approval runs one stop: a retry with its key replays it, a later stop asks again, and the dashboard never asks", () =>
     Effect.gen(function* () {
