@@ -497,10 +497,11 @@ impl NetworkPlane {
         // Both passes may stop members, which start again only once a bridge stands.
         let _extend = crate::daemon::extend_systemd_start_timeout("settling the ployz network");
         let mut stopped = Stopped::load(data_dir);
+        let mut pins = Pins::load(data_dir);
         let created = self
-            .ensure_docker_network_shape(ipv6.as_ref(), &mut stopped)
+            .ensure_docker_network_shape(ipv6.as_ref(), &mut stopped, &mut pins)
             .await?;
-        self.pin_members(&mut stopped).await;
+        self.pin_members(&mut stopped, pins).await;
         stopped.start(&self.docker).await;
         Ok(created)
     }
@@ -509,6 +510,7 @@ impl NetworkPlane {
         &self,
         ipv6: Option<&IpamConfig>,
         stopped: &mut Stopped,
+        pins: &mut Pins,
     ) -> Result<bool, NetworkError> {
         let subnet = self.machine.subnet.to_string();
         let gateway = self.machine.subnet.gateway().0.to_string();
@@ -521,7 +523,7 @@ impl NetworkPlane {
             Ok(network) => {
                 if docker_network_matches(&network, &subnet, &gateway, &required_options) {
                     if !docker_network_ipv6_matches(&network, ipv6) {
-                        self.readdress_docker_network(&network, request, ipv4_only, stopped)
+                        self.readdress_docker_network(&network, request, ipv4_only, stopped, pins)
                             .await?;
                     }
                     return Ok(false);
@@ -582,7 +584,9 @@ impl NetworkPlane {
     /// container between restarts, Ployz's or not, so such a member is stopped first
     /// and noted in `stopped` to start again. The bridge is replaced only once every
     /// member is detached, so a failure leaves a bridge serving, with every member on
-    /// it; the next start tries again.
+    /// it; the next start tries again. Each member's address is written down in
+    /// `pins` before any detach, so a start that dies midway leaves the next one the
+    /// addresses Docker forgot.
     ///
     /// # Errors
     ///
@@ -593,6 +597,7 @@ impl NetworkPlane {
         request: NetworkCreateRequest,
         ipv4_only: Option<NetworkCreateRequest>,
         stopped: &mut Stopped,
+        pins: &mut Pins,
     ) -> Result<(), NetworkError> {
         let take_ipv6 = ipv4_only.is_some();
         let mut members = match self.bridge_members().await {
@@ -602,6 +607,11 @@ impl NetworkPlane {
                 return Ok(());
             }
         };
+        pins.restore(&mut members);
+        if let Err(error) = pins.record(&members) {
+            report_readdress(take_ipv6, &error.into());
+            return Ok(());
+        }
         members.sort_by_key(|member| (member.ipv4.is_none(), member.ipv4));
         let mut detached = Vec::new();
         let mut disconnected = Ok(());
@@ -691,8 +701,9 @@ impl NetworkPlane {
     /// keeps the address it has, or takes a free one. A container created on the
     /// bridge that lost its endpoint, such as one a readdress detached, joins it again.
     /// One Ployz doesn't manage is pinned too, since a dynamic one could take a
-    /// pinned address at boot, and it rejoins with its own aliases and options.
-    async fn pin_members(&self, stopped: &mut Stopped) {
+    /// pinned address at boot, and it rejoins with its own aliases and options. A
+    /// detached member takes back the address `pins` holds for it, if any.
+    async fn pin_members(&self, stopped: &mut Stopped, mut pins: Pins) {
         let containers = match self.bridge_containers().await {
             Ok(containers) => containers,
             Err(error) => {
@@ -703,12 +714,30 @@ impl NetworkPlane {
                 return;
             }
         };
-        let members = bridge_members(&containers);
-        let taken = crate::docker::bridge_address::taken(&containers);
+        let mut members = bridge_members(&containers);
+        pins.restore(&mut members);
+        let mut taken = crate::docker::bridge_address::taken(&containers);
+        taken.extend(members.iter().filter_map(|member| member.ipv4));
+        let detaches = members
+            .iter()
+            .any(|member| member.attached && member.needs_pin());
+        let recorded = !detaches
+            || pins
+                .record(&members)
+                .inspect_err(|error| {
+                    eprintln!(
+                        "containers keep dynamic {DOCKER_NETWORK_NAME} network addresses: {error}",
+                    );
+                })
+                .is_ok();
         let unpinned = members.iter().filter(|member| member.needs_pin());
+        let mut unjoined = BTreeSet::new();
         for (member, ipv4) in addresses(unpinned, taken, self.machine.subnet) {
             let mut endpoint = crate::docker::bridge_address::endpoint(member.ipv6, None);
             if member.attached {
+                if !recorded {
+                    continue;
+                }
                 match self.docker.inspect_container(&member.id, None).await {
                     Ok(inspected) => {
                         if let Some(current) = inspected
@@ -741,8 +770,11 @@ impl NetworkPlane {
                     }
                 }
             }
-            self.rejoin_with(member, endpoint, ipv4, stopped).await;
+            if !self.rejoin_with(member, endpoint, ipv4, stopped).await {
+                unjoined.insert(member.id.clone());
+            }
         }
+        pins.finish(&unjoined);
     }
 
     /// Detaches `id` from the bridge, stopping it first when Docker holds it between
@@ -817,18 +849,19 @@ impl NetworkPlane {
 
     async fn rejoin(&self, member: &BridgeMember, ipv4: Option<Ipv4Addr>, stopped: &mut Stopped) {
         let endpoint = crate::docker::bridge_address::endpoint(member.ipv6, None);
-        self.rejoin_with(member, endpoint, ipv4, stopped).await;
+        let _ = self.rejoin_with(member, endpoint, ipv4, stopped).await;
     }
 
     /// Falls back to any free address when `ipv4` can't be had. Stops a container
-    /// Docker holds between restarts first, as `detach` does.
+    /// Docker holds between restarts first, as `detach` does. Returns whether it
+    /// rejoined.
     async fn rejoin_with(
         &self,
         member: &BridgeMember,
         endpoint: EndpointSettings,
         ipv4: Option<Ipv4Addr>,
         stopped: &mut Stopped,
-    ) {
+    ) -> bool {
         let connect = |ipv4| NetworkConnectRequest {
             container: member.id.clone(),
             endpoint_config: Some(crate::docker::bridge_address::pin(endpoint.clone(), ipv4)),
@@ -850,13 +883,14 @@ impl NetworkPlane {
                 .connect_network(DOCKER_NETWORK_NAME, connect(None))
                 .await;
         }
-        if let Err(error) = result {
+        if let Err(error) = &result {
             eprintln!(
                 "container {container} could not rejoin the {DOCKER_NETWORK_NAME} network: {error}",
                 container = member.id,
-                error = ployz_core::error_chain::inline(&error),
+                error = ployz_core::error_chain::inline(error),
             );
         }
+        result.is_ok()
     }
 }
 
@@ -1602,5 +1636,7 @@ fn delete_route(route: &IpNet) {
 #[cfg(test)]
 mod tests;
 
+mod pins;
 mod stopped;
+use pins::Pins;
 use stopped::Stopped;
