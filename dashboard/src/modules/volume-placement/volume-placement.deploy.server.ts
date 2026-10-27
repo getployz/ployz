@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { isDeepStrictEqual } from "node:util";
-import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome } from "@ployz/sdk";
+import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
+import { owners as allOwners, ownerOf } from "#/modules/config-store/store-lookup.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor } from "#/modules/identity/actor";
@@ -333,18 +334,11 @@ const NO_COPIES: CopyObservation["copies"] = [];
 
 type EnvironmentVolume = { readonly volumeId: string; readonly name: string; readonly environment: EnvironmentRef; readonly dockerVolume: string };
 
-const environmentVolumes = Effect.fn("VolumePlacement.environmentVolumes")(function* (organizationId: string, onlyEnvironmentId: string | null) {
-  const found: EnvironmentVolume[] = [];
-  const { namespaces } = yield* readStore(organizationId, { query: "namespaces" });
-  for (const owned of namespaces) {
-    const environment: EnvironmentRef = { project: owned.project, environment: owned.environment };
-    const { environment: summary, volumes } = yield* readStore(organizationId, { query: "volumes", environment });
-    if (onlyEnvironmentId !== null && summary.id !== onlyEnvironmentId) continue;
-    for (const volume of volumes) {
-      found.push({ volumeId: volume.id, name: volume.name, environment, dockerVolume: dockerVolumeName(owned.namespace, volume.id) });
-    }
-  }
-  return found;
+/** The Volumes of the Environment that owns Namespace `owned`. */
+const ownedVolumes = Effect.fn("VolumePlacement.ownedVolumes")(function* (organizationId: string, owned: OwnedNamespace) {
+  const environment: EnvironmentRef = { project: owned.project, environment: owned.environment };
+  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
+  return volumes.map((volume): EnvironmentVolume => ({ volumeId: volume.id, name: volume.name, environment, dockerVolume: dockerVolumeName(owned.namespace, volume.id) }));
 });
 
 /** A Volume a sync has something to say about: one with a slot anywhere, or with two primaries to settle. */
@@ -368,13 +362,25 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
     yield* Effect.logInfo("Mirror refresh skipped.", { organizationId, reason: refusal.message });
     return [];
   }
+  const owners = onlyEnvironmentId === null ? yield* allOwners(organizationId) : [yield* ownerOf(organizationId, onlyEnvironmentId)];
   const synced: MirrorSyncAnswer[] = [];
-  for (const volume of yield* environmentVolumes(organizationId, onlyEnvironmentId)) {
-    if (!syncs(copies.filter((copy) => copy.name === volume.dockerVolume))) continue;
-    const answer = yield* syncMirrors(organizationId, volume, members, ask).pipe(
-      Effect.catch((error) => Effect.logWarning(`could not sync ${volume.name}`, { organizationId, volumeId: volume.volumeId, error }).pipe(Effect.as(null))),
+  for (const owned of owners) {
+    if (owned === null) continue;
+    // In the organization-wide pass, an Environment the Store can't read keeps its mirrors as they are; it stops no
+    // other Environment's refresh. A Deploy's own Environment still fails its Deploy.
+    const volumes = yield* ownedVolumes(organizationId, owned).pipe(
+      Effect.catchTag("StoreRefused", (refused) => onlyEnvironmentId !== null ? Effect.fail(refused) : Effect.logWarning(
+        "Mirror refresh skipped an Environment the Store can't read.",
+        { organizationId, project: owned.project, environment: owned.environment, reason: refused.message },
+      ).pipe(Effect.as([]))),
     );
-    if (answer !== null) synced.push(answer);
+    for (const volume of volumes) {
+      if (!syncs(copies.filter((copy) => copy.name === volume.dockerVolume))) continue;
+      const answer = yield* syncMirrors(organizationId, volume, members, ask).pipe(
+        Effect.catch((error) => Effect.logWarning(`could not sync ${volume.name}`, { organizationId, volumeId: volume.volumeId, error }).pipe(Effect.as(null))),
+      );
+      if (answer !== null) synced.push(answer);
+    }
   }
   return synced;
 });
@@ -394,7 +400,10 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
   const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
   const stuck: string[] = [];
   const blocked: { volume: string; upgrade: string | null }[] = [];
-  for (const volume of yield* environmentVolumes(organizationId, null)) {
+  const volumes: EnvironmentVolume[] = [];
+  // A Drain fails while any Environment is unreadable: one skipped could leave its Volumes on the Server being removed.
+  for (const owned of yield* allOwners(organizationId)) volumes.push(...yield* ownedVolumes(organizationId, owned));
+  for (const volume of volumes) {
     if (!copies.some((copy) => copy.name === volume.dockerVolume && copy.machine_id === server && copy.role === "writer")) continue;
     const found = rows.find((entry) => entry.volumeId === volume.volumeId);
     if (found?.deploymentId != null) continue;
