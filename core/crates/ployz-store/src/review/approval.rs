@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent};
-use ployz_core::{Namespace, RpcError, ServiceName};
+use ployz_core::{MachineName, Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -521,10 +521,13 @@ pub(crate) enum Pruning {
     /// It keeps every other Service, or deploys named ones.
     Off,
     /// It removes each of `removes`, by runtime name. `unseen` when Cloud couldn't
-    /// ask every Server that should answer, so it may remove others nothing names.
+    /// ask every Server that should answer, so it may remove others nothing names;
+    /// `dropped`, those of them that didn't answer because large packets to them are
+    /// dropped.
     On {
         removes: BTreeSet<DestructiveEffect>,
         unseen: bool,
+        dropped: Vec<MachineName>,
     },
 }
 
@@ -540,6 +543,7 @@ impl Pruning {
             return Self::On {
                 removes: BTreeSet::new(),
                 unseen: true,
+                dropped: Vec::new(),
             };
         };
         let held: BTreeSet<&ServiceName> = held.into_iter().collect();
@@ -558,6 +562,7 @@ impl Pruning {
         Self::On {
             removes,
             unseen: !running.unanswered.is_empty(),
+            dropped: running.dropped.clone(),
         }
     }
 
@@ -575,13 +580,21 @@ impl Pruning {
     }
 
     /// `asked` saying, when it may remove a Service nothing names, that the Deploy
-    /// prunes: the card then says so.
+    /// prunes, and which Servers didn't answer because large packets to them are
+    /// dropped: the card then says so. Neither is bound into the digest.
     pub(crate) fn unnamed(&self, mut asked: RpcError) -> RpcError {
-        if self.unseen()
+        if let Self::On {
+            unseen: true,
+            dropped,
+            ..
+        } = self
             && asked.code.as_str() == "approval_required"
             && let Some(details) = asked.details.as_object_mut()
         {
             details.insert("prunes".to_owned(), json!(true));
+            if !dropped.is_empty() {
+                details.insert("dropped".to_owned(), json!(dropped));
+            }
         }
         asked
     }
@@ -591,7 +604,12 @@ impl Pruning {
     /// takes no `--no-prune`.
     pub(crate) fn admit(&self, trusted: &Trusted, redeploy: Option<u64>) -> Result<(), RpcError> {
         let destroy = Permission::ChangesDestroy;
-        let Self::On { removes, unseen } = self else {
+        let Self::On {
+            removes,
+            unseen,
+            dropped,
+        } = self
+        else {
             return Ok(());
         };
         if trusted.holds(destroy) || (removes.is_empty() && !unseen) {
@@ -606,6 +624,10 @@ impl Pruning {
             Some(_) => "redeploy",
             None => "deploy",
         };
+        let why = match dropped.is_empty() {
+            true => String::new(),
+            false => format!(" ({})", dropped_sentence(dropped)),
+        };
         let removes = match (names.is_empty(), unseen) {
             (false, false) => {
                 format!(
@@ -614,11 +636,11 @@ impl Pruning {
             }
             (false, true) => format!(
                 "this {what} removes {names}, running in this environment but not part of it, \
-                 and Ployz couldn't check every server for others"
+                 and Ployz couldn't check every server for others{why}"
             ),
             (true, _) => format!(
-                "Ployz couldn't check every server for services running in this environment \
-                 but not part of it, which this {what} removes"
+                "Ployz couldn't check every server{why} for services running in this \
+                 environment but not part of it, which this {what} removes"
             ),
         };
         let Some(number) = redeploy else {
@@ -641,6 +663,16 @@ impl Pruning {
             json!({ "permission": destroy }),
         ))
     }
+}
+
+/// Why the Servers in `dropped` didn't answer.
+fn dropped_sentence(dropped: &[MachineName]) -> String {
+    let names = dropped
+        .iter()
+        .map(MachineName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("large packets to {names} are dropped on the mesh path")
 }
 
 /// Refuse taking an Environment off the Servers for `taking_off` (a shutdown, or the

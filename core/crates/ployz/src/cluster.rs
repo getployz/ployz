@@ -864,10 +864,29 @@ impl Client {
             .iter()
             .map(|failure| failure.machine_id)
             .collect();
+        // The entry's own path to a Server that didn't answer says why, when large
+        // packets to it are dropped (#3490). A failed dial sends only small packets, so
+        // a Server the entry couldn't reach is left out, as the router leaves it.
+        let dropped = machines
+            .machines
+            .iter()
+            .filter(|machine| {
+                machine
+                    .path
+                    .is_some_and(|path| path.large_packets == ployz_core::LargePackets::Dropped)
+                    && live.containers.failures.iter().any(|failure| {
+                        failure.machine_id == machine.machine.id
+                            && failure.error.target_unanswered()
+                            && !failure.error.undialed()
+                    })
+            })
+            .map(|machine| machine.machine.name.clone())
+            .collect();
         Ok(ployz_store::RunningObservation {
             services: services.into_iter().collect(),
             unanswered: unanswered.into_iter().collect(),
             failure: None,
+            dropped,
         })
     }
 
@@ -2136,15 +2155,21 @@ async fn list_on_machine(
 }
 
 /// [`rpc_error`] in its own words, marked unanswered when the router or this client's
-/// deadline shows the target never answered.
+/// deadline shows the target never answered, and undialed as well when the router
+/// couldn't dial it.
 fn unanswered_kept(error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
         return rpc_error(error);
     }
+    let unreached = error.target_unreached();
     let error = rpc_error(error);
-    RpcError {
+    let kept = RpcError {
         cause: error.cause,
         ..RpcError::unanswered_target(error.code, error.message)
+    };
+    match unreached {
+        true => kept.undialed_target(),
+        false => kept,
     }
 }
 

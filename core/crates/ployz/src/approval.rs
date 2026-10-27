@@ -42,6 +42,10 @@ pub(crate) struct Asked {
     /// Environment, which only the Servers can name.
     #[serde(default)]
     prunes: bool,
+    /// The Servers that didn't answer because large packets to them are dropped, so
+    /// a prune may remove what they run unnamed.
+    #[serde(default)]
+    dropped: Vec<String>,
     /// Set on a redeploy: its Deployment's number and the later ones it rolls back.
     #[serde(default)]
     redeploy: Option<Redeploy>,
@@ -288,6 +292,12 @@ impl Asked {
         }
         if self.prunes {
             lines.push("  ✕ removes any other Service running in this environment".to_owned());
+            if !self.dropped.is_empty() {
+                lines.push(format!(
+                    "    couldn't check every server: large packets to {} are dropped on the mesh path",
+                    self.dropped.join(", ")
+                ));
+            }
         }
         let others = match &self.subject {
             Subject::Diff(diff) => diff.total_count.saturating_sub(self.effects.len()),
@@ -770,6 +780,39 @@ mod tests {
                 "This deploy:",
                 "  ✕ removes any other Service running in this environment",
                 "  + 1 other change",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_prune_says_which_servers_drop_large_packets() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1",
+            "approval": "d1",
+            "effects": [],
+            "prunes": true,
+            "dropped": ["machine-3"],
+            "diff": {
+                "environment": {
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "project": "shop",
+                    "name": "production",
+                    "revision": 3,
+                },
+                "version": "3:2:0.1",
+                "saved": 2,
+                "holds_staged": false,
+                "changes": [],
+                "total_count": 0,
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            asked.review(Verb::Deploy),
+            [
+                "This deploy:",
+                "  ✕ removes any other Service running in this environment",
+                "    couldn't check every server: large packets to machine-3 are dropped on the mesh path",
             ]
         );
     }

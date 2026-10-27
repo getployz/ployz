@@ -5,7 +5,8 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use ployz_core::{
-    DockerVolumeId, DockerVolumeName, MachineId, QualifiedService, RpcError, SealingPublicKey,
+    DockerVolumeId, DockerVolumeName, MachineId, MachineName, QualifiedService, RpcError,
+    SealingPublicKey,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -347,6 +348,12 @@ pub struct RunningObservation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub failure: Option<ObservationFailure>,
+    /// Each of `unanswered`, by name, that didn't answer because the observer's entry
+    /// finds large packets to it dropped on its mesh path. It only explains: a Server
+    /// it leaves out is no less unanswered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<MachineName>>", optional)]
+    pub dropped: Vec<MachineName>,
 }
 
 /// Why an observer couldn't check the Servers, and where the check stopped.

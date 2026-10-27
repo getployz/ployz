@@ -322,3 +322,9 @@ it("says a Deploy that prunes removes any other service, though it names none", 
   expect(within(card).getByText("Removes other services")).toBeTruthy();
   expect(within(card).getByRole("list", { name: "Destroys" }).textContent).toBe("Also removes any other service running in this environment");
 });
+
+it("says which servers a pruning Deploy couldn't check because large packets to them are dropped", () => {
+  const pruning = { ...approval, review: { ...approval.review, effects: [], prunes: true as const, dropped: ["machine-3"] } };
+  const card = show(pruning).card();
+  expect(within(card).getByText("Couldn't check every server: large packets to machine-3 are dropped on the mesh path")).toBeTruthy();
+});
