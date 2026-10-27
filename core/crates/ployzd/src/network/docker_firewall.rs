@@ -4,15 +4,180 @@
 //! nothing until a reboot clears them (#3458). Nor does the file alone: it may
 //! have changed since dockerd loaded it (#3463).
 
-use std::{fs, io, os::unix::fs::MetadataExt, path::Path};
+use std::{
+    fmt, fs, io,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
 
 const DEFAULT_CONFIG_FILE: &str = "/etc/docker/daemon.json";
 const DEFAULT_PIDFILE: &str = "/var/run/docker.pid";
 
+/// What restarting both picks up, after any fix to Docker's settings.
+const RESTART: &str = "then `systemctl restart docker` and `systemctl restart ployz`";
+
+/// Why Ployz reads the running dockerd as not filtering IPv6 with ip6tables, as it
+/// saw it. Each one fails closed and names the step that clears it.
+#[derive(Debug, PartialEq)]
+pub(super) enum Ipv6Off {
+    NoDockerd,
+    SeveralDockerds,
+    /// dockerd's command line couldn't be read, or is a zombie's.
+    UnreadableCommandLine,
+    /// A flag value dockerd would reject.
+    RejectedFlag,
+    /// Docker's own setting turns it off, from a flag or a file.
+    Setting {
+        setting: Setting,
+        from: Source,
+    },
+    UnreadableConfig {
+        path: PathBuf,
+        error: String,
+    },
+    /// Not a JSON object, or a key with a type dockerd would reject.
+    MalformedConfig {
+        path: PathBuf,
+    },
+    /// `path` changed after dockerd started, so the running dockerd may not have
+    /// loaded what it says now. `removed` when the file is gone and its directory
+    /// is what changed.
+    ChangedSinceStart {
+        path: PathBuf,
+        removed: bool,
+        changed: i128,
+        started: i128,
+    },
+    /// No pidfile of this dockerd's says when it started.
+    StartUnknown {
+        pidfile: PathBuf,
+    },
+    /// Docker made no DOCKER-USER chain in ip6tables for the fence.
+    NoDockerUserChain,
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum Setting {
+    Iptables,
+    Ip6tables,
+    Backend(String),
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum Source {
+    Flag,
+    File(PathBuf),
+}
+
+impl fmt::Display for Ipv6Off {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let unsure = "so Ployz can't tell whether Docker filters IPv6";
+        match self {
+            Self::NoDockerd => write!(
+                f,
+                "no dockerd runs as root here, {unsure}. Start Docker, then `systemctl restart ployz`."
+            ),
+            Self::SeveralDockerds => write!(
+                f,
+                "more than one dockerd runs as root here, {unsure} on the bridge. Stop the extra one, then `systemctl restart ployz`."
+            ),
+            Self::UnreadableCommandLine => write!(
+                f,
+                "Ployz can't read dockerd's command line, {unsure}. Run `systemctl restart ployz`."
+            ),
+            Self::RejectedFlag => write!(
+                f,
+                "dockerd's command line has a firewall flag value Docker wouldn't accept, {unsure}. Fix it in Docker's systemd unit, {RESTART}."
+            ),
+            Self::Setting {
+                setting,
+                from: Source::Flag,
+            } => {
+                let flag = match setting {
+                    Setting::Iptables => "--iptables=false".to_owned(),
+                    Setting::Ip6tables => "--ip6tables=false".to_owned(),
+                    Setting::Backend(backend) => format!("--firewall-backend={backend}"),
+                };
+                write!(
+                    f,
+                    "dockerd runs with {flag}, so Ployz can't fence container IPv6 out of the mesh. Remove it from Docker's systemd unit, {RESTART}."
+                )
+            }
+            Self::Setting {
+                setting,
+                from: Source::File(path),
+            } => {
+                let key = match setting {
+                    Setting::Iptables => "\"iptables\": false".to_owned(),
+                    Setting::Ip6tables => "\"ip6tables\": false".to_owned(),
+                    Setting::Backend(backend) => format!("\"firewall-backend\": {backend:?}"),
+                };
+                let path = path.display();
+                write!(
+                    f,
+                    "{path} sets {key}, so Ployz can't fence container IPv6 out of the mesh. Remove it from {path}, {RESTART}."
+                )
+            }
+            Self::UnreadableConfig { path, error } => write!(
+                f,
+                "Ployz can't read {path} ({error}), {unsure}. Make it readable, then `systemctl restart ployz`.",
+                path = path.display()
+            ),
+            Self::MalformedConfig { path } => write!(
+                f,
+                "{path} isn't a config Docker would accept, {unsure}. Fix it, {RESTART}.",
+                path = path.display()
+            ),
+            Self::ChangedSinceStart {
+                path,
+                removed,
+                changed,
+                started,
+            } => {
+                let changed = when(*changed);
+                let started = when(*started);
+                let what = match removed {
+                    true => format!(
+                        "{} was removed (its directory changed at {changed})",
+                        path.display()
+                    ),
+                    false => format!("{} changed at {changed}", path.display()),
+                };
+                write!(
+                    f,
+                    "{what}, after dockerd started at {started}, so Ployz can't tell what the running Docker loaded. Run `systemctl restart docker`, then `systemctl restart ployz`."
+                )
+            }
+            Self::StartUnknown { pidfile } => write!(
+                f,
+                "{pidfile} isn't this dockerd's pidfile, so Ployz can't tell when Docker started or what it loaded. Run `systemctl restart docker`, then `systemctl restart ployz`.",
+                pidfile = pidfile.display()
+            ),
+            Self::NoDockerUserChain => write!(
+                f,
+                "ip6tables has no DOCKER-USER chain, so Docker isn't filtering IPv6 and Ployz can't fence container IPv6 out of the mesh. Run `systemctl restart docker`, then `systemctl restart ployz`."
+            ),
+        }
+    }
+}
+
+/// A ctime in nanoseconds, in UTC to the second.
+fn when(nanos: i128) -> String {
+    i64::try_from(nanos.div_euclid(1_000_000_000))
+        .ok()
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map_or_else(
+            || "an unknown time".to_owned(),
+            |at| at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        )
+}
+
 /// Fail-closed: no single root dockerd, an unreadable config, a config changed
-/// since dockerd started or a value Docker would reject all count as off.
-pub(super) fn docker_filters_ipv6() -> bool {
-    dockerd().is_some_and(|(pid, args)| filters_ipv6(&pid, &args, &Host))
+/// since dockerd started or a value Docker would reject all count as off, each
+/// with the cause Ployz saw.
+pub(super) fn docker_filters_ipv6() -> Result<(), Ipv6Off> {
+    let (pid, args) = dockerd()?;
+    filters_ipv6(&pid, &args, &Host)
 }
 
 /// The files `filters_ipv6` looks at, so tests can stand in for the host.
@@ -40,10 +205,10 @@ impl Files for Host {
 /// A rootless daemon runs as its user and one inside a container, such as a
 /// Docker-in-Docker Service, sits in its own namespace; neither owns the
 /// bridge. Two that could leave unknown which one does.
-fn dockerd() -> Option<(String, Vec<String>)> {
-    let namespace = fs::read_link("/proc/self/ns/pid").ok()?;
+fn dockerd() -> Result<(String, Vec<String>), Ipv6Off> {
+    let namespace = fs::read_link("/proc/self/ns/pid").map_err(|_| Ipv6Off::NoDockerd)?;
     let mut daemons = fs::read_dir("/proc")
-        .ok()?
+        .map_err(|_| Ipv6Off::NoDockerd)?
         .filter_map(Result::ok)
         .filter(|entry| {
             fs::read_to_string(entry.path().join("comm"))
@@ -51,12 +216,19 @@ fn dockerd() -> Option<(String, Vec<String>)> {
                 && entry.metadata().is_ok_and(|metadata| metadata.uid() == 0)
                 && fs::read_link(entry.path().join("ns/pid")).is_ok_and(|ns| ns == namespace)
         });
-    let daemon = daemons.next()?;
+    let daemon = daemons.next().ok_or(Ipv6Off::NoDockerd)?;
     if daemons.next().is_some() {
-        return None;
+        return Err(Ipv6Off::SeveralDockerds);
     }
-    let args = cmdline_args(&fs::read(daemon.path().join("cmdline")).ok()?)?;
-    Some((daemon.file_name().into_string().ok()?, args))
+    let args = fs::read(daemon.path().join("cmdline"))
+        .ok()
+        .and_then(|cmdline| cmdline_args(&cmdline))
+        .ok_or(Ipv6Off::UnreadableCommandLine)?;
+    let pid = daemon
+        .file_name()
+        .into_string()
+        .map_err(|_| Ipv6Off::UnreadableCommandLine)?;
+    Ok((pid, args))
 }
 
 /// `/proc/<pid>/cmdline` ends each argument with a NUL. An empty argument, as in
@@ -74,17 +246,16 @@ fn cmdline_args(cmdline: &[u8]) -> Option<Vec<String>> {
 /// `args` is dockerd's command line, program first, and `pid` its PID. dockerd
 /// refuses to start when a flag and the file set the same option, so either
 /// source decides it.
-fn filters_ipv6(pid: &str, args: &[String], files: &impl Files) -> bool {
-    let Some((flags, config_file)) = flag_settings(args.get(1..).unwrap_or_default()) else {
-        return false;
-    };
+fn filters_ipv6(pid: &str, args: &[String], files: &impl Files) -> Result<(), Ipv6Off> {
+    let (flags, config_file) =
+        flag_settings(args.get(1..).unwrap_or_default()).ok_or(Ipv6Off::RejectedFlag)?;
     // An empty `--config-file=` loads no file.
     if config_file == Some("") {
-        return flags.filters_ipv6();
+        return flags.off(Source::Flag).map_or(Ok(()), Err);
     }
     let path = Path::new(config_file.unwrap_or(DEFAULT_CONFIG_FILE));
-    let (file, changed) = match files.read(path) {
-        Ok(contents) => (file_settings(&contents), files.changed(path)),
+    let (contents, removed, changed) = match files.read(path) {
+        Ok(contents) => (contents, false, files.changed(path)),
         // Docker starts without its default file; a named one it must have read.
         // Deleting the file changes its directory, and a missing directory held
         // no file to delete.
@@ -93,34 +264,60 @@ fn filters_ipv6(pid: &str, args: &[String], files: &impl Files) -> bool {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(i128::MIN),
                 changed => changed,
             };
-            (Some(Settings::default()), directory)
+            (String::new(), true, directory)
         }
-        Err(_) => return false,
+        Err(error) => {
+            return Err(Ipv6Off::UnreadableConfig {
+                path: path.to_owned(),
+                error: error.to_string(),
+            });
+        }
     };
-    let Some(settings) = file.map(|file| flags.or(file)) else {
-        return false;
-    };
-    settings.filters_ipv6()
-        && changed
-            .is_ok_and(|changed| started_since(pid, settings.pidfile.as_deref(), changed, files))
+    let file = file_settings(&contents).ok_or_else(|| Ipv6Off::MalformedConfig {
+        path: path.to_owned(),
+    })?;
+    if let Some(off) = flags
+        .off(Source::Flag)
+        .or_else(|| file.off(Source::File(path.to_owned())))
+    {
+        return Err(off);
+    }
+    let settings = flags.or(file);
+    let changed = changed.map_err(|error| Ipv6Off::UnreadableConfig {
+        path: path.to_owned(),
+        error: error.to_string(),
+    })?;
+    let started = started_at(pid, settings.pidfile.as_deref(), files)?;
+    if changed > started {
+        return Err(Ipv6Off::ChangedSinceStart {
+            path: path.to_owned(),
+            removed,
+            changed,
+            started,
+        });
+    }
+    Ok(())
 }
 
-/// dockerd writes its pidfile once it has loaded its config, so a config that
-/// changed later is one the running dockerd never read (#3463). A pidfile that
-/// isn't this dockerd's can't say when it started. A relative one is in
-/// dockerd's working directory.
-fn started_since(pid: &str, pidfile: Option<&str>, changed: i128, files: &impl Files) -> bool {
+/// When dockerd started: it writes its pidfile once it has loaded its config, so a
+/// config that changed later is one the running dockerd never read (#3463). A
+/// pidfile that isn't this dockerd's can't say when it started. A relative one is
+/// in dockerd's working directory.
+fn started_at(pid: &str, pidfile: Option<&str>, files: &impl Files) -> Result<i128, Ipv6Off> {
     let pidfile = Path::new("/proc")
         .join(pid)
         .join("cwd")
         .join(pidfile.unwrap_or(DEFAULT_PIDFILE));
-    let pidfile = pidfile.as_path();
-    files
-        .read(pidfile)
+    let unknown = || Ipv6Off::StartUnknown {
+        pidfile: pidfile.clone(),
+    };
+    if !files
+        .read(&pidfile)
         .is_ok_and(|contents| contents.trim() == pid)
-        && files
-            .changed(pidfile)
-            .is_ok_and(|started| changed <= started)
+    {
+        return Err(unknown());
+    }
+    files.changed(&pidfile).map_err(|_| unknown())
 }
 
 #[derive(Default)]
@@ -142,14 +339,20 @@ impl Settings {
     }
 
     /// Docker 29 turns ip6tables on by default, and only with iptables, whose
-    /// backend is iptables unless set to nftables.
-    fn filters_ipv6(&self) -> bool {
-        self.iptables.unwrap_or(true)
-            && self.ip6tables.unwrap_or(true)
-            && matches!(
-                self.firewall_backend.as_deref(),
-                None | Some("" | "iptables")
-            )
+    /// backend is iptables unless set to nftables. What of these settings turns it
+    /// off, as read from `from`.
+    fn off(&self, from: Source) -> Option<Ipv6Off> {
+        let setting = if self.iptables == Some(false) {
+            Setting::Iptables
+        } else if self.ip6tables == Some(false) {
+            Setting::Ip6tables
+        } else {
+            match self.firewall_backend.as_deref() {
+                None | Some("" | "iptables") => return None,
+                Some(backend) => Setting::Backend(backend.to_owned()),
+            }
+        };
+        Some(Ipv6Off::Setting { setting, from })
     }
 }
 
@@ -274,6 +477,10 @@ mod tests {
         }
 
         fn decide(&self, args: &[&str]) -> bool {
+            self.cause(args).is_ok()
+        }
+
+        fn cause(&self, args: &[&str]) -> Result<(), Ipv6Off> {
             let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
             filters_ipv6(PID, &args, self)
         }
@@ -354,7 +561,7 @@ mod tests {
     fn an_empty_config_file_argument_loads_no_file() {
         let args = cmdline_args(b"/usr/bin/dockerd\0--config-file\0\0").unwrap();
         let fake = Fake::default();
-        assert!(filters_ipv6(PID, &args, &fake));
+        assert_eq!(filters_ipv6(PID, &args, &fake), Ok(()));
         assert!(fake.read.borrow().is_empty(), "dockerd read no file");
     }
 
@@ -436,5 +643,98 @@ mod tests {
                 .decide(&["dockerd"])
         );
         assert!(!decide(&["dockerd"], Some(r#"{"pidfile": 1}"#)));
+    }
+
+    #[test]
+    fn each_cause_names_what_ployz_saw() {
+        let file = |contents: &str| Fake::with_pidfile().file(DEFAULT_CONFIG_FILE, contents, 50);
+        let daemon_json = || Source::File(DEFAULT_CONFIG_FILE.into());
+        assert_eq!(
+            file(r#"{"ip6tables": false}"#).cause(&["dockerd"]),
+            Err(Ipv6Off::Setting {
+                setting: Setting::Ip6tables,
+                from: daemon_json()
+            })
+        );
+        assert_eq!(
+            file(r#"{"firewall-backend": "nftables"}"#).cause(&["dockerd"]),
+            Err(Ipv6Off::Setting {
+                setting: Setting::Backend("nftables".into()),
+                from: daemon_json()
+            })
+        );
+        assert_eq!(
+            file("{}").cause(&["dockerd", "--ip6tables=false"]),
+            Err(Ipv6Off::Setting {
+                setting: Setting::Ip6tables,
+                from: Source::Flag
+            })
+        );
+        assert_eq!(
+            file("{}").cause(&["dockerd", "--iptables=maybe"]),
+            Err(Ipv6Off::RejectedFlag)
+        );
+        assert_eq!(
+            file("[]").cause(&["dockerd"]),
+            Err(Ipv6Off::MalformedConfig {
+                path: DEFAULT_CONFIG_FILE.into()
+            })
+        );
+        // `"ip6tables": false` was loaded, then removed without a Docker restart.
+        assert_eq!(
+            Fake::with_pidfile()
+                .file(DEFAULT_CONFIG_FILE, "{}", 150)
+                .cause(&["dockerd"]),
+            Err(Ipv6Off::ChangedSinceStart {
+                path: DEFAULT_CONFIG_FILE.into(),
+                removed: false,
+                changed: 150,
+                started: 100
+            })
+        );
+        assert_eq!(
+            Fake::with_pidfile()
+                .dir("/etc/docker", 150)
+                .cause(&["dockerd"]),
+            Err(Ipv6Off::ChangedSinceStart {
+                path: DEFAULT_CONFIG_FILE.into(),
+                removed: true,
+                changed: 150,
+                started: 100
+            })
+        );
+        assert_eq!(
+            file("{}").without(DEFAULT_PIDFILE).cause(&["dockerd"]),
+            Err(Ipv6Off::StartUnknown {
+                pidfile: DEFAULT_PIDFILE.into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_stale_daemon_json_says_to_restart_docker_not_that_ip6tables_is_off() {
+        let line = Ipv6Off::ChangedSinceStart {
+            path: DEFAULT_CONFIG_FILE.into(),
+            removed: false,
+            changed: 1_761_536_744_000_000_000,
+            started: 1_761_536_736_000_000_000,
+        }
+        .to_string();
+        assert_eq!(
+            line,
+            "/etc/docker/daemon.json changed at 2025-10-27 03:45:44 UTC, after dockerd started at \
+             2025-10-27 03:45:36 UTC, so Ployz can't tell what the running Docker loaded. Run \
+             `systemctl restart docker`, then `systemctl restart ployz`."
+        );
+        assert!(!line.contains("ip6tables"));
+        let flag = Ipv6Off::Setting {
+            setting: Setting::Ip6tables,
+            from: Source::Flag,
+        }
+        .to_string();
+        assert!(
+            flag.starts_with("dockerd runs with --ip6tables=false,"),
+            "{flag}"
+        );
     }
 }

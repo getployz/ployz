@@ -9,7 +9,7 @@ use crate::dns;
 
 use super::{
     CORROSION_GOSSIP_PORT, DOCKER_NETWORK_NAME, MACHINE_API_PORT, NetworkError, UNREGISTRY_PORT,
-    WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, checked_command,
+    WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, checked_command, docker_firewall::Ipv6Off,
 };
 
 const INPUT_CHAIN: &str = "PLOYZ-INPUT";
@@ -70,7 +70,7 @@ pub fn apply_firewall_rules(
         delete_rule("iptables", "mangle", "FORWARD", rule)?;
     }
     let mut ipv6_document = filter_document("ip6tables", &management_policy(management_address))?;
-    if docker_ipv6_firewall() {
+    if docker_ipv6_firewall().is_ok() {
         ipv6_document.push_str(&container_mesh_fence_document()?);
     }
     ipv6_document.push_str(&build_forward_document(
@@ -105,9 +105,14 @@ fn container_mesh_fence_document() -> Result<String, NetworkError> {
 
 /// Docker filters IPv6 itself, so DOCKER-USER exists for the mesh fence. Without it
 /// the bridge gets no IPv6. The chain outlives a Docker restart that turns
-/// ip6tables off, so dockerd's own settings decide.
-pub(super) fn docker_ipv6_firewall() -> bool {
-    docker_user_chain() && super::docker_firewall::docker_filters_ipv6()
+/// ip6tables off, so dockerd's own settings decide, and name the cause first.
+pub(super) fn docker_ipv6_firewall() -> Result<(), Ipv6Off> {
+    super::docker_firewall::docker_filters_ipv6()?;
+    if docker_user_chain() {
+        Ok(())
+    } else {
+        Err(Ipv6Off::NoDockerUserChain)
+    }
 }
 
 fn docker_user_chain() -> bool {

@@ -37,6 +37,7 @@ use super::{
     ChoiceRefused, DOCKER_NETWORK_NAME, EndpointChoice, MACHINE_API_PORT, MeshPeer, NetworkError,
     WIREGUARD_INTERFACE_NAME, WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey,
     attach_peer_selections, checked_command, choose_endpoint,
+    docker_firewall::Ipv6Off,
     firewall::{docker_ipv6_firewall, fence_container_ipv6, remove_firewall_rules},
     peers_for, port_held_elsewhere,
 };
@@ -480,10 +481,10 @@ impl NetworkPlane {
         // into the mesh, including one an earlier start gave IPv6; without it the
         // bridge stays IPv4-only.
         let firewall = docker_ipv6_firewall();
-        if let Some(line) = ipv6_firewall_off(host_has_ipv6(), firewall) {
+        if let Some(line) = ipv6_firewall_off(host_has_ipv6(), &firewall) {
             eprintln!("{line}");
         }
-        let fenced = firewall
+        let fenced = firewall.is_ok()
             && fence_container_ipv6()
                 .inspect_err(|error| {
                     eprintln!(
@@ -1063,17 +1064,17 @@ fn router_advertised_interfaces(routes: &str, addresses: &str) -> BTreeSet<Strin
     routed.chain(addressed).collect()
 }
 
-/// Why the bridge stays IPv4-only when Docker's ip6tables is off, told before the
-/// fence would need it, since without the fence no later check runs (#3377). A
-/// host without IPv6 never had it to lose, so says nothing.
-fn ipv6_firewall_off(host_has_ipv6: bool, firewall: bool) -> Option<String> {
-    (host_has_ipv6 && !firewall).then(|| {
+/// Why the bridge stays IPv4-only when Docker doesn't filter IPv6, told before the
+/// fence would need it, since without the fence no later check runs (#3377). It
+/// names the cause Ployz saw (bet 8). A host without IPv6 never had it to lose, so
+/// says nothing.
+fn ipv6_firewall_off(host_has_ipv6: bool, firewall: &Result<(), Ipv6Off>) -> Option<String> {
+    let Err(off) = firewall else {
+        return None;
+    };
+    host_has_ipv6.then(|| {
         format!(
-            "the {DOCKER_NETWORK_NAME} network stays IPv4-only, so Services have no IPv6 egress and apps see IPv6 visitors as its gateway: \
-             Docker's ip6tables is off or uses nftables, so Ployz can't fence container IPv6 out of the mesh. \
-             Remove \"ip6tables\": false and \"firewall-backend\": \"nftables\" from /etc/docker/daemon.json, \
-             then `systemctl restart docker` and `systemctl restart ployz`. \
-             Ployz also reads it as off while daemon.json is newer than Docker's start."
+            "the {DOCKER_NETWORK_NAME} network stays IPv4-only, so Services have no IPv6 egress and apps see IPv6 visitors as its gateway: {off}"
         )
     })
 }
