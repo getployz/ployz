@@ -385,7 +385,7 @@ fn inspect_request() -> InspectRequest {
 }
 
 /// Inspect the Server `selector` names through the entry. Once that runs past
-/// [`DIRECT_AFTER`], or the Server didn't answer the entry, read it once more over a
+/// [`DIRECT_AFTER`], or the entry reached the Server and got no answer, read it once more over a
 /// connection to the Server itself. Both share one [`TARGET_RPC_TIMEOUT`] and the first answer
 /// wins; when neither answers, the routed error says why. Inspect only reads, so asking twice
 /// changes nothing.
@@ -429,10 +429,11 @@ async fn read_details(
     .ok_or(routed_error)
 }
 
-/// Whether the entry reports the Server silent or out of its reach, which a connection to the
-/// Server itself may get past.
+/// Whether the entry reached the Server but no answer came back, as when the mesh path loses
+/// large replies, which a connection to the Server itself gets past. A dial the entry couldn't
+/// make says the Server is down, which a second dial only waits out.
 fn unanswered(error: &ConnectError) -> bool {
-    error.target_unanswered() || error.target_unreached()
+    error.target_unanswered() && !error.target_unreached()
 }
 
 /// A routed outcome whose shared deadline ran out reads as the Server not answering in time.
