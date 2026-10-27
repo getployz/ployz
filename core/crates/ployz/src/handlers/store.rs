@@ -310,7 +310,8 @@ impl<'m> Store<'m> {
             deployment: None,
         };
         let volumes = match (&self.backend, admit) {
-            (Backend::Local(..), Admit::Deploy(deploy)) if deploy.services.is_empty() => {
+            // Naming Services still saves Working State, which reviews what it drops.
+            (Backend::Local(..), Admit::Deploy(deploy)) => {
                 self.observe([removing(&deploy.environment, false)])?
             }
             (Backend::Local(..), Admit::Remove(removal)) => {

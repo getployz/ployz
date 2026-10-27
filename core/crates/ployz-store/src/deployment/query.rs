@@ -185,8 +185,13 @@ pub(crate) fn plan(
     crate::domain::name_generated(tx, &environment, &review.head, trusted, rows)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
     let target = canonicalize_environment_intent(environment.working.clone());
-    // Which Docker Volumes a removal deletes only the Servers can say.
-    let removed: Vec<VolumeLoss> = if query.services.is_empty() {
+    // Which Docker Volumes a removal deletes only the Servers can say. Naming
+    // Services saves Working State too, which reviews what it drops.
+    let saves = review
+        .saved
+        .as_ref()
+        .is_none_or(|saved| saved.intent != target);
+    let removed: Vec<VolumeLoss> = if query.services.is_empty() || saves {
         removal::removed(
             &review::approval::deployed(&review.head),
             &target,

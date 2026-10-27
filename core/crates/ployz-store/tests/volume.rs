@@ -15,8 +15,8 @@ use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, Batch, BatchCommand, Change, ConfigStore,
     CreateProject, CreateService, CreateVolume, DataEffect, Deploy, DeploymentId, DeploymentQuery,
     DeploymentStatus, DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentQuery,
-    EnvironmentRef, Mount, NodeStatus, OrganizationId, Outcome, ProjectId, ProjectName, Publish,
-    Published, RemovalsQuery, RemoveVolume, RenameVolume, Retry, RunEvidence, RunnerId,
+    EnvironmentRef, Mount, NodeStatus, OrganizationId, Outcome, PlanQuery, ProjectId, ProjectName,
+    Publish, Published, RemovalsQuery, RemoveVolume, RenameVolume, Retry, RunEvidence, RunnerId,
     ServiceLineageId, SetVolumeSharedWrites, SetVolumeStorage, SettingPath, Trusted, VolumeId,
     VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
@@ -138,13 +138,28 @@ fn admit_at(
     observed: Option<VolumeObservation>,
     version: Option<String>,
 ) -> Result<(), RpcError> {
+    admit_named(store, who, (n, &[]), accept, observed, version)
+}
+
+/// Admit Deployment `n` of `services`, every Service when it names none.
+fn admit_named(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, services): (u8, &[&str]),
+    accept: &[&str],
+    observed: Option<VolumeObservation>,
+    version: Option<String>,
+) -> Result<(), RpcError> {
     store
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
                 id: id(n),
                 environment: EnvironmentRef::default(),
-                services: Vec::new(),
+                services: services
+                    .iter()
+                    .map(|name| ServiceName::parse(*name).unwrap())
+                    .collect(),
                 version,
                 upload: None,
                 accept_volume_loss: accept
@@ -950,6 +965,61 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
         .find(|node| node.node.name() == "data")
         .unwrap();
     assert_eq!(data.outcome, NodeStatus::Removed);
+}
+
+/// #3512: a Deploy of named Services saves Working State, so a staged Volume
+/// removal asks to accept its loss there as a full Deploy does, and its plan says
+/// it needs the Servers' evidence for that. Only the full Deploy deletes it.
+#[test]
+fn a_deploy_of_named_services_asks_to_accept_a_staged_volume_removal() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    let plan = store
+        .read(
+            &who,
+            &PlanQuery {
+                services: vec![ServiceName::parse("web").unwrap()],
+                ..PlanQuery::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(plan.unresolved, ["operations", "volume data"]);
+
+    let named = |accept: &[&str], version| {
+        admit_named(
+            &store,
+            &who,
+            (2, &["web"]),
+            accept,
+            Some(observed(&['a'])),
+            version,
+        )
+    };
+    let refused = named(&[], None).unwrap_err();
+    assert_eq!(
+        refused.code,
+        RpcErrorCode::ConfirmationRequired,
+        "{refused:?}"
+    );
+    assert_eq!(refused.details["accept"], json!(["data"]));
+    let version = refused.details["version"].as_str().unwrap().to_owned();
+    named(&["data"], Some(version)).unwrap();
+    assert!(run(&store, 2, Vec::new()).deletes.is_empty());
+    assert!(listed(&store, &who)[0].deployed);
+
+    // Saved with the loss accepted, the full Deploy deletes it without asking again.
+    admit(&store, &who, 3, &[], Some(observed(&['a']))).unwrap();
+    assert_eq!(run(&store, 3, Vec::new()).deletes, [held('a')]);
 }
 
 #[test]
