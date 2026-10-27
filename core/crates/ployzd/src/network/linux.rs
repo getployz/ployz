@@ -57,21 +57,38 @@ struct Lowered {
     routes: [IpNet; 2],
 }
 
-/// Whether `machine_id` still owns `routes`: all are installed, and no other peer took one
-/// over. A lowered MTU, or a probe report, of a peer that lost them never touches the routes
-/// of the replacement Machine that took a freed IPv4 subnet; that Machine starts at the full
-/// MTU, and its own probe lowers it again.
-fn owns_routes<'a>(
+/// The peer each installed route leads to. A route the applied `peers` plan goes to the
+/// peer that plans it; one a bootstrap apply keeps for a peer it no longer plans stays
+/// with the owner it had.
+fn route_owners(
+    installed: &BTreeSet<IpNet>,
+    peers: &[MeshPeer],
+    before: &BTreeMap<IpNet, MachineId>,
+) -> BTreeMap<IpNet, MachineId> {
+    installed
+        .iter()
+        .filter_map(|route| {
+            peers
+                .iter()
+                .find(|peer| peer.allowed_ips.contains(route))
+                .map(|peer| peer.machine_id)
+                .or_else(|| before.get(route).copied())
+                .map(|owner| (*route, owner))
+        })
+        .collect()
+}
+
+/// Whether every one of `routes` leads to `machine_id`. A lowered MTU, or a probe report,
+/// of a peer that lost a route never touches the replacement Machine that took its freed
+/// IPv4 subnet; that Machine starts at the full MTU, and its own probe lowers it again.
+fn owns_routes(
+    owners: &BTreeMap<IpNet, MachineId>,
     machine_id: MachineId,
     routes: &[IpNet; 2],
-    installed: &BTreeSet<IpNet>,
-    peers: impl IntoIterator<Item = &'a MeshPeer>,
 ) -> bool {
-    routes.iter().all(|route| installed.contains(route))
-        && !peers.into_iter().any(|peer| {
-            peer.machine_id != machine_id
-                && peer.allowed_ips.iter().any(|route| routes.contains(route))
-        })
+    routes
+        .iter()
+        .all(|route| owners.get(route) == Some(&machine_id))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +103,8 @@ pub struct NetworkPlane {
     wireguard: WGApi<Kernel>,
     mtu: u32,
     routes: BTreeSet<IpNet>,
+    /// The peer each of [`Self::routes`] leads to.
+    route_owners: BTreeMap<IpNet, MachineId>,
     bootstrap_peers: Vec<MeshPeer>,
     endpoint_peers: Vec<MeshPeer>,
     /// Peers whose path loses packets of the full MTU.
@@ -135,6 +154,7 @@ impl NetworkPlane {
             docker,
             wireguard,
             mtu: record.wireguard_mtu.unwrap_or(NETWORK_MTU),
+            route_owners: route_owners(&routes, &peers, &BTreeMap::new()),
             routes,
             bootstrap_peers: peers.clone(),
             endpoint_peers: if wireguard_created {
@@ -256,9 +276,8 @@ impl NetworkPlane {
         else {
             return;
         };
-        // A report from a round that began before the peer left is stale.
-        let current = self.endpoint_peers.iter().chain(&self.bootstrap_peers);
-        if !owns_routes(peer.machine_id, &peer.allowed_ips, &self.routes, current) {
+        // A report from a round that began before the peer lost its routes is stale.
+        if !owns_routes(&self.route_owners, peer.machine_id, &peer.allowed_ips) {
             return;
         }
         let name = &peer.name;
@@ -345,6 +364,7 @@ impl NetworkPlane {
             wireguard,
             mtu: record.wireguard_mtu.unwrap_or(NETWORK_MTU),
             routes: BTreeSet::new(),
+            route_owners: BTreeMap::new(),
             bootstrap_peers: Vec::new(),
             endpoint_peers: Vec::new(),
             lowered: BTreeMap::new(),
@@ -531,9 +551,9 @@ impl NetworkPlane {
             self.wireguard.configure_peer(peer)?;
         }
         let gateway = self.machine.subnet.gateway().0.to_string();
-        self.lowered.retain(|machine_id, lowered| {
-            owns_routes(*machine_id, &lowered.routes, &changes.routes, peers)
-        });
+        let route_owners = route_owners(&changes.routes, peers, &self.route_owners);
+        self.lowered
+            .retain(|machine_id, lowered| owns_routes(&route_owners, *machine_id, &lowered.routes));
         self.paths.retain(|machine_id| {
             self.lowered.contains_key(machine_id)
                 || peers.iter().any(|peer| peer.machine_id == *machine_id)
@@ -553,6 +573,7 @@ impl NetworkPlane {
             delete_route(route);
         }
         self.routes = changes.routes;
+        self.route_owners = route_owners;
         self.probed.send_replace(
             peers
                 .iter()

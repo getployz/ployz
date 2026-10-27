@@ -968,25 +968,38 @@ fn a_lowered_mtu_and_probe_reports_stay_with_the_peer_that_owns_the_routes() {
         ],
         selection: super::super::EndpointSelection::new(&[], None, SystemTime::now()),
     };
-    let old = peer(1, "10.210.1.0/24");
-    let owns = |installed: &[&MeshPeer], peers: &[&MeshPeer]| {
-        owns_routes(
-            old.machine_id,
-            &old.allowed_ips,
-            &installed.iter().flat_map(|peer| peer.allowed_ips).collect(),
-            peers.iter().copied(),
-        )
+    let installed = |peers: &[&MeshPeer]| {
+        peers
+            .iter()
+            .flat_map(|peer| peer.allowed_ips)
+            .collect::<BTreeSet<_>>()
     };
-    assert!(owns(&[&old], &[&old]));
+    let old = peer(1, "10.210.1.0/24");
+    let owners = route_owners(
+        &installed(&[&old]),
+        std::slice::from_ref(&old),
+        &BTreeMap::new(),
+    );
+    assert!(owns_routes(&owners, old.machine_id, &old.allowed_ips));
 
-    // The old peer left and a new one took its IPv4 subnet in the same snapshot.
+    // A bootstrap apply that keeps the old peer's routes, though it no longer plans the
+    // peer, keeps them with it.
+    let kept = route_owners(&installed(&[&old]), &[], &owners);
+    assert!(owns_routes(&kept, old.machine_id, &old.allowed_ips));
+
+    // The old peer left and a new one took its IPv4 subnet. The new one owns its routes, so
+    // its reports count; a late report from the old one, though a bootstrap list may still
+    // name it, doesn't.
     let replacement = peer(2, "10.210.1.0/24");
-    assert!(!owns(&[&replacement], &[&replacement]));
-
-    // A late report from the old peer, still listed among the bootstrap peers beside its
-    // replacement, doesn't lower the replacement's route.
-    assert!(!owns(&[&old, &replacement], &[&old, &replacement]));
-
-    // A bootstrap apply that keeps the old peer's routes keeps its MTU.
-    assert!(owns(&[&old], &[]));
+    let owners = route_owners(
+        &installed(&[&replacement]),
+        std::slice::from_ref(&replacement),
+        &kept,
+    );
+    assert!(owns_routes(
+        &owners,
+        replacement.machine_id,
+        &replacement.allowed_ips
+    ));
+    assert!(!owns_routes(&owners, old.machine_id, &old.allowed_ips));
 }
