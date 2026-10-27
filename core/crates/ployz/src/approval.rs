@@ -404,10 +404,11 @@ pub(crate) fn settle(
         if !asked.reason.is_empty() {
             crate::ui::note(&asked.reason);
         }
-        crate::ui::note(format!(
-            "An owner or admin who didn't ask must approve {} in Ployz Cloud.",
+        crate::ui::note(for_another_approver(credential, &asked.id));
+        crate::ui::hint(&crate::ui::Hint::Inspect(format!(
+            "ployz org approval show {}",
             asked.id
-        ));
+        )));
     } else {
         crate::ui::note(where_to_approve(
             credential,
@@ -478,6 +479,15 @@ fn where_to_approve(credential: &Credential, id: &str, organization: Option<&str
         ),
         None => format!("Approve {id} in Ployz Cloud at {cloud}"),
     }
+}
+
+/// Who answers approval `id` when its asker can't, and where: Ployz Cloud, or the command
+/// they run. The asker can only follow it, with `org approval show`.
+fn for_another_approver(credential: &Credential, id: &str) -> String {
+    let cloud = credential.cloud().trim_end_matches('/');
+    format!(
+        "An owner or admin who didn't ask must approve {id} in Ployz Cloud at {cloud}, or with ployz org approval approve {id}."
+    )
 }
 
 /// Whether Cloud never answered the approval's read: only then is the approval as it was.
@@ -599,6 +609,18 @@ mod tests {
             "organization": "acme",
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn an_approval_someone_else_answers_names_where_and_how() {
+        let credential = crate::cloud_account::Credential::Token {
+            cloud: "http://cloud.test/".into(),
+            token: crate::cloud_login::Secret::new("ployz_secret".into()),
+        };
+        assert_eq!(
+            super::for_another_approver(&credential, "a1"),
+            "An owner or admin who didn't ask must approve a1 in Ployz Cloud at http://cloud.test, or with ployz org approval approve a1."
+        );
     }
 
     #[test]
