@@ -7416,11 +7416,27 @@ fn a_deploy_tokens_rollback_that_destroys_names_what_and_who_can() {
 #[test]
 fn a_deploy_tokens_destroying_deploy_outside_protection_names_any_member() {
     let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::SetEnvironmentProtected {
+                environment: EnvironmentRef::default(),
+                protected: false,
+                seen: None,
+            },
+        )
+        .unwrap();
     apply_both(&store, &who, 1);
     remove_web(&store, &who);
+    // A member's Deploy token: it can't protect, so only protection would make it ask.
     let token = Trusted {
         approval: Approval::Required,
         running: running(&["web", "api"]),
+        permissions: deploy_token().permissions.map(|held| {
+            held.into_iter()
+                .filter(|p| *p != Permission::EnvironmentsProtect)
+                .collect()
+        }),
         ..deploy_token()
     };
     let refused = deploy_trusted(&store, &who, 2, &token).unwrap_err();
