@@ -1,21 +1,25 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, lt, ne, or } from "drizzle-orm";
 import { Effect, Option } from "effect";
-import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { connectionsOf } from "#/modules/config-store/config-store.server";
 import { type CleanupLeft, deploymentCleanup, type DeploymentCleanupState } from "#/modules/config-store/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import type { ConfigDeploymentRetireRequestedEventData } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
 
+type RetireOutcome = { left: CleanupLeft[]; kept: CleanupLeft[] };
+
 /**
  * Retire the old copies the Deployment's run replaced, all inside the Rust SDK: Cloud names the Deployment and the Store
  * knows which copies those are. Resolves to the copies still running: `left` a retry may retire, `kept` it never will.
+ * A Deployment the Store no longer has went with its Environment: that removal answers for what is left, not this cleanup.
  */
 export const retireOldCopies = Effect.fn("DeploymentCleanup.retireOld")(function* (data: ConfigDeploymentRetireRequestedEventData) {
   const store = yield* cloudStore;
   const connections = yield* connectionsOf(data.organizationId);
-  return yield* storeTry<{ left: CleanupLeft[]; kept: CleanupLeft[] }>(() => store.retireOld(data.organizationId, data.deploymentId, connections));
+  return yield* storeTry<RetireOutcome>(() => store.retireOld(data.organizationId, data.deploymentId, connections))
+    .pipe(Effect.catchIf(refusedWith("not_found"), () => Effect.succeed<RetireOutcome>({ left: [], kept: [] })));
 });
 
 const cleanupOf = (data: ConfigDeploymentRetireRequestedEventData) =>
