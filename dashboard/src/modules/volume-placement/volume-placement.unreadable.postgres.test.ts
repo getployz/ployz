@@ -80,6 +80,6 @@ it.live("a Drain refuses naming the Environment it can't read and the way out", 
   expect(refused).toMatchObject({
     _tag: "Conflict",
     userFacing: true,
-    message: expect.stringMatching(/can't read blog\/production .*roll Ployz Cloud forward/),
+    message: expect.stringMatching(/can't read blog\/production .*roll it forward/),
   });
 }));

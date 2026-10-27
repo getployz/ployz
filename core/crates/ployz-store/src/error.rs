@@ -102,7 +102,8 @@ fn distance(a: &[char], b: &[char]) -> usize {
     previous.last().copied().unwrap_or_default()
 }
 
-/// Stored data the Store cannot read back: a bug or a hand edit, never user input.
+/// Stored data the Store cannot read back: a bug, a hand edit or a newer Cloud's
+/// write, never user input. Cloud names the Environment by this message's prefix.
 pub(crate) fn corrupt(what: &str) -> RpcError {
     internal(format!("The Config Store holds an unreadable {what}"))
 }

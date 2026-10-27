@@ -12,7 +12,8 @@ export const owners = (organizationId: string) =>
   readStore(organizationId, { query: "namespaces" }).pipe(Effect.map(({ namespaces }) => namespaces));
 
 /**
- * The Store refused to read an Environment back: its rows were written by a newer Cloud, or damaged. Whatever needs every
+ * The Store refused to read an Environment back: its rows were written by a newer Cloud, or damaged. Matches
+ * `error::corrupt` in ployz-store by its prefix. Whatever needs every
  * Environment's Volumes still refuses, naming the Environment and the way out.
  */
 export const unreadable = <E>(error: E) =>
@@ -20,7 +21,7 @@ export const unreadable = <E>(error: E) =>
 
 export const unreadableEnvironment = ({ project, environment }: { readonly project: string; readonly environment: string }) => new Conflict({
   userFacing: true,
-  message: `Ployz Cloud can't read ${project}/${environment} from the Config Store, so it can't tell where that Environment's Volumes are. A Cloud rolled back below the release that last wrote it does this: roll Ployz Cloud forward, then try again.`,
+  message: `Ployz Cloud can't read ${project}/${environment} from the Config Store, so it can't tell where that Environment's Volumes are. If Ployz Cloud was rolled back below the release that last wrote it, roll it forward, then try again; otherwise contact support.`,
 });
 
 /**
