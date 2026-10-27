@@ -135,11 +135,11 @@ it.live("an ask for a Deploy that prunes keeps saying so, on its card and to the
   Effect.gen(function* () {
     const { provided, refusal, caller } = yield* shopRemovingWeb();
     const refused = yield* refusal;
-    const pruning = { ...refused, details: { ...(refused.details as object), prunes: true } };
+    const pruning = { ...refused, details: { ...(refused.details as object), prunes: true, dropped: ["machine-3"] } };
     const answered = yield* provided(requestApproval(caller, publish, pruning, null));
-    expect(answered.details).toMatchObject({ prunes: true });
+    expect(answered.details).toMatchObject({ prunes: true, dropped: ["machine-3"] });
     const row = yield* provided(getApproval(ORGANIZATION, asked(answered).approval_id));
-    expect(row.review).toMatchObject({ prunes: true });
+    expect(row.review).toMatchObject({ prunes: true, dropped: ["machine-3"] });
   }));
 
 it.live("a destructive CLI publish waits for a human to approve exactly what it destroys, once", () =>

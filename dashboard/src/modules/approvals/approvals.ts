@@ -32,7 +32,7 @@ export type Redeploy = { deployment: number; rolls_back: number[] };
  * operation's preview. A dashboard ask into a Protected Environment also keeps what runs as its asker once approved.
  */
 export type ApprovalReview =
-  | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy; prunes?: true }
+  | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy; prunes?: true; dropped?: string[] }
   | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply | VolumeApply };
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
@@ -69,6 +69,12 @@ export function redeployLine(command: string, review: ApprovalReview) {
 
 /** A full Deploy that also removes every other Service its Environment runs, which only the Servers can name. */
 export const prunes = (review: ApprovalReview) => "diff" in review && review.prunes === true;
+
+/** Why a pruning Deploy couldn't check every Server: the ones large packets don't reach. Null when it doesn't say. */
+export function droppedLine(review: ApprovalReview) {
+  if (!prunes(review) || !("diff" in review) || (review.dropped?.length ?? 0) === 0) return null;
+  return `Couldn't check every server: large packets to ${review.dropped?.join(", ")} are dropped on the mesh path`;
+}
 
 /** A Server removal: its Volumes' data stays on the disk, so the card lists effects rather than destruction. */
 export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review

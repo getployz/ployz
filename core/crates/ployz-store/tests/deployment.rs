@@ -8,7 +8,7 @@
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{
     ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, MachineId,
-    OperationRow, QualifiedService, RpcError, RpcErrorCode, ServiceName,
+    MachineName, OperationRow, QualifiedService, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 use ployz_store::{
@@ -4799,6 +4799,7 @@ fn running(services: &[&str]) -> Option<RunningObservation> {
             .collect(),
         unanswered: Vec::new(),
         failure: None,
+        dropped: Vec::new(),
     })
 }
 
@@ -4980,6 +4981,53 @@ fn a_server_that_didnt_answer_leaves_the_prune_unseen() {
     let asked = deploy_trusted(&store, &who, 2, &agent).unwrap_err();
     assert_eq!(effects(&asked), removes(&["extra2"]), "{asked:?}");
     assert_eq!(asked.details["prunes"], true);
+}
+
+#[test]
+fn an_unseen_prune_says_which_servers_drop_large_packets() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let unanswered = |dropped: &[&str]| {
+        running(&["web", "api"]).map(|running| RunningObservation {
+            unanswered: vec![MachineId::parse("e".repeat(32)).unwrap()],
+            dropped: dropped
+                .iter()
+                .map(|name| MachineName::parse(*name).unwrap())
+                .collect(),
+            ..running
+        })
+    };
+    let token = Trusted {
+        running: unanswered(&["machine-3"]),
+        ..deploy_token()
+    };
+    let refused = deploy_trusted(&store, &who, 2, &token).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert!(
+        refused
+            .message
+            .contains("(large packets to machine-3 are dropped on the mesh path)"),
+        "{}",
+        refused.message
+    );
+    let agent = |approval, dropped: &[&str]| Trusted {
+        approval,
+        asks: Asks::EveryDeploy,
+        running: unanswered(dropped),
+        ..Trusted::default()
+    };
+    let asked = deploy_trusted(&store, &who, 2, &agent(Approval::Required, &[])).unwrap_err();
+    assert_eq!(asked.details["prunes"], true);
+    assert!(asked.details.get("dropped").is_none(), "{asked:?}");
+    let explained =
+        deploy_trusted(&store, &who, 2, &agent(Approval::Required, &["machine-3"])).unwrap_err();
+    assert_eq!(explained.details["dropped"], json!(["machine-3"]));
+    // Only an explanation: the approval given without it still admits.
+    assert!(
+        deploy_trusted(&store, &who, 2, &agent(approved(&asked), &["machine-3"]))
+            .unwrap()
+            .prune
+    );
 }
 
 #[test]

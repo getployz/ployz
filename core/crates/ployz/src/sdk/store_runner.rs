@@ -267,6 +267,7 @@ pub async fn observe_running(
         services: Vec::new(),
         unanswered: servers.clone(),
         failure: Some(failure),
+        dropped: Vec::new(),
     };
     let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
         Ok(session) => session,

@@ -10,7 +10,7 @@ import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, losesVolumeAccess, prunes, redeployLine } from "#/modules/approvals/approvals";
+import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine } from "#/modules/approvals/approvals";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
@@ -98,7 +98,10 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
             {prunes(approval.review) && (
               <li className="flex gap-2">
                 <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
-                <span>Also removes any other service running in this environment</span>
+                <span>
+                  Also removes any other service running in this environment
+                  {droppedLine(approval.review) !== null && <span className="block">{droppedLine(approval.review)}</span>}
+                </span>
               </li>
             )}
           </ul>

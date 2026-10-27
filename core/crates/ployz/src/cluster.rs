@@ -864,10 +864,27 @@ impl Client {
             .iter()
             .map(|failure| failure.machine_id)
             .collect();
+        // The entry's own path to a Server that didn't answer says why, when large
+        // packets to it are dropped (#3490).
+        let dropped = machines
+            .machines
+            .iter()
+            .filter(|machine| {
+                machine
+                    .path
+                    .is_some_and(|path| path.large_packets == ployz_core::LargePackets::Dropped)
+                    && live.containers.failures.iter().any(|failure| {
+                        failure.machine_id == machine.machine.id
+                            && failure.error.target_unanswered()
+                    })
+            })
+            .map(|machine| machine.machine.name.clone())
+            .collect();
         Ok(ployz_store::RunningObservation {
             services: services.into_iter().collect(),
             unanswered: unanswered.into_iter().collect(),
             failure: None,
+            dropped,
         })
     }
 
