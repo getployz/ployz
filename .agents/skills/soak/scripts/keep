@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# keep <file> -- <command...>
+#
+# Runs <command> with its stdout written to <file> and its stderr to
+# <file>.err (both mode 600), never the terminal, then prints both paths and
+# the output's shape: JSON with every value replaced by its type and length
+# (strings keep a known token prefix), or a byte and line count. Use it for
+# anything that mints a secret, such as
+#   keep scratch/fleet.json -- ployz --json server token create --auto
+# then read one field at a time: PLOYZ_TOKEN=$(jq -r .token scratch/fleet.json).
+# Read <file>.err through redact. Exits with <command>'s status.
+set -euo pipefail
+
+if [ $# -lt 3 ] || [ "$2" != -- ]; then
+  echo "usage: keep <file> -- <command...>" >&2
+  exit 2
+fi
+file=$1
+shift 2
+
+mkdir -p "$(dirname "$file")"
+rm -f "$file" "$file.err"
+status=0
+(umask 077; "$@" > "$file" 2> "$file.err") || status=$?
+
+python3 -I - "$file" "$status" <<'PY'
+import json, re, sys
+path, status = sys.argv[1], sys.argv[2]
+raw = open(path, "rb").read()
+err = open(path + ".err", "rb").read()
+def key(name):
+    # A field name, not a value used as a key: short, word-shaped and without a token prefix.
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,31}", name) and not re.match(r"(pflt|plyz|pmet)_", name):
+        return name
+    return f"<key {len(name)} chars>"
+def shape(value):
+    if isinstance(value, dict):
+        return {key(name): shape(item) for name, item in value.items()}
+    if isinstance(value, list):
+        return [shape(item) for item in value]
+    if isinstance(value, str):
+        prefix = re.match(r"(pflt_|plyz_|pmet_|ployzgrant1:)", value)
+        return f"<{prefix.group(1) if prefix else ''}{len(value)} chars>"
+    if isinstance(value, bool) or value is None:
+        return value
+    return f"<number {len(str(value))} digits>"
+try:
+    hint = json.dumps(shape(json.loads(raw)))
+except ValueError:
+    lines = raw.count(b"\n")
+    hint = f"<{len(raw)} bytes, {lines} lines, not JSON>"
+print(f"kept: {path} (mode 600) {hint}")
+if err:
+    lines = err.count(b"\n")
+    print(f"stderr: {path}.err (mode 600, {lines} lines; read it through redact)")
+if status != "0":
+    print(f"exit {status}")
+PY
+exit "$status"
