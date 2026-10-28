@@ -4,12 +4,13 @@
 # Reads the coord mailbox (COORD_MAIL_DIR, default
 # ~/.config/ployz-coord/mail) and prints the state of a post-tag request
 # that release sent with coord-send:
-#   ACKED    exit 0   the recipient has mailed the sender since the request.
-#   PENDING  exit 75  no reply yet, still inside the timeout (default 15).
-#   FAILED   exit 1   no reply within the timeout, the recipient has no
+#   ACKED    exit 0   the recipient mailed the sender a reply naming the
+#                     request id within the timeout (default 15 minutes).
+#   PENDING  exit 75  no such reply yet, still inside the timeout.
+#   FAILED   exit 1   no such reply within the timeout, the recipient has no
 #                     registered mailbox, or the request can't be found.
-# FAILED is a failed release gate. The draft stays unpublished until a new
-# request is acknowledged.
+# FAILED is a failed release gate. A late reply doesn't reopen it; only a
+# new request that is acknowledged in time does.
 set -euo pipefail
 
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
@@ -30,18 +31,20 @@ request=${found[0]}
 to=$(field to "$request")
 from=$(field from "$request")
 sent=$(date -ud "$(field ts "$request")" +%s)
+deadline=$(( sent + timeout * 60 ))
 
 [ -f "$dir/names/$to.json" ] || fail "$to has no registered mailbox, so the request was never delivered"
 
 for reply in "$dir"/inbox/"$from"/*.md "$dir"/read/"$from"/*.md; do
   [ "$(field from "$reply")" = "$to" ] || continue
-  if [ "$(date -ud "$(field ts "$reply")" +%s)" -ge "$sent" ]; then
+  sed '1,/^$/d' "$reply" | grep -qF -- "$id" || continue
+  if [ "$(date -ud "$(field ts "$reply")" +%s)" -le "$deadline" ]; then
     echo "ACKED: $to replied in $(basename "$reply" .md)"
     exit 0
   fi
 done
 
-waited=$(( ($(date -u +%s) - sent) / 60 ))
-[ "$waited" -lt "$timeout" ] || fail "$to has not acknowledged $id after $waited min (timeout $timeout min)"
-echo "PENDING: $to has not acknowledged $id, $(( timeout - waited )) min left"
+now=$(date -u +%s)
+[ "$now" -lt "$deadline" ] || fail "$to did not acknowledge $id within $timeout min"
+echo "PENDING: $to has not acknowledged $id, $(( (deadline - now + 59) / 60 )) min left"
 exit 75
