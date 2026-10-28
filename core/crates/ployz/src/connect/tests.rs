@@ -107,6 +107,29 @@ fn non_ascii_machine_targets_use_binary_metadata() {
     );
 }
 
+/// ssh takes an IPv6 host bare and its port from `-p`; scp still needs the brackets (#3437).
+#[test]
+fn a_bracketed_ipv6_destination_reaches_ssh_without_its_brackets() {
+    for (written, port) in [
+        ("root@[2001:db8::1]:2222", Some(2222)),
+        ("root@[2001:db8::1]", None),
+        ("root@2001:db8::1", None),
+    ] {
+        let destination = SshDestination::parse(written).unwrap();
+        assert_eq!(destination.target(), "root@2001:db8::1", "{written}");
+        assert_eq!(destination.copy_target(), "root@[2001:db8::1]", "{written}");
+        assert_eq!(destination.port(), port, "{written}");
+        assert_eq!(destination.as_str(), written, "{written}");
+    }
+    for refused in [
+        "root@[2001:db8::1]:0",
+        "root@[example.com]:22",
+        "root@[2001:db8::1]x",
+    ] {
+        assert!(SshDestination::parse(refused).is_err(), "{refused}");
+    }
+}
+
 #[test]
 fn system_ssh_command_uses_noninteractive_authentication() {
     let destination = SshDestination::parse("deploy@example.com:2222").unwrap();
