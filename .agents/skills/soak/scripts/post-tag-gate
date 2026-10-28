@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# post-tag-gate <request-id> [timeout-minutes]
+#
+# Reads the coord mailbox (COORD_MAIL_DIR, default
+# ~/.config/ployz-coord/mail) and prints the state of a post-tag request
+# that release sent with coord-send:
+#   ACKED    exit 0   the recipient mailed the sender a reply naming the
+#                     request id within the timeout (default 15 minutes).
+#   PENDING  exit 75  no such reply yet, still inside the timeout.
+#   FAILED   exit 1   no such reply within the timeout, the recipient has no
+#                     registered mailbox, or the request can't be found.
+# FAILED is a failed release gate. A late reply doesn't reopen it; only a
+# new request that is acknowledged in time does.
+set -euo pipefail
+
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+  echo "usage: post-tag-gate <request-id> [timeout-minutes]" >&2
+  exit 2
+fi
+id=$1
+timeout=${2:-15}
+if ! [[ $timeout =~ ^[0-9]+$ ]] || [ $(( 10#$timeout )) -eq 0 ]; then
+  echo "post-tag-gate: timeout must be a positive number of minutes" >&2
+  exit 2
+fi
+timeout=$(( 10#$timeout ))
+dir=${COORD_MAIL_DIR:-$HOME/.config/ployz-coord/mail}
+
+fail() { echo "FAILED: $1"; exit 1; }
+field() { sed -n "s/^$1: //p;/^\$/q" "$2"; }
+epoch() { local ts; ts=$(field ts "$1"); [ -n "$ts" ] && date -ud "$ts" +%s 2>/dev/null; }
+
+shopt -s nullglob
+found=("$dir"/read/*/"$id".md "$dir"/inbox/*/"$id".md)
+[ ${#found[@]} -gt 0 ] || fail "request $id is not in the mailbox"
+request=${found[0]}
+to=$(field to "$request")
+from=$(field from "$request")
+sent=$(epoch "$request") || fail "request $id has no valid ts"
+deadline=$(( sent + timeout * 60 ))
+
+for reply in "$dir"/inbox/"$from"/*.md "$dir"/read/"$from"/*.md; do
+  [ "$(field from "$reply")" = "$to" ] || continue
+  grep -qF -- "$id" <(sed '1,/^$/d' "$reply") || continue
+  replied=$(epoch "$reply") || continue
+  if [ "$replied" -le "$deadline" ]; then
+    echo "ACKED: $to replied in $(basename "$reply" .md)"
+    exit 0
+  fi
+done
+
+[ -f "$dir/names/$to.json" ] || fail "$to has no registered mailbox, so the request was never delivered"
+
+now=$(date -u +%s)
+[ "$now" -lt "$deadline" ] || fail "$to did not acknowledge $id within $timeout min"
+echo "PENDING: $to has not acknowledged $id, $(( (deadline - now + 59) / 60 )) min left"
+exit 75
