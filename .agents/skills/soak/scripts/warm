@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# warm [checkout]
+#
+# Fills the shared caches for a checkout's source before a soak's workers start, so their builds hit them: the
+# harness's dev ployz and ployzd (core/scripts/artifacts.py), and the Cloud SDK in the dev and release profiles.
+# Run it under the brief's PLOYZ_BUILD_LOCK; harness builds take it themselves. Prints WARM-DONE when it ends.
+set -uo pipefail
+checkout=${1:-$(cd "$(dirname "$0")/../../../.." && pwd)}
+cd "$checkout/core" || exit 2
+binaries=$(mktemp -d)
+trap 'rm -rf "$binaries"' EXIT
+failed=0
+python3 scripts/artifacts.py binaries "$binaries" ployz ployzd || { echo "warm: binaries failed" >&2; failed=1; }
+bash scripts/build-cloud-sdk.sh || { echo "warm: dev SDK failed" >&2; failed=1; }
+# The release SDK's cargo build runs outside the harness, so it takes the lock here; flock -o keeps it out of what
+# the build leaves running. Its config WASM build runs inside the harness and would wait on this same lock, so it
+# doesn't see the variable.
+release_sdk=(env -u PLOYZ_BUILD_LOCK PLOYZ_SDK_PROFILE=release bash scripts/build-cloud-sdk.sh)
+if [ -n "${PLOYZ_BUILD_LOCK:-}" ]; then release_sdk=(flock -o "$PLOYZ_BUILD_LOCK" "${release_sdk[@]}"); fi
+"${release_sdk[@]}" || { echo "warm: release SDK failed" >&2; failed=1; }
+echo WARM-DONE
+exit "$failed"

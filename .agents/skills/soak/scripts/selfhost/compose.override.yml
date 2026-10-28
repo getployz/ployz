@@ -1,0 +1,18 @@
+# Lab only: a fake github.com and api.github.com on the compose network, so GitHub sign-in works without a real
+# OAuth App. setup writes fake/ beside it: the CA web and worker trust, and the fake's certificate.
+services:
+  fakegh:
+    image: python:3.12-alpine
+    command: [python, -u, /fake/fakegh.py]
+    volumes: [./fake:/fake:ro]
+    networks:
+      default:
+        aliases: [github.com, api.github.com]
+  web:
+    environment:
+      NODE_EXTRA_CA_CERTS: /fake/ca.pem
+    volumes: [./fake:/fake:ro]
+  worker:
+    environment:
+      NODE_EXTRA_CA_CERTS: /fake/ca.pem
+    volumes: [./fake:/fake:ro]
