@@ -1041,6 +1041,14 @@ fn volume_constraints<'spec>(
         .iter()
         .filter(|machine| skipped.iter().any(|(id, ..)| *id == machine.machine.id))
         .collect::<Vec<_>>();
+    // A Global Service keeps a copy on every Machine it runs on, and a rollout without an
+    // unread Machine would remove the replica there.
+    if matches!(spec.mode, ServiceMode::Global)
+        && let Some(machine) = unread.first()
+        && let Some(volume) = mounted_volumes.first()
+    {
+        return Err(plan.holder_unknown(volume, machine.machine.name.clone()));
+    }
     let mut first_located = None;
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {

@@ -2888,3 +2888,65 @@ fn plain_volumes_on_answering_servers_still_refuse_under_the_runner() {
     let preview = runner_preview(&intent, &snapshot);
     assert!(preview.is_err(), "{:?}", preview.map(|plan| plan.blocked));
 }
+
+#[test]
+fn a_global_service_with_an_unread_server_keeps_its_replicas() {
+    let mut old = requested(ServiceMode::Global);
+    add_named_volume(&mut old, "data");
+    let mut new = old.clone();
+    new.container.image = "ghcr.io/getployz/api:2".into();
+    let inspect_failure = VolumeObservationFailure {
+        id: DockerVolumeId {
+            machine_id: machine_id('3'),
+            name: app_volume("data"),
+        },
+        error: RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "volume detail failed".into(),
+            details: Default::default(),
+            cause: Vec::new(),
+        },
+    };
+    for (named, machines) in [
+        (Vec::new(), vec![listing_failure('3')]),
+        (vec![inspect_failure], Vec::new()),
+    ] {
+        let snapshot = DeploySnapshot {
+            machines: vec![machine('1', "machine-1"), machine('3', "machine-3")],
+            containers: vec![
+                container('b', '1', &old, &service_id('a')),
+                container('c', '3', &old, &service_id('a')),
+            ],
+            volume_snapshot: VolumeSnapshot::try_from_parts(
+                vec![observed_volume(machine_id('1'), "data")],
+                named,
+                machines,
+                Vec::new(),
+            )
+            .unwrap(),
+            ..storage_snapshot()
+        };
+
+        let (preview, blocked) = blocked_beside_web(&[&new], &snapshot);
+
+        assert_eq!(
+            blocked,
+            [(
+                "api".to_owned(),
+                "machine-3 did not answer, so whether it holds Docker volume data is unknown. \
+                 Bring machine-3 back, or deploy the other services by name"
+                    .to_owned()
+            )]
+        );
+        assert!(
+            !operations(&preview).iter().any(|operation| matches!(
+                operation,
+                DeployOperation::RemoveContainer { container_id: removed, .. }
+                    if *removed == container_id('c')
+            )),
+            "{:?}",
+            operations(&preview)
+        );
+        assert_only_web_runs(&preview);
+    }
+}
