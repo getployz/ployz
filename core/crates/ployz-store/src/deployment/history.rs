@@ -315,6 +315,18 @@ pub(crate) fn claimed_or_queued(
     )
 }
 
+/// `environment`'s latest Deployment whose runner was lost, unless one applied
+/// since: what it sent its Servers may still land. Only a whole run after it
+/// brings them back to what Ployz recorded.
+pub(crate) fn unknown_since_applied(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    let applied = latest_where(tx, environment, "status = 'applied'")?;
+    Ok(latest_where(tx, environment, "status = 'unknown'")?
+        .filter(|unknown| applied.is_none_or(|applied| unknown.number > applied.number)))
+}
+
 /// `environment`'s latest Deployment that started (claimed by a runner), or a
 /// removal that applied without one. What may run on the Servers.
 pub(crate) fn last_ran(

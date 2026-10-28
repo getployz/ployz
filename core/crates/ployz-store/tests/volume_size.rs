@@ -1134,9 +1134,9 @@ fn a_record_from_a_run_that_found_no_copy_waits_for_a_deployment_whose_runner_la
 }
 
 /// An abandoned run's Deployment ends `unknown`, and a `PrepareVolumes` it sent may
-/// still land, so while it is the last that ran the record waits for a newer Deploy.
+/// still land, so the record waits until a later Deployment applies.
 #[test]
-fn a_record_from_a_run_that_found_no_copy_waits_while_the_last_deployment_that_ran_is_unknown() {
+fn a_record_from_a_run_that_found_no_copy_waits_on_an_unknown_deployment_until_one_applies() {
     let (store, who) = shop(managed(10));
     publish(&store, &who);
     deploy(&store, &who, 1);
@@ -1161,8 +1161,15 @@ fn a_record_from_a_run_that_found_no_copy_waits_while_the_last_deployment_that_r
         .write(&who, &ployz_store::Cancel { deployment: id(3) })
         .unwrap();
     refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(3)).unwrap_err(), 2);
-    deploy(&store, &who, 4);
-    resize_unheld(&store, 10, 20, Some(4)).unwrap();
+    // Nor did one whose runner stopped before it executed anything.
+    admit(&store, &who, 4).unwrap();
+    store.claim(&id(4), &runner).unwrap();
+    store
+        .record(&id(4), &runner, RunEvidence::Abandoned)
+        .unwrap();
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(4)).unwrap_err(), 2);
+    deploy(&store, &who, 5);
+    resize_unheld(&store, 10, 20, Some(5)).unwrap();
 }
 
 #[test]
