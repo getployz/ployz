@@ -268,6 +268,8 @@ const STORED_GEN: u64 = 5;
 enum Lists {
     Never,
     WithError,
+    /// The entry's router couldn't dial it.
+    Undialed,
 }
 
 /// Machine '1' is Up and lists `listed`; Machine '2' is `membership` and answers its
@@ -281,6 +283,8 @@ struct Pair {
     /// Machine '2'.
     store: bool,
     listed: Vec<ContainerObservation>,
+    /// Whether the entry's path probes find large packets to Machine '2' dropped.
+    dropped: bool,
 }
 
 impl Pair {
@@ -290,6 +294,17 @@ impl Pair {
             lists: Lists::Never,
             store: true,
             listed: Vec::new(),
+            dropped: false,
+        }
+    }
+
+    /// Machine '2' is Up, but the entry finds large packets to it dropped, so it never
+    /// lists.
+    fn up_dropped() -> Self {
+        Self {
+            membership: MembershipObservation::Up,
+            dropped: true,
+            ..Self::suspect_silent()
         }
     }
 }
@@ -324,13 +339,21 @@ async fn live_and_second(
                     daemon_version: "fixture".into(),
                     capabilities: Default::default(),
                 }),
-                RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
-                    enrollment: None,
-                    machines: vec![
-                        MachineObservation::new(holder('1'), MembershipObservation::Up),
-                        MachineObservation::new(holder('2'), pair.membership),
-                    ],
-                }),
+                RpcRequestBody::ListMachines(_) => {
+                    let mut second = MachineObservation::new(holder('2'), pair.membership);
+                    second.path = pair.dropped.then_some(ployz_core::PathObservation {
+                        mtu: 1420,
+                        large_packets: ployz_core::LargePackets::Dropped,
+                        lowered: false,
+                    });
+                    RpcResponse::from(MachineList {
+                        enrollment: None,
+                        machines: vec![
+                            MachineObservation::new(holder('1'), MembershipObservation::Up),
+                            second,
+                        ],
+                    })
+                }
                 RpcRequestBody::ListImages(_) => RpcResponse::from(images("alpine:3.23.3", true)),
                 RpcRequestBody::PullImage(_) => {
                     RpcResponse::from(ployz_core::ImagePulled::default())
@@ -341,6 +364,14 @@ async fn live_and_second(
                             return Err(Status::internal("Docker is not running"));
                         }
                         Lists::Never => return std::future::pending().await,
+                        Lists::Undialed => {
+                            return Err(ployz_core::rpc::target_unreached_status(
+                                &std::io::Error::new(
+                                    std::io::ErrorKind::ConnectionRefused,
+                                    "tcp connect error",
+                                ),
+                            ));
+                        }
                     }
                 }
                 RpcRequestBody::ListContainers(_) => RpcResponse::from(ployz_core::ContainerList {
@@ -593,6 +624,99 @@ async fn an_up_machine_that_never_lists_fails_the_service_by_name() {
 
     let error = failed_listing(&outcome).unwrap_or_else(|| panic!("{outcome:?}"));
     names_the_second(error);
+    assert!(ensured.lock().unwrap().is_empty(), "no copy starts");
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_up_machine_whose_large_packets_are_dropped_does_not_stop_a_run_on_a_live_one() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) =
+        live_and_second(std::sync::Arc::clone(&ensured), Pair::up_dropped()).await;
+    let plan = vec![run(&machine('1'), spec(None, None, None), true)];
+
+    let (outcome, warnings) = execute_named(plan, &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let above = Gen::new(STORED_GEN + 1);
+    assert_eq!(
+        *ensured.lock().unwrap(),
+        [(machine('1'), above), (machine('1'), above)],
+        "the copy starts on the live Machine only, above the silent Machine's stored copy"
+    );
+    let gaps: Vec<_> = warnings
+        .iter()
+        .filter_map(DeployWarning::observation_gap)
+        .map(|(machine_id, gap)| (machine_id, gap.reason))
+        .collect();
+    assert_eq!(
+        gaps,
+        [(machine('2'), ployz_core::ObservationGapReason::Failed)]
+    );
+    assert!(
+        warnings.iter().any(|warning| matches!(warning,
+            DeployWarning::ObservationFailed { message, .. }
+                if message.contains("large packets to machine-2 are dropped"))),
+        "{warnings:?}"
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_up_machine_whose_large_packets_are_dropped_still_needs_the_store_floor() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) = live_and_second(
+        std::sync::Arc::clone(&ensured),
+        Pair {
+            store: false,
+            ..Pair::up_dropped()
+        },
+    )
+    .await;
+    let plan = vec![run(&machine('1'), spec(None, None, None), true)];
+
+    let (outcome, _) = execute_named(plan, &client).await;
+
+    assert!(failed_listing(&outcome).is_some(), "{outcome:?}");
+    assert!(ensured.lock().unwrap().is_empty(), "no copy starts");
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_machine_that_went_silent_at_run_time_is_never_a_destination() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) =
+        live_and_second(std::sync::Arc::clone(&ensured), Pair::up_dropped()).await;
+    // Planning saw Machine '2' answer, so it placed a copy there.
+    let plan = vec![run(&machine('2'), spec(None, None, None), true)];
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    let error = failed_listing(&outcome).unwrap_or_else(|| panic!("{outcome:?}"));
+    names_the_second(error);
+    assert!(ensured.lock().unwrap().is_empty(), "nothing is sent to it");
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_up_machine_the_entry_couldnt_dial_fails_the_service_though_its_path_drops() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) = live_and_second(
+        std::sync::Arc::clone(&ensured),
+        Pair {
+            lists: Lists::Undialed,
+            ..Pair::up_dropped()
+        },
+    )
+    .await;
+    let plan = vec![run(&machine('1'), spec(None, None, None), true)];
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(failed_listing(&outcome).is_some(), "{outcome:?}");
     assert!(ensured.lock().unwrap().is_empty(), "no copy starts");
     server.abort();
 }

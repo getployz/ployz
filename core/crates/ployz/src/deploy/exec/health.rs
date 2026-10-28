@@ -30,8 +30,8 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
                 DependencyHealthFailure::Cancelled,
             ));
         }
-        // A Suspect Machine that does not answer is left out as a gap, as a Deploy's gen
-        // choice leaves it; an answered error or an Up Machine's silence still fails the check.
+        // A Machine whose silence is a listing gap is left out, as a Deploy's gen choice
+        // leaves it; an answered error or any other silence still fails the check.
         let listed = client.listed_copies(dependency).await.map_err(|error| {
             dependency_health_error(dependency, DependencyHealthFailure::Observation { error })
         })?;

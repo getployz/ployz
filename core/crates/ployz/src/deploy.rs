@@ -321,10 +321,25 @@ pub enum HeldIngress<'snapshot> {
     Restarting(&'snapshot ContainerObservation),
 }
 
-/// A Suspect Machine that left a Container listing unanswered is an observation gap a
-/// Deploy goes on without. An Up Machine's silence stays an error, as does any answer.
+/// A Machine that left a Container listing unanswered is an observation gap a Deploy
+/// goes on without when its silence is explained: it is Suspect, or the entry's path
+/// probes find large packets to it dropped, so no listing's reply comes back (#3510).
+/// An Up Machine's unexplained silence stays an error, as does any answer.
 pub(crate) fn listing_gap(machine: &MachineObservation, error: &RpcError) -> bool {
-    machine.membership == MembershipObservation::Suspect && error.target_unanswered()
+    error.target_unanswered()
+        && (machine.membership == MembershipObservation::Suspect
+            || dropped_large_packets(machine, error))
+}
+
+/// Whether `machine` left a call unanswered with `error` because the entry's path probes
+/// find large packets to it dropped. A Machine the router couldn't dial got only small
+/// packets, so its silence has another cause.
+fn dropped_large_packets(machine: &MachineObservation, error: &RpcError) -> bool {
+    error.target_unanswered()
+        && !error.undialed()
+        && machine
+            .path
+            .is_some_and(|path| path.large_packets == ployz_core::LargePackets::Dropped)
 }
 
 /// `error`, `machine`'s unanswered observation, as a notice words it: with
@@ -342,10 +357,7 @@ pub(crate) fn unanswered_message(machine: &MachineObservation, error: &RpcError)
 /// probes find large packets to it dropped: a reply larger than that path carries
 /// never arrives.
 pub(crate) fn large_packets_note(machine: &MachineObservation, error: &RpcError) -> Option<String> {
-    let dropped = machine
-        .path
-        .is_some_and(|path| path.large_packets == ployz_core::LargePackets::Dropped);
-    (error.target_unanswered() && dropped).then(|| {
+    dropped_large_packets(machine, error).then(|| {
         format!(
             "; large packets to {} are dropped on its mesh path from the Server this command \
              entered by",
