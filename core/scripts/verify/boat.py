@@ -58,6 +58,9 @@ for image in "$@" "caddy:${caddy_version#v}"; do
 done
 command -v zstd >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null || \
     { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null; }
+# Boat boots its own kernel. Once the kernel image goes, its meta package's unmet dependency fails every later
+# apt install, the installer's ZFS step among them.
+DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq linux-image-virtual >/dev/null
 sync
 """
 # A bare host keeps Boat's UFW, which drops inbound IPv6, the only address a sandbox serves the internet on.
