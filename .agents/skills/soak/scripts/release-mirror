@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# release-mirror <mirror-dir> --draft <version>
+# release-mirror <mirror-dir> --assets <dir>
+#
+# Lays out <mirror-dir> the way install.sh and ployzd read releases, so PLOYZ_GITHUB_URL, PLOYZ_FALLBACK_URL and
+# PLOYZ_CHANNEL_URL can all point at one server: the assets under releases/download/v<version>/ and
+# getployz/ployz/releases/download/v<version>/, install.sh at the root, and the channel files stable, beta,
+# v0/stable and v0/beta each holding v<version>.
+#
+# --draft fetches a release's assets from GitHub, draft or published, verifies them with the real release key and
+# takes install.sh from the release's tag. That is Phase A. --assets takes a release-build directory and this
+# checkout's install.sh; installs then need its PLOYZ_RELEASE_PUBLIC_KEY.
+# Serve it with `python3 -m http.server --directory <mirror-dir>` on this host, or mirror-https on a Boat host.
+set -euo pipefail
+
+if [ $# -ne 3 ] || { [ "$2" != --draft ] && [ "$2" != --assets ]; }; then
+  echo "usage: release-mirror <mirror-dir> (--draft <version> | --assets <dir>)" >&2
+  exit 2
+fi
+root=$(cd "$(dirname "$0")/../../../.." && pwd)
+mkdir -p "$1"
+mirror=$(cd "$1" && pwd)
+assets=$(mktemp -d)
+trap 'rm -rf "$assets"' EXIT
+
+if [ "$2" = --draft ]; then
+  version=${3#v}
+  gh release download "v$version" -R getployz/ployz -D "$assets" \
+    -p 'checksums.txt*' -p 'ployz_linux_*.tar.gz' -p 'ployzd_linux_*.tar.gz' -p 'ployz-cloud-compose.yml' -p 'ployz-cloud.env.example'
+  minisign -V -q -p "$root/core/crates/ployz-core/release.pub" -m "$assets/checksums.txt" -x "$assets/checksums.txt.minisig"
+  key=$(tail -n 1 "$root/core/crates/ployz-core/release.pub")
+  git -C "$root" fetch -q origin "refs/tags/v$version:refs/tags/v$version"
+  git -C "$root" show "v$version:core/install.sh" > "$assets/install.sh"
+else
+  cp "$3"/*.tar.gz "$3"/checksums.txt "$3"/checksums.txt.minisig "$assets/"
+  minisign -V -q -p "$3/release.pub" -m "$assets/checksums.txt" -x "$assets/checksums.txt.minisig"
+  version=$(sed -n 's/^trusted comment: ployz v//p' "$assets/checksums.txt.minisig")
+  cp "$root/core/install.sh" "$assets/install.sh"
+  key=$(tail -n 1 "$3/release.pub")
+fi
+grep -qxF "trusted comment: ployz v$version" "$assets/checksums.txt.minisig"
+(cd "$assets" && sha256sum --ignore-missing --quiet -c checksums.txt)
+
+for prefix in releases/download getployz/ployz/releases/download; do
+  rm -rf "${mirror:?}/$prefix/v$version"
+  mkdir -p "$mirror/$prefix/v$version"
+  find "$assets" -maxdepth 1 -type f ! -name install.sh -exec cp {} "$mirror/$prefix/v$version/" \;
+done
+install -m 644 "$assets/install.sh" "$mirror/install.sh"
+mkdir -p "$mirror/v0"
+for channel in stable beta v0/stable v0/beta; do printf 'v%s\n' "$version" > "$mirror/$channel"; done
+echo "mirror of v$version in $mirror; installs verify with PLOYZ_RELEASE_PUBLIC_KEY=$key"

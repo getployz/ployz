@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# signin <app-url> <github-login> <cookie-jar>
+#
+# Signs <github-login> in to the self-host lab's Cloud through its fake GitHub and leaves the session in
+# <cookie-jar>, mode 600. The fake accepts any login and makes up its user (<login>@soak.test); a login seen first
+# gets a personal Organization. Prints the signed-in user, never the cookie.
+set -euo pipefail
+
+if [ $# -ne 3 ]; then
+  echo "usage: signin <app-url> <github-login> <cookie-jar>" >&2
+  exit 2
+fi
+app=${1%/} login=$2 jar=$3
+(umask 077; : > "$jar")
+url=$(curl -fsS -c "$jar" -b "$jar" -X POST "$app/api/auth/sign-in/social" -H 'content-type: application/json' \
+  -H "origin: $app" -d '{"provider":"github","callbackURL":"/cloud"}' | python3 -c 'import json, sys; print(json.load(sys.stdin)["url"])')
+state=$(python3 -c 'import sys, urllib.parse as u; print(u.parse_qs(u.urlparse(sys.argv[1]).query)["state"][0])' "$url")
+# The fake GitHub turns the code back into the login.
+curl -fsS -c "$jar" -b "$jar" -o /dev/null "$app/api/auth/callback/github?code=$login&state=$state"
+curl -fsS -b "$jar" "$app/api/auth/get-session" | python3 -c '
+import json, sys
+session = json.load(sys.stdin)
+print("signed in:", session["user"]["email"], "in Organization", session["session"].get("activeOrganizationId"))'

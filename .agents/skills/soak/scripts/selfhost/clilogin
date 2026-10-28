@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# clilogin <ployz> <cookie-jar> [organization-id]
+#
+# Signs a CLI in as the person whose session <cookie-jar> holds (from signin), into [organization-id] or that
+# session's active Organization. Set PLOYZ_CONFIG to the CLI's own directory and PLOYZ_CLOUD_URL to the Cloud first;
+# <ployz> should be an mkguard wrapper. The login code goes from the CLI straight to Cloud and is never printed.
+set -euo pipefail
+
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+  echo "usage: clilogin <ployz> <cookie-jar> [organization-id]" >&2
+  exit 2
+fi
+: "${PLOYZ_CONFIG:?set PLOYZ_CONFIG to a config of this CLI alone}" "${PLOYZ_CLOUD_URL:?set PLOYZ_CLOUD_URL}"
+ployz=$1 jar=$2 cloud=${PLOYZ_CLOUD_URL%/}
+organization=${3:-$(curl -fsS -b "$jar" "$cloud/api/auth/get-session" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["session"]["activeOrganizationId"])')}
+code=$("$ployz" --json login | python3 -c 'import json, sys; print(json.load(sys.stdin)["code"])')
+curl -fsS -b "$jar" -o /dev/null "$cloud/api/auth/device?user_code=$code"
+body=$(python3 -c 'import json, sys; print(json.dumps({"userCode": sys.argv[1], "organizationId": sys.argv[2]}))' "$code" "$organization")
+curl -fsS -b "$jar" -o /dev/null -X POST "$cloud/api/auth/device/approve" -H 'content-type: application/json' \
+  -H "origin: $cloud" -d "$body"
+"$ployz" login --wait

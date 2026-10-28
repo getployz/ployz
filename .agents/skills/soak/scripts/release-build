@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# release-build <out-dir>
+#
+# Builds this checkout's Linux amd64 release the way goreleaser does (cargo zigbuild, --release --locked, musl)
+# and packs it as GitHub release assets in <out-dir>: ployz_linux_amd64.tar.gz, ployzd_linux_amd64.tar.gz (with
+# ployz-uninstall), checksums.txt and checksums.txt.minisig. The real release key never leaves CI, so a throwaway
+# key made here signs it; install with PLOYZ_RELEASE_PUBLIC_KEY="$(tail -1 <out-dir>/release.pub)".
+# Needs cargo-zigbuild, zig and minisign. With PLOYZ_BUILD_LOCK set, it builds under that lock.
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "usage: release-build <out-dir>" >&2
+  exit 2
+fi
+# flock -o keeps the lock out of anything the build leaves running.
+if [ -n "${PLOYZ_BUILD_LOCK:-}" ]; then exec flock -o "$PLOYZ_BUILD_LOCK" env -u PLOYZ_BUILD_LOCK "$0" "$@"; fi
+core=$(cd "$(dirname "$0")/../../../../core" && pwd)
+mkdir -p "$1"
+out=$(cd "$1" && pwd)
+target=x86_64-unknown-linux-musl
+version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$core/Cargo.toml" | head -n1)
+
+(cd "$core" && cargo zigbuild --release --locked --target "$target" --package ployz --bin ployz \
+  && cargo zigbuild --release --locked --target "$target" --package ployzd --bin ployzd)
+
+dir=$core/target/$target/release
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+install -m 755 "$dir/ployz" "$stage/ployz"
+install -m 755 "$dir/ployzd" "$stage/ployzd"
+install -m 755 "$core/scripts/uninstall.sh" "$stage/ployz-uninstall"
+tar -C "$stage" -czf "$out/ployz_linux_amd64.tar.gz" ployz
+tar -C "$stage" -czf "$out/ployzd_linux_amd64.tar.gz" ployzd ployz-uninstall
+(cd "$out" && sha256sum ployz_linux_amd64.tar.gz ployzd_linux_amd64.tar.gz > checksums.txt)
+[ -f "$out/release.key" ] || minisign -G -W -p "$out/release.pub" -s "$out/release.key" >/dev/null
+minisign -S -l -s "$out/release.key" -m "$out/checksums.txt" -x "$out/checksums.txt.minisig" -t "ployz v$version" </dev/null
+minisign -V -q -p "$out/release.pub" -m "$out/checksums.txt" -x "$out/checksums.txt.minisig"
+echo "ployz $("$stage/ployz" --version) release assets in $out, signed by $out/release.pub"
