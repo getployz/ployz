@@ -25,15 +25,14 @@ fail() { echo "FAILED: $1"; exit 1; }
 field() { sed -n "s/^$1: //p;/^\$/q" "$2"; }
 
 shopt -s nullglob
-found=("$dir"/inbox/*/"$id".md "$dir"/read/*/"$id".md)
+found=("$dir"/read/*/"$id".md "$dir"/inbox/*/"$id".md)
 [ ${#found[@]} -gt 0 ] || fail "request $id is not in the mailbox"
 request=${found[0]}
 to=$(field to "$request")
 from=$(field from "$request")
-sent=$(date -ud "$(field ts "$request")" +%s)
+ts=$(field ts "$request")
+[ -n "$ts" ] && sent=$(date -ud "$ts" +%s) || fail "request $id has no valid ts"
 deadline=$(( sent + timeout * 60 ))
-
-[ -f "$dir/names/$to.json" ] || fail "$to has no registered mailbox, so the request was never delivered"
 
 for reply in "$dir"/inbox/"$from"/*.md "$dir"/read/"$from"/*.md; do
   [ "$(field from "$reply")" = "$to" ] || continue
@@ -43,6 +42,8 @@ for reply in "$dir"/inbox/"$from"/*.md "$dir"/read/"$from"/*.md; do
     exit 0
   fi
 done
+
+[ -f "$dir/names/$to.json" ] || fail "$to has no registered mailbox, so the request was never delivered"
 
 now=$(date -u +%s)
 [ "$now" -lt "$deadline" ] || fail "$to did not acknowledge $id within $timeout min"

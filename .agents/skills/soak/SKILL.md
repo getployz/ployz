@@ -45,7 +45,7 @@ The supervisor acknowledges a post-tag request as soon as it arrives, with a rep
 
 - ACKED (exit 0): the supervisor replied with the id within 15 minutes.
 - PENDING (exit 75): no such reply yet, inside the 15 minutes.
-- FAILED (exit 1): no such reply within 15 minutes, or the supervisor has no registered mailbox, which fails at once.
+- FAILED (exit 1): no such reply within 15 minutes. It fails at once when the supervisor has no registered mailbox or the request isn't in the mailbox.
 
 On FAILED the draft stays unpublished and release reports the failed gate to the coordinator. A late reply doesn't reopen it. Only a new request acknowledged in time does.
 
