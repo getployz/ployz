@@ -103,6 +103,121 @@ async fn cloud_init_join_participates() {
     );
 }
 
+/// `--public-ip` and `--wg-endpoint` reach Cloud's registration and stay pinned, as on a
+/// direct join, so the daemon doesn't swap in a detected address (#3515).
+#[tokio::test]
+async fn cloud_join_advertises_and_pins_the_chosen_addresses() {
+    let registration = registration();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration);
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = harness::cli()
+        .env("PLOYZ_ENROLL_TOKEN", TOKEN)
+        .args([
+            "--connect",
+            &format!("ssh://root@{machine_addr}"),
+            "server",
+            "add",
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--public-ip",
+            "2001:db8::2f",
+            "--wg-endpoint",
+            "[2001:db8::2f]:51820",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let identity = enroll.posts().first().unwrap().clone();
+    assert_eq!(identity.get("publicIp"), Some(&json!("2001:db8::2f")));
+    assert_eq!(
+        identity.get("advertisedEndpoints"),
+        Some(&json!(["[2001:db8::2f]:51820"]))
+    );
+    assert_eq!(
+        daemon.join_request().pinned,
+        ployz_core::PinnedAddresses {
+            public_ip: true,
+            advertised_endpoints: true,
+        }
+    );
+}
+
+#[tokio::test]
+async fn cloud_founder_advertises_and_pins_the_chosen_public_ip() {
+    let founder = founder_machine();
+    let enroll = EnrollListen::start(json!({
+        "kind": "initialize",
+        "resumed": false,
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+    }))
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder,
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+        sealing_key: None,
+        devices: Vec::new(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = harness::cli()
+        .env("PLOYZ_ENROLL_TOKEN", TOKEN)
+        .args([
+            "--connect",
+            &format!("ssh://root@{machine_addr}"),
+            "server",
+            "add",
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "founder",
+            "--public-ip",
+            "2001:db8::31",
+            "--accepts-ingress=false",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        enroll.posts().first().unwrap().get("publicIp"),
+        Some(&json!("2001:db8::31"))
+    );
+    let initialized = daemon.initialize_request();
+    assert_eq!(initialized.public_ip, Some("2001:db8::31".parse().unwrap()));
+    assert_eq!(
+        initialized.pinned,
+        ployz_core::PinnedAddresses {
+            public_ip: true,
+            advertised_endpoints: false,
+        }
+    );
+}
+
 #[tokio::test]
 async fn cloud_zfs_rejects_a_remote_machine_before_join() {
     let mut registration = registration();

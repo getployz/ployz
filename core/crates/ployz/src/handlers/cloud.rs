@@ -9,8 +9,8 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, DescribeContractRequest, EnrollAs, EnrollRequest, InspectRequest,
     LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, ManagementCapability,
-    ManagementClientLabel, RecoveryCode, SetManagementClientRequest, StorageChoice, TokenRequest,
-    op,
+    ManagementClientLabel, PinnedAddresses, RecoveryCode, SetManagementClientRequest,
+    StorageChoice, op,
 };
 
 use super::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
@@ -179,6 +179,10 @@ where
     let url = cloud_enroll::enroll_url(cloud_url);
     let requested_name = super::server::requested_name(matches)?;
     let requested_storage = super::server::requested_storage(matches);
+    // `--public-ip` and `--wg-endpoint` shape the identity Cloud registers, and pin what the
+    // daemon would otherwise rediscover, as a direct join does (#3515).
+    let token_request = super::server::token_request(matches)?;
+    let pinned = super::server::pinned(&token_request);
     let cluster_network = *matches
         .get_one::<Ipv4Net>("network")
         .expect("Cluster network has a default");
@@ -197,6 +201,7 @@ where
     let (details, machine_token, name, outcome) = enroll_current_identity(
         command,
         &mut client,
+        token_request,
         requested_name,
         requested_storage.choice(),
         &initial_policy,
@@ -217,6 +222,7 @@ where
                 details,
                 *join,
                 &initial_policy,
+                pinned,
                 &cloud_enroll::callback_url(cloud_url),
                 token,
                 install,
@@ -240,6 +246,7 @@ where
                 machine_token,
                 name,
                 initial_policy,
+                pinned,
                 cluster_network,
                 mode,
                 pairing,
@@ -298,6 +305,7 @@ fn unlisted_participation(details: &MachineDetails, assigned: &Machine) -> Resul
 async fn enroll_current_identity(
     command: EnrollCommand,
     client: &mut Client,
+    token_request: InspectRequest,
     requested_name: Option<MachineName>,
     requested_storage: StorageChoice,
     initial_policy: &ployz_core::InitialMachinePolicy,
@@ -305,14 +313,8 @@ async fn enroll_current_identity(
     token: &CloudEnrollToken,
     progress: &dyn Fn(EnrollStage),
 ) -> Result<(MachineDetails, MachineToken, MachineName, Outcome), Error> {
-    let (details, machine_token) = crate::handlers::server::inspect_token(
-        client,
-        InspectRequest {
-            token: Some(TokenRequest::default()),
-            ..Default::default()
-        },
-    )
-    .await?;
+    let (details, machine_token) =
+        crate::handlers::server::inspect_token(client, token_request).await?;
     let name = crate::handlers::server::machine_name(requested_name, &machine_token);
     let recovery_supported = cloud_enroll::recovery_compat::supported(client).await?;
     let identity = EnrollIdentity::from_machine_token(
@@ -338,6 +340,7 @@ async fn enroll_join<Install, InstallFuture>(
     details: MachineDetails,
     join: Join,
     initial_policy: &ployz_core::InitialMachinePolicy,
+    pinned: PinnedAddresses,
     callback_url: &str,
     token: &CloudEnrollToken,
     install: &Install,
@@ -380,7 +383,7 @@ where
                     registration: join.registration,
                 },
                 wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-                pinned: Default::default(),
+                pinned,
             },
         )
         .await?;
@@ -457,6 +460,7 @@ async fn enroll_founder<Install, InstallFuture>(
     machine_token: MachineToken,
     name: MachineName,
     initial_policy: ployz_core::InitialMachinePolicy,
+    pinned: PinnedAddresses,
     cluster_network: Ipv4Net,
     mode: InitializeMode,
     pairing: CloudPairing,
@@ -541,7 +545,7 @@ where
                     advertised_endpoints: machine_token.advertised_endpoints,
                 },
                 wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-                pinned: Default::default(),
+                pinned,
             };
             let machine = match &recovery {
                 Some(Recovery::Seed(seed)) => {
@@ -1351,6 +1355,7 @@ mod tests {
                     },
                     machine.name.clone(),
                     policy,
+                    Default::default(),
                     "10.210.0.0/16".parse().unwrap(),
                     InitializeMode::Resume,
                     pairing,
@@ -1382,6 +1387,7 @@ mod tests {
                         },
                     },
                     &policy,
+                    Default::default(),
                     "http://unused.invalid",
                     &token,
                     &install,
@@ -1495,6 +1501,7 @@ mod tests {
                         },
                         machine.name.clone(),
                         policy,
+                        Default::default(),
                         "10.210.0.0/16".parse().unwrap(),
                         InitializeMode::New,
                         pairing,
@@ -1526,6 +1533,7 @@ mod tests {
                             },
                         },
                         &policy,
+                        Default::default(),
                         "http://unused.invalid",
                         &token,
                         &install,

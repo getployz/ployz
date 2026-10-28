@@ -85,12 +85,14 @@ pub struct FounderEnroll {
     pub public_ip: Option<std::net::IpAddr>,
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     pub wireguard_mtu: Option<u32>,
+    pub pinned: ployz_core::PinnedAddresses,
 }
 
 /// The Member half of an Enroll the fake daemon applied.
 #[derive(Clone, Debug)]
 pub struct MemberEnroll {
     pub registration: Registered,
+    pub pinned: ployz_core::PinnedAddresses,
 }
 
 #[derive(Clone)]
@@ -613,16 +615,24 @@ impl FakeMachine for JoinDaemon {
             telemetry,
             storage: None,
             upgrade: None,
-            token: inspect.token.map(|_| MachineToken {
+            // As the daemon does: a requested public IP or endpoint list replaces discovery.
+            token: inspect.token.map(|token| MachineToken {
                 id: self.inner.current_machine.lock().unwrap().id,
                 public_key: self.public_key(),
-                public_ip: None,
-                advertised_endpoints: self
-                    .inner
-                    .registration
-                    .assigned_machine
-                    .advertised_endpoints
-                    .clone(),
+                public_ip: match token.public_ip {
+                    ployz_core::PublicIpDiscovery::Override(address) => Some(address),
+                    ployz_core::PublicIpDiscovery::Auto
+                    | ployz_core::PublicIpDiscovery::Disabled => None,
+                },
+                advertised_endpoints: if inspect.advertised_endpoints.is_empty() {
+                    self.inner
+                        .registration
+                        .assigned_machine
+                        .advertised_endpoints
+                        .clone()
+                } else {
+                    inspect.advertised_endpoints.clone()
+                },
                 runtime: Default::default(),
                 memory_total_bytes: None,
                 disk_total_bytes: None,
@@ -1097,7 +1107,10 @@ impl JoinDaemon {
                     });
                 }
                 let machine = registration.assigned_machine.clone();
-                *self.inner.join_request.lock().unwrap() = Some(MemberEnroll { registration });
+                *self.inner.join_request.lock().unwrap() = Some(MemberEnroll {
+                    registration,
+                    pinned: enroll.pinned,
+                });
                 machine
             }
             EnrollAs::Founder {
@@ -1124,6 +1137,7 @@ impl JoinDaemon {
                         public_ip,
                         advertised_endpoints,
                         wireguard_mtu: enroll.wireguard_mtu,
+                        pinned: enroll.pinned,
                     });
                 self.record("initialize");
                 machine
