@@ -1582,6 +1582,46 @@ async fn a_new_copy_no_proxy_confirms_names_the_machines_that_did_not_confirm() 
     client.assert_done();
 }
 
+/// A proxy the plan's listing found behind a path dropping large packets is named with
+/// that cause when it never confirms (#3521).
+#[tokio::test(start_paused = true)]
+async fn a_proxy_that_never_confirms_over_a_dropping_path_is_named_with_the_cause() {
+    let (machine, dropping) = (machine('1'), machine('2'));
+    let new = container('a');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted {
+        acks: BTreeMap::from([(dropping, Ack::Never)]),
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &new,
+        )])
+    };
+    let plan = crate::deploy::DeployPlan::for_execution_test(plan, test_namespace())
+        .with_machine_names(&[machine, dropping])
+        .with_dropped_large_packets(&[dropping]);
+
+    let (outcome, _) = reported(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Machine {
+                        action: MachineAction::ReadRoutes,
+                        error,
+                    },
+                    ..
+                },
+                ..
+            } if error.message == "proxy on machine-2 did not confirm; large packets to machine-2 \
+                are dropped on its mesh path from the Server this command entered by"
+        ),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_new_copy_an_incomplete_route_set_never_confirms_says_the_set_was_incomplete() {
     let machine = machine('1');

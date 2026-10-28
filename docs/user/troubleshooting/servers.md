@@ -548,6 +548,11 @@ is down; the replicas on `web-2` keep running until a deploy after the path heal
 Before 0.3.8, every deploy that started a replica failed on every server, with
 `list Containers failed`, `Machine web-2 did not answer`.
 
+While the path stays broken, the confirmations from `web-2`'s proxy that a deploy waits for may stop
+arriving. A server that reads `down` no longer counts toward that wait. Otherwise, after 5 minutes,
+the deploy fails with `proxy on web-2 did not confirm; large packets to web-2 are dropped on its mesh
+path from the Server this command entered by`.
+
 `ployz server show web-2` still shows it. When `web-2` doesn't answer through the server the command
 entered by within 3 seconds, the CLI reads it over its own connection and prints `! web-2 did not
 answer through the Server this command entered by, so it was read over its own connection.` This
