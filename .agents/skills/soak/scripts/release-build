@@ -4,7 +4,8 @@
 # Builds this checkout's Linux amd64 release the way goreleaser does (cargo zigbuild, --release --locked, musl)
 # and packs it as GitHub release assets in <out-dir>: ployz_linux_amd64.tar.gz, ployzd_linux_amd64.tar.gz (with
 # ployz-uninstall), checksums.txt and checksums.txt.minisig. The real release key never leaves CI, so a throwaway
-# key made here signs it; install with PLOYZ_RELEASE_PUBLIC_KEY="$(tail -1 <out-dir>/release.pub)".
+# key made here signs it; install with PLOYZ_RELEASE_PUBLIC_KEY="$(tail -1 <out-dir>/release.pub)". Only install.sh reads
+# that override: a daemon verifies upgrades with its compiled-in key, so a Machine can't upgrade to this build.
 # Needs cargo-zigbuild, zig and minisign. With PLOYZ_BUILD_LOCK set, it builds under that lock.
 set -euo pipefail
 
