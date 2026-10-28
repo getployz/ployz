@@ -923,6 +923,15 @@ fn a_cloud_volume_without_a_writer_is_named_as_authored() {
 /// The Deploy Intent of one Service mounting Managed Volume `echo`, which a Deploy
 /// applied before when `deployed`.
 fn lowered_echo(deployed: bool) -> (DeployIntent, DockerVolumeName) {
+    lowered_echo_in(
+        serde_json::json!({"kind": "provisioned", "maximumBytes": 1_073_741_824}),
+        deployed,
+    )
+}
+
+/// The Deploy Intent of one Service mounting Volume `echo` kept in `storage`, which a
+/// Deploy applied before when `deployed`.
+fn lowered_echo_in(storage: serde_json::Value, deployed: bool) -> (DeployIntent, DockerVolumeName) {
     let volume = "3f2a6c1e-8d4b-4e7a-9c15-2b6d8e0f4a71";
     let intent = ployz_core::config::lower_deployment(
         serde_json::from_value(serde_json::json!({
@@ -934,12 +943,117 @@ fn lowered_echo(deployed: bool) -> (DeployIntent, DockerVolumeName) {
                     "source": {"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}},
                     "mounts": [{"volumeResourceId": volume, "volumeName": "echo", "mountPath": "/data"}]}
             }],
-            "volumes": [{"volumeResourceId": volume, "storage": {"kind": "provisioned", "maximumBytes": 1_073_741_824}, "deployed": deployed}]
+            "volumes": [{"volumeResourceId": volume, "storage": storage, "deployed": deployed}]
         }))
         .unwrap(),
     )
     .unwrap();
     (intent, app_volume(&format!("vol-{volume}")))
+}
+
+/// Server `live` up and holding nothing, and Server `holder` in `membership`, holding
+/// Docker Volume `physical` when it answers.
+fn docker_holder_snapshot(
+    physical: &DockerVolumeName,
+    membership: MembershipObservation,
+) -> DeploySnapshot {
+    let mut holder = machine('3', "holder");
+    holder.membership = membership.clone();
+    let mut snapshot = DeploySnapshot {
+        machines: vec![machine('1', "live"), holder],
+        ..Default::default()
+    };
+    if membership == MembershipObservation::Down {
+        snapshot.machines.get_mut(1).unwrap().membership_evidence =
+            Some(ployz_core::MembershipEvidence::Down);
+        snapshot.container_omissions.push(machine_id('3'));
+        snapshot.volume_snapshot = VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('3')],
+        )
+        .unwrap();
+    } else {
+        let mut row = observed_volume(machine_id('3'), "unused");
+        row.id.name = physical.clone();
+        snapshot.volume_snapshot = VolumeSnapshot::try_from_observations(vec![row]).unwrap();
+    }
+    snapshot
+}
+
+/// A Docker Volume an earlier Deploy applied may sit on a Down Server that no listing
+/// reached. Creating it on another Server would start the Service on an empty copy,
+/// and a later Deploy would remove the one holding the data (#3526).
+#[test]
+fn a_deployed_docker_volume_whose_server_is_down_is_not_attempted() {
+    let (intent, physical) = lowered_echo_in(serde_json::json!({"kind": "docker"}), true);
+
+    let preview = runner_preview(
+        &intent,
+        &docker_holder_snapshot(&physical, MembershipObservation::Down),
+    )
+    .unwrap();
+
+    assert!(
+        preview.volumes_to_create.is_empty(),
+        "{:?}",
+        preview.volumes_to_create
+    );
+    assert_eq!(
+        only_blocked(&preview).message,
+        "holder did not answer, so whether it holds Docker volume echo is unknown. \
+         Bring holder back, or deploy the other services by name"
+    );
+}
+
+/// Once the Server is back, the Deploy runs the Service beside its original copy and
+/// creates no other.
+#[test]
+fn a_deployed_docker_volume_whose_server_returned_stays_on_it() {
+    let (intent, physical) = lowered_echo_in(serde_json::json!({"kind": "docker"}), true);
+
+    let preview = runner_preview(
+        &intent,
+        &docker_holder_snapshot(&physical, MembershipObservation::Up),
+    )
+    .unwrap();
+
+    assert!(preview.blocked.is_empty(), "{:?}", preview.blocked);
+    assert!(
+        preview.volumes_to_create.is_empty(),
+        "{:?}",
+        preview.volumes_to_create
+    );
+    let targets = operations(&preview)
+        .into_iter()
+        .filter_map(|operation| match operation {
+            DeployOperation::RunContainer { machine_id, .. } => Some(machine_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(targets, [machine_id('3')]);
+}
+
+/// A Docker Volume no Deploy applied yet has no copy anywhere, so a Down Server
+/// holds none, and the Deploy creates it on a Server that answers.
+#[test]
+fn a_new_docker_volume_is_created_while_another_server_is_down() {
+    let (intent, physical) = lowered_echo_in(serde_json::json!({"kind": "docker"}), false);
+
+    let preview = runner_preview(
+        &intent,
+        &docker_holder_snapshot(&physical, MembershipObservation::Down),
+    )
+    .unwrap();
+
+    assert!(preview.blocked.is_empty(), "{:?}", preview.blocked);
+    assert_eq!(
+        preview.volumes_to_create.len(),
+        1,
+        "{:?}",
+        operations(&preview)
+    );
 }
 
 #[test]

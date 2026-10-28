@@ -310,6 +310,9 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 input.namespace.volume_name(&name),
                 mount.volume_name.clone(),
             );
+            if *deployed {
+                deployed_volumes.insert(input.namespace.volume_name(&name));
+            }
             let source = match storage {
                 VolumeKind::Docker {} => RawVolumeSource::Ordinary {
                     name,
@@ -317,16 +320,11 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                         .map_err(lowering_error)?,
                     labels: BTreeMap::new(),
                 },
-                VolumeKind::Provisioned { maximum_bytes } => {
-                    if *deployed {
-                        deployed_volumes.insert(input.namespace.volume_name(&name));
-                    }
-                    RawVolumeSource::Provisioned {
-                        name,
-                        maximum_bytes: *maximum_bytes,
-                        labels: BTreeMap::new(),
-                    }
-                }
+                VolumeKind::Provisioned { maximum_bytes } => RawVolumeSource::Provisioned {
+                    name,
+                    maximum_bytes: *maximum_bytes,
+                    labels: BTreeMap::new(),
+                },
             };
             volumes.push(ServiceVolume {
                 reference: reference.clone(),
