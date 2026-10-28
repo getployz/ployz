@@ -4,8 +4,10 @@
 # Reads the coord mailbox (COORD_MAIL_DIR, default
 # ~/.config/ployz-coord/mail) and prints the state of a post-tag request
 # that release sent with coord-send:
-#   ACKED    exit 0   the recipient mailed the sender a reply naming the
-#                     request id within the timeout (default 15 minutes).
+#   ACKED    exit 0   the recipient sent a reply naming the request id within
+#                     the timeout (default 15 minutes). The reply counts in
+#                     any mailbox, so a request sent with "from: unknown"
+#                     still sees the ack the recipient mailed to release.
 #   PENDING  exit 75  no such reply yet, still inside the timeout.
 #   FAILED   exit 1   no such reply within the timeout, the recipient has no
 #                     registered mailbox, or the request can't be found.
@@ -35,11 +37,11 @@ found=("$dir"/read/*/"$id".md "$dir"/inbox/*/"$id".md)
 [ ${#found[@]} -gt 0 ] || fail "request $id is not in the mailbox"
 request=${found[0]}
 to=$(field to "$request")
-from=$(field from "$request")
 sent=$(epoch "$request") || fail "request $id has no valid ts"
 deadline=$(( sent + timeout * 60 ))
 
-for reply in "$dir"/inbox/"$from"/*.md "$dir"/read/"$from"/*.md; do
+while IFS= read -r reply; do
+  [ "$(basename "$reply" .md)" != "$id" ] || continue
   [ "$(field from "$reply")" = "$to" ] || continue
   grep -qF -- "$id" <(sed '1,/^$/d' "$reply") || continue
   replied=$(epoch "$reply") || continue
@@ -47,7 +49,7 @@ for reply in "$dir"/inbox/"$from"/*.md "$dir"/read/"$from"/*.md; do
     echo "ACKED: $to replied in $(basename "$reply" .md)"
     exit 0
   fi
-done
+done < <(grep -rlF --include='*.md' -- "$id" "$dir/inbox" "$dir/read" 2>/dev/null)
 
 [ -f "$dir/names/$to.json" ] || fail "$to has no registered mailbox, so the request was never delivered"
 

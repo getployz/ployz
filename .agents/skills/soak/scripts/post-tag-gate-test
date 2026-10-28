@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# post-tag-gate-test
+#
+# Dry-runs post-tag-gate against a throwaway COORD_MAIL_DIR and checks each
+# state: ACKED, PENDING, FAILED, a request sent with "from: unknown", and an
+# unregistered recipient. Prints one line per case and exits 1 on a mismatch.
+set -euo pipefail
+
+gate=$(dirname "$0")/post-tag-gate
+COORD_MAIL_DIR=$(mktemp -d)
+export COORD_MAIL_DIR
+trap 'rm -rf "$COORD_MAIL_DIR"' EXIT
+mkdir -p "$COORD_MAIL_DIR/names"
+echo '{}' > "$COORD_MAIL_DIR/names/sup.json"
+echo '{}' > "$COORD_MAIL_DIR/names/release.json"
+
+n=0
+# mail <box> <id> <from> <to> <minutes-ago> <body>
+mail() {
+  mkdir -p "$COORD_MAIL_DIR/$1"
+  printf 'from: %s\nto: %s\nts: %s\nprio: normal\nid: %s\n\n%s\n' \
+    "$3" "$4" "$(date -ud "-$5 min" +%FT%TZ)" "$2" "$6" > "$COORD_MAIL_DIR/$1/$2.md"
+}
+# request <from> <to> <minutes-ago>: sets r to the new request's id
+request() {
+  n=$(( n + 1 ))
+  r=$(printf '20261028T0000%02d000Z-req%03d' "$n" "$n")
+  mail "inbox/$2" "$r" "$1" "$2" "$3" "post-tag check"
+}
+# reply <from> <to> <minutes-ago> <body>: sets a to the new reply's id
+reply() {
+  n=$(( n + 1 ))
+  a=$(printf '20261028T0001%02d000Z-rep%03d' "$n" "$n")
+  mail "inbox/$2" "$a" "$1" "$2" "$3" "$4"
+}
+
+failures=0
+# expect <case> <code> <state> <gate args...>
+expect() {
+  local name=$1 want_code=$2 want_state=$3 out code=0
+  shift 3
+  out=$("$gate" "$@") || code=$?
+  if [ "$code" = "$want_code" ] && [[ $out == "$want_state"* ]]; then
+    echo "ok    $name: $out"
+  else
+    echo "FAIL  $name: want $want_state ($want_code), got ($code) $out"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+request release sup 1; reply sup release 0 "ACK $r"
+expect "acked" 0 ACKED "$r"
+
+request release sup 1; reply sup release 0 "ACK $r"
+mkdir -p "$COORD_MAIL_DIR/read/release"
+mv "$COORD_MAIL_DIR/inbox/release/$a.md" "$COORD_MAIL_DIR/read/release/"
+expect "acked after read" 0 ACKED "$r"
+
+request unknown sup 1; reply sup release 0 "ACK $r"
+expect "from: unknown" 0 ACKED "$r"
+
+request release sup 1
+expect "pending" 75 PENDING "$r"
+
+request release sup 1; reply sup release 0 "ACK something-else"; reply other release 0 "ACK $r"
+expect "pending, unrelated replies" 75 PENDING "$r"
+
+request release sup 16
+expect "failed, no ack" 1 FAILED "$r"
+
+request release sup 20; reply sup release 1 "ACK $r"
+expect "failed, late ack" 1 FAILED "$r"
+
+request unknown sup 16
+expect "failed, from: unknown, no ack" 1 FAILED "$r"
+
+request release nobody 0
+expect "unregistered recipient" 1 FAILED "$r"
+
+expect "missing request" 1 FAILED 20261028T000000000Z-missing
+
+[ "$failures" -eq 0 ] || { echo "$failures case(s) failed"; exit 1; }
+echo "all cases passed"
