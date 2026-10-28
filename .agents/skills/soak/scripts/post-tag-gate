@@ -31,7 +31,8 @@ request=${found[0]}
 to=$(field to "$request")
 from=$(field from "$request")
 ts=$(field ts "$request")
-[ -n "$ts" ] && sent=$(date -ud "$ts" +%s) || fail "request $id has no valid ts"
+[ -n "$ts" ] || fail "request $id has no ts"
+sent=$(date -ud "$ts" +%s) || fail "request $id has an invalid ts"
 deadline=$(( sent + timeout * 60 ))
 
 for reply in "$dir"/inbox/"$from"/*.md "$dir"/read/"$from"/*.md; do
