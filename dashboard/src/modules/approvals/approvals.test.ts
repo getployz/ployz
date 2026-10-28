@@ -1,6 +1,6 @@
 import type { ConfigCommand, DestructiveEffect } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import { type ApprovalReview, approvalBadge, approvalCommand, approvalSubject, approvalTarget, asksApproval, destroyedLine } from "#/modules/approvals/approvals";
+import { type ApprovalReview, approvalBadge, approvalCommand, approvalSubject, approvalTarget, asksApproval, destroyedLine, destroyedLines } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 
 const here = { project: null, environment: null };
@@ -82,4 +82,16 @@ it("keeps real volume deletion wording for project removal, namespace clean and 
   }
   expect(destroyedLine(deletedVolume)).toEqual({ verb: "Deletes volume", name: "pgdata", after: ". Not recoverable." });
   expect(destroyedLine(deletedVolume, "publish")).toEqual({ verb: "Next deploy deletes volume", name: "pgdata", after: "." });
+});
+
+it("lists a pruning Deploy's removal of other services, with the Servers it couldn't check, as the card does (#3511)", () => {
+  const environment = { name: "production", project: "verify" };
+  const prune = asTestDouble<ApprovalReview>()({ effects: [], diff: { environment }, prunes: true, dropped: ["machine-3"] });
+  expect(destroyedLines("admit", prune)).toEqual([
+    "Also removes any other service running in this environment. Couldn't check every server: large packets to machine-3 are dropped on the mesh path",
+  ]);
+  const checked = asTestDouble<ApprovalReview>()({ effects: [{ kind: "removes_service", name: "worker" }], diff: { environment }, prunes: true });
+  expect(destroyedLines("admit", checked)).toEqual(["Removes service worker", "Also removes any other service running in this environment"]);
+  const plain = asTestDouble<ApprovalReview>()({ effects: [], diff: { environment } });
+  expect(destroyedLines("admit", plain)).toEqual([]);
 });

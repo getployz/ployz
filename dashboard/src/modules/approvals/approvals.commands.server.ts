@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import { APPROVAL_STATUSES, approvalTarget, destroyedLine } from "#/modules/approvals/approvals";
+import { APPROVAL_STATUSES, approvalTarget, destroyedLines } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import type { ApprovalView } from "#/modules/approvals/approvals.server";
 import { defineCommand, type Ran } from "#/modules/commands/command.server";
@@ -34,10 +34,7 @@ const waiting = (approval: ApprovalView): typeof Waiting.Type => {
 
 const answered = (approval: ApprovalView): typeof Answered.Type => ({
   ...waiting(approval),
-  destroys: approval.review.effects.map((effect) => {
-    const { verb, name, after } = destroyedLine(effect, approval.command, approval.review);
-    return `${verb}${name === null ? "" : ` ${name}`}${after}`;
-  }),
+  destroys: destroyedLines(approval.command, approval.review),
   reason: approval.reason,
   decided_at: approval.decided_at,
 });
