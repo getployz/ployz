@@ -32,7 +32,8 @@ install=0; build_sdk=0
 if [ ! -f "$dash/node_modules/.modules.yaml" ] || [ "$dash/pnpm-lock.yaml" -nt "$dash/node_modules/.modules.yaml" ]; then install=1; fi
 sdk=$wt/core/crates/ployz-sdk/ployz-sdk.node
 if [ ! -f "$sdk" ] || [ -n "$(find "$wt/core/crates" -newer "$sdk" -type f \( -name '*.rs' -o -name Cargo.toml \) -print -quit)" ]; then build_sdk=1; fi
-if [ "$SDK" = exact ] && grep -qs 'stale main@' "$run/sdk.log"; then build_sdk=1; fi
+# The SDK on disk may be a stale main build from an earlier run, so exact always resolves it: a cache hit takes seconds.
+if [ "$SDK" = exact ]; then build_sdk=1; fi
 
 # vite reads the env file once and loads the SDK once, and the worker runs a bundle of the code it started with, so
 # only an instance without Inngest, started by this up.sh in this mode on this port, with unchanged dependencies,
