@@ -1132,13 +1132,18 @@ fn unrecognized(holder: &mut MachineObservation, volumes: &mut VolumeSnapshot) {
     holder.membership_evidence = Some(ployz_core::MembershipEvidence::Unrecognized {
         raw: "drifting".into(),
     });
-    *volumes =
-        VolumeSnapshot::try_from_parts(Vec::new(), Vec::new(), Vec::new(), vec![machine_id('3')])
-            .unwrap();
+    *volumes = omitted();
 }
 
-fn unknown(holder: &mut MachineObservation, _: &mut VolumeSnapshot) {
+/// The Volume listing a Server that invites no RPC leaves out.
+fn omitted() -> VolumeSnapshot {
+    VolumeSnapshot::try_from_parts(Vec::new(), Vec::new(), Vec::new(), vec![machine_id('3')])
+        .unwrap()
+}
+
+fn unknown(holder: &mut MachineObservation, volumes: &mut VolumeSnapshot) {
     holder.membership = MembershipObservation::Unknown;
+    *volumes = omitted();
 }
 
 fn listing_failed(_: &mut MachineObservation, volumes: &mut VolumeSnapshot) {
@@ -1210,8 +1215,8 @@ fn a_deployed_docker_volume_whose_server_listing_failed_is_not_attempted() {
 fn a_new_docker_volume_is_created_beside_an_unread_server() {
     let (new, _) = lowered_echo_in(serde_json::json!({"kind": "docker"}), false);
     let (deployed, _) = lowered_echo_in(serde_json::json!({"kind": "docker"}), true);
-    let unarrived = |holder: &mut MachineObservation, _: &mut VolumeSnapshot| {
-        holder.membership = MembershipObservation::Unknown;
+    let unarrived = |holder: &mut MachineObservation, volumes: &mut VolumeSnapshot| {
+        unknown(holder, volumes);
         holder.machine.runtime.daemon_version = String::new();
     };
 

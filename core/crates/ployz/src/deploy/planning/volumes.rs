@@ -230,12 +230,13 @@ impl<'snapshot> VolumePlan<'snapshot> {
     /// An Unarrived Machine never held a Service, so it holds no copy.
     fn unread(&self, machine: &MachineObservation, name: &DockerVolumeName) -> bool {
         let volumes = &self.snapshot.volume_snapshot;
-        machine.membership == ployz_core::MembershipObservation::Down
-            || (!machine.invites_rpc() && !machine.unarrived())
-            || volumes.machine_gap(machine.machine.id).is_some()
-            || volumes.named_failures().iter().any(|failure| {
-                failure.id.machine_id == machine.machine.id && &failure.id.name == name
-            })
+        !machine.unarrived()
+            && (machine.membership == ployz_core::MembershipObservation::Down
+                || !machine.invites_rpc()
+                || volumes.machine_gap(machine.machine.id).is_some()
+                || volumes.named_failures().iter().any(|failure| {
+                    failure.id.machine_id == machine.machine.id && &failure.id.name == name
+                }))
     }
 
     /// `name` as the Volume's owner wrote it.
