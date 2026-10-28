@@ -69,8 +69,8 @@ pub struct Unheld {
 /// raises, a grow's or a refused shrink's undo, never waits, unless it is
 /// [`Unheld`]: no copy holds the size yet, so a Deployment in flight, or one
 /// admitted since the run looked, may create it at the lock's old size. One whose
-/// runner's lease lapsed counts too, and so does a latest one whose outcome is
-/// unknown, as an abandoned run leaves it: its Machines may still be preparing the
+/// runner's lease lapsed counts too, and so does the last one that ran when its
+/// outcome is unknown, as an abandoned run leaves it: its Machines may still be preparing the
 /// copy.
 ///
 /// Every record that writes changes Applied State, which Cloud's change log reads, so
@@ -134,12 +134,11 @@ pub(crate) fn record(
         ));
     }
     if let Some(unheld) = &resized.unheld
-        && let Some(newer) =
-            deployment::claimed_or_queued(tx, &id)?.or(deployment::latest_numbered(tx, &id)?
-                .filter(|latest| {
-                    latest.number > unheld.latest_deployment
-                        || latest.status == DeploymentStatus::Unknown
-                }))
+        && let Some(newer) = deployment::claimed_or_queued(tx, &id)?
+            .or(deployment::latest_numbered(tx, &id)?
+                .filter(|latest| latest.number > unheld.latest_deployment))
+            .or(deployment::last_ran(tx, &id)?
+                .filter(|ran| ran.status == DeploymentStatus::Unknown))
     {
         return Err(deployed_since(&name, volume, &newer));
     }
