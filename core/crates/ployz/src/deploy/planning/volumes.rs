@@ -459,6 +459,7 @@ impl VolumePlan<'_> {
                 Err(
                     PlanError::NoWriter { .. }
                     | PlanError::CopiesUnknown { .. }
+                    | PlanError::VolumeHolderUnknown { .. }
                     | PlanError::VolumeServerTakesNoServices { .. },
                 ) => {}
                 Err(error) if super::volume_server_away(&error, snapshot, spec) => {}

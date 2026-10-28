@@ -1027,9 +1027,11 @@ fn a_deployed_docker_volume_whose_server_returned_stays_on_it() {
     );
     let targets = operations(&preview)
         .into_iter()
-        .filter_map(|operation| match operation {
-            DeployOperation::RunContainer { machine_id, .. } => Some(machine_id),
-            _ => None,
+        .filter_map(|operation| {
+            let DeployOperation::RunContainer { machine_id, .. } = operation else {
+                return None;
+            };
+            Some(machine_id)
         })
         .collect::<Vec<_>>();
     assert_eq!(targets, [machine_id('3')]);
@@ -1051,6 +1053,59 @@ fn a_new_docker_volume_is_created_while_another_server_is_down() {
     assert_eq!(
         preview.volumes_to_create.len(),
         1,
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+/// A Service mounting a deployed Docker Volume and a deployed Managed one, both on a
+/// Down Server, is Not attempted while another Service still deploys.
+#[test]
+fn a_service_with_both_volume_kinds_on_a_down_server_blocks_only_itself() {
+    let image = serde_json::json!({"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}});
+    let intent = ployz_core::config::lower_deployment(
+        serde_json::from_value(serde_json::json!({
+            "namespace": "app",
+            "snapshots": [
+                {"serviceId": "db", "config": {"version": 2, "privateDns": "db", "healthcheck": {"type": "none"},
+                    "restartPolicy": "on-failure", "source": image,
+                    "mounts": [
+                        {"volumeResourceId": "a-cache", "volumeName": "cache", "mountPath": "/cache"},
+                        {"volumeResourceId": "b-data", "volumeName": "data", "mountPath": "/data"}
+                    ]}},
+                {"serviceId": "web", "config": {"version": 2, "privateDns": "web", "healthcheck": {"type": "none"},
+                    "restartPolicy": "on-failure", "source": image}}
+            ],
+            "volumes": [
+                {"volumeResourceId": "a-cache", "storage": {"kind": "docker"}, "deployed": true},
+                {"volumeResourceId": "b-data", "storage": {"kind": "provisioned", "maximumBytes": 1_073_741_824}, "deployed": true}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut snapshot =
+        docker_holder_snapshot(&app_volume("vol-a-cache"), MembershipObservation::Down);
+    let mut live = machine('1', "live");
+    live.storage = Some(MachineStorageObservation::Ready);
+    *snapshot.machines.get_mut(0).unwrap() = live;
+    snapshot.storage_capacity = storage_snapshot()
+        .storage_capacity
+        .into_iter()
+        .filter(|(machine, _)| *machine == machine_id('1'))
+        .collect();
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service.as_str(), "db", "{blocked:?}");
+    assert!(
+        operations(&preview).iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RunContainer { spec, .. } if spec.name.as_str() == "web"
+        )),
         "{:?}",
         operations(&preview)
     );
