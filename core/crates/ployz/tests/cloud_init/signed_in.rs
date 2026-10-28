@@ -75,6 +75,8 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
             "--no-install",
             "--name",
             "founder",
+            "--public-ip",
+            "10.0.0.5",
             "--accepts-ingress=false",
             "--yes",
         ])
@@ -89,6 +91,21 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
     );
     let result = stdout_json(&output);
     assert_eq!(result.pointer("/founded"), Some(&json!(true)));
+    // Checked before Cloud mints a token and read again to enroll, but warned about once.
+    assert_eq!(
+        daemon.initialize_request().public_ip,
+        Some("10.0.0.5".parse().unwrap())
+    );
+    let warned = |stream: &[u8]| {
+        String::from_utf8_lossy(stream)
+            .matches("10.0.0.5 is a private address")
+            .count()
+    };
+    assert_eq!(
+        (warned(&output.stdout), warned(&output.stderr)),
+        (1, 1),
+        "one warning, in the JSON result and on stderr"
+    );
     assert_eq!(
         result.pointer("/server/machine/id"),
         Some(&json!(founder.id))

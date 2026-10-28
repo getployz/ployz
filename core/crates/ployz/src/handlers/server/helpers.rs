@@ -16,6 +16,18 @@ use crate::{
 };
 
 pub(in crate::handlers) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Error> {
+    let request = checked_token_request(matches)?;
+    if let Some(TokenRequest {
+        public_ip: PublicIpDiscovery::Override(ip),
+    }) = &request.token
+    {
+        warn_private(*ip);
+    }
+    Ok(request)
+}
+
+/// [`token_request`] without its warnings, for a check before the request it builds is used.
+pub(super) fn checked_token_request(matches: &ArgMatches) -> Result<InspectRequest, Error> {
     let public_ip = match matches
         .get_one::<String>("public-ip")
         .map(String::as_str)
@@ -23,7 +35,7 @@ pub(in crate::handlers) fn token_request(matches: &ArgMatches) -> Result<Inspect
     {
         "auto" => PublicIpDiscovery::Auto,
         "" | "none" => PublicIpDiscovery::Disabled,
-        value => PublicIpDiscovery::Override(public_ip(value)?),
+        value => PublicIpDiscovery::Override(reachable_public_ip(value)?),
     };
     Ok(InspectRequest {
         advertised_endpoints: parse_endpoints(&string_values(matches, "wg-endpoint"))?,
@@ -35,6 +47,12 @@ pub(in crate::handlers) fn token_request(matches: &ArgMatches) -> Result<Inspect
 /// A public IP the user gave: refused when no visitor could reach it, warned about when only a
 /// private network could (#2914).
 pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
+    let ip = reachable_public_ip(value)?;
+    warn_private(ip);
+    Ok(ip)
+}
+
+fn reachable_public_ip(value: &str) -> Result<IpAddr, Error> {
     let ip = value
         .parse::<IpAddr>()
         .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?;
@@ -52,6 +70,10 @@ pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
             "{ip} is {kind} address, which no visitor can reach. Give the address the internet reaches this Server at, or none."
         )));
     }
+    Ok(ip)
+}
+
+fn warn_private(ip: IpAddr) {
     let private = match ip.to_canonical() {
         IpAddr::V4(v4) => v4.is_private(),
         IpAddr::V6(v6) => v6.is_unique_local(),
@@ -61,7 +83,6 @@ pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
             "{ip} is a private address: only its own network reaches it, not the internet."
         ));
     }
-    Ok(ip)
 }
 
 pub(in crate::handlers) fn pinned(request: &InspectRequest) -> PinnedAddresses {

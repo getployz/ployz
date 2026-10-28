@@ -161,7 +161,7 @@ const SHAPING_VALUES: [&str; 12] = [
 /// parses as enrollment will read it.
 fn shaping_args(matches: &ArgMatches) -> Result<Vec<String>, Error> {
     super::enrollment_policy(matches)?;
-    super::helpers::token_request(matches)?;
+    super::helpers::checked_token_request(matches)?;
     super::helpers::requested_name(matches)?;
     let given = |id: &str| {
         matches!(
