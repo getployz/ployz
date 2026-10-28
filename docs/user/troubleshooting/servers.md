@@ -545,7 +545,7 @@ it answers pings, but its rows may read `Volume support unknown` or `did not ans
 large packets to web-2 are dropped on its mesh path from the Server this command entered by)` and
 leaves `web-2` as it is. From 0.3.8 it deploys on the other servers and exits 3, as when a server
 is down; the replicas on `web-2` keep running until a deploy after the path heals replaces them.
-Before 0.3.8, every deploy of a service with a replica to replace failed on every server, with
+Before 0.3.8, every deploy that started a replica failed on every server, with
 `list Containers failed`, `Machine web-2 did not answer`.
 
 `ployz server show web-2` still shows it. When `web-2` doesn't answer through the server the command

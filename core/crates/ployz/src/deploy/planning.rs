@@ -1738,7 +1738,7 @@ fn placement_candidates<'snapshot>(
         .machines
         .iter()
         .filter(|machine| machine.invites_rpc())
-        // A Suspect Machine that left this observer's listing unanswered would stall a start.
+        // A Machine whose silence is a listing gap would stall a start.
         .filter(|machine| !snapshot.silent(machine))
         .filter(|machine| {
             !matches!(

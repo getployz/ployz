@@ -125,14 +125,14 @@ fn outcome_from(
     }
 }
 
-/// One Service's copies on the Machines that answered, and each Suspect Machine that
-/// did not.
+/// One Service's copies on the Machines that answered, and each Machine whose silence
+/// is a [`crate::deploy::listing_gap`].
 pub(crate) struct Listed {
     pub(crate) copies: Vec<ContainerObservation>,
     pub(crate) unanswered: Vec<Unanswered>,
 }
 
-/// A Suspect Machine whose listing went unanswered, a [`crate::deploy::listing_gap`].
+/// A Machine whose listing went unanswered, a [`crate::deploy::listing_gap`].
 pub(crate) struct Unanswered {
     pub(crate) name: MachineName,
     pub(crate) failure: MachineFailure<RpcError>,
@@ -165,10 +165,10 @@ pub(crate) trait MachineOperations {
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError>;
-    /// [`Self::service_containers`], keeping each Suspect Machine that did not answer
-    /// beside the copies the others list instead of failing on it. An answered error,
-    /// or an Up Machine's silence, still fails. The default reports no Machine as
-    /// unanswered.
+    /// [`Self::service_containers`], keeping each Machine whose silence is a
+    /// [`crate::deploy::listing_gap`] beside the copies the others list instead of
+    /// failing on it. An answered error, or any other silence, still fails. The default
+    /// reports no Machine as unanswered.
     async fn listed_copies(&self, service: &QualifiedService) -> Result<Listed, RpcError> {
         Ok(Listed {
             copies: self.service_containers(service).await?,
