@@ -357,13 +357,15 @@ pub(crate) fn unanswered_message(machine: &MachineObservation, error: &RpcError)
 /// probes find large packets to it dropped: a reply larger than that path carries
 /// never arrives.
 pub(crate) fn large_packets_note(machine: &MachineObservation, error: &RpcError) -> Option<String> {
-    dropped_large_packets(machine, error).then(|| {
-        format!(
-            "; large packets to {} are dropped on its mesh path from the Server this command \
-             entered by",
-            machine.machine.name
-        )
-    })
+    dropped_large_packets(machine, error).then(|| dropped_note(&machine.machine.name))
+}
+
+/// [`large_packets_note`]'s words for `machine`.
+pub(crate) fn dropped_note(machine: impl std::fmt::Display) -> String {
+    format!(
+        "; large packets to {machine} are dropped on its mesh path from the Server this command \
+         entered by"
+    )
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

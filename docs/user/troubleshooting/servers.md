@@ -546,7 +546,11 @@ large packets to web-2 are dropped on its mesh path from the Server this command
 leaves `web-2` as it is. From 0.3.8 it deploys on the other servers and exits 3, as when a server
 is down; the replicas on `web-2` keep running until a deploy after the path heals replaces them.
 Before 0.3.8, every deploy that started a replica failed on every server, with
-`list Containers failed`, `Machine web-2 did not answer`.
+`list Containers failed`, `Machine web-2 did not answer`. Its proxy's confirmations can stop
+arriving too, until `web-2` reads `down`, usually within a few minutes. If the deploy gives up first,
+after 5 minutes, it fails with `proxy on web-2 did not confirm; large packets to web-2 are dropped
+on its mesh path from the Server this command entered by`. The old replicas keep running beside the
+new ones until the next deploy.
 
 `ployz server show web-2` still shows it. When `web-2` doesn't answer through the server the command
 entered by within 3 seconds, the CLI reads it over its own connection and prints `! web-2 did not

@@ -1782,6 +1782,8 @@ struct Rows<'a> {
     unobserved: BTreeSet<MachineId>,
     /// The Services this Deploy takes out wherever they run.
     retiring: &'a BTreeSet<QualifiedService>,
+    /// Machines the plan's listing found unanswered over a path dropping large packets.
+    dropped_large_packets: &'a BTreeSet<MachineId>,
     /// Copies on those Machines a removal already left to the next full Deploy,
     /// so a Service losing several live copies names each one once.
     unreached: std::sync::Mutex<BTreeSet<ContainerId>>,
@@ -1910,6 +1912,7 @@ impl<'a> Rows<'a> {
                 })
                 .collect(),
             retiring: plan.retiring(),
+            dropped_large_packets: plan.dropped_large_packets(),
             unreached: std::sync::Mutex::new(BTreeSet::new()),
             stop_first,
         }
@@ -2332,7 +2335,13 @@ impl<'a> Rows<'a> {
             .iter()
             .map(|id| self.machine_name(id))
             .collect();
-        format!("proxy on {} did not confirm", names.join(", "))
+        let causes: String = unconfirmed
+            .machines
+            .iter()
+            .filter(|id| self.dropped_large_packets.contains(id))
+            .map(|id| crate::deploy::dropped_note(self.machine_name(id)))
+            .collect();
+        format!("proxy on {} did not confirm{causes}", names.join(", "))
     }
 
     fn machine_name(&self, id: &MachineId) -> String {

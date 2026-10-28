@@ -97,6 +97,9 @@ pub struct DeployPlan {
     /// The Services this Deploy takes out wherever they run: each named removal the
     /// snapshot observed, and each Service it prunes.
     retiring: BTreeSet<QualifiedService>,
+    /// Machines whose Container listing went unanswered while the entry's path probes
+    /// found large packets to them dropped, so a notice can give that cause.
+    dropped_large_packets: BTreeSet<MachineId>,
 }
 
 impl DeployPlan {
@@ -124,6 +127,10 @@ impl DeployPlan {
 
     pub(crate) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
         &self.machine_names
+    }
+
+    pub(super) const fn dropped_large_packets(&self) -> &BTreeSet<MachineId> {
+        &self.dropped_large_packets
     }
 
     pub(super) const fn retiring(&self) -> &BTreeSet<QualifiedService> {
@@ -174,6 +181,7 @@ impl DeployPlan {
             registry_auth: std::collections::BTreeMap::new(),
             machine_names: BTreeMap::new(),
             retiring: BTreeSet::new(),
+            dropped_large_packets: BTreeSet::new(),
         }
     }
 
@@ -181,6 +189,13 @@ impl DeployPlan {
     #[cfg(test)]
     pub(super) fn with_retiring(mut self, services: &[QualifiedService]) -> Self {
         self.retiring = services.iter().cloned().collect();
+        self
+    }
+
+    /// The entry's path probes found large packets to `machines` dropped.
+    #[cfg(test)]
+    pub(super) fn with_dropped_large_packets(mut self, machines: &[MachineId]) -> Self {
+        self.dropped_large_packets = machines.iter().copied().collect();
         self
     }
 
@@ -685,6 +700,17 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         registry_auth: std::collections::BTreeMap::new(),
         machine_names: super::progress::machine_names(snapshot),
         retiring: planned.retiring.into_iter().collect(),
+        dropped_large_packets: snapshot
+            .container_failures
+            .iter()
+            .filter(|failure| {
+                snapshot.machines.iter().any(|machine| {
+                    machine.machine.id == failure.machine_id
+                        && super::large_packets_note(machine, &failure.error).is_some()
+                })
+            })
+            .map(|failure| failure.machine_id)
+            .collect(),
     }
 }
 

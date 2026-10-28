@@ -345,4 +345,57 @@ mod tests {
             &refused
         ));
     }
+
+    /// Only a listing left unanswered over a path the entry finds dropping large packets
+    /// gives the plan that cause, for the notices execution words later (#3521).
+    #[test]
+    fn the_plan_keeps_the_servers_whose_listing_large_packets_explain() {
+        use crate::deploy::planning::ingress_repairs::{ingress_intent, servers};
+
+        let dropped = Some(PathObservation {
+            mtu: 1420,
+            large_packets: LargePackets::Dropped,
+            lowered: false,
+        });
+        let silent = || {
+            RpcError::unanswered_target(
+                RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            )
+        };
+        let machines = [
+            crate::global_fixtures::machine('1', "web-1"),
+            crate::global_fixtures::machine('2', "web-2"),
+            crate::global_fixtures::machine('3', "web-3"),
+            crate::global_fixtures::machine('4', "web-4"),
+        ];
+        let mut snapshot = servers(&machines, Vec::new());
+        // web-2 is silent over a dropping path; web-3 too, but the router never dialed
+        // it; web-4's path drops, but it answered.
+        for (observed, membership) in snapshot.machines.iter_mut().skip(1).zip([
+            MembershipObservation::Up,
+            MembershipObservation::Suspect,
+            MembershipObservation::Up,
+        ]) {
+            observed.membership = membership;
+            observed.path = dropped;
+        }
+        snapshot.container_failures = vec![
+            MachineFailure {
+                machine_id: machines[1].id,
+                error: silent(),
+            },
+            MachineFailure {
+                machine_id: machines[2].id,
+                error: silent().undialed_target(),
+            },
+        ];
+
+        let plan = crate::deploy::plan_deploy(&ingress_intent(), &snapshot).expect("a plan");
+
+        assert_eq!(
+            plan.dropped_large_packets(),
+            &std::collections::BTreeSet::from([machines[1].id])
+        );
+    }
 }
