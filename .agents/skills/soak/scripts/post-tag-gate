@@ -19,10 +19,16 @@ if [ $# -lt 1 ] || [ $# -gt 2 ]; then
 fi
 id=$1
 timeout=${2:-15}
+if ! [[ $timeout =~ ^[0-9]+$ ]] || [ $(( 10#$timeout )) -eq 0 ]; then
+  echo "post-tag-gate: timeout must be a positive number of minutes" >&2
+  exit 2
+fi
+timeout=$(( 10#$timeout ))
 dir=${COORD_MAIL_DIR:-$HOME/.config/ployz-coord/mail}
 
 fail() { echo "FAILED: $1"; exit 1; }
 field() { sed -n "s/^$1: //p;/^\$/q" "$2"; }
+epoch() { local ts; ts=$(field ts "$1"); [ -n "$ts" ] && date -ud "$ts" +%s 2>/dev/null; }
 
 shopt -s nullglob
 found=("$dir"/read/*/"$id".md "$dir"/inbox/*/"$id".md)
@@ -30,15 +36,14 @@ found=("$dir"/read/*/"$id".md "$dir"/inbox/*/"$id".md)
 request=${found[0]}
 to=$(field to "$request")
 from=$(field from "$request")
-ts=$(field ts "$request")
-[ -n "$ts" ] || fail "request $id has no ts"
-sent=$(date -ud "$ts" +%s) || fail "request $id has an invalid ts"
+sent=$(epoch "$request") || fail "request $id has no valid ts"
 deadline=$(( sent + timeout * 60 ))
 
 for reply in "$dir"/inbox/"$from"/*.md "$dir"/read/"$from"/*.md; do
   [ "$(field from "$reply")" = "$to" ] || continue
   sed '1,/^$/d' "$reply" | grep -qF -- "$id" || continue
-  if [ "$(date -ud "$(field ts "$reply")" +%s)" -le "$deadline" ]; then
+  replied=$(epoch "$reply") || continue
+  if [ "$replied" -le "$deadline" ]; then
     echo "ACKED: $to replied in $(basename "$reply" .md)"
     exit 0
   fi
