@@ -59,6 +59,11 @@ Managed Volumes work on every run. Enrollment says `--storage none` only because
 
 Use `cli` for product actions; it isolates ambient Ployz credentials and runs in the manifest's sibling `workspace/`. Use `exec` for diagnostics or faults inside a selected Machine. Arguments are passed directly; use `-- bash -ec '...'` when a shell is needed. Both commands capture stdout, stderr and exit status and return the underlying command's status. Read the current CLI's `--help` for the feature's actual interface.
 
+`cli` gives the command no TTY and prints its output only when it exits. So `org approval approve` refuses for want of a terminal, and a deploy waiting on an approval shows nothing meanwhile. To answer an approval from a script:
+
+1. Start the waiting command in the background, and find its approval's id with `cli "$run" -- org approval ls`.
+2. While the waiter is still alive, approve through a [soak `mkguard`](../soak/scripts/mkguard) wrapper on the run's `artifacts/ployz`, with the run's `PLOYZ_TOKEN` and `PLOYZ_CLOUD_URL`, under `script`: `printf '<org slug>\r' | script -qfec "<wrapper> org approval approve <id>" /dev/null`. Approving after the waiter has died does nothing; its rerun opens a new approval.
+
 Select checks that can expose the feature's failures. For a ZFS migration, run a stateful workload with durable numbered writes and an external request trace, trigger the actual migration, then compare acknowledged writes with destination data and measure the outage. Exercise relevant transfer interruption, destination capacity, startup and retry cases against the intended contract. Report observed downtime; a migration that finishes does not alone prove minimal downtime. A recipe for a feature still being implemented comes from its requirements and current interface.
 
 ## Faults and the ack probe
@@ -81,13 +86,22 @@ kill "$probe"; wait "$probe"                   # prints the report; exits 1 when
 
 `probe` streams `INSERT … RETURNING id` through `ployz exec -T <service> -- psql` into table `ackprobe`, 200 per second by default (`--rate`). Postgres's default `synchronous_commit=on` holds a commit's reply until the commit is durable. An id counts as acknowledged only after psql prints its row, and each one is logged with its time in `evidence/ackprobe-<service>-<time>.jsonl`. A session that dies or waits longer than `--stall` seconds is replaced, and the ids it left in flight are not retried, so they count as unknown. Each new session runs through `ployz exec`, so it reaches the Service on whichever Machine runs it now. On SIGINT or SIGTERM the probe reads the table back from the current writer and prints one JSON report: `lost` lists acknowledged ids missing there, and `longest_gap_seconds` with `longest_gap_between` gives the longest wait between two acknowledgements, a measure of downtime. While the writer is unreachable a session hangs until `--stall` ends it, so the gap can overstate the outage by up to `--stall` (2 s by default) plus one reconnect through `ployz exec`. A new session gets 15 s to answer its first query before it is replaced, so a reconnect that hangs while the writer comes back can add up to 15 s more.
 
+`probe` and `exec` need a device-approved session with Full access, so on a `--cloud` run they fail with the Organization Token and keep suggesting `ployz device request`. Count acknowledged writes another way:
+
+- a writer Service, `postgres:18` running a `psql -h <db service>` insert loop that logs `ACK <epoch> <id>` for each row it gets back, saved with `docker logs -f` on its Machine and diffed against the table afterwards;
+- or a loop of `verify-cluster exec "$run" <machine> -- docker exec <container> psql … -c 'INSERT … RETURNING id'` with a timestamp per reply.
+
+The probe covers one Postgres Service on a Managed Volume. It doesn't cover Docker volumes, other stateful Services, or the first deploy after a heal, so a fault row varies the Volume kind and checks the deploy that follows.
+
+A fault row records when the fault started and the peer's state (up, suspect or down) when the check acts, and repeats the check in each state window. A pass that arrives only after a background timeout, such as suspect turning Down or retries running out, is a finding, not a pass.
+
 After correcting the implementation, keep the Machines and their data while updating binaries. `update` keeps each Machine's daemon source; a channel is resolved again:
 
 ```bash
 scripts/verify-cluster update "$run"
 ```
 
-`update` takes the same `--daemon [MACHINE=]SOURCE` choices, and Machines it does not name keep their source. `scripts/verify-cluster update "$run" --daemon checkout` moves a release cluster to the modified daemon; `--daemon machine-2=0.2.3` moves only machine-2, downgrades included.
+`update` takes the same `--daemon [MACHINE=]SOURCE` choices, and Machines it does not name keep their source. `scripts/verify-cluster update "$run" --daemon checkout` moves a release cluster to the modified daemon; `--daemon machine-2=0.2.3` moves only machine-2, downgrades included. Either way `update` restarts every Machine's daemon, not only the one named. A "rolling" upgrade driven one Machine at a time is therefore a cluster-wide restart at each step: a harsher test than a real roll, and not a model of one. Say so in its evidence. To make a given Server the Entry Machine for a command, pass `--connect ssh://root@<sandbox>` with the run's `private/id_ed25519` loaded in ssh-agent.
 
 ## Fault builds
 
@@ -95,7 +109,7 @@ A fault build reads its armed fault from `/run/ployz/fault` on every check, so a
 
 ## Evidence and cleanup
 
-Every helper command saves its argv, exit code, duration, stdout and stderr beside the manifest in `evidence/`. Save client traffic traces, feature-specific assertions and any additional proof there too. Capture each Entry Machine separately when replicated observations matter. Name the behavior exercised and report failures or untested cases precisely.
+Every helper command saves its argv, exit code, duration, stdout and stderr beside the manifest in `evidence/`. Save client traffic traces, feature-specific assertions and any additional proof there too. Capture each Entry Machine separately when replicated observations matter. Name the behavior exercised and report failures or untested cases precisely. A fix proof cites the manifest's `revision`, the checkout commit it built, which must equal the PR head, and lists every case it skipped or cut. A coordinator rejects a proof that lacks either.
 
 ```bash
 scripts/verify-cluster down "$run"
@@ -140,13 +154,25 @@ The host reaches each sandbox over root SSH at its IPv4 `sshEndpoint`; Machines 
 - **Keep one `up` to 12 Machines or fewer.** That fits the per-minute start cap, and `up` deletes every sandbox of a run when one fails readiness, so a 32-Machine `up` that loses one box spends 32 starts.
 - **Save results as a long run goes.** A load generator that writes its report only at exit loses all of it when its sandbox stops. Write each interval to a file and fetch the files during the run.
 
+### Lab topology
+
+The lab's network differs from production in ways that can pass for product bugs. Label any address-family finding `lab topology?` until it reproduces on a dual-stack path.
+
+- Boat Machines are public on IPv6 only; their IPv4 is private behind the node's NAT.
+- This host and the lab Cloud are IPv4-only, and reach the Machines over SSH.
+- Lab daemons use the production relay, so a relay outage fails every enrollment. When all of them time out, check the relay first.
+- No lab path exercises NAT64.
+- A bare host reports the node's shared IPv4 until `server set --public-ip`; see [Bare hosts](#bare-hosts).
+
 ## Cloud pairing
 
 ```bash
 run=$(scripts/verify-cluster up --daemon stable --cloud)
 ```
 
-`--cloud` starts this checkout's dashboard (`../dashboard/scripts/verify/up.sh`) with Inngest and the worker. It then enrolls the Machines through it with the seed's Organization Token rather than `--standalone`. `cli` then goes through Cloud with that token, and `doctor` also checks that Cloud lists exactly this run's Machines. `down` stops the dashboard it started. It skips the dashboard's idle stop, since a cluster's CLI calls are too brief to count as a connection. When the dashboard's `SERVERS=N up.sh` started the cluster instead, the dashboard owns it and its `down.sh` removes the cluster. Cloud enrollment needs a daemon that speaks this checkout's CLI protocol and reports its version. A release qualifies only when this checkout is that release's tagged commit; a release with the same version string can still predate the checkout's protocol. Any other release Machine enrolls on the checkout daemon, which `up` then compiles, and gets its release installed right after enrollment. Because it enrolled with this checkout's CLI, that run keeps this checkout's CLI. Any `--daemon` choice therefore works with `--cloud`, mixed ones included, and `doctor` also checks that Cloud reports each Machine's daemon version. In this mode the daemon advertises its discovered endpoints, so the provider's `--wg-endpoint` choice does not apply; `up` sets a Boat Machine's public IP with `server set` after it enrolls.
+A fix proof on the product path runs `--cloud` and names its mode in the evidence. Without `--cloud` the cluster is Standalone, a test-only mode users don't run.
+
+`--cloud` starts this checkout's dashboard (`../dashboard/scripts/verify/up.sh`) with Inngest and the worker. It then enrolls the Machines through it with the seed's Organization Token rather than `--standalone`. `cli` then goes through Cloud with that token, and `doctor` also checks that Cloud lists exactly this run's Machines. `down` stops the dashboard it started. It skips the dashboard's idle stop, since a cluster's CLI calls are too brief to count as a connection. When the dashboard's `SERVERS=N up.sh` started the cluster instead, the dashboard owns it and its `down.sh` removes the cluster. Cloud enrollment needs a daemon that speaks this checkout's CLI protocol and reports its version. A release qualifies only when this checkout is that release's tagged commit; a release with the same version string can still predate the checkout's protocol. Any other release Machine enrolls on the checkout daemon, which `up` then compiles, and gets its release installed right after enrollment. It keeps the state the checkout made at enrollment, such as the Sealing Key and firewall rules, so it is not a genuine N-1 Server. For one, use `--bare` and enroll with the old release's install line or `server add --command`. Because it enrolled with this checkout's CLI, that run keeps this checkout's CLI. Any `--daemon` choice therefore works with `--cloud`, mixed ones included, and `doctor` also checks that Cloud reports each Machine's daemon version. In this mode the daemon advertises its discovered endpoints, so the provider's `--wg-endpoint` choice does not apply; `up` sets a Boat Machine's public IP with `server set` after it enrolls.
 
 ## Bare hosts
 
@@ -155,4 +181,4 @@ run=$(scripts/verify-cluster up --bare --machines 1 --daemon checkout)
 run=$(scripts/verify-cluster up --bare --distro debian-12)
 ```
 
-`--bare` boots fresh Boat hosts for installer work: plain sandboxes, not the bake, with this run's daemon binaries on `PATH` (`/usr/local/bin`, staged in `/opt/ployz-verify`) and nothing installed, enrolled or started. Boat keeps UFW on there, so `up` allows ports 80 and 443 through it; bare sandboxes are deleted at `down`, never pooled. A bare host you enroll yourself still reports the node's shared IPv4; run `ployz server set <server> --public-ip <address>` with the manifest's `address` before checking a domain. The plain base is Ubuntu 24.04 with Docker already running. Boat has no Debian base, so `--distro debian-12` boots the Debian 12 cloud image under KVM inside a default sandbox (4 vCPU, 8 GB) and reaches it through that sandbox; it adds under a minute to `up`. Debian 12's glibc is 2.36, older than a checkout build on this host links against, so a staged checkout `ployzd` won't run there. Build one for that glibc with `cargo zigbuild -p ployzd --target x86_64-unknown-linux-gnu.2.36`, outside kache, and push it to `/usr/local/bin` with `exec`. `exec`, `cli`, `update` and `down` work as on any run; `update` restages the binaries without installing them, and `doctor` does not apply. With `--cloud` or `--cloud-attach`, each host gets `PLOYZ_CLOUD_URL` in `/etc/environment` and no token, since it has not enrolled. The URL is this host's `http://localhost:<port>`, so `up` holds an SSH reverse forward of that port open for each Machine and checks that `curl` reaches the Cloud through it; `down` ends the forward.
+`--bare` boots fresh Boat hosts for installer work: plain sandboxes, not the bake, with this run's daemon binaries on `PATH` (`/usr/local/bin`, staged in `/opt/ployz-verify`) and nothing installed, enrolled or started. Boat keeps UFW on there, so `up` allows ports 80 and 443 through it; bare sandboxes are deleted at `down`, never pooled. A bare host you enroll yourself still reports the node's shared IPv4; run `ployz server set <server> --public-ip <address>` with the manifest's `address` before checking a domain. Before a release is published, the printed `server add --command` line and `server add ssh://` both 404 on GitHub. Install the staged binary first with `ployzd install --version <version> --storage zfs`, then join with `server add --no-install --storage none`. Only the published release proves the real install path; see soak's [Release phases](../soak/SKILL.md#release-phases). The plain base is Ubuntu 24.04 with Docker already running. Boat has no Debian base, so `--distro debian-12` boots the Debian 12 cloud image under KVM inside a default sandbox (4 vCPU, 8 GB) and reaches it through that sandbox; it adds under a minute to `up`. Debian 12's glibc is 2.36, older than a checkout build on this host links against, so a staged checkout `ployzd` won't run there. Build one for that glibc with `cargo zigbuild -p ployzd --target x86_64-unknown-linux-gnu.2.36`, outside kache, and push it to `/usr/local/bin` with `exec`. `exec`, `cli`, `update` and `down` work as on any run; `update` restages the binaries without installing them, and `doctor` does not apply. With `--cloud` or `--cloud-attach`, each host gets `PLOYZ_CLOUD_URL` in `/etc/environment` and no token, since it has not enrolled. The URL is this host's `http://localhost:<port>`, so `up` holds an SSH reverse forward of that port open for each Machine and checks that `curl` reaches the Cloud through it; `down` ends the forward.
