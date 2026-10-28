@@ -137,3 +137,32 @@ fn a_check_that_never_ran_still_refuses() {
     );
     assert_eq!(refused.details, json!({ "volumes": ["data"] }));
 }
+
+#[test]
+fn servers_that_did_not_answer_are_named_and_one_never_deployed_keeps_its_id() {
+    let named: MachineId = "67fc9e737c7045bfbbb96bf9e3c9c6cc".parse().unwrap();
+    let unnamed: MachineId = "0a1b2c3d4e5f60718293a4b5c6d7e8f9".parse().unwrap();
+    let data = [VolumeName::parse("data").unwrap()];
+    let servers = std::collections::BTreeMap::from([(named, "machine-3".to_owned())]);
+
+    let one = silent(&data, &[named], &servers);
+    assert_eq!(one.code, ployz_core::RpcErrorCode::Unavailable);
+    assert_eq!(
+        one.message,
+        "This removes deployed Volumes, and Server machine-3 didn't answer whether it holds \
+         their data, so it refuses. Try again once it answers"
+    );
+    assert_eq!(
+        one.details,
+        json!({ "volumes": ["data"], "unanswered": [named] })
+    );
+
+    let two = silent(&data, &[named, unnamed], &servers);
+    assert_eq!(
+        two.message,
+        format!(
+            "This removes deployed Volumes, and Servers machine-3, {unnamed} didn't answer \
+             whether they hold their data, so it refuses. Try again once they answer"
+        )
+    );
+}

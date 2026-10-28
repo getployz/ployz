@@ -955,6 +955,7 @@ fn rollback_losses(
     crate::review::check(&review, retry.version.as_deref())?;
     let removed = rollback_removed(tx, stored, &review.head.applied)?;
     let losses = crate::removal::review(
+        tx,
         who,
         environment,
         (&review.view.version, retry.version.as_deref()),

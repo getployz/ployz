@@ -377,6 +377,7 @@ fn deploy(
         let probe =
             deployment::namespace(tx, who, &environment.summary, false).and_then(|namespace| {
                 review::destructive(
+                    tx,
                     who,
                     &review,
                     (&target, &namespace, shipping),
@@ -399,6 +400,7 @@ fn deploy(
         trusted,
     )?;
     let losses = review::destructive(
+        tx,
         who,
         &review,
         (&saved_intent, &namespace, shipping),

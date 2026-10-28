@@ -708,6 +708,7 @@ pub(crate) fn shut_down(
     let losses = match forget {
         Some(_) => Vec::new(),
         None => crate::review::destructive(
+            tx,
             who,
             &review,
             (
