@@ -85,6 +85,18 @@ struct PeerPath {
     rtts: VecDeque<(std::time::Instant, Duration)>,
 }
 
+impl PeerPath {
+    fn rtt_at(&self, now: std::time::Instant) -> Option<RttStatistics> {
+        let samples = self
+            .rtts
+            .iter()
+            .filter(|(taken, _)| now.saturating_duration_since(*taken) < RTT_FRESH)
+            .map(|(_, rtt)| rtt.as_secs_f64() * 1000.0)
+            .collect::<Vec<_>>();
+        ployz_core::rtt_statistics(&samples)
+    }
+}
+
 impl PathBook {
     #[must_use]
     pub(crate) fn get(&self, machine_id: &MachineId) -> Option<PathObservation> {
@@ -98,16 +110,18 @@ impl PathBook {
         self.rtt_at(machine_id, std::time::Instant::now())
     }
 
-    fn rtt_at(&self, machine_id: &MachineId, now: std::time::Instant) -> Option<RttStatistics> {
-        let samples = self
-            .paths()
-            .get(machine_id)?
-            .rtts
+    /// [`Self::rtt`] for every peer that has one.
+    #[must_use]
+    pub(crate) fn rtts(&self) -> BTreeMap<MachineId, RttStatistics> {
+        let now = std::time::Instant::now();
+        self.paths()
             .iter()
-            .filter(|(taken, _)| now.saturating_duration_since(*taken) < RTT_FRESH)
-            .map(|(_, rtt)| rtt.as_secs_f64() * 1000.0)
-            .collect::<Vec<_>>();
-        ployz_core::rtt_statistics(&samples)
+            .filter_map(|(machine_id, peer)| Some((*machine_id, peer.rtt_at(now)?)))
+            .collect()
+    }
+
+    fn rtt_at(&self, machine_id: &MachineId, now: std::time::Instant) -> Option<RttStatistics> {
+        self.paths().get(machine_id)?.rtt_at(now)
     }
 
     pub(super) fn set(&self, machine_id: MachineId, path: PathObservation, rtt: Option<Duration>) {
