@@ -12,8 +12,6 @@
 # Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
 # Never prints a secret: cookies, tokens and keys stay in mode-600 files under $run, and printed commands read them.
 set -euo pipefail
-# A verify session takes main's SDK build while the SDK's interface is unchanged; SDK=exact builds this checkout's.
-export SDK=${SDK:-stale}
 dash=$(cd "$(dirname "$0")/../.." && pwd)
 wt=$(dirname "$dash")
 name=ployz-verify-$(printf %s "$wt" | sha1sum | cut -c1-10)
@@ -21,6 +19,9 @@ run=$dash/.verify/run
 fresh=0
 if [ "${1:-}" = --fresh ]; then fresh=1; shift; fi
 [ -n "${SERVERS:-}" ] && export VERIFY_REAL_SERVERS=1
+# A UI session takes main's SDK build while the SDK's interface is unchanged; SDK=exact builds this checkout's.
+# Real Servers run the worker's planner from the SDK, so a stale one would prove main's code: they build exact.
+export SDK=${SDK:-$([ "${VERIFY_REAL_SERVERS:-0}" = 1 ] && echo exact || echo stale)}
 if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ] || [ "${FAKE_GITHUB:-0}" = 1 ] || [ "${MAIL:-0}" = 1 ]; then with_inngest=1; else with_inngest=0; fi
 cd "$dash"
 # Containers other checkouts left behind hold the shared host's memory.
@@ -31,6 +32,8 @@ install=0; build_sdk=0
 if [ ! -f "$dash/node_modules/.modules.yaml" ] || [ "$dash/pnpm-lock.yaml" -nt "$dash/node_modules/.modules.yaml" ]; then install=1; fi
 sdk=$wt/core/crates/ployz-sdk/ployz-sdk.node
 if [ ! -f "$sdk" ] || [ -n "$(find "$wt/core/crates" -newer "$sdk" -type f \( -name '*.rs' -o -name Cargo.toml \) -print -quit)" ]; then build_sdk=1; fi
+# The SDK on disk may be a stale main build from an earlier run, so exact always resolves it: a cache hit takes seconds.
+if [ "$SDK" = exact ]; then build_sdk=1; fi
 
 # vite reads the env file once and loads the SDK once, and the worker runs a bundle of the code it started with, so
 # only an instance without Inngest, started by this up.sh in this mode on this port, with unchanged dependencies,
