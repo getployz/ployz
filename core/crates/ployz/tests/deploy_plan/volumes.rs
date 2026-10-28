@@ -1111,6 +1111,128 @@ fn a_service_with_both_volume_kinds_on_a_down_server_blocks_only_itself() {
     );
 }
 
+/// A Server this Deploy could not read, beside an answering Server `live`: no
+/// listing shows the Volume anywhere.
+fn unread_holder_snapshot(
+    unread: impl FnOnce(&mut MachineObservation, &mut VolumeSnapshot),
+) -> DeploySnapshot {
+    let mut holder = machine('3', "holder");
+    holder.machine.runtime.daemon_version = "0.3.8".into();
+    let mut volumes = VolumeSnapshot::default();
+    unread(&mut holder, &mut volumes);
+    DeploySnapshot {
+        machines: vec![machine('1', "live"), holder],
+        volume_snapshot: volumes,
+        ..Default::default()
+    }
+}
+
+fn unrecognized(holder: &mut MachineObservation, volumes: &mut VolumeSnapshot) {
+    holder.membership = MembershipObservation::Unrecognized("drifting".into());
+    holder.membership_evidence = Some(ployz_core::MembershipEvidence::Unrecognized {
+        raw: "drifting".into(),
+    });
+    *volumes =
+        VolumeSnapshot::try_from_parts(Vec::new(), Vec::new(), Vec::new(), vec![machine_id('3')])
+            .unwrap();
+}
+
+fn unknown(holder: &mut MachineObservation, _: &mut VolumeSnapshot) {
+    holder.membership = MembershipObservation::Unknown;
+}
+
+fn listing_failed(_: &mut MachineObservation, volumes: &mut VolumeSnapshot) {
+    *volumes = VolumeSnapshot::try_from_parts(
+        Vec::new(),
+        Vec::new(),
+        vec![MachineFailure {
+            machine_id: machine_id('3'),
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Docker did not answer".into(),
+                details: Default::default(),
+                cause: Vec::new(),
+            },
+        }],
+        Vec::new(),
+    )
+    .unwrap();
+}
+
+fn assert_holder_unknown(preview: &DeployPreview) {
+    assert!(
+        preview.volumes_to_create.is_empty(),
+        "{:?}",
+        preview.volumes_to_create
+    );
+    assert_eq!(
+        only_blocked(preview).message,
+        "holder did not answer, so whether it holds Docker volume echo is unknown. \
+         Bring holder back, or deploy the other services by name"
+    );
+}
+
+/// No RPC reaches a Server whose membership this Entry cannot decode, so its Volumes
+/// are never listed (#3540).
+#[test]
+fn a_deployed_docker_volume_whose_server_is_unrecognized_is_not_attempted() {
+    let (intent, _) = lowered_echo_in(serde_json::json!({"kind": "docker"}), true);
+
+    let preview = runner_preview(&intent, &unread_holder_snapshot(unrecognized)).unwrap();
+
+    assert_holder_unknown(&preview);
+}
+
+/// A Server that ran a daemon but whose membership is Unknown is asked nothing.
+#[test]
+fn a_deployed_docker_volume_whose_server_is_unknown_is_not_attempted() {
+    let (intent, _) = lowered_echo_in(serde_json::json!({"kind": "docker"}), true);
+
+    let preview = runner_preview(&intent, &unread_holder_snapshot(unknown)).unwrap();
+
+    assert_holder_unknown(&preview);
+}
+
+/// An Up Server whose Docker Volume listing failed may hold the copy it did not list
+/// (#3540).
+#[test]
+fn a_deployed_docker_volume_whose_server_listing_failed_is_not_attempted() {
+    let (intent, _) = lowered_echo_in(serde_json::json!({"kind": "docker"}), true);
+
+    let preview = runner_preview(&intent, &unread_holder_snapshot(listing_failed)).unwrap();
+
+    assert_holder_unknown(&preview);
+}
+
+/// A Docker Volume no Deploy applied yet has no copy on any unread Server, and an
+/// Unarrived Server never held one.
+#[test]
+fn a_new_docker_volume_is_created_beside_an_unread_server() {
+    let (new, _) = lowered_echo_in(serde_json::json!({"kind": "docker"}), false);
+    let (deployed, _) = lowered_echo_in(serde_json::json!({"kind": "docker"}), true);
+    let unarrived = |holder: &mut MachineObservation, _: &mut VolumeSnapshot| {
+        holder.membership = MembershipObservation::Unknown;
+        holder.machine.runtime.daemon_version = String::new();
+    };
+
+    for (intent, snapshot) in [
+        (&new, unread_holder_snapshot(unrecognized)),
+        (&new, unread_holder_snapshot(unknown)),
+        (&new, unread_holder_snapshot(listing_failed)),
+        (&deployed, unread_holder_snapshot(unarrived)),
+    ] {
+        let preview = runner_preview(intent, &snapshot).unwrap();
+
+        assert!(preview.blocked.is_empty(), "{:?}", preview.blocked);
+        assert_eq!(
+            preview.volumes_to_create.len(),
+            1,
+            "{:?}",
+            operations(&preview)
+        );
+    }
+}
+
 #[test]
 fn a_deployed_volume_no_member_holds_refuses_instead_of_starting_empty() {
     let (intent, physical) = lowered_echo(true);
