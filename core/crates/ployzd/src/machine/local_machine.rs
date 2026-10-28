@@ -421,8 +421,8 @@ impl LocalMachine {
             .ok_or(Error::ClusterStoreUnavailable)
     }
 
-    /// Entry-local membership and RTT from the same admin source as ListMachines
-    /// and inspect RTT.
+    /// Entry-local membership and Corrosion's RTT from the admin socket. ListMachines and
+    /// Inspect prefer the mesh echo's RTT where there is one (#3502).
     ///
     /// Returns `None` when the admin socket cannot be read so Watch can keep
     /// replicated rows.

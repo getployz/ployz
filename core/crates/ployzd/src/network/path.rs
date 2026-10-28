@@ -67,6 +67,9 @@ const ECHO_REQUEST: u8 = 128;
 const ECHO_REPLY: u8 = 129;
 /// Round trips kept per peer: about five minutes at one per round.
 const RTT_SAMPLES: usize = 5;
+/// How long a round trip counts. A peer whose echoes stop coming back reads as unmeasured
+/// once its last one is this old, rather than keeping an RTT nobody measured lately.
+const RTT_FRESH: Duration = Duration::from_secs(60 * (RTT_SAMPLES as u64 + 1));
 
 /// This Machine's latest path observation of each peer and its recent round trips, written
 /// by the network plane and read by the Machine API.
@@ -76,8 +79,8 @@ pub(crate) struct PathBook(Arc<Mutex<BTreeMap<MachineId, PeerPath>>>);
 #[derive(Clone, Debug, Default)]
 struct PeerPath {
     path: Option<PathObservation>,
-    /// Newest first, at most [`RTT_SAMPLES`].
-    rtts: VecDeque<Duration>,
+    /// Each round trip and when it was taken, newest first, at most [`RTT_SAMPLES`].
+    rtts: VecDeque<(std::time::Instant, Duration)>,
 }
 
 impl PathBook {
@@ -86,25 +89,41 @@ impl PathBook {
         self.paths().get(machine_id).and_then(|peer| peer.path)
     }
 
-    /// The round trip to a peer over its recent rounds; none before an echo came back.
+    /// The round trip to a peer over its recent rounds; none before an echo came back, or
+    /// once none has for [`RTT_FRESH`].
     #[must_use]
     pub(crate) fn rtt(&self, machine_id: &MachineId) -> Option<RttStatistics> {
+        self.rtt_at(machine_id, std::time::Instant::now())
+    }
+
+    fn rtt_at(&self, machine_id: &MachineId, now: std::time::Instant) -> Option<RttStatistics> {
         let samples = self
             .paths()
             .get(machine_id)?
             .rtts
             .iter()
-            .map(|rtt| rtt.as_secs_f64() * 1000.0)
+            .filter(|(taken, _)| now.saturating_duration_since(*taken) < RTT_FRESH)
+            .map(|(_, rtt)| rtt.as_secs_f64() * 1000.0)
             .collect::<Vec<_>>();
         ployz_core::rtt_statistics(&samples)
     }
 
     pub(super) fn set(&self, machine_id: MachineId, path: PathObservation, rtt: Option<Duration>) {
+        self.set_at(machine_id, path, rtt, std::time::Instant::now());
+    }
+
+    fn set_at(
+        &self,
+        machine_id: MachineId,
+        path: PathObservation,
+        rtt: Option<Duration>,
+        now: std::time::Instant,
+    ) {
         let mut paths = self.paths();
         let peer = paths.entry(machine_id).or_default();
         peer.path = Some(path);
         if let Some(rtt) = rtt {
-            peer.rtts.push_front(rtt);
+            peer.rtts.push_front((now, rtt));
             peer.rtts.truncate(RTT_SAMPLES);
         }
     }
@@ -329,13 +348,14 @@ fn echo(address: Ipv6Addr, size: u32, wait: Duration) -> io::Result<Option<Durat
     let identifier = fastrand::u16(..);
     let sequence = fastrand::u16(..);
     let request = echo_request(identifier, sequence, size);
+    // Before the send: a thread descheduled after it would start the clock after the reply.
+    let sent = std::time::Instant::now();
     rustix::net::sendto(
         &socket,
         &request,
         SendFlags::empty(),
         &SocketAddrV6::new(address, 0, 0, 0),
     )?;
-    let sent = std::time::Instant::now();
     let deadline = sent + wait;
     let mut reply = vec![0_u8; request.len().max(64)];
     loop {
@@ -481,6 +501,19 @@ mod tests {
             median_ms(&book),
             Some(34.0),
             "a silent round keeps the samples"
+        );
+        let later = std::time::Instant::now() + RTT_FRESH;
+        assert_eq!(
+            book.rtt_at(&peer, later),
+            None,
+            "a peer whose echoes stopped long ago reads as unmeasured"
+        );
+        book.set_at(peer, path, Some(ms(2.0)), later);
+        assert_eq!(
+            book.rtt_at(&peer, later)
+                .map(|statistics| statistics.median_ns),
+            Some(2_000_000),
+            "only the fresh echo counts"
         );
         assert_eq!(book.get(&peer), Some(path));
         book.retain(|_| false);
