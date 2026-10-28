@@ -201,7 +201,7 @@ fn a_service_whose_only_candidates_went_unread_blocks_only_itself() {
         if provisioned {
             make_provisioned(&mut pinned, "data", ployz_core::STORAGE_GIB);
         }
-        let snapshot = listing_gap_snapshot(None);
+        let snapshot = listing_gap_snapshot(&[]);
 
         let (preview, blocked) = blocked_beside_web(&[&pinned], &snapshot);
 
@@ -211,7 +211,7 @@ fn a_service_whose_only_candidates_went_unread_blocks_only_itself() {
 }
 /// Three Servers with Managed volumes. machine-3 is Up but its Docker Volume listing
 /// failed. Its ZFS storage still answered, so `holder` and its Volumes are located.
-fn listing_gap_snapshot(holder: Option<(char, &[&str])>) -> DeploySnapshot {
+fn listing_gap_snapshot(holders: &[(char, &[&str])]) -> DeploySnapshot {
     let machines =
         [('1', "machine-1"), ('2', "machine-2"), ('3', "machine-3")].map(|(id, name)| {
             let mut machine = machine(id, name);
@@ -229,14 +229,14 @@ fn listing_gap_snapshot(holder: Option<(char, &[&str])>) -> DeploySnapshot {
         .expect("valid Volume Snapshot fixture"),
         ..storage_snapshot()
     };
-    if let Some((holder, names)) = holder {
+    for (holder, names) in holders {
         let capacity = snapshot
             .storage_capacity
-            .get_mut(&machine_id(holder))
+            .get_mut(&machine_id(*holder))
             .expect("fixture has capacity for the holder")
             .as_mut()
             .expect("fixture capacity is observed");
-        for name in names {
+        for name in *names {
             capacity
                 .volumes
                 .insert(app_volume(name), maximum_bytes(ployz_core::STORAGE_GIB));
@@ -254,7 +254,7 @@ fn a_managed_volume_whose_holder_listing_failed_blocks_only_its_service() {
         add_named_volume(&mut service, name);
         make_provisioned(&mut service, name, ployz_core::STORAGE_GIB);
     }
-    let snapshot = listing_gap_snapshot(Some(('3', &["data", "more"])));
+    let snapshot = listing_gap_snapshot(&[('3', &["data", "more"])]);
 
     let (preview, blocked) = blocked_beside_web(&[&service], &snapshot);
 
@@ -270,6 +270,40 @@ fn a_managed_volume_whose_holder_listing_failed_blocks_only_its_service() {
     assert_only_web_runs(&preview);
 }
 
+/// Volumes held on different Servers have no common Server whether or not the unread one
+/// answers, so the conflict still fails the Deploy.
+#[test]
+fn volumes_split_across_an_unread_server_still_conflict() {
+    let mut service = replicated("mu");
+    for name in ["data", "more"] {
+        add_named_volume(&mut service, name);
+        make_provisioned(&mut service, name, ployz_core::STORAGE_GIB);
+    }
+    let web = replicated("web");
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&service, &web],
+        PlanOptions::default(),
+    );
+    for holders in [
+        [('1', &["data"][..]), ('3', &["more"][..])],
+        [('1', &["more"][..]), ('3', &["data"][..])],
+    ] {
+        let PlanError::Service { source, .. } =
+            runner_preview(&intent, &listing_gap_snapshot(&holders)).unwrap_err()
+        else {
+            panic!("the conflict names its Service")
+        };
+        let error = source.to_string();
+
+        assert!(error.contains("no machines available"), "{error}");
+        assert!(
+            error.contains("is already on Machine 'machine-1'"),
+            "{error}"
+        );
+    }
+}
+
 /// Services sharing a Managed volume on the unread holder wait together.
 #[test]
 fn services_sharing_a_managed_volume_on_an_unread_holder_wait_together() {
@@ -278,7 +312,7 @@ fn services_sharing_a_managed_volume_on_an_unread_holder_wait_together() {
         add_named_volume(service, "data");
         make_provisioned(service, "data", ployz_core::STORAGE_GIB);
     }
-    let snapshot = listing_gap_snapshot(Some(('3', &["data"])));
+    let snapshot = listing_gap_snapshot(&[('3', &["data"])]);
 
     let (preview, blocked) = blocked_beside_web(&[&services[0], &services[1]], &snapshot);
 
@@ -299,7 +333,7 @@ fn a_managed_volume_on_an_answering_server_deploys_beside_a_listing_gap() {
     let mut service = replicated("mu");
     add_named_volume(&mut service, "data");
     make_provisioned(&mut service, "data", ployz_core::STORAGE_GIB);
-    let snapshot = listing_gap_snapshot(Some(('2', &["data"])));
+    let snapshot = listing_gap_snapshot(&[('2', &["data"])]);
 
     let (preview, blocked) = blocked_beside_web(&[&service], &snapshot);
 

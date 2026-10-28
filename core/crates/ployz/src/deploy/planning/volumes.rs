@@ -1028,14 +1028,6 @@ fn volume_constraints<'spec>(
             false
         });
     }
-    // A Machine this Deploy did not read may hold the Volume, so a Service that can only
-    // run there waits instead of failing the Deploy (#3561).
-    if machines.is_empty()
-        && let Some((_, machine, _)) = skipped.first()
-        && let Some(volume) = mounted_volumes.first()
-    {
-        return Err(plan.holder_unknown(volume, machine.clone()));
-    }
     for volume in mounted_volumes.iter().copied() {
         let name = managed_volume_name(volume).expect("mounted managed Volumes are named");
         if let Some(machine) = machines
@@ -1045,9 +1037,17 @@ fn volume_constraints<'spec>(
             return Err(plan.holder_unknown(volume, machine.machine.name.clone()));
         }
     }
+    // The skipped Machines, narrowed by every Volume as the candidates are.
+    let mut unread = snapshot
+        .machines
+        .iter()
+        .filter(|machine| skipped.iter().any(|(id, ..)| *id == machine.machine.id))
+        .collect::<Vec<_>>();
+    let mut first_located = None;
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {
         machines.retain(|machine| !plan.incompatible_on(machine.machine.id, volume));
+        unread.retain(|machine| !plan.incompatible_on(machine.machine.id, volume));
         if matches!(spec.mode, ServiceMode::Replicated { .. }) {
             match plan.locality(volume)? {
                 VolumeLocality::Located { first, others } => {
@@ -1055,16 +1055,21 @@ fn volume_constraints<'spec>(
                     if let Some(error) = refused_location(spec, snapshot, plan, volume, located) {
                         return Err(error);
                     }
-                    if !machines.iter().any(|machine| located(machine.machine.id))
-                        && let Some((_, machine, _)) = skipped.iter().find(|(id, ..)| located(*id))
-                    {
-                        return Err(plan.holder_unknown(volume, machine.clone()));
-                    }
                     machines.retain(|machine| located(machine.machine.id));
+                    unread.retain(|machine| located(machine.machine.id));
+                    first_located.get_or_insert(volume);
                 }
                 VolumeLocality::Absent => missing_volumes.push(volume),
             }
         }
+    }
+    // Only a Machine this Deploy did not read is left, and it may already hold the
+    // Volumes, so the Service waits instead of failing the Deploy (#3561).
+    if machines.is_empty()
+        && let Some(machine) = unread.first()
+        && let Some(volume) = first_located.or_else(|| mounted_volumes.first().copied())
+    {
+        return Err(plan.holder_unknown(volume, machine.machine.name.clone()));
     }
     if machines.is_empty() {
         // ponytail: name the filter that emptied the set; no per-Machine matrix.
