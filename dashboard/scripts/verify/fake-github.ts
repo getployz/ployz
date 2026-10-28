@@ -273,10 +273,17 @@ export async function run() {
     if (input.action === "synchronize") Object.assign(p, { head_sha: sha1("synchronize", p.head_sha), commits: p.commits + 1 });
     if (input.action === "opened" || input.action === "reopened") p.state = "open";
     const baseBefore = commitSha(i, r, p.base_branch);
-    if (input.action === "closed") {
-      const merged = input.merged ?? false;
-      Object.assign(p, { state: "closed", merged, merge_commit_sha: merged ? sha1("merge", p.head_sha) : null });
-      if (p.merge_commit_sha) merges.set(`${r.id}:${p.base_branch}`, p.merge_commit_sha);
+    // A pull request merges once; closing it again changes nothing on its base branch.
+    const merging = input.action === "closed" && (input.merged ?? false) && !before.merged;
+    if (input.action === "closed" && !before.merged) {
+      Object.assign(p, { state: "closed", merged: merging, merge_commit_sha: merging ? sha1("merge", p.head_sha, baseBefore) : null });
+    }
+    if (merging && p.merge_commit_sha) {
+      merges.set(`${r.id}:${p.base_branch}`, p.merge_commit_sha);
+      // Open pull requests from the branch the merge moved now head at the merge commit, as on GitHub.
+      for (const [key, open] of pulls) {
+        if (key.startsWith(`${r.id}#`) && open.state === "open" && open.head_branch === p.base_branch) open.head_sha = p.merge_commit_sha;
+      }
     }
     pulls.set(pullKey(r, p.number), p);
     const changes = p.base_branch === before.base_branch
@@ -286,7 +293,7 @@ export async function run() {
       ...common, action: input.action, number: p.number, pull_request: pullJson(i, r, p),
       ...(input.action === "edited" ? { changes } : {}),
     });
-    if (!p.merge_commit_sha || input.action !== "closed" || closed.status >= 300) return closed;
+    if (!merging || !p.merge_commit_sha || closed.status >= 300) return closed;
     // GitHub follows a merge with the push of its merge commit to the base branch, which merge-triggered deploys need.
     const pushed = await webhook("push", {
       ...common, ref: `refs/heads/${p.base_branch}`, before: baseBefore, after: p.merge_commit_sha,
