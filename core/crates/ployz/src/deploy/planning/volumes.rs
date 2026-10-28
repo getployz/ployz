@@ -1041,10 +1041,15 @@ fn volume_constraints<'spec>(
         .iter()
         .filter(|machine| skipped.iter().any(|(id, ..)| *id == machine.machine.id))
         .collect::<Vec<_>>();
-    // A Global Service keeps a copy on every Machine it runs on, and a rollout without an
-    // unread Machine would remove the replica there.
+    // A Global rollout without an unread Machine would remove the replica it runs there.
     if matches!(spec.mode, ServiceMode::Global)
-        && let Some(machine) = unread.first()
+        && let Some(machine) = unread.iter().find(|machine| {
+            snapshot.containers.iter().any(|container| {
+                container.machine_id == machine.machine.id
+                    && container.namespace == plan.namespace
+                    && container.resolved_spec.name == spec.name
+            })
+        })
         && let Some(volume) = mounted_volumes.first()
     {
         return Err(plan.holder_unknown(volume, machine.machine.name.clone()));

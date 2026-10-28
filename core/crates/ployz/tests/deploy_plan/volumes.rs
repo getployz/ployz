@@ -2889,6 +2889,38 @@ fn plain_volumes_on_answering_servers_still_refuse_under_the_runner() {
     assert!(preview.is_err(), "{:?}", preview.map(|plan| plan.blocked));
 }
 
+/// A Global Service with no replica on the unread Server yet touches nothing there, so it
+/// starts on the Servers that answered.
+#[test]
+fn a_new_global_service_starts_beside_an_unread_server() {
+    let mut service = requested(ServiceMode::Global);
+    add_named_volume(&mut service, "data");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "machine-1"), machine('3', "machine-3")],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            vec![observed_volume(machine_id('1'), "data")],
+            Vec::new(),
+            vec![listing_failure('3')],
+            Vec::new(),
+        )
+        .unwrap(),
+        ..storage_snapshot()
+    };
+
+    let (preview, blocked) = blocked_beside_web(&[&service], &snapshot);
+
+    assert!(blocked.is_empty(), "{blocked:?}");
+    assert!(
+        operations(&preview).iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RunContainer { spec, machine_id: run, .. }
+                if spec.name.as_str() == "api" && *run == machine_id('1')
+        )),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
 #[test]
 fn a_global_service_with_an_unread_server_keeps_its_replicas() {
     let mut old = requested(ServiceMode::Global);
