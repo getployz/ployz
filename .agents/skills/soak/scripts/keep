@@ -18,6 +18,7 @@ fi
 file=$1
 shift 2
 
+mkdir -p "$(dirname "$file")"
 rm -f "$file" "$file.err"
 status=0
 (umask 077; "$@" > "$file" 2> "$file.err") || status=$?
