@@ -93,7 +93,10 @@ struct ClusterContext {
 pub(crate) struct RuntimeWatchTelemetry {
     pub states: BTreeMap<ManagementAddress, MembershipEvidence>,
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+    /// Corrosion's RTT, used for a Machine with no mesh echo RTT.
     pub rtts: Vec<RttObservation>,
+    /// The mesh echo's RTT per Machine, as ListMachines and Inspect report it (#3502).
+    pub mesh_rtts: BTreeMap<MachineId, RttStatistics>,
 }
 
 impl RuntimeWatchTelemetry {
@@ -110,7 +113,11 @@ impl RuntimeWatchTelemetry {
                 .selected_endpoints
                 .get(&observation.machine.id)
                 .copied();
-            observation.rtt = rtt.get(&observation.machine.id).cloned();
+            observation.rtt = self
+                .mesh_rtts
+                .get(&observation.machine.id)
+                .or_else(|| rtt.get(&observation.machine.id))
+                .cloned();
         }
         observations
     }
@@ -421,12 +428,15 @@ impl LocalMachine {
             .ok_or(Error::ClusterStoreUnavailable)
     }
 
-    /// Entry-local membership and Corrosion's RTT from the admin socket. ListMachines and
-    /// Inspect prefer the mesh echo's RTT where there is one (#3502).
+    /// Entry-local membership and Corrosion's RTT from the admin socket, with the mesh
+    /// echo's RTT from `paths`.
     ///
     /// Returns `None` when the admin socket cannot be read so Watch can keep
     /// replicated rows.
-    pub(crate) async fn runtime_watch_telemetry(&self) -> Option<RuntimeWatchTelemetry> {
+    pub(crate) async fn runtime_watch_telemetry(
+        &self,
+        paths: &crate::network::PathBook,
+    ) -> Option<RuntimeWatchTelemetry> {
         let Some(cluster) = &self.cluster else {
             return None;
         };
@@ -435,6 +445,7 @@ impl LocalMachine {
         Some(RuntimeWatchTelemetry {
             states: membership_states_by_address(states),
             rtts,
+            mesh_rtts: paths.rtts(),
             selected_endpoints: local.selected_endpoints.clone(),
         })
     }
@@ -770,6 +781,7 @@ impl LocalMachine {
                 states,
                 selected_endpoints: local.selected_endpoints.clone(),
                 rtts: Vec::new(),
+                mesh_rtts: BTreeMap::new(),
             }
             .overlay(machines, &entry_id),
         })
@@ -1376,6 +1388,7 @@ mod tests {
                 statistics: rtt.clone(),
                 path: None,
             }],
+            mesh_rtts: BTreeMap::new(),
         }
         .overlay(vec![entry.clone(), peer.clone()], &entry.id);
 
@@ -1386,6 +1399,47 @@ mod tests {
         assert_eq!(entry_row.selected_endpoint, Some(endpoint));
         assert_eq!(peer_row.membership, MembershipObservation::Suspect);
         assert_eq!(peer_row.rtt, Some(rtt));
+    }
+
+    #[test]
+    fn overlay_prefers_mesh_echo_rtt_over_corrosion() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let echoed = machine("echoed", PEER_ID, 2);
+        let silent = machine("silent", &"c".repeat(32), 3);
+        let corrosion = |machine: &Machine, median_ns| RttObservation {
+            peer_id: machine.name.to_string(),
+            address: format!(
+                "[{}]:{CORROSION_GOSSIP_PORT}",
+                machine.management_address().0
+            )
+            .parse()
+            .unwrap(),
+            machine: None,
+            statistics: RttStatistics {
+                median_ns,
+                population_stddev_ns: 0,
+            },
+            path: None,
+        };
+        let mesh = RttStatistics {
+            median_ns: 1_200_000,
+            population_stddev_ns: 100_000,
+        };
+        let observations = RuntimeWatchTelemetry {
+            rtts: vec![corrosion(&echoed, 0), corrosion(&silent, 7_000_000)],
+            mesh_rtts: BTreeMap::from([(echoed.id, mesh.clone())]),
+            ..RuntimeWatchTelemetry::default()
+        }
+        .overlay(vec![entry.clone(), echoed, silent], &entry.id);
+
+        let [_, echoed_row, silent_row] = observations.as_slice() else {
+            panic!("expected entry and two peer observations");
+        };
+        assert_eq!(echoed_row.rtt, Some(mesh));
+        assert_eq!(
+            silent_row.rtt.as_ref().map(|rtt| rtt.median_ns),
+            Some(7_000_000)
+        );
     }
 
     #[test]

@@ -59,6 +59,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         )]),
         selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
         rtts: vec![rtt_on(&entry, rtt.clone())],
+        mesh_rtts: BTreeMap::new(),
     };
 
     let frame = assemble_runtime_watch_frame(
@@ -357,6 +358,7 @@ fn peer_sample(
         rtts: rtt
             .map(|statistics| vec![rtt_on(peer, statistics)])
             .unwrap_or_default(),
+        mesh_rtts: BTreeMap::new(),
     }
 }
 

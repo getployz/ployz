@@ -25,6 +25,7 @@ use crate::{
     corrosion::{CertificateRow, Error, ReplicatedObservations, ReplicatedStore},
     logs::RpcStream,
     machine::{LocalMachine, RuntimeWatchTelemetry},
+    network::PathBook,
 };
 
 /// How often Watch samples membership and RTT from the local admin socket.
@@ -53,10 +54,13 @@ impl RuntimeWatch {
         &self,
         store: ReplicatedStore,
         local: LocalMachine,
+        paths: PathBook,
         entry_id: MachineId,
     ) -> Result<RuntimeWatchStream, Error> {
-        self.subscribe_with(async || serve_replicated_runtime_watch(store, local, entry_id).await)
-            .await
+        self.subscribe_with(async || {
+            serve_replicated_runtime_watch(store, local, paths, entry_id).await
+        })
+        .await
     }
 
     async fn subscribe_with(
@@ -154,9 +158,8 @@ impl RuntimeWatchSnapshot {
 ///
 /// Subscribes first, then yields one complete frame immediately. Later frames
 /// are assembled on store wakeups or
-/// once-per-second membership/RTT samples from the local admin source. Its RTT is
-/// Corrosion's; ListMachines and Inspect prefer the mesh echo's (#3502). The
-/// notification payload is not the observation. Unchanged observations do not
+/// once-per-second membership/RTT samples from the local admin source and the
+/// mesh echo. The notification payload is not the observation. Unchanged observations do not
 /// yield, including when only `observed_at` advances. Store failure ends the
 /// stream. Admin telemetry failure keeps replicated rows.
 ///
@@ -166,6 +169,7 @@ impl RuntimeWatchSnapshot {
 pub(crate) async fn serve_replicated_runtime_watch(
     store: ReplicatedStore,
     local: LocalMachine,
+    paths: PathBook,
     entry_id: MachineId,
 ) -> Result<RpcStream, Error> {
     let changes = store.subscribe_runtime_watch_changes().await?;
@@ -182,9 +186,10 @@ pub(crate) async fn serve_replicated_runtime_watch(
         },
         move || {
             let local = local.clone();
+            let paths = paths.clone();
             async move {
                 LatestSample {
-                    telemetry: local.runtime_watch_telemetry().await,
+                    telemetry: local.runtime_watch_telemetry(&paths).await,
                     observed_at: rfc3339(SystemTime::now()),
                 }
             }

@@ -697,7 +697,7 @@ impl MachineRpc for MachineService {
         let entry_id = self.local_record().id();
         let stream = self
             .runtime_watch
-            .subscribe(store, self.local.clone(), entry_id)
+            .subscribe(store, self.local.clone(), self.paths.clone(), entry_id)
             .await
             .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error))?;
         Ok(Response::new(stream))

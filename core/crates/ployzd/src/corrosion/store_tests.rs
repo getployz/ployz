@@ -187,9 +187,14 @@ async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
     let local =
         LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap());
     assert!(
-        crate::runtime_watch::serve_replicated_runtime_watch(store, local, MachineId::random())
-            .await
-            .is_err()
+        crate::runtime_watch::serve_replicated_runtime_watch(
+            store,
+            local,
+            crate::network::PathBook::default(),
+            MachineId::random(),
+        )
+        .await
+        .is_err()
     );
     let _ = std::fs::remove_dir_all(data_dir);
 }
