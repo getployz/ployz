@@ -209,17 +209,18 @@ impl<'snapshot> VolumePlan<'snapshot> {
                 super::storage::capacity(self.snapshot, machine)?;
             }
         } else if let Some(name) = managed_volume_name(volume)
-            && let Some(silent) = self
-                .snapshot
-                .machines
-                .iter()
-                .find(|machine| self.snapshot.silent(machine))
+            && let Some(away) = self.snapshot.machines.iter().find(|machine| {
+                self.snapshot.silent(machine)
+                    || (machine.membership == ployz_core::MembershipObservation::Down
+                        && self.deployed_volumes.contains(name))
+            })
         {
             // Absence from a listing a Machine left unanswered would create the Volume
-            // empty beside the copy that Machine may hold.
+            // empty beside the copy that Machine may hold. A Down Machine may hold only
+            // a Volume an earlier Deploy applied.
             return Err(PlanError::VolumeHolderUnknown {
                 name: self.authored(name).to_owned(),
-                machine: silent.machine.name.clone(),
+                machine: away.machine.name.clone(),
             });
         }
         Ok(VolumeLocality::Absent)
@@ -458,6 +459,7 @@ impl VolumePlan<'_> {
                 Err(
                     PlanError::NoWriter { .. }
                     | PlanError::CopiesUnknown { .. }
+                    | PlanError::VolumeHolderUnknown { .. }
                     | PlanError::VolumeServerTakesNoServices { .. },
                 ) => {}
                 Err(error) if super::volume_server_away(&error, snapshot, spec) => {}

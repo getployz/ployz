@@ -134,8 +134,10 @@ pub struct DeployIntent {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(as = "Option<BTreeMap<DockerVolumeName, String>>", optional)]
     pub volume_names: BTreeMap<DockerVolumeName, String>,
-    /// The Managed Volumes an earlier Deploy applied. Each holds data on some Server,
-    /// so finding no copy of one on any member means its data left the Cluster.
+    /// The Volumes an earlier Deploy applied. Each holds data on some Server, so
+    /// finding no copy of a Managed one on any member means its data left the
+    /// Cluster, and a Down Server may hold an unseen Docker one. Before 0.3.8 this
+    /// listed Managed Volumes only.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     #[ts(as = "Option<BTreeSet<DockerVolumeName>>", optional)]
     pub deployed_volumes: BTreeSet<DockerVolumeName>,

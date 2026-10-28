@@ -648,3 +648,31 @@ fn start_command_follows_how_the_image_was_built() {
     .unwrap_err();
     assert_eq!(error.path, "startCommand");
 }
+
+/// A Deploy reads a Volume an earlier Deploy applied as one a Down Server may hold,
+/// of either kind, so the Deploy Intent lists both (#3526).
+#[test]
+fn lowering_lists_every_kind_of_volume_an_earlier_deploy_applied() {
+    let config = json!({"version":2,"privateDns":"web","healthcheck":{"type":"none"},
+    "restartPolicy":"on-failure",
+    "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+    "mounts":[
+        {"volumeResourceId":"docker","volumeName":"cache","mountPath":"/cache"},
+        {"volumeResourceId":"managed","volumeName":"data","mountPath":"/data"},
+        {"volumeResourceId":"fresh","volumeName":"new","mountPath":"/new"}
+    ]});
+    let intent = lowered(json!({
+        "namespace":"app","snapshots":[{"config":config}],
+        "volumes":[
+            {"volumeResourceId":"docker","storage":{"kind":"docker"},"deployed":true},
+            {"volumeResourceId":"managed","storage":{"kind":"provisioned","maximumBytes":1_073_741_824},"deployed":true},
+            {"volumeResourceId":"fresh","storage":{"kind":"docker"}}
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        intent["deployed_volumes"],
+        json!(["app_vol-docker", "app_vol-managed"])
+    );
+}
