@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -46,6 +47,18 @@ function vite(dir: string): number {
   return child.pid;
 }
 
+/** A live vite stand-in in `dir` that listens on a free port, as a vite restarted by hand would, outside vite.pid. */
+async function listeningVite(dir: string): Promise<number> {
+  const child = spawn(
+    process.execPath,
+    ["-e", "const s=require('net').createServer().listen(0,'127.0.0.1',()=>console.log(s.address().port))", "node_modules/vite/bin/vite.js", "dev"],
+    { cwd: dir, stdio: ["ignore", "pipe", "ignore"] },
+  );
+  children.push(child);
+  const [line] = (await once(child.stdout, "data")) as [Buffer];
+  return Number(line.toString().trim());
+}
+
 function host() {
   const root = mkdtempSync(join(tmpdir(), "verify-reap-"));
   mkdirSync(join(root, "bin"));
@@ -62,7 +75,7 @@ function host() {
   /** A checkout whose verify run records `pids`, with an idle.sh that writes `idle-started` if anything runs it. */
   const checkout = (
     name: string,
-    run: { readonly vite?: number; readonly live?: true; readonly idle?: number },
+    run: { readonly vite?: number; readonly live?: true; readonly idle?: number; readonly port?: number },
   ) => {
     const wt = join(root, name);
     const dir = join(wt, "dashboard", ".verify", "run");
@@ -73,7 +86,7 @@ function host() {
       `#!/usr/bin/env bash\ntouch "${dir}/idle-started"\n`,
     );
     chmodSync(join(wt, "dashboard", "scripts", "verify", "idle.sh"), 0o755);
-    writeFileSync(join(dir, "env"), "PORT=4321\n");
+    writeFileSync(join(dir, "env"), `PORT=${run.port ?? 4321}\n`);
     if (run.vite !== undefined) writeFileSync(join(dir, "vite.pid"), `${run.vite}\n`);
     if (run.idle !== undefined) writeFileSync(join(dir, "idle.pid"), `${run.idle}\n`);
     if (run.live === true) writeFileSync(join(dir, "vite.pid"), `${vite(join(wt, "dashboard"))}\n`);
@@ -142,6 +155,32 @@ describe("scripts/verify/reap.sh", () => {
 
     expect(docker.removed()).toEqual(["bbbbbbbbbd"]);
     expect(output).not.toContain("watchdog");
+  });
+
+  it("keeps the containers of a checkout whose vite.pid is stale while its own vite listens on its port", async () => {
+    const docker = host();
+    const wt = join(docker.root, "restarted");
+    mkdirSync(join(wt, "dashboard"), { recursive: true });
+    const port = await listeningVite(join(wt, "dashboard"));
+    docker.checkout("restarted", { vite: DEAD, port });
+    docker.container("bbbbbbbbbf", wt, 3600);
+
+    docker.run();
+
+    expect(docker.removed()).toEqual([]);
+  });
+
+  it("removes the containers of a checkout whose port another checkout's vite listens on", async () => {
+    const docker = host();
+    const other = join(docker.root, "other");
+    mkdirSync(join(other, "dashboard"), { recursive: true });
+    const port = await listeningVite(join(other, "dashboard"));
+    const { wt } = docker.checkout("taken", { vite: DEAD, port });
+    docker.container("bbbbbbbbbg", wt, 3600);
+
+    docker.run();
+
+    expect(docker.removed()).toEqual(["bbbbbbbbbg"]);
   });
 
   it("keeps the containers of a checkout it may not enter", () => {
