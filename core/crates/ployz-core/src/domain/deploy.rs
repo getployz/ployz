@@ -965,7 +965,8 @@ impl Display for DeployWarning {
                 None => write!(f, "{kind} observation failed on {machine_id}: {message}"),
             },
             Self::ObservationOmitted { kind, machine_id, gap } => match gap {
-                Some(gap) => write!(f, "Server {} was observed Down by this Entry; deployment observations are incomplete.", gap.machine_name),
+                Some(ObservationGap { machine_name, reason: ObservationGapReason::Down }) => write!(f, "Server {machine_name} was observed Down by this Entry; deployment observations are incomplete."),
+                Some(ObservationGap { machine_name, reason: ObservationGapReason::Failed }) => write!(f, "Server {machine_name} could not be observed by this Entry; deployment observations are incomplete."),
                 None => write!(f, "{kind} observation omitted {machine_id}"),
             },
             Self::StorageObservationUnknown { machine_id, machine_name } => match machine_name {

@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use ployz_core::{
-    ContainerId, DeployWarning, MachineId, Namespace, ObservationKind, QualifiedService,
-    ServiceName,
+    ContainerId, DeployWarning, MachineId, Namespace, ObservationGapReason, ObservationKind,
+    QualifiedService, ServiceName,
 };
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
@@ -1138,11 +1138,15 @@ fn observation_detail(warning: &DeployWarning) -> Option<(MachineId, String)> {
         Some((*machine_id, format!("{kind}s: {message}")))
     } else if let DeployWarning::ObservationOmitted {
         machine_id,
-        gap: Some(_),
+        gap: Some(gap),
         ..
     } = warning
     {
-        Some((*machine_id, "observed Down by this Entry".into()))
+        let detail = match gap.reason {
+            ObservationGapReason::Down => "observed Down by this Entry",
+            ObservationGapReason::Failed => "not observed by this Entry",
+        };
+        Some((*machine_id, detail.into()))
     } else {
         None
     }

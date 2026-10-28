@@ -70,9 +70,15 @@ pub(super) fn warnings(
         else {
             continue;
         };
-        if !failed && machine.membership_evidence != Some(MembershipEvidence::Down) {
-            continue;
-        }
+        // Down and Unrecognized membership get no RPC, so their omission is a
+        // Server this Entry did not read. Missing evidence is synthetic absence.
+        let reason = match (failed, &machine.membership_evidence) {
+            (true, _) | (false, Some(MembershipEvidence::Unrecognized { .. })) => {
+                ObservationGapReason::Failed
+            }
+            (false, Some(MembershipEvidence::Down)) => ObservationGapReason::Down,
+            (false, _) => continue,
+        };
         let candidate = requested.iter().any(|spec| {
             relevant_kind(kind, spec)
                 && !matches!(
@@ -97,11 +103,7 @@ pub(super) fn warnings(
         {
             *gap = Some(ObservationGap {
                 machine_name: machine.machine.name.clone(),
-                reason: if failed {
-                    ObservationGapReason::Failed
-                } else {
-                    ObservationGapReason::Down
-                },
+                reason,
             });
         }
     }
