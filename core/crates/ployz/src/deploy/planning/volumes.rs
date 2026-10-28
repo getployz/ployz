@@ -234,9 +234,27 @@ impl<'snapshot> VolumePlan<'snapshot> {
             && (machine.membership == ployz_core::MembershipObservation::Down
                 || !machine.invites_rpc()
                 || volumes.machine_gap(machine.machine.id).is_some()
-                || volumes.named_failures().iter().any(|failure| {
-                    failure.id.machine_id == machine.machine.id && &failure.id.name == name
-                }))
+                || volumes.named_gap(machine.machine.id, name))
+    }
+
+    /// The refusal for a Service whose `volume` may sit on `machine`, which this Deploy
+    /// did not read. It blocks only the Services that mount the Volume.
+    fn holder_unknown(
+        &self,
+        volume: &ServiceVolume,
+        machine: ployz_core::MachineName,
+    ) -> PlanError {
+        let name = self
+            .authored(managed_volume_name(volume).expect("mounted managed Volumes are named"))
+            .to_owned();
+        if matches!(
+            volume.source.kind(),
+            ployz_core::RawVolumeSource::Provisioned { .. }
+        ) {
+            PlanError::CopiesUnknown { name, machine }
+        } else {
+            PlanError::VolumeHolderUnknown { name, machine }
+        }
     }
 
     /// `name` as the Volume's owner wrote it.
@@ -1010,30 +1028,22 @@ fn volume_constraints<'spec>(
             false
         });
     }
+    // A Machine this Deploy did not read may hold the Volume, so a Service that can only
+    // run there waits instead of failing the Deploy (#3561).
     if machines.is_empty()
-        && let Some((machine_id, machine, message)) = skipped.first()
-        && let Some(name) = mounted_volumes
-            .first()
-            .and_then(|volume| managed_volume_name(volume))
+        && let Some((_, machine, _)) = skipped.first()
+        && let Some(volume) = mounted_volumes.first()
     {
-        return Err(PlanError::DockerVolumeUnavailable {
-            id: DockerVolumeId {
-                machine_id: *machine_id,
-                name: name.clone(),
-            },
-            message: format!("Machine '{machine}' {message}"),
-        });
+        return Err(plan.holder_unknown(volume, machine.clone()));
     }
-    if let Some((id, message)) = snapshot.volume_snapshot.named_gap(|id| {
-        machines
+    for volume in mounted_volumes.iter().copied() {
+        let name = managed_volume_name(volume).expect("mounted managed Volumes are named");
+        if let Some(machine) = machines
             .iter()
-            .any(|machine| machine.machine.id == id.machine_id)
-            && mounted_volumes
-                .iter()
-                .filter_map(|volume| managed_volume_name(volume))
-                .any(|name| name == &id.name)
-    }) {
-        return Err(PlanError::DockerVolumeUnavailable { id, message });
+            .find(|machine| snapshot.volume_snapshot.named_gap(machine.machine.id, name))
+        {
+            return Err(plan.holder_unknown(volume, machine.machine.name.clone()));
+        }
     }
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {
@@ -1044,6 +1054,11 @@ fn volume_constraints<'spec>(
                     let located = |id: MachineId| id == first || others.contains(&id);
                     if let Some(error) = refused_location(spec, snapshot, plan, volume, located) {
                         return Err(error);
+                    }
+                    if !machines.iter().any(|machine| located(machine.machine.id))
+                        && let Some((_, machine, _)) = skipped.iter().find(|(id, ..)| located(*id))
+                    {
+                        return Err(plan.holder_unknown(volume, machine.clone()));
                     }
                     machines.retain(|machine| located(machine.machine.id));
                 }
