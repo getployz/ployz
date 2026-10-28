@@ -1267,17 +1267,18 @@ fn an_interrupted_deploy_counts_its_cancelled_and_interrupted_rows() {
     assert!(!text.contains("owned work"), "{text}");
 }
 
-/// An Unrecognized Server gets no RPC, so planning qualifies its omissions as a
-/// Failed gap: it reads by name, never Down, and counts like any other gap.
+/// An Unrecognized Server gets no RPC, so planning reports its omissions as
+/// failed observations: they read by name, never Down, and count as a gap.
 #[test]
 fn an_unread_server_gap_names_it_and_counts_without_claiming_down() {
     use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
     let machine_id = MachineId::random();
     let mut initial = frame(State::Completed);
     for kind in [ObservationKind::Container, ObservationKind::Volume] {
-        initial.notices.push(DeployWarning::ObservationOmitted {
+        initial.notices.push(DeployWarning::ObservationFailed {
             kind,
             machine_id,
+            message: "this Entry doesn't recognize its membership, so it wasn't asked".into(),
             gap: Some(ObservationGap {
                 machine_name: MachineName::parse("machine-3").unwrap(),
                 reason: ObservationGapReason::Failed,
@@ -1289,9 +1290,7 @@ fn an_unread_server_gap_names_it_and_counts_without_claiming_down() {
         vec![(1, Message::Finish(initial, Disposition::Settled))],
     );
     assert!(
-        text.contains(
-            "! Server machine-3: deployment observations are incomplete (not observed by this Entry)"
-        ),
+        text.contains("! Server machine-3: deployment observations are incomplete (containers: this Entry doesn't recognize its membership"),
         "{text}"
     );
     assert!(text.contains("1 Server observation gap"), "{text}");

@@ -36,6 +36,30 @@ pub(super) fn warnings(
             message.push_str(&note);
         }
     }
+    // Unrecognized membership gets no RPC, as Down does, but proves nothing about
+    // the Server. Its omission is an observation that failed, with that as the cause.
+    for warning in &mut warnings {
+        if let DeployWarning::ObservationOmitted {
+            kind,
+            machine_id,
+            gap: None,
+        } = *warning
+            && snapshot.machines.iter().any(|machine| {
+                machine.machine.id == machine_id
+                    && matches!(
+                        machine.membership_evidence,
+                        Some(MembershipEvidence::Unrecognized { .. })
+                    )
+            })
+        {
+            *warning = DeployWarning::ObservationFailed {
+                gap: None,
+                kind,
+                machine_id,
+                message: "this Entry doesn't recognize its membership, so it wasn't asked".into(),
+            };
+        }
+    }
     // Machines whose old copies may serve beside this Deploy's new ones; a gap
     // that only a removal opened starts no new copy there.
     let mut serving_beside = std::collections::BTreeSet::new();
@@ -70,15 +94,9 @@ pub(super) fn warnings(
         else {
             continue;
         };
-        // Down and Unrecognized membership get no RPC, so their omission is a
-        // Server this Entry did not read. Missing evidence is synthetic absence.
-        let reason = match (failed, &machine.membership_evidence) {
-            (true, _) | (false, Some(MembershipEvidence::Unrecognized { .. })) => {
-                ObservationGapReason::Failed
-            }
-            (false, Some(MembershipEvidence::Down)) => ObservationGapReason::Down,
-            (false, _) => continue,
-        };
+        if !failed && machine.membership_evidence != Some(MembershipEvidence::Down) {
+            continue;
+        }
         let candidate = requested.iter().any(|spec| {
             relevant_kind(kind, spec)
                 && !matches!(
@@ -103,7 +121,11 @@ pub(super) fn warnings(
         {
             *gap = Some(ObservationGap {
                 machine_name: machine.machine.name.clone(),
-                reason,
+                reason: if failed {
+                    ObservationGapReason::Failed
+                } else {
+                    ObservationGapReason::Down
+                },
             });
         }
     }

@@ -87,8 +87,8 @@ Services or their dependencies, or to observed work the deploy affected. An Entr
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
 A Server whose membership the Entry doesn't recognize (`server ls` shows a state such as
-`Left`) is not asked either, so it is an incomplete observation too, read
-`not observed by this Entry` rather than Down.
+`Left`) isn't asked either, so the CLI reports it as an incomplete observation, not as Down:
+`this Entry doesn't recognize its membership, so it wasn't asked`.
 
 When the CLI says `Server machine-2: deployment observations are incomplete`, it includes
 distinct failure causes in that Server's line and does not repeat its container or volume

@@ -58,14 +58,14 @@ fn only_recognized_evidence_or_an_actual_failure_qualifies_a_relevant_gap() {
         gaps(&preview),
         [(machine_id('2'), ObservationGapReason::Failed)]
     );
-    let omitted = preview
+    let unread = preview
         .warnings
         .iter()
         .find(|warning| warning.observation_gap().is_some())
         .unwrap();
     assert_eq!(
-        omitted.to_string(),
-        "Server unobserved could not be observed by this Entry; deployment observations are incomplete."
+        unread.to_string(),
+        "Could not fully observe containers on Server unobserved: this Entry doesn't recognize its membership, so it wasn't asked"
     );
     let mut failed = snapshot;
     failed.machines.get_mut(1).unwrap().membership_evidence = None;
