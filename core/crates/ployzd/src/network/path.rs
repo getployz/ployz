@@ -15,14 +15,16 @@
 //! No verdict is drawn from silence alone: a peer whose small echo is lost too keeps
 //! the MTU it had (bet 8).
 //!
-//! The first echo each round to come back also times the round trip to the peer over the
-//! mesh. A short window of those times is the RTT `server show` prints (#3502): Corrosion's
-//! own samples are whole milliseconds of each connection's minimum, so they read 0 on a
-//! fast path and never rise when it slows.
+//! A round that hears the peer then times one more small echo, the round trip to the peer
+//! over the mesh. A short window of those times is the RTT `server show` prints (#3502):
+//! Corrosion's own samples are whole milliseconds of each connection's minimum, so they
+//! read 0 on a fast path and never rise when it slows. The round's first echo is not timed:
+//! after a minute idle it pays to wake the path and can take ten times its steady round
+//! trip (#3528).
 //!
 //! Bound (bet 3): a Machine-local loop acting only on its own routes. Each round, every
-//! [`PROBE_EVERY`], sends each peer one echo of its current MTU. Only a lost one adds
-//! more: [`ATTEMPTS`] tries per size, one small echo and a binary search of about five
+//! [`PROBE_EVERY`], sends each peer one echo of its current MTU and one small timed echo.
+//! Only a lost one adds more: [`ATTEMPTS`] tries per size, one small echo and a binary search of about five
 //! sizes between [`MIN_MTU`] and the MTU. A lowered peer is probed at full size every
 //! [`RAISE_EVERY`].
 
@@ -31,7 +33,7 @@ use std::{
     future::Future,
     io,
     net::{Ipv6Addr, SocketAddrV6},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -154,7 +156,7 @@ pub(super) struct ProbedPeer {
 pub(super) struct PathReport {
     pub(super) machine_id: MachineId,
     pub(super) path: PathObservation,
-    /// The round trip of this round's first echo to come back; none from a silent round.
+    /// The round trip of this round's timed echo; none from a silent round.
     pub(super) rtt: Option<Duration>,
 }
 
@@ -202,6 +204,36 @@ where
         }
     }
     Finding::Carries(carried)
+}
+
+/// One round on one path, then, once the path has answered and so is awake, the round trip
+/// of a small echo. `echo(size)` sends echoes of `size` bytes and returns the round trip of
+/// the first to come back.
+pub(super) async fn probe<E, F>(
+    mut echo: E,
+    full: u32,
+    current: u32,
+    try_full: bool,
+) -> (Finding, Option<Duration>)
+where
+    E: FnMut(u32) -> F,
+    F: Future<Output = Option<Duration>>,
+{
+    let finding = check(
+        |size| {
+            let reply = echo(size);
+            async move { reply.await.is_some() }
+        },
+        full,
+        current,
+        try_full,
+    )
+    .await;
+    let rtt = match finding {
+        Finding::Silent => None,
+        Finding::Carries(_) | Finding::Dropped => echo(SMALL).await,
+    };
+    (finding, rtt)
 }
 
 /// What the prober holds for one peer between rounds.
@@ -278,24 +310,9 @@ pub(super) async fn probe_paths(
             let try_full = state.raise_due(full, now);
             let address = peer.address;
             async move {
-                let first = OnceLock::new();
-                let finding = check(
-                    |size| {
-                        let first = &first;
-                        async move {
-                            let rtt = passes(address, size).await;
-                            if let Some(rtt) = rtt {
-                                let _ = first.set(rtt);
-                            }
-                            rtt.is_some()
-                        }
-                    },
-                    full,
-                    current,
-                    try_full,
-                )
-                .await;
-                (peer, finding, first.into_inner())
+                let (finding, rtt) =
+                    probe(|size| passes(address, size), full, current, try_full).await;
+                (peer, finding, rtt)
             }
         });
         for (peer, finding, rtt) in join_all(checks).await {
@@ -431,6 +448,46 @@ mod tests {
         assert_eq!(
             round(Some(FULL), FULL, false),
             (Finding::Carries(FULL), vec![FULL])
+        );
+    }
+
+    /// The echo that wakes an idle path is not the one timed (#3528).
+    #[test]
+    fn the_rtt_is_timed_on_a_path_already_awake() {
+        let ms = |ms: u64| Duration::from_millis(ms);
+        let sent = RefCell::new(Vec::new());
+        let (finding, rtt) = futures_util::FutureExt::now_or_never(probe(
+            |size| {
+                let cold = sent.borrow().is_empty();
+                sent.borrow_mut().push(size);
+                std::future::ready(Some(if cold { ms(12) } else { ms(1) }))
+            },
+            FULL,
+            FULL,
+            false,
+        ))
+        .expect("the scripted probes are ready at once");
+        assert_eq!(
+            (finding, rtt, sent.into_inner()),
+            (Finding::Carries(FULL), Some(ms(1)), vec![FULL, SMALL])
+        );
+
+        let sent = RefCell::new(Vec::new());
+        let silent = futures_util::FutureExt::now_or_never(probe(
+            |size| {
+                sent.borrow_mut().push(size);
+                std::future::ready(None)
+            },
+            FULL,
+            FULL,
+            false,
+        ))
+        .expect("the scripted probes are ready at once");
+        assert_eq!(silent, (Finding::Silent, None));
+        assert_eq!(
+            sent.into_inner(),
+            vec![FULL, SMALL],
+            "a silent round times nothing more"
         );
     }
 
