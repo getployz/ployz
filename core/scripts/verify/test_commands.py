@@ -104,5 +104,33 @@ class EnrollPublicIp(unittest.TestCase):
             self.assertEqual(len(calls), 1, cloud)
             self.assertEqual(self.public_ip_flag(calls[0]), "none")
 
+
+class CloudCredentials(unittest.TestCase):
+    """On a --cloud run, `cli` holds the Organization Token, and --device the seeded owner's approved device."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "private").mkdir()
+        (root / "private" / "cloud-token").write_text("token")
+        self.run_ = dict(manifest=str(root / "cluster.json"), cloud=dict(url="http://localhost:1", organization="ada"))
+
+    def test_the_device_cli_holds_no_token_and_its_own_config(self):
+        _, environment, _ = cluster.cli_environment(self.run_, device=True)
+        self.assertNotIn("PLOYZ_TOKEN", environment)
+        self.assertEqual(environment["PLOYZ_CONFIG"], str(cluster.device_config(self.run_)))
+        _, environment, _ = cluster.cli_environment(self.run_)
+        self.assertEqual(environment["PLOYZ_TOKEN"], "token")
+
+    def test_approving_types_the_organization_at_a_terminal(self):
+        commands = unittest.mock.Mock()
+        cluster.answer(self.run_, commands, "id-1", approve=True)
+        args, kwargs = commands.call_args
+        self.assertEqual(args[0][:2], ["script", "-qfec"])
+        self.assertTrue(args[0][2].endswith("org approval approve id-1"))
+        self.assertEqual(kwargs["input"], b"ada\r")
+
+
 if __name__ == "__main__":
     unittest.main()
