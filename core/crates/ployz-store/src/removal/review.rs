@@ -10,6 +10,8 @@
 //! Volumes found; admission freezes them, each with its Machine, and the runner
 //! deletes only those.
 
+use std::collections::BTreeMap;
+
 use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, Namespace, RpcError};
 use serde::{Deserialize, Serialize};
@@ -147,6 +149,7 @@ pub fn docker_volume(namespace: &Namespace, volume: &str) -> Result<DockerVolume
 /// Server, so a Server that starts holding one asks again. A loss `consent` covers
 /// needs no acceptance: it was accepted when its removal was saved.
 pub(crate) fn review(
+    tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentId,
     (base, version): (&str, Option<&str>),
@@ -163,11 +166,8 @@ pub(crate) fn review(
     }
     let (losses, unanswered) = held(removed, observed)?;
     if !unanswered.is_empty() {
-        return Err(error::unobserved(
-            "This removes deployed Volumes, and some Servers didn't answer whether they hold \
-             their data, so it refuses. Try again once they answer",
-            json!({ "volumes": names, "unanswered": unanswered }),
-        ));
+        let servers = crate::deployment::server_names(tx, who, unanswered.iter().copied())?;
+        return Err(silent(&names, &unanswered, &servers));
     }
     let lost: Vec<&VolumeLoss> = losses
         .iter()
@@ -230,6 +230,39 @@ pub(crate) fn held(
         })
         .collect();
     Ok((losses, observed.unanswered.clone()))
+}
+
+/// The refusal for removing `volumes` while the Servers `unanswered` didn't answer
+/// whether they hold their data, each named by `servers`, else by its ID.
+fn silent(
+    volumes: &[VolumeName],
+    unanswered: &[MachineId],
+    servers: &BTreeMap<MachineId, String>,
+) -> RpcError {
+    let named: Vec<String> = unanswered
+        .iter()
+        .map(|machine| {
+            servers
+                .get(machine)
+                .cloned()
+                .unwrap_or_else(|| machine.to_string())
+        })
+        .collect();
+    let (who, holds, answers) = match named.as_slice() {
+        [server] => (format!("Server {server}"), "it holds", "it answers"),
+        servers => (
+            format!("Servers {}", servers.join(", ")),
+            "they hold",
+            "they answer",
+        ),
+    };
+    error::unobserved(
+        format!(
+            "This removes deployed Volumes, and {who} didn't answer whether {holds} their \
+             data, so it refuses. Try again once {answers}"
+        ),
+        json!({ "volumes": volumes, "unanswered": unanswered }),
+    )
 }
 
 /// The refusal for `removed` when the Servers weren't checked for their data. When

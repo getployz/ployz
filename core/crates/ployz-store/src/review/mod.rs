@@ -563,6 +563,7 @@ pub(crate) enum Shipping<'a> {
 /// `confirmation_required` until every loss is accepted; `unavailable` when the
 /// Servers weren't asked what they hold.
 pub(crate) fn destructive(
+    tx: &mut dyn Tx,
     who: &Actor,
     review: &Review,
     (target, namespace, shipping): (
@@ -590,6 +591,7 @@ pub(crate) fn destructive(
         false => Vec::new(),
     };
     crate::removal::review(
+        tx,
         who,
         &review.view.environment.id,
         (&review.view.version, version),

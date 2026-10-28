@@ -860,12 +860,24 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
         unanswered: vec![machine('b')],
         ..observed(&['a'])
     };
-    for evidence in [None, Some(elsewhere), Some(silent)] {
+    for evidence in [None, Some(elsewhere)] {
         assert_eq!(
             code(admit(&store, &who, 2, &["data"], evidence)),
             RpcErrorCode::Unavailable
         );
     }
+    // A silent Server no Deployment named is named by its ID.
+    let refused = admit(&store, &who, 2, &["data"], Some(silent)).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Unavailable);
+    assert_eq!(
+        refused.message,
+        format!(
+            "This removes deployed Volumes, and Server {} didn't answer whether it holds their \
+             data, so it refuses. Try again once it answers",
+            machine('b')
+        )
+    );
+    assert_eq!(refused.details["unanswered"], json!([machine('b')]));
     // Without acceptance it names what goes and where; a name it doesn't remove refuses.
     let refused = admit(&store, &who, 2, &[], Some(observed(&['a', 'b']))).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);

@@ -169,6 +169,7 @@ pub(crate) fn publish(
         let probe =
             deployment::namespace(tx, who, &environment.summary, false).and_then(|namespace| {
                 review::destructive(
+                    tx,
                     who,
                     &review,
                     (&target, &namespace, review::Shipping::Publish),
@@ -200,6 +201,7 @@ pub(crate) fn publish(
     let target = canonicalize_environment_intent(environment.working.clone());
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
     let losses = review::destructive(
+        tx,
         who,
         &review,
         (&target, &namespace, review::Shipping::Publish),

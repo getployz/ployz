@@ -236,8 +236,8 @@ A Git push can't ask, so it keeps the data instead, and so does a push when Ploy
 servers to check. Your next deploy then asks.
 
 If Ployz can't check your servers for that data, the deploy refuses and deletes nothing. It names
-the server it couldn't reach, or the server that answered with an error, and shows that error on the
-`cause:` line. Try again once that server is back or the error is fixed. For the commands that
+the server it couldn't reach or that didn't answer, or the server that answered with an error, and
+shows any error on the `cause:` line. Try again once that server is back or the error is fixed. For the commands that
 accept the loss from the CLI, see
 [Follow and inspect deployments](../cli/overview.md#follow-and-inspect-deployments).
 
