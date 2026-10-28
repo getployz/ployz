@@ -772,7 +772,7 @@ impl SshDestination {
             return Err(ConnectionError::SshDestination(value));
         }
         let target = format!("{user}@{host}");
-        let copy_target = if host.contains(':') && !host.starts_with('[') {
+        let copy_target = if host.contains(':') {
             format!("{user}@[{host}]")
         } else {
             target.clone()
@@ -816,12 +816,6 @@ fn valid_ssh_user(user: &str) -> bool {
 }
 
 fn valid_ssh_host(host: &str) -> bool {
-    if let Some(host) = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-    {
-        return host.parse::<Ipv6Addr>().is_ok();
-    }
     if host.contains(':') {
         return host.parse::<Ipv6Addr>().is_ok();
     }
@@ -832,6 +826,8 @@ fn valid_ssh_host(host: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
 }
 
+/// The host and port of `destination`. A bracketed IPv6 host comes back bare, since ssh
+/// resolves `[2001:db8::1]` as a hostname (#3437).
 fn split_ssh_port(destination: &str) -> Option<(&str, Option<u16>)> {
     if let Some(bracketed) = destination.strip_prefix('[') {
         let (host, suffix) = bracketed.split_once(']')?;
@@ -839,12 +835,12 @@ fn split_ssh_port(destination: &str) -> Option<(&str, Option<u16>)> {
             return None;
         }
         return match suffix {
-            "" => Some((destination, None)),
+            "" => Some((host, None)),
             value if value.starts_with(':') => value[1..]
                 .parse::<u16>()
                 .ok()
                 .filter(|port| *port != 0)
-                .map(|port| (&destination[..host.len() + 2], Some(port))),
+                .map(|port| (host, Some(port))),
             _ => None,
         };
     }
