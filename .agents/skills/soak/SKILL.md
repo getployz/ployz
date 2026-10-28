@@ -11,7 +11,7 @@ A soak lives in a run store, `~/.claude/orchestrate/<run>/`. Its `BRIEF.md` hold
 
 The supervisor:
 
-1. Creates every org a worker uses (`soak-<area>-1`) and mints each worker's token. The brief names each worker's org.
+1. Creates every org a worker uses (`soak-<area>-1`) and mints each worker's token through `keep` (see [Secrets](#secrets)). The brief names each worker's org.
 2. Approves or denies any pending approval in those orgs, so a worker's keyboard pass can't answer one by accident.
 3. Gives each worker a scratch dir in the store and a guarded CLI for every `ployz` binary it drives (release, N-1, checkout): `.agents/skills/soak/scripts/mkguard <store>/scratch/<area>/<who> <real-ployz>` prints the wrapper's path. The wrapper pins `PLOYZ_CONFIG` to that dir and exits 97 on ployz.dev. Every brief hands workers wrapper paths, never a bare binary. Isolation written only as prose once let a worker deploy into Nick's production org. `verify-cluster cli` isolates its own config. The active org lives on the server and is shared by every session of one account, so each worker checks the account menu before a write in the browser.
 4. Names which worker's run hosts a local Cloud. That run goes down last.
@@ -64,7 +64,8 @@ Workers keep findings in files and send the supervisor pointers, so the supervis
 - Redact before output reaches a file or the transcript: `cmd 2>&1 | .agents/skills/soak/scripts/redact | tee <log>`. Pipe every grep over scratch logs through it too; an unfiltered grep printed a lab session cookie. It masks `pflt_`, `plyz_`, `pmet_` and `ployzgrant1:` tokens, JWTs, Cookie and Set-Cookie values, `session_token`, Authorization values, invite links (`/invite/…`), PEM blocks and JSON fields named like a token, cookie, password or secret. Enrollment codes and passwords printed bare still need your own pattern.
 - Print a Generated Value's length and fingerprint, never the value itself.
 - `org approval approve` needs a terminal on stdout. Run it under `script` and pipe `script`'s own output through the filter; see verify-server's [Drive the feature](../verify-server/SKILL.md#drive-the-feature).
-- Read one field at a time with `jq` from files that hold tokens: `seed.json`, `.verify/run/info`, up logs, and any `--json` output that mints a token.
+- Mint through `.agents/skills/soak/scripts/keep <file> -- <command>`: anything that prints a token, such as `--json server token create`. It writes stdout to a mode-600 file and prints only the path and each field's length and token prefix.
+- Read one field at a time with `jq` from files that hold tokens: `seed.json`, `.verify/run/cookie`, up logs, and every file `keep` wrote. `up.sh` and `.verify/run/info` print no secrets; their `cookies set` lines read the cookie from its file.
 - Clean a leaked secret by matching its pattern. Typing the secret into a redaction command logs it again.
 
 ## Boat

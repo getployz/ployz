@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# keep <file> -- <command...>
+#
+# Runs <command> with its stdout written to <file> (mode 600), never the
+# terminal, then prints the path and the output's shape: JSON with every string
+# replaced by its length and any known token prefix, or a byte and line count.
+# Use it for anything that mints a secret, such as
+#   keep scratch/fleet.json -- ployz --json server token create --auto
+# then read one field at a time: PLOYZ_TOKEN=$(jq -r .token scratch/fleet.json).
+# stderr passes through redact. Exits with <command>'s status.
+set -euo pipefail
+
+if [ $# -lt 3 ] || [ "$2" != -- ]; then
+  echo "usage: keep <file> -- <command...>" >&2
+  exit 2
+fi
+file=$1
+shift 2
+here=$(cd "$(dirname "$0")" && pwd)
+
+rm -f "$file"
+status=0
+(umask 077; "$@" > "$file" 2> >("$here/redact" >&2)) || status=$?
+
+python3 -I - "$file" <<'PY'
+import json, re, sys
+path = sys.argv[1]
+raw = open(path, "rb").read()
+def shape(value):
+    if isinstance(value, dict):
+        return {key: shape(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [shape(item) for item in value]
+    if isinstance(value, str):
+        prefix = re.match(r"(pflt_|plyz_|pmet_|ployzgrant1:)", value)
+        return f"<{prefix.group(1) if prefix else ''}{len(value)} chars>"
+    return value
+try:
+    hint = json.dumps(shape(json.loads(raw)))
+except ValueError:
+    lines = raw.count(b"\n")
+    hint = f"<{len(raw)} bytes, {lines} lines, not JSON>"
+print(f"kept: {path} (mode 600) {hint}")
+PY
+exit "$status"

@@ -10,6 +10,7 @@
 # FAKE_GITHUB=1 points Cloud at a fake GitHub (fake-github.ts, fixtures .verify/github.json) and starts Inngest too.
 # MAIL=1 turns mail on: a fake PostShiba (fake-postshiba.ts) relays every send into a Mailpit inbox, and Inngest runs.
 # Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
+# Never prints a secret: cookies, tokens and keys stay in mode-600 files under $run, and printed commands read them.
 set -euo pipefail
 # A verify session takes main's SDK build while the SDK's interface is unchanged; SDK=exact builds this checkout's.
 export SDK=${SDK:-stale}
@@ -46,6 +47,7 @@ fi
 
 if [ "$reseed" = 1 ]; then
   echo "up.sh: reseeding the running instance (--fresh restarts it)"
+  chmod 700 "$run"
   set -a; . "$run/env"; set +a
   port=$PORT; hosted_dns=$PLOYZ_HOSTED_DNS_URL
   pg_port=$(docker port "$name" 5432/tcp | head -1 | sed 's/.*://')
@@ -70,6 +72,7 @@ else
   port=${1:-$(free_ports 1)}
   if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then echo "up.sh: port $port is in use" >&2; exit 1; fi
   mkdir -p "$run" "$dash/.verify/evidence"
+  chmod 700 "$run"
   echo "$mode" > "$run/mode"
 
   if [ "$install" = 1 ]; then
@@ -157,7 +160,7 @@ INNGEST_EVENT_API_BASE_URL=http://127.0.0.1:9"
   # Without real Servers, metric reads answer from src/modules/metrics/metrics.verify-fixture.ts.
   if [ -n "${SERVERS:-}" ]; then verify_metrics=0; else verify_metrics=1; fi
   if [ -z "${SERVERS:-}" ] && [ "${FAKE_SERVERS:-}" = 1 ]; then verify_runtime=1; else verify_runtime=0; fi
-  cat > "$run/env" <<EOF
+  (umask 077; cat > "$run/env") <<EOF
 NODE_ENV=development
 PORT=$port
 APP_URL=http://localhost:$port
@@ -215,9 +218,10 @@ seed=$(printf '%s\n' "$seed_out" | sed -n 's/^VERIFY_SEED //p')
 setsid nohup bash -c 'node scripts/verify/runner.mjs /scripts/verify/seed-uptime.ts > "$1/seed-uptime.log" 2>&1 \
   && echo ok > "$1/uptime" || echo failed > "$1/uptime"' seed-uptime "$run" < /dev/null > /dev/null 2>&1 &
 echo $! > "$run/seed-uptime.pid"
-printf '%s\n' "$seed" > "$run/seed.json"; echo "$name" > "$run/session"
+echo "$name" > "$run/session"
 json() { node -e 'console.log(JSON.parse(process.argv[1])[process.argv[2]])' "$seed" "$1"; }
 org=$(json organizationSlug); cookie=$(json cookie)
+(umask 077; printf '%s\n' "$seed" > "$run/seed.json"; printf '%s\n' "$cookie" > "$run/cookie")
 
 if [ "$with_inngest" = 1 ]; then
   wait "$worker_build" || { cat "$run/worker-build.log" >&2; exit 1; }
@@ -260,7 +264,7 @@ Ployz Cloud verify: $base  (billing $([ "${BILLING:-0}" = 1 ] && echo on || echo
   servers     $base/cloud/$org/~/servers
 uptime: seeding in the background for the Monitoring tab; wait with: until [ -s $run/uptime ]; do sleep 1; done; cat $run/uptime
 browser:
-  agent-browser --session $name cookies set better-auth.session_token '$cookie' --url $base --httpOnly --sameSite Lax
+  agent-browser --session $name cookies set better-auth.session_token "\$(cat $run/cookie)" --url $base --httpOnly --sameSite Lax
   agent-browser --session $name open $base/cloud/$org/shop/production
   $dash/scripts/verify/as.sh grace  # or ada (owner), linus (member): switches this session to that person in $org
 EOF
@@ -272,14 +276,16 @@ if [ "${MAIL:-0}" = 1 ]; then
 fi
 if [ "${FAKE_GITHUB:-0}" = 1 ]; then
   bob_credentials=$(node -e 'const { bob } = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify(bob))' "$seed")
+  bob_email=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).email)' "$bob_credentials")
   bob_cookie=$(curl -s -o /dev/null -D - -X POST "$base/api/auth/sign-in/email" -H 'content-type: application/json' \
     -H "origin: $base" -d "$bob_credentials" | tr -d '\r' | sed -n 's/^set-cookie: better-auth\.session_token=\([^;]*\).*/\1/Ip')
   [ -n "$bob_cookie" ] || { echo "up.sh: Bob's email sign-in returned no session cookie" >&2; exit 1; }
+  (umask 077; printf '%s\n' "$bob_cookie" > "$run/bob-cookie")
   cat <<EOF | tee -a "$run/info"
 github origin: $fake_github (PLOYZ_VERIFY_GITHUB_ORIGIN), every GitHub URL Cloud builds points at this fake
 fake github on $fake_github (requests $run/fake-github.log, fixtures $dash/.verify/github.json)
-  bob ($bob_credentials, signed in through POST $base/api/auth/sign-in/email):
-  agent-browser --session $name-bob cookies set better-auth.session_token '$bob_cookie' --url $base --httpOnly --sameSite Lax
+  bob ($bob_email, password in $run/seed.json .bob, signed in through POST $base/api/auth/sign-in/email):
+  agent-browser --session $name-bob cookies set better-auth.session_token "\$(cat $run/bob-cookie)" --url $base --httpOnly --sameSite Lax
   agent-browser --session $name-bob open $base/cloud
   webhook: curl -X POST $fake_github/_fake/webhook -d '{"event":"installation_repositories","action":"added","installation":7,"repositories":["acme/docs"]}'
 EOF
