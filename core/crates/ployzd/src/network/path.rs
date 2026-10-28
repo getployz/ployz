@@ -15,6 +15,11 @@
 //! No verdict is drawn from silence alone: a peer whose small echo is lost too keeps
 //! the MTU it had (bet 8).
 //!
+//! The first echo each round to come back also times the round trip to the peer over the
+//! mesh. A short window of those times is the RTT `server show` prints (#3502): Corrosion's
+//! own samples are whole milliseconds of each connection's minimum, so they read 0 on a
+//! fast path and never rise when it slows.
+//!
 //! Bound (bet 3): a Machine-local loop acting only on its own routes. Each round, every
 //! [`PROBE_EVERY`], sends each peer one echo of its current MTU. Only a lost one adds
 //! more: [`ATTEMPTS`] tries per size, one small echo and a binary search of about five
@@ -22,16 +27,16 @@
 //! [`RAISE_EVERY`].
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     future::Future,
     io,
     net::{Ipv6Addr, SocketAddrV6},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
 use futures_util::future::join_all;
-use ployz_core::{LargePackets, MachineId, MachineName, PathObservation};
+use ployz_core::{LargePackets, MachineId, MachineName, PathObservation, RttStatistics};
 use rustix::net::{RecvFlags, SendFlags, sockopt::Ipv6PathMtuDiscovery};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
@@ -60,20 +65,67 @@ const IPV6_HEADER: u32 = 40;
 const ICMP_HEADER: u32 = 8;
 const ECHO_REQUEST: u8 = 128;
 const ECHO_REPLY: u8 = 129;
+/// Round trips kept per peer: about five minutes at one per round.
+const RTT_SAMPLES: usize = 5;
+/// How long a round trip counts. A peer whose echoes stop coming back reads as unmeasured
+/// once its last one is this old, rather than keeping an RTT nobody measured lately.
+const RTT_FRESH: Duration = Duration::from_secs(60 * (RTT_SAMPLES as u64 + 1));
 
-/// This Machine's latest path observation of each peer, written by the network plane and
-/// read by the Machine API.
+/// This Machine's latest path observation of each peer and its recent round trips, written
+/// by the network plane and read by the Machine API.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PathBook(Arc<Mutex<BTreeMap<MachineId, PathObservation>>>);
+pub(crate) struct PathBook(Arc<Mutex<BTreeMap<MachineId, PeerPath>>>);
+
+#[derive(Clone, Debug, Default)]
+struct PeerPath {
+    path: Option<PathObservation>,
+    /// Each round trip and when it was taken, newest first, at most [`RTT_SAMPLES`].
+    rtts: VecDeque<(std::time::Instant, Duration)>,
+}
 
 impl PathBook {
     #[must_use]
     pub(crate) fn get(&self, machine_id: &MachineId) -> Option<PathObservation> {
-        self.paths().get(machine_id).copied()
+        self.paths().get(machine_id).and_then(|peer| peer.path)
     }
 
-    pub(super) fn set(&self, machine_id: MachineId, path: PathObservation) {
-        self.paths().insert(machine_id, path);
+    /// The round trip to a peer over its recent rounds; none before an echo came back, or
+    /// once none has for [`RTT_FRESH`].
+    #[must_use]
+    pub(crate) fn rtt(&self, machine_id: &MachineId) -> Option<RttStatistics> {
+        self.rtt_at(machine_id, std::time::Instant::now())
+    }
+
+    fn rtt_at(&self, machine_id: &MachineId, now: std::time::Instant) -> Option<RttStatistics> {
+        let samples = self
+            .paths()
+            .get(machine_id)?
+            .rtts
+            .iter()
+            .filter(|(taken, _)| now.saturating_duration_since(*taken) < RTT_FRESH)
+            .map(|(_, rtt)| rtt.as_secs_f64() * 1000.0)
+            .collect::<Vec<_>>();
+        ployz_core::rtt_statistics(&samples)
+    }
+
+    pub(super) fn set(&self, machine_id: MachineId, path: PathObservation, rtt: Option<Duration>) {
+        self.set_at(machine_id, path, rtt, std::time::Instant::now());
+    }
+
+    fn set_at(
+        &self,
+        machine_id: MachineId,
+        path: PathObservation,
+        rtt: Option<Duration>,
+        now: std::time::Instant,
+    ) {
+        let mut paths = self.paths();
+        let peer = paths.entry(machine_id).or_default();
+        peer.path = Some(path);
+        if let Some(rtt) = rtt {
+            peer.rtts.push_front((now, rtt));
+            peer.rtts.truncate(RTT_SAMPLES);
+        }
     }
 
     /// Forget every peer the mesh no longer has.
@@ -81,7 +133,7 @@ impl PathBook {
         self.paths().retain(|machine_id, _| keep(machine_id));
     }
 
-    fn paths(&self) -> std::sync::MutexGuard<'_, BTreeMap<MachineId, PathObservation>> {
+    fn paths(&self) -> std::sync::MutexGuard<'_, BTreeMap<MachineId, PeerPath>> {
         // A panic while holding the map leaves plain data behind; keep serving it.
         self.0
             .lock()
@@ -102,6 +154,8 @@ pub(super) struct ProbedPeer {
 pub(super) struct PathReport {
     pub(super) machine_id: MachineId,
     pub(super) path: PathObservation,
+    /// The round trip of this round's first echo to come back; none from a silent round.
+    pub(super) rtt: Option<Duration>,
 }
 
 /// A round's finding on one path.
@@ -224,11 +278,27 @@ pub(super) async fn probe_paths(
             let try_full = state.raise_due(full, now);
             let address = peer.address;
             async move {
-                let finding = check(|size| passes(address, size), full, current, try_full).await;
-                (peer, finding)
+                let first = OnceLock::new();
+                let finding = check(
+                    |size| {
+                        let first = &first;
+                        async move {
+                            let rtt = passes(address, size).await;
+                            if let Some(rtt) = rtt {
+                                let _ = first.set(rtt);
+                            }
+                            rtt.is_some()
+                        }
+                    },
+                    full,
+                    current,
+                    try_full,
+                )
+                .await;
+                (peer, finding, first.into_inner())
             }
         });
-        for (peer, finding) in join_all(checks).await {
+        for (peer, finding, rtt) in join_all(checks).await {
             let Some(state) = states.get_mut(&peer.machine_id) else {
                 continue;
             };
@@ -239,6 +309,7 @@ pub(super) async fn probe_paths(
             let report = PathReport {
                 machine_id: peer.machine_id,
                 path,
+                rtt,
             };
             if reports.send(report).await.is_err() {
                 return;
@@ -247,47 +318,50 @@ pub(super) async fn probe_paths(
     }
 }
 
-/// Whether any of [`ATTEMPTS`] echoes of `size` bytes to `address` came back.
-async fn passes(address: Ipv6Addr, size: u32) -> bool {
+/// The round trip of the first of [`ATTEMPTS`] echoes of `size` bytes to `address` to come
+/// back, or none if none did.
+async fn passes(address: Ipv6Addr, size: u32) -> Option<Duration> {
     for _ in 0..ATTEMPTS {
         match tokio::task::spawn_blocking(move || echo(address, size, REPLY_WAIT)).await {
-            Ok(Ok(true)) => return true,
-            Ok(Ok(false)) => {}
+            Ok(Ok(Some(rtt))) => return Some(rtt),
+            Ok(Ok(None)) => {}
             Ok(Err(error)) => {
                 eprintln!(
                     "path probe to {address} could not send: {error}",
                     error = ployz_core::error_chain::inline(&error),
                 );
-                return false;
+                return None;
             }
-            Err(_) => return false,
+            Err(_) => return None,
         }
     }
-    false
+    None
 }
 
 /// Send one ICMPv6 echo of `size` bytes over the WireGuard interface and wait up to `wait`
-/// for its reply. The socket probes past the route MTU this plane may have lowered, and
-/// never fragments, so the echo crosses at exactly `size` or not at all.
-fn echo(address: Ipv6Addr, size: u32, wait: Duration) -> io::Result<bool> {
+/// for its reply, returning the round trip. The socket probes past the route MTU this plane
+/// may have lowered, and never fragments, so the echo crosses at exactly `size` or not at all.
+fn echo(address: Ipv6Addr, size: u32, wait: Duration) -> io::Result<Option<Duration>> {
     let socket = Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?;
     socket.bind_device(Some(WIREGUARD_INTERFACE_NAME.as_bytes()))?;
     rustix::net::sockopt::set_ipv6_mtu_discover(&socket, Ipv6PathMtuDiscovery::PROBE)?;
     let identifier = fastrand::u16(..);
     let sequence = fastrand::u16(..);
     let request = echo_request(identifier, sequence, size);
+    // Before the send: a thread descheduled after it would start the clock after the reply.
+    let sent = std::time::Instant::now();
     rustix::net::sendto(
         &socket,
         &request,
         SendFlags::empty(),
         &SocketAddrV6::new(address, 0, 0, 0),
     )?;
-    let deadline = std::time::Instant::now() + wait;
+    let deadline = sent + wait;
     let mut reply = vec![0_u8; request.len().max(64)];
     loop {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         if left.is_zero() {
-            return Ok(false);
+            return Ok(None);
         }
         // Under a microsecond would round to a zero timeout, which blocks.
         socket.set_read_timeout(Some(left.max(Duration::from_millis(1))))?;
@@ -303,7 +377,7 @@ fn echo(address: Ipv6Addr, size: u32, wait: Duration) -> io::Result<bool> {
                 .get(..received)
                 .is_some_and(|packet| is_reply(packet, identifier, sequence))
         {
-            return Ok(true);
+            return Ok(Some(sent.elapsed()));
         }
     }
 }
@@ -391,6 +465,59 @@ mod tests {
             (finding, sent.into_inner()),
             (Finding::Carries(FULL), vec![FULL, SMALL, FULL])
         );
+    }
+
+    /// The RTT follows the recent echoes: a path that slows reads slow within a few rounds,
+    /// and a sub-millisecond one reads its fraction, not 0 (#3502).
+    #[test]
+    fn the_rtt_follows_the_recent_echoes() {
+        let book = PathBook::default();
+        let peer = MachineId::parse("a".repeat(32)).unwrap();
+        let path = PathObservation {
+            mtu: FULL,
+            large_packets: LargePackets::Carried,
+            lowered: false,
+        };
+        let ms = |ms: f64| Duration::from_secs_f64(ms / 1000.0);
+        let median_ms = |book: &PathBook| {
+            book.rtt(&peer)
+                .map(|statistics| statistics.median_ns as f64 / 1_000_000.0)
+        };
+
+        book.set(peer, path, None);
+        assert_eq!(median_ms(&book), None, "no echo has come back yet");
+        for _ in 0..RTT_SAMPLES {
+            book.set(peer, path, Some(ms(0.4)));
+        }
+        assert_eq!(median_ms(&book), Some(0.4));
+        for _ in 0..RTT_SAMPLES / 2 {
+            book.set(peer, path, Some(ms(34.0)));
+        }
+        assert_eq!(median_ms(&book), Some(0.4), "a short spike moves no median");
+        book.set(peer, path, Some(ms(34.0)));
+        assert_eq!(median_ms(&book), Some(34.0), "a slowed path reads slow");
+        book.set(peer, path, None);
+        assert_eq!(
+            median_ms(&book),
+            Some(34.0),
+            "a silent round keeps the samples"
+        );
+        let later = std::time::Instant::now() + RTT_FRESH;
+        assert_eq!(
+            book.rtt_at(&peer, later),
+            None,
+            "a peer whose echoes stopped long ago reads as unmeasured"
+        );
+        book.set_at(peer, path, Some(ms(2.0)), later);
+        assert_eq!(
+            book.rtt_at(&peer, later)
+                .map(|statistics| statistics.median_ns),
+            Some(2_000_000),
+            "only the fresh echo counts"
+        );
+        assert_eq!(book.get(&peer), Some(path));
+        book.retain(|_| false);
+        assert_eq!(median_ms(&book), None, "a peer that left is forgotten");
     }
 
     #[test]

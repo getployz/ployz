@@ -343,7 +343,7 @@ impl NetworkPlane {
                 None => self.lowered.remove(&peer.machine_id),
             };
         }
-        self.paths.set(peer.machine_id, path);
+        self.paths.set(peer.machine_id, path, report.rtt);
         // The prober reports every known path each round; log only a change.
         if before == Some(path) {
             return;

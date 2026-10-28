@@ -154,8 +154,8 @@ impl RuntimeWatchSnapshot {
 ///
 /// Subscribes first, then yields one complete frame immediately. Later frames
 /// are assembled on store wakeups or
-/// once-per-second membership/RTT samples from the same local admin source as
-/// ListMachines and inspect RTT. The
+/// once-per-second membership/RTT samples from the local admin source. Its RTT is
+/// Corrosion's; ListMachines and Inspect prefer the mesh echo's (#3502). The
 /// notification payload is not the observation. Unchanged observations do not
 /// yield, including when only `observed_at` advances. Store failure ends the
 /// stream. Admin telemetry failure keeps replicated rows.

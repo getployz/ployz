@@ -63,7 +63,7 @@ ployz server show web-3
 
 `ployz server show` shows a server that has joined the same way, so one command covers both: its
 OS, versions, addresses, storage, CPU, memory and disk, and how long a round trip to each other
-server takes. Add `--json` for everything it knows, such as the features its daemon supports. It
+server takes over the mesh, the median of its last few minutes. Add `--json` for everything it knows, such as the features its daemon supports. It
 also takes a waiting server's id, or the start of one at least 8 characters long, such as the
 start the list prints. If two waiting servers share a name or the start you typed, it lists their
 ids instead.
