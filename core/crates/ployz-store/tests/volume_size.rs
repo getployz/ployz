@@ -1068,6 +1068,24 @@ fn a_record_that_raises_or_replays_is_taken_while_a_deployment_is_in_flight() {
     refused_while_deploying(&resize(&store, 8, 5).unwrap_err(), 2);
 }
 
+/// A Store on a file `dir` holds, and its URL, so a test can age its rows.
+fn aged_shop(dir: &tempfile::TempDir) -> (ConfigStore, Actor, String) {
+    let url = backend::fresh_url(dir);
+    let (store, who) = shop_on(
+        ConfigStore::open(&url, backend::key()).unwrap(),
+        managed(10),
+    );
+    (store, who, url)
+}
+
+/// Every Deployment that ended did so long enough ago for its Servers to settle.
+fn settled(url: &str) {
+    backend::execute(
+        url,
+        "UPDATE config_deployment SET ended = ended - 3600, lease = lease - 3600",
+    );
+}
+
 /// The refusal of a record from a run that found no copy, since Deployment `n` may
 /// have created it.
 fn refused_as_deployed_since(refused: &RpcError, n: u8) {
@@ -1097,7 +1115,8 @@ fn a_record_from_a_run_that_found_no_copy_refuses_once_a_deployment_came_since()
 
 #[test]
 fn a_record_from_a_run_that_found_no_copy_waits_for_a_deployment_in_flight_either_way() {
-    let (store, who) = shop(managed(10));
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who, url) = aged_shop(&dir);
     publish(&store, &who);
     deploy(&store, &who, 1);
     admit(&store, &who, 2).unwrap();
@@ -1105,6 +1124,9 @@ fn a_record_from_a_run_that_found_no_copy_waits_for_a_deployment_in_flight_eithe
     refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(2)).unwrap_err(), 2);
     refused_as_deployed_since(&resize_unheld(&store, 10, 5, Some(2)).unwrap_err(), 2);
     run(&store, 2);
+    // Ended, but what it sent its Servers may still land.
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(2)).unwrap_err(), 2);
+    settled(&url);
     resize_unheld(&store, 10, 20, Some(2)).unwrap();
     assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
     // The next Deploy claims the Volume at the recorded size.
@@ -1133,11 +1155,13 @@ fn a_record_from_a_run_that_found_no_copy_waits_for_a_deployment_whose_runner_la
     assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(10)));
 }
 
-/// An abandoned run's Deployment ends `unknown`, and a `PrepareVolumes` it sent may
-/// still land, so the record waits until a later Deployment applies.
+/// A Machine finishes what a run sent it after the run stops waiting, so no outcome
+/// proves a Deployment's work settled. Until long enough after the last one that
+/// ran, the record waits; one that never ran sent nothing.
 #[test]
-fn a_record_from_a_run_that_found_no_copy_waits_on_an_unknown_deployment_until_one_applies() {
-    let (store, who) = shop(managed(10));
+fn a_record_from_a_run_that_found_no_copy_waits_for_the_deployments_that_ran_to_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who, url) = aged_shop(&dir);
     publish(&store, &who);
     deploy(&store, &who, 1);
     admit(&store, &who, 2).unwrap();
@@ -1155,28 +1179,30 @@ fn a_record_from_a_run_that_found_no_copy_waits_on_an_unknown_deployment_until_o
         .record(&id(2), &runner, RunEvidence::Abandoned)
         .unwrap();
     refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(2)).unwrap_err(), 2);
-    // One cancelled before it ran stopped nothing #2 sent.
     admit(&store, &who, 3).unwrap();
     store
         .write(&who, &ployz_store::Cancel { deployment: id(3) })
         .unwrap();
     refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(3)).unwrap_err(), 2);
-    // Nor did one whose runner stopped before it executed anything.
+    // Failed, whatever it sent may still land.
     admit(&store, &who, 4).unwrap();
     store.claim(&id(4), &runner).unwrap();
     store
         .record(&id(4), &runner, RunEvidence::Abandoned)
         .unwrap();
-    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(4)).unwrap_err(), 2);
-    deploy(&store, &who, 5);
-    resize_unheld(&store, 10, 20, Some(5)).unwrap();
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(4)).unwrap_err(), 4);
+    settled(&url);
+    resize_unheld(&store, 10, 20, Some(4)).unwrap();
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
 }
 
 #[test]
 fn a_record_from_a_run_that_found_no_copy_moves_the_size_with_no_deployment_since() {
-    let (store, who) = shop(managed(10));
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who, url) = aged_shop(&dir);
     publish(&store, &who);
     deploy(&store, &who, 1);
+    settled(&url);
     resize_unheld(&store, 10, 4, Some(1)).unwrap();
     let listed = listing(&store, &who, "data");
     assert_eq!(listed.recorded_storage, Some(gb(4)));

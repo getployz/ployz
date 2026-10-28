@@ -315,16 +315,26 @@ pub(crate) fn claimed_or_queued(
     )
 }
 
-/// `environment`'s latest Deployment whose runner was lost, unless one applied
-/// since: what it sent its Servers may still land. Only a whole run after it
-/// brings them back to what Ployz recorded.
-pub(crate) fn unknown_since_applied(
+/// How long after a Deployment that ran ends its Servers may still be doing what it
+/// sent: a Machine finishes admitted work its caller stopped waiting for, and a
+/// runner waits two minutes on each call.
+pub(crate) const SETTLING: i64 = 10 * 60;
+
+/// `environment`'s latest Deployment that ran and ended within [`SETTLING`], whatever
+/// its outcome: what it sent its Servers may still land. One whose runner was lost
+/// records no end, so its lease, which every record renews, stands in for it.
+pub(crate) fn settling(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    let applied = latest_where(tx, environment, "status = 'applied'")?;
-    Ok(latest_where(tx, environment, "status = 'unknown'")?
-        .filter(|unknown| applied.is_none_or(|applied| unknown.number > applied.number)))
+    let since = super::now() - SETTLING;
+    latest_where(
+        tx,
+        environment,
+        &format!(
+            "started IS NOT NULL AND (ended >= {since} OR (ended IS NULL AND lease >= {since}))"
+        ),
+    )
 }
 
 /// `environment`'s latest Deployment that started (claimed by a runner), or a

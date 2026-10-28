@@ -118,7 +118,7 @@ export function recordRefusalOf(volumeName: string, record: SizeRecord, refusal:
   const deploying = decodeDeploying(refusal.details);
   if (Option.isSome(deploying) && deploying.value.unheld === true) {
     const { number } = deploying.value.deployment;
-    return { ok: false, reason: "deployed_since", message: `${number === null ? "a Deployment" : `Deployment #${number}`} may have created ${volumeName} at ${gb(record.from)}` };
+    return { ok: false, reason: "deployed_since", message: `${number === null ? "a Deployment" : `Deployment #${number}`} may have created ${volumeName} at ${gb(record.from)}; change its size again in a few minutes` };
   }
   if (Option.isSome(deploying)) return { ok: false, reason: "changed", message: deployingMessage(volumeName, deploying.value.deployment.number, record.to) };
   const recorded = decodeRecorded(refusal.details);

@@ -49,11 +49,12 @@ editable, and so does a deploy while no service mounts the volume. Once a deploy
 the volume, the limit is fixed in the panel. If that deploy then fails before any server holds the
 volume, `ployz volume set data --size 10` still changes it: Ployz checks every server, finds no
 copy, and your next deploy creates the volume at the new limit. It refuses while a deploy is under
-way, since that deploy may be creating the volume; run it again when the deploy ends. It also
+way and for 10 minutes after one ends, however it ended, since a server may still be creating the
+volume; run it again after that. It also
 refuses while a server reports no managed storage, since Ployz can't tell whether that server holds
 a copy. If a deploy creates the volume while the change is in progress, Ployz resizes the copy that
-deploy made instead, or, if that deploy is still under way, stops and asks you to run it again
-when the deploy ends. Once the volume deploys, you
+deploy made instead, or, if that deploy is still under way or just ended, stops and asks you to run
+it again in a few minutes. Once the volume deploys, you
 can grow it on Ployz Cloud while its service keeps running. Type a larger **Storage limit** there
 and click **Grow**. The panel shows the resize until it ends. Before you confirm,
 it refuses a smaller limit, a server whose Ployz is too old to grow it or that isn't reporting to
