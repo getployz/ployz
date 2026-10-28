@@ -2,6 +2,7 @@
 """Which edits change which artifact keys, how the local cache keeps, returns and drops builds, and which CI uploads it takes."""
 
 import contextlib
+import fcntl
 import hashlib
 import io
 import json
@@ -436,6 +437,43 @@ class Slots(Scratch):
                 self.assertTrue(third.wait(5), "a slot freed up")
             waiter.join()
         self.assertEqual(said.getvalue(), "waiting for one of 2 build slots\n")
+
+    def test_the_build_lock_is_held_for_the_compile_only(self):
+        path = self.root / "cargo.lock"
+        held = []
+
+        def compile(args, **kwargs):
+            with open(path) as probe:
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    held.append(False)
+                except BlockingIOError:
+                    held.append(True)
+            return subprocess.CompletedProcess(args, 0)
+
+        with mock.patch.dict(os.environ, {"PLOYZ_BUILD_LOCK": str(path)}):
+            artifacts.harness_build(["cargo", "build"], compile)
+        with open(path) as probe:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertEqual(held, [True])
+
+    def test_a_build_waits_for_the_build_lock(self):
+        path = self.root / "cargo.lock"
+        built = threading.Event()
+
+        def build():
+            artifacts.harness_build(["cargo", "build"], lambda args, **kwargs: built.set())
+
+        with mock.patch.dict(os.environ, {"PLOYZ_BUILD_LOCK": str(path)}), \
+                contextlib.redirect_stderr(io.StringIO()) as said, open(path, "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            waiter = threading.Thread(target=build)
+            waiter.start()
+            self.assertFalse(built.wait(1.5), "another worktree holds the lock")
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            self.assertTrue(built.wait(5), "the lock freed up")
+            waiter.join()
+        self.assertEqual(said.getvalue(), f"waiting for the build lock {path}\n")
 
 
 if __name__ == "__main__":
