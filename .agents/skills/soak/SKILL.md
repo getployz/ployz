@@ -17,7 +17,8 @@ The supervisor:
 4. Names which worker's run hosts a local Cloud. That run goes down last.
 5. Plans timed steps, such as cleanup and the end of the soak, as its own sends. A worker's in-session cron stays silent while the worker's thread is idle.
 6. Assigns a gap sweep when the release touches a shared write or read path. One worker lists every caller from the code first: dashboard, CLI, MCP and agent tools, presets and templates, and every backend. Then it drives each caller. Area rows alone missed a refused dashboard Create → Database through two full passes.
-7. Turns the previous soak's flag-on findings into live rows when a PR removes a feature flag. Deleting a flag turns its behaviour on for every tenant.
+7. Has the brief serialize builds with `export PLOYZ_BUILD_LOCK=<store>/cargo-o.lock`, never with `flock` around `verify-cluster up` or `up.sh`. Those hold the lock through boot and enrollment, so workers queued 15-20 minutes behind one enrollment. Builds outside the harness, such as `cargo zigbuild` or a Cloud image's `docker build`, take `flock -o` on the same file.
+8. Turns the previous soak's flag-on findings into live rows when a PR removes a feature flag. Deleting a flag turns its behaviour on for every tenant.
 
 Standalone Clusters are a test-only mode, by Nick's ruling. Every lab enrolls through a Cloud, and a Standalone finding is never a blocker and never goes to Nick.
 

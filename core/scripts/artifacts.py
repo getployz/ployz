@@ -216,9 +216,27 @@ def build_slot():
         time.sleep(1)
 
 
+@contextmanager
+def build_lock():
+    """Hold PLOYZ_BUILD_LOCK, when set, until the block ends: a file that a group of worktrees, such as a soak's
+    workers, flocks to compile one at a time. Only the compile holds it, never a run's boot or enrollment."""
+    path = os.environ.get("PLOYZ_BUILD_LOCK")
+    if not path:
+        yield
+        return
+    with open(path, "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"waiting for the build lock {path}", file=sys.stderr)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def harness_build(args, commands=run, **kwargs):
-    """Run a harness build in a build slot, at low priority."""
-    with build_slot():
+    """Run a harness build under PLOYZ_BUILD_LOCK and in a build slot, at low priority."""
+    # The group's lock comes first, so a build holding a slot never waits on it.
+    with build_lock(), build_slot():
         return commands(["nice", "-n", "10", *args], env={**os.environ, **HARNESS_ENV}, **kwargs)
 
 
