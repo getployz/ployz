@@ -108,6 +108,8 @@ scripts/verify/down.sh        # stops vite, Inngest, the worker and the cluster;
 The instance runs `down.sh` by itself after 15 minutes with nothing connected to vite; an open page counts as connected. `VERIFY_IDLE_TIMEOUT=<seconds>` changes that, and `0` keeps it up.
 Every `up.sh` first runs `scripts/verify/reap.sh`, which removes verify containers another checkout left behind: ones whose checkout is gone, or whose vite has stopped. It leaves any container younger than 10 minutes, since its `up.sh` may still be starting. It keeps an instance whose vite still runs and names one whose idle watchdog died; that checkout's own `up.sh` starts a watchdog again. It leaves a checkout this host cannot fully see, such as an unmounted or private directory. `VERIFY_REAP_DRY=1 scripts/verify/reap.sh` lists what it would remove.
 
+Restart an instance only through the scripts: `up.sh --fresh`, or `down.sh` then `up.sh`. Both reseed; no mode restarts a dead instance's processes and keeps its data. `reap.sh` trusts the pid `up.sh` records in `.verify/run/vite.pid`, so a vite started by hand leaves it naming the wrong process, and the live instance reads as dead. Another checkout's `up.sh` then reaps the live Cloud and deletes its database.
+
 ## Known gaps
 
 - Without `SERVERS`, no Server answers. Service nodes read **Queued · Can't reach servers** and Logs and runtime status stay empty. Without `SERVERS` or `FAKE_GITHUB`, Inngest points at a dead port, so anything that sends an Inngest event fails at that call. With only `FAKE_GITHUB`, Inngest runs the seeded queued Deploy, which fails because no Server answers.

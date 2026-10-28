@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# mkguard <scratch-dir> <real-ployz>
+#
+# Writes <scratch-dir>/ployz, a wrapper that runs <real-ployz> with
+# PLOYZ_CONFIG pinned to <scratch-dir>/config.yaml, and prints its path.
+# The wrapper exits 97 before the CLI runs when:
+#   - an argument passes --ployz-config, which would escape the pin;
+#   - PLOYZ_CLOUD_URL, a --cloud-url argument or the scratch sign-in
+#     (cloud.json) names ployz.dev;
+#   - `login` names no Cloud at all, since the CLI then defaults to ployz.dev.
+#
+# <scratch-dir> must sit under a run store's scratch/, for example
+# ~/.claude/orchestrate/<run>/scratch/<area>/<who>.
+set -euo pipefail
+
+if [ $# -ne 2 ]; then
+  echo "usage: mkguard <scratch-dir> <real-ployz>" >&2
+  exit 2
+fi
+
+mkdir -p "$1"
+dir=$(cd "$1" && pwd -P)
+case "$dir/" in
+  */scratch/*) ;;
+  *) echo "mkguard: $dir is not under a run store's scratch/" >&2; exit 2 ;;
+esac
+
+real=$(readlink -f "$2")
+if [ ! -x "$real" ]; then
+  echo "mkguard: $2 is not an executable" >&2
+  exit 2
+fi
+
+wrapper=$dir/ployz
+if [ "$real" = "$wrapper" ]; then
+  echo "mkguard: $2 is the wrapper itself" >&2
+  exit 2
+fi
+
+cat >"$wrapper" <<WRAPPER
+#!/usr/bin/env bash
+export PLOYZ_CONFIG=$(printf '%q' "$dir/config.yaml")
+real=$(printf '%q' "$real")
+cloud_json=$(printf '%q' "$dir/cloud.json")
+refuse() { echo "GUARD: \$1" >&2; exit 97; }
+
+cloud=\${PLOYZ_CLOUD_URL:-}
+login=
+prev=
+for arg in "\$@"; do
+  case "\$arg" in
+    --ployz-config|--ployz-config=*) refuse "--ployz-config would leave the scratch config" ;;
+    --cloud-url=*) cloud=\${arg#--cloud-url=} ;;
+    login) login=1 ;;
+  esac
+  [ "\$prev" = --cloud-url ] && cloud=\$arg
+  prev=\$arg
+done
+
+case "\$cloud" in *ployz.dev*) refuse "Cloud URL is ployz.dev" ;; esac
+if [ -f "\$cloud_json" ] && grep -q 'ployz\.dev' "\$cloud_json"; then
+  refuse "the scratch config is signed in to ployz.dev"
+fi
+if [ -n "\$login" ] && [ -z "\$cloud" ] && [ ! -f "\$cloud_json" ]; then
+  refuse "login names no Cloud and would default to ployz.dev; set PLOYZ_CLOUD_URL"
+fi
+
+exec "\$real" "\$@"
+WRAPPER
+chmod +x "$wrapper"
+echo "$wrapper"
