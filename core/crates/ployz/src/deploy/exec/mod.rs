@@ -1774,7 +1774,9 @@ struct Rows<'a> {
     /// The Service each rollout removal retires a copy of, so one that cannot
     /// inspect its copy can still name it.
     services: BTreeMap<usize, &'a ServiceName>,
-    gens: std::sync::Mutex<BTreeMap<QualifiedService, std::sync::Arc<tokio::sync::OnceCell<Gen>>>>,
+    gens: std::sync::Mutex<
+        BTreeMap<QualifiedService, std::sync::Arc<tokio::sync::OnceCell<Numbered>>>,
+    >,
     stored: tokio::sync::OnceCell<Result<Vec<ContainerObservation>, RpcError>>,
     /// Machines whose Containers the plan's snapshot did not list.
     unobserved: BTreeSet<MachineId>,
@@ -2130,13 +2132,42 @@ impl<'a> Rows<'a> {
         QualifiedService::new(self.namespace.clone(), spec.name.clone())
     }
 
+    /// The gen a new copy of `service` on `destination` takes. A Machine that left the
+    /// listing unanswered is a gap the Deploy goes on without, never a destination.
     async fn gen_for<C: MachineOperations>(
         &self,
         client: &C,
         progress: &Progress,
         service: &QualifiedService,
+        destination: &MachineId,
         cancellation: &CancellationToken,
     ) -> Result<Gen, ExecutionError> {
+        let numbered = self
+            .numbered(client, progress, service, cancellation)
+            .await?;
+        match numbered
+            .silent
+            .iter()
+            .find(|silent| silent.failure.machine_id == *destination)
+        {
+            Some(silent) => Err(machine_error(
+                MachineAction::ListContainers,
+                naming_machine(
+                    crate::cluster::unanswered_by(&silent.name, silent.failure.error.clone()),
+                    destination,
+                ),
+            )),
+            None => Ok(numbered.r#gen),
+        }
+    }
+
+    async fn numbered<C: MachineOperations>(
+        &self,
+        client: &C,
+        progress: &Progress,
+        service: &QualifiedService,
+        cancellation: &CancellationToken,
+    ) -> Result<Numbered, ExecutionError> {
         // One cell per Service, so a silent Machine's deadline is paid by each
         // Service at once rather than one Service after another.
         let cell = std::sync::Arc::clone(
@@ -2171,10 +2202,13 @@ impl<'a> Rows<'a> {
                 .chain(stored.iter().filter(|copy| copy.identity() == *service))
                 .map(|copy| copy.copy_gen())
                 .max();
-            Ok(highest.map_or(Gen::FIRST, |highest| Gen::new(highest.get() + 1)))
+            Ok(Numbered {
+                r#gen: highest.map_or(Gen::FIRST, |highest| Gen::new(highest.get() + 1)),
+                silent: std::sync::Arc::new(listed.unanswered),
+            })
         })
         .await
-        .copied()
+        .cloned()
     }
 
     /// What a removal knows of `service`'s copies on the Machines this Deploy did
@@ -2501,7 +2535,13 @@ async fn execute_operation<C: MachineOperations>(
         } => {
             let slot = slots.slot(ContainerKind::ServiceContainer, spec, index, None);
             let r#gen = rows
-                .gen_for(client, progress, &rows.service(spec), cancellation)
+                .gen_for(
+                    client,
+                    progress,
+                    &rows.service(spec),
+                    machine_id,
+                    cancellation,
+                )
                 .await?;
             run_container(
                 client,
@@ -2570,6 +2610,7 @@ async fn execute_operation<C: MachineOperations>(
                     client,
                     progress,
                     &rows.service(&replacement.spec),
+                    &replacement.machine_id,
                     cancellation,
                 )
                 .await?;
@@ -3654,6 +3695,13 @@ pub(super) async fn inspect<C: MachineOperations>(
 
 fn machine_error(action: MachineAction, error: RpcError) -> ExecutionError {
     ExecutionError::Machine { action, error }
+}
+
+/// A Service's next gen, and the Machines that left its listing unanswered.
+#[derive(Clone)]
+struct Numbered {
+    r#gen: Gen,
+    silent: std::sync::Arc<Vec<Unanswered>>,
 }
 
 /// A new copy cannot start while `silent` may run copies the store could not number.

@@ -686,6 +686,22 @@ async fn an_up_machine_whose_large_packets_are_dropped_still_needs_the_store_flo
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_machine_that_went_silent_at_run_time_is_never_a_destination() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) =
+        live_and_second(std::sync::Arc::clone(&ensured), Pair::up_dropped()).await;
+    // Planning saw Machine '2' answer, so it placed a copy there.
+    let plan = vec![run(&machine('2'), spec(None, None, None), true)];
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    let error = failed_listing(&outcome).unwrap_or_else(|| panic!("{outcome:?}"));
+    names_the_second(error);
+    assert!(ensured.lock().unwrap().is_empty(), "nothing is sent to it");
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_up_machine_the_entry_couldnt_dial_fails_the_service_though_its_path_drops() {
     let ensured = std::sync::Arc::default();
     let (client, server) = live_and_second(
