@@ -211,19 +211,32 @@ impl<'snapshot> VolumePlan<'snapshot> {
         } else if let Some(name) = managed_volume_name(volume)
             && let Some(away) = self.snapshot.machines.iter().find(|machine| {
                 self.snapshot.silent(machine)
-                    || (machine.membership == ployz_core::MembershipObservation::Down
-                        && self.deployed_volumes.contains(name))
+                    || (self.deployed_volumes.contains(name) && self.unread(machine, name))
             })
         {
             // Absence from a listing a Machine left unanswered would create the Volume
-            // empty beside the copy that Machine may hold. A Down Machine may hold only
-            // a Volume an earlier Deploy applied.
+            // empty beside the copy that Machine may hold. A Machine this Deploy did not
+            // read may hold only a Volume an earlier Deploy applied.
             return Err(PlanError::VolumeHolderUnknown {
                 name: self.authored(name).to_owned(),
                 machine: away.machine.name.clone(),
             });
         }
         Ok(VolumeLocality::Absent)
+    }
+
+    /// Whether this Deploy cannot tell if `machine` holds Docker Volume `name`: it was
+    /// asked nothing (Down, Unknown, or Unrecognized), or its listing of `name` failed.
+    /// An Unarrived Machine never held a Service, so it holds no copy.
+    fn unread(&self, machine: &MachineObservation, name: &DockerVolumeName) -> bool {
+        let volumes = &self.snapshot.volume_snapshot;
+        !machine.unarrived()
+            && (machine.membership == ployz_core::MembershipObservation::Down
+                || !machine.invites_rpc()
+                || volumes.machine_gap(machine.machine.id).is_some()
+                || volumes.named_failures().iter().any(|failure| {
+                    failure.id.machine_id == machine.machine.id && &failure.id.name == name
+                }))
     }
 
     /// `name` as the Volume's owner wrote it.
