@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 import uuid
 
 CORE = Path(__file__).resolve().parents[1]
@@ -206,12 +207,23 @@ def pair_cloud(private, commands, owns):
     return dict(dashboard=str(DASHBOARD), url=url, organization=seed["organizationSlug"], owns_dashboard=owns)
 
 
-def cli_environment(run):
+def device_config(run):
+    """The config of the CLI signed in as the seeded owner, beside which its credential and device key live."""
+    return Path(run["manifest"]).parent / "private" / "device" / "config.yaml"
+
+
+def cli_environment(run, *, device=False):
+    """The CLI that drives the run: on a --cloud run it holds the Organization Token, or with `device` the seeded
+    owner's signed-in, approved device, which exec and port-forward need."""
     directory = Path(run["manifest"]).parent
     environment = {key: value for key, value in os.environ.items() if not key.startswith("PLOYZ_")}
     environment.update(PLOYZ_CONFIG=str(directory / "private" / "config.yaml"),
                        PATH=str(directory / "private" / "bin") + os.pathsep + os.environ["PATH"])
-    if "cloud" in run:
+    if device and "cloud" not in run:
+        raise RuntimeError("--device needs a --cloud run; a standalone run's CLI already reaches every Machine")
+    if device:
+        environment.update(PLOYZ_CONFIG=str(device_config(run)), PLOYZ_CLOUD_URL=run["cloud"]["url"])
+    elif "cloud" in run:
         environment.update(PLOYZ_TOKEN=(directory / "private" / "cloud-token").read_text(), PLOYZ_CLOUD_URL=run["cloud"]["url"])
     else:
         environment.update(PLOYZ_CONTEXT="verify", PLOYZ_STORE="sqlite:" + str(directory / "private" / "store.sqlite"))
@@ -219,9 +231,54 @@ def cli_environment(run):
     return str(ployz), environment, directory / "workspace"
 
 
-def cli(run, commands, args, **kwargs):
-    ployz, environment, workspace = cli_environment(run)
+def cli(run, commands, args, *, device=False, **kwargs):
+    ployz, environment, workspace = cli_environment(run, device=device)
     return commands([ployz, *args], cwd=workspace, env=environment, **kwargs)
+
+
+def approve_device(run, commands):
+    """Sign a second CLI in as the seeded owner and approve its device on every Server. An Organization Token can't
+    request a device, and exec and port-forward need an approved one. The login code and the owner's session cookie
+    go straight to Cloud, never to argv or evidence."""
+    ployz, environment, workspace = cli_environment(run, device=True)
+    device_config(run).parent.mkdir(mode=0o700, exist_ok=True)
+    started = subprocess.run([ployz, "--json", "login"], cwd=workspace, env=environment, capture_output=True,
+                             stdin=subprocess.DEVNULL, timeout=60)
+    if started.returncode:
+        raise RuntimeError("ployz login: " + started.stderr.decode(errors="replace").strip()[-500:])
+    code, url = json.loads(started.stdout)["code"], run["cloud"]["url"]
+    cookie = dashboard_state(Path(run["cloud"]["dashboard"]))[1]["cookie"]
+
+    def browser(path, body=None):
+        request = urllib.request.Request(url + path, data=body and json.dumps(body).encode(), headers={
+            "Cookie": "better-auth.session_token=" + cookie, "Origin": url, "Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read() or "null")
+    # What the browser does on the page `ployz login` links: claim the code, then approve it into the
+    # Organization its session is in.
+    organization = browser("/api/auth/get-session")["session"]["activeOrganizationId"]
+    browser("/api/auth/device?user_code=" + urllib.parse.quote(code))
+    browser("/api/auth/device/approve", {"userCode": code, "organizationId": organization})
+    cli(run, commands, ["login", "--wait"], device=True, timeout=120)
+    code = json.loads(cli(run, commands, ["--json", "device", "request"], device=True).stdout)["code"]
+    # A device is approved from an approved device or over SSH on a Server; this one is the first.
+    cli(run, commands, ["device", "approve", code, "--connect", "ssh://" + run["machines"][0]["ssh"]], device=True, timeout=120)
+    run["device"] = code
+    save(run)
+
+
+def answer(run, commands, approval, *, approve, reason=None):
+    """Approve or deny a pending approval with the Organization Token. Approving asks for the Organization's slug at
+    a terminal, which `cli` doesn't give, so it runs under `script` with the slug typed."""
+    if "cloud" not in run:
+        raise RuntimeError("approve and deny need a --cloud run")
+    if not approve:
+        return cli(run, commands, ["org", "approval", "deny", approval, *(["--reason", reason] if reason else [])],
+                   check=False, timeout=60)
+    ployz, environment, workspace = cli_environment(run)
+    return commands(["script", "-qfec", shlex.join([ployz, "org", "approval", "approve", approval]), "/dev/null"],
+                    cwd=workspace, env=environment, input=(run["cloud"]["organization"] + "\r").encode(),
+                    check=False, timeout=60)
 
 
 PARTITION = """
@@ -764,6 +821,11 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
                   ", ".join(f"{node['name']}={node['daemon']['version']}" for node in bridged), file=sys.stderr)
             parallel(lambda node: install(run, backend, node, node["daemon"]), bridged)
         wait_ready(run, commands, backend)
+        if "cloud" in run:
+            try:
+                approve_device(run, commands)
+            except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                print(f"No approved device, so probe and cli --device won't work: {str(error).splitlines()[0]}", file=sys.stderr)
         run["timings"]["join_and_ready"] = round(time.monotonic() - started, 3)
         run["state"] = "ready"
         run["timings"]["total"] = round(time.monotonic() - total_started, 3)
@@ -877,7 +939,7 @@ def main():
     reaping.add_argument("--older-than", type=float, default=24, metavar="HOURS", help="Age that makes a run removable; 24 by default")
     reaping.add_argument("--force", action="store_true", help="Also remove runs whose owner process is still alive")
     reaping.add_argument("--yes", action="store_true", help="Remove the runs marked remove")
-    for action in ["doctor", "update", "down", "exec", "cli", "power", "partition", "runner", "probe", "dns-soak"]:
+    for action in ["doctor", "update", "down", "exec", "cli", "power", "partition", "runner", "probe", "dns-soak", "approve", "deny"]:
         command = actions.add_parser(action)
         if action in ["power", "partition"]:
             command.add_argument("state", choices=["on", "off"])
@@ -904,6 +966,15 @@ def main():
                                  help=daemon_help + "; Machines not named keep their source")
         if action == "exec":
             command.add_argument("machine", help="machine-1, machine-2, …")
+        if action in ["approve", "deny"]:
+            command.description = f"{action.capitalize()} a pending approval with the Organization Token; --cloud runs only"
+            command.add_argument("approval", help="The approval id, from: cli RUN -- org approval ls")
+        if action == "deny":
+            command.add_argument("--reason", help="Why not, passed back to whoever asked")
+        if action == "cli":
+            command.add_argument("--device", action="store_true",
+                                 help="Act as the seeded owner's approved device, not the Organization Token; "
+                                      "exec and port-forward need it on --cloud runs")
         if action in ["exec", "cli"]:
             command.add_argument("--timeout", type=float, default=300, help="Command deadline in seconds")
             command.add_argument("command", nargs=argparse.REMAINDER)
@@ -960,8 +1031,15 @@ def main():
             dns_soak_start(commands, backend, machine, args.name, args.workload)
             return 0
         return dns_soak_stop(commands, backend, machine)
+    if args.action in ["approve", "deny"]:
+        result = answer(run, commands, args.approval, approve=args.action == "approve", reason=getattr(args, "reason", None))
+        sys.stdout.buffer.write(result.stdout)
+        sys.stderr.buffer.write(result.stderr)
+        return result.returncode
+    if (args.action == "probe" or getattr(args, "device", False)) and "cloud" in run and not run.get("device"):
+        raise RuntimeError("This --cloud run has no approved device; `up` approves one for the seeded owner after enrollment")
     if args.action == "probe":
-        ployz, environment, workspace = cli_environment(run)
+        ployz, environment, workspace = cli_environment(run, device="cloud" in run)
         result = importlib.import_module("ackprobe").run(
             ployz, environment, workspace, commands.evidence, service=args.service,
             user=args.user, database=args.database, rate=args.rate, stall=args.stall)
@@ -975,7 +1053,7 @@ def main():
             raise RuntimeError("Supply a command after --")
         # The passthroughs forward the caller's stdin, as the commands they wrap do.
         if args.action == "cli":
-            result = cli(run, commands, command, check=False, timeout=args.timeout, stdin=None)
+            result = cli(run, commands, command, device=args.device, check=False, timeout=args.timeout, stdin=None)
         else:
             result = backend.exec(machine, command, check=False, timeout=args.timeout, stdin=None)
         sys.stdout.buffer.write(result.stdout)
