@@ -780,7 +780,7 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
 
 def enroll(run, commands, node, private):
     """Enroll one Machine and give its Server the public IP the internet reaches it on."""
-    # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
+    # Cloud enrollment pins --public-ip and --wg-endpoint as a direct join does, from 0.3.8 on (#3516).
     # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
     # and the daemon creates the Machine Pool on the first Volume, as on a real Server.
     public = public_ip(node["address"])
@@ -809,7 +809,7 @@ def enroll(run, commands, node, private):
         # Complete the same Ingress Proxy follow-up offered by the CLI.
         cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"])
     if "cloud" in run and public != "none":
-        # Cloud enrollment kept the address the daemon looked up, which on Boat is the node's shared NAT IPv4.
+        # A release CLI before 0.3.8 enrolls through Cloud with the address the daemon looked up, on Boat the node's shared NAT IPv4.
         cli(run, commands, ["--json", "server", "set", node["machine_id"], "--public-ip", public])
 
 
