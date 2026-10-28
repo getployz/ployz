@@ -334,7 +334,7 @@ pub(crate) fn listing_gap(machine: &MachineObservation, error: &RpcError) -> boo
 /// Whether `machine` left a call unanswered with `error` because the entry's path probes
 /// find large packets to it dropped. A Machine the router couldn't dial got only small
 /// packets, so its silence has another cause.
-fn dropped_large_packets(machine: &MachineObservation, error: &RpcError) -> bool {
+pub(crate) fn dropped_large_packets(machine: &MachineObservation, error: &RpcError) -> bool {
     error.target_unanswered()
         && !error.undialed()
         && machine

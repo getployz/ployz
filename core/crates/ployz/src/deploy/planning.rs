@@ -706,7 +706,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
             .filter(|failure| {
                 snapshot.machines.iter().any(|machine| {
                     machine.machine.id == failure.machine_id
-                        && super::large_packets_note(machine, &failure.error).is_some()
+                        && super::dropped_large_packets(machine, &failure.error)
                 })
             })
             .map(|failure| failure.machine_id)
