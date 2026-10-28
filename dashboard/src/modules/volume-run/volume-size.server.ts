@@ -5,7 +5,7 @@ import { storeSystem } from "#/modules/config-store/config-store.server";
 import type { StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
 import { ClusterOutOfTime, clusterRead } from "#/modules/runtime/organization-runtime.server";
 import { sdkFailureMessage } from "#/modules/runtime/ployz.server";
-import { type Bytes, deployingMessage, gb, gbAtLeast, type SizeDirection, type SizeOutcome } from "#/modules/volume-run/resize";
+import { type Bytes, deployingMessage, gb, gbAtLeast, type SizeDirection, type SizeOutcome, type Unheld } from "#/modules/volume-run/resize";
 import { type MachineRef, openSession, requireOwner, type RunContext, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 
 /**
@@ -101,21 +101,25 @@ export const resizeCopy = Effect.fn("VolumeRun.resizeCopy")(function* (
  */
 export type RecordAnswer =
   | { readonly ok: true }
-  | { readonly ok: false; readonly reason: "changed" | "gone"; readonly message: string };
+  | { readonly ok: false; readonly reason: "changed" | "gone" | "deployed_since"; readonly message: string };
 
 const Recorded = Schema.Struct({ recorded: Schema.Union([Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") })]) });
 const decodeRecorded = Schema.decodeUnknownOption(Recorded);
-const Deploying = Schema.Struct({ reason: Schema.Literal("deploying"), deployment: Schema.Struct({ number: Schema.NullOr(Schema.Number) }) });
+const Deploying = Schema.Struct({ reason: Schema.Literal("deploying"), deployment: Schema.Struct({ number: Schema.NullOr(Schema.Number) }), unheld: Schema.optional(Schema.Boolean) });
 const decodeDeploying = Schema.decodeUnknownOption(Deploying);
 
 /**
  * What the Store's refusal of a record from `record.from` to `record.to` means for the run, or null when it is no answer
  * the record ends on. A shrink's record waits for a Deployment in flight, so the run names it and asks again after.
  */
-export function recordRefusalOf(volumeName: string, record: { readonly from: Bytes; readonly to: Bytes }, refusal: Pick<StoreRefusal, "code" | "details">): RecordAnswer | null {
+export function recordRefusalOf(volumeName: string, record: SizeRecord, refusal: Pick<StoreRefusal, "code" | "details">): RecordAnswer | null {
   if (refusal.code === "not_found") return { ok: false, reason: "gone", message: `${volumeName} is no longer deployed, so its size was not recorded` };
   if (refusal.code !== "conflict") return null;
   const deploying = decodeDeploying(refusal.details);
+  if (Option.isSome(deploying) && deploying.value.unheld === true) {
+    const { number } = deploying.value.deployment;
+    return { ok: false, reason: "deployed_since", message: `${number === null ? "a Deployment" : `Deployment #${number}`} may have created ${volumeName} at ${gb(record.from)}` };
+  }
   if (Option.isSome(deploying)) return { ok: false, reason: "changed", message: deployingMessage(volumeName, deploying.value.deployment.number, record.to) };
   const recorded = decodeRecorded(refusal.details);
   const holds = Option.isSome(recorded)
@@ -124,18 +128,22 @@ export function recordRefusalOf(volumeName: string, record: { readonly from: Byt
   return { ok: false, reason: "changed", message: `the Store ${holds}; read its size again` };
 }
 
+/** One record of a Volume's size: `unheld` when no Server holds a copy, so it sets only the size the next Deploy creates. */
+export type SizeRecord = { readonly from: Bytes; readonly to: Bytes; readonly unheld?: Unheld | undefined };
+
 /**
- * Tell the Store every copy holds `to`: Cloud's own observation, in-process, so no user, token or agent can claim a
- * size no Machine applied. A record the Store already holds answers ok, so a replayed step converges. Only the
+ * Tell the Store every copy holds `to`, or, `unheld`, that no Server holds one: Cloud's own observation, in-process,
+ * so no user, token or agent can claim a size no Machine applied. A record the Store already holds answers ok, so a replayed step converges. Only the
  * Store's own answers end the record; a Store that couldn't be asked fails the step, and Inngest asks again.
  */
 export const recordVolumeSize = Effect.fn("VolumeRun.recordVolumeSize")(function* (
   ctx: RunContext,
   inngestRunId: string,
-  record: { readonly from: Bytes; readonly to: Bytes },
+  record: SizeRecord,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* storeSystem(ctx.organizationId, { event: "volume_resized", environment: ctx.environmentId, volume: ctx.volumeId, from: record.from, to: record.to }).pipe(
+  const unheld = record.unheld === undefined ? {} : { unheld: record.unheld };
+  return yield* storeSystem(ctx.organizationId, { event: "volume_resized", environment: ctx.environmentId, volume: ctx.volumeId, from: record.from, to: record.to, ...unheld }).pipe(
     Effect.map((): RecordAnswer => ({ ok: true })),
     Effect.catchTag("StoreRefused", (refusal): Effect.Effect<RecordAnswer, StoreRefused> => {
       const answer = recordRefusalOf(ctx.volumeName, record, refusal);

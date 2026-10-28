@@ -123,7 +123,7 @@ pub use trusted::{
     Approval, Asks, ObservationFailure, ObservationStage, RunningObservation, SealingRecipient,
     Trusted, VolumeObservation,
 };
-pub use volume::size::VolumeResized;
+pub use volume::size::{Unheld, VolumeResized};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]

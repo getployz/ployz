@@ -1,3 +1,4 @@
+import type { MachineName } from "@ployz/sdk";
 import { listNames } from "#/lib/plural";
 import { gigabytes } from "#/modules/config-store/store-volumes";
 import { type Requirement, requirements } from "#/modules/runtime/daemon-compat";
@@ -50,7 +51,18 @@ export type ResizePhase = {
   readonly from: Bytes;
   readonly to: Bytes;
   readonly steps: readonly ResizeStep[];
+  /** Set when no Server holds a copy: the run only records the size the next Deploy creates the Volume at. */
+  readonly unheld?: Unheld;
 };
+
+/** What a run that found no copy saw before it asked the Servers, which the Store's record checks: see `VolumeResized`. */
+export type Unheld = { readonly latest_deployment: number | null };
+
+/**
+ * The Environment's Deployments as a resize read them before asking the Servers: the newest numbered one, and the
+ * one in flight. Only a resize that finds no copy reads them.
+ */
+export type DeploymentsSeen = { readonly latest: number | null; readonly inFlight: { readonly number: number | null } | null };
 
 const refuse = (code: Refusal["code"], message: string): Refusal => ({ code, message });
 
@@ -89,11 +101,8 @@ export function planResize(
   writer: AnsweredMember,
   mirrors: readonly AnsweredMember[],
 ): { readonly ok: true; readonly phase: ResizePhase } | { readonly ok: false; readonly refusal: Refusal } {
-  if (size.recorded === 0) {
-    return { ok: false, refusal: size.working === 0
-      ? refuse("invalid", `${volumeName} uses Docker storage, which has no size to change; add a Managed Volume for a sized one`)
-      : refuse("invalid", `${volumeName} has no deployed size to change yet; deploy it first`) };
-  }
+  const unsized = unsizedRefusal(volumeName, size);
+  if (unsized !== null) return { ok: false, refusal: unsized };
   const direction = sizeDirection(size.recorded, args.maximum_bytes);
   const order: Order = RESIZE_ORDER[direction];
   const holders = order.holders(writer, mirrors);
@@ -113,6 +122,39 @@ export function planResize(
   const record = { kind: "record" } as const;
   const steps = order.record === "first" ? [record, ...sets] : order.record === "last" ? [...sets, record] : sets;
   return { ok: true, phase: { kind: "resize", direction, from: size.recorded, to: args.maximum_bytes, steps } };
+}
+
+function unsizedRefusal(volumeName: string, size: RecordedSize): Refusal | null {
+  if (size.recorded !== 0) return null;
+  return size.working === 0
+    ? refuse("invalid", `${volumeName} uses Docker storage, which has no size to change; add a Managed Volume for a sized one`)
+    : refuse("invalid", `${volumeName} has no deployed size to change yet; deploy it first`);
+}
+
+/**
+ * The resize of a Volume no Server holds: a Deploy fixed its size and then failed before creating it. Every managed
+ * Server answered without a copy, so the run records the size alone and the next Deploy creates it at that size. A
+ * Server that reports no managed storage might still hold a copy its daemon can't see, as when `zpool` is missing
+ * while the pool is imported, so it refuses. So does a Deployment in flight, which may be creating the copy now.
+ */
+export function planUnheld(
+  volumeName: string,
+  args: VolumeRunArgs["resize"],
+  size: RecordedSize,
+  hidden: readonly MachineName[],
+  deployments: DeploymentsSeen | undefined,
+): { readonly ok: true; readonly phase: ResizePhase } | { readonly ok: false; readonly refusal: Refusal } {
+  const unsized = unsizedRefusal(volumeName, size);
+  if (unsized !== null) return { ok: false, refusal: unsized };
+  if (hidden.length > 0) {
+    return { ok: false, refusal: refuse("unanswered", `${listNames([...hidden])} ${hidden.length === 1 ? "reports" : "report"} no managed storage, so whether `
+      + `${hidden.length === 1 ? "it holds" : "they hold"} ${volumeName} is unknown; change its size once ${listNames([...hidden])} ${hidden.length === 1 ? "reports its" : "report their"} storage, or after the next deploy creates it`) };
+  }
+  if (deployments === undefined) return { ok: false, refusal: refuse("unobserved", `Cloud couldn't read ${volumeName}'s Deployments; try again in a moment`) };
+  if (deployments.inFlight !== null) return { ok: false, refusal: refuse("deploying", deployingMessage(volumeName, deployments.inFlight.number, args.maximum_bytes)) };
+  const direction = sizeDirection(size.recorded, args.maximum_bytes);
+  const steps: readonly ResizeStep[] = direction === "settle" ? [] : [{ kind: "record" }];
+  return { ok: true, phase: { kind: "resize", direction, from: size.recorded, to: args.maximum_bytes, steps, unheld: { latest_deployment: deployments.latest } } };
 }
 
 /**

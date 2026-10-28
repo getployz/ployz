@@ -30,6 +30,21 @@ pub struct VolumeResized {
     /// compare-and-set on it.
     pub from: ProvisionedVolumeMaximumBytes,
     pub to: ProvisionedVolumeMaximumBytes,
+    /// Set by a run that found no Server holding a copy, so it changes only the size
+    /// the next Deploy creates the Volume at. Absent from every other record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub unheld: Option<Unheld>,
+}
+
+/// What a run that found no copy saw before it asked the Servers: the Environment's
+/// latest numbered Deployment, none before the first. A Deploy admitted since may
+/// have created the copy at the old size, so the record refuses once a newer one
+/// exists or one is in flight.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Unheld {
+    pub latest_deployment: Option<u64>,
 }
 
 /// Record `resized` in one transaction under the Environment's lock. This is the only
@@ -51,7 +66,9 @@ pub struct VolumeResized {
 /// claim fails its planner. A Deploy's admission and its claim take the same
 /// Environment lock, so either the record sees the Deployment or the Deployment's
 /// claim reads the lowered size. A record that
-/// raises, a grow's or a refused shrink's undo, never waits.
+/// raises, a grow's or a refused shrink's undo, never waits, unless it is
+/// [`Unheld`]: no copy holds the size yet, so a Deployment in flight, or one
+/// admitted since the run looked, may create it at the lock's old size.
 ///
 /// Every record that writes changes Applied State, which Cloud's change log reads, so
 /// the lock row needs no change-log source of its own.
@@ -61,7 +78,7 @@ pub struct VolumeResized {
 /// Applied State; `conflict` with `reason: "size_changed"` when the lock row holds
 /// anything but `Provisioned { from }`, a Docker Volume included; `conflict` with
 /// `reason: "deploying"`, naming the Deployment, when it lowers the size while one is
-/// in flight.
+/// in flight, or is [`Unheld`] and one is in flight or newer than it saw.
 pub(crate) fn record(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -112,6 +129,13 @@ pub(crate) fn record(
             message,
             json!({ "reason": "size_changed", "volume": volume, "recorded": recorded }),
         ));
+    }
+    if let Some(unheld) = &resized.unheld
+        && let Some(newer) = deployment::in_flight(tx, &id)?
+            .or(deployment::latest_numbered(tx, &id)?
+                .filter(|latest| latest.number > unheld.latest_deployment))
+    {
+        return Err(deployed_since(&name, volume, &newer));
     }
     if resized.to < resized.from
         && let Some(running) = deployment::in_flight(tx, &id)?
@@ -165,6 +189,25 @@ fn deploying(name: &str, volume: &str, running: &DeploymentSummary) -> RpcError 
             "reason": "deploying",
             "volume": volume,
             "deployment": { "id": running.id, "number": running.number },
+        }),
+    )
+}
+
+/// The refusal of an [`Unheld`] record for Volume `name` once Deployment `newer` is in
+/// flight or was admitted since the run looked for copies: it may create the Volume
+/// at the lock's size, so the run looks again.
+fn deployed_since(name: &str, volume: &str, newer: &DeploymentSummary) -> RpcError {
+    error::conflict(
+        format!(
+            "Deployment {} may create {name} at its recorded size; Ployz looks for its \
+             copies again before it changes the size.",
+            newer.label()
+        ),
+        json!({
+            "reason": "deploying",
+            "volume": volume,
+            "deployment": { "id": newer.id, "number": newer.number },
+            "unheld": true,
         }),
     )
 }

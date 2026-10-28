@@ -1,5 +1,5 @@
 import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
-import { planResize, type ResizePhase } from "#/modules/volume-run/resize";
+import { type DeploymentsSeen, planResize, planUnheld, type ResizePhase } from "#/modules/volume-run/resize";
 import { type AnsweredMember, copyName, heardFrom, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 /** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
@@ -20,7 +20,8 @@ export type RefusalCode =
   | "no_copy"
   | "another_copy"
   | "confirm_required"
-  | "role_changed";
+  | "role_changed"
+  | "deploying";
 
 /**
  * Where a Move continues from the copies it finds. `rounds` and `cut` start on A's root; `final` pulls the cut's
@@ -55,9 +56,14 @@ export type Planned =
 
 /**
  * A resize also carries the sizes the Store holds for the Volume: `recordedBytes`, the one its copies hold, 0 before
- * the first Deploy, and `refquotaBytes`, the Working one, 0 for a Docker Volume.
+ * the first Deploy, and `refquotaBytes`, the Working one, 0 for a Docker Volume; and the Deployments it read before it
+ * asked the Servers, which only a Volume no Server holds plans with.
  */
-export type PlanInput = (Exclude<VolumeRunInput, { kind: "resize" }> | (Extract<VolumeRunInput, { kind: "resize" }> & { readonly recordedBytes: number; readonly refquotaBytes: number }))
+export type PlanInput = (Exclude<VolumeRunInput, { kind: "resize" }> | (Extract<VolumeRunInput, { kind: "resize" }> & {
+  readonly recordedBytes: number;
+  readonly refquotaBytes: number;
+  readonly deployments?: DeploymentsSeen;
+}))
   & { readonly volumeName: string; readonly orphan: boolean };
 
 export const ROLE_NOUN = { mirror: "a mirror", old_copy: "an old copy" } as const satisfies Record<SlotRole, string>;
@@ -107,8 +113,10 @@ const isDestination = ({ to, machine }: VolumeRunArgs["move"], member: Member) =
 const refuse = (code: RefusalCode, message: string): Planned => ({ ok: false, refusal: { code, message } });
 
 /** Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. */
-export function planFromCopies(input: PlanInput, members: readonly Member[]): Planned {
+export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const name = input.volumeName;
+  const members = observed.filter((member) => member.answered || member.stateless !== true);
+  const hidden = observed.flatMap((member) => (!member.answered && member.stateless === true ? [member.machine.name] : []));
   const answered = members.filter((member): member is AnsweredMember => member.answered);
   const withRole = (...roles: Role[]) => answered.filter((member) => roles.includes(roleOf(member)));
   const named = (member: Member) => copyName(name, member.machine.name);
@@ -189,7 +197,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
 
   if (root === undefined) {
     if (mirrors.length > 0) return refuse("no_writer", `${name} has no writer; ployz volume release ${name} ends a move cut short`);
-    if (input.kind === "resize") return refuse("no_writer", `no Server holds ${name} yet; change its size after the next deploy creates it`);
+    if (input.kind === "resize") return planUnheld(name, input.args, { recorded: input.recordedBytes, working: input.refquotaBytes }, hidden, input.deployments);
     return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
   }
   if (roleOf(root) === "cutting") return midRun(name, mirrors, root);

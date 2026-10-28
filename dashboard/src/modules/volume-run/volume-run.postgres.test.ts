@@ -208,6 +208,7 @@ describe("volume runs", () => {
   let storeEvents: SystemEvent[];
   let storeRefuse: ((event: SystemEvent) => InstanceType<typeof RpcError> | null) | null;
   let storeInFlight: { id: string; number: number | null }[];
+  let storeLatest: number | null;
   /** Whether the Store reads production as Protected. */
   let storeProtected: boolean;
   /** The nodes every Deployment the Store reads back targets. */
@@ -513,7 +514,7 @@ describe("volume runs", () => {
               after?.();
               return answer;
             }
-            if (query.query === "deployments") return { in_flight: storeInFlight };
+            if (query.query === "deployments") return { in_flight: storeInFlight, latest: storeLatest === null ? null : { number: storeLatest } };
             if (query.query === "environments") return { environments: [{ id: "env-1", name: "production", protected: storeProtected }] };
             if (query.query === "deployment") {
               return { id: query.id, status: "running", namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" }, nodes: deployNodes };
@@ -623,6 +624,7 @@ describe("volume runs", () => {
     storeEvents = [];
     storeRefuse = null;
     storeInFlight = [];
+    storeLatest = null;
     storeProtected = false;
     deployNodes = [{ type: "service", id: "svc-web", name: "web", outcome: "pending", rows: [] }, { type: "volume", id: volumeId, name: "data", outcome: "pending", rows: [] }];
     machines = [
@@ -3184,6 +3186,62 @@ describe("volume runs", () => {
       expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
       expect(storeEvents).toEqual([recorded]);
       expect(await rows()).toMatchObject([{ kind: "resize", state: "done", epoch: null, message: "data is 20 GB on fsn-2, fsn-3, fsn-1" }]);
+    });
+
+    describe("of a Volume no Server holds (#3501)", () => {
+      const unheld = (latest: number | null) => ({ ...recorded, unheld: { latest_deployment: latest } });
+
+      beforeEach(() => {
+        machines = [sized("fsn-1", null), sized("fsn-2", null)];
+        storeLatest = 3;
+      });
+
+      it("records the size alone, naming the newest Deployment it read before asking the Servers, and asks no Machine", async () => {
+        const run = await requested(grow(20));
+
+        const output = await execute(run.id);
+
+        expect(output.result).toEqual({ runId: run.id, resized: 20 * GB });
+        expect(verbs).toEqual([]);
+        expect(storeEvents).toEqual([unheld(3)]);
+        expect(await rows()).toMatchObject([{ state: "done", message: "No Server holds data yet; the next deploy creates it at 20 GB" }]);
+      });
+
+      it("a Deploy that created the copy since the run looked refuses the record; looking again, the run grows that copy", async () => {
+        // Deployment 4 is admitted after the run read Deployment 3, creates the copy at 10 GB and ends before the record.
+        storeRefuse = (event) => {
+          if (event.event !== "volume_resized" || !("unheld" in event)) return null;
+          storeLatest = 4;
+          machines[0] = sized("fsn-1", writerCopy());
+          return new RpcError({ code: "conflict", message: "Deployment #4 may create data", details: { reason: "deploying", volume: volumeId, deployment: { id: "dep-4", number: 4 }, unheld: true } });
+        };
+        const run = await requested(grow(20));
+
+        const output = await execute(run.id);
+
+        expect(output.result).toEqual({ runId: run.id, resized: 20 * GB });
+        expect(verbs).toEqual(["size@fsn-1(20)"]);
+        expect(bounds()).toMatchObject({ "fsn-1": 20 });
+        expect(storeEvents).toEqual([recorded]);
+        expect(await rows()).toMatchObject([{ state: "done", message: "data is 20 GB on fsn-1" }]);
+      });
+
+      it("counts a Server reporting no managed storage as unanswered, and records nothing", async () => {
+        machines.push({ name: "docker-1", pool: false, stateless: true, copy: null });
+
+        expect(await admit(grow(20))).toMatchObject({ ok: false, refusal: {
+          code: "unavailable", message: "docker-1 reports no managed storage, so whether it holds data is unknown; change its size once docker-1 reports its storage, or after the next deploy creates it",
+        } });
+        expect(storeEvents).toEqual([]);
+        expect(await rows()).toEqual([]);
+      });
+
+      it("is refused while a Deployment is in flight, which may be creating the copy now", async () => {
+        storeInFlight = [{ id: "dep-4", number: 4 }];
+
+        expect(await admit(grow(20))).toMatchObject({ ok: false, refusal: { code: "conflict", message: "Deployment #4 is in flight; run ployz volume set data --size 20 again when it ends" } });
+        expect(storeEvents).toEqual([]);
+      });
     });
 
     it("a copy already bigger holds, and a copy that keeps switching is asked again until it holds", async () => {
