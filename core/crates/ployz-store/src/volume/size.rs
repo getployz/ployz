@@ -38,13 +38,17 @@ pub struct VolumeResized {
 }
 
 /// What a run that found no copy saw before it asked the Servers: the Environment's
-/// latest numbered Deployment, none before the first. A Deploy admitted since may
-/// have created the copy at the old size, so the record refuses once a newer one
-/// exists or one is in flight.
+/// latest numbered Deployment, none before the first, and when it read it. A Deploy
+/// admitted since may have created the copy at the old size, so the record refuses
+/// once a newer one exists or one is in flight. So does one that ended within
+/// [`deployment::SETTLING`] of `looked_at`, however late the record comes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Unheld {
     pub latest_deployment: Option<u64>,
+    /// Unix seconds.
+    #[ts(type = "number")]
+    pub looked_at: i64,
 }
 
 /// Record `resized` in one transaction under the Environment's lock. This is the only
@@ -137,7 +141,7 @@ pub(crate) fn record(
         && let Some(newer) = deployment::claimed_or_queued(tx, &id)?
             .or(deployment::latest_numbered(tx, &id)?
                 .filter(|latest| latest.number > unheld.latest_deployment))
-            .or(deployment::settling(tx, &id)?)
+            .or(deployment::settling(tx, &id, unheld.looked_at)?)
     {
         return Err(deployed_since(&name, volume, &newer));
     }

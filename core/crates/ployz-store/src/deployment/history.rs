@@ -320,14 +320,16 @@ pub(crate) fn claimed_or_queued(
 /// runner waits two minutes on each call.
 pub(crate) const SETTLING: i64 = 10 * 60;
 
-/// `environment`'s latest Deployment that ran and ended within [`SETTLING`], whatever
-/// its outcome: what it sent its Servers may still land. One whose runner was lost
+/// `environment`'s latest Deployment that ran and ended no earlier than [`SETTLING`]
+/// before `looked`, whatever its outcome: what it sent its Servers may still have
+/// landed after a look at them then. One whose runner was lost
 /// records no end, so its lease, which every record renews, stands in for it.
 pub(crate) fn settling(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
+    looked: i64,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    let since = super::now() - SETTLING;
+    let since = looked.min(super::now()) - SETTLING;
     latest_where(
         tx,
         environment,

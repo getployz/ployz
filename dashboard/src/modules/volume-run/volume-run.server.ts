@@ -17,7 +17,7 @@ import type {
   WantedCopy,
 } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, notInArray, or, type SQL, sql } from "drizzle-orm";
-import { Data, Effect, Option, Schema } from "effect";
+import { Clock, Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import type { OperationVerb } from "#/modules/approvals/approvals";
@@ -600,9 +600,10 @@ const shrinkWhileDeploying = Effect.fn("VolumeRun.shrinkWhileDeploying")(functio
  * holds names the newest it saw, and refuses once a newer one exists.
  */
 const deploymentsSeen = Effect.fn("VolumeRun.deploymentsSeen")(function* (organizationId: string, environment: EnvironmentRef) {
+  const readAt = Math.floor((yield* Clock.currentTimeMillis) / 1000);
   const { latest, in_flight: inFlight } = yield* readStore(organizationId, { query: "deployments", environment, limit: 1, cursor: null });
   const [running] = inFlight;
-  return { latest: latest?.number ?? null, inFlight: running === undefined ? null : { number: running.number } } satisfies DeploymentsSeen;
+  return { latest: latest?.number ?? null, inFlight: running === undefined ? null : { number: running.number }, readAt } satisfies DeploymentsSeen;
 });
 
 /**

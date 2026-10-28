@@ -56,13 +56,14 @@ export type ResizePhase = {
 };
 
 /** What a run that found no copy saw before it asked the Servers, which the Store's record checks: see `VolumeResized`. */
-export type Unheld = { readonly latest_deployment: number | null };
+/** `looked_at`: Unix seconds when the run read the Deployments, before it looked for copies. */
+export type Unheld = { readonly latest_deployment: number | null; readonly looked_at: number };
 
 /**
  * The Environment's Deployments as a resize read them before asking the Servers: the newest numbered one, and the
  * one in flight. Only a resize that finds no copy reads them.
  */
-export type DeploymentsSeen = { readonly latest: number | null; readonly inFlight: { readonly number: number | null } | null };
+export type DeploymentsSeen = { readonly latest: number | null; readonly inFlight: { readonly number: number | null } | null; readonly readAt: number };
 
 const refuse = (code: Refusal["code"], message: string): Refusal => ({ code, message });
 
@@ -154,7 +155,7 @@ export function planUnheld(
   if (deployments.inFlight !== null) return { ok: false, refusal: refuse("deploying", deployingMessage(volumeName, deployments.inFlight.number, args.maximum_bytes)) };
   const direction = sizeDirection(size.recorded, args.maximum_bytes);
   const steps: readonly ResizeStep[] = direction === "settle" ? [] : [{ kind: "record" }];
-  return { ok: true, phase: { kind: "resize", direction, from: size.recorded, to: args.maximum_bytes, steps, unheld: { latest_deployment: deployments.latest } } };
+  return { ok: true, phase: { kind: "resize", direction, from: size.recorded, to: args.maximum_bytes, steps, unheld: { latest_deployment: deployments.latest, looked_at: deployments.readAt } } };
 }
 
 /**

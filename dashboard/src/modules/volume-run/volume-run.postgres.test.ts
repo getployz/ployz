@@ -3189,7 +3189,7 @@ describe("volume runs", () => {
     });
 
     describe("of a Volume no Server holds (#3501)", () => {
-      const unheld = (latest: number | null) => ({ ...recorded, unheld: { latest_deployment: latest } });
+      const unheld = (latest: number | null) => ({ ...recorded, unheld: { latest_deployment: latest, looked_at: expect.any(Number) } });
 
       beforeEach(() => {
         machines = [sized("fsn-1", null), sized("fsn-2", null)];

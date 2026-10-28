@@ -470,20 +470,20 @@ describe("plan a resize", () => {
 });
 
 describe("plan a resize of a Volume no Server holds (#3501)", () => {
-  const seen = { latest: 3, inFlight: null };
+  const seen = { latest: 3, inFlight: null, readAt: 1_000 };
   const unheld = (gigabytes: number, deployments: DeploymentsSeen = seen): PlanInput =>
     ({ kind: "resize", args: { maximum_bytes: gigabytes * GB }, ...data, recordedBytes: 10 * GB, refquotaBytes: 10 * GB, deployments });
   const empty = [member("fsn-1", "empty"), member("fsn-2", "empty")];
   const stateless = (server: string): Member => ({ machine: member(server, "unanswered").machine, answered: false, stateless: true });
 
   it("records the size alone, naming the newest Deployment it saw before asking the Servers", () => {
-    expect(planFromCopies(unheld(20), empty)).toEqual({ ok: true, phase: { kind: "resize", direction: "grow", from: 10 * GB, to: 20 * GB, steps: [{ kind: "record" }], unheld: { latest_deployment: 3 } } });
+    expect(planFromCopies(unheld(20), empty)).toEqual({ ok: true, phase: { kind: "resize", direction: "grow", from: 10 * GB, to: 20 * GB, steps: [{ kind: "record" }], unheld: { latest_deployment: 3, looked_at: 1_000 } } });
     expect(outcome(unheld(4), empty)).toBe("shrink 10->4 GB: record");
     expect(outcome(unheld(10), empty)).toBe("settle 10->10 GB: ");
   });
 
   it("refuses while a Deployment is in flight, which may be creating the copy now", () => {
-    expect(planFromCopies(unheld(20, { latest: 4, inFlight: { number: 4 } }), empty)).toMatchObject({ ok: false, refusal: {
+    expect(planFromCopies(unheld(20, { latest: 4, inFlight: { number: 4 }, readAt: 1_000 }), empty)).toMatchObject({ ok: false, refusal: {
       code: "deploying", message: "Deployment #4 is in flight; run ployz volume set data --size 20 again when it ends",
     } });
   });

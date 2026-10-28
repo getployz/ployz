@@ -231,18 +231,30 @@ fn resized(volume: &str, from: u64, to: u64) -> SystemEvent {
 }
 
 /// Cloud records `data` moved from `from` to `to` GB from a run that found no copy,
-/// having seen `latest` as the Environment's newest numbered Deployment.
+/// having just seen `latest` as the Environment's newest numbered Deployment.
 fn resize_unheld(
     store: &ConfigStore,
     from: u64,
     to: u64,
     latest: Option<u64>,
 ) -> Result<(), RpcError> {
+    resize_unheld_looked(store, from, to, latest, now())
+}
+
+/// As [`resize_unheld`], from a run that looked at `looked_at`, in Unix seconds.
+fn resize_unheld_looked(
+    store: &ConfigStore,
+    from: u64,
+    to: u64,
+    latest: Option<u64>,
+    looked_at: i64,
+) -> Result<(), RpcError> {
     let SystemEvent::VolumeResized(mut resized) = resized(VOLUME, from, to) else {
         unreachable!()
     };
     resized.unheld = Some(Unheld {
         latest_deployment: latest,
+        looked_at,
     });
     store
         .system(
@@ -1079,6 +1091,16 @@ fn aged_shop(dir: &tempfile::TempDir) -> (ConfigStore, Actor, String) {
 }
 
 /// Every Deployment that ended did so long enough ago for its Servers to settle.
+fn now() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap()
+}
+
 fn settled(url: &str) {
     backend::execute(
         url,
@@ -1192,6 +1214,12 @@ fn a_record_from_a_run_that_found_no_copy_waits_for_the_deployments_that_ran_to_
         .unwrap();
     refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(4)).unwrap_err(), 4);
     settled(&url);
+    // A record retried late from a look taken while #4 settled still refuses.
+    let looked_then = now() - 3600;
+    refused_as_deployed_since(
+        &resize_unheld_looked(&store, 10, 20, Some(4), looked_then).unwrap_err(),
+        4,
+    );
     resize_unheld(&store, 10, 20, Some(4)).unwrap();
     assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
 }
