@@ -302,6 +302,43 @@ pub(crate) fn in_flight(
     latest_where(tx, environment, &in_flight_sql())
 }
 
+/// `environment`'s latest Deployment queued or claimed, even one whose runner's lease
+/// lapsed: what it sent the Machines may still land.
+pub(crate) fn claimed_or_queued(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    latest_where(
+        tx,
+        environment,
+        "status IN ('queued', 'running', 'cancelling')",
+    )
+}
+
+/// How long after a Deployment that ran ends its Servers may still be doing what it
+/// sent: a Machine finishes admitted work its caller stopped waiting for, and a
+/// runner waits two minutes on each call.
+pub(crate) const SETTLING: i64 = 10 * 60;
+
+/// `environment`'s latest Deployment that ran and ended no earlier than [`SETTLING`]
+/// before `looked`, whatever its outcome: what it sent its Servers may still have
+/// landed after a look at them then. One whose runner was lost
+/// records no end, so its lease, which every record renews, stands in for it.
+pub(crate) fn settling(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    looked: i64,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    let since = looked.min(super::now()) - SETTLING;
+    latest_where(
+        tx,
+        environment,
+        &format!(
+            "started IS NOT NULL AND (ended >= {since} OR (ended IS NULL AND lease >= {since}))"
+        ),
+    )
+}
+
 /// `environment`'s latest Deployment that started (claimed by a runner), or a
 /// removal that applied without one. What may run on the Servers.
 pub(crate) fn last_ran(

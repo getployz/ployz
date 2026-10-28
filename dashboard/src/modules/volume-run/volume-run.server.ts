@@ -17,7 +17,7 @@ import type {
   WantedCopy,
 } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, notInArray, or, type SQL, sql } from "drizzle-orm";
-import { Data, Effect, Option, Schema } from "effect";
+import { Clock, Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import type { OperationVerb } from "#/modules/approvals/approvals";
@@ -46,7 +46,7 @@ import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
-import { deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
+import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -407,6 +407,7 @@ const refusalCode = {
   no_copy: "conflict",
   another_copy: "conflict",
   role_changed: "conflict",
+  deploying: "conflict",
   server_lacks: "unsupported",
 } satisfies Record<RefusalCode, string>;
 
@@ -594,6 +595,31 @@ const shrinkWhileDeploying = Effect.fn("VolumeRun.shrinkWhileDeploying")(functio
   return { code: "conflict", message: deployingMessage(volumeName, running.number, to), details: { reason: "deploying", deployment: { id: running.id, number: running.number } } } satisfies StoreRefusal;
 });
 
+/**
+ * The Environment's Deployments as a resize reads them before it asks the Servers: a record of a Volume no Server
+ * holds names the newest it saw, and refuses once a newer one exists.
+ */
+const deploymentsSeen = Effect.fn("VolumeRun.deploymentsSeen")(function* (organizationId: string, environment: EnvironmentRef) {
+  const readAt = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+  const { latest, in_flight: inFlight } = yield* readStore(organizationId, { query: "deployments", environment, limit: 1, cursor: null });
+  const [running] = inFlight;
+  return { latest: latest?.number ?? null, inFlight: running === undefined ? null : { number: running.number }, readAt } satisfies DeploymentsSeen;
+});
+
+/**
+ * A resize run's Deployments, read before it observes the Servers; null when the Environment its Docker volume names
+ * is gone, which a Volume no Server holds plans as unread.
+ */
+export const runDeploymentsSeen = Effect.fn("VolumeRun.runDeploymentsSeen")(function* (ctx: RunContext, inngestRunId: string) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const parsed = parseDockerVolumeName(ctx.dockerVolume);
+  if (parsed === null) return null;
+  const { namespaces } = yield* readStore(ctx.organizationId, { query: "namespaces" });
+  const owned = namespaces.find((entry) => entry.namespace === parsed.namespace);
+  if (owned === undefined) return null;
+  return yield* deploymentsSeen(ctx.organizationId, { project: owned.project, environment: owned.environment });
+});
+
 /** A read's failure as none, except the plan running out of Cluster time, which refuses the whole plan. */
 const answered = <A, E, R>(read: Effect.Effect<A, E, R>) => read.pipe(
   Effect.map(Option.some),
@@ -610,6 +636,8 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   input: PlanRequest,
   pending: Owed | null,
 ) {
+  // Read before the Servers are asked: a Deploy admitted after this may create a copy the observation missed.
+  const deployments = input.kind === "resize" ? Option.getOrUndefined(yield* answered(deploymentsSeen(organizationId, input.environment))) : undefined;
   const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input.kind === "resize" ? { ...input, recordedBytes: volume.recordedBytes } : input));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
@@ -622,7 +650,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     if (forward.kind === "blocked") return { ok: false, refusal: { code: "conflict", message: forward.message, details: null } } satisfies ClusterPlan;
   }
   const planInput: PlanInput = input.kind === "resize"
-    ? { ...input, volumeName: volume.volumeName, orphan: false, recordedBytes: volume.recordedBytes, refquotaBytes: volume.refquotaBytes }
+    ? { ...input, volumeName: volume.volumeName, orphan: false, recordedBytes: volume.recordedBytes, refquotaBytes: volume.refquotaBytes, ...(deployments && { deployments }) }
     : { ...input, volumeName: volume.volumeName, orphan: false };
   const planned = planFromCopies(planInput, members.value);
   if (!planned.ok) {
@@ -1444,6 +1472,11 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
+  // A resize names them, so its record of a Volume no Server holds can't miss a copy a stateless report hides.
+  const stateless = run?.kind === "resize"
+    ? frame.machines.filter((observed) => observed.storage?.state === "stateless")
+      .map(({ machine }): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false, stateless: true }))
+    : [];
   const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false, incomplete: true }));
   const listed = yield* Effect.forEach(managed, ({ machine }) => {
     const ref: MachineRef = { id: machine.id, name: machine.name };
@@ -1481,7 +1514,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
   }, { concurrency: "unbounded" });
-  return [...listed, ...unlisted].map((member): Member =>
+  return [...listed, ...stateless, ...unlisted].map((member): Member =>
     !member.answered && lastMirror(frame.volumes, member.machine.id, dockerVolume) ? { ...member, lastMirror: true } : member);
 }, Effect.scoped);
 

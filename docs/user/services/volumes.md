@@ -46,9 +46,15 @@ You can change the limit in the volume's **Settings**, under **Space**, or with
 `ployz volume set data --size 10`, until a deploy starts creating the volume. A deploy refused
 before it starts, for example because its plan finds no server with room, leaves the limit
 editable, and so does a deploy while no service mounts the volume. Once a deploy starts creating
-the volume, the limit is fixed, even if that deploy then fails and no server holds the volume.
-`ployz volume set --size` then refuses, saying no server holds it yet: deploy again, and change the
-limit once a deploy creates the volume. Once the volume deploys, you
+the volume, the limit is fixed in the panel. If that deploy then fails before any server holds the
+volume, `ployz volume set data --size 10` still changes it: Ployz checks every server, finds no
+copy, and your next deploy creates the volume at the new limit. It refuses while a deploy is under
+way and for 10 minutes after one ends, however it ended, since a server may still be creating the
+volume; run it again after that. It also
+refuses while a server reports no managed storage, since Ployz can't tell whether that server holds
+a copy. If a deploy creates the volume while the change is in progress, Ployz resizes the copy that
+deploy made instead, or, if that deploy is still under way or just ended, stops and asks you to run
+it again in a few minutes. Once the volume deploys, you
 can grow it on Ployz Cloud while its service keeps running. Type a larger **Storage limit** there
 and click **Grow**. The panel shows the resize until it ends. Before you confirm,
 it refuses a smaller limit, a server whose Ployz is too old to grow it or that isn't reporting to

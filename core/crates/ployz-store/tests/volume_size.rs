@@ -17,8 +17,8 @@ use ployz_store::{
     DeploymentId, DeploymentQuery, Discard, DiscardTarget, Edit, EnvironmentId, EnvironmentRef,
     HistoryAction, HistoryPreviewQuery, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
     Publish, RemoveVolume, Retry, Revision, RunEvidence, RunnerId, ServiceLineageId,
-    SetVolumeStorage, SettingPath, StageHistory, SystemEvent, Trusted, VolumeId, VolumeListing,
-    VolumeName, VolumeObservation, VolumeResized, VolumesQuery,
+    SetVolumeStorage, SettingPath, StageHistory, SystemEvent, Trusted, Unheld, VolumeId,
+    VolumeListing, VolumeName, VolumeObservation, VolumeResized, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -226,7 +226,43 @@ fn resized(volume: &str, from: u64, to: u64) -> SystemEvent {
         volume: VolumeId::parse(volume).unwrap(),
         from: gb(from),
         to: gb(to),
+        unheld: None,
     })
+}
+
+/// Cloud records `data` moved from `from` to `to` GB from a run that found no copy,
+/// having just seen `latest` as the Environment's newest numbered Deployment.
+fn resize_unheld(
+    store: &ConfigStore,
+    from: u64,
+    to: u64,
+    latest: Option<u64>,
+) -> Result<(), RpcError> {
+    resize_unheld_looked(store, from, to, latest, now())
+}
+
+/// As [`resize_unheld`], from a run that looked at `looked_at`, in Unix seconds.
+fn resize_unheld_looked(
+    store: &ConfigStore,
+    from: u64,
+    to: u64,
+    latest: Option<u64>,
+    looked_at: i64,
+) -> Result<(), RpcError> {
+    let SystemEvent::VolumeResized(mut resized) = resized(VOLUME, from, to) else {
+        unreachable!()
+    };
+    resized.unheld = Some(Unheld {
+        latest_deployment: latest,
+        looked_at,
+    });
+    store
+        .system(
+            &org(),
+            &SystemEvent::VolumeResized(resized),
+            &Trusted::default(),
+        )
+        .map(|_| ())
 }
 
 /// Cloud records `data` moved from `from` to `to` GB.
@@ -1042,6 +1078,166 @@ fn a_record_that_raises_or_replays_is_taken_while_a_deployment_is_in_flight() {
     resize(&store, 5, 8).unwrap();
     assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(8)));
     refused_while_deploying(&resize(&store, 8, 5).unwrap_err(), 2);
+}
+
+/// A Store on a file `dir` holds, and its URL, so a test can age its rows.
+fn aged_shop(dir: &tempfile::TempDir) -> (ConfigStore, Actor, String) {
+    let url = backend::fresh_url(dir);
+    let (store, who) = shop_on(
+        ConfigStore::open(&url, backend::key()).unwrap(),
+        managed(10),
+    );
+    (store, who, url)
+}
+
+/// Every Deployment that ended did so long enough ago for its Servers to settle.
+fn now() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap()
+}
+
+fn settled(url: &str) {
+    backend::execute(
+        url,
+        "UPDATE config_deployment SET ended = ended - 3600, lease = lease - 3600",
+    );
+}
+
+/// The refusal of a record from a run that found no copy, since Deployment `n` may
+/// have created it.
+fn refused_as_deployed_since(refused: &RpcError, n: u8) {
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(refused.details["reason"], json!("deploying"));
+    assert_eq!(refused.details["unheld"], json!(true));
+    assert_eq!(refused.details["deployment"]["id"], json!(id(n)));
+}
+
+/// #3501: a run sees Deployment 1 as the latest and finds no copy. Deployment 2 is
+/// then admitted, creates the copy at the old size and ends before the run records.
+/// Nothing is in flight at the record, yet it refuses; a run that looks again sees
+/// the copy and resizes it, so its record is an ordinary one.
+#[test]
+fn a_record_from_a_run_that_found_no_copy_refuses_once_a_deployment_came_since() {
+    let (store, who) = shop(managed(10));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    let seen = Some(1);
+    deploy(&store, &who, 2);
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, seen).unwrap_err(), 2);
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(10)));
+    // Looking again, the run finds the copy Deployment 2 created and grows it.
+    resize(&store, 10, 20).unwrap();
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
+}
+
+#[test]
+fn a_record_from_a_run_that_found_no_copy_waits_for_a_deployment_in_flight_either_way() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who, url) = aged_shop(&dir);
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    admit(&store, &who, 2).unwrap();
+    // Admitted before the run looked, so the run saw it; it is in flight all the same.
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(2)).unwrap_err(), 2);
+    refused_as_deployed_since(&resize_unheld(&store, 10, 5, Some(2)).unwrap_err(), 2);
+    run(&store, 2);
+    // Ended, but what it sent its Servers may still land.
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(2)).unwrap_err(), 2);
+    settled(&url);
+    resize_unheld(&store, 10, 20, Some(2)).unwrap();
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
+    // The next Deploy claims the Volume at the recorded size.
+    admit(&store, &who, 3).unwrap();
+    deploys_at(&store, &who, 3, 20);
+}
+
+/// A runner whose lease lapsed may still have a `PrepareVolumes` on the wire, so its
+/// Deployment counts though it no longer reads as in flight.
+#[test]
+fn a_record_from_a_run_that_found_no_copy_waits_for_a_deployment_whose_runner_lapsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(
+        ConfigStore::open(&url, backend::key()).unwrap(),
+        managed(10),
+    );
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    admit(&store, &who, 2).unwrap();
+    store
+        .claim(&id(2), &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    backend::execute(&url, "UPDATE config_deployment SET lease = 0");
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(2)).unwrap_err(), 2);
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(10)));
+}
+
+/// A Machine finishes what a run sent it after the run stops waiting, so no outcome
+/// proves a Deployment's work settled. Until long enough after the last one that
+/// ran, the record waits; one that never ran sent nothing.
+#[test]
+fn a_record_from_a_run_that_found_no_copy_waits_for_the_deployments_that_ran_to_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who, url) = aged_shop(&dir);
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    admit(&store, &who, 2).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(2), &runner).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production", "operations": [],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(2), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    store
+        .record(&id(2), &runner, RunEvidence::Abandoned)
+        .unwrap();
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(2)).unwrap_err(), 2);
+    admit(&store, &who, 3).unwrap();
+    store
+        .write(&who, &ployz_store::Cancel { deployment: id(3) })
+        .unwrap();
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(3)).unwrap_err(), 2);
+    // Failed, whatever it sent may still land.
+    admit(&store, &who, 4).unwrap();
+    store.claim(&id(4), &runner).unwrap();
+    store
+        .record(&id(4), &runner, RunEvidence::Abandoned)
+        .unwrap();
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(4)).unwrap_err(), 4);
+    settled(&url);
+    // A record retried late from a look taken while #4 settled still refuses.
+    let looked_then = now() - 3600;
+    refused_as_deployed_since(
+        &resize_unheld_looked(&store, 10, 20, Some(4), looked_then).unwrap_err(),
+        4,
+    );
+    resize_unheld(&store, 10, 20, Some(4)).unwrap();
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
+}
+
+#[test]
+fn a_record_from_a_run_that_found_no_copy_moves_the_size_with_no_deployment_since() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who, url) = aged_shop(&dir);
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    settled(&url);
+    resize_unheld(&store, 10, 4, Some(1)).unwrap();
+    let listed = listing(&store, &who, "data");
+    assert_eq!(listed.recorded_storage, Some(gb(4)));
+    assert_eq!(listed.volume.storage, managed(4));
+    // A replay of the same record answers ok whatever came since.
+    deploy(&store, &who, 2);
+    resize_unheld(&store, 10, 4, Some(1)).unwrap();
 }
 
 #[test]

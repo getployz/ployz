@@ -12,10 +12,10 @@ import {
 } from "#/modules/inngest/events";
 import { gigabytes } from "#/modules/config-store/store-volumes";
 import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patience";
-import { gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
+import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planForwardRelease, planFromCopies, ROLE_NOUN } from "#/modules/volume-run/plan";
+import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -42,6 +42,7 @@ import {
   releaseChangedMessage,
   removeContainer,
   removeKept,
+  runDeploymentsSeen,
   type RunContext,
   sendSwitch,
   setVolumeCopy,
@@ -97,14 +98,17 @@ export async function runVolume(
   if (run.kind === "release" && run.args.plan?.forward !== undefined) {
     return fail(steps, "01-changed", releaseChangedMessage(run.volumeName));
   }
+  // A resize reads the Deployments before it asks the Servers, so its record of a Volume no Server holds can name them.
+  const deployments = run.kind === "resize" ? await step.run("01-deployments", () => runEffect(runDeploymentsSeen(run, runId))) : null;
   const members = run.kind === "release" ? await observeRelease(steps) : await step.run("01-observe", () => runEffect(observeMembers(run, runId)));
   if (run.kind === "deploy") throw new NonRetriableError(`run ${run.id} is a Deploy's lane, not a volume run`);
-  const plan = planFromCopies(run, members);
+  const plan = planFromCopies(run.kind === "resize" && deployments !== null ? { ...run, deployments } : run, members);
   if (!plan.ok) {
     await step.run("02-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
     return { runId: run.id, refused: plan.refusal };
   }
   const { phase } = plan;
+  if (phase.kind === "resize" && phase.unheld !== undefined) return resizeUnheld(steps, deployments);
   if (phase.kind === "seed") return seedVolume(steps, phase);
   if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
   if (phase.kind === "landed") return landVolume(steps, phase);
@@ -357,32 +361,78 @@ const names = (machines: readonly MachineRef[]) => machines.map((machine) => mac
  * whenever the run dies every live bound is at or above the Store's size. A refusal ends the run failed, naming the
  * Server, and undoes the record only while no copy holds the size yet, so the Store never says more than every copy holds.
  */
-async function resizeVolume(steps: RunSteps, phase: ResizePhase) {
+async function resizeVolume(steps: RunSteps, phase: ResizePhase, again = false): Promise<{ readonly runId: string; readonly resized?: number; readonly refused?: Refusal }> {
   const { step, runEffect, run, runId } = steps;
+  // A second look after a Deploy came since takes step ids of its own, so a replay returns each look's own answers.
+  const id = (name: string) => (again ? `again-${name}` : name);
   const sets = phase.steps.flatMap((each) => (each.kind === "set" ? [each.member.machine] : []));
   const done: ("recorded" | "held")[] = [];
   for (const [index, each] of phase.steps.entries()) {
     if (each.kind === "record") {
-      const recorded: RecordAnswer = await step.run(`03-${index}-record`, () => runEffect(recordVolumeSize(run, runId, { from: phase.from, to: phase.to })));
-      if (!recorded.ok) return fail(steps, "05-failed", `${unrecorded(run.volumeName, phase, names(sets))} ${recorded.message}`);
+      // Built inside the step that sends it: a step another Cloud version replays never carries a record it can't read.
+      const recorded: RecordAnswer = await step.run(id(`03-${index}-record`), () => runEffect(recordVolumeSize(run, runId, { from: phase.from, to: phase.to, unheld: phase.unheld })));
+      if (!recorded.ok && recorded.reason === "deployed_since" && !again) return resizeAgain(steps);
+      if (!recorded.ok && phase.unheld !== undefined) return fail(steps, id("05-failed"), `${run.volumeName} stays ${gb(phase.from)}, because ${recorded.message}`);
+      if (!recorded.ok) return fail(steps, id("05-failed"), `${unrecorded(run.volumeName, phase, names(sets))} ${recorded.message}`);
       done.push("recorded");
       continue;
     }
     const { machine } = each.member;
-    await step.run(`03-${index}-note`, () => runEffect(noteRun(run, runId, `${SIZING[phase.direction]} ${run.volumeName} to ${gb(phase.to)} on ${machine.name}`)));
-    const outcome = await sizeSettle(steps, `03-${index}-size-${machine.id}`, each, phase);
+    await step.run(id(`03-${index}-note`), () => runEffect(noteRun(run, runId, `${SIZING[phase.direction]} ${run.volumeName} to ${gb(phase.to)} on ${machine.name}`)));
+    const outcome = await sizeSettle(steps, id(`03-${index}-size-${machine.id}`), each, phase);
     if (outcome.kind === "refused") {
       let recorded = done.includes("recorded");
       if (undoOnRefusal(done)) {
-        const undone: RecordAnswer = await step.run("04-unrecord", () => runEffect(recordVolumeSize(run, runId, { from: phase.to, to: phase.from })));
+        const undone: RecordAnswer = await step.run(id("04-unrecord"), () => runEffect(recordVolumeSize(run, runId, { from: phase.to, to: phase.from })));
         recorded = !undone.ok;
       }
-      return fail(steps, "05-failed", refusedMessage(run.volumeName, phase, sets, each, outcome, recorded));
+      return fail(steps, id("05-failed"), refusedMessage(run.volumeName, phase, sets, each, outcome, recorded));
     }
     done.push("held");
   }
-  await finish(steps, "05-finish", `${run.volumeName} is ${gb(phase.to)} on ${names(sets)}`);
+  const said = phase.unheld === undefined
+    ? `${run.volumeName} is ${gb(phase.to)} on ${names(sets)}`
+    : `No Server holds ${run.volumeName} yet; the next deploy creates it at ${gb(phase.to)}`;
+  await finish(steps, id("05-finish"), said);
   return { runId: run.id, resized: phase.to };
+}
+
+/**
+ * A resize that found no copy looks at the Servers once more before it records, after `deployments`, the read in
+ * `01-deployments`: that read must come first, and an `01-observe` an older Cloud memoized before `01-deployments`
+ * existed may predate it.
+ * Whatever this look finds is the plan, a copy a Deploy made since included.
+ */
+async function resizeUnheld(steps: RunSteps, deployments: DeploymentsSeen | null) {
+  const { step, runEffect, run, runId } = steps;
+  if (run.kind !== "resize") throw new NonRetriableError(`run ${run.id} is a ${run.kind}, not a resize`);
+  const members = await step.run("01-unheld-observe", () => runEffect(observeMembers(run, runId)));
+  const plan = planFromCopies(deployments === null ? run : { ...run, deployments }, members);
+  if (!plan.ok) {
+    await step.run("02-unheld-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
+    return { runId: run.id, refused: plan.refusal };
+  }
+  if (plan.phase.kind !== "resize") throw new NonRetriableError(`a resize planned ${plan.phase.kind}`);
+  return resizeVolume(steps, plan.phase);
+}
+
+/**
+ * The resize again, once, after the Store refused a record of a Volume no Server held because a Deployment came since
+ * the run looked: that Deploy may have created the copy at the old size, so the run reads the Deployments and the
+ * copies afresh. Finding the copy, it resizes it as any resize does.
+ */
+async function resizeAgain(steps: RunSteps) {
+  const { step, runEffect, run, runId } = steps;
+  if (run.kind !== "resize") throw new NonRetriableError(`run ${run.id} is a ${run.kind}, not a resize`);
+  const deployments = await step.run("again-01-deployments", () => runEffect(runDeploymentsSeen(run, runId)));
+  const members = await step.run("again-01-observe", () => runEffect(observeMembers(run, runId)));
+  const plan = planFromCopies(deployments === null ? run : { ...run, deployments }, members);
+  if (!plan.ok) {
+    await step.run("again-02-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
+    return { runId: run.id, refused: plan.refusal };
+  }
+  if (plan.phase.kind !== "resize") throw new NonRetriableError(`a resize planned ${plan.phase.kind}`);
+  return resizeVolume(steps, plan.phase, true);
 }
 
 /**

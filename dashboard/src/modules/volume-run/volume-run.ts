@@ -110,6 +110,11 @@ export type Member =
       readonly incomplete?: true;
       /** The Runtime Watch's last record of this Server's copy is a mirror. Copies shows it; staging and recovery never read it. */
       readonly lastMirror?: true;
+      /**
+       * A resize's Server that reports no managed storage, so it wasn't asked. Every plan leaves it out but the record of
+       * a Volume no Server holds, since a Server whose `zpool` is missing while its pool is imported reports so too.
+       */
+      readonly stateless?: true;
     };
 export type AnsweredMember = Extract<Member, { answered: true }>;
 

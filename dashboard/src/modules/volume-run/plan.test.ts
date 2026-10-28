@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { MachineId, VolumeCopy } from "@ployz/sdk";
 import { expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
 import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
+import type { DeploymentsSeen } from "#/modules/volume-run/resize";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const GB = 1_000_000_000;
@@ -465,7 +466,42 @@ describe("plan a resize", () => {
     expect(planFromCopies(resize(20), [...copies, lacking])).toMatchObject({ ok: false, refusal: { message: "Volume resize needs a newer Ployz on fsn-4." } });
     expect(planFromCopies(resize(20, { recordedBytes: 0, refquotaBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data uses Docker storage, which has no size to change; add a Managed Volume for a sized one" } });
     expect(planFromCopies(resize(20, { recordedBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data has no deployed size to change yet; deploy it first" } });
-    expect(planFromCopies(resize(20), [member("fsn-1", "empty")])).toMatchObject({ ok: false, refusal: { code: "no_writer", message: "no Server holds data yet; change its size after the next deploy creates it" } });
+  });
+});
+
+describe("plan a resize of a Volume no Server holds (#3501)", () => {
+  const seen = { latest: 3, inFlight: null, readAt: 1_000 };
+  const unheld = (gigabytes: number, deployments: DeploymentsSeen = seen): PlanInput =>
+    ({ kind: "resize", args: { maximum_bytes: gigabytes * GB }, ...data, recordedBytes: 10 * GB, refquotaBytes: 10 * GB, deployments });
+  const empty = [member("fsn-1", "empty"), member("fsn-2", "empty")];
+  const stateless = (server: string): Member => ({ machine: member(server, "unanswered").machine, answered: false, stateless: true });
+
+  it("records the size alone, naming the newest Deployment it saw before asking the Servers", () => {
+    expect(planFromCopies(unheld(20), empty)).toEqual({ ok: true, phase: { kind: "resize", direction: "grow", from: 10 * GB, to: 20 * GB, steps: [{ kind: "record" }], unheld: { latest_deployment: 3, looked_at: 1_000 } } });
+    expect(outcome(unheld(4), empty)).toBe("shrink 10->4 GB: record");
+    expect(outcome(unheld(10), empty)).toBe("settle 10->10 GB: ");
+  });
+
+  it("refuses while a Deployment is in flight, which may be creating the copy now", () => {
+    expect(planFromCopies(unheld(20, { latest: 4, inFlight: { number: 4 }, readAt: 1_000 }), empty)).toMatchObject({ ok: false, refusal: {
+      code: "deploying", message: "Deployment #4 is in flight; run ployz volume set data --size 20 again when it ends",
+    } });
+  });
+
+  it("counts a Server reporting no managed storage as unanswered, since a missing zpool hides an imported pool's copy", () => {
+    expect(planFromCopies(unheld(20), [...empty, stateless("fsn-3")])).toMatchObject({ ok: false, refusal: {
+      code: "unanswered", message: "fsn-3 reports no managed storage, so whether it holds data is unknown; change its size once fsn-3 reports its storage, or after the next deploy creates it",
+    } });
+  });
+
+  it("leaves a Server reporting no managed storage out of a resize that found the copy", () => {
+    expect(outcome(resize(20), [member("fsn-1", "writer"), stateless("fsn-3")])).toBe("grow 10->20 GB: primary fsn-1, record");
+  });
+
+  it("refuses without the Deployments it read, and as before for a Docker Volume or one no Deploy sized", () => {
+    expect(outcome(resize(20), empty)).toBe("refuse unobserved");
+    expect(outcome(unheld(20), [...empty, member("fsn-3", "unanswered")])).toBe("refuse unanswered");
+    expect(outcome({ kind: "resize", args: { maximum_bytes: 20 * GB }, ...data, recordedBytes: 0, refquotaBytes: 0, deployments: seen }, empty)).toBe("refuse invalid");
   });
 });
 
