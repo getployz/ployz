@@ -41,6 +41,8 @@ describe("up.sh", () => {
     const printed = printedLines(readFileSync(upSh, "utf8"));
     expect(printed.some((line) => line.includes("cookies set"))).toBe(true);
     expect(printed.filter((line) => secretReference.test(line))).toEqual([]);
+    // seed.ts's own output reaches the terminal only without its VERIFY_SEED line.
+    expect(readFileSync(upSh, "utf8")).toContain(`printf '%s\\n' "$seed_out" | grep -v '^VERIFY_SEED ' >&2`);
   });
 
   it("writes its secret files with mode 600", () => {
@@ -60,8 +62,25 @@ describe("soak keep", () => {
     const token = "plyz_" + "a1b2c3d4".repeat(4);
     const stdout = execFileSync(keep, [file, "--", "printf", `{"token":"${token}","max":3}`], { encoding: "utf8" });
     expect(stdout).not.toContain(token);
-    expect(stdout).toContain(`kept: ${file} (mode 600) {"token": "<plyz_37 chars>", "max": 3}`);
+    expect(stdout).toContain(`kept: ${file} (mode 600) {"token": "<plyz_37 chars>", "max": "<number 1 digits>"}`);
     expect(readFileSync(file, "utf8")).toContain(token);
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("keeps numbers, value-shaped keys and stderr out of stdout", () => {
+    const dir = mkdtempSync(join(tmpdir(), "keep-"));
+    const file = join(dir, "out.json");
+    const script = `printf '{"password":48151623,"plyz_k3yk3yk3y":true}'; echo hunter2-bare >&2; exit 3`;
+    let stdout = "";
+    try {
+      execFileSync(keep, [file, "--", "sh", "-c", script], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      const failed = error as { status: number; stdout: string; stderr: string };
+      expect(failed.status).toBe(3);
+      stdout = failed.stdout + failed.stderr;
+    }
+    expect(stdout).toContain(`stderr: ${file}.err (mode 600, 1 lines`);
+    for (const secret of ["48151623", "k3yk3yk3y", "hunter2"]) expect(stdout).not.toContain(secret);
+    expect(statSync(`${file}.err`).mode & 0o777).toBe(0o600);
   });
 });

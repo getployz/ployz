@@ -212,7 +212,8 @@ fi
 
 for _ in $(seq 120); do docker exec "$name" pg_isready -q -h 127.0.0.1 -U postgres -d ployz_cloud && break; sleep 0.5; done
 { node node_modules/drizzle-kit/bin.cjs migrate && node node_modules/drizzle-kit/bin.cjs migrate --config drizzle.analytics.config.ts; } > "$run/migrate.log" 2>&1 || { cat "$run/migrate.log" >&2; exit 1; }
-seed_out=$(node scripts/verify/runner.mjs /scripts/verify/seed.ts 2>&1) || { echo "$seed_out" >&2; exit 1; }
+# seed.ts prints its VERIFY_SEED line, which holds cookies and tokens, before it fails on a refused write.
+seed_out=$(node scripts/verify/runner.mjs /scripts/verify/seed.ts 2>&1) || { printf '%s\n' "$seed_out" | grep -v '^VERIFY_SEED ' >&2; exit 1; }
 seed=$(printf '%s\n' "$seed_out" | sed -n 's/^VERIFY_SEED //p')
 # Only the Monitoring tab reads uptime, so it seeds in the background; $run/uptime says ok or failed when it ends.
 setsid nohup bash -c 'node scripts/verify/runner.mjs /scripts/verify/seed-uptime.ts > "$1/seed-uptime.log" 2>&1 \
