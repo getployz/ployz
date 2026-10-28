@@ -27,6 +27,27 @@ vite_of() {
   elif [ "$dir" = "$(cd "$2/dashboard" && pwd -P)" ]; then echo own
   else echo none; fi
 }
+# The pids listening on TCP port $1.
+listeners() {
+  if command -v ss >/dev/null; then ss -Hltnp "sport = :$1" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u
+  else lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null; fi
+}
+# Whose vite serves checkout $1, as vite_of answers. vite.pid goes stale when vite is restarted by hand, so the
+# process listening on the checkout's port settles it; a listener whose pid this host hides may be its vite.
+serving() {
+  local run=$1/dashboard/.verify/run found port pids pid
+  found=$(vite_of "$(cat "$run/vite.pid" 2>/dev/null)" "$1")
+  [ "$found" = none ] || { echo "$found"; return; }
+  port=$(sed -n 's/^PORT=//p' "$run/env" 2>/dev/null)
+  [ -n "$port" ] || { echo none; return; }
+  pids=$(listeners "$port")
+  for pid in $pids; do
+    found=$(vite_of "$pid" "$1")
+    [ "$found" = none ] || { echo "$found"; return; }
+  done
+  if [ -z "$pids" ] && (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then echo unknown; return; fi
+  echo none
+}
 # Whether this reaper sees all of checkout $1: its parent exists, and it may enter every part of it that exists.
 visible() {
   local path
@@ -46,7 +67,7 @@ for id in $(docker ps -a --filter label=ployz.verify.checkout --format '{{.ID}}'
   if [ ! -d "$wt/dashboard" ]; then
     reason="its checkout $wt is gone"
   else
-    case $(vite_of "$(cat "$run/vite.pid" 2>/dev/null)" "$wt") in
+    case $(serving "$wt") in
       own)
         if [ -f "$run/idle.pid" ] && ! runs "$(cat "$run/idle.pid" 2>/dev/null)" idle.sh; then
           echo "reap: $wt runs with no idle watchdog; its scripts/verify/up.sh restarts one, or down.sh stops it"
