@@ -1112,6 +1112,27 @@ fn a_record_from_a_run_that_found_no_copy_waits_for_a_deployment_in_flight_eithe
     deploys_at(&store, &who, 3, 20);
 }
 
+/// A runner whose lease lapsed may still have a `PrepareVolumes` on the wire, so its
+/// Deployment counts though it no longer reads as in flight.
+#[test]
+fn a_record_from_a_run_that_found_no_copy_waits_for_a_deployment_whose_runner_lapsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(
+        ConfigStore::open(&url, backend::key()).unwrap(),
+        managed(10),
+    );
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    admit(&store, &who, 2).unwrap();
+    store
+        .claim(&id(2), &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    backend::execute(&url, "UPDATE config_deployment SET lease = 0");
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(2)).unwrap_err(), 2);
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(10)));
+}
+
 #[test]
 fn a_record_from_a_run_that_found_no_copy_moves_the_size_with_no_deployment_since() {
     let (store, who) = shop(managed(10));

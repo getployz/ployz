@@ -52,7 +52,8 @@ copy, and your next deploy creates the volume at the new limit. It refuses while
 way, since that deploy may be creating the volume; run it again when the deploy ends. It also
 refuses while a server reports no managed storage, since Ployz can't tell whether that server holds
 a copy. If a deploy creates the volume while the change is in progress, Ployz resizes the copy that
-deploy made instead. Once the volume deploys, you
+deploy made instead, or, if that deploy is still under way, stops and asks you to run it again
+when the deploy ends. Once the volume deploys, you
 can grow it on Ployz Cloud while its service keeps running. Type a larger **Storage limit** there
 and click **Grow**. The panel shows the resize until it ends. Before you confirm,
 it refuses a smaller limit, a server whose Ployz is too old to grow it or that isn't reporting to

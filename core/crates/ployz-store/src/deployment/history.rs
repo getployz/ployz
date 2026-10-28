@@ -302,6 +302,19 @@ pub(crate) fn in_flight(
     latest_where(tx, environment, &in_flight_sql())
 }
 
+/// `environment`'s latest Deployment queued or claimed, even one whose runner's lease
+/// lapsed: what it sent the Machines may still land.
+pub(crate) fn claimed_or_queued(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    latest_where(
+        tx,
+        environment,
+        "status IN ('queued', 'running', 'cancelling')",
+    )
+}
+
 /// `environment`'s latest Deployment that started (claimed by a runner), or a
 /// removal that applied without one. What may run on the Servers.
 pub(crate) fn last_ran(

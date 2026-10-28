@@ -12,7 +12,7 @@ import {
 } from "#/modules/inngest/events";
 import { gigabytes } from "#/modules/config-store/store-volumes";
 import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patience";
-import { gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
+import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
 import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN } from "#/modules/volume-run/plan";
@@ -108,6 +108,7 @@ export async function runVolume(
     return { runId: run.id, refused: plan.refusal };
   }
   const { phase } = plan;
+  if (phase.kind === "resize" && phase.unheld !== undefined) return resizeUnheld(steps, deployments);
   if (phase.kind === "seed") return seedVolume(steps, phase);
   if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
   if (phase.kind === "landed") return landVolume(steps, phase);
@@ -394,6 +395,25 @@ async function resizeVolume(steps: RunSteps, phase: ResizePhase, again = false):
     : `No Server holds ${run.volumeName} yet; the next deploy creates it at ${gb(phase.to)}`;
   await finish(steps, id("05-finish"), said);
   return { runId: run.id, resized: phase.to };
+}
+
+/**
+ * A resize that found no copy looks at the Servers once more before it records, after `deployments`, the read in
+ * `01-deployments`: that read must come first, and an `01-observe` an older Cloud memoized before `01-deployments`
+ * existed may predate it.
+ * Whatever this look finds is the plan, a copy a Deploy made since included.
+ */
+async function resizeUnheld(steps: RunSteps, deployments: DeploymentsSeen | null) {
+  const { step, runEffect, run, runId } = steps;
+  if (run.kind !== "resize") throw new NonRetriableError(`run ${run.id} is a ${run.kind}, not a resize`);
+  const members = await step.run("01-unheld-observe", () => runEffect(observeMembers(run, runId)));
+  const plan = planFromCopies(deployments === null ? run : { ...run, deployments }, members);
+  if (!plan.ok) {
+    await step.run("02-unheld-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
+    return { runId: run.id, refused: plan.refusal };
+  }
+  if (plan.phase.kind !== "resize") throw new NonRetriableError(`a resize planned ${plan.phase.kind}`);
+  return resizeVolume(steps, plan.phase);
 }
 
 /**

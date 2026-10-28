@@ -68,7 +68,8 @@ pub struct Unheld {
 /// claim reads the lowered size. A record that
 /// raises, a grow's or a refused shrink's undo, never waits, unless it is
 /// [`Unheld`]: no copy holds the size yet, so a Deployment in flight, or one
-/// admitted since the run looked, may create it at the lock's old size.
+/// admitted since the run looked, may create it at the lock's old size. One whose
+/// runner's lease lapsed counts too: its Machines may still be preparing the copy.
 ///
 /// Every record that writes changes Applied State, which Cloud's change log reads, so
 /// the lock row needs no change-log source of its own.
@@ -131,7 +132,7 @@ pub(crate) fn record(
         ));
     }
     if let Some(unheld) = &resized.unheld
-        && let Some(newer) = deployment::in_flight(tx, &id)?
+        && let Some(newer) = deployment::claimed_or_queued(tx, &id)?
             .or(deployment::latest_numbered(tx, &id)?
                 .filter(|latest| latest.number > unheld.latest_deployment))
     {

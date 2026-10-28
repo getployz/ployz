@@ -3226,6 +3226,19 @@ describe("volume runs", () => {
         expect(await rows()).toMatchObject([{ state: "done", message: "data is 20 GB on fsn-1" }]);
       });
 
+      it("looks at the Servers again after reading the Deployments, so an observation an older Cloud memoized first never decides", async () => {
+        // An older worker memoized `01-observe` with no copy; Deployment 4 then made one at 10 GB, before `01-deployments` ran.
+        machines[0] = sized("fsn-1", writerCopy());
+        storeLatest = 4;
+        const run = await requested(grow(20));
+
+        const output = await execute(run.id, "run-1", [{ id: "01-observe", handler: () => [] }]);
+
+        expect(output.result).toEqual({ runId: run.id, resized: 20 * GB });
+        expect(verbs).toEqual(["size@fsn-1(20)"]);
+        expect(storeEvents).toEqual([recorded]);
+      });
+
       it("counts a Server reporting no managed storage as unanswered, and records nothing", async () => {
         machines.push({ name: "docker-1", pool: false, stateless: true, copy: null });
 
