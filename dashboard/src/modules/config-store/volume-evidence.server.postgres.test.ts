@@ -34,7 +34,7 @@ const asked = (command: JsonObject) => Effect.gen(function* () {
   return read.mock.calls.map(([query]) => query);
 });
 
-it.live("a Publish gathers what the Servers hold of the Volumes it removes, as a full Deploy does", () =>
+it.live("a Publish or a Deploy of named Services gathers what the Servers hold of the Volumes it removes, as a full Deploy does", () =>
   Effect.gen(function* () {
     const services = yield* storeTestCloud();
     const removals = (environment: JsonValue, remove: boolean) => [{ query: "removals", environment, remove }];
@@ -43,7 +43,8 @@ it.live("a Publish gathers what the Servers hold of the Volumes it removes, as a
     expect(yield* gathered({ command: "publish", environment: staging, version: null, accept_volume_loss: [] })).toEqual(removals(staging, false));
     expect(yield* gathered({ command: "admit", admit: "deploy", environment: staging, services: [] })).toEqual(removals(staging, false));
     expect(yield* gathered({ command: "admit", admit: "remove", environment: staging })).toEqual(removals(staging, true));
-    expect(yield* gathered({ command: "admit", admit: "deploy", environment: staging, services: ["web"] })).toEqual([]);
+    // Naming Services still saves Working State, so the Store reviews what that Save drops (#3512).
+    expect(yield* gathered({ command: "admit", admit: "deploy", environment: staging, services: ["web"] })).toEqual(removals(staging, false));
   }));
 
 it.live("a push asks which Volumes a Save accepted losing, and without Servers to ask sends no evidence", () =>

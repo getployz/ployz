@@ -15,7 +15,6 @@ const AdmitCommand = Schema.Struct({
   command: Schema.Literal("admit"),
   admit: Schema.Literals(["deploy", "remove", "shut_down"]),
   environment: Schema.optional(EnvironmentRef),
-  services: Schema.optional(Schema.Array(Schema.String)),
 });
 
 /** A plain retry ships the Volume identities its source accepted; a rollback reviews what it deletes now. */
@@ -37,7 +36,7 @@ const EvidenceCommand = Schema.Union([AdmitCommand, RetryCommand, RemoveCommand,
 })]);
 
 /**
- * For a Save, full Deploy, or removal, that removes deployed Volumes: which Servers hold their data, as Cloud itself observes them.
+ * For a Save, Deploy, or removal, that removes deployed Volumes: which Servers hold their data, as Cloud itself observes them.
  * A Project's removal asks about every Environment's. Nothing here comes from the caller. When the Servers can't be
  * reached the evidence names them and why, or is left out when Cloud couldn't try, and the Store refuses the write
  * rather than act on data it could not see.
@@ -49,7 +48,8 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
 ) {
   if (call.operation !== "write") return undefined;
   const command = Option.getOrUndefined(Schema.decodeUnknownOption(EvidenceCommand)(call.command));
-  if (command === undefined || ("services" in command && (command.services ?? []).length > 0)) return undefined;
+  // A Deploy of named Services still saves Working State, so it reviews the Volumes that Save drops as a full one does.
+  if (command === undefined) return undefined;
   const asked = yield* Effect.option(questions(command, read));
   const sought = Option.getOrUndefined(asked)?.flatMap((removals) => removals.volumes.map((volume) => volume.docker_volume));
   if (sought === undefined || sought.length === 0) return undefined;
