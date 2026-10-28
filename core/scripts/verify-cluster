@@ -256,7 +256,10 @@ def approve_device(run, commands):
             return json.loads(response.read() or "null")
     # What the browser does on the page `ployz login` links: claim the code, then approve it into the
     # Organization its session is in.
-    organization = browser("/api/auth/get-session")["session"]["activeOrganizationId"]
+    session = browser("/api/auth/get-session")
+    if not session:
+        raise RuntimeError("the seed's browser session is signed out; rerun the dashboard's up.sh")
+    organization = session["session"]["activeOrganizationId"]
     browser("/api/auth/device?user_code=" + urllib.parse.quote(code))
     browser("/api/auth/device/approve", {"userCode": code, "organizationId": organization})
     cli(run, commands, ["login", "--wait"], device=True, timeout=120)
@@ -824,7 +827,7 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
         if "cloud" in run:
             try:
                 approve_device(run, commands)
-            except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            except Exception as error:  # noqa: BLE001 - the run is ready either way
                 print(f"No approved device, so probe and cli --device won't work: {str(error).splitlines()[0]}", file=sys.stderr)
         run["timings"]["join_and_ready"] = round(time.monotonic() - started, 3)
         run["state"] = "ready"
