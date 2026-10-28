@@ -12,6 +12,7 @@ if [ $# -ne 3 ]; then
 fi
 app=${1%/} login=$2 jar=$3
 (umask 077; : > "$jar")
+chmod 600 "$jar"
 url=$(curl -fsS -c "$jar" -b "$jar" -X POST "$app/api/auth/sign-in/social" -H 'content-type: application/json' \
   -H "origin: $app" -d '{"provider":"github","callbackURL":"/cloud"}' | python3 -c 'import json, sys; print(json.load(sys.stdin)["url"])')
 state=$(python3 -c 'import sys, urllib.parse as u; print(u.parse_qs(u.urlparse(sys.argv[1]).query)["state"][0])' "$url")

@@ -60,10 +60,12 @@ cp "$lab/compose.override.yml" compose.override.yml
 docker compose pull -q
 docker compose run --rm web npm run db:migrate
 docker compose up -d
+healthy=
 for _ in $(seq 90); do
-  [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q worker)" 2>/dev/null)" = healthy ] && break
+  [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q worker)" 2>/dev/null)" = healthy ] && { healthy=1; break; }
   sleep 2
 done
+[ -n "$healthy" ] || { echo "setup: worker is not healthy after 3 minutes; see docker compose logs worker" >&2; exit 1; }
 
 # The doc's TLS proxy: Caddy on this host.
 host=${app#https://}
