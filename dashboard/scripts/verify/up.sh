@@ -12,6 +12,7 @@
 # Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
 # Never prints a secret: cookies, tokens and keys stay in mode-600 files under $run, and printed commands read them.
 set -euo pipefail
+. "$(dirname "$0")/scope.sh"
 dash=$(cd "$(dirname "$0")/../.." && pwd)
 wt=$(dirname "$dash")
 name=ployz-verify-$(printf %s "$wt" | sha1sum | cut -c1-10)

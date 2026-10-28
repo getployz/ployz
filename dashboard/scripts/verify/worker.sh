@@ -2,6 +2,7 @@
 # Starts the Inngest worker that up.sh built into dashboard/.verify/run/worker, records its pid and waits until it
 # connects. up.sh runs it first; core/scripts/verify-cluster runner start runs it again after runner kill.
 set -euo pipefail
+. "$(dirname "$0")/scope.sh"
 dash=$(cd "$(dirname "$0")/../.." && pwd)
 run=$dash/.verify/run
 set -a; . "$run/env"; set +a
