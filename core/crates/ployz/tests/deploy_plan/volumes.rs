@@ -27,11 +27,75 @@ fn automatic_provisioned_intent() -> DeployIntent {
     )
 }
 
-#[test]
-fn unavailable_named_volume_blocks_only_a_dependent_service() {
-    let mut dependent = requested(ServiceMode::Replicated {
+fn replicated(name: &str) -> RequestedServiceSpec {
+    let mut service = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
+    service.name = ServiceName::parse(name).unwrap();
+    service
+}
+
+/// Plans `services` with an unrelated stateless `web` beside them, as a Deploy runner
+/// does, and returns the Services it blocked.
+fn blocked_beside_web(
+    services: &[&RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> (DeployPreview, Vec<(String, String)>) {
+    let web = replicated("web");
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        services.iter().copied().chain([&web]),
+        PlanOptions::default(),
+    );
+    let preview = runner_preview(&intent, snapshot).unwrap();
+    assert!(
+        operations(&preview).iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RunContainer { spec, .. } if spec.name.as_str() == "web"
+        )),
+        "{:?}",
+        operations(&preview)
+    );
+    let blocked = preview
+        .blocked
+        .iter()
+        .map(|blocked| (blocked.service.to_string(), blocked.error.message.clone()))
+        .collect();
+    (preview, blocked)
+}
+
+fn assert_only_web_runs(preview: &DeployPreview) {
+    assert!(
+        preview.volumes_to_create.is_empty(),
+        "{:?}",
+        preview.volumes_to_create
+    );
+    assert!(
+        operations(preview).iter().all(|operation| operation
+            .spec()
+            .is_none_or(|spec| spec.name.as_str() == "web")),
+        "{:?}",
+        operations(preview)
+    );
+}
+
+fn listing_failure(machine: char) -> MachineFailure<RpcError> {
+    MachineFailure {
+        machine_id: machine_id(machine),
+        error: RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "target Machine RPC timed out".into(),
+            details: Default::default(),
+            cause: Vec::new(),
+        },
+    }
+}
+
+/// A Docker Volume whose inspect failed on the only Server that can run its Service may
+/// hold data there, so only that Service waits.
+#[test]
+fn unavailable_named_volume_blocks_only_a_dependent_service() {
+    let mut dependent = replicated("api");
     add_named_volume(&mut dependent, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
@@ -56,27 +120,23 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
         ..storage_snapshot()
     };
 
-    let error = plan_deploy([&dependent], &snapshot, PlanOptions::default()).unwrap_err();
-    assert!(error.to_string().contains("app_data"), "{error}");
-    assert!(
-        error.to_string().contains("volume detail failed"),
-        "{error}"
-    );
+    let (preview, blocked) = blocked_beside_web(&[&dependent], &snapshot);
 
-    let unrelated = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    let preview = plan_deploy([&unrelated], &snapshot, PlanOptions::default()).unwrap();
-    assert!(matches!(
-        operations(&preview).as_slice(),
-        [DeployOperation::RunContainer { .. }]
-    ));
+    assert_eq!(
+        blocked,
+        [(
+            "api".to_owned(),
+            "first did not answer, so whether it holds Docker volume data is unknown. \
+             Bring first back, or deploy the other services by name"
+                .to_owned()
+        )]
+    );
+    assert_only_web_runs(&preview);
     assert_eq!(
         preview.prune_refusal,
         Some(PruneRefusal::IncompleteSnapshot)
     );
 }
-
 #[test]
 fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
     let mut service = requested(ServiceMode::Replicated {
@@ -119,47 +179,39 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
     );
 }
 
+/// A Service whose every candidate went unread can only start where its Volume may
+/// already be, so it waits and the rest of the Deploy goes ahead (#3561).
 #[test]
-fn named_volume_planning_rejects_an_only_incomplete_candidate() {
-    let mut dependent = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    add_named_volume(&mut dependent, "data");
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "incomplete")],
-        volume_snapshot: VolumeSnapshot::try_from_parts(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![machine_id('1')],
-        )
-        .expect("valid Volume Snapshot fixture"),
-        ..storage_snapshot()
-    };
+fn a_service_whose_only_candidates_went_unread_blocks_only_itself() {
+    for (provisioned, expected) in [
+        (
+            false,
+            "machine-3 did not answer, so whether it holds Docker volume data is unknown. \
+             Bring machine-3 back, or deploy the other services by name",
+        ),
+        (
+            true,
+            "machine-3 did not answer, so Volume data's copies are unknown. \
+             Bring machine-3 back, or deploy the other services by name",
+        ),
+    ] {
+        let mut pinned = replicated("api");
+        pinned.placement.constraints = [label_constraint("machine-3")].into();
+        add_named_volume(&mut pinned, "data");
+        if provisioned {
+            make_provisioned(&mut pinned, "data", ployz_core::STORAGE_GIB);
+        }
+        let snapshot = listing_gap_snapshot(None);
 
-    let error = plan_deploy([&dependent], &snapshot, PlanOptions::default()).unwrap_err();
-    assert!(error.to_string().contains("app_data"), "{error}");
-    assert!(
-        error.to_string().contains("no terminal response"),
-        "{error}"
-    );
-    assert!(error.to_string().contains("incomplete"), "{error}");
+        let (preview, blocked) = blocked_beside_web(&[&pinned], &snapshot);
 
-    let unrelated = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    assert!(plan_deploy([&unrelated], &snapshot, PlanOptions::default()).is_ok());
-}
-
-#[test]
-fn no_eligible_machine_names_the_inventory_gap_that_skipped_the_volume_owner() {
-    let mut service = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    for name in ["data", "more", "third"] {
-        add_named_volume(&mut service, name);
-        make_provisioned(&mut service, name, ployz_core::STORAGE_GIB);
+        assert_eq!(blocked, [("api".to_owned(), expected.to_owned())]);
+        assert_only_web_runs(&preview);
     }
+}
+/// Three Servers with Managed volumes. machine-3 is Up but its Docker Volume listing
+/// failed. Its ZFS storage still answered, so `holder` and its Volumes are located.
+fn listing_gap_snapshot(holder: Option<(char, &[&str])>) -> DeploySnapshot {
     let machines =
         [('1', "machine-1"), ('2', "machine-2"), ('3', "machine-3")].map(|(id, name)| {
             let mut machine = machine(id, name);
@@ -171,53 +223,97 @@ fn no_eligible_machine_names_the_inventory_gap_that_skipped_the_volume_owner() {
         volume_snapshot: VolumeSnapshot::try_from_parts(
             Vec::new(),
             Vec::new(),
-            vec![MachineFailure {
-                machine_id: machine_id('3'),
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "ZFS dataset ployz/ployz is read-only".into(),
-                    details: Default::default(),
-                    cause: Vec::new(),
-                },
-            }],
+            vec![listing_failure('3')],
             Vec::new(),
         )
         .expect("valid Volume Snapshot fixture"),
         ..storage_snapshot()
     };
-    let owner = snapshot
-        .storage_capacity
-        .get_mut(&machine_id('3'))
-        .expect("fixture has capacity for machine 3")
-        .as_mut()
-        .expect("fixture capacity is observed");
-    for name in ["data", "more"] {
-        owner
-            .volumes
-            .insert(app_volume(name), maximum_bytes(ployz_core::STORAGE_GIB));
+    if let Some((holder, names)) = holder {
+        let capacity = snapshot
+            .storage_capacity
+            .get_mut(&machine_id(holder))
+            .expect("fixture has capacity for the holder")
+            .as_mut()
+            .expect("fixture capacity is observed");
+        for name in names {
+            capacity
+                .volumes
+                .insert(app_volume(name), maximum_bytes(ployz_core::STORAGE_GIB));
+        }
     }
-
-    let error = plan_deploy([&service], &snapshot, PlanOptions::default())
-        .unwrap_err()
-        .to_string();
-
-    assert!(
-        error.contains(
-            "Machine 'machine-3' was skipped because its Docker Volume inventory failed: \
-             ZFS dataset ployz/ployz is read-only"
-        ),
-        "{error}"
-    );
-    assert!(
-        error.contains("Docker Volume 'app_data' is already on Machine 'machine-3'"),
-        "{error}"
-    );
-    assert!(
-        error.contains("Docker Volume 'app_more' is already on Machine 'machine-3'"),
-        "{error}"
-    );
+    snapshot
 }
 
+/// A Managed volume whose Up holder failed its Docker Volume listing blocks only its
+/// Service; unrelated Services deploy (#3561).
+#[test]
+fn a_managed_volume_whose_holder_listing_failed_blocks_only_its_service() {
+    let mut service = replicated("mu");
+    for name in ["data", "more"] {
+        add_named_volume(&mut service, name);
+        make_provisioned(&mut service, name, ployz_core::STORAGE_GIB);
+    }
+    let snapshot = listing_gap_snapshot(Some(('3', &["data", "more"])));
+
+    let (preview, blocked) = blocked_beside_web(&[&service], &snapshot);
+
+    assert_eq!(
+        blocked,
+        [(
+            "mu".to_owned(),
+            "machine-3 did not answer, so Volume data's copies are unknown. \
+             Bring machine-3 back, or deploy the other services by name"
+                .to_owned()
+        )]
+    );
+    assert_only_web_runs(&preview);
+}
+
+/// Services sharing a Managed volume on the unread holder wait together.
+#[test]
+fn services_sharing_a_managed_volume_on_an_unread_holder_wait_together() {
+    let mut services = ["mu", "mv"].map(replicated);
+    for service in &mut services {
+        add_named_volume(service, "data");
+        make_provisioned(service, "data", ployz_core::STORAGE_GIB);
+    }
+    let snapshot = listing_gap_snapshot(Some(('3', &["data"])));
+
+    let (preview, blocked) = blocked_beside_web(&[&services[0], &services[1]], &snapshot);
+
+    assert_eq!(
+        blocked
+            .iter()
+            .map(|(service, _)| service.as_str())
+            .collect::<Vec<_>>(),
+        ["mu", "mv"]
+    );
+    assert_only_web_runs(&preview);
+}
+
+/// A Managed volume held on an answering Server is provably unaffected by another
+/// Server's failed listing.
+#[test]
+fn a_managed_volume_on_an_answering_server_deploys_beside_a_listing_gap() {
+    let mut service = replicated("mu");
+    add_named_volume(&mut service, "data");
+    make_provisioned(&mut service, "data", ployz_core::STORAGE_GIB);
+    let snapshot = listing_gap_snapshot(Some(('2', &["data"])));
+
+    let (preview, blocked) = blocked_beside_web(&[&service], &snapshot);
+
+    assert!(blocked.is_empty(), "{blocked:?}");
+    assert!(
+        operations(&preview).iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RunContainer { spec, machine_id: run, .. }
+                if spec.name.as_str() == "mu" && *run == machine_id('2')
+        )),
+        "{:?}",
+        operations(&preview)
+    );
+}
 fn explicitly_targeted_provisioned_deploy(
     storage: Option<MachineStorageObservation>,
     volumes: Vec<DockerVolume>,
