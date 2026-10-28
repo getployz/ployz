@@ -41,6 +41,8 @@ The live agent eval runs only on a developer's machine, never in GitHub Actions,
 
 No-model agent replays are also local only. Nothing under `dashboard/evals` runs in GitHub Actions, and `rust-tests` skips the `ployz mcp` transcript replays. Run both before a release. From `dashboard/`, `pnpm sdk:eval`, then `pnpm eval:replay` replays the golden trajectories through the sidebar. It needs Docker and `cargo build -p ployz-testkit --bin ployz-fake-fleet`. `pnpm eval` runs everything under `dashboard/evals`, with live trials still skipped. From `core/`, `cargo nextest run -p ployz --run-ignored only -E 'test(/transcript_replays/)'` replays every agent tool transcript through `ployz mcp`.
 
+When a soak runs the post-tag check on the draft, an unacknowledged request fails the gate. It never stays pending. See [Release phases](../../.agents/skills/soak/SKILL.md#release-phases) and its `post-tag-gate` script.
+
 Before Publish, use the beta on real Machines through Cloud: enrol, deploy, attach a domain and certificate, and upgrade. There is no scripted qualification; when the informing cluster suite and those Machines disagree, the real Machines are the authority. Testkit bugs do not block a release.
 
 ## Release notes

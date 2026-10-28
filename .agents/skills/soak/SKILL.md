@@ -41,7 +41,7 @@ Each kind proves one thing. A PASS of one kind proves nothing about another, so 
 - **Phase B, on the published release.** Use no overrides at all. Check that the tarball hashes equal Phase A's.
 - **What each proves.** The mirror proves the bytes and the upgrade flow. Only the published artifact proves the install lines, channels and Homebrew.
 
-The supervisor acknowledges a post-tag request as soon as it arrives.
+The supervisor acknowledges a post-tag request as soon as it arrives. An unacknowledged request is a failed gate, not a pending one. Release checks it with `.agents/skills/soak/scripts/post-tag-gate <request-id>`, which prints ACKED (exit 0) once the supervisor has replied, PENDING (exit 75) for the first 15 minutes, and FAILED (exit 1) after that or at once when the supervisor has no registered mailbox. On FAILED the draft stays unpublished. Release reports the failed gate to the coordinator, and only a new request that gets an acknowledgement reopens the gate.
 
 ## Real-world hosts
 
