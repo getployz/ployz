@@ -41,7 +41,7 @@ deadline=$(( sent + timeout * 60 ))
 
 for reply in "$dir"/inbox/"$from"/*.md "$dir"/read/"$from"/*.md; do
   [ "$(field from "$reply")" = "$to" ] || continue
-  sed '1,/^$/d' "$reply" | grep -qF -- "$id" || continue
+  grep -qF -- "$id" <(sed '1,/^$/d' "$reply") || continue
   replied=$(epoch "$reply") || continue
   if [ "$replied" -le "$deadline" ]; then
     echo "ACKED: $to replied in $(basename "$reply" .md)"
