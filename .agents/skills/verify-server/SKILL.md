@@ -109,7 +109,7 @@ A fault build reads its armed fault from `/run/ployz/fault` on every check, so a
 
 ## Evidence and cleanup
 
-Every helper command saves its argv, exit code, duration, stdout and stderr beside the manifest in `evidence/`. Save client traffic traces, feature-specific assertions and any additional proof there too. Capture each Entry Machine separately when replicated observations matter. Name the behavior exercised and report failures or untested cases precisely. A fix proof cites the manifest's `revision`, the checkout commit it built, which must equal the PR head, and lists every case it skipped or cut. A coordinator rejects a proof that lacks either.
+Every helper command saves its argv, exit code, duration, stdout and stderr beside the manifest in `evidence/`. Save client traffic traces, feature-specific assertions and any additional proof there too. Capture each Entry Machine separately when replicated observations matter. Name the behavior exercised and report failures or untested cases precisely. A fix proof cites the manifest's `revision`, the checkout commit it built, which must equal the PR head, and lists every case it skipped or cut. A coordinator rejects a proof that lacks either. A `--cloud` fix proof also shows `dashboard/.verify/run/sdk.log` fetching or building the SDK for that head, never `stale main@`; `up.sh` builds it exact for real Servers, and `SDK=exact core/scripts/build-cloud-sdk.sh` builds it by hand.
 
 ```bash
 scripts/verify-cluster down "$run"
