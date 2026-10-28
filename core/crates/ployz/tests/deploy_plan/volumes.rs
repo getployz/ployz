@@ -304,6 +304,105 @@ fn volumes_split_across_an_unread_server_still_conflict() {
     }
 }
 
+/// machine-3 lists its Docker Volumes, but the inspect of each of `failed` there fails.
+/// `listed` are Docker Volumes machine-1 lists, and `holders` hold Managed volumes.
+fn inspect_gap_snapshot(
+    holders: &[(char, &[&str])],
+    listed: &[&str],
+    failed: &[&str],
+) -> DeploySnapshot {
+    let mut snapshot = listing_gap_snapshot(holders);
+    snapshot.volume_snapshot = VolumeSnapshot::try_from_parts(
+        listed
+            .iter()
+            .map(|name| observed_volume(machine_id('1'), name))
+            .collect(),
+        failed
+            .iter()
+            .map(|name| VolumeObservationFailure {
+                id: DockerVolumeId {
+                    machine_id: machine_id('3'),
+                    name: app_volume(name),
+                },
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "volume detail failed".into(),
+                    details: Default::default(),
+                    cause: Vec::new(),
+                },
+            })
+            .collect(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("valid Volume Snapshot fixture");
+    snapshot
+}
+
+fn assert_conflict(services: &[&RequestedServiceSpec], snapshot: &DeploySnapshot) {
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        services.iter().copied(),
+        PlanOptions::default(),
+    );
+    let error = runner_preview(&intent, snapshot).unwrap_err();
+    let error = if let PlanError::Service { source, .. } = &error {
+        source.to_string()
+    } else {
+        error.to_string()
+    };
+    assert!(error.contains("no machines available"), "{error}");
+    assert!(
+        error.contains("is already on Machine 'machine-1'"),
+        "{error}"
+    );
+}
+
+/// A failed inspect leaves a split between Servers as fatal as a failed listing does.
+#[test]
+fn volumes_split_across_a_failed_inspect_still_conflict() {
+    let mut managed = replicated("mu");
+    let mut docker = replicated("dv");
+    for name in ["data", "more"] {
+        add_named_volume(&mut managed, name);
+        make_provisioned(&mut managed, name, ployz_core::STORAGE_GIB);
+        add_named_volume(&mut docker, name);
+    }
+    for (data, more) in [('1', '3'), ('3', '1')] {
+        let snapshot = inspect_gap_snapshot(
+            &[(data, &["data"]), (more, &["more"])],
+            &[],
+            &[if more == '3' { "more" } else { "data" }],
+        );
+        assert_conflict(&[&managed], &snapshot);
+    }
+    for (listed, failed) in [("data", "more"), ("more", "data")] {
+        assert_conflict(&[&docker], &inspect_gap_snapshot(&[], &[listed], &[failed]));
+    }
+}
+
+/// A Docker Volume whose inspect failed exists on that Server, so it is never created
+/// elsewhere, even when no Deploy applied it yet.
+#[test]
+fn a_docker_volume_whose_inspect_failed_is_never_created_elsewhere() {
+    let mut service = replicated("dv");
+    add_named_volume(&mut service, "data");
+
+    let (preview, blocked) =
+        blocked_beside_web(&[&service], &inspect_gap_snapshot(&[], &[], &["data"]));
+
+    assert_eq!(
+        blocked,
+        [(
+            "dv".to_owned(),
+            "machine-3 did not answer, so whether it holds Docker volume data is unknown. \
+             Bring machine-3 back, or deploy the other services by name"
+                .to_owned()
+        )]
+    );
+    assert_only_web_runs(&preview);
+}
+
 /// Services sharing a Managed volume on the unread holder wait together.
 #[test]
 fn services_sharing_a_managed_volume_on_an_unread_holder_wait_together() {

@@ -234,7 +234,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
             && (machine.membership == ployz_core::MembershipObservation::Down
                 || !machine.invites_rpc()
                 || volumes.machine_gap(machine.machine.id).is_some()
-                || volumes.named_gap(machine.machine.id, name))
+                || volumes.named_gap(machine.machine.id, name).is_some())
     }
 
     /// The refusal for a Service whose `volume` may sit on `machine`, which this Deploy
@@ -1021,21 +1021,19 @@ fn volume_constraints<'spec>(
     let mut skipped = Vec::new();
     if !mounted_volumes.is_empty() {
         machines.retain(|machine| {
-            let Some(message) = snapshot.volume_snapshot.machine_gap(machine.machine.id) else {
+            let id = machine.machine.id;
+            let volumes = &snapshot.volume_snapshot;
+            let Some(message) = volumes.machine_gap(id).or_else(|| {
+                mounted_volumes
+                    .iter()
+                    .filter_map(|volume| managed_volume_name(volume))
+                    .find_map(|name| volumes.named_gap(id, name))
+            }) else {
                 return true;
             };
             skipped.push((machine.machine.id, machine.machine.name.clone(), message));
             false
         });
-    }
-    for volume in mounted_volumes.iter().copied() {
-        let name = managed_volume_name(volume).expect("mounted managed Volumes are named");
-        if let Some(machine) = machines
-            .iter()
-            .find(|machine| snapshot.volume_snapshot.named_gap(machine.machine.id, name))
-        {
-            return Err(plan.holder_unknown(volume, machine.machine.name.clone()));
-        }
     }
     // The skipped Machines, narrowed by every Volume as the candidates are.
     let mut unread = snapshot
@@ -1059,7 +1057,20 @@ fn volume_constraints<'spec>(
                     unread.retain(|machine| located(machine.machine.id));
                     first_located.get_or_insert(volume);
                 }
-                VolumeLocality::Absent => missing_volumes.push(volume),
+                VolumeLocality::Absent => {
+                    // A Volume whose inspect failed is still on that Machine.
+                    let name =
+                        managed_volume_name(volume).expect("mounted managed Volumes are named");
+                    let held =
+                        |id: MachineId| snapshot.volume_snapshot.named_gap(id, name).is_some();
+                    if skipped.iter().any(|(id, ..)| held(*id)) {
+                        machines.clear();
+                        unread.retain(|machine| held(machine.machine.id));
+                        first_located.get_or_insert(volume);
+                    } else {
+                        missing_volumes.push(volume);
+                    }
+                }
             }
         }
     }

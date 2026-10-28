@@ -249,11 +249,21 @@ impl VolumeSnapshot {
             })
     }
 
-    /// Whether the inspect of Docker Volume `name` on `machine_id` failed.
-    pub(crate) fn named_gap(&self, machine_id: MachineId, name: &DockerVolumeName) -> bool {
+    /// Why the inspect of Docker Volume `name` on `machine_id` failed, if it did.
+    pub(crate) fn named_gap(
+        &self,
+        machine_id: MachineId,
+        name: &DockerVolumeName,
+    ) -> Option<String> {
         self.named_failures
             .iter()
-            .any(|failure| failure.id.machine_id == machine_id && &failure.id.name == name)
+            .find(|failure| failure.id.machine_id == machine_id && &failure.id.name == name)
+            .map(|failure| {
+                format!(
+                    "inspect of Docker Volume {name} failed: {}",
+                    crate::ui::row(&failure.error)
+                )
+            })
     }
 
     pub(crate) fn deploy_warnings(&self) -> impl Iterator<Item = DeployWarning> + '_ {
