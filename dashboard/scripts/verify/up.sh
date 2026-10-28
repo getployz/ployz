@@ -265,7 +265,7 @@ Ployz Cloud verify: $base  (billing $([ "${BILLING:-0}" = 1 ] && echo on || echo
   servers     $base/cloud/$org/~/servers
 uptime: seeding in the background for the Monitoring tab; wait with: until [ -s $run/uptime ]; do sleep 1; done; cat $run/uptime
 browser:
-  agent-browser --session $name cookies set better-auth.session_token "\$(cat $run/cookie)" --url $base --httpOnly --sameSite Lax
+  agent-browser --session $name cookies set better-auth.session_token "\$(cat '$run/cookie')" --url $base --httpOnly --sameSite Lax
   agent-browser --session $name open $base/cloud/$org/shop/production
   $dash/scripts/verify/as.sh grace  # or ada (owner), linus (member): switches this session to that person in $org
 EOF
@@ -286,7 +286,7 @@ if [ "${FAKE_GITHUB:-0}" = 1 ]; then
 github origin: $fake_github (PLOYZ_VERIFY_GITHUB_ORIGIN), every GitHub URL Cloud builds points at this fake
 fake github on $fake_github (requests $run/fake-github.log, fixtures $dash/.verify/github.json)
   bob ($bob_email, password in $run/seed.json .bob, signed in through POST $base/api/auth/sign-in/email):
-  agent-browser --session $name-bob cookies set better-auth.session_token "\$(cat $run/bob-cookie)" --url $base --httpOnly --sameSite Lax
+  agent-browser --session $name-bob cookies set better-auth.session_token "\$(cat '$run/bob-cookie')" --url $base --httpOnly --sameSite Lax
   agent-browser --session $name-bob open $base/cloud
   webhook: curl -X POST $fake_github/_fake/webhook -d '{"event":"installation_repositories","action":"added","installation":7,"repositories":["acme/docs"]}'
 EOF
