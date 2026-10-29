@@ -310,7 +310,16 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
 
         // TODO: do not reroute away from the current entry before removal.
         if let (Some(credential), Some(id)) = (&cloud, &run) {
-            let removed = cloud_account::follow_removal(credential, &selected.name, id).await?;
+            let removed = cloud_account::follow_removal(
+                credential,
+                &selected.name,
+                match removal {
+                    Removal::Reset => "removing",
+                    Removal::Forget => "forgetting",
+                },
+                id,
+            )
+            .await?;
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));

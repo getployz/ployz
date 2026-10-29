@@ -724,9 +724,10 @@ finish and points at **Forget server**. If the
 server is gone but `ployz server ls` (or the **Servers** page) still lists it,
 [forget it](#forget-a-server-that-is-gone); if it still answers, remove it again; if it's no longer
 listed, there is nothing left to forget. A removal that runs out of retries before it reaches the
-server only shows its failure. `ployz server rm` stops following a removal after 10 minutes. It
-then says the removal keeps running in Ployz Cloud, and to forget the server if the removal fails
-and the server is gone but still listed.
+server only shows its failure. While Ployz Cloud works, `ployz server rm` and `ployz server forget`
+say why after 30 seconds, then print a line each minute. They stop following a removal after 20
+minutes. They then say the removal keeps running in Ployz Cloud, and to forget the server if the
+removal fails and the server is gone but still listed.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
@@ -753,6 +754,12 @@ ployz server forget web-2 --confirm dead
 
 The approval Ployz Cloud asks for names the server and each volume whose only copy is on it, as
 those are lost with it. A volume with a mirror or a writer on another server isn't listed.
+
+Once you approve, forgetting an offline server takes seconds. Forgetting one that is still up but
+doesn't answer takes Ployz Cloud longer: a minute or two when the server holds only mirrors, and
+about 11 minutes when it holds a volume's writer, since Ployz Cloud retries the server first in
+case it still writes the volume. `ployz server forget` prints a line each minute meanwhile, and
+says `Forgot Server web-2.` once it's done.
 
 `ployz server rm` on a server that doesn't answer stops before it changes anything and prints that
 command as its next step. When Ployz Cloud itself doesn't answer, it says to run `ployz server rm`
