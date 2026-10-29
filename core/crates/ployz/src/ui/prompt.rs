@@ -116,6 +116,7 @@ const CTRL_C: u8 = 0x03;
 const CTRL_D: u8 = 0x04;
 const BACKSPACE: u8 = 0x08;
 const CTRL_U: u8 = 0x15;
+const CTRL_W: u8 = 0x17;
 const DELETE: u8 = 0x7f;
 
 /// How a line typed with echo off ended.
@@ -145,6 +146,7 @@ fn hidden_line(question: &str) -> io::Result<Typed> {
 /// The terminal with echo, line editing and signals off, restored on drop.
 struct Quiet<'fd> {
     tty: BorrowedFd<'fd>,
+    quiet: Termios,
     original: Termios,
 }
 
@@ -157,7 +159,11 @@ impl<'fd> Quiet<'fd> {
         quiet.special_codes[SpecialCodeIndex::VMIN] = 1;
         quiet.special_codes[SpecialCodeIndex::VTIME] = 0;
         termios::tcsetattr(tty, OptionalActions::Now, &quiet)?;
-        Ok(Self { tty, original })
+        Ok(Self {
+            tty,
+            quiet,
+            original,
+        })
     }
 
     fn read_line(&self) -> io::Result<Typed> {
@@ -172,10 +178,43 @@ impl<'fd> Quiet<'fd> {
             };
             match type_keys(&mut line, keys.get(..read).unwrap_or_default()) {
                 None => {}
-                Some(Typed::Line(_)) if rustix::io::ioctl_fionread(self.tty)? > 0 => {
-                    return Ok(Typed::Lines);
+                Some(Typed::Line(line)) => {
+                    return Ok(if self.settle()? {
+                        Typed::Lines
+                    } else {
+                        Typed::Line(line)
+                    });
                 }
-                Some(typed) => return Ok(typed),
+                Some(typed) => {
+                    self.settle()?;
+                    return Ok(typed);
+                }
+            }
+        }
+    }
+
+    /// Read on, echo still off, until nothing arrives for 200ms: a paste can come
+    /// in pieces, and none of it may be taken as the whole value or reach the
+    /// shell. Whether anything but line endings came.
+    fn settle(&self) -> io::Result<bool> {
+        let mut waiting = self.quiet.clone();
+        waiting.special_codes[SpecialCodeIndex::VMIN] = 0;
+        waiting.special_codes[SpecialCodeIndex::VTIME] = 2;
+        termios::tcsetattr(self.tty, OptionalActions::Now, &waiting)?;
+        let mut more = false;
+        let mut keys = [0; 4096];
+        loop {
+            match rustix::io::read(self.tty, &mut keys) {
+                Ok(0) => return Ok(more),
+                Ok(read) => {
+                    more |= keys
+                        .get(..read)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|key| !matches!(key, b'\r' | b'\n'));
+                }
+                Err(rustix::io::Errno::INTR) => {}
+                Err(error) => return Err(error.into()),
             }
         }
     }
@@ -183,7 +222,7 @@ impl<'fd> Quiet<'fd> {
 
 impl Drop for Quiet<'_> {
     fn drop(&mut self) {
-        // Flush, so the rest of a refused paste never reaches the shell.
+        // Flush, so nothing typed with echo off reaches the shell.
         let _ = termios::tcsetattr(self.tty, OptionalActions::Flush, &self.original);
     }
 }
@@ -208,6 +247,15 @@ fn type_keys(line: &mut Vec<u8>, keys: &[u8]) -> Option<Typed> {
                 while line.pop().is_some_and(|byte| byte & 0xc0 == 0x80) {}
             }
             CTRL_U => line.clear(),
+            CTRL_W => {
+                // Drop the word before the cursor and the blanks after it.
+                while line.last().is_some_and(u8::is_ascii_whitespace) {
+                    line.pop();
+                }
+                while line.last().is_some_and(|byte| !byte.is_ascii_whitespace()) {
+                    line.pop();
+                }
+            }
             b'\t' => line.push(key),
             key if key < 0x20 => {}
             key => line.push(key),
@@ -259,6 +307,7 @@ mod tests {
         assert_eq!(typed(&[b"dummx\x7fy\n"]), line("dummy"));
         assert_eq!(typed(&["dummy\u{e9}\x7f\n".as_bytes()]), line("dummy"));
         assert_eq!(typed(&[b"wrong\x15dummy\n"]), line("dummy"));
+        assert_eq!(typed(&[b"dummy wrong \x17\n"]), line("dummy "));
         assert_eq!(typed(&[b"\n"]), line(""));
         assert_eq!(typed(&[b"dummy"]), None);
         assert_eq!(typed(&[b"-----BEGIN-----\nabc\n"]), Some(Typed::Lines));
