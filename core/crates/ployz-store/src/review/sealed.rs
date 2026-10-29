@@ -66,14 +66,30 @@ pub(crate) fn names(tx: &mut dyn Tx, environment: &str) -> Result<BTreeSet<Strin
             .filter(|variable| sealed(&variable.value))
             .map(|variable| variable.key.clone()),
     );
+    // A Branch reads a Live Node's values from its Parent, which may seal them: a
+    // template reading a Service its own intent doesn't own always counts.
+    for intent in &intents {
+        let live = crate::branch::used_live(intent);
+        names.extend(
+            intent
+                .services
+                .iter()
+                .flat_map(|service| &service.variables)
+                .filter(|variable| {
+                    variable
+                        .value
+                        .referenced_lineages()
+                        .any(|lineage| live.contains_key(lineage))
+                })
+                .map(|variable| variable.key.clone()),
+        );
+    }
     // A template carries a Sealed value only through a reference, maybe via another
     // template: one reading only plain values resolves plain and is shown.
     loop {
         let reading: Vec<_> = variables
             .iter()
-            .filter(|variable| {
-                !names.contains(&variable.key) && reads_any(&variable.value, &names)
-            })
+            .filter(|variable| !names.contains(&variable.key) && reads_any(&variable.value, &names))
             .map(|variable| variable.key.clone())
             .collect();
         if reading.is_empty() {
