@@ -218,7 +218,8 @@ fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
     assert_eq!(plain.len(), 2);
 
     for method in [BuildMethod::Dockerfile, BuildMethod::Railpack] {
-        let sealed = crate::sealed_compat::builders(&visible, Some(method)).unwrap();
+        let sealed =
+            crate::sealed_compat::builders(&visible, Some((method, vec!["BUILD_SECRET"]))).unwrap();
         let names: Vec<_> = sealed
             .iter()
             .map(|observation| observation.machine.name.to_string())
@@ -227,19 +228,28 @@ fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
     }
 
     let only_behind = vec![MachineObservation::new(behind, MembershipObservation::Up)];
-    for (method, message) in [
+    for (method, read, message) in [
         (
             BuildMethod::Dockerfile,
-            "behind cannot open sealed values; upgrade every Server first.",
+            vec!["BUILD_SECRET"],
+            "behind cannot open sealed values, and this build reads BUILD_SECRET. \
+             Upgrade a Server to 0.3.5 to build there, or stop reading it in the build.",
+        ),
+        (
+            BuildMethod::Dockerfile,
+            vec!["API_KEY", "BUILD_SECRET"],
+            "behind cannot open sealed values, and this build reads API_KEY, BUILD_SECRET. \
+             Upgrade a Server to 0.3.5 to build there, or stop reading them in the build.",
         ),
         (
             BuildMethod::Railpack,
+            vec!["BUILD_SECRET"],
             "behind cannot open sealed values. Railpack gives the build every variable, \
              sealed ones included, so upgrade a Server to build there.",
         ),
     ] {
         let crate::connect::ConnectError::Remote(error) =
-            crate::sealed_compat::builders(&only_behind, Some(method)).unwrap_err()
+            crate::sealed_compat::builders(&only_behind, Some((method, read))).unwrap_err()
         else {
             panic!("expected a remote refusal");
         };

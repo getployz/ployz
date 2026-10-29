@@ -104,7 +104,8 @@ variable), gets every sealed value. A sealed `GIT_AUTH_TOKEN` or `GIT_AUTH_HEADE
 the build, for an `ADD` of a private Git repository.
 
 Your servers open a sealed value for a build only from Ployz 0.3.5. A build that gets one needs a
-server on 0.3.5 or later, and it won't start until you upgrade one.
+server on 0.3.5 or later, and it won't start until you upgrade one. The refusal names the sealed
+values the build reads, so you can instead stop reading them in the build.
 
 Railpack gives the build every variable, so a Railpack build reads every sealed value, even one
 only your app uses at runtime. A Railpack service with any sealed value needs a server on 0.3.5

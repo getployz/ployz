@@ -847,10 +847,12 @@ async fn failed_builder_selection_records_why_each_machine_was_rejected_without_
 #[test]
 fn a_sealed_build_no_server_can_open_names_the_servers_behind() {
     let visible = [machine('a', "builder"), machine('b', "behind")];
-    let behind =
-        crate::sealed_compat::builders(&visible, Some(ployz_core::config::BuildMethod::Dockerfile))
-            .err()
-            .unwrap();
+    let behind = crate::sealed_compat::builders(
+        &visible,
+        Some((ployz_core::config::BuildMethod::Dockerfile, vec!["TOKEN"])),
+    )
+    .err()
+    .unwrap();
     let error = crate::sdk::preparation_error(
         crate::sdk::prepare::PreparationError::Selection(behind),
         false,

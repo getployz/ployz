@@ -67,14 +67,14 @@ pub(crate) async fn admit(
     )))
 }
 
-/// The Machines a Build may run on. One that reads a Sealed value, built by
-/// `reads`, runs only where the daemon opens them; without one, every visible
-/// Machine stays.
-pub(crate) fn builders(
-    visible: &[MachineObservation],
-    reads: Option<BuildMethod>,
-) -> Result<Cow<'_, [MachineObservation]>, ConnectError> {
-    let Some(method) = reads else {
+/// The Machines a Build may run on. One that reads Sealed values, built and
+/// named by `reads`, runs only where the daemon opens them; without one, every
+/// visible Machine stays.
+pub(crate) fn builders<'a>(
+    visible: &'a [MachineObservation],
+    reads: Option<(BuildMethod, Vec<&str>)>,
+) -> Result<Cow<'a, [MachineObservation]>, ConnectError> {
+    let Some((method, read)) = reads else {
         return Ok(Cow::Borrowed(visible));
     };
     let (able, behind): (Vec<_>, Vec<_>) = visible.iter().cloned().partition(|observation| {
@@ -96,8 +96,14 @@ pub(crate) fn builders(
             .collect();
         let names = names.join(", ");
         match method {
+            // One Server that opens them is enough: the Build runs there.
             BuildMethod::Dockerfile => {
-                format!("{names} cannot open sealed values; upgrade every Server first.")
+                let it = if read.len() == 1 { "it" } else { "them" };
+                format!(
+                    "{names} cannot open sealed values, and this build reads {}. \
+                     Upgrade a Server to 0.3.5 to build there, or stop reading {it} in the build.",
+                    read.join(", ")
+                )
             }
             // A Dockerfile reading none builds anywhere; Railpack can't read none.
             BuildMethod::Railpack => format!(
