@@ -13,7 +13,7 @@ use std::{
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpSocket},
 };
 
 use super::get_if_present;
@@ -53,43 +53,60 @@ fn client(dns: Option<Dns>) -> reqwest::Client {
     .unwrap()
 }
 
-/// Serves `status`, with any `headers`, and body `body` to every request, counting them.
+/// Serves `status`, with any `headers`, and body `body` to every request under its URL,
+/// counting them. That URL's path is unique on this host: other processes, such as other
+/// tests, probe loopback ports, and a request one of them sends is answered 404, uncounted.
 async fn http(
     status: &'static str,
     headers: String,
     body: &'static str,
 ) -> (String, Arc<AtomicUsize>) {
+    static SERVERS: AtomicUsize = AtomicUsize::new(0);
+    let path = format!(
+        "/{}-{}",
+        std::process::id(),
+        SERVERS.fetch_add(1, Ordering::SeqCst)
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();
+    let ours = format!("GET {path}/");
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
-            counted.fetch_add(1, Ordering::SeqCst);
             let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request).await;
-            let response = format!(
-                "HTTP/1.1 {status}\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
+            let read = stream.read(&mut request).await.unwrap_or(0);
+            let response = if request
+                .get(..read)
+                .is_some_and(|received| received.starts_with(ours.as_bytes()))
+            {
+                counted.fetch_add(1, Ordering::SeqCst);
+                format!(
+                    "HTTP/1.1 {status}\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else {
+                "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    .to_owned()
+            };
             let _ = stream.write_all(response.as_bytes()).await;
         }
     });
-    (format!("http://{address}"), requests)
+    (format!("http://{address}{path}"), requests)
 }
 
-/// The mirror a fallback reaches, counting its requests. Bound before any port a test
-/// closes, so it can never take that port.
+/// The mirror a fallback reaches, counting its requests.
 async fn fallback() -> (String, Arc<AtomicUsize>) {
     http("200 OK", String::new(), "fallback").await
 }
 
-/// A loopback port nothing listens on.
-async fn refused() -> String {
-    let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = closed.local_addr().unwrap();
-    drop(closed);
-    format!("https://{address}")
+/// A loopback URL whose port refuses connections while the returned socket lives. The socket
+/// holds the port bound without listening, so no other process can take it.
+fn refused() -> (String, TcpSocket) {
+    let socket = TcpSocket::new_v4().unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let address = socket.local_addr().unwrap();
+    (format!("https://{address}"), socket)
 }
 
 /// An HTTPS listener whose certificate no client trusts.
@@ -141,8 +158,8 @@ fn stayed((requests, result): (usize, Result<Option<Vec<u8>>, reqwest::Error>)) 
 
 #[tokio::test]
 async fn a_refused_connection_falls_back() {
-    let fallback = fallback().await;
-    fell_back(through(&client(None), &refused().await, fallback).await);
+    let (primary, _port) = refused();
+    fell_back(through(&client(None), &primary, fallback().await).await);
 }
 
 #[tokio::test]
@@ -191,8 +208,8 @@ async fn a_server_error_never_falls_back() {
 /// GitHub redirects every asset to its asset host; that host is the one that must answer.
 #[tokio::test]
 async fn an_unreachable_redirect_target_falls_back() {
-    let fallback = fallback().await;
-    let target = refused().await.replace("https://", "http://");
+    let (target, _port) = refused();
+    let target = target.replace("https://", "http://");
     let (primary, _) = http("302 Found", format!("location: {target}/asset\r\n"), "").await;
-    fell_back(through(&client(None), &primary, fallback).await);
+    fell_back(through(&client(None), &primary, fallback().await).await);
 }
