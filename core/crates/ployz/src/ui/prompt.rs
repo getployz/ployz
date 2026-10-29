@@ -3,8 +3,10 @@
 //! that answers it. A declined prompt says what did not happen and exits 130.
 
 use std::io::{self, IsTerminal as _};
+use std::os::fd::{AsFd as _, BorrowedFd};
 
-use dialoguer::{Confirm, Input, Password, Select, console::Term};
+use dialoguer::{Confirm, Input, Select, console::Term};
+use rustix::termios::{self, LocalModes, OptionalActions, SpecialCodeIndex, Termios};
 
 use super::{Mode, mode};
 use crate::failure::Failure;
@@ -82,7 +84,8 @@ pub(crate) fn select<T: ToString>(
     .ok_or_else(|| decline(declined))
 }
 
-/// Ask for a secret without echoing it. Ctrl-C declines.
+/// Ask for a secret without echoing it. Ctrl-C or Ctrl-D declines, an empty line
+/// asks again, and a paste of more than one line is refused, never cut short.
 pub(crate) fn secret(
     question: &str,
     refusal: impl FnOnce() -> Failure,
@@ -91,13 +94,126 @@ pub(crate) fn secret(
     if !can_prompt() {
         return Err(refusal());
     }
-    ask(|| {
-        Password::new()
-            .with_prompt(question)
-            .interact_on(&Term::stderr())
-            .map(Some)
-    })?
-    .ok_or_else(|| decline(declined))
+    loop {
+        match crate::cancellation::while_prompting(|| hidden_line(question))?? {
+            Typed::Line(line) if line.is_empty() => {}
+            Typed::Line(line) => {
+                return String::from_utf8(line)
+                    .map_err(|_| Failure::usage("What you typed isn't UTF-8 text."));
+            }
+            Typed::Lines => {
+                return Err(Failure::usage(
+                    "That paste held more than one line, and only one is read here; nothing was \
+                     kept. Pipe a value of several lines in instead.",
+                ));
+            }
+            Typed::Cancelled => return Err(decline(declined)),
+        }
+    }
+}
+
+const CTRL_C: u8 = 0x03;
+const CTRL_D: u8 = 0x04;
+const BACKSPACE: u8 = 0x08;
+const CTRL_U: u8 = 0x15;
+const DELETE: u8 = 0x7f;
+
+/// How a line typed with echo off ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Typed {
+    Line(Vec<u8>),
+    /// Enter came with more of a paste behind it.
+    Lines,
+    Cancelled,
+}
+
+/// Prompt on stderr and read one line from the terminal on stdin with echo off.
+/// Signals are off too, so Ctrl-C arrives as a key rather than a SIGINT that
+/// the read would restart through.
+fn hidden_line(question: &str) -> io::Result<Typed> {
+    let term = Term::stderr();
+    term.write_str(&format!("{question}: "))?;
+    let stdin = io::stdin();
+    let typed = {
+        let quiet = Quiet::on(stdin.as_fd())?;
+        quiet.read_line()?
+    };
+    term.write_line("")?;
+    Ok(typed)
+}
+
+/// The terminal with echo, line editing and signals off, restored on drop.
+struct Quiet<'fd> {
+    tty: BorrowedFd<'fd>,
+    original: Termios,
+}
+
+impl<'fd> Quiet<'fd> {
+    fn on(tty: BorrowedFd<'fd>) -> io::Result<Self> {
+        let original = termios::tcgetattr(tty)?;
+        let mut quiet = original.clone();
+        quiet.local_modes -= LocalModes::ECHO | LocalModes::ICANON | LocalModes::ISIG;
+        quiet.local_modes -= LocalModes::IEXTEN;
+        quiet.special_codes[SpecialCodeIndex::VMIN] = 1;
+        quiet.special_codes[SpecialCodeIndex::VTIME] = 0;
+        termios::tcsetattr(tty, OptionalActions::Now, &quiet)?;
+        Ok(Self { tty, original })
+    }
+
+    fn read_line(&self) -> io::Result<Typed> {
+        let mut line = Vec::new();
+        let mut keys = [0; 4096];
+        loop {
+            let read = match rustix::io::read(self.tty, &mut keys) {
+                Ok(0) => return Ok(Typed::Cancelled),
+                Ok(read) => read,
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            match type_keys(&mut line, keys.get(..read).unwrap_or_default()) {
+                None => {}
+                Some(Typed::Line(_)) if rustix::io::ioctl_fionread(self.tty)? > 0 => {
+                    return Ok(Typed::Lines);
+                }
+                Some(typed) => return Ok(typed),
+            }
+        }
+    }
+}
+
+impl Drop for Quiet<'_> {
+    fn drop(&mut self) {
+        // Flush, so the rest of a refused paste never reaches the shell.
+        let _ = termios::tcsetattr(self.tty, OptionalActions::Flush, &self.original);
+    }
+}
+
+/// Apply `keys` to `line`, or `None` while it goes on. Enter ends it; newlines
+/// right after it are one pasted line's ending, anything else is a further line.
+fn type_keys(line: &mut Vec<u8>, keys: &[u8]) -> Option<Typed> {
+    let mut keys = keys.iter();
+    while let Some(&key) = keys.next() {
+        match key {
+            CTRL_C => return Some(Typed::Cancelled),
+            CTRL_D if line.is_empty() => return Some(Typed::Cancelled),
+            b'\r' | b'\n' => {
+                return Some(if keys.all(|key| matches!(key, b'\r' | b'\n')) {
+                    Typed::Line(std::mem::take(line))
+                } else {
+                    Typed::Lines
+                });
+            }
+            BACKSPACE | DELETE => {
+                // Drop one character: its UTF-8 continuation bytes, then its lead.
+                while line.pop().is_some_and(|byte| byte & 0xc0 == 0x80) {}
+            }
+            CTRL_U => line.clear(),
+            b'\t' => line.push(key),
+            key if key < 0x20 => {}
+            key => line.push(key),
+        }
+    }
+    None
 }
 
 /// Ctrl-C reaches the prompt as `Interrupted`: that is a no, and the cursor a
@@ -129,6 +245,26 @@ mod tests {
 
     fn refusal() -> Failure {
         Failure::coded(RpcErrorCode::ConfirmationRequired, "needs a terminal")
+    }
+
+    #[test]
+    fn a_hidden_line_ends_at_enter_and_never_keeps_part_of_a_paste() {
+        let typed = |keys: &[&[u8]]| {
+            let mut line = Vec::new();
+            keys.iter().find_map(|keys| type_keys(&mut line, keys))
+        };
+        let line = |text: &str| Some(Typed::Line(text.as_bytes().to_vec()));
+        assert_eq!(typed(&[b"dummy-", b"value\r"]), line("dummy-value"));
+        assert_eq!(typed(&[b"dummy\r\n"]), line("dummy"));
+        assert_eq!(typed(&[b"dummx\x7fy\n"]), line("dummy"));
+        assert_eq!(typed(&["dummy\u{e9}\x7f\n".as_bytes()]), line("dummy"));
+        assert_eq!(typed(&[b"wrong\x15dummy\n"]), line("dummy"));
+        assert_eq!(typed(&[b"\n"]), line(""));
+        assert_eq!(typed(&[b"dummy"]), None);
+        assert_eq!(typed(&[b"-----BEGIN-----\nabc\n"]), Some(Typed::Lines));
+        assert_eq!(typed(&[b"dum\x03"]), Some(Typed::Cancelled));
+        assert_eq!(typed(&[b"\x04"]), Some(Typed::Cancelled));
+        assert_eq!(typed(&[b"dum\x04my\n"]), line("dummy"));
     }
 
     #[test]

@@ -386,7 +386,7 @@ fn read_secret(path: &str, stdin: impl Read, stdin_is_terminal: bool) -> Result<
             &format!("Value for {path}"),
             || {
                 Error::usage(format!(
-                    "No terminal to ask for {path} without showing it; pipe it in: printf %s \"$VALUE\" | ployz set {path} --secret"
+                    "{path}: this run can't prompt (--json, CI, TERM=dumb or stderr not a terminal), and a typed secret would show; pipe it in: printf %s \"$VALUE\" | ployz set {path} --secret"
                 ))
             },
             "Cancelled. Nothing was staged.",
@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn a_secret_typed_at_a_terminal_is_never_read_with_echo_on() {
+    fn a_secret_is_never_read_from_a_terminal_that_cant_hide_it_nor_named_in_an_error() {
         const SENTINEL: &[u8] = b"SENTINEL-3414-do-not-echo\n";
         // Tests run in Plain mode, where nothing prompts: the terminal is refused, not read.
         let mut typed = SENTINEL;
@@ -663,6 +663,7 @@ mod tests {
         let message = refused.to_string();
         assert!(message.contains("web.env.TOKEN"), "{message}");
         assert!(message.contains("pipe it in"), "{message}");
+        assert_eq!(refused.report().code, RpcErrorCode::InvalidArgument);
         assert!(!message.contains("SENTINEL"), "{message}");
 
         // Piped, the value is read to its end, without the newline `echo` adds.
@@ -670,10 +671,13 @@ mod tests {
             read_secret("web.env.TOKEN", SENTINEL, false).unwrap(),
             "SENTINEL-3414-do-not-echo"
         );
-        for piped in [&b"\n"[..], b"SENTINEL-3414\xff"] {
-            let message = read_secret("web.env.TOKEN", piped, false)
-                .unwrap_err()
-                .to_string();
+        for (piped, code) in [
+            (&b"\n"[..], RpcErrorCode::InvalidArgument),
+            (b"SENTINEL-3414\xff", RpcErrorCode::Internal),
+        ] {
+            let error = read_secret("web.env.TOKEN", piped, false).unwrap_err();
+            assert_eq!(error.report().code, code);
+            let message = error.to_string();
             assert!(!message.contains("SENTINEL"), "{message}");
         }
     }
