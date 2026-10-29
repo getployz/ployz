@@ -1017,8 +1017,19 @@ async fn forget_leaves_a_tombstone_only_the_forgotten_identity_matches() {
         ForgottenAnswer::NoAnswer
     );
 
-    // An Entry's Register writes the id back without an identity: Listed wins.
-    store.publish_local_machine(&machine).await.unwrap();
+    // An Entry on an older daemon can still write the id back without an identity
+    // (#3613): Listed wins.
+    store
+        .api()
+        .execute([Statement::new(
+            "INSERT INTO machines (id, info) VALUES (?, ?)",
+            [
+                json!(machine.id),
+                json!(serde_json::to_string(&machine).unwrap()),
+            ],
+        )])
+        .await
+        .unwrap();
     assert_eq!(
         store.forgotten(identity).await.unwrap(),
         ForgottenAnswer::Listed
@@ -1067,6 +1078,26 @@ async fn a_forgotten_machine_still_running_cannot_publish_itself_back() {
         store.forgotten(identity).await.unwrap(),
         ForgottenAnswer::Forgotten
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_forgotten_id_stays_gone_when_published_without_an_identity() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    let publication = store.machine_publication().await;
+    let published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&published).await.unwrap();
+    drop(publication);
+    store.forget_machine(&machine.id).await.unwrap();
+
+    let mut registered = published;
+    registered.runtime.management_identity = None;
+    store.publish_local_machine(&registered).await.unwrap();
+
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
     task.abort();
 }
 

@@ -829,6 +829,12 @@ server first, as `ployz server rm` would have, and asks before it does; `--yes` 
 That reset can delete the server's mirrors, so don't use it while a mirror there may be the last copy
 of a volume.
 
+Before Ployz 0.3.11, that refused plain `ployz server add` still put the forgotten server back on
+your list, under its old id. It then blocked deploys and restores with `<server> did not answer`,
+and a second add left two servers with the same name. To clear it, forget the old one by its id:
+`ployz server forget <old id> --confirm dead`. From 0.3.11 the refused add changes nothing; the
+servers you have left need 0.3.11 for that.
+
 The server you add back must run Ployz 0.3.10 or later. Update `ployz` on your computer first, then
 let `ployz server add` install, which it does by default: it installs the release of the `ployz` you
 run. With `--no-install`, upgrade Ployz on that server first. On 0.3.9 or earlier, even a plain
