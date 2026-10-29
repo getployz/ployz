@@ -194,7 +194,7 @@ pub(super) async fn reconnect_direct(
 
 /// The daemon restarts after it enrolls, so a first failed attempt is the expected path,
 /// not a reachability problem: this setup reached the same connection moments before (#3371).
-const STARTING: crate::setup_retry::Expected =
+pub(in crate::handlers) const STARTING: crate::setup_retry::Expected =
     crate::setup_retry::Expected("Waiting for the Server's daemon to start…");
 
 pub(super) async fn wait_direct_participating(

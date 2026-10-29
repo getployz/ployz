@@ -957,16 +957,23 @@ async fn wait_phase(
     awaited: Awaited<'_>,
     timeout_message: &str,
 ) -> Result<Client, Error> {
-    let (phase, wait) = match awaited {
-        Awaited::Uninitialized => (LocalMachinePhase::Uninitialized, Duration::from_secs(60)),
+    let (phase, expected, wait) = match awaited {
+        Awaited::Uninitialized => (
+            LocalMachinePhase::Uninitialized,
+            None,
+            Duration::from_secs(60),
+        ),
+        // The daemon restarts after it enrolls (#3581).
         Awaited::Enrolled { .. } => (
             LocalMachinePhase::Participating,
+            Some(crate::handlers::server::STARTING),
             ployz_core::MACHINE_START_WAIT,
         ),
     };
-    crate::setup_retry::run(
+    crate::setup_retry::run_expecting(
         &mut (),
         &format!("Waiting for the {} phase", phase.as_str()),
+        expected,
         wait,
         ConnectError::is_setup_retryable,
         async |_| {
