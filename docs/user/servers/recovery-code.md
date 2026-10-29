@@ -36,7 +36,9 @@ server to do that.
 After you [forget every server](manage-servers.md#forget-servers-you-deleted) and add one again,
 the new server doesn't have the key yet. Adding it says "This Server needs access to the
 Sealing Key; ployz recover restores it.", the **Servers** page shows it as **Needs recovery**,
-and a deploy that needs a sealed value fails with "this Machine holds no Sealing Key".
+a deploy that needs a sealed value fails with "this Machine holds no Sealing Key", and
+`ployz set --secret` says "Your server needs the Sealing Key back before it can take sealed
+values."
 
 1. On that server, run `sudo ployz recover`, or from your computer
    `ployz recover --connect ssh://root@203.0.113.10`.
@@ -44,7 +46,7 @@ and a deploy that needs a sealed value fails with "this Machine holds no Sealing
    pipe the code in with `--code-stdin` instead.
 3. Deploy again.
 
-<!-- TODO(#3387): once a lone recovered server lets you add new sealed values, say so here. -->
+Once it has the key back, you can add new sealed values too, even with only that server.
 
 Servers you add after that get the key from this one. If the code is wrong, `ployz recover`
 says so and changes nothing, so you can try again.

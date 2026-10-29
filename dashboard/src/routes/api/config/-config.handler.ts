@@ -62,7 +62,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   }
   // Without a server, the CLI hears so before the Store reads anything.
   const sealing = operation === "sealing" ? yield* readClusterSealingToSeal(caller.organization.id) : undefined;
-  if (sealing !== undefined && sealing.state !== "ready") return Response.json({ state: sealing.state }, { headers: { "cache-control": "no-store" } });
+  if (sealing !== undefined && sealing.state !== "ready") return Response.json(sealing, { headers: { "cache-control": "no-store" } });
   // An approval the write names must be this Caller's, for this command, even where nobody is asked.
   const named = request.headers.get("x-ployz-approval");
   const asks = call.operation === "write" && asksApproval(caller.via, call.command);

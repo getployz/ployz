@@ -135,12 +135,19 @@ describe("readClusterSealing", () => {
     expect(await readToSeal()).toEqual({ state: "ready", publicKey });
   });
 
-  it("to seal, has no server while no Server holds a key, two hold different keys, or the Cluster doesn't answer", async () => {
+  it("to seal, has no server while two Servers hold different keys or the Cluster doesn't answer", async () => {
     await pair();
-    for (const answer of [frameOf({ m1: awaitsRecovery }), frameOf({ m1: held(publicKey), m2: held(otherKey) }), "unreachable" as const]) {
+    for (const answer of [frameOf({ m1: held(publicKey), m2: held(otherKey) }), "unreachable" as const]) {
       cluster = answer;
       expect(await readToSeal()).toEqual({ state: "no_server" });
     }
+    expect(await read()).toEqual({ state: "no_server" });
+  });
+
+  it("to seal, says the Cluster awaits recovery while a Server does and none holds a key", async () => {
+    await pair();
+    cluster = frameOf({ m1: awaitsRecovery });
+    expect(await readToSeal()).toEqual({ state: "no_server", awaitsRecovery: true });
     expect(await read()).toEqual({ state: "no_server" });
   });
 

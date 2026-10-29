@@ -79,6 +79,8 @@ service still gets the real value when it deploys.
 
 - New variables are plain unless you tick **Sealed**.
 - A new sealed value needs a server in your organization first. Add one with `ployz server add`.
+  If your server shows **Needs recovery**, run `sudo ployz recover` on it instead
+  ([recovery code](../servers/recovery-code.md#when-a-server-shows-needs-recovery)).
 - Every server needs Ployz 0.3.4 or later to open sealed values, including a server you add
   after you seal one. Install a current `ployz` on the new server before you add it: an older one
   joins, but can't start your services there. See

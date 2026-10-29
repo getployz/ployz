@@ -22,7 +22,12 @@ enum Sealing {
     /// The Organization seals in the Store: the write goes as it always has.
     Off,
     /// It seals on the client, but no Server holds a Sealing Key yet.
-    NoServer,
+    #[serde(rename_all = "camelCase")]
+    NoServer {
+        /// A Server awaits `ployz recover`. Absent from a Cloud before 0.3.10.
+        #[serde(default)]
+        awaits_recovery: bool,
+    },
     /// It seals on the client, to this key, and the write's secrets land here.
     #[serde(rename_all = "camelCase")]
     Ready {
@@ -163,7 +168,15 @@ impl Store<'_> {
     ) -> Result<Option<(SealingPublicKey, SealingTargetsView)>, Error> {
         match self.backend.sealing(query).map_err(&fail)? {
             Sealing::Off => Ok(None),
-            Sealing::NoServer => Err(Error::conflict("Sealed values need a server.")
+            Sealing::NoServer {
+                awaits_recovery: true,
+            } => Err(Error::conflict(
+                "Your server needs the Sealing Key back before it can take sealed values.",
+            )
+            .hint(Hint::Next("sudo ployz recover".into()))),
+            Sealing::NoServer {
+                awaits_recovery: false,
+            } => Err(Error::conflict("Sealed values need a server.")
                 .hint(Hint::Next("ployz server add".into()))),
             Sealing::Ready {
                 public_key,
