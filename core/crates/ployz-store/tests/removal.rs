@@ -2093,24 +2093,27 @@ fn an_environment_its_project_is_removing_cannot_be_protected_midway() {
     protect(&store, &who, "staging", false);
 }
 
-/// A Save that seals a value in `production` scrubs it from the arrivals and bases it
-/// shares with `staging`, under `production`'s lock alone: arrivals first, then bases.
-/// Removing `staging` meanwhile deletes the pair's rows in that order too, so neither
-/// waits on the other in a cycle (#3574).
-#[test]
-fn removing_an_environment_takes_its_sync_rows_in_the_order_a_scrub_does() {
-    if std::env::var("PLOYZ_STORE_TEST_POSTGRES").is_err() {
-        return; // SQLite runs one writer at a time.
-    }
+/// A Save that seals a value in `production` scrubs it, under `production`'s lock
+/// alone, from the Branch rows, arrivals and bases it shares with `environment`, in
+/// that order. Remove `environment` while a scrub holds the first rows of `scrub` and
+/// still has to take the rest: the removal deletes them in the scrub's order, so
+/// neither waits on the other in a cycle (#3574).
+fn removed_while_a_scrub_runs(a_branch: bool, scrub: &[&str]) {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
-    let (production, staging) = (uuid(2), uuid(6));
+    let (environment, n) = if a_branch {
+        branch(&store, &who, "fix");
+        ("fix", 7)
+    } else {
+        ("staging", 6)
+    };
+    let (production, other) = (uuid(2), uuid(n));
     backend::execute(
         &url,
         &format!(
             "INSERT INTO config_sync_base (environment_id, other_id, organization_id, base) \
-             VALUES ('{production}', '{staging}', 'org', '{{}}')"
+             VALUES ('{production}', '{other}', 'org', '{{}}') ON CONFLICT DO NOTHING"
         ),
     );
     backend::execute(
@@ -2118,21 +2121,17 @@ fn removing_an_environment_takes_its_sync_rows_in_the_order_a_scrub_does() {
         &format!(
             "INSERT INTO config_sync_arrival \
              (environment_id, other_id, lineage, at, organization_id, how, state, value, prior) \
-             VALUES ('{staging}', '{production}', '{}', 'env.KEY', 'org', 'sync', 'hint', '{{}}', '{{}}')",
+             VALUES ('{other}', '{production}', '{}', 'env.KEY', 'org', 'sync', 'hint', '{{}}', '{{}}')",
             uuid(3)
         ),
     );
 
-    let mut scrub = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    let mut scrub = scrub.transaction().unwrap();
-    scrub
-        .execute(
-            "UPDATE config_sync_arrival SET prior = prior WHERE environment_id = $1",
-            &[&staging],
-        )
-        .unwrap();
-    let removing = std::thread::spawn(move || store.write(&who, &request(Some("staging"))));
-    // Wait until the removal blocks on the arrival the scrub holds.
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = client.transaction().unwrap();
+    let (first, rest) = scrub.split_first().unwrap();
+    held.execute(*first, &[&production, &other]).unwrap();
+    let removing = std::thread::spawn(move || store.write(&who, &request(Some(environment))));
+    // Wait until the removal blocks on a row the scrub holds.
     let mut watch = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     while !watch
         .query_one(
@@ -2143,15 +2142,39 @@ fn removing_an_environment_takes_its_sync_rows_in_the_order_a_scrub_does() {
         .unwrap()
         .get::<_, bool>(0)
     {
+        assert!(
+            !removing.is_finished(),
+            "the removal never waited on the scrub"
+        );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    scrub
-        .execute(
-            "UPDATE config_sync_base SET base = base WHERE environment_id = $1 AND other_id = $2",
-            &[&production, &staging],
-        )
-        .unwrap();
-    scrub.commit().unwrap();
+    for statement in rest {
+        held.execute(*statement, &[&production, &other]).unwrap();
+    }
+    held.commit().unwrap();
 
     removing.join().unwrap().unwrap();
+}
+
+/// What a scrub of `production` ($1) writes of the pair it shares with $2.
+const SCRUB_BRANCH: &str = "UPDATE config_environment_branch SET made_with = made_with WHERE environment_id = $2 AND parent_id = $1";
+const SCRUB_ARRIVAL: &str =
+    "UPDATE config_sync_arrival SET prior = prior WHERE environment_id = $2 AND other_id = $1";
+const SCRUB_BASE: &str =
+    "UPDATE config_sync_base SET base = base WHERE environment_id = $1 AND other_id = $2";
+
+#[test]
+fn removing_an_environment_takes_its_sync_rows_in_the_order_a_scrub_does() {
+    if std::env::var("PLOYZ_STORE_TEST_POSTGRES").is_err() {
+        return; // SQLite runs one writer at a time.
+    }
+    removed_while_a_scrub_runs(false, &[SCRUB_ARRIVAL, SCRUB_BASE]);
+}
+
+#[test]
+fn removing_a_branch_takes_its_branch_row_before_its_sync_rows_as_a_scrub_does() {
+    if std::env::var("PLOYZ_STORE_TEST_POSTGRES").is_err() {
+        return; // SQLite runs one writer at a time.
+    }
+    removed_while_a_scrub_runs(true, &[SCRUB_BRANCH, SCRUB_ARRIVAL, SCRUB_BASE]);
 }

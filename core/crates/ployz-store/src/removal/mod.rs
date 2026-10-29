@@ -1187,8 +1187,12 @@ pub(crate) fn teardown_order<'a>(
 
 /// Delete `environment` and everything it owns: its rows go with it.
 pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
-    // Arrivals before bases, the order Discard, Sync and the seal scrub lock them in:
-    // the cascade below would take the pair's bases first.
+    // Branch rows, then arrivals, then bases: the order the seal scrub takes them in
+    // under the other side's lock alone. The cascade below would take bases first.
+    tx.execute(
+        "DELETE FROM config_environment_branch WHERE environment_id = ?1 OR parent_id = ?1",
+        &[environment.as_str().into()],
+    )?;
     tx.execute(
         "DELETE FROM config_sync_arrival WHERE environment_id = ?1",
         &[environment.as_str().into()],
