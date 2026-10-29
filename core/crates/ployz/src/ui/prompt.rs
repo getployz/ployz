@@ -258,6 +258,10 @@ impl Keys {
     fn feed(&mut self, keys: &[u8]) -> Option<Typed> {
         let mut keys = keys.iter();
         while let Some(&key) = keys.next() {
+            // Ctrl-C cancels anywhere, even inside a paste that never ends.
+            if key == CTRL_C {
+                return Some(Typed::Cancelled);
+            }
             if let Some(escape) = &mut self.escape {
                 escape.push(key);
                 if escape == PASTE_START {
@@ -290,7 +294,6 @@ impl Keys {
                 }
             } else {
                 match key {
-                    CTRL_C => return Some(Typed::Cancelled),
                     CTRL_D if self.line.is_empty() => return Some(Typed::Cancelled),
                     // Ctrl-D after some text ends the line, as a terminal's own reading does.
                     b'\r' | b'\n' | CTRL_D => return Some(self.end(&mut keys)),
@@ -390,6 +393,8 @@ mod tests {
             Some(Typed::Lines)
         );
         assert_eq!(typed(&[b"\x1b[200~line1\n", b"line2"]), None);
+        assert_eq!(typed(&[b"\x1b[200~line1", b"\x03"]), Some(Typed::Cancelled));
+        assert_eq!(typed(&[b"\x1b[20", b"\x03"]), Some(Typed::Cancelled));
     }
 
     #[test]
