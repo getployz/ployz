@@ -1147,14 +1147,14 @@ fn a_seal_that_follows_leaves_no_plain_text_in_the_arrival() {
         web(&store, &who, "fix-web")["env"]["TOKEN"],
         json!({ "secret": false })
     );
-    assert!(backend::tables_holding(&url, "plain-private").is_empty());
+    assert_eq!(backend::tables_holding(&url, "plain-private"), [""; 0]);
 }
 
-/// A Branch made while the value was plain keeps it only in what it compares with:
-/// what it was made with, its Node Introduction, and the pending arrival's base cell
-/// until it deploys. Its review still lists the seal that followed.
+/// A Branch made while the value was plain keeps no copy of it in what it syncs over,
+/// only in its Node Introduction. The seal follows into it cleanly, and its review
+/// still lists it.
 #[test]
-fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_only_its_bases() {
+fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_no_plain_base() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
@@ -1181,16 +1181,43 @@ fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_only_its_bases() {
     );
     assert_eq!(
         backend::tables_holding(&url, "plain-private"),
-        [
-            "config_environment_branch",
-            "config_node_introduction",
-            "config_sync_arrival"
-        ]
+        ["config_node_introduction"]
     );
     deploy(&store, &who, "qa", 4);
     assert_eq!(
         backend::tables_holding(&url, "plain-private"),
-        ["config_environment_branch", "config_node_introduction"]
+        ["config_node_introduction"]
+    );
+}
+
+/// Sealing a value in a Working State empties it in the bases its Branch shares,
+/// before anything is saved or deployed.
+#[test]
+fn sealing_a_value_empties_it_in_the_bases_a_branch_shares() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    let sealed = token(&store, &who, "production", 1);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!({ "secret": sealed }))],
+    );
+
+    let holding = backend::tables_holding(&url, "plain-private");
+    assert!(
+        !holding.contains(&"config_environment_branch".to_owned())
+            && !holding.contains(&"config_sync_base".to_owned()),
+        "{holding:?}"
     );
 }
 

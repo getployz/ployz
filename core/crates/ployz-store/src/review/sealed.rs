@@ -4,8 +4,9 @@
 use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
-use ployz_core::config::{SavedEnvironmentIntent, SavedVariableIntent, SavedVariableValue};
+use ployz_core::config::{Cell, SavedEnvironmentIntent, SavedVariableIntent, SavedVariableValue};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use ts_rs::TS;
 
 use crate::scope::{self, EnvironmentRef};
@@ -175,4 +176,114 @@ fn sealed_in(
             .filter(|variable| sealed(&variable.value))
             .map(move |variable| (service.id.as_str(), variable))
     })
+}
+
+/// Each variable an Environment ever held sealed, by Service lineage and key: how a
+/// Sync base, shared with other Environments, names it.
+pub(crate) fn sealed_rows(
+    tx: &mut dyn Tx,
+    environment: &str,
+) -> Result<BTreeSet<(String, String)>, RpcError> {
+    let ever = EverSealed::load(tx, environment)?;
+    if ever.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let mut intents = Vec::new();
+    for row in tx.query(
+        "SELECT working FROM config_environment WHERE id = ?1",
+        &[environment.into()],
+    )? {
+        intents.push(row.intent(0, "Working State")?);
+    }
+    for row in tx.query(
+        "SELECT intent FROM config_saved WHERE environment_id = ?1",
+        &[environment.into()],
+    )? {
+        intents.push(row.intent(0, "Saved State")?);
+    }
+    Ok(intents
+        .iter()
+        .flat_map(|intent| &intent.services)
+        .flat_map(|service| {
+            service
+                .variables
+                .iter()
+                .filter(|variable| ever.holds(&service.id, variable))
+                .map(|variable| (service.lineage_id.clone(), variable.key.clone()))
+        })
+        .collect())
+}
+
+/// Each variable `after` holds sealed that `before` didn't, by Service lineage and key.
+pub(crate) fn newly_sealed(
+    before: &SavedEnvironmentIntent,
+    after: &SavedEnvironmentIntent,
+) -> BTreeSet<(String, String)> {
+    let rows = |intent: &SavedEnvironmentIntent| -> BTreeSet<(String, String)> {
+        intent
+            .services
+            .iter()
+            .flat_map(|service| {
+                service
+                    .variables
+                    .iter()
+                    .filter(|variable| sealed(&variable.value))
+                    .map(|variable| (service.lineage_id.clone(), variable.key.clone()))
+            })
+            .collect()
+    };
+    let before = rows(before);
+    rows(after).difference(&before).cloned().collect()
+}
+
+/// Empty the plain value of each of `rows` in a Sync base. It keeps its kind and
+/// fingerprint, which is all a Sync compares a plain value by.
+pub(crate) fn empty_plain_in(
+    base: &mut SavedEnvironmentIntent,
+    rows: &BTreeSet<(String, String)>,
+) -> bool {
+    let mut emptied = false;
+    for service in &mut base.services {
+        for variable in &mut service.variables {
+            if rows.contains(&(service.lineage_id.clone(), variable.key.clone())) {
+                emptied |= empty_plain(&mut variable.value);
+            }
+        }
+    }
+    emptied
+}
+
+fn empty_plain(value: &mut SavedVariableValue) -> bool {
+    match value {
+        SavedVariableValue::Literal { value } if !value.is_empty() => value.clear(),
+        SavedVariableValue::Template { parts } if !parts.is_empty() => parts.clear(),
+        SavedVariableValue::Literal { value: _ }
+        | SavedVariableValue::Template { parts: _ }
+        | SavedVariableValue::Secret { encrypted_value: _ }
+        | SavedVariableValue::SecretWithoutValue => return false,
+    }
+    true
+}
+
+/// [`empty_plain_in`] for one base cell, as a pending arrival keeps it.
+pub(crate) fn empty_plain_cell(cell: &mut Cell) -> bool {
+    let Cell::Value(Value::Object(fields)) = cell else {
+        return false;
+    };
+    let mut plain = fields.clone();
+    let Some(fingerprint) = plain.remove("fingerprint") else {
+        return false;
+    };
+    let Ok(mut value) = serde_json::from_value::<SavedVariableValue>(Value::Object(plain)) else {
+        return false;
+    };
+    if !empty_plain(&mut value) {
+        return false;
+    }
+    let Ok(Value::Object(emptied)) = serde_json::to_value(value) else {
+        return false;
+    };
+    *fields = emptied;
+    fields.insert("fingerprint".to_owned(), fingerprint);
+    true
 }

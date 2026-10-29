@@ -289,7 +289,7 @@ impl<'de> Deserialize<'de> for RowId {
 /// What one side holds at a row. A setting at its default is `Absent`, so unsetting is
 /// a removal. A secret is there by fingerprint only: its value travels as a
 /// [`SealedCell`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cell {
     /// Nothing there, or a setting at its default.
@@ -302,6 +302,33 @@ pub enum Cell {
     },
     /// A secret still waiting for its value.
     SecretWithoutValue,
+}
+
+/// A variable's plain value compares by its kind and fingerprint, so a base that
+/// emptied a value sealed since still equals a side that holds it.
+impl PartialEq for Cell {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Value(a), Self::Value(b)) => match (plain_identity(a), plain_identity(b)) {
+                (Some(a), Some(b)) => a == b,
+                _ => a == b,
+            },
+            (Self::Secret { fingerprint: a }, Self::Secret { fingerprint: b }) => a == b,
+            (Self::Absent, Self::Absent) | (Self::SecretWithoutValue, Self::SecretWithoutValue) => {
+                true
+            }
+            (Self::Absent | Self::Value(_) | Self::Secret { .. } | Self::SecretWithoutValue, _) => {
+                false
+            }
+        }
+    }
+}
+
+/// The kind and fingerprint of a cell from [`variable_cell`] holding a plain value.
+fn plain_identity(cell: &Value) -> Option<(&str, &str)> {
+    let fields = cell.as_object()?;
+    let kind = fields.get("kind")?.as_str()?;
+    matches!(kind, "literal" | "template").then_some((kind, fields.get("fingerprint")?.as_str()?))
 }
 
 impl Cell {

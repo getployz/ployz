@@ -833,6 +833,11 @@ pub(crate) fn persist_working(
         ],
     )?;
     crate::review::sealed::record(tx, environment.summary.id.as_str(), &environment.working)?;
+    crate::branch::empty_in_bases(
+        tx,
+        environment.summary.id.as_str(),
+        &crate::review::sealed::newly_sealed(&before, &environment.working),
+    )?;
     // A row the draft changed is its own now, whatever proposal brought it.
     crate::branch::release_changed(tx, environment)
 }
