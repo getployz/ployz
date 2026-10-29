@@ -101,7 +101,7 @@ pub(crate) fn builders<'a>(
                 let it = if read.len() == 1 { "it" } else { "them" };
                 format!(
                     "{names} cannot open sealed values, and this build reads {}. \
-                     Upgrade a Server to 0.3.5 to build there, or stop reading {it} in the build.",
+                     Upgrade a Server to 0.3.5 or later to build there, or stop reading {it} in the build.",
                     read.join(", ")
                 )
             }

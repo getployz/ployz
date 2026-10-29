@@ -233,13 +233,13 @@ fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
             BuildMethod::Dockerfile,
             vec!["BUILD_SECRET"],
             "behind cannot open sealed values, and this build reads BUILD_SECRET. \
-             Upgrade a Server to 0.3.5 to build there, or stop reading it in the build.",
+             Upgrade a Server to 0.3.5 or later to build there, or stop reading it in the build.",
         ),
         (
             BuildMethod::Dockerfile,
             vec!["API_KEY", "BUILD_SECRET"],
             "behind cannot open sealed values, and this build reads API_KEY, BUILD_SECRET. \
-             Upgrade a Server to 0.3.5 to build there, or stop reading them in the build.",
+             Upgrade a Server to 0.3.5 or later to build there, or stop reading them in the build.",
         ),
         (
             BuildMethod::Railpack,
