@@ -784,14 +784,20 @@ its own copy of each volume and they keep writing there, and a later move, mirro
 of the volume doesn't reach it. Ployz never brings back what they write there, and if you've
 restored the volume on another server, the two copies drift apart.
 
-A forgotten server stops its services itself as a best effort, and only when it was unreachable
-when it was forgotten. It needs the server and at least one other server to have run Ployz 0.3.1 or
-later while it was still connected, and the server that forgot it to run 0.3.1 or later. Once its
-network returns and it has heard nothing from a server for a minute, it asks that server whether it
-was forgotten, and when one says so it resets itself as `ployz server rm` would, except that it
-keeps every volume copy on its disk, mirrors included. Its services stop up to about 15 minutes
-after its network returns, and `journalctl -u ployz` on it says `this Machine was forgotten by its
-Cluster`. Nothing stops them when it can't reach any of those servers, or when the versions don't
+A forgotten server stops its services itself as a best effort. It needs the server and at least
+one other server to have run Ployz 0.3.1 or later while it was still connected, and the server
+that forgot it to run 0.3.1 or later. Once it has heard nothing from a server for a minute, it asks
+that server whether it was forgotten, and when one says so it resets itself as `ployz server rm`
+would, except that it keeps every volume copy on its disk, mirrors included. `journalctl -u ployz`
+on it then says `this Machine was forgotten by its Cluster`.
+
+- A server that was unreachable when it was forgotten stops its services up to about 15 minutes
+  after its network returns.
+- A server that was still running, but that Ployz Cloud couldn't reach, stops them about a minute
+  after the forget, once it runs Ployz 0.3.10 or later. Before 0.3.10 it put itself back on your
+  list of servers as soon as it was forgotten, and kept running.
+
+Nothing stops its services when it can't reach any of those servers, or when the versions don't
 line up. Those cases, and the minutes before it asks, are yours to cover.
 
 So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
