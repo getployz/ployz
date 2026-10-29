@@ -1007,8 +1007,11 @@ impl LocalMachine {
 }
 
 impl LocalMachine {
+    /// Install keeps every copy a prior identity left, mirrors included: an uninitialized
+    /// Machine is in no Cluster, so it cannot tell whether a mirror's writer still holds
+    /// what the mirror holds (#3591). Only a Leave destroys mirrors.
     async fn install(&self, installation: Installation) -> Result<(), Error> {
-        self.depart_storage(StorageExit::Depart).await?;
+        self.depart_storage(StorageExit::KeepEveryCopy).await?;
         self.owner
             .mutate(move |store| store.install(installation))
             .await??;
@@ -1067,8 +1070,8 @@ impl LocalMachine {
     }
 }
 
-/// What a departure does with this Machine's mirrors: a leave or a fresh install
-/// destroys those a writer elsewhere holds, a forgotten Machine's fence keeps every copy.
+/// What a departure does with this Machine's mirrors: a leave destroys those a writer
+/// elsewhere holds; a forgotten Machine's fence and a fresh install keep every copy.
 #[derive(Clone, Copy)]
 enum StorageExit {
     Depart,

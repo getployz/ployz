@@ -802,10 +802,11 @@ line up. Those cases, and the minutes before it asks, are yours to cover.
 
 So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
 on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along
-with Docker and your images. Adding it back later, with `ployz server add` and `--reset`, makes its
-copies read-only and keeps their data but can delete its mirrors, even after an uninstall. So don't
-add it back while a mirror there may be the last copy of a volume. Wipe or reinstall its disk only
-if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
+with Docker and your images. Adding it back later with a plain `ployz server add` keeps every copy
+on it, mirrors included, even after an uninstall. Each then shows under the volume's **Copies**,
+`ployz volume restore <volume> --from <server>` can bring the volume back from it, and
+`ployz volume mirror rm` deletes one you no longer need. Wipe or reinstall its disk only if you
+need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
 reach it. `ployz server forget` prints this warning each time it forgets servers.
 
 `ployz server forget` warns about replicated services as `ployz server rm` does, with one
@@ -813,8 +814,11 @@ difference. A forgotten server may still run its replicas, so for a service with
 it, forget says "No copies of Replicated Services were seen on the remaining Servers" rather than
 that the service runs none. With `--json` it lists them as `no_copies` all the same.
 
-To add a forgotten server back, run `ployz server add` for it with `--reset`. It resets the server
-first, as `ployz server rm` would have, and asks before it does; `--yes` skips the question.
+To add a forgotten server back, run `ployz server add` for it. A server that already reset itself
+joins as it is. One that didn't says it is already initialised: add `--reset`, and it resets the
+server first, as `ployz server rm` would have, and asks before it does; `--yes` skips the question.
+That reset can delete the server's mirrors, so don't use it while a mirror there may be the last copy
+of a volume.
 
 ## Clean up after a deleted environment
 

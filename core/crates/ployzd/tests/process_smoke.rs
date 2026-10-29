@@ -231,6 +231,12 @@ fn serve_empty_plugin(socket: &Path) {
                             axum::Json(serde_json::json!({"Ok": StorageDeparture::default()}))
                         }),
                     )
+                    .route(
+                        "/Storage.Seal",
+                        axum::routing::post(|| async {
+                            axum::Json(serde_json::json!({"Ok": StorageDeparture::default()}))
+                        }),
+                    )
                     .fallback(axum::routing::post(|| async {
                         axum::Json(serde_json::json!({"Ok": []}))
                     }));
