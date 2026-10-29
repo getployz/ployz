@@ -30,7 +30,7 @@ raw = open(path, "rb").read()
 err = open(path + ".err", "rb").read()
 def key(name):
     # A field name, not a value used as a key: short, word-shaped and without a token prefix.
-    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,31}", name) and not re.match(r"(pflt|plyz|pmet)_", name):
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,31}", name) and not re.match(r"(ployz|pflt|plyz|pmet|ppair)_|ployz1:", name):
         return name
     return f"<key {len(name)} chars>"
 def shape(value):
@@ -39,7 +39,7 @@ def shape(value):
     if isinstance(value, list):
         return [shape(item) for item in value]
     if isinstance(value, str):
-        prefix = re.match(r"(pflt_|plyz_|pmet_|ployzgrant1:)", value)
+        prefix = re.match(r"(ployz_|pflt_|plyz_|pmet_|ppair_|ployz1:|ployzgrant1:)", value)
         return f"<{prefix.group(1) if prefix else ''}{len(value)} chars>"
     if isinstance(value, bool) or value is None:
         return value

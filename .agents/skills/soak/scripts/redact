@@ -5,10 +5,10 @@
 #   cmd 2>&1 | redact | tee log
 #   grep -r marker scratch/ | redact
 #
-# Masks Ployz token values (pflt_, plyz_, pmet_, ployzgrant1:), JWTs, Cookie
-# and Set-Cookie values, session_token values, Authorization values, PLOYZ_TOKEN,
-# invite links, JSON fields named like a token, cookie, password or secret, and
-# whole PEM blocks. A masked value reads <redacted>; the prefix or name stays.
+# Masks Ployz token values (ployz_, pflt_, pmet_, ppair_, plyz_, ployz1:,
+# ployzgrant1:), JWTs, Cookie and Set-Cookie values, session_token values,
+# Authorization values, PLOYZ_TOKEN, invite links, JSON fields named like a
+# token, cookie, password or secret, and whole PEM blocks. A masked value reads <redacted>; the prefix or name stays.
 use strict;
 use warnings;
 
@@ -27,7 +27,10 @@ while (my $line = <STDIN>) {
         next;
     }
 
-    $line =~ s/\b(pflt_|plyz_|pmet_)[A-Za-z0-9_\-]+/$1<redacted>/g;
+    $line =~ s/\b(pflt_|plyz_|pmet_|ppair_)[A-Za-z0-9_\-]+/$1<redacted>/g;
+    # Organization Tokens carry 43 base64url chars; the floor spares names like ployz_claim_sign_in.
+    $line =~ s/\b(ployz_)[A-Za-z0-9_\-]{32,}/$1<redacted>/g;
+    $line =~ s/\b(ployz1:)[A-Za-z0-9_\-]+/$1<redacted>/g;
     $line =~ s/\b(ployzgrant1:)[A-Za-z0-9._~+\/=:\-]+/$1<redacted>/g;
     $line =~ s/\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/<redacted JWT>/g;
     $line =~ s/((?:^|["'\s])(?:set-)?cookie:\s*)[^"'\r\n]+/$1<redacted>/ig;
