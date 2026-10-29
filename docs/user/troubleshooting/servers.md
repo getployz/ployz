@@ -379,6 +379,32 @@ and find its owner from its labels and attached containers. Move or remove those
 whatever deployed them. Once the network is empty and nothing needs it, run
 `docker network rm ployz`, then the last two commands above.
 
+A server can have both. Clear them together, because Ployz names only the first one it meets on
+each start.
+
+### After deleting /var/lib/ployz
+
+`/var/lib/ployz` holds the server's identity, and the `ployz-wg` interface and `ployz` Docker
+network belong to that identity. Deleting the folder doesn't remove them, so the server's next
+enrollment meets both. If you delete `/var/lib/ployz`, clear them too, before you add the server
+again:
+
+```sh
+sudo systemctl stop ployz.socket ployz
+sudo ip link delete ployz-wg
+docker network inspect ployz --format '{{range .Containers}}{{.Name}} {{end}}'
+docker rm -f MY-CONTAINER ...
+docker network rm ployz
+sudo systemctl reset-failed ployz.socket ployz
+sudo systemctl start ployz.socket
+```
+
+The containers that `docker network inspect` lists are the apps and the ingress proxy the server ran
+before. Removing them stops those apps; their volume data stays on the disk. Deploy them again once
+the server has rejoined. Your server list still shows the old identity as a second row with the
+same name. Once it shows as offline, forget it as in
+[Forget a server that is gone](../servers/manage-servers.md#forget-a-server-that-is-gone).
+
 ## My first server never finished joining
 
 You'll see `This Organization's Servers can't be reached` when you add another server, and an
