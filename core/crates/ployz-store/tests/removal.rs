@@ -44,7 +44,11 @@ fn at(environment: &str) -> EnvironmentRef {
 
 /// Project `shop`: `production` runs `web` and `db`, which mounts Volume `data`.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open())
+}
+
+/// [`shop`] in `store`.
+fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -2087,4 +2091,67 @@ fn an_environment_its_project_is_removing_cannot_be_protected_midway() {
     assert_eq!(refused.message, "production is being removed");
     // Unprotecting takes nothing away from a removal, so it still goes.
     protect(&store, &who, "staging", false);
+}
+
+/// A Save that seals a value in `production` scrubs it from the arrivals and bases it
+/// shares with `staging`, under `production`'s lock alone: arrivals first, then bases.
+/// Removing `staging` meanwhile deletes the pair's rows in that order too, so neither
+/// waits on the other in a cycle (#3574).
+#[test]
+fn removing_an_environment_takes_its_sync_rows_in_the_order_a_scrub_does() {
+    if std::env::var("PLOYZ_STORE_TEST_POSTGRES").is_err() {
+        return; // SQLite runs one writer at a time.
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let (production, staging) = (uuid(2), uuid(6));
+    backend::execute(
+        &url,
+        &format!(
+            "INSERT INTO config_sync_base (environment_id, other_id, organization_id, base) \
+             VALUES ('{production}', '{staging}', 'org', '{{}}')"
+        ),
+    );
+    backend::execute(
+        &url,
+        &format!(
+            "INSERT INTO config_sync_arrival \
+             (environment_id, other_id, lineage, at, organization_id, how, state, value, prior) \
+             VALUES ('{staging}', '{production}', '{}', 'env.KEY', 'org', 'sync', 'hint', '{{}}', '{{}}')",
+            uuid(3)
+        ),
+    );
+
+    let mut scrub = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut scrub = scrub.transaction().unwrap();
+    scrub
+        .execute(
+            "UPDATE config_sync_arrival SET prior = prior WHERE environment_id = $1",
+            &[&staging],
+        )
+        .unwrap();
+    let removing = std::thread::spawn(move || store.write(&who, &request(Some("staging"))));
+    // Wait until the removal blocks on the arrival the scrub holds.
+    let mut watch = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    while !watch
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock')",
+            &[],
+        )
+        .unwrap()
+        .get::<_, bool>(0)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    scrub
+        .execute(
+            "UPDATE config_sync_base SET base = base WHERE environment_id = $1 AND other_id = $2",
+            &[&production, &staging],
+        )
+        .unwrap();
+    scrub.commit().unwrap();
+
+    removing.join().unwrap().unwrap();
 }
