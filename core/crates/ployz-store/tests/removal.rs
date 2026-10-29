@@ -2146,6 +2146,7 @@ fn removed_while_a_scrub_runs(a_branch: bool, scrub: &[&str]) {
             !removing.is_finished(),
             "the removal never waited on the scrub"
         );
+        // real-wait: another Postgres backend blocking on a row lock signals nothing.
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     for statement in rest {
