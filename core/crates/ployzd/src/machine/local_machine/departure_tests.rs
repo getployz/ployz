@@ -54,10 +54,12 @@ async fn harness(initialized: bool) -> Harness {
         store.enroll(initialize_request()).unwrap();
     }
     let plugin = FakePlugin::default();
-    plugin.reply(
-        "Storage.Demote",
-        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
-    );
+    for route in ["Storage.Demote", "Storage.Seal"] {
+        plugin.reply(
+            route,
+            json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
+        );
+    }
     let (client, _server) = plugin.serve(&data_dir);
     let (runtime, docker) = fake_runtime_with(FakeDocker::default()).await;
     let (replicated, _cluster) = fake_cluster::store().await;
@@ -163,19 +165,22 @@ async fn leave_forgets_every_volume_floor() {
 }
 
 #[tokio::test]
-async fn initialize_departs_storage_a_prior_identity_left_behind() {
+async fn initialize_departs_storage_a_prior_identity_left_behind_keeping_every_copy() {
     let test = harness(false).await;
     test.local.enroll(initialize_request()).await.unwrap();
-    assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
+    assert_eq!(test.plugin.routes_called(), ["Storage.Seal"]);
     assert!(forgot_data(&test.docker));
 }
 
+/// A forgotten Server that fenced keeps its mirrors, and one may be a Volume's last copy.
+/// Joining it again must not destroy them (#3591): the join departs through the seal, as
+/// the fence did, never through the demote that destroys pulled mirrors.
 #[tokio::test]
-async fn join_departs_storage_a_prior_identity_left_behind() {
+async fn join_departs_storage_a_prior_identity_left_behind_keeping_every_mirror() {
     let test = harness(false).await;
     let request = join_request(&test.local.record());
     test.local.enroll(request).await.unwrap();
-    assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
+    assert_eq!(test.plugin.routes_called(), ["Storage.Seal"]);
     assert!(forgot_data(&test.docker));
 }
 
@@ -398,7 +403,7 @@ async fn a_resumed_join_does_not_depart_again() {
     let first = test.local.enroll(request.clone()).await.unwrap();
     let again = test.local.enroll(request).await.unwrap();
     assert_eq!(again, first);
-    assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
+    assert_eq!(test.plugin.routes_called(), ["Storage.Seal"]);
 }
 
 #[tokio::test]
@@ -419,7 +424,7 @@ async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
     let test = harness(false).await;
     let request = join_request(&test.local.record());
     test.plugin.reply(
-        "Storage.Demote",
+        "Storage.Seal",
         json!({"Err": {"code": "internal", "message": "zfs rename failed", "details": null}}),
     );
     let error = test.local.enroll(request.clone()).await.unwrap_err();
@@ -430,13 +435,13 @@ async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
     );
 
     test.plugin.reply(
-        "Storage.Demote",
+        "Storage.Seal",
         json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
     );
     test.local.enroll(request).await.unwrap();
     assert_eq!(
         test.plugin.routes_called(),
-        ["Storage.Demote", "Storage.Demote"]
+        ["Storage.Seal", "Storage.Seal"]
     );
     assert_eq!(test.local.record().phase(), LocalMachinePhase::Joining);
 }

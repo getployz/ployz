@@ -14,11 +14,12 @@
 //! by every mirror v0.3.0-beta.2 or earlier refreshed last: it carries no pulled mark, and
 //! sync pulls only when the writer has a newer point, so a mirror of an idle Volume
 //! survives the departure. A slot with no snapshot holds only a resumable receive that
-//! never completed, so it holds no point and is destroyed.
+//! never completed, so it holds no point and a demote destroys it.
 //!
 //! A seal is a departure that keeps every mirror: a Machine fencing itself after the
-//! Cluster forgot it (#2927) cannot tell whether a copy elsewhere still holds what its
-//! mirror holds, so it seals its roots and leaves every mirror where it is.
+//! Cluster forgot it (#2927), or installing afresh (#3591), cannot tell whether a copy
+//! elsewhere still holds what its mirror holds, so it seals its roots and leaves every
+//! mirror where it is.
 
 use std::collections::BTreeSet;
 
@@ -189,7 +190,10 @@ impl VolumeStorage {
                     self.receives.forget(name);
                     true
                 }
-                Mirrors::Keep => false,
+                Mirrors::Keep => {
+                    tracing::warn!(%name, "kept this Volume's mirror; remove it with `ployz volume mirror rm` once it is not the last copy");
+                    false
+                }
             },
         };
         Ok(demoted)
