@@ -12,8 +12,8 @@ use ployz_store::{
     Actor, AddDomain, Admit, Branched, Change, ConfigStore, CopyNode, CreateBranch, CreateProject,
     CreateService, CreateVolume, Deploy, DeploymentId, DiffQuery, DomainName, DomainsQuery, Edit,
     EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode, Mount, OrganizationId,
-    ProjectId, ProjectName, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, SettingPath,
-    SetupCommand, Trusted, VolumeId, VolumeName,
+    ProjectId, ProjectName, RunEvidence, RunnerId, SealedNamesQuery, ServiceLineageId,
+    ServiceQuery, SettingPath, SetupCommand, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -526,6 +526,17 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
         "fix-web",
         &[("web.env.DB_HOST", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"))],
     );
+    // What a live node holds comes from the Parent, which may seal it, so a
+    // template reading one counts as Sealed where production's own reading db doesn't.
+    let sealed = |environment| {
+        let query = SealedNamesQuery {
+            environment: at(environment),
+        };
+        let names = store.read(&who, &query).unwrap().names;
+        ["DB_HOST", "DB_URL"].map(|name| names.contains(name))
+    };
+    assert_eq!(sealed("fix-web"), [true, true]);
+    assert_eq!(sealed("production"), [false, false]);
     let mut wrong = branch("other", "production", &["web"]);
     wrong.live = vec![node("volumes.data")];
     assert_eq!(

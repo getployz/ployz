@@ -111,7 +111,8 @@ for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`), after any
   timestamp, sets it. A line without one counts as **Info**, stderr included.
 - **The dashboard never shows a Sealed value.** It replaces each one with `[secret NAME]`, and a
-  variable you seal while you watch is scrubbed from the next lines on. A container a deploy
+  variable you seal while you watch is scrubbed from the next lines on. A variable whose `${{ … }}`
+  reads a Sealed value is scrubbed whole too; one that reads only plain values shows as it is. A container a deploy
   removed is still checked against the variables it ran with, which its server kept beside its
   logs. Lines it couldn't check, say because your servers couldn't read the service's variables,
   show as **Hidden: couldn’t check these lines for Sealed values.** When a server fails, the

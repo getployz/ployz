@@ -54,8 +54,8 @@ export const findService = Effect.fn("ConfigStore.findService")(function* (organ
 });
 
 /**
- * Every variable name the Store ever held Sealed in the Environment that owns `namespace`, plus every template, for
- * scrubbing its Containers' logs. Null when the Organization owns no such Namespace, so the reader scrubs every value.
+ * Every variable name the Store ever held Sealed in the Environment that owns `namespace`, plus every template that
+ * reads one, for scrubbing its Containers' logs. Null when the Organization owns no such Namespace, so the reader scrubs every value.
  */
 export const sealedNames = Effect.fn("ConfigStore.sealedNames")(function* (organizationId: string, namespace: string) {
   const owned = (yield* owners(organizationId)).find((row) => row.namespace === namespace);

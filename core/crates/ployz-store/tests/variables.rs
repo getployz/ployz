@@ -530,7 +530,7 @@ fn secrets_never_leave_reads_and_reach_a_claim_as_sealed() {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>(),
-        ["DATABASE_URL", "PASSWORD", "WEB"]
+        ["DATABASE_URL", "PASSWORD"]
     );
     // A Service waits for the Services its variables reference.
     let api = ServiceName::parse("api").unwrap();
@@ -774,7 +774,7 @@ fn a_renamed_secret_stays_sealed_and_keeps_its_value() {
 }
 
 #[test]
-fn sealed_names_keep_every_name_ever_sealed_and_every_template() {
+fn sealed_names_keep_every_name_ever_sealed_and_every_template_reading_one() {
     let store = backend::open();
     shop(&store);
     set(
@@ -782,8 +782,13 @@ fn sealed_names_keep_every_name_ever_sealed_and_every_template() {
         &[
             ("web.env.TOKEN", sealed(3, "TOKEN", 1)),
             ("web.env.OLD", sealed(3, "OLD", 2)),
+            ("web.env.KEY", sealed(3, "KEY", 3)),
             ("web.env.PLAIN", json!("hello-plain")),
+            // A template reading only plain values resolves plain, so its value is shown.
             ("api.env.URL", json!("http://${{ web.PLAIN }}")),
+            ("api.env.AUTH", json!("Bearer ${{ web.KEY }}")),
+            // Through another template, it still carries the Sealed value.
+            ("api.env.HEADER", json!("Authorization: ${{ AUTH }}")),
         ],
     )
     .unwrap();
@@ -798,14 +803,17 @@ fn sealed_names_keep_every_name_ever_sealed_and_every_template() {
             .into_iter()
             .collect::<Vec<_>>()
     };
-    assert_eq!(names(&store), ["API_TOKEN", "OLD", "TOKEN", "URL"]);
+    assert_eq!(
+        names(&store),
+        ["API_TOKEN", "AUTH", "HEADER", "KEY", "OLD", "TOKEN"]
+    );
     let id = admit(&store, 1).unwrap();
     let claimed = store
         .claim(&id, &RunnerId::parse("runner").unwrap())
         .unwrap();
     assert_eq!(
         claimed.sealed_names.into_iter().collect::<Vec<_>>(),
-        ["API_TOKEN", "OLD", "TOKEN", "URL"]
+        ["API_TOKEN", "AUTH", "HEADER", "KEY", "OLD", "TOKEN"]
     );
     assert!(
         !json!(store.read(&who(), &SealedNamesQuery::default()).unwrap())
