@@ -311,18 +311,24 @@ impl CapturedBuild {
     }
 
     /// How a Build that reads a Sealed value builds, which only a Builder that
-    /// opens them can run. Railpack names it first: its refusal explains more.
+    /// opens them can run, and the names the Builds that way read, sorted.
+    /// Railpack names it first: its refusal explains more.
     #[must_use]
-    pub fn reads_sealed(&self) -> Option<BuildMethod> {
+    pub fn reads_sealed(&self) -> Option<(BuildMethod, Vec<&str>)> {
         let reading = self
             .targets
             .iter()
             .filter(|captured| !captured.sealed.is_empty());
-        reading
+        let method = reading
             .clone()
             .find(|captured| captured.build_method == BuildMethod::Railpack)
-            .or_else(|| reading.clone().next())
-            .map(|captured| captured.build_method)
+            .or_else(|| reading.clone().next())?
+            .build_method;
+        let names: std::collections::BTreeSet<&str> = reading
+            .filter(|captured| captured.build_method == method)
+            .flat_map(|captured| captured.sealed.iter().map(String::as_str))
+            .collect();
+        Some((method, names.into_iter().collect()))
     }
 
     /// Run each Build in order on one resolved Machine over the authenticated
