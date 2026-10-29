@@ -51,6 +51,8 @@
   --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #dedede;
   --input: #dedede;
+  /* The canvas dot grid, quiet behind the nodes. */
+  --canvas-dot: #91919a;
   --ring: #737373;
   --chart-1: hsl(220 80% 55%);
   --chart-2: hsl(180 50% 44%);
@@ -73,6 +75,9 @@
 .light {
   color-scheme: light;
 }
+
+/* Every canvas `<Background>` draws its dots in the theme's colour, not React Flow's light default. */
+.react-flow { --xy-background-pattern-color: var(--canvas-dot); }
 
 /* React Flow marks its wrapper .light by default, which would reset the canvas to light tokens. */
 .dark,
@@ -116,6 +121,7 @@
   --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #333333;
   --input: #333333;
+  --canvas-dot: #3a3a3a;
   --ring: #8f8f8f;
   --chart-1: hsl(220 80% 55%);
   --chart-2: hsl(180 50% 44%);
