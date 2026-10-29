@@ -803,10 +803,11 @@ line up. Those cases, and the minutes before it asks, are yours to cover.
 So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
 on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along
 with Docker and your images. Adding it back later with a plain `ployz server add` keeps every copy
-on it, mirrors included, even after an uninstall. A copy of a volume your project still has then
-shows under that volume's **Copies**, `ployz volume restore <volume> --from <server>` can bring
-the volume back from it, and `ployz volume mirror rm` deletes one you no longer need. If you gave
-the volume a new mirror meanwhile, syncs refuse a second mirror until you remove one of them. Wipe
+on it, mirrors included, even after an uninstall, as long as the server runs Ployz 0.3.10 or later
+by then. A copy of a volume your project still has then shows under that volume's **Copies**,
+`ployz volume restore <volume> --from <server>` can bring the volume back from it, and
+`ployz volume mirror rm` deletes one you no longer need. If you gave the volume a new mirror
+meanwhile, syncs refuse a second mirror until you remove one of them. Wipe
 or reinstall its disk only if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
 reach it. `ployz server forget` prints this warning each time it forgets servers.
 
@@ -820,6 +821,12 @@ joins as it is. One that didn't says it is already initialised: add `--reset`, a
 server first, as `ployz server rm` would have, and asks before it does; `--yes` skips the question.
 That reset can delete the server's mirrors, so don't use it while a mirror there may be the last copy
 of a volume.
+
+The server you add back must run Ployz 0.3.10 or later. Update `ployz` on your computer first, then
+let `ployz server add` install, which it does by default: it installs the release of the `ployz` you
+run. With `--no-install`, upgrade Ployz on that server first. On 0.3.9 or earlier, even a plain
+`ployz server add` can delete the server's mirrors, including one that is the last copy of a
+volume, so restore or copy that data first.
 
 ### A forgotten server on 0.3.9 or earlier comes back
 
