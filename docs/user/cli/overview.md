@@ -136,7 +136,8 @@ Some things are not tools. Run these yourself in a terminal:
 - `exec`, `service port-forward`, `logs --follow` and `up`.
 - Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` seals a secret on this
-  computer. A new secret needs a Server first, so run `ployz server add` if you have none. An
+  computer. In a terminal it asks `Value for web.env.KEY:` and takes one line without showing what
+  you type; Ctrl-C cancels. Pipe in a value of several lines, such as a PEM key. A new secret needs a Server first, so run `ployz server add` if you have none. An
   older `ployz` can't set a secret and tells you to update. A new branch's secrets start Not
   set: `ployz env branch`, `env copy` and `env keep` list them, like
   `1 secret not set in staging: web.env.TOKEN`, with the command to set one.
