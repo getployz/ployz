@@ -156,6 +156,15 @@ const MIGRATIONS: &[(&str, Step)] = &[
             Ok(None)
         }),
     ),
+    (
+        "0029_scrub_sealed_bases",
+        Step::Rust(|tx, _| {
+            for row in tx.query("SELECT id FROM config_environment", &[])? {
+                crate::branch::scrub_bases(tx, row.text(0)?)?;
+            }
+            Ok(None)
+        }),
+    ),
 ];
 
 enum Step {

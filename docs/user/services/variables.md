@@ -89,8 +89,10 @@ service still gets the real value when it deploys.
 - To seal a plain variable, choose **Seal** from its menu. You can't unseal it. Saving the
   sealed value removes its earlier values from History too, so older versions show **Sealed**.
   A retried deployment of an older version gets the sealed value, not the one it had.
-  A branch made before the seal is the exception: Ployz Cloud keeps the earlier plain value in
-  what that branch compares its changes with, until you delete the branch.
+  What a branch made before the seal compares its changes with keeps only a fingerprint of the
+  earlier plain value, so syncs and follows treat that value as unchanged without keeping it.
+  The branch's record of how each service was first created still holds the earlier value
+  until you delete the branch.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
   a plain value is refused, so a secret never turns into plain text by mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that

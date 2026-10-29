@@ -16,7 +16,7 @@ use ployz_store::{
     DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
     EnvironmentRef, HintSource, NeverSync, OrganizationId, ProjectId, ProjectName, Publish,
     SecretValue, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, SyncChanges,
-    SyncChange, SyncQuery, SyncView, Take, Trusted,
+    SyncQuery, SyncView, Take, Trusted,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -1147,12 +1147,12 @@ fn a_seal_that_follows_leaves_no_plain_text_in_the_arrival() {
         web(&store, &who, "fix-web")["env"]["TOKEN"],
         json!({ "secret": false })
     );
-    assert!(backend::tables_holding(&url, "plain-private").is_empty());
+    assert_eq!(backend::tables_holding(&url, "plain-private"), [""; 0]);
 }
 
-/// A Branch made while the value was plain keeps no copy of it in what it compares
-/// with: only its Node Introduction, until the node deploys. Its review still lists
-/// the seal that followed.
+/// A Branch made while the value was plain keeps no copy of it in what it syncs over,
+/// only in its Node Introduction. The seal follows into it cleanly, and its review
+/// still lists it.
 #[test]
 fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_no_plain_base() {
     let dir = tempfile::tempdir().unwrap();
@@ -1184,14 +1184,16 @@ fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_no_plain_base() {
         ["config_node_introduction"]
     );
     deploy(&store, &who, "qa", 4);
-    assert!(backend::tables_holding(&url, "plain-private").is_empty());
+    assert_eq!(
+        backend::tables_holding(&url, "plain-private"),
+        ["config_node_introduction"]
+    );
 }
 
-/// Saving a seal empties the plain value in the bases its Branch shares, and a Branch
-/// that still holds that value compares equal to the emptied base: syncing the seal
-/// into it is a clean change, not a conflict.
+/// Sealing a value in a Working State empties it in the bases its Branch shares,
+/// before anything is saved or deployed.
 #[test]
-fn a_saved_seal_empties_the_bases_and_syncs_into_a_branch_without_a_conflict() {
+fn sealing_a_value_empties_it_in_the_bases_a_branch_shares() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
@@ -1217,21 +1219,6 @@ fn a_saved_seal_empties_the_bases_and_syncs_into_a_branch_without_a_conflict() {
             && !holding.contains(&"config_sync_base".to_owned()),
         "{holding:?}"
     );
-    let view: SyncView = store
-        .read(
-            &who,
-            &SyncQuery {
-                from: at("production"),
-                into: Some(at("qa")),
-            },
-        )
-        .unwrap();
-    let changes: Vec<_> = view
-        .rows
-        .iter()
-        .map(|row| (row.at.to_string(), row.change))
-        .collect();
-    assert_eq!(changes, [("web.env.TOKEN".to_owned(), SyncChange::Changed)]);
 }
 
 /// Seal production's `web.env.TOKEN` and deploy it as `n`.

@@ -796,3 +796,107 @@ fn a_plain_value_kept_in_a_follows_arrival_is_gone_after_upgrade() {
         .collect();
     assert_eq!(incoming, ["web.env.TOKEN production"]);
 }
+
+/// The plain value an older Store kept in a Branch's Sync bases after its Parent
+/// sealed it.
+#[test]
+fn a_plain_value_kept_in_a_branchs_sync_bases_is_gone_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    {
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse(uuid(1)).unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("web").unwrap(),
+                    image: Some("web:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        set(
+            &store,
+            &who,
+            "production",
+            &[("web.env.TOKEN", json!("plain-private"))],
+        );
+        backend::deploy(&store, &who, "production", 1);
+        store
+            .write(
+                &who,
+                &CreateBranch {
+                    id: EnvironmentId::parse(uuid(9)).unwrap(),
+                    from: at("production"),
+                    name: EnvironmentName::parse("fix-web").unwrap(),
+                    copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                    live: Vec::new(),
+                    setup: Vec::new(),
+                    keep: false,
+                    fix: None,
+                },
+            )
+            .unwrap();
+        set(
+            &store,
+            &who,
+            "production",
+            &[(
+                "web.env.TOKEN",
+                backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+            )],
+        );
+        backend::deploy(&store, &who, "production", 2);
+        let (empty, plain) = (
+            r#""kind":"literal","value":"""#,
+            r#""kind":"literal","value":"plain-private""#,
+        );
+        run(
+            &url,
+            &format!(
+                "UPDATE config_environment_branch SET made_with = replace(made_with, '{empty}', '{plain}');
+                 UPDATE config_sync_arrival SET prior = replace(prior, '{empty}', '{plain}');
+                 DELETE FROM config_migration WHERE name = '0029_scrub_sealed_bases';",
+            ),
+        );
+        assert_eq!(
+            backend::tables_holding(&url, "plain-private"),
+            [
+                "config_environment_branch",
+                "config_node_introduction",
+                "config_sync_arrival"
+            ]
+        );
+    }
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    assert_eq!(
+        backend::tables_holding(&url, "plain-private"),
+        ["config_node_introduction"]
+    );
+    let incoming: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap()
+        .incoming
+        .iter()
+        .map(|change| format!("{} {}", change.at, change.from))
+        .collect();
+    assert_eq!(incoming, ["web.env.TOKEN production"]);
+}
