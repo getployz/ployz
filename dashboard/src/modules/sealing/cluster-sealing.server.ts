@@ -8,7 +8,7 @@ import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server
 
 /** The key a client seals an Organization's Sealed values to, once its Cluster has one. */
 export type ClusterSealing =
-  | { readonly state: "no_server" }
+  | { readonly state: "no_server"; readonly awaitsRecovery?: true }
   | { readonly state: "ready"; readonly publicKey: SealingPublicKey };
 
 /** The Cluster's Sealing public key, or no server while it has no current pairing or none of its Servers has reported one. */
@@ -27,9 +27,13 @@ export const readClusterSealingToSeal = Effect.fn("ClusterSealing.readToSeal")(f
   const generation = yield* currentGeneration(organizationId);
   if (recorded.state === "ready" || generation === null) return recorded;
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  const held = new Set(frame?.machines.flatMap(({ machine: { runtime } }) =>
-    runtime.sealing?.kind === "held" ? [runtime.sealing.public_key] : []));
+  const sealings = frame?.machines.map(({ machine: { runtime } }) => runtime.sealing) ?? [];
+  const held = new Set(sealings.flatMap((sealing) => sealing?.kind === "held" ? [sealing.public_key] : []));
   const [publicKey] = held;
+  // Until `ployz recover` runs, the client is told that, not to add a Server, which couldn't get the key either.
+  if (held.size === 0 && sealings.some((sealing) => sealing?.kind === "awaits_recovery")) {
+    return { state: "no_server", awaitsRecovery: true } satisfies ClusterSealing;
+  }
   // A pairing replaced during the read must not take the old Cluster's key.
   if (held.size !== 1 || publicKey === undefined || (yield* currentGeneration(organizationId)) !== generation) return recorded;
   // The reseal request is queued durably, so a seal never waits on Inngest to take it.

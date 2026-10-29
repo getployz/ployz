@@ -299,6 +299,9 @@ fn serve(
         (Some(who), "/api/config/sealing") if let Some(state) = sealing => {
             match state {
                 SealingState::NoServer => (200, json!({ "state": "no_server" })),
+                SealingState::AwaitsRecovery => {
+                    (200, json!({ "state": "no_server", "awaitsRecovery": true }))
+                }
                 SealingState::Ready(public_key) => {
                     let query: ployz_store::SealingTargetsQuery =
                         serde_json::from_slice(&body).unwrap();
@@ -523,6 +526,8 @@ static REQUESTS: std::sync::Mutex<Vec<(String, String, String)>> =
 #[derive(Clone)]
 enum SealingState {
     NoServer,
+    /// No Server holds the key, and one awaits `ployz recover`.
+    AwaitsRecovery,
     /// The Organization seals on the client, to this key.
     Ready(String),
 }
@@ -8338,6 +8343,32 @@ fn a_plain_text_secret_sent_to_a_cloud_without_the_sealing_route_is_refused_with
     );
     let missing = error(&cloud, &["get", "web.env.TOKEN"]);
     assert_eq!(missing["code"], json!("not_found"), "{missing}");
+}
+
+#[test]
+fn set_refuses_a_new_secret_while_the_server_awaits_recovery_and_points_to_recover() {
+    let cloud = sealing_cloud(Some(SealingState::AwaitsRecovery));
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let writes = requests_to(&cloud, "/api/config/write").len();
+    let (code, refused) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret"],
+        "never-s3cr3t\n",
+    );
+    assert_eq!(code, Some(1), "{refused}");
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(refused["error"]["code"], json!("conflict"), "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        json!("Your server needs the Sealing Key back before it can take sealed values.")
+    );
+    assert_eq!(
+        refused["error"]["details"]["next"],
+        json!("sudo ployz recover")
+    );
+    assert_eq!(requests_to(&cloud, "/api/config/write").len(), writes);
+    cloud_never_saw(&cloud, "never-s3cr3t");
 }
 
 #[test]
