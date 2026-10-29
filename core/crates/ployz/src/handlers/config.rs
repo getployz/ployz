@@ -10,6 +10,7 @@
 use crate::ui::{self, Hint};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
+use std::io::{IsTerminal as _, Read};
 
 use ployz_core::{MachineId, MachineObservation, MachineTarget, RpcErrorCode};
 use ployz_store::{
@@ -297,27 +298,9 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 "--secret reads the value from stdin, never the command line: set web.env.KEY --secret",
             ));
         }
-        let secret = read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?
-            .ok_or_else(|| input_too_long("stdin", "a secret"))?;
-        // `internal`, as when stdin was read as a string.
-        let mut secret = String::from_utf8(secret).map_err(|_| {
-            Error::coded(
-                RpcErrorCode::Internal,
-                format!("{path}: the secret on stdin isn't UTF-8 text"),
-            )
-        })?;
-        // `echo VALUE |` ends it with a newline that is not part of the secret.
-        if secret.ends_with('\n') {
-            secret.pop();
-            if secret.ends_with('\r') {
-                secret.pop();
-            }
-        }
-        if secret.is_empty() {
-            return Err(Error::usage(format!(
-                "No secret on stdin for {path}; pipe one in: printf %s \"$VALUE\" | ployz set {path} --secret"
-            )));
-        }
+        let stdin = std::io::stdin();
+        let stdin_is_terminal = stdin.is_terminal();
+        let secret = read_secret(&path, stdin, stdin_is_terminal)?;
         return edit(
             root,
             vec![Change::Set {
@@ -393,6 +376,44 @@ fn one_service(matches: &ArgMatches, usage: &'static str) -> Result<String, Erro
         Some(_) | None => None,
     }
     .ok_or_else(|| Error::usage(usage))
+}
+
+/// The value for `set PATH --secret`. Typed at a terminal, it is asked for with
+/// echo off, so it never shows on screen; piped, stdin is read to its end.
+fn read_secret(path: &str, stdin: impl Read, stdin_is_terminal: bool) -> Result<String, Error> {
+    if stdin_is_terminal {
+        return ui::secret(
+            &format!("Value for {path}"),
+            || {
+                Error::usage(format!(
+                    "No terminal to ask for {path} without showing it; pipe it in: printf %s \"$VALUE\" | ployz set {path} --secret"
+                ))
+            },
+            "Cancelled. Nothing was staged.",
+        );
+    }
+    let secret = read_bounded(stdin, MAX_CLI_INPUT_BYTES)?
+        .ok_or_else(|| input_too_long("stdin", "a secret"))?;
+    // `internal`, as when stdin was read as a string.
+    let mut secret = String::from_utf8(secret).map_err(|_| {
+        Error::coded(
+            RpcErrorCode::Internal,
+            format!("{path}: the secret on stdin isn't UTF-8 text"),
+        )
+    })?;
+    // `echo VALUE |` ends it with a newline that is not part of the secret.
+    if secret.ends_with('\n') {
+        secret.pop();
+        if secret.ends_with('\r') {
+            secret.pop();
+        }
+    }
+    if secret.is_empty() {
+        return Err(Error::usage(format!(
+            "No secret on stdin for {path}; pipe one in: printf %s \"$VALUE\" | ployz set {path} --secret"
+        )));
+    }
+    Ok(secret)
 }
 
 /// `set SERVICE --from-env-file FILE [--secret]`: every variable in the file, in one
@@ -630,6 +651,31 @@ mod tests {
             },
             ployz_core::MembershipObservation::Up,
         )
+    }
+
+    #[test]
+    fn a_secret_typed_at_a_terminal_is_never_read_with_echo_on() {
+        const SENTINEL: &[u8] = b"SENTINEL-3414-do-not-echo\n";
+        // Tests run in Plain mode, where nothing prompts: the terminal is refused, not read.
+        let mut typed = SENTINEL;
+        let refused = read_secret("web.env.TOKEN", &mut typed, true).unwrap_err();
+        assert_eq!(typed, SENTINEL, "stdin was read");
+        let message = refused.to_string();
+        assert!(message.contains("web.env.TOKEN"), "{message}");
+        assert!(message.contains("pipe it in"), "{message}");
+        assert!(!message.contains("SENTINEL"), "{message}");
+
+        // Piped, the value is read to its end, without the newline `echo` adds.
+        assert_eq!(
+            read_secret("web.env.TOKEN", SENTINEL, false).unwrap(),
+            "SENTINEL-3414-do-not-echo"
+        );
+        for piped in [&b"\n"[..], b"SENTINEL-3414\xff"] {
+            let message = read_secret("web.env.TOKEN", piped, false)
+                .unwrap_err()
+                .to_string();
+            assert!(!message.contains("SENTINEL"), "{message}");
+        }
     }
 
     #[test]
