@@ -101,7 +101,9 @@ To bring services back:
    serving on your other servers, but the deploy finishes only once they mark that server
    offline. If that takes more than 5 minutes, the service fails and the deploy names the server.
    A service with a Docker volume isn't attempted when no answering server holds the volume,
-   because it may be on that server. Any service fails before it changes anything when the deploy
+   because it may be on that server. From 0.3.10 the same holds for an online server whose volume
+   list doesn't arrive: only the services with a volume on it aren't attempted, where before the
+   whole deploy failed. Any service fails before it changes anything when the deploy
    can't read which replicas that server runs.
    A server the others still count as online but that doesn't answer fails the deploy. From 0.3.8,
    one whose silence is explained, because

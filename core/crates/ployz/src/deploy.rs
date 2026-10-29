@@ -249,14 +249,21 @@ impl VolumeSnapshot {
             })
     }
 
+    /// Why the inspect of Docker Volume `name` on `machine_id` failed, if it did.
     pub(crate) fn named_gap(
         &self,
-        mut relevant: impl FnMut(&DockerVolumeId) -> bool,
-    ) -> Option<(DockerVolumeId, String)> {
+        machine_id: MachineId,
+        name: &DockerVolumeName,
+    ) -> Option<String> {
         self.named_failures
             .iter()
-            .find(|failure| relevant(&failure.id))
-            .map(|failure| (failure.id.clone(), failure.to_string()))
+            .find(|failure| failure.id.machine_id == machine_id && &failure.id.name == name)
+            .map(|failure| {
+                format!(
+                    "inspect of Docker Volume {name} failed: {}",
+                    crate::ui::row(&failure.error)
+                )
+            })
     }
 
     pub(crate) fn deploy_warnings(&self) -> impl Iterator<Item = DeployWarning> + '_ {
@@ -842,8 +849,6 @@ pub enum PlanError {
     },
     #[error("dependency cycle at service '{service}'")]
     DependencyCycle { service: String },
-    #[error("Docker Volume {id} is unavailable: {message}")]
-    DockerVolumeUnavailable { id: DockerVolumeId, message: String },
     #[error("{}", .refusal.message(.hostname, .owner))]
     HostnameConflict {
         hostname: IngressHost,
@@ -973,8 +978,7 @@ impl PlanError {
             | Self::ProvisionedVolumeStorageUnavailable
             | Self::ProvisionedVolumeStorageUnknown { .. }
             | Self::ExistingPlainVolume { .. }
-            | Self::ExistingProvisionedVolumeMismatch { .. }
-            | Self::DockerVolumeUnavailable { .. } => false,
+            | Self::ExistingProvisionedVolumeMismatch { .. } => false,
         }
     }
 
@@ -1032,7 +1036,6 @@ impl PlanError {
             | Self::ExistingProvisionedVolumeMismatch { .. }
             | Self::MixedVolumeModes { .. }
             | Self::DependencyCycle { .. }
-            | Self::DockerVolumeUnavailable { .. }
             | Self::HostnameConflict { .. }
             | Self::RemovalInTarget { .. }
             | Self::RemovalNotSelected { .. }

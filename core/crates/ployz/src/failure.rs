@@ -660,8 +660,7 @@ fn plan_code(error: &PlanError) -> RpcErrorCode {
         PlanError::CapacityUnknown
         | PlanError::CopiesUnknown { .. }
         | PlanError::VolumeHolderUnknown { .. }
-        | PlanError::ProvisionedVolumeStorageUnknown { .. }
-        | PlanError::DockerVolumeUnavailable { .. } => RpcErrorCode::Unavailable,
+        | PlanError::ProvisionedVolumeStorageUnknown { .. } => RpcErrorCode::Unavailable,
     }
 }
 

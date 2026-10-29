@@ -234,9 +234,27 @@ impl<'snapshot> VolumePlan<'snapshot> {
             && (machine.membership == ployz_core::MembershipObservation::Down
                 || !machine.invites_rpc()
                 || volumes.machine_gap(machine.machine.id).is_some()
-                || volumes.named_failures().iter().any(|failure| {
-                    failure.id.machine_id == machine.machine.id && &failure.id.name == name
-                }))
+                || volumes.named_gap(machine.machine.id, name).is_some())
+    }
+
+    /// The refusal for a Service whose `volume` may sit on `machine`, which this Deploy
+    /// did not read. It blocks only the Services that mount the Volume.
+    fn holder_unknown(
+        &self,
+        volume: &ServiceVolume,
+        machine: ployz_core::MachineName,
+    ) -> PlanError {
+        let name = self
+            .authored(managed_volume_name(volume).expect("mounted managed Volumes are named"))
+            .to_owned();
+        if matches!(
+            volume.source.kind(),
+            ployz_core::RawVolumeSource::Provisioned { .. }
+        ) {
+            PlanError::CopiesUnknown { name, machine }
+        } else {
+            PlanError::VolumeHolderUnknown { name, machine }
+        }
     }
 
     /// `name` as the Volume's owner wrote it.
@@ -1003,41 +1021,44 @@ fn volume_constraints<'spec>(
     let mut skipped = Vec::new();
     if !mounted_volumes.is_empty() {
         machines.retain(|machine| {
-            let Some(message) = snapshot.volume_snapshot.machine_gap(machine.machine.id) else {
+            let id = machine.machine.id;
+            let volumes = &snapshot.volume_snapshot;
+            let Some(message) = volumes.machine_gap(id).or_else(|| {
+                mounted_volumes
+                    .iter()
+                    .filter_map(|volume| managed_volume_name(volume))
+                    .find_map(|name| volumes.named_gap(id, name))
+            }) else {
                 return true;
             };
             skipped.push((machine.machine.id, machine.machine.name.clone(), message));
             false
         });
     }
-    if machines.is_empty()
-        && let Some((machine_id, machine, message)) = skipped.first()
-        && let Some(name) = mounted_volumes
-            .first()
-            .and_then(|volume| managed_volume_name(volume))
+    // The skipped Machines, narrowed by every Volume as the candidates are.
+    let mut unread = snapshot
+        .machines
+        .iter()
+        .filter(|machine| skipped.iter().any(|(id, ..)| *id == machine.machine.id))
+        .collect::<Vec<_>>();
+    // A Global rollout without an unread Machine would remove the replica it runs there.
+    if matches!(spec.mode, ServiceMode::Global)
+        && let Some(machine) = unread.iter().find(|machine| {
+            snapshot.containers.iter().any(|container| {
+                container.machine_id == machine.machine.id
+                    && container.namespace == plan.namespace
+                    && container.resolved_spec.name == spec.name
+            })
+        })
+        && let Some(volume) = mounted_volumes.first()
     {
-        return Err(PlanError::DockerVolumeUnavailable {
-            id: DockerVolumeId {
-                machine_id: *machine_id,
-                name: name.clone(),
-            },
-            message: format!("Machine '{machine}' {message}"),
-        });
+        return Err(plan.holder_unknown(volume, machine.machine.name.clone()));
     }
-    if let Some((id, message)) = snapshot.volume_snapshot.named_gap(|id| {
-        machines
-            .iter()
-            .any(|machine| machine.machine.id == id.machine_id)
-            && mounted_volumes
-                .iter()
-                .filter_map(|volume| managed_volume_name(volume))
-                .any(|name| name == &id.name)
-    }) {
-        return Err(PlanError::DockerVolumeUnavailable { id, message });
-    }
+    let mut first_located = None;
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {
         machines.retain(|machine| !plan.incompatible_on(machine.machine.id, volume));
+        unread.retain(|machine| !plan.incompatible_on(machine.machine.id, volume));
         if matches!(spec.mode, ServiceMode::Replicated { .. }) {
             match plan.locality(volume)? {
                 VolumeLocality::Located { first, others } => {
@@ -1046,10 +1067,33 @@ fn volume_constraints<'spec>(
                         return Err(error);
                     }
                     machines.retain(|machine| located(machine.machine.id));
+                    unread.retain(|machine| located(machine.machine.id));
+                    first_located.get_or_insert(volume);
                 }
-                VolumeLocality::Absent => missing_volumes.push(volume),
+                VolumeLocality::Absent => {
+                    // A Volume whose inspect failed is still on that Machine.
+                    let name =
+                        managed_volume_name(volume).expect("mounted managed Volumes are named");
+                    let held =
+                        |id: MachineId| snapshot.volume_snapshot.named_gap(id, name).is_some();
+                    if skipped.iter().any(|(id, ..)| held(*id)) {
+                        machines.clear();
+                        unread.retain(|machine| held(machine.machine.id));
+                        first_located.get_or_insert(volume);
+                    } else {
+                        missing_volumes.push(volume);
+                    }
+                }
             }
         }
+    }
+    // Only a Machine this Deploy did not read is left, and it may already hold the
+    // Volumes, so the Service waits instead of failing the Deploy (#3561).
+    if machines.is_empty()
+        && let Some(machine) = unread.first()
+        && let Some(volume) = first_located.or_else(|| mounted_volumes.first().copied())
+    {
+        return Err(plan.holder_unknown(volume, machine.machine.name.clone()));
     }
     if machines.is_empty() {
         // ponytail: name the filter that emptied the set; no per-Machine matrix.
