@@ -12,6 +12,10 @@ ARMED = "/run/hangplug-hang"
 
 
 class H(BaseHTTPRequestHandler):
+    # A Unix-socket peer has no address, which the default request log indexes.
+    def address_string(self):
+        return "unix"
+
     def do_POST(self):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
         if self.path == "/VolumeDriver.List" and os.path.exists(ARMED):
