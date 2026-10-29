@@ -357,6 +357,15 @@ When `ss` lists the port with no program, another WireGuard interface, such as a
 `wg-quick`, probably holds it. `sudo wg show all listen-port` names the interface. Move that
 tunnel to another port, or take it down.
 
+## Enroll refuses over an earlier enrollment's network
+
+You'll see `refusing to enroll over an earlier enrollment's network`. The server's Ployz state was
+wiped, but the `ployz-wg` interface or the `ployz` Docker network from its earlier enrollment is
+still there. Enroll stops before it changes anything. The message names each leftover, including
+the containers still attached to the network, and ends with the commands that clear them all.
+Removing those containers stops them, and their volume data stays on the disk. Run the commands,
+then run the enroll command again.
+
 ## Ployz stops over a leftover network
 
 `sudo systemctl status ployz` shows the service failed with `status=78`, and its logs say

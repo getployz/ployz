@@ -730,15 +730,17 @@ impl NetworkPlane {
             .then(|| docker_network_request(self.machine.subnet, &required_options, None));
         match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
             Ok(network) => {
-                if docker_network_matches(&network, &subnet, &gateway, &required_options) {
-                    if !docker_network_ipv6_matches(&network, ipv6) {
-                        self.readdress_docker_network(&network, request, ipv4_only, stopped, pins)
+                let refusal = match found_network(&network, &subnet, &gateway, &required_options) {
+                    FoundNetwork::Fits => {
+                        if !docker_network_ipv6_matches(&network, ipv6) {
+                            self.readdress_docker_network(
+                                &network, request, ipv4_only, stopped, pins,
+                            )
                             .await?;
+                        }
+                        return Ok(false);
                     }
-                    return Ok(false);
-                }
-                match stale_network_replacement_allowed(&network) {
-                    Ok(()) => {
+                    FoundNetwork::Stale => {
                         let Some(network_id) = network.id.as_deref() else {
                             return Err(docker_network_conflict(
                                 &network,
@@ -749,31 +751,28 @@ impl NetworkPlane {
                             ));
                         };
                         match self.docker.remove_network(network_id).await {
-                            Ok(()) => {}
-                            Err(error) if is_not_found(&error) => {}
-                            Err(error) => {
-                                return Err(docker_network_conflict(
-                                    &network,
-                                    &subnet,
-                                    &gateway,
-                                    &required_options,
-                                    format!(
-                                        "Docker refused to remove the network after inspection: {error}",
-                                        error = ployz_core::error_chain::inline(&error),
-                                    ),
-                                ));
-                            }
+                            Ok(()) => None,
+                            Err(error) if is_not_found(&error) => None,
+                            Err(error) => Some(format!(
+                                "Docker refused to remove the network after inspection: {error}",
+                                error = ployz_core::error_chain::inline(&error),
+                            )),
                         }
                     }
-                    Err(reason) => {
-                        return Err(docker_network_conflict(
-                            &network,
-                            &subnet,
-                            &gateway,
-                            &required_options,
-                            reason,
-                        ));
-                    }
+                    FoundNetwork::Attached => Some("containers are attached".to_owned()),
+                    FoundNetwork::Unowned => Some(
+                        "ownership is unproven because the exact name and `ployzd.managed` label do not both match"
+                            .to_owned(),
+                    ),
+                };
+                if let Some(reason) = refusal {
+                    return Err(docker_network_conflict(
+                        &network,
+                        &subnet,
+                        &gateway,
+                        &required_options,
+                        reason,
+                    ));
                 }
             }
             Err(error) if is_not_found(&error) => {}
@@ -1404,6 +1403,15 @@ fn read_retained_device(
     machine: &Machine,
 ) -> Result<Option<Host>, NetworkError> {
     validate_machine_identity(private_key, machine.public_key)?;
+    let Some((host, addresses)) = read_device(wireguard)? else {
+        return Ok(None);
+    };
+    validate_retained_device(&host, private_key, machine, &addresses)?;
+    Ok(Some(host))
+}
+
+/// The `ployz-wg` device and, when it holds no key, its addresses.
+fn read_device(wireguard: &WGApi<Kernel>) -> Result<Option<(Host, Vec<IpAddrMask>)>, NetworkError> {
     if !wireguard_device_exists()? {
         return Ok(None);
     }
@@ -1413,8 +1421,7 @@ fn read_retained_device(
     } else {
         Vec::new()
     };
-    validate_retained_device(&host, private_key, machine, &addresses)?;
-    Ok(Some(host))
+    Ok(Some((host, addresses)))
 }
 
 fn wireguard_device_exists() -> io::Result<bool> {
@@ -1687,20 +1694,118 @@ fn reset_network_id<'network>(
     ))
 }
 
-fn stale_network_replacement_allowed(network: &NetworkInspect) -> Result<(), &'static str> {
-    if !docker_network_owned(network) {
-        Err(
-            "ownership is unproven because the exact name and `ployzd.managed` label do not both match",
-        )
+/// What a start does with the `ployz` network Docker already has.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FoundNetwork {
+    /// Shaped for this Machine: kept.
+    Fits,
+    /// Ployz's and empty, but shaped for another Machine: replaced.
+    Stale,
+    /// Ployz's and shaped for another Machine, with containers attached: refused.
+    Attached,
+    /// Not provably Ployz's: refused.
+    Unowned,
+}
+
+fn found_network(
+    network: &NetworkInspect,
+    subnet: &str,
+    gateway: &str,
+    required_options: &HashMap<String, String>,
+) -> FoundNetwork {
+    if docker_network_matches(network, subnet, gateway, required_options) {
+        FoundNetwork::Fits
+    } else if !docker_network_owned(network) {
+        FoundNetwork::Unowned
     } else if network
         .containers
         .as_ref()
         .is_some_and(|containers| !containers.is_empty())
     {
-        Err("containers are attached")
+        FoundNetwork::Attached
     } else {
-        Ok(())
+        FoundNetwork::Stale
     }
+}
+
+/// What an earlier enrollment left on this Server that a network plane for a new
+/// identity refuses to change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Leftover {
+    /// `ployz-wg` exists and does not fit the new identity, for this reason.
+    WireGuardDevice(&'static str),
+    /// The `ployz` network is Ployz's, shaped for another Machine, and holds these
+    /// containers, by name.
+    AttachedNetwork(Vec<String>),
+    /// The `ployz` network is shaped for another Machine and lacks Ployz's label.
+    UnownedNetwork,
+}
+
+impl NetworkPlane {
+    /// What would stop a network plane for `machine` from starting on this Server,
+    /// read without changing anything. A part this cannot read, such as Docker when
+    /// `docker` is `None` or unreachable, reports nothing.
+    pub(crate) async fn leftovers(
+        docker: Option<&Docker>,
+        private_key: &WireGuardPrivateKey,
+        machine: &Machine,
+        wireguard_mtu: Option<u32>,
+    ) -> Vec<Leftover> {
+        let device = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME)
+            .ok()
+            .and_then(|wireguard| read_device(&wireguard).ok().flatten());
+        let network = match docker {
+            Some(docker) => docker.inspect_network(DOCKER_NETWORK_NAME, None).await.ok(),
+            None => None,
+        };
+        leftovers(
+            device
+                .as_ref()
+                .map(|(host, addresses)| (host, &addresses[..])),
+            network.as_ref(),
+            private_key,
+            machine,
+            wireguard_mtu.unwrap_or(NETWORK_MTU),
+        )
+    }
+}
+
+/// The leftovers among a retained `device` and its addresses, and the `ployz`
+/// `network`, judged as a start of `machine` would judge them.
+fn leftovers(
+    device: Option<(&Host, &[IpAddrMask])>,
+    network: Option<&NetworkInspect>,
+    private_key: &WireGuardPrivateKey,
+    machine: &Machine,
+    mtu: u32,
+) -> Vec<Leftover> {
+    let mut leftovers = Vec::new();
+    if let Some((host, addresses)) = device
+        && let Err(NetworkError::WireGuardConflict { reason, .. }) =
+            validate_retained_device(host, private_key, machine, addresses)
+    {
+        leftovers.push(Leftover::WireGuardDevice(reason));
+    }
+    if let Some(network) = network {
+        let subnet = machine.subnet.to_string();
+        let gateway = machine.subnet.gateway().0.to_string();
+        let options = required_docker_network_options(mtu);
+        match found_network(network, &subnet, &gateway, &options) {
+            FoundNetwork::Fits | FoundNetwork::Stale => {}
+            FoundNetwork::Attached => {
+                let mut names = network
+                    .containers
+                    .iter()
+                    .flatten()
+                    .map(|(id, endpoint)| endpoint.name.clone().unwrap_or_else(|| id.clone()))
+                    .collect::<Vec<_>>();
+                names.sort_unstable();
+                leftovers.push(Leftover::AttachedNetwork(names));
+            }
+            FoundNetwork::Unowned => leftovers.push(Leftover::UnownedNetwork),
+        }
+    }
+    leftovers
 }
 
 fn docker_network_conflict(

@@ -28,9 +28,9 @@ use super::{
 
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
-    docker::ContainerRuntime,
+    docker::{ContainerRuntime, LocalDocker},
     host_capacity,
-    network::{NetworkError, discover_network},
+    network::{Leftover, NetworkError, NetworkPlane, discover_network},
     sealing_key::SealingKey,
 };
 
@@ -679,6 +679,25 @@ impl LocalMachine {
                     .machine()
                     .cloned()
                     .expect("an enrollment owns its Machine");
+                let docker = self.containers.as_ref().map(ContainerRuntime::local_docker);
+                let leftovers = NetworkPlane::leftovers(
+                    docker.as_ref().map(LocalDocker::client),
+                    self.record().private_key(),
+                    &machine,
+                    installation.wireguard_mtu(),
+                )
+                .await;
+                if !leftovers.is_empty() {
+                    return Ok(Enrolled::Refused {
+                        error: RpcError {
+                            code: RpcErrorCode::Conflict,
+                            message: leftovers_refusal(&leftovers),
+                            details: serde_json::Value::Null,
+                            cause: Vec::new(),
+                        },
+                        now: self.record().now(),
+                    });
+                }
                 self.install(installation).await?;
                 self.owner.request_restart();
                 machine
@@ -1197,6 +1216,46 @@ fn enroll_conflict(phase: &LocalMachinePhase) -> &'static str {
     }
 }
 
+/// Why a fresh enrollment is refused while an earlier enrollment's network remains,
+/// with one recovery covering every leftover named.
+fn leftovers_refusal(leftovers: &[Leftover]) -> String {
+    let mut found = Vec::new();
+    let mut steps = vec!["run `systemctl stop ployz.socket ployz`".to_owned()];
+    for leftover in leftovers {
+        match leftover {
+            Leftover::WireGuardDevice(reason) => {
+                found.push(format!("WireGuard interface ployz-wg remains: {reason}"));
+                steps.push("run `ip link delete ployz-wg`".to_owned());
+            }
+            Leftover::AttachedNetwork(names) => {
+                found.push(format!(
+                    "Docker network ployz remains with containers {} attached; they belong to this Server's earlier enrollment, and removing them stops them while Volume data stays",
+                    names.join(", "),
+                ));
+                steps.push(format!("run `docker rm -f {}`", names.join(" ")));
+                steps.push("run `docker network rm ployz`".to_owned());
+            }
+            Leftover::UnownedNetwork => {
+                found.push(
+                    "Docker network ployz exists without the `ployzd.managed` label, so Ployz can't prove it made it"
+                        .to_owned(),
+                );
+                steps.push("once nothing else needs it, run `docker network rm ployz`".to_owned());
+            }
+        }
+    }
+    steps.extend([
+        "run `systemctl reset-failed ployz.socket ployz`".to_owned(),
+        "run `systemctl start ployz.socket`".to_owned(),
+        "rerun the enroll command".to_owned(),
+    ]);
+    format!(
+        "refusing to enroll over an earlier enrollment's network: {}; safe recovery: {}",
+        found.join("; "),
+        steps.join("; "),
+    )
+}
+
 /// Associate one value per management address; duplicate addresses are dropped.
 fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTreeMap<IpAddr, T> {
     let mut identities = BTreeMap::new();
@@ -1235,8 +1294,11 @@ mod departure_tests;
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{RuntimeWatchTelemetry, leave_response, read_admin, unique_identities};
+    use super::{
+        RuntimeWatchTelemetry, leave_response, leftovers_refusal, read_admin, unique_identities,
+    };
     use crate::corrosion::AdminClient;
+    use crate::network::Leftover;
     use ployz_core::{
         AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineIdentity,
         MachineName, MachineRuntime, MembershipEvidence, MembershipObservation, RttObservation,
@@ -1483,5 +1545,38 @@ mod tests {
             runtime: MachineRuntime::default(),
             build_concurrency: None,
         }
+    }
+
+    #[test]
+    fn a_refusal_names_every_leftover_and_one_recovery_for_them() {
+        let message = leftovers_refusal(&[
+            Leftover::WireGuardDevice(
+                "the existing device identity differs from the Machine record",
+            ),
+            Leftover::AttachedNetwork(vec!["ployz-ingress".into(), "ployz-workspace".into()]),
+        ]);
+        assert_eq!(
+            message,
+            "refusing to enroll over an earlier enrollment's network: \
+             WireGuard interface ployz-wg remains: the existing device identity differs from the Machine record; \
+             Docker network ployz remains with containers ployz-ingress, ployz-workspace attached; \
+             they belong to this Server's earlier enrollment, and removing them stops them while Volume data stays; \
+             safe recovery: run `systemctl stop ployz.socket ployz`; run `ip link delete ployz-wg`; \
+             run `docker rm -f ployz-ingress ployz-workspace`; run `docker network rm ployz`; \
+             run `systemctl reset-failed ployz.socket ployz`; run `systemctl start ployz.socket`; \
+             rerun the enroll command"
+        );
+    }
+
+    #[test]
+    fn a_refusal_gives_only_the_steps_for_what_it_found() {
+        let message = leftovers_refusal(&[Leftover::WireGuardDevice(
+            "the existing device identity differs from the Machine record",
+        )]);
+        assert!(
+            message.contains("run `ip link delete ployz-wg`"),
+            "{message}"
+        );
+        assert!(!message.contains("docker"), "{message}");
     }
 }

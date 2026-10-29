@@ -469,19 +469,141 @@ fn network_diagnostics_preserve_field_and_collection_boundaries() {
 
 #[test]
 fn stale_network_deletion_requires_exact_name_label_and_no_attachments() {
+    let found = |network: &NetworkInspect| {
+        found_network(
+            network,
+            "10.210.1.0/24",
+            "10.210.1.1",
+            &required_docker_network_options(1420),
+        )
+    };
     assert_eq!(
-        stale_network_replacement_allowed(&stale_network("ployz", Some(""), false)),
-        Ok(())
+        found(&stale_network("ployz", Some(""), false)),
+        FoundNetwork::Stale
     );
-
+    assert_eq!(
+        found(&stale_network("ployz", Some(""), true)),
+        FoundNetwork::Attached
+    );
     for network in [
         stale_network("ployz-old", Some(""), false),
         stale_network("ployz", None, false),
         stale_network("ployz", Some("other-owner"), false),
-        stale_network("ployz", Some(""), true),
+        stale_network("ployz", None, true),
     ] {
-        assert!(stale_network_replacement_allowed(&network).is_err());
+        assert_eq!(found(&network), FoundNetwork::Unowned);
     }
+}
+
+/// The `ployz` network a start of `machine` keeps, with `attached` containers by name.
+fn fitting_network(machine: &Machine, attached: &[&str]) -> NetworkInspect {
+    NetworkInspect {
+        id: Some("owned-network".into()),
+        name: Some(DOCKER_NETWORK_NAME.into()),
+        driver: Some("bridge".into()),
+        scope: Some("local".into()),
+        labels: Some(HashMap::from([(
+            DOCKER_NETWORK_MANAGED_LABEL.into(),
+            String::new(),
+        )])),
+        ipam: Some(Ipam {
+            config: Some(vec![IpamConfig {
+                subnet: Some(machine.subnet.to_string()),
+                gateway: Some(machine.subnet.gateway().0.to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        options: Some(required_docker_network_options(NETWORK_MTU)),
+        containers: Some(
+            attached
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    (
+                        format!("{index:064x}"),
+                        bollard::models::EndpointResource {
+                            name: Some((*name).into()),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_device_and_network_that_fit_the_new_identity_are_no_leftovers() {
+    let private_key = WireGuardPrivateKey::from_bytes([7; 32]);
+    let machine = machine(7, private_key.public_key());
+    let device = Host::new(WIREGUARD_PORT, Key::new([7; 32]));
+    let network = fitting_network(&machine, &["ployz-ingress"]);
+    assert_eq!(
+        leftovers(
+            Some((&device, &[])),
+            Some(&network),
+            &private_key,
+            &machine,
+            NETWORK_MTU
+        ),
+        []
+    );
+    assert_eq!(
+        leftovers(None, None, &private_key, &machine, NETWORK_MTU),
+        []
+    );
+}
+
+#[test]
+fn an_empty_owned_network_of_another_machine_is_no_leftover() {
+    let private_key = WireGuardPrivateKey::from_bytes([7; 32]);
+    let new = machine(7, private_key.public_key());
+    let earlier = fitting_network(&machine(8, WireGuardPublicKey([8; 32])), &[]);
+    assert_eq!(
+        leftovers(None, Some(&earlier), &private_key, &new, NETWORK_MTU),
+        []
+    );
+}
+
+#[test]
+fn leftovers_name_the_device_and_every_attached_container() {
+    let private_key = WireGuardPrivateKey::from_bytes([7; 32]);
+    let new = machine(7, private_key.public_key());
+    let device = Host::new(WIREGUARD_PORT, Key::new([8; 32]));
+    let earlier = fitting_network(
+        &machine(8, WireGuardPublicKey([8; 32])),
+        &["ployz-workspace", "ployz-ingress"],
+    );
+    let wireguard =
+        Leftover::WireGuardDevice("the existing device identity differs from the Machine record");
+    let attached =
+        Leftover::AttachedNetwork(vec!["ployz-ingress".into(), "ployz-workspace".into()]);
+
+    assert_eq!(
+        leftovers(Some((&device, &[])), None, &private_key, &new, NETWORK_MTU),
+        std::slice::from_ref(&wireguard)
+    );
+    assert_eq!(
+        leftovers(None, Some(&earlier), &private_key, &new, NETWORK_MTU),
+        std::slice::from_ref(&attached)
+    );
+    assert_eq!(
+        leftovers(
+            Some((&device, &[])),
+            Some(&earlier),
+            &private_key,
+            &new,
+            NETWORK_MTU
+        ),
+        [wireguard, attached]
+    );
+    let foreign = stale_network(DOCKER_NETWORK_NAME, None, true);
+    assert_eq!(
+        leftovers(None, Some(&foreign), &private_key, &new, NETWORK_MTU),
+        [Leftover::UnownedNetwork]
+    );
 }
 
 #[test]

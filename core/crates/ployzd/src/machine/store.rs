@@ -63,6 +63,10 @@ impl Installation {
     pub(crate) fn machine(&self) -> Option<&Machine> {
         self.body.machine()
     }
+
+    pub(crate) fn wireguard_mtu(&self) -> Option<u32> {
+        self.wireguard_mtu
+    }
 }
 
 /// What an Enroll does on this Machine.
