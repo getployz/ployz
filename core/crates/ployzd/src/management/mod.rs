@@ -130,11 +130,6 @@ pub async fn bind(
     secret: &ManagementSecret,
     config: &ManagementConfig,
 ) -> Result<Endpoint, BindError> {
-    let transport = QuicTransportConfig::builder()
-        .max_idle_timeout(Some(
-            IdleTimeout::try_from(IDLE_TIMEOUT).expect("60s is within the idle timeout bounds"),
-        ))
-        .build();
     Endpoint::builder(presets::Minimal)
         .secret_key(secret.secret_key())
         .alpns(vec![
@@ -145,13 +140,26 @@ pub async fn bind(
         ])
         .relay_mode(RelayMode::custom([config.relay_url.clone()]))
         .ca_tls_config(config.relay_tls.clone())
-        .transport_config(transport)
+        .transport_config(transport())
         .bind_addr(format!("0.0.0.0:{}", config.port))
         .expect("literal IPv4 socket address")
         .bind_addr(format!("[::]:{}", config.port))
         .expect("literal IPv6 socket address")
         .bind()
         .await
+}
+
+/// Sends without segmentation offload. A NIC without UDP checksum offload refuses a
+/// segmented send, and the socket only learns that by dropping one: the first large
+/// reply a restarted daemon sends on a direct path, which stalled a read past its
+/// budget (#3567).
+fn transport() -> QuicTransportConfig {
+    QuicTransportConfig::builder()
+        .max_idle_timeout(Some(
+            IdleTimeout::try_from(IDLE_TIMEOUT).expect("60s is within the idle timeout bounds"),
+        ))
+        .enable_segmentation_offload(false)
+        .build()
 }
 
 /// The Management Client key a connection proved with its [`ManagementProof`]. Each
@@ -520,5 +528,12 @@ mod tests {
         let reloaded: ManagementSecret =
             serde_json::from_value(serde_json::to_value(&secret).unwrap()).unwrap();
         assert_eq!(reloaded.public_key(), secret.public_key());
+    }
+
+    /// The contract #3567 rests on: no Linux host can refuse a segmented send this
+    /// endpoint makes, since it makes none.
+    #[test]
+    fn management_endpoint_sends_without_segmentation_offload() {
+        assert!(format!("{:?}", transport()).contains("enable_segmentation_offload: false"));
     }
 }

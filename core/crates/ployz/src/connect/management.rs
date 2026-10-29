@@ -7,7 +7,7 @@ use super::{
 use crate::context::ConnectionError;
 use iroh::{
     Endpoint as IrohEndpoint, EndpointAddr, PublicKey, RelayMode, RelayUrl, SecretKey,
-    endpoint::{TransportErrorCode, VarInt, presets},
+    endpoint::{QuicTransportConfig, TransportErrorCode, VarInt, presets},
     tls::CaTlsConfig,
 };
 use ployz_core::{
@@ -103,7 +103,8 @@ async fn management_endpoint(
     let mut builder = IrohEndpoint::builder(presets::Minimal)
         .secret_key(SecretKey::generate())
         .relay_mode(RelayMode::custom([relay.url.clone()]))
-        .ca_tls_config(relay.tls.clone());
+        .ca_tls_config(relay.tls.clone())
+        .transport_config(transport());
     if relay.relay_only {
         builder = builder.clear_ip_transports();
     }
@@ -115,6 +116,15 @@ async fn management_endpoint(
         endpoint,
         runtime: tokio::runtime::Handle::current(),
     }))
+}
+
+/// Sends without segmentation offload, as the daemon does (#3567): a NIC without UDP
+/// checksum offload refuses a segmented send, and the socket only learns that by
+/// dropping one, which on this fresh endpoint is the command's first large request.
+fn transport() -> QuicTransportConfig {
+    QuicTransportConfig::builder()
+        .enable_segmentation_offload(false)
+        .build()
 }
 
 /// TLS `no_application_protocol`: the Machine offers none of this release's ALPNs, which
@@ -363,6 +373,11 @@ impl AsyncWrite for ManagementIo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn management_dials_send_without_segmentation_offload() {
+        assert!(format!("{:?}", transport()).contains("enable_segmentation_offload: false"));
+    }
 
     #[test]
     fn endpoint_can_be_dropped_without_an_entered_runtime() {
