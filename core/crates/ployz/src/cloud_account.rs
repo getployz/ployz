@@ -1009,7 +1009,9 @@ enum RemovalRun {
 }
 
 /// How long `server rm` and `server forget` wait on Cloud's removal before it stops watching.
-const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+/// It outlasts the ~11 minutes Cloud spends retrying a leaving Server that reads up but
+/// doesn't answer before it goes ahead.
+const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
 /// Have Cloud remove Server `machine` of the credential's Organization, resetting it
 /// and accepting exactly `confirmation`'s Data Loss. It is the same durable removal the
@@ -1071,18 +1073,17 @@ pub(crate) async fn start_forget(
 pub(crate) async fn follow_removal(
     credential: &Credential,
     name: &MachineName,
+    verb: &str,
     id: &str,
 ) -> Result<CloudRemoval, StoreCallError> {
     let deadline = tokio::time::Instant::now() + REMOVAL_WAIT;
     let doing = format!("Removing Server {name}");
-    match follow_run(
-        credential,
-        &format!("server-removals/{id}"),
-        &doing,
-        Some(deadline),
-    )
-    .await
-    {
+    let path = format!("server-removals/{id}");
+    let followed = tokio::select! {
+        followed = follow_run(credential, &path, &doing, Some(deadline)) => followed,
+        () = removal_progress(verb, name, crate::ui::note) => unreachable!("progress never ends"),
+    };
+    match followed {
         Ok(Some(RemovalRun::Succeeded(removal))) => Ok(removal),
         Ok(None) => Err(StoreCallError::Refused(removal_unsettled(name))),
         Err(StoreCallError::Refused(refused))
@@ -1101,6 +1102,23 @@ pub(crate) async fn follow_removal(
             }))
         }
         Err(error) => Err(error),
+    }
+}
+
+/// What `server rm` or `server forget` says on stderr while Cloud's removal of Server `name`
+/// runs, `verb` being "removing" or "forgetting": why it can take long after 30 seconds, then
+/// the minutes so far once a minute. It never ends; the follow it runs beside does.
+async fn removal_progress(verb: &str, name: &MachineName, mut say: impl FnMut(String)) {
+    let started = tokio::time::Instant::now();
+    tokio::time::sleep_until(started + Duration::from_secs(30)).await;
+    say(format!(
+        "Ployz Cloud is still {verb} Server {name}. A Server that is up but doesn't answer takes \
+         it up to about 12 minutes, since it retries the Server first in case it still writes a \
+         Volume."
+    ));
+    for minutes in 1u64.. {
+        tokio::time::sleep_until(started + Duration::from_secs(minutes * 60)).await;
+        say(format!("Still {verb} Server {name} ({minutes} min)…"));
     }
 }
 
@@ -1451,6 +1469,33 @@ mod tests {
         );
         // The removal still runs, so forgetting now would only find it in progress.
         assert_eq!(unsettled.details.get("next"), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_removal_says_why_it_waits_after_30_seconds_then_once_a_minute() {
+        let name = MachineName::parse("web-2").unwrap();
+        let lines = std::cell::RefCell::new(Vec::new());
+        let progress = removal_progress("forgetting", &name, |line| lines.borrow_mut().push(line));
+        tokio::pin!(progress);
+        let at = |seconds| tokio::time::sleep(Duration::from_secs(seconds));
+
+        tokio::select! { biased; () = &mut progress => unreachable!(), () = at(29) => {} }
+        assert!(lines.borrow().is_empty(), "{:?}", lines.borrow());
+        tokio::select! { biased; () = &mut progress => unreachable!(), () = at(1) => {} }
+        let why = lines.borrow().clone();
+        assert!(
+            matches!(&why[..], [line] if line.starts_with("Ployz Cloud is still forgetting Server web-2. ")),
+            "{why:?}"
+        );
+        tokio::select! { biased; () = &mut progress => unreachable!(), () = at(150) => {} }
+        assert_eq!(
+            lines.borrow().get(1..).unwrap_or_default(),
+            [
+                "Still forgetting Server web-2 (1 min)…",
+                "Still forgetting Server web-2 (2 min)…",
+                "Still forgetting Server web-2 (3 min)…",
+            ]
+        );
     }
 
     #[test]
