@@ -39,7 +39,7 @@ scripts/verify-cluster doctor "$run"
 
 The first run for an image recipe prepares Ubuntu with Docker, real ZFS, Corrosion, Caddy and the scenario workload images (nginx, Postgres, Alpine, whoami), so checks do not pull them from Docker Hub. Later runs boot clones with cached dependencies. Published daemons and their systemd units stay installed in release images; checkout runs install their own binaries and units. The host CLI drives both and reads each Entry Machine over SSH. Machine identities are created after cloning. Compilation overlaps image preparation and VM boot; installation and enrollment wait for the required binaries. Phase timings overlap; `total` records elapsed startup time.
 
-`doctor` checks active services, each Machine's running daemon executable hash and reported version against its own selection, ZFS, and each Entry Machine's observation of the expected peers. Run it before driving and after an unexpected failure. A deliberate fault can make doctor fail; restore that fault or start a fresh run before continuing unrelated checks.
+`doctor` checks active services, each Machine's running daemon executable hash and reported version against its own selection, ZFS, and each Entry Machine's observation of the expected peers. Run it before driving and after an unexpected failure. A deliberate fault can make doctor fail; restore that fault or start a fresh run before continuing unrelated checks. Doctor knows only the manifest's selections, so it refuses a Machine whose daemon you installed by hand, as in [Roll one Server](#roll-one-server). On such a cluster, run the per-Entry check doctor runs inside, once for each Machine: `scripts/verify-cluster cli "$run" -- --json --connect ssh://<ssh> server ls`, with `<ssh>` from that Machine's `ssh` in the manifest, and check every view lists the same Servers up.
 
 A committed enrollment can return a startup follow-up failure. The helper retains that failure in `setup_follow_up_errors`, checks readiness for up to 30 seconds and completes the public ingress recovery command. It reports setup failures in stderr and evidence; inspect and report these when enrollment itself is the feature under verification.
 
@@ -57,7 +57,7 @@ scripts/verify-cluster exec "$run" machine-2 -- journalctl -u ployz --no-pager -
 
 Managed Volumes work on every run. Enrollment says `--storage none` only because `--no-install` requires it; the image already ran the real installer with `--storage zfs`. As on a real Server, the daemon creates the file-backed `ployz` Machine Pool under `/var/lib/ployz-machine-pool` when the first managed Volume deploys. Do not create a pool yourself. An Incus Machine's 24 GiB root disk bounds the Pool. With `--provider incus`, pass `--memory` and `--disk` to `up` with Incus sizes, such as `--memory 4GiB --disk 40GiB`, when a check needs a larger Volume or workload; a Boat sandbox already has 4 GB and a 69 GB disk. The Incus defaults are 2 GiB of RAM and a 24 GiB disk. The manifest records both under `provider_state`, so `update` and `power on` keep them. Larger VMs take more of the shared host, so size them only for the check that needs it.
 
-Use `cli` for product actions; it isolates ambient Ployz credentials and runs in the manifest's sibling `workspace/`. Use `exec` for diagnostics or faults inside a selected Machine. Arguments are passed directly; use `-- bash -ec '...'` when a shell is needed. Both commands capture stdout, stderr and exit status and return the underlying command's status. Read the current CLI's `--help` for the feature's actual interface.
+Use `cli` for product actions; it isolates ambient Ployz credentials and runs in the manifest's sibling `workspace/`. Use `exec` for diagnostics or faults inside a selected Machine. Arguments are passed directly; use `-- bash -ec '...'` when a shell is needed. Both commands capture stdout, stderr and exit status and return the underlying command's status. Read the current CLI's `--help` for the feature's actual interface. Their own flags go before the manifest: `cli --device --timeout 900 "$run" -- …`. After it, they reach `ployz`, which rejects them with only "For more information, try '--help'". `--timeout` defaults to 300 seconds, too short for a forget or a deploy that waits on an approval.
 
 `cli` gives the command no TTY and prints its output only when it exits. So `org approval approve` refuses for want of a terminal, and a deploy waiting on an approval shows nothing meanwhile. On a `--cloud` run, answer an approval with `approve` or `deny`, which act with the Organization Token. `approve` types the Organization's name for you under `script`:
 
@@ -98,11 +98,69 @@ After correcting the implementation, keep the Machines and their data while upda
 scripts/verify-cluster update "$run"
 ```
 
-`update` takes the same `--daemon [MACHINE=]SOURCE` choices, and Machines it does not name keep their source. `scripts/verify-cluster update "$run" --daemon checkout` moves a release cluster to the modified daemon; `--daemon machine-2=0.2.3` moves only machine-2, downgrades included. Either way `update` restarts every Machine's daemon, not only the one named. A "rolling" upgrade driven one Machine at a time is therefore a cluster-wide restart at each step: a harsher test than a real roll, and not a model of one. Say so in its evidence. To make a given Server the Entry Machine for a command, pass `--connect ssh://root@<sandbox>` with the run's `private/id_ed25519` loaded in ssh-agent.
+`update` takes the same `--daemon [MACHINE=]SOURCE` choices, and Machines it does not name keep their source. `scripts/verify-cluster update "$run" --daemon checkout` moves a release cluster to the modified daemon; `--daemon machine-2=0.2.3` moves only machine-2, downgrades included. Either way `update` restarts every Machine's daemon, not only the one named. A "rolling" upgrade driven through `update` is therefore a cluster-wide restart at each step: a harsher test than a real roll, and not a model of one. Say so in its evidence, and use [Roll one Server](#roll-one-server) for a real one. To make a given Server the Entry Machine for a command, pass `--connect ssh://root@<sandbox>` with the run's `private/id_ed25519` loaded in ssh-agent.
+
+## Roll one Server
+
+A genuine roll replaces the daemon on one Machine while every other daemon keeps running, as a user upgrading Servers one at a time does. It is the install step of `verify-cluster` run on that Machine alone. `server upgrade` can't do it for a checkout build, since daemons verify upgrades with the release key. The checkout daemon is in `artifacts/ployzd` and `artifacts/ployz-uninstall` beside the manifest whenever the run built one; a `--cloud` run on a release builds it to enroll.
+
+```bash
+dir=$(dirname "$run") m=machine-1
+for b in ployzd ployz-uninstall; do
+  scripts/verify-cluster exec "$run" $m -- sh -ec 'install -d /opt/ployz-roll; cat > /opt/ployz-roll/$1; chmod 755 /opt/ployz-roll/$1' push $b < "$dir/artifacts/$b"
+done
+scripts/verify-cluster exec "$run" $m -- bash -ec '
+systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service
+systemctl stop ployz-observe.service 2>/dev/null || true
+for b in ployzd ployz-uninstall; do install -m 755 /opt/ployz-roll/$b /usr/local/bin/$b.next; mv /usr/local/bin/$b.next /usr/local/bin/$b; done
+ployzd install --version "$(ployzd version)" --install-only
+systemctl daemon-reload
+systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service'
+```
+
+After each Machine, record:
+
+- its running daemon's hash, `sha256sum /proc/$(systemctl show ployz -p MainPID --value)/exe`;
+- every other Machine's `systemctl show ployz -p ActiveEnterTimestamp`, unchanged since before the step, which proves the roll touched one daemon;
+- each Entry's `server ls` and Cloud's, as in [Launch and doctor](#launch-and-doctor), since `doctor` now refuses;
+- a deploy through Cloud whose change every replica shows.
+
+The same steps without the binary swap restart the old daemon one Machine at a time. Run that first as the baseline: numbers from another run are too noisy to compare.
+
+Measure the gap two ways. `probe` gives lost acks and a gap that includes its own `ployz exec` reconnect, so it shows about 3 to 5 seconds at every daemon restart, even on Servers that don't host the database. An in-cluster writer measures Postgres itself, like for like across releases. Its Service sits beside a Postgres Service `db` that accepts user `postgres` without a password (`db.env.POSTGRES_HOST_AUTH_METHOD=trust`) and inserts about 20 rows a second over Internal DNS:
+
+```bash
+scripts/verify-cluster cli "$run" -- service add writer --image postgres:18
+scripts/verify-cluster cli "$run" -- set "writer.startCommand=sh -c 'until pg_isready -h db -U postgres -q; do sleep 1; done; psql -h db -U postgres -qc \"create table if not exists ack(id bigserial primary key, t timestamptz default now())\"; while :; do (while :; do echo \"insert into ack default values returning id;\"; sleep 0.05; done) | psql -h db -U postgres -At 2>&1 | while read l; do echo ACK \$(date +%s.%N) \$l; done; echo SESSION-END \$(date +%s); sleep 1; done'"
+scripts/verify-cluster cli "$run" -- deploy writer
+```
+
+Read its log with `docker logs` on the Machine that runs it, and the table with `cli --device "$run" -- exec -T db -- psql -U postgres -At -c 'select id from ack'`. An `ACK <time> <id>` line missing from the table is a lost write, and the longest step between consecutive `ACK` times is the gap. Report both measures with the baseline's beside them.
+
+A release CLI, such as N-1's, reaches a `--cloud` run's Cloud with `PLOYZ_TOKEN` from `private/cloud-token` and `PLOYZ_CLOUD_URL` from the manifest's `cloud.url`, in its own `PLOYZ_CONFIG`.
 
 ## Fault builds
 
 A fault build reads its armed fault from `/run/ployz/fault` on every check, so a check arms one by writing that file on a Machine and disarms it by removing the file, with no restart. A daemon refuses to start when the file holds something that is not a fault point. `leak-memory` is read only at start.
+
+## Fault scripts
+
+`scripts/verify/faults/` holds faults that need no fault build, so they work on release daemons too. Copy a script to the Machine and run it as a transient unit:
+
+```bash
+for s in leftproxy.py unproxy.sh; do
+  scripts/verify-cluster exec "$run" machine-1 -- sh -ec 'install -d /run/ployz-faults; cat > /run/ployz-faults/$1' push $s < scripts/verify/faults/$s
+done
+scripts/verify-cluster exec "$run" machine-1 -- systemd-run --unit leftproxy python3 /run/ployz-faults/leftproxy.py /run/ployz/corrosion/admin.sock <holder-address>
+scripts/verify-cluster exec "$run" machine-1 -- sh /run/ployz-faults/unproxy.sh leftproxy /run/ployz/corrosion/admin.sock
+```
+
+- **Unrecognized membership.** Run `leftproxy.py` on every Machine except the holder. It sits on Corrosion's admin socket and reports the holder's actor as `Left`, so those Entries' `server ls` shows it `Left` and they send it no RPC. `<holder-address>` is the host part of `[gossip] addr` in the holder's `/var/lib/ployz/corrosion/config.toml`. Undo with `unproxy.sh leftproxy /run/ployz/corrosion/admin.sock`.
+- **Hung Docker volume listing.** Run `hangplug.py` as unit `hangplug` on the holder, then `touch /run/hangplug-hang`. It is a fake legacy Docker volume plugin whose `VolumeDriver.List` hangs, so `time docker volume ls` takes about 15 seconds there while `docker ps` answers at once. Docker can join a deploy's listing to a call already in flight, and the deploy then answers inside its 10-second read. Count a deploy as under the fault only when it prints `volumes: target Machine RPC timed out` for the holder. Undo with `rm /run/hangplug-hang`, `systemctl stop hangplug` and `rm /run/docker/plugins/hang.sock`.
+- **Failed ployz plugin listing or inspect.** Run `plugproxy.py list` or `plugproxy.py get <volume>` as unit `plugproxy`, then `systemctl restart ployz-volume-plugin.service`. Docker holds a keep-alive connection to the plugin, so the proxy sees nothing until that restart; restarting `ployz.service` doesn't touch the plugin, and the socket unit keeps its listener. `list` fails the whole listing, so every Managed Volume on that Server reads as failed. `get` fails one Volume's inspect, and Docker then drops that Volume's labels, so a later deploy refuses it; use it only on a Volume you can discard. A Docker volume has no per-volume inspect, so `get` reaches only Managed Volumes. Undo with `unproxy.sh plugproxy /run/docker/plugins/ployz.sock` and the same restart.
+- **Running but unreachable.** Drop inbound TCP to the Machine API and management ports on the Server: `iptables -t raw -I PREROUTING ! -i lo -p tcp --dport 7569 -j DROP`, and the same for 7573. Its daemon keeps running while Cloud and its peers get no answer. A `forget` then treats it as unreachable even when it holds Volume copies, where the `unanswered` fault build's storage inspect still answers. It works on any daemon version. Undo with `-D` in place of `-I`.
+
+Disarm a socket proxy before restarting Corrosion or the plugin's socket unit on that Machine. Either restart binds a new real socket at the path, and `unproxy.sh` would then move a stale `.real` over it. `/run` empties at reboot, so `power off` and `down` drop every script.
 
 ## Evidence and cleanup
 
@@ -179,3 +237,5 @@ run=$(scripts/verify-cluster up --bare --distro debian-12)
 ```
 
 `--bare` boots fresh Boat hosts for installer work: plain sandboxes, not the bake, with this run's daemon binaries on `PATH` (`/usr/local/bin`, staged in `/opt/ployz-verify`) and nothing installed, enrolled or started. Boat keeps UFW on there, so `up` allows ports 80 and 443 through it; bare sandboxes are deleted at `down`, never pooled. A bare host you enroll yourself still reports the node's shared IPv4; run `ployz server set <server> --public-ip <address>` with the manifest's `address` before checking a domain. Before a release is published, the printed `server add --command` line and `server add ssh://` both 404 on GitHub. Install the staged binary first with `ployzd install --version <version> --storage zfs`, then join with `server add --no-install --storage none`. Only the published release proves the real install path; see soak's [Release phases](../soak/SKILL.md#release-phases). The plain base is Ubuntu 24.04 with Docker already running. Boat has no Debian base, so `--distro debian-12` boots the Debian 12 cloud image under KVM inside a default sandbox (4 vCPU, 8 GB) and reaches it through that sandbox; it adds under a minute to `up`. Debian 12's glibc is 2.36, older than a checkout build on this host links against, so a staged checkout `ployzd` won't run there. Build one for that glibc with `cargo zigbuild -p ployzd --target x86_64-unknown-linux-gnu.2.36`, outside kache, and push it to `/usr/local/bin` with `exec`. `exec`, `cli`, `update` and `down` work as on any run; `update` restages the binaries without installing them, and `doctor` does not apply. With `--cloud` or `--cloud-attach`, each host gets `PLOYZ_CLOUD_URL` in `/etc/environment` and no token, since it has not enrolled. The URL is this host's `http://localhost:<port>`, so `up` holds an SSH reverse forward of that port open for each Machine and checks that `curl` reaches the Cloud through it; `down` ends the forward.
+
+A published install line keeps a `ployzd` already on `PATH` when its version string matches, and says `ployzd <version> retained`. So on a run whose staged checkout daemon reports the same version as the release, that line runs the checkout daemon, and the "N-1" Server is not one. For a genuine N-1 Server, stage the release itself with `--daemon <machine>=<version>`, or remove `/usr/local/bin/ployzd`, `/usr/local/bin/ployz-uninstall` and `/opt/ployz-verify` before the install line. `update` stages again, so remove them again after it. Then prove it: the `sha256sum` of `/proc/<ployzd pid>/exe` must equal that of the `ployzd` inside the release's `ployzd_linux_amd64.tar.gz`, once that tarball matches the release's `checksums.txt`. `checksums.txt` lists the tarballs, not the binaries.
