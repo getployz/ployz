@@ -585,9 +585,10 @@ fn sql_param(value: &serde_json::Value) -> rusqlite::types::Value {
             .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
             .collect::<Vec<_>>()
             .into(),
-        value @ (serde_json::Value::Null
-        | serde_json::Value::Bool(_)
-        | serde_json::Value::Object(_)) => panic!("unsupported test parameter: {value}"),
+        serde_json::Value::Null => rusqlite::types::Value::Null,
+        value @ (serde_json::Value::Bool(_) | serde_json::Value::Object(_)) => {
+            panic!("unsupported test parameter: {value}")
+        }
     }
 }
 
@@ -998,6 +999,41 @@ async fn forget_leaves_a_tombstone_only_the_forgotten_identity_matches() {
     assert_eq!(
         store.forgotten(identity).await.unwrap(),
         ForgottenAnswer::Listed
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_forgotten_machine_still_running_cannot_publish_itself_back() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    let identity = local.management_secret().public_key();
+    let publication = store.machine_publication().await;
+    let published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&published).await.unwrap();
+    let mut updated = published.clone();
+    updated.runtime.running_builds += 1;
+    publication.publish(&updated).await.unwrap();
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(updated.clone())
+    );
+    drop(publication);
+
+    store.forget_machine(&machine.id).await.unwrap();
+    store
+        .machine_publication()
+        .await
+        .publish(&updated)
+        .await
+        .unwrap();
+
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::Forgotten
     );
     task.abort();
 }
