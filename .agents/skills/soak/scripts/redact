@@ -6,9 +6,9 @@
 #   grep -r marker scratch/ | redact
 #
 # Masks Ployz token values (ployz_, pflt_, pmet_, ppair_, plyz_, ployz1:,
-# ployzgrant1:), JWTs, Cookie and Set-Cookie values, session_token values,
-# Authorization values, PLOYZ_TOKEN, invite links, JSON fields named like a
-# token, cookie, password or secret, and whole PEM blocks. A masked value reads <redacted>; the prefix or name stays.
+# ployzgrant1:), Cluster recovery codes, JWTs, Cookie and Set-Cookie values,
+# session_token values, Authorization values, PLOYZ_TOKEN, invite links, JSON
+# fields named like a token, cookie, password or secret, and whole PEM blocks. A masked value reads <redacted>; the prefix or name stays.
 use strict;
 use warnings;
 
@@ -32,6 +32,8 @@ while (my $line = <STDIN>) {
     $line =~ s/\b(ployz_)[A-Za-z0-9_\-]{32,}/$1<redacted>/g;
     $line =~ s/\b(ployz1:)[A-Za-z0-9_\-]+/$1<redacted>/g;
     $line =~ s/\b(ployzgrant1:)[A-Za-z0-9._~+\/=:\-]+/$1<redacted>/g;
+    # A recovery code prints as five dash-joined groups of uppercase base32 (A-Z, 2-7): 5-5-5-5-6.
+    $line =~ s/\b[A-Z2-7]{5}(?:-[A-Z2-7]{5}){3}-[A-Z2-7]{6}\b/<redacted recovery code>/g;
     $line =~ s/\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/<redacted JWT>/g;
     $line =~ s/((?:^|["'\s])(?:set-)?cookie:\s*)[^"'\r\n]+/$1<redacted>/ig;
     $line =~ s/(authorization:\s*(?:bearer\s+|basic\s+)?)[^\s"',]+/$1<redacted>/ig;
