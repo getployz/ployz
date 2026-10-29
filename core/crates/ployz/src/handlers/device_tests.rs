@@ -141,6 +141,31 @@ async fn a_refused_request_writes_no_key_and_a_filed_one_keeps_it() {
 }
 
 #[tokio::test]
+async fn a_request_that_loses_a_race_files_the_key_the_winner_wrote() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = key::path(&dir.path().join("config.yaml"));
+    let winner = key::generate();
+    let filed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = crate::cloud_login::tests::fake_cloud({
+        let (path, filed) = (path.clone(), filed.clone());
+        move |_, body| {
+            let key = serde_json::from_str::<Pending>(body).unwrap().key;
+            filed.lock().unwrap().push(key);
+            if !path.exists() {
+                assert!(key::store(&path, &winner).unwrap());
+            }
+            (200, json!({ "code": key.code(), "expires_at": "x" }))
+        }
+    });
+
+    let requested = request_at(&token(cloud), &path).await.unwrap();
+
+    assert_eq!(requested.code, key::public(&winner).code());
+    assert_eq!(key::load(&path).unwrap(), Some(winner));
+    assert_eq!(filed.lock().unwrap().last(), Some(&key::public(&winner)));
+}
+
+#[tokio::test]
 async fn request_refuses_a_reply_naming_another_code() {
     let cloud = crate::cloud_login::tests::fake_cloud(|_, _| {
         (200, json!({ "code": key(1).code(), "expires_at": "x" }))
@@ -247,7 +272,8 @@ fn a_device_key_other_users_can_read_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = key::path(&dir.path().join("config.yaml"));
     let secret = key::generate();
-    key::store(&path, &secret).unwrap();
+    assert!(key::store(&path, &secret).unwrap());
+    assert!(!key::store(&path, &key::generate()).unwrap());
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600

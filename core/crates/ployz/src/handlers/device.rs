@@ -71,8 +71,15 @@ async fn request_at(credential: &Credential, path: &Path) -> Result<Requested, E
     }
     let secret = key::generate();
     let requested = request_with(credential, key::public(&secret)).await?;
-    key::store(path, &secret)?;
-    Ok(requested)
+    if key::store(path, &secret)? {
+        return Ok(requested);
+    }
+    // A concurrent request wrote its key first: file that one, the key exec will sign with.
+    let kept = key::load(path)?.ok_or_else(|| key::KeyError::Write {
+        path: path.to_owned(),
+        source: std::io::ErrorKind::NotFound.into(),
+    })?;
+    request_with(credential, key::public(&kept)).await
 }
 
 /// File `key` with Cloud and show the code computed here from it. A reply naming another
@@ -481,8 +488,9 @@ pub(crate) mod key {
         iroh::SecretKey::generate().to_bytes()
     }
 
-    /// Write `secret` to `path`, readable only by its owner. Never replaces a key already there.
-    pub(crate) fn store(path: &Path, secret: &[u8; 32]) -> Result<(), KeyError> {
+    /// Write `secret` to `path`, readable only by its owner. False when a key is already
+    /// there, which is never replaced.
+    pub(crate) fn store(path: &Path, secret: &[u8; 32]) -> Result<bool, KeyError> {
         let write = |source| KeyError::Write {
             path: path.to_owned(),
             source,
@@ -490,14 +498,19 @@ pub(crate) mod key {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(write)?;
         }
-        let mut file = OpenOptions::new()
+        let mut file = match OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(path)
-            .map_err(write)?;
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(source) => return Err(write(source)),
+        };
         file.write_all(secret).map_err(write)?;
-        file.sync_all().map_err(write)
+        file.sync_all().map_err(write)?;
+        Ok(true)
     }
 }
 
