@@ -84,8 +84,8 @@ pub(crate) fn select<T: ToString>(
     .ok_or_else(|| decline(declined))
 }
 
-/// Ask for a secret without echoing it. Ctrl-C or Ctrl-D declines, an empty line
-/// asks again, and a paste of more than one line is refused, never cut short.
+/// Ask for a secret without echoing it. Ctrl-C, or Ctrl-D on an empty line,
+/// declines; an empty line asks again, and a paste of more than one line is refused, never cut short.
 pub(crate) fn secret(
     question: &str,
     refusal: impl FnOnce() -> Failure,
@@ -235,7 +235,8 @@ fn type_keys(line: &mut Vec<u8>, keys: &[u8]) -> Option<Typed> {
         match key {
             CTRL_C => return Some(Typed::Cancelled),
             CTRL_D if line.is_empty() => return Some(Typed::Cancelled),
-            b'\r' | b'\n' => {
+            // Ctrl-D after some text ends the line, as a terminal's own reading does.
+            b'\r' | b'\n' | CTRL_D => {
                 return Some(if keys.all(|key| matches!(key, b'\r' | b'\n')) {
                     Typed::Line(std::mem::take(line))
                 } else {
@@ -313,7 +314,7 @@ mod tests {
         assert_eq!(typed(&[b"-----BEGIN-----\nabc\n"]), Some(Typed::Lines));
         assert_eq!(typed(&[b"dum\x03"]), Some(Typed::Cancelled));
         assert_eq!(typed(&[b"\x04"]), Some(Typed::Cancelled));
-        assert_eq!(typed(&[b"dum\x04my\n"]), line("dummy"));
+        assert_eq!(typed(&[b"dummy\x04"]), line("dummy"));
     }
 
     #[test]
