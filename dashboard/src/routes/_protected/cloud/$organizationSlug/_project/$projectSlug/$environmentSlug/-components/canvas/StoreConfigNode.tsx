@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import { NO_MOUNTS_CONFIGURED, stagedChip, stagedSurface } from "./node-status";
+import { chipWord, NO_MOUNTS_CONFIGURED, nodeLabel, stagedChip, stagedSurface } from "./node-status";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { usePendingNode } from "./usePendingNode";
@@ -15,12 +15,14 @@ export function StoreConfigCard({ config, selected, className }: { config: Confi
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const surface = stagedSurface(config.change);
   const { name, leaving } = usePendingNode("config", config.name);
+  const chip = config.change === null ? null : stagedChip(config.change, 0);
   return (
     <Link
       to={ENVIRONMENT_RESOURCE_ROUTE_TO}
       params={{ ...params, resourceId: config.id }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
       data-canvas-node={config.id}
+      aria-label={nodeLabel(name, chipWord(chip), NO_MOUNTS_CONFIGURED.word)}
       aria-current={selected ? "page" : undefined}
       draggable={false}
       preload="intent"
@@ -32,7 +34,7 @@ export function StoreConfigCard({ config, selected, className }: { config: Confi
           <div className="flex items-start gap-3">
             <Avatar><AvatarFallback><FolderIcon /></AvatarFallback></Avatar>
             <CardTitle className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{name}</CardTitle>
-            <DeployChip chip={config.change === null ? null : stagedChip(config.change, 0)} />
+            <DeployChip chip={chip} />
           </div>
         </CardHeader>
         <CardContent><StatusLine status={NO_MOUNTS_CONFIGURED} issues={null} /></CardContent>

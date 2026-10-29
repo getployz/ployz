@@ -4,9 +4,8 @@ import { CloudOffIcon, TriangleAlertIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { RelativeTime, RunningTime } from "#/components/relative-time";
 import { Skeleton } from "#/components/ui/skeleton";
-import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
-import { stagedWord, type DeployChipState, type NodeIssues, type RuntimeLine, type StagedColour, type Tone } from "./node-status";
+import { issuesLabel, stagedWord, type DeployChipState, type NodeIssues, type RuntimeLine, type StagedColour, type Tone } from "./node-status";
 
 /** Pink keys on `data-changed`, as the no-hand-drawn-staged lint rule requires, so a tray using `surface` sets it too. */
 export const STAGED_CLASSES = {
@@ -67,7 +66,7 @@ export function StatusLine({ status, issues, onIssues, className }: {
           </span>}
       {issues ? (
         <Badge variant={issues.tone === "bad" ? "destructive" : "warning"} className={cn("ml-auto", onIssues && "cursor-pointer hover:underline")}
-          aria-label={issues.lead ? `${issues.lead}, ${plural(issues.count, "issue")}` : plural(issues.count, "issue")}
+          aria-label={issuesLabel(issues)}
           role={onIssues ? "link" : undefined} onClick={onIssues}>
           <TriangleAlertIcon data-icon="inline-start" />{issuesText(issues)}
         </Badge>

@@ -3,7 +3,8 @@ import { Link, useParams } from "@tanstack/react-router";
 import { Card, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { ENVIRONMENT_LIVE_NODE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { LiveLabel } from "./PickableNode";
-import { liveNodeId } from "./nodes";
+import { liveName, liveNodeId } from "./nodes";
+import { nodeLabel } from "./node-status";
 import type { StoreLiveNode as StoreLive } from "./types";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 
@@ -16,7 +17,8 @@ export function StoreLiveNode({ data: { live } }: { data: { live: StoreLive } })
   const { selectedNodeId } = useCanvasInspectorSelection();
   return (
     <Link to={ENVIRONMENT_LIVE_NODE_ROUTE_TO} params={{ ...params, lineageId: live.name }}
-      data-canvas-node={liveNodeId(live.name)} draggable={false} className="block h-36 w-72">
+      data-canvas-node={liveNodeId(live.name)}
+      aria-label={nodeLabel(liveName(live), live.owner ? null : storeLiveLabel(live), live.data ? "real data" : null)} draggable={false} className="block h-36 w-72">
       <Handle type="target" position={Position.Bottom} isConnectable={false} className="opacity-0" />
       <Handle type="source" position={Position.Top} isConnectable={false} className="opacity-0" />
       <Card size="node" state="live" className="h-full" data-selected={selectedNodeId === liveNodeId(live.name)}>

@@ -15,6 +15,7 @@ import type {
   CanvasStoreConfigNode,
   MountedVolume,
   StoreCanvas,
+  StoreCanvasService,
   StoreLiveNode,
   CanvasStoreLiveNode,
   PendingNode,
@@ -175,10 +176,18 @@ export function hangOverhang(hang: readonly VolumeCopies[]) {
 /** Links into Live Nodes are dashed. */
 const LIVE_EDGE_STYLE = { stroke: "var(--muted-foreground)", strokeDasharray: "6 4" };
 
-/** Dashed links from each Live Node into the Services here that read it; a mount is a tray, not a link. */
-export function buildStoreEdges(store: { live?: StoreLiveNode[] }): Edge[] {
+/** A Live Node by name and the Environment it runs in: "production's redis". */
+export const liveName = (live: Pick<StoreLiveNode, "name" | "owner">) => live.owner ? `${live.owner}'s ${live.name}` : live.name;
+
+/**
+ * Dashed links from each Live Node into the Services here that read it; a mount is a tray, not a link. Each is named
+ * for its ends, "api reads production's redis", not React Flow's ids.
+ */
+export function buildStoreEdges(store: { live?: StoreLiveNode[]; services?: Pick<StoreCanvasService, "service">[] }): Edge[] {
+  const names = new Map((store.services ?? []).map(({ service }) => [service.id, service.name]));
   return (store.live ?? []).flatMap((live) => live.usedBy.map((serviceId) => ({
     id: `${liveNodeId(live.name)}:${serviceId}`, source: liveNodeId(live.name), target: serviceId, style: LIVE_EDGE_STYLE,
+    ariaLabel: `${names.get(serviceId) ?? serviceId} reads ${liveName(live)}`,
   })));
 }
 

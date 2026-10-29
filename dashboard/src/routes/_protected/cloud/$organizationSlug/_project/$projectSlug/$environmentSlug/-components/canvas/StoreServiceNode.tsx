@@ -12,7 +12,7 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { deployChip, deployEffect, nodeIssues, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedChip, stagedSurface } from "./node-status";
+import { chipWord, deployChip, deployEffect, issuesLabel, nodeIssues, nodeLabel, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedChip, stagedSurface, statusWord } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
 import { CopyHang } from "./MirrorNode";
@@ -83,6 +83,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
         params={{ ...params, serviceId: service.id }}
         search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
         data-canvas-node={service.id}
+        aria-label={nodeLabel(name, domain?.hostname, chipWord(chip), chipWord(staged), statusWord(status), issues && issuesLabel(issues), unset)}
         aria-current={selected ? "page" : undefined}
         draggable={false}
         className={cn("relative z-10 rounded-xl", className)}

@@ -1,5 +1,6 @@
 import type { DeploymentSummary, DeploymentView, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
+import { formatRelativeTime } from "#/utils/relative-time";
 import { shippedService } from "#/modules/config-store/store-deployments";
 import type { CachedStoreRead } from "#/modules/config-store/store-view.queries";
 import type { Marker } from "#/modules/metrics/metrics-model";
@@ -243,6 +244,26 @@ function planned(name: string, { nodes, preview, builds }: Pick<DeploymentView, 
 /** A node's staged surface, in the colour of what the next Deploy does to it. */
 export function stagedSurface(change: ReviewLifecycleKind | null): StagedColour | undefined {
   return change === null ? undefined : stagedColour(change);
+}
+
+/** A chip in one word, as a screen reader hears it. */
+export function chipWord(chip: DeployChipState | null) {
+  return chip === null ? null : chip.kind === "deploying" ? "Deploying" : chip.kind === "queued" ? "Queued" : chip.label;
+}
+
+/** The ⚠ as a screen reader hears it: "OOM, 1 issue". */
+export const issuesLabel = ({ count, lead }: NodeIssues) => lead ? `${lead}, ${plural(count, "issue")}` : plural(count, "issue");
+
+/**
+ * A node's accessible name: its name, then what its card says in words, so a screen reader hears
+ * "api, Queued, Can't reach servers" and not the card's text run together.
+ */
+export const nodeLabel = (name: string, ...said: (string | null | undefined)[]) => [name, ...said.filter(Boolean)].join(", ");
+
+/** A status line in words, with its age when it isn't current ("Online 2 minutes ago"); the shimmer reads Checking. */
+export function statusWord(status: Pick<RuntimeLine, "word" | "tone" | "since">, now = new Date()) {
+  if (status.tone === "pending") return "Checking";
+  return status.since ? `${status.word} ${formatRelativeTime(status.since, now)}` : status.word;
 }
 
 /** How many of a Service's secrets have no value, which its Deploys leave out. None when every secret has one. */

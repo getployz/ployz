@@ -8,7 +8,7 @@ import { cn } from "#/lib/utils";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import { NO_MOUNTS_CONFIGURED, stagedChip, stagedSurface } from "./node-status";
+import { chipWord, NO_MOUNTS_CONFIGURED, nodeLabel, stagedChip, stagedSurface } from "./node-status";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { usePendingNode } from "./usePendingNode";
@@ -20,12 +20,14 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const surface = stagedSurface(volume.change);
   const { name, leaving } = usePendingNode("volume", volume.name);
+  const chip = volume.change === null ? null : stagedChip(volume.change, 0);
   return (
     <Link
       to={ENVIRONMENT_RESOURCE_ROUTE_TO}
       params={{ ...params, resourceId: volume.id }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
       data-canvas-node={volume.id}
+      aria-label={nodeLabel(name, chipWord(chip), NO_MOUNTS_CONFIGURED.word)}
       aria-current={selected ? "page" : undefined}
       draggable={false}
       className={cn("rounded-xl", className)}
@@ -36,7 +38,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
           <div className="flex items-start gap-3">
             <Avatar><AvatarFallback><HardDriveIcon /></AvatarFallback></Avatar>
             <CardTitle className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{name}</CardTitle>
-            <DeployChip chip={volume.change === null ? null : stagedChip(volume.change, 0)} />
+            <DeployChip chip={chip} />
           </div>
         </CardHeader>
         <CardContent><StatusLine status={NO_MOUNTS_CONFIGURED} issues={null} /></CardContent>
