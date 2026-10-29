@@ -102,7 +102,7 @@ scripts/verify-cluster update "$run"
 
 ## Roll one Server
 
-A genuine roll replaces the daemon on one Machine while every other daemon keeps running, as a user upgrading Servers one at a time does. It is the install step of `verify-cluster` run on that Machine alone. `server upgrade` can't do it for a checkout build, since daemons verify upgrades with the release key. The checkout daemon is in `artifacts/ployzd` and `artifacts/ployz-uninstall` beside the manifest whenever the run built one; a `--cloud` run on a release builds it to enroll.
+A genuine roll replaces the daemon on one Machine while every other daemon keeps running, as a user upgrading Servers one at a time does. It is the install step of `verify-cluster` run on that Machine alone. `server upgrade` can't do it for a checkout build, since daemons verify upgrades with the release key. The checkout daemon is in `artifacts/ployzd` and `artifacts/ployz-uninstall` beside the manifest whenever the run built one; a `--cloud` run on a release builds it to enroll, unless the checkout is that release's tag.
 
 ```bash
 dir=$(dirname "$run") m=machine-1
@@ -118,7 +118,7 @@ systemctl daemon-reload
 systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service'
 ```
 
-After each Machine, record:
+The recipe rolls to a daemon that starts its own observer, such as the checkout. A release that keeps `ployz-observe.service` in `/etc` also needs that unit enabled, as `install()` does. After each Machine, record:
 
 - its running daemon's hash, `sha256sum /proc/$(systemctl show ployz -p MainPID --value)/exe`;
 - every other Machine's `systemctl show ployz -p ActiveEnterTimestamp`, unchanged since before the step, which proves the roll touched one daemon;
@@ -135,7 +135,7 @@ scripts/verify-cluster cli "$run" -- set "writer.startCommand=sh -c 'until pg_is
 scripts/verify-cluster cli "$run" -- deploy writer
 ```
 
-Read its log with `docker logs` on the Machine that runs it, and the table with `cli --device "$run" -- exec -T db -- psql -U postgres -At -c 'select id from ack'`. Count only `ACK <time> <id>` lines whose id is a number; psql's `INSERT 0 1` tags and errors get the `ACK` prefix too. A numeric id missing from the table is a lost write, and the longest step between consecutive numeric `ACK` times is the gap. Report both measures with the baseline's beside them.
+Find its Machine with `cli "$run" -- --json ps`, read its log there with `docker logs $(docker ps -q --filter name=^writer)`, and the table with `cli --device "$run" -- exec -T db -- psql -U postgres -At -c 'select id from ack'`. Count only `ACK <time> <id>` lines whose id is a number; psql's `INSERT 0 1` tags and errors get the `ACK` prefix too. A numeric id missing from the table is a lost write, and the longest step between consecutive numeric `ACK` times is the gap. Report both measures with the baseline's beside them.
 
 A release CLI, such as N-1's, reaches a `--cloud` run's Cloud with `PLOYZ_TOKEN` from `private/cloud-token` and `PLOYZ_CLOUD_URL` from the manifest's `cloud.url`, in its own `PLOYZ_CONFIG`.
 
@@ -145,7 +145,7 @@ A fault build reads its armed fault from `/run/ployz/fault` on every check, so a
 
 ## Fault scripts
 
-`scripts/verify/faults/` holds faults that need no fault build, so they work on release daemons too. Copy a script to the Machine and run it as a transient unit:
+`scripts/verify/faults/` holds faults that need no fault build, so they work on release daemons too. Copy a script, with `unproxy.sh` for the proxies, to the Machine as below and run it as a transient unit:
 
 ```bash
 for s in leftproxy.py unproxy.sh; do
@@ -156,7 +156,7 @@ scripts/verify-cluster exec "$run" machine-1 -- sh /run/ployz-faults/unproxy.sh 
 ```
 
 - **Unrecognized membership.** Run `leftproxy.py` on every Machine except the holder. It sits on Corrosion's admin socket and reports the holder's actor as `Left`, so those Entries' `server ls` shows it `Left` and they send it no RPC. `<holder-address>` is the host part of `[gossip] addr` in the holder's `/var/lib/ployz/corrosion/config.toml`. Undo with `unproxy.sh leftproxy /run/ployz/corrosion/admin.sock`.
-- **Hung Docker volume listing.** Run `hangplug.py` as unit `hangplug` on the holder, then `touch /run/hangplug-hang`. It is a fake legacy Docker volume plugin whose `VolumeDriver.List` hangs, so `time docker volume ls` takes about 15 seconds there while `docker ps` answers at once. Docker can join a deploy's listing to a call already in flight, and the deploy then answers inside its 10-second read. Count a deploy as under the fault only when it prints `volumes: target Machine RPC timed out` for the holder. Undo with `rm /run/hangplug-hang`, `systemctl stop hangplug` and `rm /run/docker/plugins/hang.sock`.
+- **Hung Docker volume listing.** Run `hangplug.py` as unit `hangplug` on the holder, then `touch /run/hangplug-hang`. It is a fake legacy Docker volume plugin whose `VolumeDriver.List` hangs, so `time docker volume ls` takes about 15 seconds there while `docker ps` answers at once. Docker can join a deploy's listing to a call already in flight, and the deploy then answers inside its 10-second read. Count a deploy as under the fault only when it prints `volumes: target Machine RPC timed out` for the holder. Undo with `rm /run/hangplug-hang` alone, and leave the unit running until `down`. Docker keeps a legacy plugin it found until dockerd restarts, so stopping the unit or removing its socket brings back the same 15-second stall.
 - **Failed ployz plugin listing or inspect.** Run `plugproxy.py list` or `plugproxy.py get <volume>` as unit `plugproxy`, then `systemctl restart ployz-volume-plugin.service`. Docker holds a keep-alive connection to the plugin, so the proxy sees nothing until that restart; restarting `ployz.service` doesn't touch the plugin, and the socket unit keeps its listener. `list` fails the whole listing, so every Managed Volume on that Server reads as failed. `get` fails one Volume's inspect, and Docker then drops that Volume's labels, so a later deploy refuses it; use it only on a Volume you can discard. A Docker volume has no per-volume inspect, so `get` reaches only Managed Volumes. Undo with `unproxy.sh plugproxy /run/docker/plugins/ployz.sock` and the same restart.
 - **Running but unreachable to `forget`.** On the Server, `iptables -t raw -I PREROUTING ! -i lo -p tcp --dport 7569 -j DROP`, and the same for 7573. Its daemon keeps running. The 0.3.10 soak used these two IPv4 rules, and `forget` then treated the Server as unreachable even when it held Volume copies, on 0.3.9 and on 0.3.10. The `unanswered` fault build can't do this, since its storage inspect still answers. The rules don't cover IPv6 or UDP, so before you rely on them for another check, confirm that check's path really fails. Undo with `-D` in place of `-I`.
 
