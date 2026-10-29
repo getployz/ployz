@@ -4,7 +4,9 @@
 use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
-use ployz_core::config::{Cell, SavedEnvironmentIntent, SavedVariableIntent, SavedVariableValue};
+use ployz_core::config::{
+    Cell, SavedEnvironmentIntent, SavedVariableIntent, SavedVariableValue, ValuePart,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
@@ -23,8 +25,13 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
     }
 }
 
-fn may_carry_sealed(value: &SavedVariableValue) -> bool {
-    sealed(value) || matches!(value, SavedVariableValue::Template { parts: _ })
+/// Whether a template reads a name in `names`. By key alone, whatever Service owns
+/// it, so a shared key counts.
+fn reads_any(value: &SavedVariableValue, names: &BTreeSet<String>) -> bool {
+    value.parts().iter().any(|part| match part {
+        ValuePart::Ref { key, .. } => names.contains(key),
+        ValuePart::Text { .. } => false,
+    })
 }
 
 pub(crate) fn names(tx: &mut dyn Tx, environment: &str) -> Result<BTreeSet<String>, RpcError> {
@@ -48,15 +55,32 @@ pub(crate) fn names(tx: &mut dyn Tx, environment: &str) -> Result<BTreeSet<Strin
     )? {
         intents.push(row.intent(0, "Working State")?);
     }
+    let variables: Vec<_> = intents
+        .iter()
+        .flat_map(|intent| &intent.services)
+        .flat_map(|service| &service.variables)
+        .collect();
     names.extend(
-        intents
+        variables
             .iter()
-            .flat_map(|intent| &intent.services)
-            .flat_map(|service| &service.variables)
-            .filter(|variable| may_carry_sealed(&variable.value))
+            .filter(|variable| sealed(&variable.value))
             .map(|variable| variable.key.clone()),
     );
-    Ok(names)
+    // A template carries a Sealed value only through a reference, maybe via another
+    // template: one reading only plain values resolves plain and is shown.
+    loop {
+        let reading: Vec<_> = variables
+            .iter()
+            .filter(|variable| {
+                !names.contains(&variable.key) && reads_any(&variable.value, &names)
+            })
+            .map(|variable| variable.key.clone())
+            .collect();
+        if reading.is_empty() {
+            return Ok(names);
+        }
+        names.extend(reading);
+    }
 }
 
 /// The variable names under which an Environment's Containers may hold Sealed values.
@@ -71,7 +95,8 @@ pub struct SealedNamesQuery {
 pub struct SealedNamesView {
     /// The Environment, at the revision read.
     pub environment: EnvironmentSummary,
-    /// Every name ever Sealed or templated in it, across its Services.
+    /// Every name ever Sealed in it, and every template that reads one, across its
+    /// Services.
     pub names: BTreeSet<String>,
 }
 
