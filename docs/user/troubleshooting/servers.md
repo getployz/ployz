@@ -364,7 +364,8 @@ wiped, but the `ployz-wg` interface or the `ployz` Docker network from its earli
 still there. Enroll stops before it changes anything. The message names each leftover, including
 the containers still attached to the network, and ends with the commands that clear them all.
 Removing those containers stops them, and their volume data stays on the disk. Run the commands,
-then run the enroll command again.
+then run the enroll command again. [After deleting /var/lib/ployz](#after-deleting-varlibployz)
+covers the old identity left in your server list.
 
 ## Ployz stops over a leftover network
 
@@ -395,8 +396,8 @@ each start.
 
 `/var/lib/ployz` holds the server's identity, and the `ployz-wg` interface and `ployz` Docker
 network belong to that identity. Deleting the folder doesn't remove them, so the server's next
-enrollment meets both. If you delete `/var/lib/ployz`, clear them too, before you add the server
-again:
+enrollment refuses over them. If you delete `/var/lib/ployz`, clear them too, before you add the
+server again:
 
 ```sh
 sudo systemctl stop ployz.socket ployz
