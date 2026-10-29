@@ -741,6 +741,38 @@ async fn catch_up_waits_for_pending_target_transactions() {
     server.abort();
 }
 
+#[tokio::test]
+async fn store_version_stops_below_each_actors_first_hole() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
+         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
+         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);
+         INSERT INTO crsql_db_versions VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 14);
+         INSERT INTO __corro_bookkeeping_gaps VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 10, 13);
+         INSERT INTO crsql_db_versions VALUES (X'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 5);
+         INSERT INTO __corro_seq_bookkeeping VALUES (X'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 4);
+         INSERT INTO crsql_db_versions VALUES (X'cccccccccccccccccccccccccccccccc', 7);
+         INSERT INTO crsql_db_versions VALUES (X'dddddddddddddddddddddddddddddddd', 3);
+         INSERT INTO __corro_bookkeeping_gaps VALUES (X'dddddddddddddddddddddddddddddddd', 1, 2);",
+    )
+    .unwrap();
+    let (store, server) = identity_store(db).await;
+    let version = store.version().await.unwrap();
+    assert_eq!(
+        version,
+        BTreeMap::from([
+            ("a".repeat(32), 9),
+            ("b".repeat(32), 3),
+            ("c".repeat(32), 7)
+        ])
+    );
+    // A joiner given this map as its target can finish while every live store keeps the
+    // hole, as one does when the actor that wrote the missing versions is gone (#3611).
+    assert!(store.has_reached_version(&version).await.unwrap());
+    server.abort();
+}
+
 // Exercise the store API against real SQL rows, including corrupt imported documents.
 pub(crate) async fn identity_store(
     db: rusqlite::Connection,
@@ -776,8 +808,8 @@ pub(crate) async fn identity_store(
                     rusqlite::types::ValueRef::Text(value) => {
                         json!(std::str::from_utf8(value).unwrap())
                     }
-                    value @ (rusqlite::types::ValueRef::Real(_)
-                    | rusqlite::types::ValueRef::Blob(_)) => {
+                    rusqlite::types::ValueRef::Blob(value) => json!(value),
+                    value @ rusqlite::types::ValueRef::Real(_) => {
                         panic!("unsupported test row value: {value:?}")
                     }
                 })
