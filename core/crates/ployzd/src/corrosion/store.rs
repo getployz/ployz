@@ -1094,14 +1094,10 @@ impl ReplicatedStore {
         }
     }
 
+    /// Each actor's highest version this store holds with no hole below it: a catch-up
+    /// target.
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
-        let query = self
-            .api
-            .query(Statement::new(
-                "SELECT site_id, db_version FROM crsql_db_versions",
-                [],
-            ))
-            .await?;
+        let query = self.api.query(Statement::new(VERSION_QUERY, [])).await?;
         query
             .rows(["site_id", "db_version"])?
             .into_iter()
@@ -1169,6 +1165,19 @@ impl ReplicatedStore {
         }
     }
 }
+
+/// A dead actor's hole is shared by every live store and never fills, so a target past
+/// it could never be reached (#3611).
+pub(super) const VERSION_QUERY: &str = "SELECT site_id, db_version FROM (
+     SELECT current.site_id, MIN(
+         current.db_version,
+         COALESCE((SELECT MIN(start) FROM __corro_bookkeeping_gaps
+                   WHERE actor_id = current.site_id) - 1, current.db_version),
+         COALESCE((SELECT MIN(db_version) FROM __corro_seq_bookkeeping
+                   WHERE site_id = current.site_id) - 1, current.db_version)
+     ) AS db_version
+     FROM crsql_db_versions AS current
+ ) WHERE db_version > 0";
 
 #[derive(Default)]
 pub(crate) struct LocalContainerSnapshot {
