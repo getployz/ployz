@@ -83,7 +83,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
         params={{ ...params, serviceId: service.id }}
         search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
         data-canvas-node={service.id}
-        aria-label={nodeLabel(name, chipWord(chip), chipWord(staged), statusWord(status), issues && issuesLabel(issues), unset)}
+        aria-label={nodeLabel(name, domain?.hostname, chipWord(chip), chipWord(staged), statusWord(status), issues && issuesLabel(issues), unset)}
         aria-current={selected ? "page" : undefined}
         draggable={false}
         className={cn("relative z-10 rounded-xl", className)}

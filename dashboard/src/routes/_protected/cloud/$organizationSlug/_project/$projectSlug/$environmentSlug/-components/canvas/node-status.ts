@@ -1,5 +1,6 @@
 import type { DeploymentSummary, DeploymentView, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
+import { formatRelativeTime } from "#/utils/relative-time";
 import { shippedService } from "#/modules/config-store/store-deployments";
 import type { CachedStoreRead } from "#/modules/config-store/store-view.queries";
 import type { Marker } from "#/modules/metrics/metrics-model";
@@ -259,8 +260,11 @@ export const issuesLabel = ({ count, lead }: NodeIssues) => lead ? `${lead}, ${p
  */
 export const nodeLabel = (name: string, ...said: (string | null | undefined)[]) => [name, ...said.filter(Boolean)].join(", ");
 
-/** A status line in words; the shimmer reads Checking. */
-export const statusWord = (status: Pick<RuntimeLine, "word" | "tone">) => status.tone === "pending" ? "Checking" : status.word;
+/** A status line in words, with its age when it isn't current ("Online 2 minutes ago"); the shimmer reads Checking. */
+export function statusWord(status: Pick<RuntimeLine, "word" | "tone" | "since">, now = new Date()) {
+  if (status.tone === "pending") return "Checking";
+  return status.since ? `${status.word} ${formatRelativeTime(status.since, now)}` : status.word;
+}
 
 /** How many of a Service's secrets have no value, which its Deploys leave out. None when every secret has one. */
 export function notSetLabel(notSet: readonly string[]): string | undefined {

@@ -486,7 +486,12 @@ describe("nodeLabel", () => {
   });
 
   it("reads the shimmer as Checking", () => {
-    expect(statusWord({ word: "", tone: "pending" })).toBe("Checking");
-    expect(statusWord({ word: "Online", tone: "ok" })).toBe("Online");
+    expect(statusWord({ word: "", tone: "pending", since: null })).toBe("Checking");
+    expect(statusWord({ word: "Online", tone: "ok", since: null })).toBe("Online");
+  });
+
+  it("reads a grey word's age, as its line shows it", () => {
+    const now = new Date("2026-10-29T12:00:00Z");
+    expect(statusWord({ word: "Online", tone: "quiet", since: new Date("2026-10-29T09:00:00Z") }, now)).toBe("Online 3 hours ago");
   });
 });
