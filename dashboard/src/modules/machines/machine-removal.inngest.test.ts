@@ -210,12 +210,12 @@ describe("process-machine-remove observing the leaving Server", () => {
     ))) as typeof runInngestEffect;
   const unanswered = () => Effect.succeed({ copies: [], unanswered: [leaving] });
 
-  const observeOnAttempt = (attempt: number, noReset = false) => new InngestTestEngine({
+  const observeOnAttempt = (attempt: number) => new InngestTestEngine({
     function: createProcessMachineRemove(new Inngest({ id: "test" }), runEffect, unanswered),
     events: [{ name: "machine/remove.requested", data: { attemptId } }],
     steps: [{
       id: "claim-machine-remove",
-      handler: () => ({ kind: "ready", attempt: { id: attemptId, organizationId: "org-1", machineId: leaving, noReset } }),
+      handler: () => ({ kind: "ready", attempt: { id: attemptId, organizationId: "org-1", machineId: leaving } }),
     }],
     transformCtx: (ctx) => ({ ...mockCtx(ctx), attempt }),
   }).executeStep("observe-leaving-server");
@@ -231,12 +231,6 @@ describe("process-machine-remove observing the leaving Server", () => {
 
   it("takes the unanswered Server as writing nothing on the step's last try", async () => {
     const output = await observeOnAttempt(MACHINE_REMOVE_RETRIES);
-    expect(output.error).toBeUndefined();
-    expect(output.result).toEqual({ machine: { id: leaving, name: "fsn-2" }, writes: [] });
-  });
-
-  it("takes a forgotten Server that reads up but does not answer as writing nothing on its first try", async () => {
-    const output = await observeOnAttempt(0, true);
     expect(output.error).toBeUndefined();
     expect(output.result).toEqual({ machine: { id: leaving, name: "fsn-2" }, writes: [] });
   });

@@ -99,7 +99,7 @@ export async function executeProcessMachineRemove({
     runEffect(observeLeavingServerActivity({
       organizationId: attempt.organizationId,
       machineId: attempt.machineId,
-      retry: stepAttempt < MACHINE_REMOVE_RETRIES,
+      lastTry: stepAttempt >= MACHINE_REMOVE_RETRIES,
     }, observe)),
   );
   const sent = await step.run("remove-machine", () =>
