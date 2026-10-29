@@ -410,10 +410,13 @@ sudo systemctl start ployz.socket
 ```
 
 The containers that `docker network inspect` lists are the apps and the ingress proxy the server ran
-before. Removing them stops those apps; their volume data stays on the disk. Deploy them again once
-the server has rejoined. Your server list still shows the old identity as a second row with the
-same name. Once it shows as offline, forget it as in
-[Forget a server that is gone](../servers/manage-servers.md#forget-a-server-that-is-gone).
+before. Removing them stops those apps; their volume data stays on the disk.
+
+Your server list still shows the old identity as a second row with the same name, so the join can
+end with `Global catch-up is incomplete` and `MY-SERVER: no terminal response`. The server has
+joined all the same. Forget the old row by its ID, which `ployz --json server ls` shows, as in
+[Forget a server that is gone](../servers/manage-servers.md#forget-a-server-that-is-gone). Then
+redeploy, so your apps and the ingress proxy start on the server again.
 
 ## My first server never finished joining
 
