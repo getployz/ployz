@@ -99,6 +99,14 @@ describe("Config Store nodes", () => {
       .toMatchObject([{ id: "live:redis:s2", source: "live:redis", target: "s2" }]);
   });
 
+  it("names each Live Node link for its ends, not their ids", () => {
+    const services = [{ service: listing("s2", "api") }];
+    expect(buildStoreEdges({ services, live: [{ name: "redis", owner: "production", data: false, usedBy: ["s2"] }] }))
+      .toMatchObject([{ ariaLabel: "api reads production's redis" }]);
+    expect(buildStoreEdges({ services, live: [{ name: "redis", owner: null, data: false, usedBy: ["s2"] }] }))
+      .toMatchObject([{ ariaLabel: "api reads redis" }]);
+  });
+
   it("finds the node that shows a selection: a tray's first Service, else the node itself", () => {
     const nodes = buildStoreNodes(store, [], "e");
     expect(canvasNodeOf(nodes, "shared")).toBe("s1");

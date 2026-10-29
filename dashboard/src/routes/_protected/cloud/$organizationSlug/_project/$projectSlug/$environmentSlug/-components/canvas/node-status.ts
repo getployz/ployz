@@ -245,6 +245,23 @@ export function stagedSurface(change: ReviewLifecycleKind | null): StagedColour 
   return change === null ? undefined : stagedColour(change);
 }
 
+/** A chip in one word, as a screen reader hears it. */
+export function chipWord(chip: DeployChipState | null) {
+  return chip === null ? null : chip.kind === "deploying" ? "Deploying" : chip.kind === "queued" ? "Queued" : chip.label;
+}
+
+/** The ⚠ as a screen reader hears it: "OOM, 1 issue". */
+export const issuesLabel = ({ count, lead }: NodeIssues) => lead ? `${lead}, ${plural(count, "issue")}` : plural(count, "issue");
+
+/**
+ * A node's accessible name: its name, then what its card says in words, so a screen reader hears
+ * "api, Queued, Can't reach servers" and not the card's text run together.
+ */
+export const nodeLabel = (name: string, ...said: (string | null | undefined)[]) => [name, ...said.filter(Boolean)].join(", ");
+
+/** A status line in words; the shimmer reads Checking. */
+export const statusWord = (status: Pick<RuntimeLine, "word" | "tone">) => status.tone === "pending" ? "Checking" : status.word;
+
 /** How many of a Service's secrets have no value, which its Deploys leave out. None when every secret has one. */
 export function notSetLabel(notSet: readonly string[]): string | undefined {
   return notSet.length ? `${notSet.length} not set` : undefined;

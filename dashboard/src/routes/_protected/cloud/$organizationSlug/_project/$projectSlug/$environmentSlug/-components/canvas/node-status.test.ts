@@ -2,7 +2,7 @@ import type { BuildView, DeploymentView, DeployPreview, DomainRow, NodeOutcome, 
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
 import { asTestDouble } from "#/lib/test-double";
-import { containerTrouble, deployChip, deployEffect, nodeIssues, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedSurface, type DeployEffect, type RuntimeLens } from "./node-status";
+import { chipWord, containerTrouble, deployChip, issuesLabel, nodeLabel, deployEffect, nodeIssues, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedChip, stagedSurface, statusWord, type DeployEffect, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", row: "web:node" as RowId, name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
@@ -472,5 +472,21 @@ describe("notSetLabel", () => {
 
   it("says nothing when every secret has a value", () => {
     expect(notSetLabel([])).toBeUndefined();
+  });
+});
+
+describe("nodeLabel", () => {
+  it("reads a node's name, then its card's words, skipping what it doesn't show", () => {
+    const issues = { count: 1, tone: "bad", monitoring: true, lead: "Unreachable" } as const;
+    expect(nodeLabel("api", chipWord({ kind: "queued" }), chipWord(stagedChip("update", 2)), "Can't reach servers", issuesLabel(issues), undefined))
+      .toBe("api, Queued, 2 changes, Can't reach servers, Unreachable, 1 issue");
+    expect(nodeLabel("redis", chipWord(null), null)).toBe("redis");
+    expect(chipWord({ kind: "deploying", since: 0 })).toBe("Deploying");
+    expect(issuesLabel({ count: 2, tone: "warn", monitoring: false, lead: null })).toBe("2 issues");
+  });
+
+  it("reads the shimmer as Checking", () => {
+    expect(statusWord({ word: "", tone: "pending" })).toBe("Checking");
+    expect(statusWord({ word: "Online", tone: "ok" })).toBe("Online");
   });
 });
