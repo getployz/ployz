@@ -33,7 +33,7 @@ fn selected(name: &str) -> PlanOptions {
 }
 
 #[test]
-fn only_recognized_down_or_an_actual_failure_qualifies_a_relevant_gap() {
+fn only_recognized_evidence_or_an_actual_failure_qualifies_a_relevant_gap() {
     let requested = spec("web");
     let snapshot = snapshot();
     let preview = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
@@ -41,16 +41,32 @@ fn only_recognized_down_or_an_actual_failure_qualifies_a_relevant_gap() {
         gaps(&preview),
         [(machine_id('2'), ObservationGapReason::Down)]
     );
-    for evidence in [
-        None,
-        Some(MembershipEvidence::Unrecognized { raw: "down".into() }),
-    ] {
-        let mut legacy = snapshot.clone();
-        legacy.machines.get_mut(1).unwrap().membership_evidence = evidence;
-        let preview = plan_deploy([&requested], &legacy, PlanOptions::default()).unwrap();
-        assert!(!preview.has_observation_gaps());
-        assert!(!preview.warnings.is_empty());
-    }
+    let mut legacy = snapshot.clone();
+    legacy.machines.get_mut(1).unwrap().membership_evidence = None;
+    let preview = plan_deploy([&requested], &legacy, PlanOptions::default()).unwrap();
+    assert!(!preview.has_observation_gaps());
+    assert!(!preview.warnings.is_empty());
+    // Unrecognized membership gets no RPC either: a gap it did not see, not Down.
+    let mut unrecognized = snapshot.clone();
+    unrecognized
+        .machines
+        .get_mut(1)
+        .unwrap()
+        .membership_evidence = Some(MembershipEvidence::Unrecognized { raw: "Left".into() });
+    let preview = plan_deploy([&requested], &unrecognized, PlanOptions::default()).unwrap();
+    assert_eq!(
+        gaps(&preview),
+        [(machine_id('2'), ObservationGapReason::Failed)]
+    );
+    let unread = preview
+        .warnings
+        .iter()
+        .find(|warning| warning.observation_gap().is_some())
+        .unwrap();
+    assert_eq!(
+        unread.to_string(),
+        "Could not fully observe containers on Server unobserved: this Entry doesn't recognize its membership, so it wasn't asked"
+    );
     let mut failed = snapshot;
     failed.machines.get_mut(1).unwrap().membership_evidence = None;
     failed.container_omissions.clear();

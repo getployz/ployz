@@ -86,6 +86,11 @@ makes an otherwise successful invocation exit 3 when that Server was relevant to
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
+A Server whose membership the Entry doesn't recognize (`server ls` shows a state such as
+`Left`) isn't asked either, so the CLI reports it as an incomplete observation, not as Down:
+`this Entry doesn't recognize its membership, so it wasn't asked`. From 0.3.10 that counts as a
+Server observation gap, so an otherwise successful deploy exits 3 when that Server is relevant,
+as for a Down one. Before 0.3.10 it printed the Server's ID and exited 0.
 
 When the CLI says `Server machine-2: deployment observations are incomplete`, it includes
 distinct failure causes in that Server's line and does not repeat its container or volume

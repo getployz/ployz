@@ -36,6 +36,30 @@ pub(super) fn warnings(
             message.push_str(&note);
         }
     }
+    // Unrecognized membership gets no RPC, as Down does, but proves nothing about
+    // the Server. Its omission is an observation that failed, with that as the cause.
+    for warning in &mut warnings {
+        if let DeployWarning::ObservationOmitted {
+            kind,
+            machine_id,
+            gap: None,
+        } = *warning
+            && snapshot.machines.iter().any(|machine| {
+                machine.machine.id == machine_id
+                    && matches!(
+                        machine.membership_evidence,
+                        Some(MembershipEvidence::Unrecognized { .. })
+                    )
+            })
+        {
+            *warning = DeployWarning::ObservationFailed {
+                gap: None,
+                kind,
+                machine_id,
+                message: "this Entry doesn't recognize its membership, so it wasn't asked".into(),
+            };
+        }
+    }
     // Machines whose old copies may serve beside this Deploy's new ones; a gap
     // that only a removal opened starts no new copy there.
     let mut serving_beside = std::collections::BTreeSet::new();
