@@ -2,6 +2,7 @@
 //! Device's key to the approver, who checks it against the code the Device printed.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use clap::{ArgMatches, Command};
 use ployz_core::{
@@ -48,12 +49,10 @@ pub(crate) fn remove_command(command: Command) -> Command {
 
 pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
     let config = config_path(leaf_matches(root))?;
-    let secret = key::load_or_create(&key::path(&config))?;
-    let key = key::public(&secret);
     let store = CredentialStore::beside(&config);
     let requested = runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
-        request_with(&credential, key).await
+        request_at(&credential, &key::path(&config)).await
     })?;
     let code = requested.code;
     ui::finish(&requested, || {
@@ -62,6 +61,25 @@ pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
             "Approve it from an approved device, or over SSH on a server:\n  ployz device approve {code}"
         ));
     })
+}
+
+/// File the key at `path` with Cloud, writing a new one there only once Cloud has filed it:
+/// a refused request must leave no key for exec and port-forward to sign with.
+async fn request_at(credential: &Credential, path: &Path) -> Result<Requested, Error> {
+    if let Some(secret) = key::load(path)? {
+        return request_with(credential, key::public(&secret)).await;
+    }
+    let secret = key::generate();
+    let requested = request_with(credential, key::public(&secret)).await?;
+    if key::store(path, &secret)? {
+        return Ok(requested);
+    }
+    // A concurrent request wrote its key first: file that one, the key exec will sign with.
+    let kept = key::load(path)?.ok_or_else(|| key::KeyError::Write {
+        path: path.to_owned(),
+        source: std::io::ErrorKind::NotFound.into(),
+    })?;
+    request_with(credential, key::public(&kept)).await
 }
 
 /// File `key` with Cloud and show the code computed here from it. A reply naming another
@@ -466,10 +484,13 @@ pub(crate) mod key {
         })
     }
 
-    pub(crate) fn load_or_create(path: &Path) -> Result<[u8; 32], KeyError> {
-        if let Some(secret) = load(path)? {
-            return Ok(secret);
-        }
+    pub(crate) fn generate() -> [u8; 32] {
+        iroh::SecretKey::generate().to_bytes()
+    }
+
+    /// Write `secret` to `path`, readable only by its owner. False when a key is already
+    /// there, which is never replaced.
+    pub(crate) fn store(path: &Path, secret: &[u8; 32]) -> Result<bool, KeyError> {
         let write = |source| KeyError::Write {
             path: path.to_owned(),
             source,
@@ -477,23 +498,19 @@ pub(crate) mod key {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(write)?;
         }
-        let secret = iroh::SecretKey::generate().to_bytes();
-        match OpenOptions::new()
+        let mut file = match OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(path)
         {
-            Ok(mut file) => {
-                file.write_all(&secret).map_err(write)?;
-                file.sync_all().map_err(write)?;
-                Ok(secret)
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                load(path)?.ok_or_else(|| write(io::Error::from(io::ErrorKind::NotFound)))
-            }
-            Err(source) => Err(write(source)),
-        }
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(source) => return Err(write(source)),
+        };
+        file.write_all(secret).map_err(write)?;
+        file.sync_all().map_err(write)?;
+        Ok(true)
     }
 }
 
