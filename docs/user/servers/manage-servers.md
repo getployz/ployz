@@ -803,10 +803,11 @@ line up. Those cases, and the minutes before it asks, are yours to cover.
 So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
 on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along
 with Docker and your images. Adding it back later with a plain `ployz server add` keeps every copy
-on it, mirrors included, even after an uninstall. Each then shows under the volume's **Copies**,
-`ployz volume restore <volume> --from <server>` can bring the volume back from it, and
-`ployz volume mirror rm` deletes one you no longer need. Wipe or reinstall its disk only if you
-need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
+on it, mirrors included, even after an uninstall. A copy of a volume your project still has then
+shows under that volume's **Copies**, `ployz volume restore <volume> --from <server>` can bring
+the volume back from it, and `ployz volume mirror rm` deletes one you no longer need. If you gave
+the volume a new mirror meanwhile, syncs refuse a second mirror until you remove one of them. Wipe
+or reinstall its disk only if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
 reach it. `ployz server forget` prints this warning each time it forgets servers.
 
 `ployz server forget` warns about replicated services as `ployz server rm` does, with one
