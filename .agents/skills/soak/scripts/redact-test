@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# redact-test
+#
+# Feeds redact one line per Ployz token prefix, built from obviously fake
+# values, and checks each value is masked. Then feeds lines that only look
+# token-shaped and checks they pass through unchanged. Prints one line per
+# case and exits 1 on a mismatch.
+set -euo pipefail
+
+redact=$(dirname "$0")/redact
+fake43=FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAK
+failures=0
+
+# check <case> <input> <want>
+check() {
+  local got
+  got=$(printf '%s\n' "$2" | "$redact")
+  if [ "$got" = "$3" ]; then
+    echo "ok    $1"
+  else
+    echo "FAIL  $1: want '$3', got '$got'"
+    failures=$(( failures + 1 ))
+  fi
+}
+# masked <prefix> <fake body>
+masked() { check "masks $1" "token $1$2 issued" "token $1<redacted> issued"; }
+# kept <case> <input>
+kept() { check "keeps $1" "$2" "$2"; }
+
+masked ployz_ "$fake43"
+masked pflt_ "$fake43"
+masked pmet_ "$fake43"
+masked ppair_ "$fake43"
+masked plyz_ "$fake43"
+masked ployz1: "${fake43}${fake43}"
+masked ployzgrant1: "FAKE.FAKE:FAKE"
+check "masks ployz_ with - and _" "ployz_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE" "ployz_<redacted>"
+
+kept "cookie-name ployz_ identifier" "set ployz_claim_sign_in to expire"
+kept "short ployz_ test fixture" "Secret::new(\"ployz_secret\")"
+kept "ployz_ in snake case" "my_ployz_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE"
+kept "bare prefix in prose" "Organization Tokens start with \`ployz_\` and capabilities with \`ployz1:\`"
+kept "plain log line" "deploy web: 3 containers healthy on machine-a"
+
+[ "$failures" -eq 0 ] || { echo "$failures case(s) failed"; exit 1; }
+echo "all cases passed"
