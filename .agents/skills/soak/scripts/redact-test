@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # redact-test
 #
-# Feeds redact one line per Ployz token prefix, built from obviously fake
-# values, and checks each value is masked. Then feeds lines that only look
+# Feeds redact one line per Ployz token prefix and recovery code, built from
+# obviously fake values, and checks each value is masked. Then feeds lines that only look
 # token-shaped and checks they pass through unchanged. Prints one line per
 # case and exits 1 on a mismatch.
 set -euo pipefail
@@ -34,12 +34,17 @@ masked ppair_ "$fake43"
 masked plyz_ "$fake43"
 masked ployz1: "${fake43}${fake43}"
 masked ployzgrant1: "FAKE.FAKE:FAKE"
+check "masks recovery code field" "Recovery code  FAKEA-FAKEB-FAKEC-FAKED-FAKE22" "Recovery code  <redacted recovery code>"
+check "masks recovery code in JSON" '{"recoveryCode":"FAKE2-FAKE3-FAKE4-FAKE5-FAKE67"}' '{"recoveryCode":"<redacted recovery code>"}'
 check "masks ployz_ with - and _" "ployz_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE" "ployz_<redacted>"
 
 kept "cookie-name ployz_ identifier" "set ployz_claim_sign_in to expire"
 kept "short ployz_ test fixture" "Secret::new(\"ployz_secret\")"
 kept "ployz_ in snake case" "my_ployz_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE"
 kept "bare prefix in prose" "Organization Tokens start with \`ployz_\` and capabilities with \`ployz1:\`"
+kept "lowercase 5-5-5-5-6 slug" "image local-first-hello-world-server pulled"
+kept "uppercase groups with digits outside base32" "ABCDE-FGHIJ-KLMNO-PQRST-UVWXY0"
+kept "longer dashed uppercase run" "XFAKEA-FAKEB-FAKEC-FAKED-FAKE22"
 kept "plain log line" "deploy web: 3 containers healthy on machine-a"
 
 [ "$failures" -eq 0 ] || { echo "$failures case(s) failed"; exit 1; }
