@@ -117,6 +117,7 @@ const CTRL_D: u8 = 0x04;
 const BACKSPACE: u8 = 0x08;
 const CTRL_U: u8 = 0x15;
 const CTRL_W: u8 = 0x17;
+const ESC: u8 = 0x1b;
 const DELETE: u8 = 0x7f;
 
 /// How a line typed with echo off ended.
@@ -130,14 +131,18 @@ enum Typed {
 
 /// Prompt on stderr and read one line from the terminal on stdin with echo off.
 /// Signals are off too, so Ctrl-C arrives as a key rather than a SIGINT that
-/// the read would restart through.
+/// the read would restart through. Bracketed paste is on meanwhile, so a
+/// paste's end is marked rather than guessed from a pause.
 fn hidden_line(question: &str) -> io::Result<Typed> {
     let term = Term::stderr();
     term.write_str(&format!("{question}: "))?;
     let stdin = io::stdin();
     let typed = {
         let quiet = Quiet::on(stdin.as_fd())?;
-        quiet.read_line()?
+        term.write_str("\x1b[?2004h")?;
+        let typed = quiet.read_line();
+        term.write_str("\x1b[?2004l")?;
+        typed?
     };
     term.write_line("")?;
     Ok(typed)
@@ -167,7 +172,7 @@ impl<'fd> Quiet<'fd> {
     }
 
     fn read_line(&self) -> io::Result<Typed> {
-        let mut line = Vec::new();
+        let mut typed = Keys::default();
         let mut keys = [0; 4096];
         loop {
             let read = match rustix::io::read(self.tty, &mut keys) {
@@ -176,7 +181,7 @@ impl<'fd> Quiet<'fd> {
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(error) => return Err(error.into()),
             };
-            match type_keys(&mut line, keys.get(..read).unwrap_or_default()) {
+            match typed.feed(keys.get(..read).unwrap_or_default()) {
                 None => {}
                 Some(Typed::Line(line)) => {
                     return Ok(if self.settle()? {
@@ -193,9 +198,10 @@ impl<'fd> Quiet<'fd> {
         }
     }
 
-    /// Read on, echo still off, until nothing arrives for 200ms: a paste can come
-    /// in pieces, and none of it may be taken as the whole value or reach the
-    /// shell. Whether anything but line endings came.
+    /// Read on, echo still off, until nothing arrives for 200ms, for a terminal
+    /// that doesn't bracket a paste: a paste can come in pieces, and none of it
+    /// may be taken as the whole value or reach the shell. Whether anything but
+    /// line endings came.
     fn settle(&self) -> io::Result<bool> {
         let mut waiting = self.quiet.clone();
         waiting.special_codes[SpecialCodeIndex::VMIN] = 0;
@@ -227,42 +233,101 @@ impl Drop for Quiet<'_> {
     }
 }
 
-/// Apply `keys` to `line`, or `None` while it goes on. Enter ends it; newlines
-/// right after it are one pasted line's ending, anything else is a further line.
-fn type_keys(line: &mut Vec<u8>, keys: &[u8]) -> Option<Typed> {
-    let mut keys = keys.iter();
-    while let Some(&key) = keys.next() {
-        match key {
-            CTRL_C => return Some(Typed::Cancelled),
-            CTRL_D if line.is_empty() => return Some(Typed::Cancelled),
-            // Ctrl-D after some text ends the line, as a terminal's own reading does.
-            b'\r' | b'\n' | CTRL_D => {
-                return Some(if keys.all(|key| matches!(key, b'\r' | b'\n')) {
-                    Typed::Line(std::mem::take(line))
-                } else {
-                    Typed::Lines
-                });
-            }
-            BACKSPACE | DELETE => {
-                // Drop one character: its UTF-8 continuation bytes, then its lead.
-                while line.pop().is_some_and(|byte| byte & 0xc0 == 0x80) {}
-            }
-            CTRL_U => line.clear(),
-            CTRL_W => {
-                // Drop the word before the cursor and the blanks after it.
-                while line.last().is_some_and(u8::is_ascii_whitespace) {
-                    line.pop();
+const PASTE_START: &[u8] = b"[200~";
+const PASTE_END: &[u8] = b"[201~";
+
+/// The line typed so far, and where it stands in an escape sequence or a
+/// bracketed paste.
+#[derive(Default)]
+struct Keys {
+    line: Vec<u8>,
+    /// Bytes after an ESC, while they may still be a paste marker.
+    escape: Option<Vec<u8>>,
+    pasting: bool,
+    /// A newline came inside the paste.
+    pasted_end: bool,
+    /// Something other than a newline came after one inside the paste.
+    pasted_lines: bool,
+}
+
+impl Keys {
+    /// Apply `keys`, or `None` while the line goes on. Enter ends it; newlines
+    /// right after it are one pasted line's ending, anything else is a further
+    /// line. A bracketed paste is read to its end marker however slowly it
+    /// arrives, and ends the line if it held a newline.
+    fn feed(&mut self, keys: &[u8]) -> Option<Typed> {
+        let mut keys = keys.iter();
+        while let Some(&key) = keys.next() {
+            if let Some(escape) = &mut self.escape {
+                escape.push(key);
+                if escape == PASTE_START {
+                    self.escape = None;
+                    self.pasting = true;
+                } else if escape == PASTE_END {
+                    self.escape = None;
+                    self.pasting = false;
+                    if self.pasted_lines {
+                        return Some(Typed::Lines);
+                    }
+                    if self.pasted_end {
+                        return Some(self.end(&mut keys));
+                    }
+                } else if !PASTE_START.starts_with(escape) && !PASTE_END.starts_with(escape) {
+                    // Another sequence, such as an arrow key: no part of the value.
+                    self.escape = None;
                 }
-                while line.last().is_some_and(|byte| !byte.is_ascii_whitespace()) {
-                    line.pop();
+                continue;
+            }
+            if key == ESC {
+                self.escape = Some(Vec::new());
+            } else if self.pasting {
+                match key {
+                    b'\r' | b'\n' => self.pasted_end = true,
+                    _ if self.pasted_end => self.pasted_lines = true,
+                    b'\t' => self.line.push(key),
+                    key if key < 0x20 => {}
+                    key => self.line.push(key),
+                }
+            } else {
+                match key {
+                    CTRL_C => return Some(Typed::Cancelled),
+                    CTRL_D if self.line.is_empty() => return Some(Typed::Cancelled),
+                    // Ctrl-D after some text ends the line, as a terminal's own reading does.
+                    b'\r' | b'\n' | CTRL_D => return Some(self.end(&mut keys)),
+                    BACKSPACE | DELETE => {
+                        // Drop one character: its UTF-8 continuation bytes, then its lead.
+                        while self.line.pop().is_some_and(|byte| byte & 0xc0 == 0x80) {}
+                    }
+                    CTRL_U => self.line.clear(),
+                    CTRL_W => {
+                        // Drop the word before the cursor and the blanks after it.
+                        while self.line.last().is_some_and(u8::is_ascii_whitespace) {
+                            self.line.pop();
+                        }
+                        while self
+                            .line
+                            .last()
+                            .is_some_and(|byte| !byte.is_ascii_whitespace())
+                        {
+                            self.line.pop();
+                        }
+                    }
+                    b'\t' => self.line.push(key),
+                    key if key < 0x20 => {}
+                    key => self.line.push(key),
                 }
             }
-            b'\t' => line.push(key),
-            key if key < 0x20 => {}
-            key => line.push(key),
+        }
+        None
+    }
+
+    fn end<'k>(&mut self, rest: &mut impl Iterator<Item = &'k u8>) -> Typed {
+        if rest.all(|key| matches!(key, b'\r' | b'\n')) {
+            Typed::Line(std::mem::take(&mut self.line))
+        } else {
+            Typed::Lines
         }
     }
-    None
 }
 
 /// Ctrl-C reaches the prompt as `Interrupted`: that is a no, and the cursor a
@@ -299,8 +364,8 @@ mod tests {
     #[test]
     fn a_hidden_line_ends_at_enter_and_never_keeps_part_of_a_paste() {
         let typed = |keys: &[&[u8]]| {
-            let mut line = Vec::new();
-            keys.iter().find_map(|keys| type_keys(&mut line, keys))
+            let mut typed = Keys::default();
+            keys.iter().find_map(|keys| typed.feed(keys))
         };
         let line = |text: &str| Some(Typed::Line(text.as_bytes().to_vec()));
         assert_eq!(typed(&[b"dummy-", b"value\r"]), line("dummy-value"));
@@ -309,12 +374,22 @@ mod tests {
         assert_eq!(typed(&["dummy\u{e9}\x7f\n".as_bytes()]), line("dummy"));
         assert_eq!(typed(&[b"wrong\x15dummy\n"]), line("dummy"));
         assert_eq!(typed(&[b"dummy wrong \x17\n"]), line("dummy "));
+        assert_eq!(typed(&[b"dum\x1b[Dmy\n"]), line("dummy"));
         assert_eq!(typed(&[b"\n"]), line(""));
         assert_eq!(typed(&[b"dummy"]), None);
         assert_eq!(typed(&[b"-----BEGIN-----\nabc\n"]), Some(Typed::Lines));
         assert_eq!(typed(&[b"dum\x03"]), Some(Typed::Cancelled));
         assert_eq!(typed(&[b"\x04"]), Some(Typed::Cancelled));
         assert_eq!(typed(&[b"dummy\x04"]), line("dummy"));
+
+        // A bracketed paste is read to its end marker, however it is split.
+        assert_eq!(typed(&[b"\x1b[200~dummy\x1b[201~", b"\r"]), line("dummy"));
+        assert_eq!(typed(&[b"\x1b[200~dummy\n\x1b[201~"]), line("dummy"));
+        assert_eq!(
+            typed(&[b"\x1b[2", b"00~line1\n", b"line2", b"\n\x1b[20", b"1~"]),
+            Some(Typed::Lines)
+        );
+        assert_eq!(typed(&[b"\x1b[200~line1\n", b"line2"]), None);
     }
 
     #[test]
