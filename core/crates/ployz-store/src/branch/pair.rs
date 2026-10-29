@@ -785,7 +785,9 @@ pub(crate) fn forget_unclaimed(tx: &mut dyn Tx, receiver: &str) -> Result<(), Rp
 
 /// Keep no plain value `environment` ever sealed in a base it shares: what a Branch
 /// was made with, a pair's base, and a pending arrival's prior cell. Each keeps the
-/// value's fingerprint, which a Sync compares by.
+/// value's fingerprint, which a Sync compares by. It holds no lock on the other side
+/// of a pair, so each write replaces only the document it read: a base another writer
+/// moved since stays as that writer left it, for the next Save to empty.
 pub(crate) fn scrub_bases(tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
     let rows = review::sealed::sealed_rows(tx, environment)?;
     empty_in_bases(tx, environment, &rows)
@@ -808,8 +810,13 @@ pub(crate) fn empty_in_bases(
         let mut made_with = row.intent(1, "Branch")?;
         if review::sealed::empty_plain_in(&mut made_with, rows) {
             tx.execute(
-                "UPDATE config_environment_branch SET made_with = ?2 WHERE environment_id = ?1",
-                &[row.text(0)?.into(), document(&made_with).as_str().into()],
+                "UPDATE config_environment_branch SET made_with = ?2 \
+                 WHERE environment_id = ?1 AND made_with = ?3",
+                &[
+                    row.text(0)?.into(),
+                    document(&made_with).as_str().into(),
+                    row.text(1)?.into(),
+                ],
             )?;
         }
     }
@@ -821,11 +828,13 @@ pub(crate) fn empty_in_bases(
         let mut base = row.intent(2, "Sync base")?;
         if review::sealed::empty_plain_in(&mut base, rows) {
             tx.execute(
-                "UPDATE config_sync_base SET base = ?3 WHERE environment_id = ?1 AND other_id = ?2",
+                "UPDATE config_sync_base SET base = ?3 \
+                 WHERE environment_id = ?1 AND other_id = ?2 AND base = ?4",
                 &[
                     row.text(0)?.into(),
                     row.text(1)?.into(),
                     document(&base).as_str().into(),
+                    row.text(2)?.into(),
                 ],
             )?;
         }
@@ -846,13 +855,15 @@ pub(crate) fn empty_in_bases(
         if review::sealed::empty_plain_cell(&mut prior) {
             tx.execute(
                 "UPDATE config_sync_arrival SET prior = ?5 \
-                 WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4",
+                 WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+                 AND prior = ?6",
                 &[
                     row.text(0)?.into(),
                     row.text(1)?.into(),
                     lineage.into(),
                     at.into(),
                     json_of(&prior).as_str().into(),
+                    row.text(4)?.into(),
                 ],
             )?;
         }
