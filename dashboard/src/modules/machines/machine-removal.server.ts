@@ -180,7 +180,9 @@ export class LeavingServerUnanswered extends Data.TaggedError("LeavingServerUnan
  * holds no writer. The last try counts the step's attempts, so earlier tries may have failed for another reason.
  */
 export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLeaving")(function* (input: {
-  organizationId: string; machineId: MachineId; lastTry: boolean;
+  organizationId: string; machineId: MachineId;
+  /** Fail, for the step to retry, while the leaving Server may yet answer. */
+  retry: boolean;
 }, observe: typeof observeOrganization = observeOrganization) {
   const id = input.machineId;
   const runtime = yield* OrganizationRuntime;
@@ -193,8 +195,8 @@ export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLea
   const observed = yield* observe(input.organizationId);
   const mayStillWrite = leaving?.membership === "up" && observed.unanswered.includes(id);
   if (mayStillWrite) {
-    if (!input.lastTry) return yield* new LeavingServerUnanswered({ machineId: id });
-    yield* Effect.logWarning("Taking the leaving Server as writing no Volumes on the step's last try: it reads up, but its copies did not answer.", { machineId: id });
+    if (input.retry) return yield* new LeavingServerUnanswered({ machineId: id });
+    yield* Effect.logWarning("Taking the leaving Server as writing no Volumes: it reads up, but its copies did not answer.", { machineId: id });
   }
   const writes = observed.copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
   return { machine: { id, name: leaving?.machine.name ?? null }, writes };

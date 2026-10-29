@@ -85,7 +85,7 @@ describe("observeLeavingServerActivity", () => {
   let observed: CopyObservation | null;
   let waited: number | null;
 
-  const observe = (lastTry = false) => {
+  const observe = (retry = true) => {
     const session = asTestDouble<PloyzSession>()({
       watchFirstFrame: (timeoutMs: number) => {
         waited = timeoutMs;
@@ -103,7 +103,7 @@ describe("observeLeavingServerActivity", () => {
     const observeCopies = () => observed === null
       ? Effect.fail(new PloyzProviderError({ operation: "observe copies", cause: new Error("transport error") }))
       : Effect.succeed(observed);
-    return Effect.runPromiseExit(observeLeavingServerActivity({ organizationId: "org-1", machineId: leaving, lastTry }, observeCopies).pipe(
+    return Effect.runPromiseExit(observeLeavingServerActivity({ organizationId: "org-1", machineId: leaving, retry }, observeCopies).pipe(
       Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntime["Service"]>()({
         open: () => Effect.succeed({ status: "connected" as const, connected: session }),
       })),
@@ -148,14 +148,14 @@ describe("observeLeavingServerActivity", () => {
     expect(await observe()).toMatchObject({ _tag: "Failure" });
   });
 
-  it("writes nothing on the step's last try when the leaving Machine reads up but its copies do not answer", async () => {
+  it("writes nothing, when it may not retry, if the leaving Machine reads up but its copies do not answer", async () => {
     observed = { copies: [writerOn(other, "logs")], unanswered: [leaving] };
-    expect(await observe(true)).toEqual(Exit.succeed({ machine: { id: leaving, name: "fsn-2" }, writes: [] }));
+    expect(await observe(false)).toEqual(Exit.succeed({ machine: { id: leaving, name: "fsn-2" }, writes: [] }));
   });
 
-  it("still fails on the step's last try when the Cluster frame times out", async () => {
+  it("still fails, when it may not retry, if the Cluster frame times out", async () => {
     frame = "times out";
-    expect(await observe(true)).toMatchObject({ _tag: "Failure" });
+    expect(await observe(false)).toMatchObject({ _tag: "Failure" });
   });
 
   it("writes nothing when the leaving Machine is down and its copies do not answer", async () => {
