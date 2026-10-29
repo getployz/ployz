@@ -99,8 +99,7 @@ export async function executeProcessMachineRemove({
     runEffect(observeLeavingServerActivity({
       organizationId: attempt.organizationId,
       machineId: attempt.machineId,
-      // A forgotten Server is gone by the person's word and never answers: waiting out the retries holds every Deploy.
-      retry: !attempt.noReset && stepAttempt < MACHINE_REMOVE_RETRIES,
+      retry: stepAttempt < MACHINE_REMOVE_RETRIES,
     }, observe)),
   );
   const sent = await step.run("remove-machine", () =>
