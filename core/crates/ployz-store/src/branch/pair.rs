@@ -821,25 +821,6 @@ pub(crate) fn empty_in_bases(
         }
     }
     for row in tx.query(
-        "SELECT environment_id, other_id, base FROM config_sync_base \
-         WHERE environment_id = ?1 OR other_id = ?1",
-        &[environment.into()],
-    )? {
-        let mut base = row.intent(2, "Sync base")?;
-        if review::sealed::empty_plain_in(&mut base, rows) {
-            tx.execute(
-                "UPDATE config_sync_base SET base = ?3 \
-                 WHERE environment_id = ?1 AND other_id = ?2 AND base = ?4",
-                &[
-                    row.text(0)?.into(),
-                    row.text(1)?.into(),
-                    document(&base).as_str().into(),
-                    row.text(2)?.into(),
-                ],
-            )?;
-        }
-    }
-    for row in tx.query(
         "SELECT environment_id, other_id, lineage, at, prior FROM config_sync_arrival \
          WHERE (environment_id = ?1 OR other_id = ?1) AND prior IS NOT NULL",
         &[environment.into()],
@@ -864,6 +845,26 @@ pub(crate) fn empty_in_bases(
                     at.into(),
                     json_of(&prior).as_str().into(),
                     row.text(4)?.into(),
+                ],
+            )?;
+        }
+    }
+    // Arrivals before bases, the order Discard and Sync lock them in.
+    for row in tx.query(
+        "SELECT environment_id, other_id, base FROM config_sync_base \
+         WHERE environment_id = ?1 OR other_id = ?1",
+        &[environment.into()],
+    )? {
+        let mut base = row.intent(2, "Sync base")?;
+        if review::sealed::empty_plain_in(&mut base, rows) {
+            tx.execute(
+                "UPDATE config_sync_base SET base = ?3 \
+                 WHERE environment_id = ?1 AND other_id = ?2 AND base = ?4",
+                &[
+                    row.text(0)?.into(),
+                    row.text(1)?.into(),
+                    document(&base).as_str().into(),
+                    row.text(2)?.into(),
                 ],
             )?;
         }
