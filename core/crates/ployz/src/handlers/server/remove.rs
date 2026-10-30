@@ -96,17 +96,34 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await?
             .machine_id;
-        if selected.id == current && machines.len() > 1 {
+        let switched = selected.id == current && machines.len() > 1;
+        if switched {
             (client, current) =
                 super::connect_avoiding(matches, options.context(), &selected).await?;
         }
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
         let held = match removal {
-            Removal::Forget => Some(client.held_copies(observation).await?),
+            Removal::Forget => match client.held_copies(observation).await? {
+                HeldCopies::Gone(unchecked) if switched => return Err(unchecked.into()),
+                held @ (HeldCopies::Dead | HeldCopies::Answered(_) | HeldCopies::Gone(_)) => {
+                    Some(held)
+                }
+            },
             Removal::Reset => None,
         };
         Ok::<_, Error>((machines, selected, current, hold, held))
     })?;
+    if let Some(HeldCopies::Gone(_)) = &held {
+        crate::ui::stream(format_args!(
+            "Server {} was already forgotten. Nothing to do.",
+            selected.name
+        ));
+        crate::ui::emit(&json!({
+            "server": super::server_json(&selected),
+            "already_forgotten": true,
+        }))?;
+        return Ok(());
+    }
     if let Some(HeldCopies::Answered(held)) = &held
         && !held.is_empty()
     {
