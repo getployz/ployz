@@ -138,6 +138,9 @@ pub(crate) struct Unanswered {
     pub(crate) failure: MachineFailure<RpcError>,
     /// The failure as planning words it too, so their notices are one.
     pub(crate) message: String,
+    /// It reads Up but the entry's router couldn't dial it, as while its daemon is
+    /// stopped: its proxy keeps serving its last routes and nothing writes its ack.
+    pub(crate) acks_unwritten: bool,
 }
 
 impl Unanswered {
@@ -297,6 +300,8 @@ impl MachineOperations for Client {
                     unanswered.push(Unanswered {
                         name: machine.machine.name.clone(),
                         message: crate::deploy::unanswered_message(machine, &failure.error),
+                        acks_unwritten: machine.membership == MembershipObservation::Up
+                            && failure.error.undialed(),
                         failure,
                     });
                 }
@@ -1409,6 +1414,12 @@ async fn publish_group<C: MachineOperations>(
     } else {
         None
     };
+    if let Some(gapped) = &gapped {
+        rows.gapped
+            .lock()
+            .expect("gapped lock")
+            .insert(service.clone(), gapped.clone());
+    }
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
     let mut listed_on: BTreeSet<MachineId> = new
         .first()
@@ -1798,6 +1809,9 @@ fn strength(policy: PullPolicy) -> u8 {
 
 struct Rows<'a> {
     namespace: &'a Namespace,
+    /// Each Service whose publish ended with only gap Servers' proxies unconfirmed.
+    /// Those proxies may still route its old copies, so none goes Out.
+    gapped: std::sync::Mutex<BTreeMap<QualifiedService, cleanup::Unconfirmed>>,
     #[expect(dead_code, reason = "the operations the rows describe")]
     operations: &'a [DeployOperation],
     run: &'a DeploymentLogId,
@@ -1915,6 +1929,7 @@ impl<'a> Rows<'a> {
             .collect();
         Self {
             namespace: &plan.namespace,
+            gapped: std::sync::Mutex::new(BTreeMap::new()),
             operations,
             run,
             names,
@@ -2356,8 +2371,9 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// The Machines `service`'s listing left unanswered. They are observation gaps,
-    /// so no publish waits on their proxies.
+    /// The Machines `service`'s listing left unanswered whose proxy acks nothing, so
+    /// no publish waits on them. A Suspect Machine still turns Down, and one behind a
+    /// path dropping large packets still acks.
     fn gaps(&self, service: &QualifiedService) -> BTreeSet<MachineId> {
         let cell = self.gens.lock().expect("gens lock").get(service).cloned();
         cell.and_then(|cell| {
@@ -2365,11 +2381,22 @@ impl<'a> Rows<'a> {
                 numbered
                     .silent
                     .iter()
+                    .filter(|silent| silent.acks_unwritten)
                     .map(|silent| silent.failure.machine_id)
                     .collect()
             })
         })
         .unwrap_or_default()
+    }
+
+    /// The proxies that never confirmed `service`'s publish, when only gap Servers'
+    /// did not.
+    fn gapped(&self, service: &QualifiedService) -> Option<cleanup::Unconfirmed> {
+        self.gapped
+            .lock()
+            .expect("gapped lock")
+            .get(service)
+            .cloned()
     }
 
     fn not_confirmed(&self, unconfirmed: &cleanup::Unconfirmed) -> String {
@@ -3286,6 +3313,12 @@ async fn remove_container<C: MachineOperations>(
             return Err(error.into());
         }
     };
+    if copy.rotation == CopyRotation::In
+        && let Some(gapped) = rows.gapped(&copy.service)
+    {
+        rows.leave_running(progress, &copy, Left::NotConfirmed(gapped));
+        return Ok(Ran::default());
+    }
     let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
     let unreached = rows.unreached(client, &copy.service, cancellation).await?;
     let retired = if copy.drains() && unreached.may_keep_route() {
