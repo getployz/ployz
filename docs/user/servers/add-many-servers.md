@@ -100,8 +100,8 @@ when Cloud knows the position, the detail shows how many servers are ahead.
 
 The first server joins, then the others join up to eight at a time. An add that stops before its
 server starts to join, for example one the CLI refuses because the server still participates,
-gives its slot back as soon as the CLI reports the failure. CLIs with `DO_NOT_TRACK` set
-send no report, so their slot frees after 10 minutes. One case can let a ninth through: rerunning
+gives its slot back as soon as the CLI reports the failure. With `DO_NOT_TRACK=1` the CLI
+sends no report, so the slot frees 10 minutes after the add last used it. One case can let a ninth through: rerunning
 an add's token while that server is still joining, when the rerun stops before it joins. The
 server already joining still finishes. The header counts how many of
 the attempts have joined. Every row draws six progress segments, including Docker-only servers.
