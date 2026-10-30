@@ -85,6 +85,9 @@ for cookie in "$hex32.$sig" "$hex32.$sig_url" "$hex32$hex32.$sig" "$hex32$hex32.
     hidden "session cookie in $form" "${form//@/$cookie}"
   done
 done
+kept "up.sh's cookie hint, which reads a file" "  agent-browser --session s cookies set better-auth.session_token \"\$(cat '/x/.verify/run/cookie')\" --url http://x --httpOnly"
+kept "a session_token from a shell variable" 'curl -b better-auth.session_token=$cookie http://x'
+check "masks a session_token value" 'better-auth.session_token=FAKEFAKE; Path=/' 'better-auth.session_token=<redacted>; Path=/'
 kept "a commit hash and a dotted name" "fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e.patch applied"
 check "masks ployz_ with - and _" "ployz_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE" "ployz_<redacted>"
 
