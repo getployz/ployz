@@ -7,12 +7,12 @@ use ployz_core::{
 use super::super::runtime;
 use super::{ConnectionOptions, Reached, target};
 use crate::approval::{self, Verb};
-use crate::cloud_account::{self, Credential, Release};
+use crate::cloud_account::{self, Credential, Release, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{
     CloudHold, DeadConfirmed, HeldCopies, LeftNotForgotten, copies_left_behind, refuse_last_managed,
 };
-use crate::connect::Remover;
+use crate::connect::{Client, Remover};
 use crate::context::ConnectionSource;
 use crate::drain::{movable_services_on, replicated_services_on, services_on};
 use crate::handlers::{
@@ -295,7 +295,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     )?;
     let selected_target = MachineTarget::from(&selected.id);
     let run = match &cloud {
-        Some(credential) => Some(approval::approved(
+        Some(credential) => match approval::approved(
             &runtime,
             credential,
             match removal {
@@ -312,12 +312,24 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 Removal::Reset => {
                     cloud_account::start_removal(credential, &selected, &confirmation, approval)
                         .await
+                        .map(Some)
                 }
                 Removal::Forget => {
-                    cloud_account::start_forget(credential, &selected, approval).await
+                    match cloud_account::start_forget(credential, &selected, approval).await {
+                        // Cloud has no row left for it: another forget may have just finished.
+                        Err(StoreCallError::Refused(refused))
+                            if refused.code == RpcErrorCode::NotFound =>
+                        {
+                            Ok(None)
+                        }
+                        started => started.map(Some),
+                    }
                 }
             },
-        )?),
+        )? {
+            Some(id) => Some(id),
+            None => return runtime.block_on(cloud_forgot(&mut client, &selected)),
+        },
         None => None,
     };
     runtime.block_on(async {
@@ -476,6 +488,33 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         }
         Ok::<_, Error>(())
     })
+}
+
+/// Cloud refused to forget `selected` as no Server of its own. The entry that listed it
+/// says whether it is gone: another forget finished, or Cloud and the Cluster disagree.
+async fn cloud_forgot(client: &mut Client, selected: &Machine) -> Result<(), Error> {
+    let listed = client
+        .machines()
+        .await?
+        .iter()
+        .any(|observed| observed.machine.id == selected.id);
+    if listed {
+        return Err(Error::not_found(format!(
+            "Cloud has no Server {} to forget, but the Cluster still lists it. If another forget \
+             of it just finished, the Cluster may not have caught up yet. No changes made.",
+            selected.name
+        ))
+        .hint(Hint::Inspect("ployz server ls".into())));
+    }
+    crate::ui::stream(format_args!(
+        "Server {} was already forgotten. Nothing to do.",
+        selected.name
+    ));
+    crate::ui::emit(&json!({
+        "server": super::server_json(selected),
+        "already_forgotten": true,
+    }))?;
+    Ok(())
 }
 
 /// Cloud manages this Server, so Cloud removes it through its durable removal and drops
@@ -1133,5 +1172,80 @@ mod tests {
 
     fn machine_id(value: char) -> MachineId {
         MachineId::parse(value.to_string().repeat(32)).unwrap()
+    }
+
+    /// An entry that lists `machines` and answers nothing else.
+    async fn listing(
+        machines: Vec<ployz_core::Machine>,
+    ) -> (
+        crate::connect::Client,
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    ) {
+        crate::connect::test_support::rpc_client(
+            move |rpc: tonic::Request<ployz_core::OpaquePayload>| {
+                let machines = machines.clone();
+                async move {
+                    let body = rpc.into_inner().decode_request().unwrap().body;
+                    assert!(
+                        matches!(body, ployz_core::RpcRequestBody::ListMachines(_)),
+                        "{body:?}"
+                    );
+                    let list = ployz_core::MachineList {
+                        enrollment: None,
+                        machines: machines
+                            .into_iter()
+                            .map(|machine| {
+                                ployz_core::MachineObservation::new(
+                                    machine,
+                                    ployz_core::MembershipObservation::Up,
+                                )
+                            })
+                            .collect(),
+                    };
+                    Ok(tonic::Response::new(
+                        ployz_core::RpcResponse::from(list).encode().unwrap(),
+                    ))
+                }
+            },
+        )
+        .await
+    }
+
+    /// A forget racing another forget's Cloud step, #3646: Cloud no longer has the Server,
+    /// and the entry no longer lists it, so it was already forgotten.
+    #[tokio::test]
+    async fn a_server_cloud_and_the_entry_both_dropped_was_already_forgotten() {
+        let selected = crate::global_fixtures::machine('b', "machine-2");
+        let (mut client, server) =
+            listing(vec![crate::global_fixtures::machine('a', "machine-1")]).await;
+
+        let forgot = super::cloud_forgot(&mut client, &selected).await;
+
+        assert!(forgot.is_ok(), "{forgot:?}");
+        server.abort();
+    }
+
+    /// Cloud has no such Server, but the entry still lists it: not proof it is gone.
+    #[tokio::test]
+    async fn a_server_the_entry_still_lists_is_not_called_forgotten() {
+        let selected = crate::global_fixtures::machine('b', "machine-2");
+        let (mut client, server) = listing(vec![
+            crate::global_fixtures::machine('a', "machine-1"),
+            selected.clone(),
+        ])
+        .await;
+
+        let report = super::cloud_forgot(&mut client, &selected)
+            .await
+            .unwrap_err()
+            .report();
+
+        assert_eq!(report.code, RpcErrorCode::NotFound);
+        assert!(
+            report.message.contains("Server machine-2"),
+            "{}",
+            report.message
+        );
+        server.abort();
     }
 }
