@@ -34,7 +34,8 @@ ployz server add --command
 It prints a line to paste on the server and an enrollment token beside it, then waits until the
 server joins. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste
 the token when it asks. The prompt doesn't show what you paste, so the token never enters the
-server's shell history or process list. The token works for 24 hours.
+server's shell history or process list. It takes one line: a paste of more than one line is
+refused and nothing is kept, so paste the token alone. The token works for 24 hours.
 
 A script, such as cloud-init or `ssh host '...'`, has no terminal to answer the prompt. There,
 `export PLOYZ_ENROLL_TOKEN=pmet_…` before the line: it keeps that variable through `sudo`. You can
