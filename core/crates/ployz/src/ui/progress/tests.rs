@@ -620,6 +620,7 @@ fn progress_drop_joins_its_worker_without_a_summary() {
     next.notices.push(DeployWarning::ObservationFailed {
         kind: ObservationKind::Volume,
         machine_id: MachineId::random(),
+        machine_name: None,
         message: "volume query timed out".into(),
         gap: None,
     });
@@ -640,6 +641,7 @@ fn interactive_abandon_keeps_the_observation_notice() {
     initial.notices.push(DeployWarning::ObservationFailed {
         kind: ObservationKind::Volume,
         machine_id: MachineId::random(),
+        machine_name: None,
         message: "volume query timed out".into(),
         gap: None,
     });
@@ -730,12 +732,14 @@ fn unqualified_observation_failures_keep_their_causes_in_the_named_server_gap() 
         DeployWarning::ObservationFailed {
             kind: ObservationKind::Volume,
             machine_id,
+            machine_name: None,
             message: "volume query timed out".into(),
             gap: None,
         },
         DeployWarning::ObservationFailed {
             kind: ObservationKind::Container,
             machine_id,
+            machine_name: None,
             message: "container query timed out".into(),
             gap: Some(ObservationGap {
                 machine_name: MachineName::parse("machine-2").unwrap(),
@@ -770,6 +774,7 @@ fn observation_cause_waits_for_a_later_named_server_gap() {
     initial.notices.push(DeployWarning::ObservationFailed {
         kind: ObservationKind::Volume,
         machine_id,
+        machine_name: None,
         message: "volume query timed out".into(),
         gap: None,
     });
@@ -802,6 +807,7 @@ fn observation_notice_without_a_next_frame_gap_prints_before_a_later_named_gap()
     initial.notices.push(DeployWarning::ObservationFailed {
         kind: ObservationKind::Volume,
         machine_id,
+        machine_name: None,
         message: "volume query timed out".into(),
         gap: None,
     });
@@ -841,6 +847,7 @@ fn later_named_observation_cause_does_not_reprint_an_earlier_cause() {
     initial.notices.push(DeployWarning::ObservationFailed {
         kind: ObservationKind::Volume,
         machine_id,
+        machine_name: None,
         message: "volume query timed out".into(),
         gap: Some(gap.clone()),
     });
@@ -848,6 +855,7 @@ fn later_named_observation_cause_does_not_reprint_an_earlier_cause() {
     later.notices.push(DeployWarning::ObservationFailed {
         kind: ObservationKind::Container,
         machine_id,
+        machine_name: None,
         message: "container query timed out".into(),
         gap: Some(gap),
     });
@@ -873,6 +881,7 @@ fn observation_without_a_named_gap_still_appears_at_settle() {
     initial.notices.push(DeployWarning::ObservationFailed {
         kind: ObservationKind::Volume,
         machine_id: MachineId::random(),
+        machine_name: None,
         message: "volume query timed out".into(),
         gap: None,
     });
@@ -889,6 +898,7 @@ fn a_store_warning_prints_an_invisible_character_as_its_code() {
     let failed = |machine_id| DeployWarning::ObservationFailed {
         kind: ObservationKind::Volume,
         machine_id,
+        machine_name: None,
         message: "no file a\u{202E}b.txt".into(),
         gap: None,
     };
@@ -1278,6 +1288,7 @@ fn an_unread_server_gap_names_it_and_counts_without_claiming_down() {
         initial.notices.push(DeployWarning::ObservationFailed {
             kind,
             machine_id,
+            machine_name: None,
             message: "this Entry doesn't recognize its membership, so it wasn't asked".into(),
             gap: Some(ObservationGap {
                 machine_name: MachineName::parse("machine-3").unwrap(),

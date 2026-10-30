@@ -1258,6 +1258,7 @@ fn a_gap_found_at_run_time_leaves_a_direct_deploy_partial_and_names_its_server()
         }),
         kind: ployz_core::ObservationKind::Container,
         machine_id: MachineId::random(),
+        machine_name: None,
         message: "Machine one did not answer: deadline has elapsed".into(),
     });
 

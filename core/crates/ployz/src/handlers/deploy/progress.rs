@@ -1851,6 +1851,7 @@ mod tests {
             }),
             kind: ObservationKind::Container,
             machine_id: ployz_core::MachineId::random(),
+            machine_name: None,
             message: "Machine machine-3 did not answer: deadline has elapsed".into(),
         }];
         view.preview = Some(preview);
@@ -1884,6 +1885,7 @@ mod tests {
                 }),
                 kind: ObservationKind::Container,
                 machine_id: ployz_core::MachineId::random(),
+                machine_name: None,
                 message: "Machine one did not answer: deadline has elapsed".into(),
             },
         }];

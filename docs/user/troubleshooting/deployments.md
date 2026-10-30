@@ -98,6 +98,9 @@ omissions. The Server's observation can be incomplete even if the project has no
 `--json` keeps every warning, including the individual omissions and failures.
 If the CLI has no name for an observation failure yet, plain output prints the warning at
 the next progress update or heartbeat, using the Machine ID if it still lacks a name.
+A failure on a Server that isn't relevant to the deploy is not a gap, so exit codes ignore it.
+From 0.3.11 it names that Server too: `volume observation failed on Server machine-3: …`.
+Before 0.3.11 it printed the Server's Machine ID.
 Interactive progress can show it at once. If following stops first while progress is showing,
 the warning still prints.
 

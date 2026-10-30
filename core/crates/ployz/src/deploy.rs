@@ -273,6 +273,7 @@ impl VolumeSnapshot {
                 gap: None,
                 kind: ObservationKind::Volume,
                 machine_id: failure.machine_id,
+                machine_name: None,
                 message: crate::ui::row(&failure.error),
             })
             .chain(
@@ -291,7 +292,11 @@ impl VolumeSnapshot {
                         gap: None,
                         kind: ObservationKind::Volume,
                         machine_id: failure.id.machine_id,
-                        message: failure.to_string(),
+                        machine_name: None,
+                        message: format!(
+                            "Docker Volume {} could not be inspected: {}; resolve the reported Docker or storage error on that Server, then inspect the Volume again",
+                            failure.id.name, failure.error
+                        ),
                     }),
             )
     }
@@ -1070,6 +1075,7 @@ pub(super) fn observation_warnings(
             gap: None,
             kind,
             machine_id: failure.machine_id,
+            machine_name: None,
             message: crate::ui::row(&failure.error),
         })
         .chain(

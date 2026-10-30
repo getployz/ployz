@@ -86,6 +86,7 @@ fn observation_warnings_keep_failures_and_omissions_distinct() {
                 gap: None,
                 kind: ObservationKind::Container,
                 machine_id: MachineId::parse("b".repeat(32)).unwrap(),
+                machine_name: None,
                 message: "container listing failed".into(),
             },
             DeployWarning::ObservationOmitted {

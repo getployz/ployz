@@ -335,3 +335,49 @@ fn a_machine_the_deploy_could_not_observe_is_named_as_one_that_can_serve_old_cop
         preview.warnings
     );
 }
+
+#[test]
+fn a_volume_failure_on_a_server_outside_the_work_names_that_server() {
+    let error = || RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "listing failed".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            machine('1', "available"),
+            machine('2', "storage"),
+            machine('3', "archive"),
+        ],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            vec![ployz_core::VolumeObservationFailure {
+                id: owned_volume(machine_id('3'), "data").id,
+                error: error(),
+            }],
+            vec![MachineFailure {
+                machine_id: machine_id('2'),
+                error: error(),
+            }],
+            Vec::new(),
+        )
+        .expect("valid Volume Snapshot fixture"),
+        ..Default::default()
+    };
+    let preview = plan_deploy([&spec("web")], &snapshot, PlanOptions::default()).unwrap();
+    assert!(!preview.has_observation_gaps());
+    let failures: Vec<String> = preview
+        .warnings
+        .iter()
+        .filter(|warning| matches!(warning, DeployWarning::ObservationFailed { .. }))
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        failures,
+        [
+            "volume observation failed on Server storage: listing failed",
+            "volume observation failed on Server archive: Docker Volume app_data could not be inspected: listing failed; resolve the reported Docker or storage error on that Server, then inspect the Volume again",
+        ]
+    );
+}
