@@ -8361,7 +8361,10 @@ fn set_refuses_a_new_secret_while_the_server_awaits_recovery_and_points_to_recov
     assert_eq!(refused["error"]["code"], json!("conflict"), "{refused}");
     assert_eq!(
         refused["error"]["message"],
-        json!("Your server needs the Sealing Key back before it can take sealed values.")
+        json!(
+            "Your server needs the Sealing Key back before it can take sealed values. \
+             If you just ran ployz recover, try again in a few seconds."
+        )
     );
     assert_eq!(
         refused["error"]["details"]["next"],
