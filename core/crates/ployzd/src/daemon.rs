@@ -128,8 +128,12 @@ fn record_refusal(path: &Path, error: &Error) {
     }
 }
 
-fn clear_refusal(path: &Path) {
-    if let Err(error) = std::fs::remove_file(path)
+/// Removes the refusal an earlier start left beside the socket in `run_dir`.
+/// A daemon process does this first, so no failure of its start, however
+/// early, leaves an earlier refusal to be reported as its own.
+pub fn clear_refusal(run_dir: &Path) {
+    let path = run_dir.join(ployz_core::STARTUP_REFUSAL_FILE);
+    if let Err(error) = std::fs::remove_file(&path)
         && error.kind() != io::ErrorKind::NotFound
     {
         eprintln!(
@@ -158,14 +162,6 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
-        // First, so no failure of this start can leave the last refusal standing.
-        clear_refusal(
-            &config
-                .socket
-                .parent()
-                .unwrap_or_else(|| Path::new("/run/ployz"))
-                .join(ployz_core::STARTUP_REFUSAL_FILE),
-        );
         // The Observe Store outlives the daemon, so it starts before anything
         // here can fail, and the daemon does not exit before it has started.
         let observe = (config.units == UnitSupervision::Systemd).then(|| {
@@ -1128,35 +1124,6 @@ mod tests {
                 "ployzd refused to start: refusing to change the retained WireGuard interface: the existing device listen port differs from the mesh port; safe recovery: delete ployz-wg"
             )
         );
-    }
-
-    #[tokio::test]
-    async fn a_clean_start_clears_the_last_refusal() {
-        let root = TestDir::new("ployzd-daemon-refusal-cleared");
-        let (config, _socket) = test_config(&root.0, ContainerMode::Absent);
-        let run_dir = config.socket.parent().unwrap().to_owned();
-        fs::create_dir_all(&run_dir).unwrap();
-        fs::write(run_dir.join(ployz_core::STARTUP_REFUSAL_FILE), "refusing\n").unwrap();
-
-        let daemon = Daemon::start(config).await.unwrap();
-
-        assert_eq!(ployz_core::startup_refusal(&run_dir), None);
-        daemon.request_stop();
-        daemon.wait().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_start_that_fails_before_its_planes_clears_the_last_refusal() {
-        let root = TestDir::new("ployzd-daemon-refusal-early-failure");
-        let (config, socket) = test_config(&root.0, ContainerMode::Absent);
-        let run_dir = socket.parent().unwrap().to_owned();
-        fs::create_dir_all(&run_dir).unwrap();
-        fs::write(run_dir.join(ployz_core::STARTUP_REFUSAL_FILE), "refusing\n").unwrap();
-        fs::write(&socket, "not a socket").unwrap();
-
-        assert!(Daemon::start(config).await.is_err());
-
-        assert_eq!(ployz_core::startup_refusal(&run_dir), None);
     }
 
     #[test]

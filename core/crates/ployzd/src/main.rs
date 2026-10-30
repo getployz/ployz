@@ -143,6 +143,9 @@ enum ObserveCommand {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    if args.command.is_none() {
+        ployzd::daemon::clear_refusal(socket_dir(&args.socket));
+    }
     let dial_stdio = matches!(args.command, Some(Command::DialStdio));
     let runtime = match runtime() {
         Ok(runtime) => runtime,
@@ -351,8 +354,12 @@ fn install_request(
     Ok(InstallRequest { release, mode })
 }
 
+fn socket_dir(socket: &Path) -> &Path {
+    socket.parent().unwrap_or_else(|| Path::new("/run/ployz"))
+}
+
 async fn dial_stdio(path: &Path) -> io::Result<()> {
-    let run_dir = path.parent().unwrap_or_else(|| Path::new("/run/ployz"));
+    let run_dir = socket_dir(path);
     let stream = wait_until_socket_accepts(path, DIAL_STDIO_SOCKET_TIMEOUT)
         .await
         .map_err(|error| naming_refusal(run_dir, error))?;
