@@ -578,6 +578,18 @@ const foundingRecovery = Effect.fn("MachineEnrollment.foundingRecovery")(functio
     : { kind: "seed" as const, expectedPublicKey: organizationKey.publicKey, backup: organizationKey.recoveryBlob };
 });
 
+const enrolledInPairing = Effect.fn("MachineEnrollment.enrolledInPairing")(function* (
+  organizationId: string, machineId: MachineId, secret: string,
+) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine).where(and(
+    eq(organizationMachine.organizationId, organizationId),
+    eq(organizationMachine.clusterKey, hashEnrollmentToken(secret)),
+    eq(organizationMachine.machineId, machineId),
+  )).limit(1);
+  return row !== undefined;
+});
+
 const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   function* (input: {
     token: string;
@@ -636,7 +648,9 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
         const pairing = {
           secret: yield* decryptPairingSecret(current.encryptedPairingSecret),
         };
-        if (!joiner && current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId) {
+        // A founder that Cloud dropped since it founded was forgotten: it joins again like any other Server.
+        if (!joiner && current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId
+          && (current.founderMachineId === null || (yield* enrolledInPairing(input.organizationId, current.founderMachineId, pairing.secret)))) {
           yield* claimEnrollmentToken(input.token, input);
           return {
             kind: "initialize" as const,
