@@ -26,6 +26,15 @@ check() {
 masked() { check "masks $1" "token $1$2 issued" "token $1<redacted> issued"; }
 # kept <case> <input>
 kept() { check "keeps $1" "$2" "$2"; }
+# hidden <case> <input>: no FAKE or fa4e run survives, whatever stands in its place.
+hidden() {
+  local got
+  got=$(printf '%s\n' "$2" | "$redact")
+  case "$got" in
+    *FAKE* | *fa4efa4e*) echo "FAIL  hides $1: got '$got'"; failures=$(( failures + 1 )) ;;
+    *) echo "ok    hides $1" ;;
+  esac
+}
 
 masked ployz_ "$fake43"
 masked pflt_ "$fake43"
@@ -59,6 +68,24 @@ for prefix in pflt_ pmet_; do
     check "masks $prefix in $form" "${form//@/$t}" "${form//@/$prefix<redacted>}"
   done
 done
+# Dev-dashboard session cookies (#3634): hex token, a dot, base64 HMAC, raw or URL-encoded.
+hex32=fa4efa4efa4efa4efa4efa4efa4efa4e
+sig='FAKE+fake/FAKE+fake/FAKE+fake/FAKE+fake/FAK='
+sig_url='FAKE%2Bfake%2FFAKE%2Bfake%2FFAKE%2Bfake%2FFAKE%2Bfake%2FFAK%3D'
+for cookie in "$hex32.$sig" "$hex32.$sig_url" "$hex32$hex32.$sig" "$hex32$hex32.$sig_url"; do
+  check "masks a bare session cookie" "$cookie" "<redacted session cookie>"
+  for form in 'Cookie: better-auth.session_token=@; other=1' \
+    'set-cookie: better-auth.session_token=@; Path=/; HttpOnly' \
+    'curl -H "Cookie: better-auth.session_token=@" http://127.0.0.1:5173/cloud' \
+    'VERIFY_SEED {"organizationSlug":"ada","cookie":"@","grace":"@","linus":"@"}' \
+    '{"name":"better-auth.session_token","value":"@"}' \
+    'http://127.0.0.1:5173/cloud?session=@&x=1' \
+    'agent-browser --session s cookies set better-auth.session_token @ --url http://x' \
+    '"x\n@\n"'; do
+    hidden "session cookie in $form" "${form//@/$cookie}"
+  done
+done
+kept "a commit hash and a dotted name" "fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e.patch applied"
 check "masks ployz_ with - and _" "ployz_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE" "ployz_<redacted>"
 
 kept "cookie-name ployz_ identifier" "set ployz_claim_sign_in to expire"
