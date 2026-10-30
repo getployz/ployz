@@ -99,7 +99,8 @@ service still gets the real value when it deploys.
   until you delete the branch. Once the seal reaches the branch, its `ployz diff` and the
   agent's review show that earlier value as **Sealed**, even after the branch deletes the
   variable or adds it again plain. They also show it as **Sealed** when the branch deleted the
-  variable before the seal, including from a service it made separate after it was created. A
+  variable before the seal, including from a service it made separate after it was created.
+  Discarding that delete brings the variable back **Not set**, never with the earlier value. A
   service made separate before Ployz 0.3.12 still shows that earlier value there. If the branch
   adds it again plain after taking the seal, its History keeps no copy of the earlier value
   either.
