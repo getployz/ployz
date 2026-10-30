@@ -229,9 +229,13 @@ async fn register_of_a_forgotten_id_does_not_list_it_again() {
     use crate::corrosion::store_tests::{corrosion_db, identity_store};
 
     let db = corrosion_db();
-    // Register answers with the store's version, which cr-sqlite keeps here.
-    db.execute_batch("CREATE TABLE crsql_db_versions (site_id TEXT, db_version INTEGER)")
-        .unwrap();
+    // Register answers with the store's version, which cr-sqlite and Corrosion keep here.
+    db.execute_batch(
+        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
+         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
+         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
+    )
+    .unwrap();
     let (replicated, server) = identity_store(db).await;
     replicated
         .publish_cluster_network("10.210.0.0/16".parse().unwrap())
