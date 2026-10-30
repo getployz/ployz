@@ -36,6 +36,18 @@ masked ployz1: "${fake43}${fake43}"
 masked ployzgrant1: "FAKE.FAKE:FAKE"
 check "masks recovery code field" "Recovery code  FAKEA-FAKEB-FAKEC-FAKED-FAKE22" "Recovery code  <redacted recovery code>"
 check "masks recovery code in JSON" '{"recoveryCode":"FAKE2-FAKE3-FAKE4-FAKE5-FAKE67"}' '{"recoveryCode":"<redacted recovery code>"}'
+# In a JSON string a newline is the two characters \n, so a word char sits right before the prefix (#3618).
+for esc in '\n' '\t' '\r' '\"' '\u000a'; do
+  for prefix in ployz_ pflt_ pmet_ ppair_ plyz_ ployz1:; do
+    check "masks $prefix after $esc" "\"x${esc}${prefix}${fake43}${esc}\"" "\"x${esc}${prefix}<redacted>${esc}\""
+  done
+  check "masks ployzgrant1: after $esc" "\"x${esc}ployzgrant1:FAKE.FAKE:FAKE\"" "\"x${esc}ployzgrant1:<redacted>\""
+  check "masks recovery code after $esc" "\"x${esc}FAKEA-FAKEB-FAKEC-FAKED-FAKE22${esc}\"" "\"x${esc}<redacted recovery code>${esc}\""
+done
+check "masks JWT after \\n" '"x\neyJFAKE.eyJFAKE.FAKE"' '"x\n<redacted JWT>"'
+check "masks Bearer after \\n" '"x\nBearer FAKEFAKEFAKE"' '"x\nBearer <redacted>"'
+check "masks PLOYZ_TOKEN after \\n" '"x\nPLOYZ_TOKEN=FAKEFAKE"' '"x\nPLOYZ_TOKEN=<redacted>"'
+check "masks the #3618 repro" 'x\npflt_FAKEFAKEFAKEFAKE1234 "a\nployz_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"' 'x\npflt_<redacted> "a\nployz_<redacted>"'
 check "masks ployz_ with - and _" "ployz_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE" "ployz_<redacted>"
 
 kept "cookie-name ployz_ identifier" "set ployz_claim_sign_in to expire"
@@ -45,6 +57,8 @@ kept "bare prefix in prose" "Organization Tokens start with \`ployz_\` and capab
 kept "lowercase 5-5-5-5-6 slug" "image local-first-hello-world-server pulled"
 kept "uppercase groups with digits outside base32" "ABCDE-FGHIJ-KLMNO-PQRST-UVWXY0"
 kept "longer dashed uppercase run" "XFAKEA-FAKEB-FAKEC-FAKED-FAKE22"
+kept "ployz_ name after an escape" 'a\nployz_claim_sign_in'
+kept "prefix glued to a word" "xpflt_FAKEFAKE"
 kept "plain log line" "deploy web: 3 containers healthy on machine-a"
 
 [ "$failures" -eq 0 ] || { echo "$failures case(s) failed"; exit 1; }
