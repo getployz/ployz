@@ -202,30 +202,74 @@ pub(super) async fn wait_direct_participating(
     connection: &Connection,
     timeout_message: &str,
 ) -> Result<Client, Error> {
+    let mut joining = Joining::default();
     crate::setup_retry::run_expecting(
-        &mut (),
+        &mut joining,
         &format!("Waiting for {connection} to participate"),
         Some(STARTING),
         MACHINE_START_WAIT,
         ConnectError::is_setup_retryable,
-        async |_| {
+        async |joining| {
             let mut client = connect_direct(matches, connection).await?;
-            check_listed(&mut client).await?;
+            check_listed(&mut client, joining).await?;
             Ok(client)
         },
     )
     .await
-    .map_err(|error| Error::from(error).context(readiness_timeout_message(timeout_message)))
+    .map_err(|error| Error::from(error).context(joining.timeout_message(timeout_message)))
+}
+
+/// How long an answering daemon stays Joining before the wait says what it waits on.
+/// A healthy joiner catches up within seconds of its post-enroll restart.
+const JOINING_NOTICE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+const STILL_JOINING: &str = "The Server's daemon is running but still joining: it hasn't caught up with the Cluster from your other Servers yet. They reach each other over WireGuard on UDP 51820, so check that no firewall between them blocks it.";
+
+/// Whether a readiness wait has seen the daemon answer while Joining, and since when (#3597).
+#[derive(Debug, Default)]
+pub(in crate::handlers) struct Joining {
+    since: Option<tokio::time::Instant>,
+    told: bool,
+}
+
+impl Joining {
+    fn seen(&mut self, phase: &LocalMachinePhase) {
+        if *phase != LocalMachinePhase::Joining {
+            self.since = None;
+            return;
+        }
+        let since = *self.since.get_or_insert_with(tokio::time::Instant::now);
+        if !self.told && since.elapsed() >= JOINING_NOTICE_AFTER {
+            crate::ui::note(STILL_JOINING);
+            self.told = true;
+        }
+    }
+
+    /// The timeout context: the joining cause once the daemon was last seen Joining, otherwise
+    /// [`readiness_timeout_message`], since nothing showed why it isn't ready.
+    pub(in crate::handlers) fn timeout_message(&self, message: &str) -> String {
+        if self.since.is_some() {
+            format!(
+                "{message}; its daemon runs but stayed joining, so it never caught up with the Cluster from your other Servers; allow UDP 51820 between it and them in every firewall, including one your provider runs in front of them, then run the command again"
+            )
+        } else {
+            readiness_timeout_message(message)
+        }
+    }
 }
 
 /// One readiness attempt: Participating and listed among its own Machines.
 ///
 /// A founder turns Participating before its publisher writes its Machine row,
 /// so a Deploy right after Participating can see an empty Deploy Snapshot.
-pub(in crate::handlers) async fn check_listed(client: &mut Client) -> Result<(), ConnectError> {
+pub(in crate::handlers) async fn check_listed(
+    client: &mut Client,
+    joining: &mut Joining,
+) -> Result<(), ConnectError> {
     let details = client
         .read_once::<op::Inspect>(InspectRequest::default(), None)
         .await?;
+    joining.seen(&details.phase);
     if details.phase != LocalMachinePhase::Participating {
         return Err(ConnectError::Attempt(
             format!("Server phase is {}", details.phase.as_str().escape_debug()).into(),
@@ -413,6 +457,38 @@ mod tests {
         assert_eq!(
             requested_name(&matches("web-1")).unwrap().unwrap().as_str(),
             "web-1"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_daemon_left_joining_is_named_as_not_catching_up_over_udp_51820() {
+        let mut joining = Joining::default();
+        joining.seen(&LocalMachinePhase::Joining);
+        tokio::time::advance(JOINING_NOTICE_AFTER - std::time::Duration::from_secs(1)).await;
+        joining.seen(&LocalMachinePhase::Joining);
+        assert!(!joining.told, "a healthy joiner's first minute stays quiet");
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        joining.seen(&LocalMachinePhase::Joining);
+        assert!(joining.told);
+        let message = joining.timeout_message("the joined Server did not become ready");
+        assert!(
+            message.starts_with("the joined Server did not become ready; "),
+            "{message}"
+        );
+        assert!(message.contains("stayed joining"), "{message}");
+        assert!(message.contains("UDP 51820"), "{message}");
+        assert!(!message.contains("Corrosion"), "{message}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_daemon_never_seen_joining_keeps_the_general_readiness_message() {
+        let mut joining = Joining::default();
+        joining.seen(&LocalMachinePhase::Joining);
+        joining.seen(&LocalMachinePhase::Uninitialized);
+        tokio::time::advance(JOINING_NOTICE_AFTER).await;
+        assert_eq!(
+            joining.timeout_message("not ready"),
+            readiness_timeout_message("not ready")
         );
     }
 

@@ -214,9 +214,13 @@ its apps go down; volume data stays on the disk.
 You'll see `the joined Server did not become ready`, or `the first Server did not become ready` on
 your first server.
 
+If the wait printed `The Server's daemon is running but still joining`, or the error says the
+daemon `stayed joining`, the server started but couldn't catch up with your other servers. Start
+at step 2.
+
 1. Run the same command again. A first start can take several minutes.
-2. Make sure your servers reach each other on UDP 51820, in any firewall your provider runs in
-   front of them.
+2. Make sure your servers reach each other on UDP 51820, in both directions, in the server's own
+   firewall and in any firewall your provider runs in front of them.
 3. Read the server's logs with `sudo journalctl -u ployz -n 200`. Only if they say `refusing to
    change the retained WireGuard interface` or `refusing to replace the existing Docker network`,
    follow [Ployz stops over a leftover network](#ployz-stops-over-a-leftover-network). If they say

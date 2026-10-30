@@ -51,8 +51,8 @@ mod waiting;
 use add::add;
 pub(super) use enroll::{enroll_token, requested_storage};
 pub(super) use helpers::{
-    STARTING, check_listed, confirm, connect_direct, enroll, enroll_for_recovery, inspect_token,
-    leave, machine_name, pinned, readiness_timeout_message, requested_name, token_request,
+    Joining, STARTING, check_listed, confirm, connect_direct, enroll, enroll_for_recovery,
+    inspect_token, leave, machine_name, pinned, requested_name, token_request,
 };
 use init::init;
 pub(super) use remove::remove;

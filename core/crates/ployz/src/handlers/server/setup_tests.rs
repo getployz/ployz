@@ -291,7 +291,7 @@ async fn readiness_waits_out_a_cluster_store_that_is_still_opening() {
         "Waiting for the participating phase",
         ployz_core::MACHINE_START_WAIT,
         crate::connect::ConnectError::is_setup_retryable,
-        async |client| super::check_listed(client).await,
+        async |client| super::check_listed(client, &mut super::Joining::default()).await,
     )
     .await
     .unwrap();
