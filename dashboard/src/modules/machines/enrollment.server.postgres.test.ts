@@ -1740,6 +1740,75 @@ describe("organization enrollment coordinator", () => {
         .toMatchObject({ success: { kind: "join" } });
     });
 
+    const reportFailure = (token: string, failedStep: "install" | "enroll" | "storage" | "join") =>
+      Effect.runPromise(recordMachineSetupReport({
+        token,
+        report: {
+          outcome: "failed", profile: {}, steps: [], totalSeconds: 1,
+          failedStep, failedStepSeconds: 1, error: "refused",
+        },
+      }).pipe(
+        Effect.provideService(Database, harness.database),
+        Effect.provideService(PostHog, {
+          capture: () => Effect.void,
+          identify: () => Effect.void,
+          identifyOrganization: () => Effect.void,
+          toolCall: () => Effect.void,
+        }),
+      ));
+
+    // A plain add of a Server that still participates is Registered, then refused by the CLI
+    // before it tells the Server to join (#3630).
+    it("gives back the slot of an add its CLI refused before telling the Server to join", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [refused, next] = [await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, refused, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, next, 2)).toEqual(queued(1));
+
+      await reportFailure(refused, "storage");
+      expect(await enrollIn(fake, next, 2)).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("keeps the slot of an add that failed after telling the Server to join", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [joining, next] = [await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, joining, 1)).toMatchObject({ success: { kind: "join" } });
+
+      await reportFailure(joining, "join");
+      expect(await enrollIn(fake, next, 2)).toEqual(queued(1));
+    });
+
+    // A report carries no identity: one that failed before Cloud answered its enroll, as another
+    // Server's refused use of a claimed token does, may not be the claimant's.
+    it("keeps the claimant's slot when a report fails before Cloud answered its enroll", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [claimed, next] = [await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, claimed, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, claimed, 3)).not.toMatchObject({ success: expect.anything() });
+
+      await reportFailure(claimed, "install");
+      await reportFailure(claimed, "enroll");
+      expect(await enrollIn(fake, next, 2)).toEqual(queued(1));
+      expect(await enrollIn(fake, claimed, 1)).toMatchObject({ success: { kind: "join" } });
+    });
+
+    // Accepted for 0.3.11: Cloud keeps no record that a claim was answered before, so a rerun of a
+    // token whose Server is already joining, refused at `storage` (say for a changed policy), frees
+    // that join's slot. The join still completes; the line admits one more than its slots.
+    it("lets one more through when a rerun of a still-joining add fails at storage", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [joining, next] = [await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, joining, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, joining, 1)).toMatchObject({ success: { kind: "join" } });
+
+      await reportFailure(joining, "storage");
+      expect(await enrollIn(fake, next, 2)).toMatchObject({ success: { kind: "join" } });
+    });
+
     it("sends a resumed claim whose slot lapsed back into the line", async () => {
       const fake = fakeSession(harness.database);
       await readyFounder(fake);

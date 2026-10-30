@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
-import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Cause, Effect, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
@@ -212,7 +212,7 @@ const recordJoined = Effect.fn("MachineEnrollment.recordJoined")(
 
 /**
  * One setup report becomes one event for whoever made the token, as `server_enrolled` is.
- * Enrollment itself is never touched.
+ * Enrollment itself is touched only to give back the join slot of an add that failed before it joined.
  */
 export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetupReport")(
   function* (input: { readonly token: string; readonly report: SetupReport }) {
@@ -229,6 +229,20 @@ export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetup
       .limit(1);
     if (!setupReportAccepted(row, input.report.outcome, new Date())) {
       return yield* new NotFound({ message: "Enrollment not found." });
+    }
+    // Every CLI since reports began (0.2.2) moves to `storage` only once Cloud answered its enroll,
+    // which it does only for the identity holding the claim, and to `join` just before it tells the
+    // Server to join. So an add that failed at `storage`, as one refused for a Server that still
+    // participates does, is the claimant's and never joins: it gives its slot back rather than
+    // holding it for the idle limit (#3630). An earlier step names no claim; a report has no identity.
+    if (input.report.outcome === "failed" && input.report.failedStep === "storage") {
+      yield* drizzle.update(schemaMachineEnrollmentToken)
+        .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: new Date() })
+        .where(and(
+          eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(input.token)),
+          isNotNull(schemaMachineEnrollmentToken.claimedMachineId),
+          isNull(schemaMachineEnrollmentToken.joinedMachineId),
+        ));
     }
     yield* (yield* PostHog).capture({
       userId: row.userId,
