@@ -830,6 +830,144 @@ fn undoing_a_repository_sync_keeps_a_branch_chosen_since() {
 }
 
 #[test]
+fn sealing_a_value_a_sync_replaced_keeps_no_plain_text_for_its_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), false);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.PAIR_X", json!("plain-own"))],
+    );
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.PAIR_X", json!("plain-landed"))],
+    );
+    let synced = sync_into(
+        &store,
+        &who,
+        ("fix-web", "production"),
+        Some(&["web.env.PAIR_X"]),
+    );
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "web.env.PAIR_X",
+            backend::sealed_secret(&uuid(2), &uuid(3), "PAIR_X", 1),
+        )],
+    );
+    assert_eq!(backend::tables_holding(&url, "plain-own"), [""; 0]);
+
+    // Back to the value that landed and saved, so no proposal holds the Sync, Undo
+    // puts back the variable sealed and Not set.
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.PAIR_X").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.PAIR_X", json!("plain-landed"))],
+    );
+    store
+        .write(
+            &who,
+            &Publish {
+                id: None,
+                environment: at("production"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["PAIR_X"],
+        json!({ "secret": false })
+    );
+    assert_eq!(backend::tables_holding(&url, "plain-own"), [""; 0]);
+}
+
+/// A key sealed once and added again plain keeps its plain value for Undo, as History
+/// keeps it.
+#[test]
+fn a_key_sealed_then_added_again_plain_keeps_its_value_for_undo() {
+    let (store, who) = shop(false);
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "web.env.PAIR_X",
+            backend::sealed_secret(&uuid(2), &uuid(3), "PAIR_X", 1),
+        )],
+    );
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.PAIR_X").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.PAIR_X", json!("plain-again"))],
+    );
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.PAIR_X", json!("plain-landed"))],
+    );
+    let synced = sync_into(
+        &store,
+        &who,
+        ("fix-web", "production"),
+        Some(&["web.env.PAIR_X"]),
+    );
+    store
+        .write(
+            &who,
+            &Publish {
+                id: None,
+                environment: at("production"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["PAIR_X"],
+        json!("plain-again")
+    );
+}
+
+#[test]
 fn a_sync_is_not_undone_once_a_row_it_landed_changed_or_deployed() {
     let (store, who) = shop(false);
     set(

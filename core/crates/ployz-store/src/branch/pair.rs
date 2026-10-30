@@ -773,6 +773,9 @@ pub(super) struct Arrived {
 /// during a rolling deploy reads it on every pending row, so it is Absent, not NULL.
 const UNKEPT: SealedCell = SealedCell::Cell(Cell::Absent);
 
+/// What a Sync's Undo puts back for the receiver's own value sealed since.
+const NOT_SET: SealedCell = SealedCell::Cell(Cell::SecretWithoutValue);
+
 /// Forget the receiver's own kept in each row of `receiver` no Sync claims.
 pub(crate) fn forget_unclaimed(tx: &mut dyn Tx, receiver: &str) -> Result<(), RpcError> {
     tx.execute(
@@ -785,7 +788,8 @@ pub(crate) fn forget_unclaimed(tx: &mut dyn Tx, receiver: &str) -> Result<(), Rp
 
 /// Keep no plain value `environment` ever sealed in a base it shares: what a Branch
 /// was made with, a pair's base, and a pending arrival's prior cell. Each keeps the
-/// value's fingerprint, which a Sync compares by. It holds no lock on the other side
+/// value's fingerprint, which a Sync compares by. The receiver's own value a Sync's
+/// Undo keeps becomes sealed and Not set. It holds no lock on the other side
 /// of a pair, so each write replaces only the document it read: a base another writer
 /// moved since stays as that writer left it, for the next Save to empty.
 pub(crate) fn scrub_bases(tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
@@ -845,6 +849,53 @@ pub(crate) fn empty_in_bases(
                     at.into(),
                     json_of(&prior).as_str().into(),
                     row.text(4)?.into(),
+                ],
+            )?;
+        }
+    }
+    // The receiver's own value a Sync's Undo puts back: once sealed, it comes back
+    // sealed and Not set, as History brings it back, never as plain text. As in
+    // History, a key the receiver holds plain now keeps it: sealed once, it was
+    // added again plain since.
+    let working = tx
+        .query(
+            "SELECT working FROM config_environment WHERE id = ?1",
+            &[environment.into()],
+        )?
+        .first()
+        .ok_or_else(|| error::corrupt("Environment"))?
+        .intent(0, "Working State")?;
+    for row in tx.query(
+        "SELECT other_id, lineage, at, was FROM config_sync_arrival \
+         WHERE environment_id = ?1 AND was IS NOT NULL",
+        &[environment.into()],
+    )? {
+        let (lineage, at) = (row.text(1)?, row.text(2)?);
+        let At::Variable(key) = row_id(lineage, at)?.at().clone() else {
+            continue;
+        };
+        let plain_now = working
+            .services
+            .iter()
+            .find(|service| service.lineage_id == lineage)
+            .and_then(|service| service.variables.iter().find(|v| v.key == key))
+            .is_some_and(|variable| !review::sealed::sealed(&variable.value));
+        if plain_now || !rows.contains(&(lineage.to_owned(), key)) {
+            continue;
+        }
+        // A variable's only cell with a value is a plain one, generated or not.
+        if let SealedCell::Cell(Cell::Value(_)) = row.json(3, "Sync")? {
+            tx.execute(
+                "UPDATE config_sync_arrival SET was = ?5 \
+                 WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+                 AND was = ?6",
+                &[
+                    environment.into(),
+                    row.text(0)?.into(),
+                    lineage.into(),
+                    at.into(),
+                    json_of(&NOT_SET).as_str().into(),
+                    row.text(3)?.into(),
                 ],
             )?;
         }
