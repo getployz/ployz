@@ -476,9 +476,7 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
         "SELECT hostname, body FROM certificates ORDER BY hostname" => {
             events(&["hostname", "body"], Vec::new())
         }
-        "SELECT site_id, db_version FROM crsql_db_versions" => {
-            events(&["site_id", "db_version"], Vec::new())
-        }
+        super::store::VERSION_QUERY => events(&["site_id", "db_version"], Vec::new()),
         query => panic!("unexpected query {query}"),
     })
 }

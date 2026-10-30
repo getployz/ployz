@@ -855,6 +855,8 @@ touch /tmp/probe.done",
         .map_err(|_| self.readiness_timeout(index))
     }
 
+    /// Waits on each actor's raw head: `inspect` stops an actor below its first gap, so
+    /// it cannot show replication past the known gap this barrier holds open.
     async fn wait_store_version(
         &self,
         index: usize,
@@ -862,12 +864,35 @@ touch /tmp/probe.done",
         timeout: Duration,
     ) -> Result<(), TestkitError> {
         poll_until(timeout, "store version reaches the target", async || {
-            self.inspect(index)
-                .await
-                .is_ok_and(|details| version_reached(&details.store_version, target))
+            self.raw_store_version(index)
+                .is_ok_and(|current| version_reached(&current, target))
         })
         .await
         .map_err(|_| self.readiness_timeout(index))
+    }
+
+    fn raw_store_version(&self, index: usize) -> Result<BTreeMap<String, i64>, TestkitError> {
+        let output = self.corrosion_request(
+            index,
+            "v1/queries",
+            r#"{"query":"SELECT lower(hex(site_id)), db_version FROM crsql_db_versions","params":[]}"#,
+        )?;
+        let mut versions = BTreeMap::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if let Some([actor, version]) = event
+                .get("row")
+                .and_then(|row| row.get(1))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::as_slice)
+                && let (Some(actor), Some(version)) = (actor.as_str(), version.as_i64())
+            {
+                versions.insert(actor.to_owned(), version);
+            }
+        }
+        Ok(versions)
     }
 
     pub async fn inspect(&self, index: usize) -> Result<ployz_core::MachineDetails, TestkitError> {
