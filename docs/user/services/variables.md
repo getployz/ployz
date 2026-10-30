@@ -94,8 +94,9 @@ service still gets the real value when it deploys.
   What a branch made before the seal compares its changes with keeps only a fingerprint of the
   earlier plain value, so syncs and follows treat that value as unchanged without keeping it.
   The branch's record of how each service was first created still holds the earlier value
-  until you delete the branch. The branch's `ployz diff` and the agent's review show that
-  earlier value as **Sealed**.
+  until you delete the branch. Once the seal reaches the branch, its `ployz diff` and the
+  agent's review show that earlier value as **Sealed**, even after the branch deletes the
+  variable.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
   a plain value is refused, so a secret never turns into plain text by mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that
