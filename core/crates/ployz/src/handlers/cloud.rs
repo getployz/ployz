@@ -172,7 +172,7 @@ where
     let matches = leaf_matches(root);
     let remote = matches.get_one::<String>("destination").is_some();
     // First, so a failed first install still reports what it ran on.
-    if !remote && dials_this_host(matches) {
+    if dials_this_host(matches) {
         report.read_host();
     }
     let initial_policy = super::server::enrollment_policy(matches)?;
@@ -861,9 +861,12 @@ fn local_selection(matches: &ArgMatches) -> Result<SelectedConnections, ConnectE
     )
 }
 
-/// Whether a run with no destination enrolls this host: it dials only the local socket, or
-/// finds nothing to dial and so installs the daemon here (see `connect_machine`).
+/// Whether a run enrolls this host: it has no destination, and it dials only the local
+/// socket or finds nothing to dial and so installs the daemon here (see `connect_machine`).
 fn dials_this_host(matches: &ArgMatches) -> bool {
+    if matches.get_one::<String>("destination").is_some() {
+        return false;
+    }
     match local_selection(matches) {
         Ok(selected) => selected
             .connections
@@ -1121,9 +1124,10 @@ mod tests {
         .err()
         .expect("nothing listens on port 1");
         assert!(!installed.get(), "never installs on this host");
+        let causes = error.causes().join("\n");
         assert!(
-            error.to_string().contains("127.0.0.1"),
-            "names the destination: {error}"
+            causes.contains("root@127.0.0.1"),
+            "names the SSH destination: {error}: {causes}"
         );
     }
 
