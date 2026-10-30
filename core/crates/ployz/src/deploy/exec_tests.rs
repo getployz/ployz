@@ -237,6 +237,11 @@ struct Scripted {
     copies: Mutex<BTreeMap<ContainerId, Recorded>>,
     /// A Machine it omits acks promptly.
     acks: BTreeMap<MachineId, Ack>,
+    /// Up Machines the entry couldn't dial, by name, which every listing leaves
+    /// unanswered.
+    undialed: BTreeMap<MachineId, &'static str>,
+    /// Suspect Machines, by name, which every listing leaves unanswered.
+    suspect: BTreeMap<MachineId, &'static str>,
     route_reads: Mutex<BTreeMap<MachineId, usize>>,
     down: BTreeSet<MachineId>,
     /// An In ask on this copy leaves it where it is and answers this verdict.
@@ -310,6 +315,8 @@ impl Scripted {
             pulled: Mutex::new(BTreeSet::new()),
             copies: Mutex::new(BTreeMap::new()),
             acks: BTreeMap::new(),
+            undialed: BTreeMap::new(),
+            suspect: BTreeMap::new(),
             route_reads: Mutex::new(BTreeMap::new()),
             down: BTreeSet::new(),
             unhealthy_in: BTreeMap::new(),
@@ -1159,6 +1166,31 @@ impl MachineOperations for Scripted {
                 panic!("scripted list requires Listed or Error")
             }
         }
+    }
+
+    async fn listed_copies(&self, service: &QualifiedService) -> Result<Listed, RpcError> {
+        let unanswered = self
+            .undialed
+            .iter()
+            .map(|machine| (machine, true))
+            .chain(self.suspect.iter().map(|machine| (machine, false)))
+            .map(|((machine_id, name), acks_unwritten)| Unanswered {
+                name: ployz_core::MachineName::parse(*name).unwrap(),
+                failure: ployz_core::MachineFailure {
+                    machine_id: *machine_id,
+                    error: RpcError::unanswered_target(
+                        RpcErrorCode::Unavailable,
+                        "tcp connect error".into(),
+                    ),
+                },
+                message: "tcp connect error".into(),
+                acks_unwritten,
+            })
+            .collect();
+        Ok(Listed {
+            copies: self.service_containers(service).await?,
+            unanswered,
+        })
     }
 
     async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {

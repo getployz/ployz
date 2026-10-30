@@ -589,7 +589,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     .await;
     let unconfirmed = match listed {
         Ok(Wait::Done) => None,
-        Ok(Wait::TimedOut(machines)) => Some(Unconfirmed::Proxies {
+        Ok(Wait::TimedOut(machines) | Wait::Gapped(machines)) => Some(Unconfirmed::Proxies {
             servers: machines.machines.iter().map(name).collect(),
         }),
         Ok(Wait::Cancelled) => Some(Unconfirmed::Cancelled),

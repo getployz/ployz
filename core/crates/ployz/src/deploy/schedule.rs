@@ -90,6 +90,9 @@ pub(crate) enum Event {
     Published(usize),
     PublishFailed(usize),
     PublishUnconfirmed(usize),
+    /// Published, but a gap Server's proxy never confirmed it, so the Service may
+    /// serve either side.
+    PublishGapped(usize),
     /// A newer Deploy's copies serve the group's Service.
     NewerServing(usize),
     /// Every live proxy lists `service`'s new copies.
@@ -331,6 +334,10 @@ impl Schedule {
             Event::PublishUnconfirmed(group) => {
                 self.unconfirmed.insert(group);
                 self.apply(Event::PublishFailed(group));
+            }
+            Event::PublishGapped(group) => {
+                self.unconfirmed.insert(group);
+                self.apply(Event::Published(group));
             }
             Event::NewerServing(group) => {
                 self.newer_serving.insert(group);
@@ -897,6 +904,40 @@ mod tests {
                 ServiceOutcome {
                     service: name("web"),
                     result: ServiceResult::NotStarted,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_publish_only_a_gap_servers_proxy_did_not_confirm_lets_dependents_start() {
+        let mut schedule = Schedule::new(
+            vec![
+                group("a", &[], vec![Step::Parallel(vec![0])]),
+                group("b", &["a"], vec![Step::Parallel(vec![1])]),
+            ],
+            vec![start('1'), start('1')],
+        );
+        assert_eq!(starts(&mut schedule), vec![0]);
+        schedule.apply(Event::Completed(0));
+        assert_eq!(publishes(&mut schedule), vec![0]);
+        schedule.apply(routed("a"));
+        schedule.apply(Event::PublishGapped(0));
+        assert_eq!(starts(&mut schedule), vec![1]);
+        schedule.apply(Event::Completed(1));
+        schedule.apply(Event::Published(1));
+        assert!(schedule.finished());
+        assert!(!schedule.failed());
+        assert_eq!(
+            schedule.services(),
+            vec![
+                ServiceOutcome {
+                    service: name("a"),
+                    result: ServiceResult::Unconfirmed,
+                },
+                ServiceOutcome {
+                    service: name("b"),
+                    result: ServiceResult::New,
                 },
             ]
         );

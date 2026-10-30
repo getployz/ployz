@@ -163,7 +163,7 @@ pub(crate) async fn let_go<C: MachineOperations>(
                 detail: crate::ui::row(&error),
             },
         },
-        Ok(Wait::TimedOut(machines)) => proxies(&machines),
+        Ok(Wait::TimedOut(machines) | Wait::Gapped(machines)) => proxies(&machines),
         Ok(Wait::Cancelled) => Unconfirmed::Cancelled,
         Err(error) => Unconfirmed::Failed {
             detail: crate::ui::row(&error),
