@@ -237,7 +237,7 @@ Ployz didn't start this one. Fix the service the message names first; its **Logs
 
 If the cause says a server `did not answer`, that server didn't answer while Ployz checked the
 other service. From 0.3.12, a server whose Ployz is stopped is skipped instead, and the deploy
-exits 3 naming it. See [When a server goes down](../services/scaling.md#when-a-server-goes-down).
+names it. See [When a server goes down](../services/scaling.md#when-a-server-goes-down).
 
 ## My setup or pre-deploy command failed
 
