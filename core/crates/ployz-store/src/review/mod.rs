@@ -289,7 +289,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let saved = latest_saved(tx, id)?;
     let head = crate::deployment::head(tx, environment)?;
     let mut introductions = introductions(tx, environment)?;
-    sealed::hide_introduced(tx, id.as_str(), &mut introductions, &environment.working)?;
+    sealed::hide_introduced(tx, id, &mut introductions, &environment.working)?;
     let deployed = approval::deployed(&head);
     let mut view = compare(
         environment,
@@ -1074,6 +1074,14 @@ impl Scrub {
                 let (value, fingerprint) = match now {
                     Some(now) if sealed::sealed(&now.value) => {
                         (&now.value, now.value_fingerprint.as_str())
+                    }
+                    // Added again plain since: only this very variable was sealed.
+                    Some(now)
+                        if now.id != was.id
+                            && !sealed::sealed(&was.value)
+                            && self.ever.holds_id(&service.id, was) =>
+                    {
+                        (&SavedVariableValue::SecretWithoutValue, "")
                     }
                     None if !sealed::sealed(&was.value) && self.ever.holds(&service.id, was) => {
                         (&SavedVariableValue::SecretWithoutValue, "")
