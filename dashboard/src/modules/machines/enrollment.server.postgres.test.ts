@@ -1780,6 +1780,21 @@ describe("organization enrollment coordinator", () => {
       expect(await enrollIn(fake, next, 2)).toEqual(queued(1));
     });
 
+    // A report carries no identity: one that failed before Cloud answered its enroll, as another
+    // Server's refused use of a claimed token does, may not be the claimant's.
+    it("keeps the claimant's slot when a report fails before Cloud answered its enroll", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [claimed, next] = [await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, claimed, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, claimed, 3)).not.toMatchObject({ success: expect.anything() });
+
+      await reportFailure(claimed, "install");
+      await reportFailure(claimed, "enroll");
+      expect(await enrollIn(fake, next, 2)).toEqual(queued(1));
+      expect(await enrollIn(fake, claimed, 1)).toMatchObject({ success: { kind: "join" } });
+    });
+
     it("sends a resumed claim whose slot lapsed back into the line", async () => {
       const fake = fakeSession(harness.database);
       await readyFounder(fake);

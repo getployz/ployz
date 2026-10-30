@@ -230,10 +230,12 @@ export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetup
     if (!setupReportAccepted(row, input.report.outcome, new Date())) {
       return yield* new NotFound({ message: "Enrollment not found." });
     }
-    // Every CLI since reports began (0.2.2) marks `join` just before it tells the Server to join, so
-    // an add that failed earlier, as one refused for a Server that still participates does, never
-    // joins: it gives its slot back rather than holding it for the idle limit (#3630).
-    if (input.report.outcome === "failed" && input.report.failedStep !== "join") {
+    // Every CLI since reports began (0.2.2) moves to `storage` only once Cloud answered its enroll,
+    // which it does only for the identity holding the claim, and to `join` just before it tells the
+    // Server to join. So an add that failed at `storage`, as one refused for a Server that still
+    // participates does, is the claimant's and never joins: it gives its slot back rather than
+    // holding it for the idle limit (#3630). An earlier step names no claim; a report has no identity.
+    if (input.report.outcome === "failed" && input.report.failedStep === "storage") {
       yield* drizzle.update(schemaMachineEnrollmentToken)
         .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: new Date() })
         .where(and(
