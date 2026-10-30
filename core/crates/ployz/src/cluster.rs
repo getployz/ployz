@@ -1069,6 +1069,7 @@ impl Client {
                 return Err(stopped_answering(&observation.machine));
             }
             (HeldCopies::Answered(held), _) => held,
+            (HeldCopies::Gone, _) => return Ok(()),
         };
         if !held.is_empty() {
             return Err(copies_left_behind(
@@ -1101,6 +1102,9 @@ impl Client {
             Err(error) if error.target_unanswered() => Ok(HeldCopies::Dead),
             Err(error) => {
                 let error = rpc_error(error);
+                if error.server_unlisted(&machine.machine.id) {
+                    return Ok(HeldCopies::Gone);
+                }
                 Err(RpcError {
                     code: RpcErrorCode::Unavailable,
                     // Often only the entry was busy, as when several forgets share it.
@@ -1576,6 +1580,8 @@ fn stopped_answering(machine: &Machine) -> RpcError {
 pub(crate) enum HeldCopies {
     Dead,
     Answered(BTreeSet<DockerVolumeName>),
+    /// The entry no longer lists the Server, as when Cloud's removal finished first.
+    Gone,
 }
 
 /// Whether Cloud holds the last Machine. Cloud lets go of it by removing it itself:

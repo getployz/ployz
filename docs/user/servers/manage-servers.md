@@ -846,8 +846,8 @@ volume, so restore or copy that data first.
 
 ### A forgotten server on 0.3.9 or earlier comes back
 
-When the server you forget still runs Ployz 0.3.9 or earlier, it puts itself back on your list of
-servers. `ployz server ls` lists it as `up` with `Volume support unknown`, and prints
+When the server you forget still runs Ployz 0.3.9 or earlier, it can put itself back on your list
+of servers. `ployz server ls` lists it as `up` with `Volume support unknown`, and prints
 `! web-2 did not answer; its rows are missing.`; the **Servers** page shows it **Online**.
 Forgetting it again ends the same way. It keeps running its services, and deploys still place
 replicas on it. Those replicas fail, and the deploy can run for 15 minutes or more.
@@ -855,7 +855,8 @@ replicas on it. Those replicas fail, and the deploy can run for 15 minutes or mo
 What keeps a forgotten server off the list runs on that server, from Ployz 0.3.10. Upgrading your
 other servers doesn't help.
 
-To take it off the list, stop Ployz on the server, then forget it again. On `web-2`:
+It doesn't always come back: check `ployz server ls` first. If `web-2` is listed, take it off the
+list: stop Ployz on the server, then forget it again. On `web-2`:
 
 ```sh
 sudo systemctl stop ployz.socket ployz
@@ -869,8 +870,9 @@ ployz server forget web-2 --confirm dead
 
 The forget can take about 10 minutes and still end with
 `error: Cloud is still removing Server web-2`. Once Ployz Cloud finishes, `ployz server ls` no
-longer lists `web-2`, and it stays off. Stopping Ployz leaves its services running, so decide what
-happens to the server next, as described above.
+longer lists `web-2`, and it stays off. A forget that starts just as Ployz Cloud finishes prints
+`Server web-2 was already forgotten. Nothing to do.` Stopping Ployz leaves its services running, so
+decide what happens to the server next, as described above.
 
 To avoid this, [upgrade](#upgrade-ployz-on-a-server) a server to 0.3.10 or later before you forget
 it while it still runs.

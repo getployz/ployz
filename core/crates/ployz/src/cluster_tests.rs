@@ -694,6 +694,36 @@ async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
     server.abort();
 }
 
+/// A forget racing Cloud's finished removal, #3612: the entry no longer lists the Server
+/// by the time its copies are read, so it is gone rather than unchecked.
+#[tokio::test]
+async fn a_server_the_entry_no_longer_lists_reads_gone() {
+    let (client, server) =
+        crate::connect::test_support::rpc_client(|rpc: tonic::Request<OpaquePayload>| async move {
+            let body = rpc.into_inner().decode_request().unwrap().body;
+            assert!(
+                matches!(body, ployz_core::RpcRequestBody::InspectStorage(_)),
+                "{body:?}"
+            );
+            let id = machine_id('b').to_string();
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::NotFound,
+                &std::io::Error::other(format!("No Server named {id:?}")),
+                json!({
+                    "inspect": ["ployz server ls"],
+                    "reason": ployz_core::rpc::NO_SUCH_SERVER_REASON,
+                    "targets": [id],
+                }),
+            ))
+        })
+        .await;
+
+    let held = client.held_copies(&machine('b')).await;
+
+    assert!(matches!(held, Ok(HeldCopies::Gone)), "{held:?}");
+    server.abort();
+}
+
 /// Parallel forgets through one busy entry, #2934: the entry's router says the Server didn't
 /// answer, so the entry itself answered, and reconnecting to it would outlast the read.
 #[tokio::test(start_paused = true)]

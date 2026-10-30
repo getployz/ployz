@@ -107,6 +107,13 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         };
         Ok::<_, Error>((machines, selected, current, hold, held))
     })?;
+    if let Some(HeldCopies::Gone) = &held {
+        crate::ui::stream(format_args!(
+            "Server {} was already forgotten. Nothing to do.",
+            selected.name
+        ));
+        return Ok(());
+    }
     if let Some(HeldCopies::Answered(held)) = &held
         && !held.is_empty()
     {
