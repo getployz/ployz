@@ -1231,6 +1231,162 @@ fn a_branch_deleting_a_value_sealed_since_it_was_made_never_shows_the_plain_valu
     assert!(!shown.contains("plain-private"), "{shown}");
 }
 
+/// A Branch that deletes a variable sealed since it was made, then adds it again
+/// plain, reviews the new value against sealed, not against the earlier plain one.
+#[test]
+fn a_branch_adding_back_plain_a_value_sealed_since_it_was_made_never_shows_the_plain_value() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    seal_token(&store, &who, 3);
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    set(&store, &who, "qa", &[("web.env.TOKEN", json!("plain-new"))]);
+
+    let review = diff(&store, &who, "qa");
+    assert_eq!(
+        token_row(&review),
+        (json!({ "secret": true }), json!("plain-new"))
+    );
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// A Branch that deleted a variable before its Parent sealed it reviews the
+/// deletion from sealed.
+#[test]
+fn a_branch_that_deleted_a_value_before_its_parent_sealed_it_never_shows_the_plain_value() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    seal_token(&store, &who, 3);
+
+    let review = diff(&store, &who, "qa");
+    assert_eq!(token_row(&review), (json!({ "secret": true }), Value::Null));
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// A Parent's seal of a variable it has since replaced with a plain one doesn't
+/// hide the plain one a Branch made afterwards deletes.
+#[test]
+fn a_branch_deleting_a_value_its_parent_added_plain_after_a_seal_still_shows_it() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    seal_token(&store, &who, 3);
+    unset(&store, &who, "production", "web.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("public-new"))],
+    );
+    deploy(&store, &who, "production", 4);
+    branch(&store, &who, 10, "production", "qa");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+
+    assert_eq!(
+        token_row(&diff(&store, &who, "qa")),
+        (json!("public-new"), Value::Null)
+    );
+}
+
+/// A value nothing sealed stays readable in a Branch's review after it adds the
+/// variable again.
+#[test]
+fn a_branch_adding_back_a_value_nothing_sealed_still_shows_it() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    set(&store, &who, "qa", &[("web.env.TOKEN", json!("plain-new"))]);
+
+    assert_eq!(
+        token_row(&diff(&store, &who, "qa")),
+        (json!("plain-private"), json!("plain-new"))
+    );
+}
+
+/// A Branch that saved a value plain, took its Parent's seal of it, then added it
+/// again plain keeps no earlier plain value in History, while the plain value added
+/// since stays.
+#[test]
+fn a_branch_adding_back_plain_a_value_sealed_since_keeps_no_earlier_plain_value_in_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    deploy(&store, &who, "qa", 3);
+    seal_token(&store, &who, 4);
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    set(&store, &who, "qa", &[("web.env.TOKEN", json!("plain-new"))]);
+    deploy(&store, &who, "qa", 5);
+
+    assert!(!backend::tables_holding(&url, "plain-private").contains(&"config_saved".to_owned()));
+    assert!(backend::tables_holding(&url, "plain-new").contains(&"config_saved".to_owned()));
+}
+
+fn unset(store: &ConfigStore, who: &Actor, environment: &str, path: &str) {
+    store
+        .write(
+            who,
+            &Edit {
+                environment: at(environment),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse(path).unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+/// The `before` and `after` of the review's `web.env.TOKEN` row.
+fn token_row(review: &DiffView) -> (Value, Value) {
+    let token = review
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|setting| setting.path == "web.env.TOKEN")
+        .unwrap();
+    (token.before.clone(), token.after.clone())
+}
+
 /// Sealing a value in a Working State empties it in the bases its Branch shares,
 /// before anything is saved or deployed.
 #[test]

@@ -174,6 +174,18 @@ const MIGRATIONS: &[(&str, Step)] = &[
             Ok(None)
         }),
     ),
+    (
+        "0031_scrub_sealed_history",
+        Step::Rust(|tx, _| {
+            for row in tx.query("SELECT id FROM config_environment", &[])? {
+                crate::review::scrub_sealed(
+                    tx,
+                    &row.parse::<crate::EnvironmentId>(0, "Environment")?,
+                )?;
+            }
+            Ok(None)
+        }),
+    ),
 ];
 
 enum Step {

@@ -13,7 +13,7 @@ use ts_rs::TS;
 
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
-use crate::{Actor, EnvironmentSummary};
+use crate::{Actor, EnvironmentId, EnvironmentSummary};
 
 pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
     match value {
@@ -26,18 +26,20 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
 }
 
 /// Show sealed each plain value `introduced` keeps for a variable the Environment
-/// holds sealed now, or held sealed before deleting it: a Node Introduction keeps
-/// the value a Branch was made with, and a review compares a new node with it, but
+/// holds sealed now, or held sealed before deleting or adding it again, or one it
+/// was made with that its Parent sealed since: a Node Introduction keeps the
+/// value a Branch was made with, and a review compares a new node with it, but
 /// never reads a sealed value back. The fingerprint stays, so the comparison still
 /// sees whether the value changed.
 pub(crate) fn hide_introduced(
     tx: &mut dyn Tx,
-    environment: &str,
+    environment: &EnvironmentId,
     introduced: &mut SavedEnvironmentIntent,
     working: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
-    // Read only for a deleted variable: it scans every save.
+    // Read only for a variable deleted or added again: they scan every save.
     let mut ever = None;
+    let mut parent = None;
     for service in &mut introduced.services {
         let now = working
             .services
@@ -54,13 +56,23 @@ pub(crate) fn hide_introduced(
                     .or_else(|| now.iter().find(|now| now.key == was.key))
             });
             let sealed_now = match now {
-                Some(now) => sealed(&now.value),
-                None => {
+                Some(now) if now.id == was.id || sealed(&now.value) => sealed(&now.value),
+                Some(_) | None => {
                     if ever.is_none() {
-                        ever = Some(EverSealed::load(tx, environment)?);
+                        ever = Some(EverSealed::load(tx, environment.as_str())?);
                     }
-                    ever.as_ref()
-                        .is_some_and(|ever| ever.holds(&service.id, was))
+                    let own = ever.as_ref().is_some_and(|ever| match now {
+                        Some(_) => ever.holds_id(&service.id, was),
+                        None => ever.holds(&service.id, was),
+                    });
+                    own || {
+                        if parent.is_none() {
+                            parent = Some(parent_sealed(tx, environment)?);
+                        }
+                        parent.as_ref().is_some_and(|parent| {
+                            parent.contains(&(service.lineage_id.clone(), was.key.clone()))
+                        })
+                    }
                 }
             };
             if sealed_now {
@@ -72,6 +84,36 @@ pub(crate) fn hide_introduced(
         }
     }
     Ok(())
+}
+
+/// Each variable a Branch was made with that its Parent sealed since, by Service
+/// lineage and key: none for a root. The Branch's own copy has its own ID, so the
+/// Parent's seal is matched by the ID of the variable the Branch was made from,
+/// never by key alone, which a variable added since under that key shares.
+fn parent_sealed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<BTreeSet<(String, String)>, RpcError> {
+    let rows = tx.query(
+        "SELECT parent_id, made_with FROM config_environment_branch WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(BTreeSet::new());
+    };
+    let made_with = row.intent(1, "Branch")?;
+    let ever = EverSealed::load(tx, row.text(0)?)?;
+    Ok(made_with
+        .services
+        .iter()
+        .flat_map(|service| {
+            service
+                .variables
+                .iter()
+                .filter(|variable| ever.holds_id(&service.id, variable))
+                .map(|variable| (service.lineage_id.clone(), variable.key.clone()))
+        })
+        .collect())
 }
 
 /// Whether a template reads a name in `names`. By key alone, whatever Service owns
@@ -215,6 +257,12 @@ impl EverSealed {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.ids.is_empty()
+    }
+
+    /// Whether this very variable was sealed: not one under its key since.
+    pub(crate) fn holds_id(&self, service: &str, variable: &SavedVariableIntent) -> bool {
+        self.ids
+            .contains(&(service.to_owned(), variable.id.clone()))
     }
 
     pub(crate) fn holds(&self, service: &str, variable: &SavedVariableIntent) -> bool {
