@@ -1299,6 +1299,11 @@ fn discarding_a_delete_its_parent_sealed_since_brings_it_back_not_set() {
 
     let values = web(&store, &who, "qa");
     assert_eq!(values["env"]["TOKEN"], json!({ "secret": false }));
+    // The row stays: the variable needs a value before it deploys.
+    assert_eq!(
+        token_row(&diff(&store, &who, "qa")),
+        (json!({ "secret": true }), json!({ "secret": false }))
+    );
     let shown = serde_json::to_string(&diff(&store, &who, "qa")).unwrap();
     assert!(!shown.contains("plain-private"), "{shown}");
 }

@@ -1758,9 +1758,50 @@ fn discarding_an_own_copys_delete_its_owner_sealed_since_brings_it_back_not_set(
     );
     deploy(&store, &who, "production", 3, true);
 
+    discard_token(&store, &who);
+
+    let values = values(&store, &who, "fix-web", "db");
+    assert_eq!(values["env"]["TOKEN"], json!({ "secret": false }));
+    assert!(!values.to_string().contains("plain-private"), "{values}");
+}
+
+/// Discarding the delete a Branch's later Own Copy made of a variable its owner
+/// replaced with a plain one after a seal brings back that plain value.
+#[test]
+fn discarding_an_own_copys_delete_its_owner_added_plain_after_a_seal_brings_the_value_back() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "db.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOKEN", 2),
+        )],
+    );
+    deploy(&store, &who, "production", 1, true);
+    unset(&store, &who, "production", "db.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("public-new"))],
+    );
+    deploy(&store, &who, "production", 3, true);
+    copy_db_and_delete_token(&store, &who);
+
+    discard_token(&store, &who);
+
+    assert_eq!(
+        values(&store, &who, "fix-web", "db")["env"]["TOKEN"],
+        json!("public-new")
+    );
+}
+
+fn discard_token(store: &ConfigStore, who: &Actor) {
     store
         .write(
-            &who,
+            who,
             &Discard {
                 environment: at("fix-web"),
                 target: None,
@@ -1769,10 +1810,6 @@ fn discarding_an_own_copys_delete_its_owner_sealed_since_brings_it_back_not_set(
             },
         )
         .unwrap();
-
-    let values = values(&store, &who, "fix-web", "db");
-    assert_eq!(values["env"]["TOKEN"], json!({ "secret": false }));
-    assert!(!values.to_string().contains("plain-private"), "{values}");
 }
 
 /// The owner's seal of a variable it has since replaced with a plain one doesn't

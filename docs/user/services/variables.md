@@ -101,7 +101,8 @@ service still gets the real value when it deploys.
   variable or adds it again plain. They also show it as **Sealed** when the branch deleted the
   variable before the seal, including from a service it made separate after it was created.
   Discarding that delete brings the variable back **Not set**, never with the earlier value. A
-  service made separate before Ployz 0.3.12 still shows that earlier value there. If the branch
+  service made separate before Ployz 0.3.12 still shows that earlier value there, and a discard
+  brings it back. If the branch
   adds it again plain after taking the seal, its History keeps no copy of the earlier value
   either.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
