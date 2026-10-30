@@ -42,8 +42,10 @@ values."
 
 1. On that server, run `sudo ployz recover`, or from your computer
    `ployz recover --connect ssh://root@203.0.113.10`.
-2. Type your recovery code when it asks. The prompt doesn't show what you type. A script can
-   pipe the code in with `--code-stdin` instead.
+2. Type your recovery code when it asks. The prompt doesn't show what you type, and it takes one
+   line: a paste of more than one line is refused and nothing is kept, so paste the code alone.
+   Ctrl-C, or Ctrl-D on an empty line, cancels. A script can pipe the code in with
+   `--code-stdin` instead.
 3. Deploy again.
 
 Once it has the key back, you can add new sealed values too, even with only that server.
