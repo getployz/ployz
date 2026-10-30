@@ -1582,6 +1582,96 @@ async fn a_new_copy_no_proxy_confirms_names_the_machines_that_did_not_confirm() 
     client.assert_done();
 }
 
+/// An Up Server the entry couldn't dial, such as one whose daemon is stopped, keeps
+/// its proxy serving its last routes, and nothing there writes its ack (#3663).
+#[tokio::test(start_paused = true)]
+async fn an_undialed_servers_proxy_does_not_hold_the_switch_and_its_routes_keep_the_old_copy() {
+    let (machine, undialed) = (machine('1'), machine('2'));
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StartFirst)];
+    let client = Scripted {
+        acks: BTreeMap::from([(undialed, Ack::Never)]),
+        undialed: BTreeMap::from([(undialed, "machine-2")]),
+        ..Scripted::new(vec![
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            observed(Call::Inspect(machine, old), running()),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+    let began = tokio::time::Instant::now();
+
+    let (outcome, warnings) = execute_reported(
+        &plan,
+        &[machine, undialed],
+        &client,
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert!(
+        began.elapsed() < cleanup::ACK_WAIT,
+        "the switch ends once every other proxy confirms"
+    );
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::Unconfirmed)])
+    );
+    assert_eq!(
+        client.moves(),
+        [Move::To(new, CopyRotation::In)],
+        "the old copy machine-2's proxy may still route stays In"
+    );
+    assert_eq!(
+        warnings,
+        [
+            "Could not fully observe containers on Server machine-2: tcp connect error".to_owned(),
+            left_running("machine-1", "proxy on machine-2 did not confirm"),
+            mixed_after_return("machine-2"),
+        ]
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_undialed_server_whose_proxy_confirms_with_the_others_retires_the_old_copy() {
+    let (machine, undialed) = (machine('1'), machine('2'));
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StartFirst)];
+    let client = Scripted {
+        acks: BTreeMap::from([(machine, Ack::After(3)), (undialed, Ack::After(1))]),
+        undialed: BTreeMap::from([(undialed, "machine-2")]),
+        ..Scripted::new(vec![
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Remove(machine, old)),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+
+    let (outcome, _) = execute_reported(
+        &plan,
+        &[machine, undialed],
+        &client,
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    assert_eq!(
+        client.moves(),
+        [
+            Move::To(new, CopyRotation::In),
+            Move::To(old, CopyRotation::Out),
+            Move::Gone(old)
+        ]
+    );
+    client.assert_done();
+}
+
 /// A proxy the plan's listing found behind a path dropping large packets is named with
 /// that cause when it never confirms (#3521).
 #[tokio::test(start_paused = true)]

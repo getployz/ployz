@@ -103,6 +103,8 @@ pub(crate) async fn bring_in<C: MachineOperations>(
 pub(crate) enum Wait {
     Done,
     TimedOut(Unconfirmed),
+    /// Every proxy confirmed but those on the wait's gap Servers.
+    Gapped(Unconfirmed),
     Cancelled,
 }
 
@@ -122,9 +124,34 @@ pub(crate) async fn wait_listed<C: MachineOperations>(
     cancellation: &CancellationToken,
     acked: impl FnMut(&MachineId),
 ) -> Result<Wait, RpcError> {
+    wait_listed_beside(
+        client,
+        machine_id,
+        service,
+        copies,
+        &BTreeSet::new(),
+        cancellation,
+        acked,
+    )
+    .await
+}
+
+/// [`wait_listed`] that ends at [`Wait::Gapped`] once only `gaps`' proxies are
+/// unconfirmed. A gap Server is one this Deploy already reports unobserved, such as
+/// an Up one whose daemon the entry couldn't dial: nothing there writes its ack.
+pub(crate) async fn wait_listed_beside<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    service: &QualifiedService,
+    copies: &BTreeSet<ContainerId>,
+    gaps: &BTreeSet<MachineId>,
+    cancellation: &CancellationToken,
+    acked: impl FnMut(&MachineId),
+) -> Result<Wait, RpcError> {
     wait_routes(
         || client.read_routes(machine_id, service),
         |routed| copies.is_subset(routed),
+        gaps,
         cancellation,
         acked,
     )
@@ -142,6 +169,7 @@ pub(crate) async fn wait_none_listed<C: MachineOperations>(
     wait_routes(
         || client.read_entry_routes(service),
         |routed| routed.is_disjoint(copies),
+        &BTreeSet::new(),
         cancellation,
         |_| {},
     )
@@ -158,6 +186,7 @@ pub(crate) async fn wait_unlisted<C: MachineOperations>(
     wait_routes(
         || client.read_routes(machine_id, service),
         |routed| !routed.contains(container_id),
+        &BTreeSet::new(),
         cancellation,
         |_| {},
     )
@@ -167,6 +196,7 @@ pub(crate) async fn wait_unlisted<C: MachineOperations>(
 async fn wait_routes<Read>(
     read: impl Fn() -> Read,
     satisfied: impl Fn(&BTreeSet<ContainerId>) -> bool,
+    gaps: &BTreeSet<MachineId>,
     cancellation: &CancellationToken,
     mut acked: impl FnMut(&MachineId),
 ) -> Result<Wait, RpcError>
@@ -188,6 +218,19 @@ where
         }
         if read.complete && waiting.machines.is_empty() {
             return Ok(Wait::Done);
+        }
+        if read.complete
+            && waiting
+                .machines
+                .iter()
+                .all(|machine| gaps.contains(machine))
+        {
+            // A gap Server is away even when its stale row arrived.
+            let away = waiting.machines.clone();
+            return Ok(Wait::Gapped(Unconfirmed {
+                machines: away.clone(),
+                unanswered: away,
+            }));
         }
         if Instant::now() >= deadline {
             return Ok(Wait::TimedOut(waiting));
@@ -225,7 +268,7 @@ impl From<Wait> for Step {
     fn from(wait: Wait) -> Self {
         match wait {
             Wait::Done => Step::Done,
-            Wait::TimedOut(machines) => Step::NotConfirmed(machines),
+            Wait::TimedOut(machines) | Wait::Gapped(machines) => Step::NotConfirmed(machines),
             Wait::Cancelled => Step::Cancelled,
         }
     }

@@ -950,7 +950,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                 )
                                 .await
                                 {
-                                    Ok(()) => Done::Admitted(index),
+                                    Ok(_) => Done::Admitted(index),
                                     Err(published) => Done::Publish(group, published),
                                 }
                             })));
@@ -1015,6 +1015,15 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         }
                         schedule.apply(Event::Routed(service));
                         schedule.apply(Event::Published(group));
+                    }
+                    // Its old copies were left In beside the new ones and named.
+                    Published::Gapped => {
+                        for index in awaiting_flip.remove(&group).unwrap_or_default() {
+                            completed.insert(index);
+                            progress.set_completed(index);
+                        }
+                        schedule.apply(Event::Routed(service));
+                        schedule.apply(Event::PublishGapped(group));
                     }
                     Published::Unconfirmed(machines) => {
                         unread.insert(group);
@@ -1359,6 +1368,9 @@ enum Done {
 
 enum Published {
     Listed,
+    /// Listed by every proxy but those on gap Servers, which may still route the
+    /// old copies, so those stay In.
+    Gapped,
     Unconfirmed(cleanup::Unconfirmed),
     /// The new copies are listed, but an old copy's Out was not seen through.
     OutUnconfirmed(ExecutionError),
@@ -1387,14 +1399,16 @@ async fn publish_group<C: MachineOperations>(
     if new.is_empty() {
         return Published::Listed;
     }
-    // System ingress copies stay Pending for life and no route lists them.
-    if *service != QualifiedService::system_ingress()
-        && let Err(published) =
-            route_new(client, operations, rows, service, &new, cancellation).await
-    {
-        return published;
-    }
     let routed = *service != QualifiedService::system_ingress();
+    // System ingress copies stay Pending for life and no route lists them.
+    let gapped = if routed {
+        match route_new(client, operations, rows, service, &new, cancellation).await {
+            Ok(gapped) => gapped,
+            Err(published) => return published,
+        }
+    } else {
+        None
+    };
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
     let mut listed_on: BTreeSet<MachineId> = new
         .first()
@@ -1438,6 +1452,12 @@ async fn publish_group<C: MachineOperations>(
             gone.push(copy);
             continue;
         }
+        if let Some(gapped) = &gapped
+            && copy.rotation == CopyRotation::In
+        {
+            rows.leave_running(progress, &copy, Left::NotConfirmed(gapped.clone()));
+            continue;
+        }
         // The owner refuses this Out (LastIn) until its own view lists a new copy.
         if routed && copy.rotation == CopyRotation::In && !listed_on.contains(&copy.machine_id) {
             let left = match cleanup::wait_listed(
@@ -1451,7 +1471,7 @@ async fn publish_group<C: MachineOperations>(
             .await
             {
                 Ok(cleanup::Wait::Done) => None,
-                Ok(cleanup::Wait::TimedOut(_)) => Some(Left::NotListed),
+                Ok(cleanup::Wait::TimedOut(_) | cleanup::Wait::Gapped(_)) => Some(Left::NotListed),
                 Ok(cleanup::Wait::Cancelled) => Some(Left::Interrupted),
                 Err(error) => Some(Left::Failed(error)),
             };
@@ -1493,7 +1513,7 @@ async fn publish_group<C: MachineOperations>(
         let unlisted = cleanup::wait_none_listed(client, service, &ids, cancellation).await;
         let (left, error) = match unlisted {
             Ok(cleanup::Wait::Done) => (None, None),
-            Ok(cleanup::Wait::TimedOut(machines)) => {
+            Ok(cleanup::Wait::TimedOut(machines) | cleanup::Wait::Gapped(machines)) => {
                 let error = machine_error(
                     MachineAction::ReadRoutes,
                     unavailable(rows.not_confirmed(&machines)),
@@ -1529,9 +1549,10 @@ async fn publish_group<C: MachineOperations>(
             rows.leave_running(progress, copy, left);
         }
     }
-    match unconfirmed {
-        None => Published::Listed,
-        Some(error) => Published::OutUnconfirmed(error),
+    match (unconfirmed, gapped) {
+        (Some(error), _) => Published::OutUnconfirmed(error),
+        (None, Some(_)) => Published::Gapped,
+        (None, None) => Published::Listed,
     }
 }
 
@@ -1562,7 +1583,7 @@ async fn route_new<C: MachineOperations>(
     service: &QualifiedService,
     new: &[(usize, MachineId, ContainerId)],
     cancellation: &CancellationToken,
-) -> Result<(), Published> {
+) -> Result<Option<cleanup::Unconfirmed>, Published> {
     let (_, first_machine, _) = new.first().expect("a published group started copies");
     let brought = join_all(
         new.iter()
@@ -1600,18 +1621,27 @@ async fn route_new<C: MachineOperations>(
     .await;
     brought.into_iter().collect::<Result<Vec<()>, _>>()?;
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
-    match cleanup::wait_listed(client, first_machine, service, &ids, cancellation, |_| {}).await {
-        Ok(cleanup::Wait::Done) => {}
-        Ok(cleanup::Wait::TimedOut(machines)) => return Err(Published::Unconfirmed(machines)),
-        Ok(cleanup::Wait::Cancelled) => return Err(Published::Cancelled),
-        Err(error) => {
-            return Err(Published::Failed(machine_error(
-                MachineAction::ReadRoutes,
-                error,
-            )));
-        }
+    let gaps = rows.gaps(service);
+    match cleanup::wait_listed_beside(
+        client,
+        first_machine,
+        service,
+        &ids,
+        &gaps,
+        cancellation,
+        |_| {},
+    )
+    .await
+    {
+        Ok(cleanup::Wait::Done) => Ok(None),
+        Ok(cleanup::Wait::Gapped(machines)) => Ok(Some(machines)),
+        Ok(cleanup::Wait::TimedOut(machines)) => Err(Published::Unconfirmed(machines)),
+        Ok(cleanup::Wait::Cancelled) => Err(Published::Cancelled),
+        Err(error) => Err(Published::Failed(machine_error(
+            MachineAction::ReadRoutes,
+            error,
+        ))),
     }
-    Ok(())
 }
 
 /// The copies the group's publish retires. A copy updated in place is one of
@@ -2324,6 +2354,22 @@ impl<'a> Rows<'a> {
             Ok(cleanup::Step::Cancelled) => Err(ExecutionError::Cancelled),
             Err(error) => Err(machine_error(action, error)),
         }
+    }
+
+    /// The Machines `service`'s listing left unanswered. They are observation gaps,
+    /// so no publish waits on their proxies.
+    fn gaps(&self, service: &QualifiedService) -> BTreeSet<MachineId> {
+        let cell = self.gens.lock().expect("gens lock").get(service).cloned();
+        cell.and_then(|cell| {
+            cell.get().map(|numbered| {
+                numbered
+                    .silent
+                    .iter()
+                    .map(|silent| silent.failure.machine_id)
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
     }
 
     fn not_confirmed(&self, unconfirmed: &cleanup::Unconfirmed) -> String {

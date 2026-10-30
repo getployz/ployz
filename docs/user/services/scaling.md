@@ -111,9 +111,11 @@ To bring services back:
    is skipped the same way instead. From 0.3.12, so is one the deploy can't connect to because
    Ployz is stopped there: its replicas start on your other servers, and a service that
    references another, such as a cache running on a different server, no longer fails with
-   `Dependency … failed its health gate`. Its proxy still has to confirm the switch, so a service
-   that replaces running replicas can still fail with `proxy on web-3 did not confirm` until that
-   server's Ployz is back.
+   `Dependency … failed its health gate`. Its proxy keeps sending requests to the replicas it
+   knew, so the deploy doesn't wait for it to confirm the switch. Instead the replicas the switch
+   replaced keep running and answering beside the new ones, the deploy names each one, and it
+   exits 3. Until 0.3.12 the deploy waited 5 minutes for that proxy, then failed with
+   `proxy on web-3 did not confirm`.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your
    next deploy removes it. It takes out only its own replicas, so an extra one on another server

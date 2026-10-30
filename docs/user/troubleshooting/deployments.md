@@ -358,7 +358,9 @@ for.
 or `my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.`
 
 A deploy couldn't reach web-2 to retire its old replica, because web-2 was cut off or powered
-off. If web-2 restarts and confirms the new replicas within a few minutes of starting, it takes
+off. From 0.3.12 this also happens when Ployz is stopped on web-2. Its proxy keeps sending
+requests to the replicas it knew, so the deploy leaves the replicas it replaced, on any server,
+running beside the new ones. If web-2 restarts and confirms the new replicas within a few minutes of starting, it takes
 its old replica out of traffic on its own, but the replica keeps running. That includes a replica a
 deploy replaced while the server was offline, even with nothing changed. Otherwise the replica
 answers beside the new ones, so visitors get either version. That happens when web-2 comes back
