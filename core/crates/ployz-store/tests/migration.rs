@@ -1091,3 +1091,121 @@ fn a_plain_value_sealed_then_added_back_is_gone_from_history_after_upgrade() {
     assert!(!backend::tables_holding(&url, "plain-private").contains(&"config_saved".to_owned()));
     assert!(backend::tables_holding(&url, "plain-new").contains(&"config_saved".to_owned()));
 }
+
+/// A Branch made before `0032_node_copied_from` makes its Own Copy after it, and
+/// the owner's later seal of a variable it deleted from the copy reads sealed.
+#[test]
+fn an_own_copy_made_after_upgrade_never_shows_a_value_its_owner_sealed_since() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    {
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse(uuid(1)).unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                },
+            )
+            .unwrap();
+        for (n, name) in [(3, "web"), (4, "db")] {
+            store
+                .write(
+                    &who,
+                    &CreateService {
+                        id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ServiceName::parse(name).unwrap(),
+                        image: Some(format!("{name}:1")),
+                        template: None,
+                    },
+                )
+                .unwrap();
+        }
+        set(
+            &store,
+            &who,
+            "production",
+            &[
+                ("web.env.DB_URL", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")),
+                ("db.env.TOKEN", json!("plain-private")),
+            ],
+        );
+        backend::deploy(&store, &who, "production", 1);
+        store
+            .write(
+                &who,
+                &CreateBranch {
+                    id: EnvironmentId::parse(uuid(9)).unwrap(),
+                    from: at("production"),
+                    name: EnvironmentName::parse("fix-web").unwrap(),
+                    copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                    live: vec![ployz_store::NodeName::parse("db").unwrap()],
+                    setup: Vec::new(),
+                    keep: false,
+                    fix: None,
+                },
+            )
+            .unwrap();
+        backend::deploy(&store, &who, "fix-web", 2);
+        run(
+            &url,
+            "DROP TABLE config_node_copied_from;
+             DELETE FROM config_migration WHERE name = '0032_node_copied_from';",
+        );
+    }
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CopyNode {
+                environment: at("fix-web"),
+                node: ServiceName::parse("db").unwrap(),
+                expect: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("fix-web"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("db.env.TOKEN").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "db.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOKEN", 1),
+        )],
+    );
+    backend::deploy(&store, &who, "production", 3);
+    let review = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    let token = review
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|setting| setting.path == "db.env.TOKEN")
+        .unwrap();
+    assert_eq!(
+        (token.before.clone(), token.after.clone()),
+        (json!({ "secret": true }), Value::Null)
+    );
+}

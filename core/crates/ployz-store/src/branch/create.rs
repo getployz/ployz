@@ -319,6 +319,36 @@ pub(crate) fn copy_node(
         &none,
         (Owner::None, Some(trusted)),
     )?;
+    // The copy's variables have their own IDs: keep the owner's, from the very
+    // state the copy landed, for its seals.
+    for service in &own.from.services {
+        if !copied.contains(&service.lineage_id) {
+            continue;
+        }
+        let Some(own) = branch
+            .working
+            .services
+            .iter()
+            .find(|own| own.lineage_id == service.lineage_id)
+        else {
+            continue;
+        };
+        for variable in &service.variables {
+            tx.execute(
+                "INSERT INTO config_node_copied_from \
+                 (environment_id, node_id, source_id, source_node_id, variable_id, key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT DO NOTHING",
+                &[
+                    branch.summary.id.as_str().into(),
+                    own.id.as_str().into(),
+                    owner.environment.summary.id.as_str().into(),
+                    service.id.as_str().into(),
+                    variable.id.as_str().into(),
+                    variable.key.as_str().into(),
+                ],
+            )?;
+        }
+    }
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,

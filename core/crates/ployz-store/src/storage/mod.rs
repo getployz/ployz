@@ -186,6 +186,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
             Ok(None)
         }),
     ),
+    (
+        "0032_node_copied_from",
+        Step::Sql(include_str!("migrations/0032_node_copied_from.sql")),
+    ),
 ];
 
 enum Step {
