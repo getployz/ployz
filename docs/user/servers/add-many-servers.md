@@ -98,7 +98,12 @@ It changes to **Installing** in the same row when preparation finishes. **Waitin
 means the first server has not finished. **In line** means it is waiting for a join slot;
 when Cloud knows the position, the detail shows how many servers are ahead.
 
-The first server joins, then the others join up to eight at a time. The header counts how many of
+The first server joins, then the others join up to eight at a time. An add that stops before its
+server starts to join, for example one the CLI refuses because the server still participates,
+gives its slot back as soon as the CLI reports the failure. CLIs with `DO_NOT_TRACK` set
+send no report, so their slot frees after 10 minutes. One case can let a ninth through: rerunning
+an add's token while that server is still joining, when the rerun stops before it joins. The
+server already joining still finishes. The header counts how many of
 the attempts have joined. Every row draws six progress segments, including Docker-only servers.
 **Joined** rows stay in the list for one hour. Older attempts leave the polling view. The Servers below it show what Cloud observes from your
 running servers. A new server takes no apps until you deploy.
