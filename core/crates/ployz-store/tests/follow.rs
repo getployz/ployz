@@ -1152,7 +1152,7 @@ fn a_seal_that_follows_leaves_no_plain_text_in_the_arrival() {
 
 /// A Branch made while the value was plain keeps no copy of it in what it syncs over,
 /// only in its Node Introduction. The seal follows into it cleanly, and its review
-/// still lists it.
+/// still lists it, from sealed rather than from the plain value (#3587).
 #[test]
 fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_no_plain_base() {
     let dir = tempfile::tempdir().unwrap();
@@ -1179,6 +1179,8 @@ fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_no_plain_base() {
             .flat_map(|change| &change.settings)
             .any(|setting| setting.path == "web.env.TOKEN")
     );
+    let shown = serde_json::to_string(&diff(&store, &who, "qa")).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
     assert_eq!(
         backend::tables_holding(&url, "plain-private"),
         ["config_node_introduction"]
