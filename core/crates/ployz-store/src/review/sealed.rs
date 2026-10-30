@@ -26,8 +26,8 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
 }
 
 /// Show sealed each plain value `introduced` keeps for a variable the Environment
-/// holds sealed now, or held sealed before deleting or adding it again, or one its
-/// Parent sealed after the Environment deleted it: a Node Introduction keeps the
+/// holds sealed now, or held sealed before deleting or adding it again, or one it
+/// was made with that its Parent sealed since: a Node Introduction keeps the
 /// value a Branch was made with, and a review compares a new node with it, but
 /// never reads a sealed value back. The fingerprint stays, so the comparison still
 /// sees whether the value changed.
@@ -39,7 +39,7 @@ pub(crate) fn hide_introduced(
 ) -> Result<(), RpcError> {
     // Read only for a variable deleted or added again: they scan every save.
     let mut ever = None;
-    let mut parents = None;
+    let mut parent = None;
     for service in &mut introduced.services {
         let now = working
             .services
@@ -66,11 +66,11 @@ pub(crate) fn hide_introduced(
                         None => ever.holds(&service.id, was),
                     });
                     own || {
-                        if parents.is_none() {
-                            parents = Some(parents_sealed(tx, environment)?);
+                        if parent.is_none() {
+                            parent = Some(parent_sealed(tx, environment)?);
                         }
-                        parents.as_ref().is_some_and(|parents| {
-                            parents.contains(&(service.lineage_id.clone(), was.key.clone()))
+                        parent.as_ref().is_some_and(|parent| {
+                            parent.contains(&(service.lineage_id.clone(), was.key.clone()))
                         })
                     }
                 }
@@ -86,17 +86,34 @@ pub(crate) fn hide_introduced(
     Ok(())
 }
 
-/// Each variable an Environment's Parents ever held sealed, by Service lineage and
-/// key: none for a root.
-fn parents_sealed(
+/// Each variable a Branch was made with that its Parent sealed since, by Service
+/// lineage and key: none for a root. The Branch's own copy has its own ID, so the
+/// Parent's seal is matched by the ID of the variable the Branch was made from,
+/// never by key alone, which a variable added since under that key shares.
+fn parent_sealed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<BTreeSet<(String, String)>, RpcError> {
-    let mut rows = BTreeSet::new();
-    for parent in crate::branch::ancestors(tx, environment)? {
-        rows.extend(sealed_rows(tx, parent.as_str())?);
-    }
-    Ok(rows)
+    let rows = tx.query(
+        "SELECT parent_id, made_with FROM config_environment_branch WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(BTreeSet::new());
+    };
+    let made_with = row.intent(1, "Branch")?;
+    let ever = EverSealed::load(tx, row.text(0)?)?;
+    Ok(made_with
+        .services
+        .iter()
+        .flat_map(|service| {
+            service
+                .variables
+                .iter()
+                .filter(|variable| ever.holds_id(&service.id, variable))
+                .map(|variable| (service.lineage_id.clone(), variable.key.clone()))
+        })
+        .collect())
 }
 
 /// Whether a template reads a name in `names`. By key alone, whatever Service owns

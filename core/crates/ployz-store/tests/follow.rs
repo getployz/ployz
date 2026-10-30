@@ -1279,6 +1279,36 @@ fn a_branch_that_deleted_a_value_before_its_parent_sealed_it_never_shows_the_pla
     assert!(!shown.contains("plain-private"), "{shown}");
 }
 
+/// A Parent's seal of a variable it has since replaced with a plain one doesn't
+/// hide the plain one a Branch made afterwards deletes.
+#[test]
+fn a_branch_deleting_a_value_its_parent_added_plain_after_a_seal_still_shows_it() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    seal_token(&store, &who, 3);
+    unset(&store, &who, "production", "web.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("public-new"))],
+    );
+    deploy(&store, &who, "production", 4);
+    branch(&store, &who, 10, "production", "qa");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+
+    assert_eq!(
+        token_row(&diff(&store, &who, "qa")),
+        (json!("public-new"), Value::Null)
+    );
+}
+
 /// A value nothing sealed stays readable in a Branch's review after it adds the
 /// variable again.
 #[test]
