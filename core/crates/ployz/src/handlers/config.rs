@@ -374,14 +374,24 @@ fn seals(variable: &Value) -> bool {
         .any(|value| value.get("secret").is_some_and(Value::is_string))
 }
 
-/// Whether `set PATH=VALUE` would send a new secret as text: `VALUE` parses as one on
-/// a `SERVICE.env.KEY` or `SERVICE.registryCredential` path.
+/// Whether `set PATH=VALUE` would send a new secret as text. A variable's value is any
+/// text, so only the shape the Store seals counts: `{"secret": "…"}`, nonempty, alone.
+/// A registry credential takes no text but `{"secret": true}`, so any new secret counts.
 fn seals_as_text(path: &str, value: &str) -> bool {
-    let secret_path = matches!(
-        path.split('.').collect::<Vec<_>>()[..],
-        [_, "env", _] | [_, "registryCredential"]
-    );
-    secret_path && serde_json::from_str::<Value>(value).is_ok_and(|value| seals(&value))
+    let Ok(value) = serde_json::from_str::<Value>(value) else {
+        return false;
+    };
+    match path.split('.').collect::<Vec<_>>()[..] {
+        [_, "env", _] => value.as_object().is_some_and(|fields| {
+            fields.len() == 1
+                && fields
+                    .get("secret")
+                    .and_then(Value::as_str)
+                    .is_some_and(|secret| !secret.is_empty())
+        }),
+        [_, "registryCredential"] => seals(&value),
+        _ => false,
+    }
 }
 
 /// Whether `value` names a Server, by ID or name, as `path`'s Preferred Builder.
@@ -747,18 +757,24 @@ mod tests {
     fn an_assignment_shaped_like_a_new_secret_is_refused_but_text_and_kept_secrets_are_not() {
         let fake = r#"{"secret":"FAKE-3588"}"#;
         assert!(seals_as_text("web.env.RX", fake));
-        assert!(seals_as_text(
-            "web.env.RX",
-            r#"{"value":{"secret":"FAKE-3588"}}"#
-        ));
         assert!(seals_as_text("web.registryCredential", fake));
+        assert!(seals_as_text(
+            "web.registryCredential",
+            r#"{"username":"u","secret":"FAKE-3588"}"#
+        ));
         // Keeping the stored secret carries no value.
         assert!(!seals_as_text(
             "web.registryCredential",
             r#"{"secret":true}"#
         ));
+        // A variable keeps any JSON the Store would not seal, as text.
         assert!(!seals_as_text("web.env.RX", "plain"));
         assert!(!seals_as_text("web.env.RX", r#"{"other":"x"}"#));
+        assert!(!seals_as_text(
+            "web.env.RX",
+            r#"{"secret":"field-name","enabled":false}"#
+        ));
+        assert!(!seals_as_text("web.env.RX", r#"{"secret":""}"#));
         assert!(!seals_as_text("web.env.RX.description", fake));
         assert!(!seals_as_text("setup.web", fake));
     }
