@@ -1096,6 +1096,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unreachable_destination_reports_its_ssh_failure_not_the_local_config() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config.toml");
+        let matches = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "--ployz-config",
+                config.to_str().unwrap(),
+                "server",
+                "add",
+                "root@127.0.0.1:1",
+                "--no-install",
+                "--ssh-timeout",
+                "2",
+            ])
+            .unwrap();
+        let installed = std::cell::Cell::new(false);
+        let error = connect_machine(leaf_matches(&matches), &|_| {
+            installed.set(true);
+            async { Ok(()) }
+        })
+        .await
+        .err()
+        .expect("nothing listens on port 1");
+        assert!(!installed.get(), "never installs on this host");
+        assert!(
+            error.to_string().contains("127.0.0.1"),
+            "names the destination: {error}"
+        );
+    }
+
+    #[tokio::test]
     async fn resumed_enrollment_founder_waits_for_published_machine() {
         assert_resumed_enrollment_waits_for_published_machine(true).await;
     }
