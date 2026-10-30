@@ -1557,6 +1557,25 @@ describe("organization enrollment coordinator", () => {
     expect((await harness.pool.query("select machine_id from organization_machine")).rows).toEqual([{ machine_id: joiner.machineId }]);
   });
 
+  it("resumes a founder Cloud still lists, and joins one it forgot like any other Server", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await readyFounder(fake);
+    const joiner = await joinedServer(fake, founder, 1);
+    await fake.coordinator.completeFounding(joiner);
+    expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(0) }))
+      .toMatchObject({ success: { kind: "initialize", resumed: true } });
+
+    const generation = hashEnrollmentToken(founder.pairingCredential);
+    expect(await fake.coordinator.dropRemoved({ organizationId, machineId: founder.machineId, generation, removal: "unconfirmed" }))
+      .toEqual({ kind: "others_remain" });
+    const registered = fake.registerCalls();
+    expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(0) })).toMatchObject({
+      success: { kind: "join", registration: { assigned_machine: { id: founder.machineId } } },
+    });
+    expect(fake.registerCalls()).toBe(registered + 1);
+    expect((await harness.pool.query("select machine_id from organization_machine")).rows).toEqual([{ machine_id: joiner.machineId }]);
+  });
+
   it("refuses a publication that waited on the pairing lock while its Server was removed", async () => {
     const fake = fakeSession(harness.database);
     const founder = await readyFounder(fake);
