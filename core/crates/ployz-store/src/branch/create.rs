@@ -324,11 +324,11 @@ pub(crate) fn copy_node(
         if !copied.contains(&service.lineage_id) {
             continue;
         }
-        let Some(copy) = branch
+        let Some(own) = branch
             .working
             .services
             .iter()
-            .find(|copy| copy.lineage_id == service.lineage_id)
+            .find(|own| own.lineage_id == service.lineage_id)
         else {
             continue;
         };
@@ -339,7 +339,7 @@ pub(crate) fn copy_node(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT DO NOTHING",
                 &[
                     branch.summary.id.as_str().into(),
-                    copy.id.as_str().into(),
+                    own.id.as_str().into(),
                     owner.environment.summary.id.as_str().into(),
                     service.id.as_str().into(),
                     variable.id.as_str().into(),

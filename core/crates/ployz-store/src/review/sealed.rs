@@ -88,7 +88,7 @@ pub(crate) fn hide_introduced(
 }
 
 /// Each variable a Branch was made with, or copied from a node's owner since, that
-/// the Parent or owner sealed since: none for a root. The Branch's own copy has its
+/// the Parent or owner sealed since. The Branch's own copy has its
 /// own ID, so the seal is matched by the ID of the variable the copy came from,
 /// never by key alone, which a variable added since under that key shares.
 #[derive(Default)]
