@@ -22,7 +22,8 @@ use super::{
 };
 use crate::{
     corrosion::{
-        AdminClient, ApiClient, Error as CorrosionError, MachineView, ReplicatedStore, Subscription,
+        AdminClient, ApiClient, Error as CorrosionError, MachineView, REFRESH_INTERVAL,
+        ReplicatedStore, Subscription,
     },
     route_acks::load_down,
 };
@@ -76,6 +77,7 @@ pub async fn serve(run_dir: &Path) -> io::Result<DnsExit> {
             resolv_conf: PathBuf::from("/etc/resolv.conf"),
             exe: InstalledExe::current()?,
             tick: TICK,
+            refresh: REFRESH_INTERVAL,
             backoff: Backoff::default(),
         },
         shutdown,
@@ -89,6 +91,8 @@ pub(crate) struct Fixture<'a> {
     pub(crate) resolv_conf: PathBuf,
     pub(crate) exe: InstalledExe,
     pub(crate) tick: Duration,
+    /// How often the Container snapshot is re-read with no change reported.
+    pub(crate) refresh: Duration,
     pub(crate) backoff: Backoff,
 }
 
@@ -187,7 +191,7 @@ pub(crate) async fn serve_with(
     tokio::pin!(server);
     let exit = tokio::select! {
         served = &mut server => return served.map(|()| DnsExit::Stopped),
-        followed = session.follow(&answers, connection, fixture.tick, fixture.keeper, &shutdown) => {
+        followed = session.follow(&answers, connection, fixture.tick, fixture.refresh, fixture.keeper, &shutdown) => {
             followed?;
             DnsExit::Stopped
         }
@@ -273,6 +277,7 @@ impl Session {
         answers: &Answers,
         mut connection: Connection,
         tick: Duration,
+        refresh: Duration,
         keeper: &dyn Keeper,
         shutdown: &CancellationToken,
     ) -> io::Result<()> {
@@ -283,6 +288,7 @@ impl Session {
                 &mut self.inputs,
                 &self.endpoint.token_file,
                 tick,
+                refresh,
                 shutdown,
             )
             .await?
@@ -380,6 +386,7 @@ async fn watch_projection(
     inputs: &mut ProjectionInputs,
     token_file: &Path,
     tick: Duration,
+    refresh_every: Duration,
     shutdown: &CancellationToken,
 ) -> io::Result<Watched> {
     let Connection {
@@ -397,9 +404,23 @@ async fn watch_projection(
     // membership I/O never delays Container-change withdrawal.
     let membership = IntervalStream::new(interval).then(|_| load_down(machines, admin, &local_id));
     tokio::pin!(membership);
+    // A quiet subscription and a stalled one look alike, so the snapshot is
+    // re-read even without a change, and a re-snapshot still open is a lost stream.
+    let mut refresh =
+        tokio::time::interval_at(tokio::time::Instant::now() + refresh_every, refresh_every);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut pending_snapshot = false;
     loop {
         let rebuild = tokio::select! {
+            _ = refresh.tick() => {
+                if changes.snapshot_in_progress() {
+                    return Ok(Watched::Lost(Lost::Stream(CorrosionError::Protocol(
+                        "subscription snapshot stalled".into(),
+                    ))));
+                }
+                pending_snapshot = true;
+                reload_snapshot(replicated, inputs, &mut pending_snapshot).await
+            }
             changed = changes.changed() => {
                 if let Err(error) = changed {
                     return Ok(Watched::Lost(Lost::Stream(error)));

@@ -33,6 +33,7 @@ struct ClusterKv {
     volumes: BTreeMap<(String, String), String>,
     ingress_routes: BTreeMap<(String, String), String>,
     container_changes: broadcast::Sender<()>,
+    container_feed: ContainerFeed,
     machine_changes: broadcast::Sender<()>,
     /// No test writes a certificate; this only keeps the empty table's subscription open.
     certificate_changes: broadcast::Sender<()>,
@@ -42,6 +43,16 @@ struct ClusterKv {
     /// Counts subscription requests, so a test awaits a subscribe instead of polling.
     subscribed: tokio::sync::watch::Sender<usize>,
     held: Option<HeldQuery>,
+}
+
+/// What an open Container subscription sends when a Container row changes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContainerFeed {
+    Changes,
+    /// Nothing, as a subscription that went quiet on a live connection.
+    Silent,
+    /// The start of a re-snapshot that never finishes.
+    StalledSnapshot,
 }
 
 #[derive(Clone)]
@@ -66,6 +77,7 @@ impl ClusterKv {
             volumes: BTreeMap::new(),
             ingress_routes: BTreeMap::new(),
             container_changes,
+            container_feed: ContainerFeed::Changes,
             machine_changes,
             certificate_changes,
             subscriptions,
@@ -193,6 +205,10 @@ impl FakeCluster {
         self.serve(std::net::TcpListener::bind(self.address).unwrap());
     }
 
+    pub(crate) fn feed_container_changes(&self, feed: ContainerFeed) {
+        self.kv.lock().unwrap().container_feed = feed;
+    }
+
     pub(crate) fn fail_snapshots(&self, fail: bool) {
         self.kv.lock().unwrap().snapshots_fail = fail;
     }
@@ -316,6 +332,7 @@ async fn subscriptions(
     body: Bytes,
 ) -> Result<Body, StatusCode> {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
+    let shared = Arc::clone(&kv);
     let mut kv = kv.lock().unwrap();
     kv.subscribed.send_modify(|seen| *seen += 1);
     if let Some(token) = headers
@@ -328,35 +345,50 @@ async fn subscriptions(
     if !kv.subscriptions {
         return Err(StatusCode::NOT_FOUND);
     }
-    let (receiver, columns) = match statement.query.as_str() {
+    let (receiver, columns, containers) = match statement.query.as_str() {
         "SELECT id, machine_id, container FROM containers" => (
             kv.container_changes.subscribe(),
             "{\"columns\":[\"id\",\"machine_id\",\"container\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+            true,
         ),
         "SELECT id, info FROM machines" => (
             kv.machine_changes.subscribe(),
             "{\"columns\":[\"id\",\"info\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+            false,
         ),
         "SELECT hostname, body FROM certificates" => (
             kv.certificate_changes.subscribe(),
             "{\"columns\":[\"hostname\",\"body\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+            false,
         ),
         query => panic!("unexpected subscription {query}"),
     };
     drop(kv);
     let snapshot =
         stream::once(async move { Ok::<_, Infallible>(Bytes::from_static(columns.as_bytes())) });
-    let changes = stream::unfold(receiver, |mut receiver| async move {
-        loop {
-            match receiver.recv().await {
-                Ok(()) => {
-                    return Some((
-                        Ok::<_, Infallible>(Bytes::from_static(b"{\"change\":{}}\n")),
-                        receiver,
-                    ));
+    let changes = stream::unfold(receiver, move |mut receiver| {
+        let kv = Arc::clone(&shared);
+        async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(()) => {
+                        let feed = if containers {
+                            kv.lock().unwrap().container_feed
+                        } else {
+                            ContainerFeed::Changes
+                        };
+                        let event: &'static [u8] = match feed {
+                            ContainerFeed::Changes => b"{\"change\":{}}\n",
+                            ContainerFeed::Silent => continue,
+                            ContainerFeed::StalledSnapshot => {
+                                b"{\"columns\":[\"id\",\"machine_id\",\"container\"]}\n"
+                            }
+                        };
+                        return Some((Ok::<_, Infallible>(Bytes::from_static(event)), receiver));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return None,
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
     });

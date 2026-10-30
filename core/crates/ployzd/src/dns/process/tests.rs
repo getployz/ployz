@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Backoff, DnsExit, Fixture, InstalledExe, serve_with};
 use crate::{
-    corrosion::fake_cluster::{FakeCluster, unclaimed_loopback},
+    corrosion::fake_cluster::{ContainerFeed, FakeCluster, unclaimed_loopback},
     dns::{
         listeners::{Keeper, Listeners, MemoryKeeper},
         spec::{CorrosionEndpoint, DnsSpec, SpecFile},
@@ -32,6 +32,7 @@ use crate::{
 };
 
 const TICK: Duration = Duration::from_millis(50);
+const REFRESH: Duration = Duration::from_millis(200);
 const SETTLE: Duration = Duration::from_secs(5);
 const SILENCE: Duration = Duration::from_millis(300);
 const INTERNAL: &str = "api.app.internal.";
@@ -91,6 +92,7 @@ impl Harness {
                     resolv_conf,
                     exe,
                     tick: TICK,
+                    refresh: REFRESH,
                     backoff: Backoff::between(
                         Duration::from_millis(20),
                         Duration::from_millis(100),
@@ -272,6 +274,57 @@ async fn a_rotated_token_reconnects_on_the_tick() {
     })
     .await;
     harness.publish_replicas(3).await;
+    harness.wait_for_replicas(3).await;
+
+    shutdown.cancel();
+    assert_eq!(process.await.unwrap().unwrap(), DnsExit::Stopped);
+}
+
+#[tokio::test]
+async fn a_quiet_subscription_is_caught_by_the_refresh() {
+    let harness = Harness::new();
+    harness.publish_replicas(2).await;
+    let shutdown = CancellationToken::new();
+    let process = harness.spawn(&shutdown);
+    harness.wait_for_replicas(2).await;
+
+    harness
+        .cluster
+        .feed_container_changes(ContainerFeed::Silent);
+    harness.publish_replicas(3).await;
+    harness.wait_for_replicas(3).await;
+    assert!(
+        !harness
+            .keeper
+            .statuses()
+            .contains(&"reconnecting to Corrosion".to_owned()),
+        "a quiet table is re-read, not reconnected"
+    );
+
+    shutdown.cancel();
+    assert_eq!(process.await.unwrap().unwrap(), DnsExit::Stopped);
+}
+
+#[tokio::test]
+async fn a_stalled_resnapshot_reconnects_on_the_refresh() {
+    let harness = Harness::new();
+    harness.publish_replicas(2).await;
+    let shutdown = CancellationToken::new();
+    let process = harness.spawn(&shutdown);
+    harness.wait_for_replicas(2).await;
+
+    harness
+        .cluster
+        .feed_container_changes(ContainerFeed::StalledSnapshot);
+    // One change, so the stream stalls inside the re-snapshot rather than breaking it.
+    let third = replica_observations(3).pop().unwrap();
+    harness
+        .cluster
+        .store()
+        .publish_container(&third)
+        .await
+        .unwrap();
+    wait_for_status(&harness.keeper, "serving after reconnecting to Corrosion").await;
     harness.wait_for_replicas(3).await;
 
     shutdown.cancel();

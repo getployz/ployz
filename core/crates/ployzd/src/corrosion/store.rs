@@ -22,8 +22,8 @@ use ployz_core::{
 use serde_json::json;
 
 use super::{
-    ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, Statement,
-    Subscription,
+    ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, REFRESH_INTERVAL,
+    Statement, Subscription,
 };
 use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, RecordOwner};
 
@@ -1300,6 +1300,8 @@ struct RuntimeWatchChanges {
 }
 
 impl RuntimeWatchChanges {
+    /// Wakes on a change, or after `REFRESH_INTERVAL` without one so the reader
+    /// re-reads tables whose subscription went quiet.
     async fn changed(&mut self) -> Result<(), Error> {
         tokio::select! {
             result = self.machines.changed() => result,
@@ -1307,7 +1309,26 @@ impl RuntimeWatchChanges {
             result = self.volumes.changed() => result,
             result = self.certificates.changed() => result,
             result = self.cluster.changed() => result,
+            () = tokio::time::sleep(REFRESH_INTERVAL) => {
+                if self.snapshot_in_progress() {
+                    Err(Error::Protocol("subscription snapshot stalled".into()))
+                } else {
+                    Ok(())
+                }
+            }
         }
+    }
+
+    fn snapshot_in_progress(&self) -> bool {
+        [
+            &self.machines,
+            &self.containers,
+            &self.volumes,
+            &self.certificates,
+            &self.cluster,
+        ]
+        .into_iter()
+        .any(Subscription::snapshot_in_progress)
     }
 }
 
@@ -1347,4 +1368,61 @@ fn removal(machine_id: &MachineId) -> [Statement; 4] {
         ),
         Statement::new("DELETE FROM machines WHERE id = ?", [json!(machine_id)]),
     ]
+}
+
+#[cfg(test)]
+mod runtime_watch_changes_tests {
+    use std::{io, time::Duration};
+
+    use bytes::Bytes;
+    use futures_util::{StreamExt, stream};
+
+    use super::{REFRESH_INTERVAL, RuntimeWatchChanges, Subscription};
+
+    fn quiet() -> Subscription {
+        Subscription::streaming(stream::pending::<Result<Bytes, io::Error>>())
+    }
+
+    fn changes(certificates: Subscription) -> RuntimeWatchChanges {
+        RuntimeWatchChanges {
+            machines: quiet(),
+            containers: quiet(),
+            volumes: quiet(),
+            certificates,
+            cluster: quiet(),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn quiet_subscriptions_wake_the_reader_on_the_refresh_interval() {
+        let mut changes = changes(quiet());
+        let started = tokio::time::Instant::now();
+
+        changes
+            .changed()
+            .await
+            .expect("a quiet table is not a failure");
+        assert_eq!(started.elapsed(), REFRESH_INTERVAL);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_snapshot_still_in_progress_at_the_refresh_ends_the_watch() {
+        let stalled = Subscription::streaming(
+            stream::iter([Ok::<_, io::Error>(Bytes::from_static(
+                b"{\"columns\":[\"hostname\",\"body\"]}\n",
+            ))])
+            .chain(stream::pending()),
+        );
+        let mut changes = changes(stalled);
+
+        let error =
+            tokio::time::timeout(REFRESH_INTERVAL + Duration::from_secs(1), changes.changed())
+                .await
+                .expect("the refresh bounds a stalled snapshot")
+                .expect_err("a stalled snapshot must end the watch");
+        assert!(
+            error.to_string().contains("subscription snapshot stalled"),
+            "{error}"
+        );
+    }
 }
