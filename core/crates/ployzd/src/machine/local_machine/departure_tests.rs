@@ -419,6 +419,39 @@ async fn a_refused_enroll_does_not_depart() {
     assert!(!forgot_data(&test.docker));
 }
 
+/// A Server wiped and enrolled again over the bridge its earlier enrollment left, with
+/// that enrollment's containers on it, refuses before it departs or installs (#3405).
+#[tokio::test]
+async fn an_enroll_over_an_earlier_enrollments_bridge_refuses_naming_its_containers() {
+    let test = harness(false).await;
+    *test.docker.network.lock().unwrap() = Some(json!({
+        "Id": "earlier",
+        "Name": "ployz",
+        "Labels": {"ployzd.managed": ""},
+        "IPAM": {"Config": [{"Subnet": "10.210.9.0/24", "Gateway": "10.210.9.1"}]},
+        "Containers": {"a1": {"Name": "ployz-ingress"}, "b2": {"Name": "ployz-workspace"}},
+    }));
+    let refused = test.local.enroll(initialize_request()).await.unwrap();
+    let Enrolled::Refused { error, now } = refused else {
+        panic!("{refused:?}");
+    };
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert!(
+        error
+            .message
+            .contains("run `docker rm -f ployz-ingress ployz-workspace`"),
+        "{}",
+        error.message
+    );
+    assert_eq!(now.phase, LocalMachinePhase::Uninitialized);
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Uninitialized
+    );
+    assert!(test.plugin.routes_called().is_empty());
+    assert!(!forgot_data(&test.docker));
+}
+
 #[tokio::test]
 async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
     let test = harness(false).await;

@@ -84,6 +84,8 @@ pub(crate) struct FakeDocker {
     pub(crate) slow_running_inspects: Arc<Mutex<Duration>>,
     /// The multiplexed body every Container log request answers with.
     pub(crate) logs: Arc<Mutex<Vec<u8>>>,
+    /// What a network inspect answers in place of an empty Ployz bridge.
+    pub(crate) network: Arc<Mutex<Option<serde_json::Value>>>,
 }
 
 async fn fake_docker(
@@ -338,10 +340,14 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             serde_json::json!({"Id": id, "Warnings": []}),
         )
     } else if method == Method::GET && path.contains("/networks/") {
-        (
-            StatusCode::OK,
-            serde_json::json!({"IPAM":{"Config":[{"Subnet":"10.210.0.0/24","Gateway":"10.210.0.1"}]}}),
-        )
+        let network = fake.network.lock().unwrap().clone().unwrap_or_else(|| {
+            serde_json::json!({
+                "Name": "ployz",
+                "Labels": {"ployzd.managed": ""},
+                "IPAM": {"Config": [{"Subnet": "10.210.0.0/24", "Gateway": "10.210.0.1"}]},
+            })
+        });
+        (StatusCode::OK, network)
     } else if method == Method::GET && path.ends_with("/containers/json") {
         let listed = uri.query().and_then(|query| {
             fake.volume_users

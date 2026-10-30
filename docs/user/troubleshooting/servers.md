@@ -357,6 +357,16 @@ When `ss` lists the port with no program, another WireGuard interface, such as a
 `wg-quick`, probably holds it. `sudo wg show all listen-port` names the interface. Move that
 tunnel to another port, or take it down.
 
+## Enroll refuses over an earlier enrollment's network
+
+You'll see `refusing to enroll over an earlier enrollment's network`. The server's Ployz state was
+wiped, but the `ployz-wg` interface or the `ployz` Docker network from its earlier enrollment is
+still there. Enroll stops before it changes anything. The message names each leftover, including
+the containers still attached to the network, and ends with the commands that clear them all.
+Removing those containers stops them, and their volume data stays on the disk. Run the commands,
+then run the enroll command again. [After deleting /var/lib/ployz](#after-deleting-varlibployz)
+covers the old identity left in your server list.
+
 ## Ployz stops over a leftover network
 
 `sudo systemctl status ployz` shows the service failed with `status=78`, and its logs say
@@ -378,6 +388,35 @@ For a Docker network named `ployz`, stop Ployz the same way. Run `docker network
 and find its owner from its labels and attached containers. Move or remove those containers through
 whatever deployed them. Once the network is empty and nothing needs it, run
 `docker network rm ployz`, then the last two commands above.
+
+A server can have both. Clear them together, because Ployz names only the first one it meets on
+each start.
+
+### After deleting /var/lib/ployz
+
+`/var/lib/ployz` holds the server's identity, and the `ployz-wg` interface and `ployz` Docker
+network belong to that identity. Deleting the folder doesn't remove them, so the server's next
+enrollment refuses over them. If you delete `/var/lib/ployz`, clear them too, before you add the
+server again:
+
+```sh
+sudo systemctl stop ployz.socket ployz
+sudo ip link delete ployz-wg
+docker network inspect ployz --format '{{range .Containers}}{{.Name}} {{end}}'
+docker rm -f MY-CONTAINER ...
+docker network rm ployz
+sudo systemctl reset-failed ployz.socket ployz
+sudo systemctl start ployz.socket
+```
+
+The containers that `docker network inspect` lists are the apps and the ingress proxy the server ran
+before. Removing them stops those apps; their volume data stays on the disk.
+
+Your server list still shows the old identity as a second row with the same name, so the join can
+end with `Global catch-up is incomplete` and `MY-SERVER: no terminal response`. The server has
+joined all the same. Forget the old row by its ID, which `ployz --json server ls` shows, as in
+[Forget a server that is gone](../servers/manage-servers.md#forget-a-server-that-is-gone). Then
+redeploy, so your apps and the ingress proxy start on the server again.
 
 ## My first server never finished joining
 

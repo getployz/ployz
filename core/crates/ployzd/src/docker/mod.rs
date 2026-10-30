@@ -147,6 +147,10 @@ impl LocalDocker {
         Ok(Self::from_client(Docker::connect_with_defaults()?))
     }
 
+    pub(crate) fn client(&self) -> &Docker {
+        &self.client
+    }
+
     fn from_client(client: Docker) -> Self {
         Self {
             client,
