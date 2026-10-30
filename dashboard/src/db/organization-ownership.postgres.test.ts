@@ -29,6 +29,7 @@ const notOrganizationOwned = {
   config_migration: "The Config Store's applied migrations.",
   config_volume_storage: "Storage fixed when a Deployment first targets a Volume. The Volume listing reads it as recorded_storage, and it moves only in the transaction that moves Applied State, whose change log covers the move.",
   config_sealed_variable: "Which variables an Environment ever sealed, read only when History restores or scrubs; no view reads it, so it needs no change log.",
+  config_node_copied_from: "The IDs each Own Copy's variables came from, read only when a review hides a value the owner sealed; no view reads it, so it needs no change log.",
   operation_outbox: "Events waiting for Inngest, keyed by event id; it belongs to no Organization and no view reads it.",
   uptime_region: "Display names for the probe regions, shared by every Organization and written only by the uptime checker.",
   jwks: "The keys Cloud signs agent access tokens with, shared by every Organization.",

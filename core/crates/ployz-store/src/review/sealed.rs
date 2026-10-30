@@ -71,7 +71,7 @@ pub(crate) fn hide_introduced(
                             parent = Some(parent_sealed(tx, environment)?);
                         }
                         parent.as_ref().is_some_and(|parent| {
-                            parent.contains(&(service.lineage_id.clone(), was.key.clone()))
+                            parent.holds(&service.id, &service.lineage_id, &was.key)
                         })
                     }
                 }
@@ -88,61 +88,77 @@ pub(crate) fn hide_introduced(
 }
 
 /// Each variable a Branch was made with, or copied from a node's owner since, that
-/// the Parent or owner sealed since, by Service lineage and key: none for a root.
-/// The Branch's own copy has its own ID, so the seal is matched by the ID of the
-/// variable the copy came from, never by key alone, which a variable added since
-/// under that key shares.
-fn parent_sealed(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-) -> Result<BTreeSet<(String, String)>, RpcError> {
-    // (source, source Service ID, lineage, variable ID, key)
-    let mut came_from = Vec::new();
+/// the Parent or owner sealed since: none for a root. The Branch's own copy has its
+/// own ID, so the seal is matched by the ID of the variable the copy came from,
+/// never by key alone, which a variable added since under that key shares.
+#[derive(Default)]
+struct ParentSealed {
+    /// By Service lineage and key, for a node the Branch was made with.
+    made_with: BTreeSet<(String, String)>,
+    /// By the Branch's node ID, then key, for each Own Copy made since: a copy
+    /// removed and made again has a new ID, and its own source.
+    copied: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl ParentSealed {
+    fn holds(&self, node: &str, lineage: &str, key: &str) -> bool {
+        match self.copied.get(node) {
+            Some(keys) => keys.contains(key),
+            None => self
+                .made_with
+                .contains(&(lineage.to_owned(), key.to_owned())),
+        }
+    }
+}
+
+fn parent_sealed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<ParentSealed, RpcError> {
+    let mut sealed = ParentSealed::default();
+    let mut ledgers = BTreeMap::new();
     for row in tx.query(
         "SELECT parent_id, made_with FROM config_environment_branch WHERE environment_id = ?1",
         &[environment.as_str().into()],
     )? {
-        let parent = row.text(0)?;
+        let ever = ledger(tx, &mut ledgers, row.text(0)?)?;
         for service in row.intent(1, "Branch")?.services {
-            for variable in service.variables {
-                came_from.push((
-                    parent.to_owned(),
-                    service.id.clone(),
-                    service.lineage_id.clone(),
-                    variable.id,
-                    variable.key,
-                ));
+            for variable in &service.variables {
+                if ever.holds_id(&service.id, variable) {
+                    sealed
+                        .made_with
+                        .insert((service.lineage_id.clone(), variable.key.clone()));
+                }
             }
         }
     }
     for row in tx.query(
-        "SELECT source_id, source_node_id, lineage_id, variable_id, key \
+        "SELECT node_id, source_id, source_node_id, variable_id, key \
          FROM config_node_copied_from WHERE environment_id = ?1",
         &[environment.as_str().into()],
     )? {
-        came_from.push((
-            row.text(0)?.to_owned(),
-            row.text(1)?.to_owned(),
-            row.text(2)?.to_owned(),
-            row.text(3)?.to_owned(),
-            row.text(4)?.to_owned(),
-        ));
-    }
-    let mut ledgers = BTreeMap::new();
-    let mut sealed = BTreeSet::new();
-    for (source, service, lineage, variable, key) in came_from {
-        let ever = match ledgers.entry(source) {
-            Entry::Occupied(ever) => ever.into_mut(),
-            Entry::Vacant(at) => {
-                let ever = EverSealed::load(tx, at.key())?;
-                at.insert(ever)
-            }
-        };
-        if ever.ids.contains(&(service, variable)) {
-            sealed.insert((lineage, key));
+        let keys = sealed.copied.entry(row.text(0)?.to_owned()).or_default();
+        let ever = ledger(tx, &mut ledgers, row.text(1)?)?;
+        if ever
+            .ids
+            .contains(&(row.text(2)?.to_owned(), row.text(3)?.to_owned()))
+        {
+            keys.insert(row.text(4)?.to_owned());
         }
     }
     Ok(sealed)
+}
+
+/// `source`'s [`EverSealed`], loaded once per review.
+fn ledger<'a>(
+    tx: &mut dyn Tx,
+    ledgers: &'a mut BTreeMap<String, EverSealed>,
+    source: &str,
+) -> Result<&'a EverSealed, RpcError> {
+    Ok(match ledgers.entry(source.to_owned()) {
+        Entry::Occupied(ever) => ever.into_mut(),
+        Entry::Vacant(at) => {
+            let ever = EverSealed::load(tx, source)?;
+            at.insert(ever)
+        }
+    })
 }
 
 /// Whether a template reads a name in `names`. By key alone, whatever Service owns

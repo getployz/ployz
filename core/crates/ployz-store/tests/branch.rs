@@ -1676,20 +1676,28 @@ fn copy_db_and_delete_token(store: &ConfigStore, who: &Actor) {
     create.live = vec![node("db")];
     store.write(who, &create).unwrap();
     deploy(store, who, "fix-web", 2, true);
+    copy_db(store, who);
+    unset(store, who, "fix-web", "db.env.TOKEN");
+}
+
+fn copy_db(store: &ConfigStore, who: &Actor) {
     let copy = CopyNode {
         environment: at("fix-web"),
         node: ServiceName::parse("db").unwrap(),
         expect: None,
     };
     store.write(who, &copy).unwrap();
+}
+
+fn unset(store: &ConfigStore, who: &Actor, environment: &str, path: &str) {
     store
         .write(
             who,
             &Edit {
-                environment: at("fix-web"),
+                environment: at(environment),
                 expect: None,
                 changes: vec![Change::Unset {
-                    path: SettingPath::parse("db.env.TOKEN").unwrap(),
+                    path: SettingPath::parse(path).unwrap(),
                 }],
             },
         )
@@ -1741,18 +1749,7 @@ fn an_own_copy_deleting_a_value_its_parent_added_plain_after_a_seal_still_shows_
         )],
     );
     deploy(&store, &who, "production", 1, true);
-    store
-        .write(
-            &who,
-            &Edit {
-                environment: at("production"),
-                expect: None,
-                changes: vec![Change::Unset {
-                    path: SettingPath::parse("db.env.TOKEN").unwrap(),
-                }],
-            },
-        )
-        .unwrap();
+    unset(&store, &who, "production", "db.env.TOKEN");
     set(
         &store,
         &who,
@@ -1761,6 +1758,68 @@ fn an_own_copy_deleting_a_value_its_parent_added_plain_after_a_seal_still_shows_
     );
     deploy(&store, &who, "production", 3, true);
     copy_db_and_delete_token(&store, &who);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-web", "db.env.TOKEN"),
+        (json!("public-new"), Value::Null)
+    );
+}
+
+/// A copy removed and made again matches the owner's seals by its own source: the
+/// first copy's sealed variable doesn't hide the plain one the second came from.
+#[test]
+fn an_own_copy_made_again_matches_only_its_own_source() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    deploy(&store, &who, "fix-web", 2, true);
+    copy_db(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: at("fix-web"),
+                service: ServiceName::parse("db").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: at("fix-web"),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "db.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOKEN", 2),
+        )],
+    );
+    deploy(&store, &who, "production", 3, true);
+    unset(&store, &who, "production", "db.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("public-new"))],
+    );
+    deploy(&store, &who, "production", 4, true);
+    copy_db(&store, &who);
+    unset(&store, &who, "fix-web", "db.env.TOKEN");
 
     assert_eq!(
         review_row(&store, &who, "fix-web", "db.env.TOKEN"),

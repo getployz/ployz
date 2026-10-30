@@ -335,14 +335,13 @@ pub(crate) fn copy_node(
         for variable in &service.variables {
             tx.execute(
                 "INSERT INTO config_node_copied_from \
-                 (environment_id, node_id, source_id, source_node_id, lineage_id, variable_id, key) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT DO NOTHING",
+                 (environment_id, node_id, source_id, source_node_id, variable_id, key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT DO NOTHING",
                 &[
                     branch.summary.id.as_str().into(),
                     copy.id.as_str().into(),
                     owner.environment.summary.id.as_str().into(),
                     service.id.as_str().into(),
-                    service.lineage_id.as_str().into(),
                     variable.id.as_str().into(),
                     variable.key.as_str().into(),
                 ],

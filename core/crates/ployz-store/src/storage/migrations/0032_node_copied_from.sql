@@ -6,7 +6,6 @@ CREATE TABLE config_node_copied_from (
     node_id TEXT NOT NULL,
     source_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
     source_node_id TEXT NOT NULL,
-    lineage_id TEXT NOT NULL,
     variable_id TEXT NOT NULL,
     key TEXT NOT NULL,
     PRIMARY KEY (environment_id, node_id, variable_id)
