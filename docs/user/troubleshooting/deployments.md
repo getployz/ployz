@@ -101,6 +101,11 @@ the next progress update or heartbeat, using the Machine ID if it still lacks a 
 Interactive progress can show it at once. If following stops first while progress is showing,
 the warning still prints.
 
+A failure on a Server that isn't relevant to the deploy is not a gap, so exit codes ignore it.
+A deploy planned by 0.3.11 or later names that Server: `volume observation failed on Server
+machine-3: …`. It prints the Machine ID instead when another Server has the same name, and
+when an earlier release planned the deploy.
+
 If Ployz cannot read every required Server's Containers and Volumes while deploying a Service
 with an ingress hostname, it warns that hostname conflicts were not fully checked. Resolve the
 observation warnings, then deploy again.

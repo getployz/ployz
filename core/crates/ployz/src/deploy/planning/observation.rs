@@ -56,6 +56,7 @@ pub(super) fn warnings(
                 gap: None,
                 kind,
                 machine_id,
+                machine_name: None,
                 message: "this Entry doesn't recognize its membership, so it wasn't asked".into(),
             };
         }
@@ -127,6 +128,26 @@ pub(super) fn warnings(
                     ObservationGapReason::Down
                 },
             });
+        }
+    }
+    // A Server outside this Deploy's work leaves no gap, but its failure still names
+    // it, unless another Server shares that name and only the ID tells them apart.
+    for warning in &mut warnings {
+        if let DeployWarning::ObservationFailed {
+            machine_id,
+            machine_name,
+            gap: None,
+            ..
+        } = warning
+            && let Some(machine) = snapshot
+                .machines
+                .iter()
+                .find(|machine| machine.machine.id == *machine_id)
+            && !snapshot.machines.iter().any(|other| {
+                other.machine.id != *machine_id && other.machine.name == machine.machine.name
+            })
+        {
+            *machine_name = Some(machine.machine.name.clone());
         }
     }
     // Its old copies were never observed, so no cleanup report reaches them;

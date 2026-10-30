@@ -791,6 +791,7 @@ fn losing_cloud_after_an_observation_failure_prints_the_notice() {
         warning: DeployWarning::ObservationFailed {
             kind: ObservationKind::Volume,
             machine_id: MachineId::parse("2".repeat(32)).unwrap(),
+            machine_name: None,
             message: "volume query timed out".into(),
             gap: None,
         },

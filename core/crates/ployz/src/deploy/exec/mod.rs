@@ -150,6 +150,7 @@ impl Unanswered {
             }),
             kind: ObservationKind::Container,
             machine_id: self.failure.machine_id,
+            machine_name: None,
             message: self.message.clone(),
         });
     }

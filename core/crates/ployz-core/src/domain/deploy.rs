@@ -858,6 +858,11 @@ pub enum DeployWarning {
         gap: Option<ObservationGap>,
         kind: ObservationKind,
         machine_id: MachineId,
+        /// The Machine's name, set only on an uncounted failure whose name is unique.
+        /// Absent from previews written before 0.3.11.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        machine_name: Option<MachineName>,
         message: String,
     },
     /// Listing containers or volumes on `machine_id` produced no terminal response.
@@ -960,9 +965,10 @@ impl Display for DeployWarning {
         match self {
             Self::StorageHeadroom { machine_id, remaining_bytes } => write!(f, "Machine {machine_id} has only {remaining_bytes} bytes of disk headroom after storage preparation and the OS reserve"),
             Self::UnbudgetedDiskUsage => f.write_str("Storage admission covers provisioned Volumes; image pulls and application writes may need additional disk space."),
-            Self::ObservationFailed { kind, machine_id, message, gap } => match gap {
-                Some(gap) => write!(f, "Could not fully observe {kind}s on Server {}: {message}", gap.machine_name),
-                None => write!(f, "{kind} observation failed on {machine_id}: {message}"),
+            Self::ObservationFailed { kind, machine_id, machine_name, message, gap } => match (gap, machine_name) {
+                (Some(gap), _) => write!(f, "Could not fully observe {kind}s on Server {}: {message}", gap.machine_name),
+                (None, Some(name)) => write!(f, "{kind} observation failed on Server {name}: {message}"),
+                (None, None) => write!(f, "{kind} observation failed on {machine_id}: {message}"),
             },
             Self::ObservationOmitted { kind, machine_id, gap } => match gap {
                 Some(gap) => write!(f, "Server {} was observed Down by this Entry; deployment observations are incomplete.", gap.machine_name),
@@ -1513,6 +1519,31 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(&warning).unwrap(), before);
         assert!(warning.to_string().contains(&machine_id.to_string()));
+    }
+
+    #[test]
+    fn uncounted_observation_failure_names_its_server_and_reads_old_previews() {
+        let machine_id = MachineId::random();
+        let before = serde_json::json!({
+            "type": "observation_failed",
+            "kind": "volume",
+            "machine_id": machine_id,
+            "message": "target Machine RPC timed out",
+        });
+        let mut warning: DeployWarning = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&warning).unwrap(), before);
+        assert_eq!(
+            warning.to_string(),
+            format!("volume observation failed on {machine_id}: target Machine RPC timed out")
+        );
+        let DeployWarning::ObservationFailed { machine_name, .. } = &mut warning else {
+            panic!("expected an observation failure");
+        };
+        *machine_name = Some(MachineName::parse("machine-3").unwrap());
+        assert_eq!(
+            warning.to_string(),
+            "volume observation failed on Server machine-3: target Machine RPC timed out"
+        );
     }
 
     #[test]
