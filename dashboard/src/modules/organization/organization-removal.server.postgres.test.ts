@@ -8,7 +8,7 @@ import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
 import { readOrganizationChanges } from "#/routes/api/org/-changes.server";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
-import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
+import { CloudStore, openCloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, session, user } from "#/modules/identity/tables";
 import { requireAccess, SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
@@ -265,5 +265,45 @@ describe("removeOrganization", () => {
     await harness.db.insert(member).values({ userId: jo, organizationId: NEW_KETTLE, role: "owner" });
 
     expect(await ended).toBe("ended");
+  });
+
+  it("refuses while it read a Project, even one removed before the Store is asked, and asks no one", async () => {
+    const FORGE = "00000000-0000-4000-8000-00000000c010";
+    const [gil] = (await harness.db.insert(user).values({ email: "gil@example.test", name: "Gil" }).returning({ id: user.id }))
+      .map((row) => row.id) as [string];
+    await harness.db.insert(organization).values({ id: FORGE, name: "Forge", slug: "forge" });
+    await harness.db.insert(member).values({ userId: gil, organizationId: FORGE, role: "owner" });
+    const asked: string[] = [];
+    const result = await harness.runEffect(Effect.gen(function* () {
+      const store = yield* openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret");
+      yield* Effect.promise(() => store.write(FORGE, {
+        command: "create_project", id: "00000000-0000-4000-8000-00000000c011", name: "shop", default_environment: "00000000-0000-4000-8000-00000000c012",
+      }));
+      // The Store's own refusal, which the removal answers with in its place.
+      const storeRefusal = yield* storeTry(() => store.removeOrganization(FORGE)).pipe(Effect.flip, Effect.map((error) => error.refusal));
+      // A separately approved `project rm` lands right after the removal reads the Projects.
+      const read = store.read.bind(store);
+      store.read = async (...args) => {
+        const projects = await read(...args);
+        await store.write(FORGE, { command: "remove", project: "shop", environment: null, version: null, accept_volume_loss: {}, every_copy: {} });
+        return projects;
+      };
+      const removed = yield* removeOrganization({ userId: gil, organization: { id: FORGE, slug: "forge" }, role: "owner" }, FORGE, {
+        gate: (operation) => Effect.sync(() => {
+          asked.push(operation.verb);
+          return { ok: true as const, approvalId: null };
+        }),
+      }).pipe(
+        Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+        Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+        Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+        Effect.provideService(InngestClient, sendsNowhere()),
+      );
+      return { removed, storeRefusal };
+    }));
+    expect(result.removed).toEqual({ ok: false, refusal: result.storeRefusal });
+    expect(result.storeRefusal).toMatchObject({ code: "conflict", details: { next: { tool: "remove", input: { project: "shop" } } } });
+    expect(asked).toEqual([]);
+    expect(await harness.db.select().from(organization).where(eq(organization.id, FORGE))).toHaveLength(1);
   });
 });

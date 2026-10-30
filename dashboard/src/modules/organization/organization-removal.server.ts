@@ -51,13 +51,14 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* <E 
   const lacking = lacks({ ...caller, support: null }, "org:delete");
   if (lacking !== null) return refused({ code: "forbidden", message: `${lacking} No changes made.`, details: { permission: "org:delete" } });
   const store = yield* cloudStore;
-  // A Project refuses the removal anyway, so the Store names it before anyone is asked to approve.
+  // A Project refuses the removal before anyone is asked to approve, here and not at the Store: one removed meanwhile
+  // would let the Store remove the Organization unapproved.
   if (gate !== undefined) {
     const { projects } = yield* storeTry(() => store.read(id, { query: "projects" })).pipe(Effect.orDie);
-    if (projects.length === 0) {
-      const gated = yield* gate(organizationRemovalAsked(caller.organization));
-      if (!gated.ok) return refused(gated.refusal);
-    }
+    const [first] = projects;
+    if (first !== undefined) return refused(stillHasProjects(projects.map((project) => project.name), first.name));
+    const gated = yield* gate(organizationRemovalAsked(caller.organization));
+    if (!gated.ok) return refused(gated.refusal);
   }
   const refusal = yield* storeTry(() => store.removeOrganization(id)).pipe(
     Effect.as(null),
@@ -81,6 +82,12 @@ type Deleting<E> = (drop: Effect.Effect<void, never, Database>) => Effect.Effect
 type OrganizationRemoval = { organization: string; removed: boolean; servers: { confirmed: string[]; unconfirmed: string[] } };
 const removal = (value: OrganizationRemoval): StoreResult<OrganizationRemoval> => ({ ok: true, value });
 const refused = (refusal: StoreRefusal): StoreResult<OrganizationRemoval> => ({ ok: false, refusal });
+/** The Store's own refusal of an Organization with Projects (`remove_organization` in ployz-store's teardown.rs). */
+const stillHasProjects = (names: string[], first: string): StoreRefusal => ({
+  code: "conflict",
+  message: `This Organization still has Projects (${names.join(", ")}). Remove them first`,
+  details: { projects: names, next: { tool: "remove", input: { project: first } } },
+});
 
 /** The dashboard's Delete organization: the same removal, by an owner of the Organization named by `organizationSlug`. */
 export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember")(function* (actor: Actor, organizationSlug: string) {
