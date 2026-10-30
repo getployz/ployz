@@ -833,7 +833,7 @@ pub(crate) fn undo(
             &into.working,
             &suffix,
             &changed.row,
-            &changed.value,
+            Some(&changed.value),
         ));
     }
     take_out(tx, &mut into, &proposal)?;

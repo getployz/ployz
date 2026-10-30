@@ -1175,8 +1175,8 @@ pub(super) fn undo(
             let value = landed
                 .iter()
                 .find(|landed| landed.row == row)
-                .map_or(Cell::Absent, |landed| landed.value.clone());
-            return Err(changed_since(&receiver.working, &suffix, &row, &value));
+                .map(|landed| &landed.value);
+            return Err(changed_since(&receiver.working, &suffix, &row, value));
         }
         Err(Unapplied::Invalid(error)) => return Err(config(error)),
     };
@@ -1194,16 +1194,19 @@ pub(super) fn undo(
     Ok(true)
 }
 
-/// Undo refused: `row` holds other than the `value` a Sync landed there. A value
-/// sealed since never becomes plain again, so it can't be changed back.
+/// Undo refused: `row` holds other than the `value` a Sync landed there, if it landed
+/// one. A plain value sealed since never becomes plain again, so it can't be changed
+/// back.
 pub(super) fn changed_since(
     working: &SavedEnvironmentIntent,
     suffix: &str,
     row: &RowId,
-    value: &Cell,
+    value: Option<&Cell>,
 ) -> RpcError {
     let label = named(&[working], row).map_or_else(|| row.to_string(), |row| row.to_string());
-    let message = if Cells::of(working, suffix).at(row).is_secret() && !value.is_secret() {
+    let sealed_since =
+        matches!(value, Some(Cell::Value(_))) && Cells::of(working, suffix).at(row).is_secret();
+    let message = if sealed_since {
         format!("{label} is sealed since it synced: set it as you want it instead")
     } else {
         format!("{label} changed since it synced: change it back instead")

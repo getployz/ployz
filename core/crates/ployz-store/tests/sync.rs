@@ -979,6 +979,31 @@ fn sealing_a_value_a_sync_landed_keeps_only_its_fingerprint() {
     );
 }
 
+/// A secret added since to a node a Sync brought was never plain there: Undo says it
+/// changed, not that it was sealed.
+#[test]
+fn a_secret_added_to_a_synced_node_is_a_change_not_a_seal() {
+    let (store, who) = shop(false);
+    service(&store, &who, "fix-web", 5, "api", "api:1");
+    let synced = sync_into(&store, &who, ("fix-web", "production"), None);
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "api.env.NEW",
+            backend::sealed_secret(&uuid(2), &uuid(5), "NEW", 1),
+        )],
+    );
+    assert_eq!(
+        undo(&store, &who, &synced),
+        Err((
+            RpcErrorCode::Conflict,
+            "api.env.NEW changed since it synced: change it back instead".into()
+        ))
+    );
+}
+
 /// A key sealed once and added again plain keeps its plain value for Undo, as History
 /// keeps it.
 #[test]
