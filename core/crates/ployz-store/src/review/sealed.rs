@@ -25,6 +25,35 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
     }
 }
 
+/// Show sealed each plain value `introduced` keeps for a variable `working` holds
+/// sealed now: a Node Introduction keeps the value a Branch was made with, and a
+/// review compares a new node with it, but never reads a sealed value back. The
+/// fingerprint stays, so the comparison still sees whether the value changed.
+pub(crate) fn hide_introduced(
+    introduced: &mut SavedEnvironmentIntent,
+    working: &SavedEnvironmentIntent,
+) {
+    for service in &mut introduced.services {
+        let Some(now) = working.services.iter().find(|now| now.id == service.id) else {
+            continue;
+        };
+        for was in &mut service.variables {
+            let sealed_now = now
+                .variables
+                .iter()
+                .find(|now| now.id == was.id)
+                .or_else(|| now.variables.iter().find(|now| now.key == was.key))
+                .is_some_and(|now| sealed(&now.value));
+            if sealed_now && !sealed(&was.value) {
+                was.value = SavedVariableValue::Secret {
+                    encrypted_value: None,
+                };
+                was.generated = None;
+            }
+        }
+    }
+}
+
 /// Whether a template reads a name in `names`. By key alone, whatever Service owns
 /// it, so a shared key counts.
 fn reads_any(value: &SavedVariableValue, names: &BTreeSet<String>) -> bool {
