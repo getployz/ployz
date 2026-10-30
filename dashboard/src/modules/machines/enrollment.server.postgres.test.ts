@@ -1795,6 +1795,20 @@ describe("organization enrollment coordinator", () => {
       expect(await enrollIn(fake, claimed, 1)).toMatchObject({ success: { kind: "join" } });
     });
 
+    // Accepted for 0.3.11: Cloud keeps no record that a claim was answered before, so a rerun of a
+    // token whose Server is already joining, refused at `storage` (say for a changed policy), frees
+    // that join's slot. The join still completes; the line admits one more than its slots.
+    it("lets one more through when a rerun of a still-joining add fails at storage", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [joining, next] = [await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, joining, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, joining, 1)).toMatchObject({ success: { kind: "join" } });
+
+      await reportFailure(joining, "storage");
+      expect(await enrollIn(fake, next, 2)).toMatchObject({ success: { kind: "join" } });
+    });
+
     it("sends a resumed claim whose slot lapsed back into the line", async () => {
       const fake = fakeSession(harness.database);
       await readyFounder(fake);
