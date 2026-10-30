@@ -984,3 +984,110 @@ fn a_plain_value_kept_in_a_branchs_sync_bases_is_gone_after_upgrade() {
         .collect();
     assert_eq!(incoming, ["web.env.TOKEN production"]);
 }
+
+/// The plain value an older Store kept in a Branch's History after the Branch took
+/// its Parent's seal of it and added it again plain.
+#[test]
+fn a_plain_value_sealed_then_added_back_is_gone_from_history_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    {
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse(uuid(1)).unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("web").unwrap(),
+                    image: Some("web:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        set(
+            &store,
+            &who,
+            "production",
+            &[("web.env.TOKEN", json!("plain-private"))],
+        );
+        backend::deploy(&store, &who, "production", 1);
+        store
+            .write(
+                &who,
+                &CreateBranch {
+                    id: EnvironmentId::parse(uuid(9)).unwrap(),
+                    from: at("production"),
+                    name: EnvironmentName::parse("fix-web").unwrap(),
+                    copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                    live: Vec::new(),
+                    setup: Vec::new(),
+                    keep: false,
+                    fix: None,
+                },
+            )
+            .unwrap();
+        backend::deploy(&store, &who, "fix-web", 2);
+        set(
+            &store,
+            &who,
+            "production",
+            &[(
+                "web.env.TOKEN",
+                backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+            )],
+        );
+        backend::deploy(&store, &who, "production", 3);
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: at("fix-web"),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse("web.env.TOKEN").unwrap(),
+                    }],
+                },
+            )
+            .unwrap();
+        set(
+            &store,
+            &who,
+            "fix-web",
+            &[("web.env.TOKEN", json!("plain-new"))],
+        );
+        run(
+            &url,
+            "CREATE TABLE kept_saved AS SELECT environment_id, revision, intent FROM config_saved;",
+        );
+        backend::deploy(&store, &who, "fix-web", 4);
+        run(
+            &url,
+            "UPDATE config_saved SET intent = (SELECT intent FROM kept_saved \
+               WHERE kept_saved.environment_id = config_saved.environment_id \
+               AND kept_saved.revision = config_saved.revision) \
+             WHERE EXISTS (SELECT 1 FROM kept_saved \
+               WHERE kept_saved.environment_id = config_saved.environment_id \
+               AND kept_saved.revision = config_saved.revision);
+             DROP TABLE kept_saved;
+             DELETE FROM config_migration WHERE name = '0031_scrub_sealed_history';",
+        );
+        assert!(
+            backend::tables_holding(&url, "plain-private").contains(&"config_saved".to_owned())
+        );
+    }
+    let _store = ConfigStore::open(&url, backend::key()).unwrap();
+    assert!(!backend::tables_holding(&url, "plain-private").contains(&"config_saved".to_owned()));
+    assert!(backend::tables_holding(&url, "plain-new").contains(&"config_saved".to_owned()));
+}
