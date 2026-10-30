@@ -14,6 +14,7 @@ import {
   type OperationVerb,
   type ServiceApply,
   type VolumeApply,
+  withoutSealedBefore,
 } from "#/modules/approvals/approvals";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { user } from "#/modules/identity/tables";
@@ -44,9 +45,12 @@ export const onceFor = (command: ConfigCommand, approvalId: string, reviewed: Di
   return command;
 };
 
-/** A review as anyone reads it: what runs once approved stays in Cloud, since a Sync's carries the secrets it sets. */
+/**
+ * A review as anyone reads it: what runs once approved stays in Cloud, since a Sync's carries the secrets it sets. A
+ * row stored before Cloud sealed its earlier values reads sealed too.
+ */
 const shownReview = ({ apply: _apply, ...review }: ApprovalReview, subject: string): ApprovalReview =>
-  "operation" in review ? { ...review, operation: { ...review.operation, subject } } : review;
+  "operation" in review ? { ...review, operation: { ...review.operation, subject } } : { ...review, diff: withoutSealedBefore(review.diff) };
 
 /** An approval as the CLI reads it. */
 function approvalView(row: ApprovalRow) {
@@ -425,7 +429,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
   // A redeploy's card says what it rolls back, and a pruning Deploy's that it prunes, which its digest binds, and which
   // Servers it couldn't check because large packets to them are dropped, which it doesn't.
   const pruning = { ...(prunes && { prunes }), ...(prunes && dropped && dropped.length > 0 && { dropped }) };
-  const shown = { effects, diff, ...(redeploy && { redeploy }), ...pruning };
+  const shown = { effects, diff: withoutSealedBefore(diff), ...(redeploy && { redeploy }), ...pruning };
   const review = storeReview(caller, command, shown, guarded);
   const recorded = yield* recordAndSweep(organizationId, diff.environment.id, Effect.gen(function* () {
     const { drizzle } = yield* Database;

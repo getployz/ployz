@@ -1,6 +1,6 @@
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { it } from "@effect/vitest";
-import { type Approval, type ConfigCommand, type ConfigStore, RpcError, type RuntimeWatchView } from "@ployz/sdk";
+import { type Approval, type ConfigCommand, type ConfigStore, type DestructiveEffect, type DiffView, type NodeChange, type RowId, type ServiceSettingChange, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber } from "effect";
 import { expect, vi } from "vitest";
@@ -16,7 +16,7 @@ import {
   redeemApproval,
   requestApproval,
 } from "#/modules/approvals/approvals.server";
-import { destroyedLine, type OperationVerb } from "#/modules/approvals/approvals";
+import { type ApprovalReview, destroyedLine, type OperationVerb } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -140,6 +140,34 @@ it.live("an ask for a Deploy that prunes keeps saying so, on its card and to the
     expect(answered.details).toMatchObject({ prunes: true, dropped: ["machine-3"] });
     const row = yield* provided(getApproval(ORGANIZATION, asked(answered).approval_id));
     expect(row.review).toMatchObject({ prunes: true, dropped: ["machine-3"] });
+  }));
+
+it.live("an ask that seals a plain variable stores no plain value for it, and reads none back", () =>
+  Effect.gen(function* () {
+    const { provided, refusal, caller } = yield* shopRemovingWeb();
+    const refused = yield* refusal;
+    const details = refused.details as { diff: DiffView; effects: DestructiveEffect[] };
+    const sealing: ServiceSettingChange = {
+      path: "api.env.TOKEN", kind: "update", before: "fake-plain-marker", after: { secret: true }, canRestore: false, row: "api:variables.TOKEN" as RowId,
+    };
+    const node: NodeChange = { type: "service", id: "api", name: "api", row: "api:node" as RowId, lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [sealing] };
+    const diff = { ...details.diff, changes: [...details.diff.changes, node], draft_changes: [...(details.diff.draft_changes ?? []), node] };
+    const answered = yield* provided(requestApproval(caller, publish, { ...refused, details: { ...details, diff } }, null));
+    const holding = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.select({ id: operationApprovals.id }).from(operationApprovals)
+        .where(sql`strpos(${operationApprovals.review}::text, 'fake-plain-marker') > 0`);
+    }));
+    expect(holding).toEqual([]);
+    // A row stored before Cloud sealed it still holds the plain value, but reads it sealed.
+    const id = asked(answered).approval_id;
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(operationApprovals).set({ review: { effects: details.effects, diff } as ApprovalReview }).where(eq(operationApprovals.id, id));
+    }));
+    const row = yield* provided(getApproval(ORGANIZATION, id));
+    expect(JSON.stringify(row.review)).not.toContain("fake-plain-marker");
+    expect("diff" in row.review && row.review.diff.changes.at(-1)?.settings[0]?.before).toEqual({ secret: true });
   }));
 
 it.live("a destructive CLI publish waits for a human to approve exactly what it destroys, once", () =>

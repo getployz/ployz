@@ -91,6 +91,8 @@ service still gets the real value when it deploys.
 - To seal a plain variable, choose **Seal** from its menu. You can't unseal it. Saving the
   sealed value removes its earlier values from History too, so older versions show **Sealed**.
   A retried deployment of an older version gets the sealed value, not the one it had.
+  An approval for a deploy that seals a variable doesn't keep its earlier value: its card shows
+  **Sealed** on both sides of that change.
   What a branch made before the seal compares its changes with keeps only a fingerprint of the
   earlier plain value, so syncs and follows treat that value as unchanged without keeping it.
   The branch's record of how each service was first created still holds the earlier value
