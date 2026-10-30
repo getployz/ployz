@@ -114,4 +114,7 @@ it("keeps no plain value of a variable the reviewed change seals, as the Store k
   expect(JSON.stringify(sealed)).not.toContain("fake-gone");
   expect(sealed.changes[0]?.settings.map((row) => row.before)).toEqual([{ secret: true }, { secret: true }, "fake-open", "nginx:1"]);
   expect(sealed.draft_changes?.[0]?.settings[0]?.before).toEqual({ secret: true });
+  // A review Cloud kept with only its version and Environment reads as it was.
+  const bare = asTestDouble<DiffView>()({ version: "7", environment: { id: "e", project: "shop", name: "production" } });
+  expect(withoutSealedBefore(bare)).toEqual(bare);
 });

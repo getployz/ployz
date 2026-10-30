@@ -40,7 +40,8 @@ const isSealed = Schema.is(Schema.Struct({ secret: Schema.Boolean }));
 
 /**
  * `diff` with each variable it seals shown sealed before too: saving the seal removes the earlier plain value from
- * History, so an approval kept after it runs keeps none either.
+ * History, so an approval kept after it runs keeps none either. Cloud checks only a refusal's version and Environment,
+ * so a review without changes passes through as it is.
  */
 export function withoutSealedBefore<T extends DiffView>(diff: T): T {
   const node = (change: NodeChange): NodeChange => ({
@@ -48,8 +49,12 @@ export function withoutSealedBefore<T extends DiffView>(diff: T): T {
     settings: change.settings.map((row) =>
       holds(row.row, row.path) === "variable" && isSealed(row.after) && row.before !== null && !isSealed(row.before) ? { ...row, before: { secret: true } } : row),
   });
-  const shown = { ...diff, changes: diff.changes.map(node) };
-  if (diff.draft_changes) shown.draft_changes = diff.draft_changes.map(node);
+  const nodes = (changes: NodeChange[] | undefined) => changes?.map(node);
+  const shown = { ...diff };
+  const changes = nodes(diff.changes);
+  if (changes) shown.changes = changes;
+  const drafts = nodes(diff.draft_changes);
+  if (drafts) shown.draft_changes = drafts;
   return shown;
 }
 
