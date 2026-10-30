@@ -158,6 +158,14 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
+        // First, so no failure of this start can leave the last refusal standing.
+        clear_refusal(
+            &config
+                .socket
+                .parent()
+                .unwrap_or_else(|| Path::new("/run/ployz"))
+                .join(ployz_core::STARTUP_REFUSAL_FILE),
+        );
         // The Observe Store outlives the daemon, so it starts before anything
         // here can fail, and the daemon does not exit before it has started.
         let observe = (config.units == UnitSupervision::Systemd).then(|| {
@@ -209,7 +217,6 @@ impl Daemon {
     ) -> Result<Self, Error> {
         let queued = socket.listener.try_clone()?;
         let refusal = run_dir.join(ployz_core::STARTUP_REFUSAL_FILE);
-        clear_refusal(&refusal);
         let started = Self::start_planes(config, socket, build_policy, run_dir).await;
         if let Err(error) = &started {
             // Recorded before the close, so a client it closes finds the line.
@@ -1136,6 +1143,20 @@ mod tests {
         assert_eq!(ployz_core::startup_refusal(&run_dir), None);
         daemon.request_stop();
         daemon.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_start_that_fails_before_its_planes_clears_the_last_refusal() {
+        let root = TestDir::new("ployzd-daemon-refusal-early-failure");
+        let (config, socket) = test_config(&root.0, ContainerMode::Absent);
+        let run_dir = socket.parent().unwrap().to_owned();
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::write(run_dir.join(ployz_core::STARTUP_REFUSAL_FILE), "refusing\n").unwrap();
+        fs::write(&socket, "not a socket").unwrap();
+
+        assert!(Daemon::start(config).await.is_err());
+
+        assert_eq!(ployz_core::startup_refusal(&run_dir), None);
     }
 
     #[test]

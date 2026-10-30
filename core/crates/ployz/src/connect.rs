@@ -429,7 +429,7 @@ async fn connect_ssh(
         master,
         timeout,
     );
-    connect_stream(spawn_child(program, &args)?, timeout).await
+    connect_stream(spawn_session(program, &args)?, timeout).await
 }
 
 fn ssh_args(
@@ -521,25 +521,21 @@ pub(crate) fn control_path() -> Option<PathBuf> {
         .then(|| directory.join("ployz_ssh_%C.sock"))
 }
 
+/// A child stream whose end passes straight through, as an `ssh -W` forward's
+/// must: that ssh lives on after the target closes, until our side closes.
 fn spawn_child(program: &Path, args: &[String]) -> io::Result<ChildIo> {
-    // A terminal Ctrl-C signals the whole foreground process group. The transport
-    // stays out of it so a cancelled command can still clean up over it.
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()?;
-    let reader = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("child stdout was not piped"))?;
-    let writer = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("child stdin was not piped"))?;
+    let (reader, writer, child) = spawn_piped(program, args, Stdio::null())?;
+    Ok(ChildIo {
+        reader,
+        writer: Some(writer),
+        exit: Some(ChildExit::Ended { child, said: None }),
+    })
+}
+
+/// A child stream that ends, when the child exits unsuccessfully, with the
+/// last line it wrote to stderr: a remote `ployzd dial-stdio` says there why.
+fn spawn_session(program: &Path, args: &[String]) -> io::Result<ChildIo> {
+    let (reader, writer, mut child) = spawn_piped(program, args, Stdio::piped())?;
     let stderr = child
         .stderr
         .take()
@@ -552,6 +548,32 @@ fn spawn_child(program: &Path, args: &[String]) -> io::Result<ChildIo> {
             stderr: drain_stderr(stderr),
         }),
     })
+}
+
+fn spawn_piped(
+    program: &Path,
+    args: &[String],
+    stderr: Stdio,
+) -> io::Result<(ChildStdout, ChildStdin, Child)> {
+    // A terminal Ctrl-C signals the whole foreground process group. The transport
+    // stays out of it so a cancelled command can still clean up over it.
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(stderr)
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()?;
+    let reader = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("child stdout was not piped"))?;
+    let writer = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("child stdin was not piped"))?;
+    Ok((reader, writer, child))
 }
 
 /// How long a stream that ended waits for its child to exit and say why.

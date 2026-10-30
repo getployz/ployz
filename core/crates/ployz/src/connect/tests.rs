@@ -1723,7 +1723,7 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
 #[tokio::test]
 async fn a_child_stream_ends_with_the_last_line_of_a_failed_child() {
     use tokio::io::AsyncReadExt as _;
-    let mut failed = spawn_child(
+    let mut failed = spawn_session(
         Path::new("sh"),
         &[
             "-c".into(),
@@ -1734,7 +1734,7 @@ async fn a_child_stream_ends_with_the_last_line_of_a_failed_child() {
     let error = failed.read_to_end(&mut Vec::new()).await.unwrap_err();
     assert_eq!(error.to_string(), "ployzd refused to start: refusing");
 
-    let mut clean = spawn_child(Path::new("sh"), &["-c".into(), "echo note >&2".into()]).unwrap();
+    let mut clean = spawn_session(Path::new("sh"), &["-c".into(), "echo note >&2".into()]).unwrap();
     assert_eq!(clean.read_to_end(&mut Vec::new()).await.unwrap(), 0);
 }
 
@@ -1771,4 +1771,24 @@ async fn a_local_daemon_that_refused_to_start_names_its_refusal() {
         ),
         "{text}"
     );
+}
+
+#[tokio::test]
+async fn a_forward_ends_when_its_stdout_closes_though_ssh_lives_on() {
+    use tokio::io::AsyncReadExt as _;
+    // `ssh -W` keeps running after the target closes, until our side closes.
+    let mut forward = spawn_child(
+        Path::new("sh"),
+        &[
+            "-c".into(),
+            "printf response; exec 1>&-; cat >/dev/null".into(),
+        ],
+    )
+    .unwrap();
+    let mut read = Vec::new();
+    tokio::time::timeout(Duration::from_millis(500), forward.read_to_end(&mut read))
+        .await
+        .expect("EOF waited on the child")
+        .unwrap();
+    assert_eq!(read, b"response");
 }
