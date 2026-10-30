@@ -1826,3 +1826,47 @@ fn an_own_copy_made_again_matches_only_its_own_source() {
         (json!("public-new"), Value::Null)
     );
 }
+
+/// A Branch of a Branch copies a node its Parent uses live from production: the
+/// owner's seal, not the Parent's, is the one its Own Copy follows.
+#[test]
+fn an_own_copy_from_a_grandparent_never_shows_a_value_it_sealed_since() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    deploy(&store, &who, "fix-web", 2, true);
+    store
+        .write(&who, &branch("child", "fix-web", &["web"]))
+        .unwrap();
+    deploy(&store, &who, "child", 3, true);
+    let copy = CopyNode {
+        environment: at("child"),
+        node: ServiceName::parse("db").unwrap(),
+        expect: None,
+    };
+    store.write(&who, &copy).unwrap();
+    unset(&store, &who, "child", "db.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "db.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOKEN", 2),
+        )],
+    );
+    deploy(&store, &who, "production", 4, true);
+
+    assert_eq!(
+        review_row(&store, &who, "child", "db.env.TOKEN"),
+        (json!({ "secret": true }), Value::Null)
+    );
+}
