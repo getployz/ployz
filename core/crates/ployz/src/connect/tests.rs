@@ -837,10 +837,10 @@ async fn child_stream_preserves_half_close_and_reaps_on_cancellation() {
         .unwrap()
         .unwrap();
     assert_eq!(result, "requestresponse-after-eof");
-    assert!(stream._child.wait().await.unwrap().success());
+    assert!(stream.child().wait().await.unwrap().success());
 
-    let child = spawn_child(Path::new("cat"), &[]).unwrap();
-    let pid = child._child.id().unwrap();
+    let mut child = spawn_child(Path::new("cat"), &[]).unwrap();
+    let pid = child.child().id().unwrap();
     drop(child);
     tokio::time::timeout(Duration::from_secs(3), exited(pid))
         .await
@@ -1685,4 +1685,110 @@ async fn a_server_unanswered_through_cloud_may_be_offline_or_filtered_not_only_s
         };
         assert_eq!(error.to_string(), said);
     }
+}
+
+#[tokio::test]
+async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
+    let program = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ssh");
+    let selected = |host: &str| SelectedConnections {
+        source: ConnectionSource::Direct,
+        connections: vec![Connection::ssh(SshDestination::parse(host).unwrap())],
+    };
+
+    let refused = connect_selected_with(
+        selected("user@refused"),
+        Arc::new(SystemConnector::new(program)),
+    )
+    .await
+    .err()
+    .expect("a refusing daemon must fail the connect");
+    let text = crate::ui::chain_text(&refused);
+    assert!(
+        text.contains("ployzd refused to start: refusing to change the retained WireGuard interface: the existing device listen port differs from the mesh port; safe recovery: delete ployz-wg"),
+        "{text}"
+    );
+    assert!(!text.contains("Permanently added"), "{text}");
+
+    let closed = connect_selected_with(
+        selected("user@closed"),
+        Arc::new(SystemConnector::new(program)),
+    )
+    .await
+    .err()
+    .expect("a session that closes unanswered must fail the connect");
+    let text = crate::ui::chain_text(&closed);
+    assert!(!text.contains("Permanently added"), "{text}");
+}
+
+#[tokio::test]
+async fn a_child_stream_ends_with_the_last_line_of_a_failed_child() {
+    use tokio::io::AsyncReadExt as _;
+    let mut failed = spawn_session(
+        Path::new("sh"),
+        &[
+            "-c".into(),
+            "echo note >&2; echo 'ployzd refused to start: refusing' >&2; exit 1".into(),
+        ],
+    )
+    .unwrap();
+    let error = failed.read_to_end(&mut Vec::new()).await.unwrap_err();
+    assert_eq!(error.to_string(), "ployzd refused to start: refusing");
+
+    let mut clean = spawn_session(Path::new("sh"), &["-c".into(), "echo note >&2".into()]).unwrap();
+    assert_eq!(clean.read_to_end(&mut Vec::new()).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_local_daemon_that_refused_to_start_names_its_refusal() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ployz.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let refused = root.path().join(ployz_core::STARTUP_REFUSAL_FILE);
+    tokio::spawn(async move {
+        // As a refusing start does: record why, then close what it accepted.
+        let (stream, _) = listener.accept().await.unwrap();
+        fs::write(
+            &refused,
+            "refusing to change the retained WireGuard interface\n",
+        )
+        .unwrap();
+        drop(stream);
+    });
+    let selected = SelectedConnections {
+        source: ConnectionSource::Direct,
+        connections: vec![Connection::unix(&path).unwrap()],
+    };
+
+    let error = connect_selected_with(selected, Arc::new(SystemConnector::default()))
+        .await
+        .err()
+        .expect("a refusing daemon must fail the connect");
+
+    let text = crate::ui::chain_text(&error);
+    assert!(
+        text.contains(
+            "ployzd refused to start: refusing to change the retained WireGuard interface"
+        ),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_forward_ends_when_its_stdout_closes_though_ssh_lives_on() {
+    use tokio::io::AsyncReadExt as _;
+    // `ssh -W` keeps running after the target closes, until our side closes.
+    let mut forward = spawn_child(
+        Path::new("sh"),
+        &[
+            "-c".into(),
+            "printf response; exec 1>&-; cat >/dev/null".into(),
+        ],
+    )
+    .unwrap();
+    let mut read = Vec::new();
+    tokio::time::timeout(Duration::from_millis(500), forward.read_to_end(&mut read))
+        .await
+        .expect("EOF waited on the child")
+        .unwrap();
+    assert_eq!(read, b"response");
 }

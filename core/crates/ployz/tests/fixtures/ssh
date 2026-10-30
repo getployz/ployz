@@ -11,6 +11,16 @@ for argument do
             exec sleep 30
             ;;
         user@timeout) exec sleep 30 ;;
+        user@refused | user@closed)
+            case "$*" in *dial-stdio)
+                echo "Warning: Permanently added '$argument' (ED25519) to the list of known hosts." >&2
+                [ "$argument" = user@closed ] && exit 0
+                echo 'ployzd refused to start: refusing to change the retained WireGuard interface: the existing device listen port differs from the mesh port; safe recovery: delete ployz-wg' >&2
+                exit 1
+                ;;
+            esac
+            exit 0
+            ;;
         user@record)
             echo "$*" >> "$0.args"
             case "$*" in *dial-stdio) exec sleep 30 ;; esac
