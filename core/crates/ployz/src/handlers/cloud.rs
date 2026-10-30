@@ -970,16 +970,17 @@ async fn wait_phase(
             ployz_core::MACHINE_START_WAIT,
         ),
     };
+    let mut joining = crate::handlers::server::Joining::default();
     crate::setup_retry::run_expecting(
-        &mut (),
+        &mut joining,
         &format!("Waiting for the {} phase", phase.as_str()),
         expected,
         wait,
         ConnectError::is_setup_retryable,
-        async |_| {
+        async |joining| {
             if let Awaited::Enrolled { id, via } = awaited {
                 let mut client = super::server::connect_direct(matches, via).await?;
-                check_enrolled(&mut client, id).await?;
+                check_enrolled(&mut client, id, joining).await?;
                 return Ok(client);
             }
             let mut client = dial(matches).await?;
@@ -997,9 +998,7 @@ async fn wait_phase(
     .await
     .map_err(|error| {
         Error::from(error).context(match awaited {
-            Awaited::Enrolled { .. } => {
-                crate::handlers::server::readiness_timeout_message(timeout_message)
-            }
+            Awaited::Enrolled { .. } => joining.timeout_message(timeout_message),
             Awaited::Uninitialized => timeout_message.to_owned(),
         })
     })
@@ -1011,6 +1010,7 @@ async fn wait_phase(
 async fn check_enrolled(
     client: &mut Client,
     expected: ployz_core::MachineId,
+    joining: &mut crate::handlers::server::Joining,
 ) -> Result<(), ConnectError> {
     let details = client
         .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
@@ -1021,7 +1021,7 @@ async fn check_enrolled(
             format!("reached Machine {reached}, not the enrolled Machine {expected}").into(),
         ));
     }
-    crate::handlers::server::check_listed(client).await
+    crate::handlers::server::check_listed(client, joining).await
 }
 
 pub(super) fn group(command: Command) -> Command {
@@ -1158,8 +1158,18 @@ mod tests {
             })
         };
         let mut client = unix_client(&path).await;
-        let refused = check_enrolled(&mut client, enrolled.id).await;
-        let accepted = check_enrolled(&mut client, fallback.id).await;
+        let refused = check_enrolled(
+            &mut client,
+            enrolled.id,
+            &mut crate::handlers::server::Joining::default(),
+        )
+        .await;
+        let accepted = check_enrolled(
+            &mut client,
+            fallback.id,
+            &mut crate::handlers::server::Joining::default(),
+        )
+        .await;
         server.shutdown_background();
         assert!(
             matches!(refused, Err(ConnectError::Attempt(_))),

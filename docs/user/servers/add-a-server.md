@@ -48,6 +48,12 @@ flag that shapes the server too, such as `--storage`, `--label-add` or `--accept
 finishes, the server shows on the **Servers** page, ready for builds, services and web traffic. If
 it doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md).
 
+While the server joins, the line prints `Waiting for the Server's daemon to start…`. The Ployz
+daemon restarts once after it enrolls, and a joining server catches up with your other servers,
+which usually takes under a minute. If it is still catching up after a minute, the line says so
+and names UDP 51820, which your servers use to reach each other. The wait gives up after 5
+minutes.
+
 Add more servers the same way, even at different providers. Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
