@@ -36,7 +36,8 @@ pub(crate) fn hide_introduced(
     introduced: &mut SavedEnvironmentIntent,
     working: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
-    let ever = EverSealed::recorded(tx, environment)?;
+    // Read only for a deleted variable: it scans every save.
+    let mut ever = None;
     for service in &mut introduced.services {
         let now = working
             .services
@@ -44,6 +45,9 @@ pub(crate) fn hide_introduced(
             .find(|now| now.id == service.id)
             .map(|now| &now.variables);
         for was in &mut service.variables {
+            if sealed(&was.value) {
+                continue;
+            }
             let now = now.and_then(|now| {
                 now.iter()
                     .find(|now| now.id == was.id)
@@ -51,9 +55,15 @@ pub(crate) fn hide_introduced(
             });
             let sealed_now = match now {
                 Some(now) => sealed(&now.value),
-                None => ever.holds(&service.id, was),
+                None => {
+                    if ever.is_none() {
+                        ever = Some(EverSealed::load(tx, environment)?);
+                    }
+                    ever.as_ref()
+                        .is_some_and(|ever| ever.holds(&service.id, was))
+                }
             };
-            if sealed_now && !sealed(&was.value) {
+            if sealed_now {
                 was.value = SavedVariableValue::Secret {
                     encrypted_value: None,
                 };
@@ -178,22 +188,6 @@ pub(crate) struct EverSealed {
 
 impl EverSealed {
     pub(crate) fn load(tx: &mut dyn Tx, environment: &str) -> Result<Self, RpcError> {
-        let mut ever = Self::recorded(tx, environment)?;
-        // Saves hold seals made before Working State recorded them.
-        for row in tx.query(
-            "SELECT intent FROM config_saved WHERE environment_id = ?1",
-            &[environment.into()],
-        )? {
-            for (service, variable) in sealed_in(&row.intent(0, "Saved State")?) {
-                ever.ids.insert((service.to_owned(), variable.id.clone()));
-                ever.keys.insert((service.to_owned(), variable.key.clone()));
-            }
-        }
-        Ok(ever)
-    }
-
-    /// Those Working State recorded as it sealed them, without reading every save.
-    pub(crate) fn recorded(tx: &mut dyn Tx, environment: &str) -> Result<Self, RpcError> {
         let mut ever = Self::default();
         for row in tx.query(
             "SELECT service_id, variable_id, key FROM config_sealed_variable \
@@ -205,6 +199,16 @@ impl EverSealed {
                 .insert((service.to_owned(), row.text(1)?.to_owned()));
             ever.keys
                 .insert((service.to_owned(), row.text(2)?.to_owned()));
+        }
+        // Saves hold seals made before Working State recorded them.
+        for row in tx.query(
+            "SELECT intent FROM config_saved WHERE environment_id = ?1",
+            &[environment.into()],
+        )? {
+            for (service, variable) in sealed_in(&row.intent(0, "Saved State")?) {
+                ever.ids.insert((service.to_owned(), variable.id.clone()));
+                ever.keys.insert((service.to_owned(), variable.key.clone()));
+            }
         }
         Ok(ever)
     }
