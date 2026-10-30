@@ -1332,6 +1332,46 @@ fn discarding_a_delete_its_parent_added_plain_after_a_seal_brings_the_value_back
     assert_eq!(web(&store, &who, "qa")["env"]["TOKEN"], json!("public-new"));
 }
 
+/// Discarding a Branch's change to a variable it sealed since it was made never
+/// overwrites the sealed value, with the earlier plain one or with Not set.
+#[test]
+fn discarding_a_variable_a_branch_sealed_since_keeps_its_sealed_value() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    let sealed = token(&store, &who, "qa", 1);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!({ "secret": sealed }))],
+    );
+
+    let refused = store
+        .write(
+            &who,
+            &Discard {
+                environment: at("qa"),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: Some(SettingPath::parse("web.env.TOKEN").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": true })
+    );
+}
+
 /// Discarding a Branch's delete of a variable nothing sealed brings back its value.
 #[test]
 fn discarding_a_delete_nothing_sealed_brings_the_value_back() {
