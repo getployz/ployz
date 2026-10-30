@@ -408,15 +408,16 @@ async fn watch_projection(
     let replicated: &ReplicatedStore = replicated;
     // A quiet subscription and a stalled one look alike, so the snapshot is
     // re-read even without a change, and a re-snapshot still open is a lost stream.
-    // Like membership, the re-read stays in flight while other branches run. A
-    // re-read that started before a change notification is dropped, whether or not
-    // that change's own reload succeeded, so it can't undo the change or its retry.
-    let changes_seen = AtomicU64::new(0);
+    // Like membership, the re-read stays in flight while other branches run, so it
+    // may land after newer facts. `epoch` advances on every change notification
+    // and every applied reload; a re-read applies only if it hasn't moved since the
+    // re-read started, so it can never undo a newer reload or clear a newer retry.
+    let epoch = AtomicU64::new(0);
     let mut refresh =
         tokio::time::interval_at(tokio::time::Instant::now() + refresh_every, refresh_every);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let refreshes = IntervalStream::new(refresh).then(|_| {
-        let started = changes_seen.load(Ordering::Relaxed);
+        let started = epoch.load(Ordering::Relaxed);
         async move { (started, load_snapshot(replicated).await) }
     });
     tokio::pin!(refreshes);
@@ -430,7 +431,7 @@ async fn watch_projection(
                     ))));
                 }
                 match loaded {
-                    Ok(observations) if started == changes_seen.load(Ordering::Relaxed) => {
+                    Ok(observations) if started == epoch.load(Ordering::Relaxed) => {
                         inputs.observations = observations;
                         pending_snapshot = false;
                         true
@@ -450,9 +451,9 @@ async fn watch_projection(
                 if let Err(error) = changed {
                     return Ok(Watched::Lost(Lost::Stream(error)));
                 }
-                changes_seen.fetch_add(1, Ordering::Relaxed);
+                epoch.fetch_add(1, Ordering::Relaxed);
                 pending_snapshot = true;
-                reload_snapshot(replicated, inputs, &mut pending_snapshot).await
+                reload_snapshot(replicated, inputs, &mut pending_snapshot, &epoch).await
             }
             Some(result) = membership.next() => {
                 if read_token(token_file).is_ok_and(|current| &current != token) {
@@ -460,7 +461,7 @@ async fn watch_projection(
                 }
                 let membership = inputs.down.update(result);
                 let retried = pending_snapshot
-                    && reload_snapshot(replicated, inputs, &mut pending_snapshot).await;
+                    && reload_snapshot(replicated, inputs, &mut pending_snapshot, &epoch).await;
                 membership || retried
             }
             () = shutdown.cancelled() => return Ok(Watched::Shutdown),
@@ -475,11 +476,13 @@ async fn reload_snapshot(
     replicated: &ReplicatedStore,
     inputs: &mut ProjectionInputs,
     pending: &mut bool,
+    epoch: &AtomicU64,
 ) -> bool {
     match load_snapshot(replicated).await {
         Ok(observations) => {
             inputs.observations = observations;
             *pending = false;
+            epoch.fetch_add(1, Ordering::Relaxed);
             true
         }
         Err(error) => {
