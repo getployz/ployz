@@ -312,23 +312,20 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 Removal::Reset => {
                     cloud_account::start_removal(credential, &selected, &confirmation, approval)
                         .await
-                        .map(Some)
+                        .map(Ok)
                 }
                 Removal::Forget => {
                     match cloud_account::start_forget(credential, &selected, approval).await {
-                        // Cloud has no row left for it: another forget may have just finished.
-                        Err(StoreCallError::Refused(refused))
-                            if refused.code == RpcErrorCode::NotFound =>
-                        {
-                            Ok(None)
+                        Err(StoreCallError::Refused(refused)) if no_cloud_row(&refused) => {
+                            Ok(Err(refused))
                         }
-                        started => started.map(Some),
+                        started => started.map(Ok),
                     }
                 }
             },
         )? {
-            Some(id) => Some(id),
-            None => return runtime.block_on(cloud_forgot(&mut client, &selected)),
+            Ok(id) => Some(id),
+            Err(refused) => return runtime.block_on(cloud_forgot(&mut client, &selected, refused)),
         },
         None => None,
     };
@@ -490,20 +487,35 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     })
 }
 
+/// Cloud has no row left for the Server: another forget may have just finished. A missing
+/// approval is `not_found` too, but names its id, and stays Cloud's refusal.
+fn no_cloud_row(refused: &RpcError) -> bool {
+    refused.code == RpcErrorCode::NotFound && refused.details.get("approval_id").is_none()
+}
+
 /// Cloud refused to forget `selected` as no Server of its own. The entry that listed it
 /// says whether it is gone: another forget finished, or Cloud and the Cluster disagree.
-async fn cloud_forgot(client: &mut Client, selected: &Machine) -> Result<(), Error> {
+async fn cloud_forgot(
+    client: &mut Client,
+    selected: &Machine,
+    refused: RpcError,
+) -> Result<(), Error> {
     let listed = client
         .machines()
         .await?
         .iter()
         .any(|observed| observed.machine.id == selected.id);
     if listed {
-        return Err(Error::not_found(format!(
-            "Cloud has no Server {} to forget, but the Cluster still lists it. If another forget \
-             of it just finished, the Cluster may not have caught up yet. No changes made.",
-            selected.name
-        ))
+        return Err(Error::caused(
+            RpcErrorCode::NotFound,
+            format!(
+                "Cloud has no Server {} to forget, but the Cluster still lists it. If another \
+                 forget of it just finished, the Cluster may not have caught up yet. No changes \
+                 made.",
+                selected.name
+            ),
+            refused,
+        )
         .hint(Hint::Inspect("ployz server ls".into())));
     }
     crate::ui::stream(format_args!(
@@ -1174,6 +1186,28 @@ mod tests {
         MachineId::parse(value.to_string().repeat(32)).unwrap()
     }
 
+    /// Cloud's refusal of a forget of a Server it has no row for.
+    fn no_such_server() -> RpcError {
+        RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "No such Server.".into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_a_missing_server_reads_as_no_cloud_row() {
+        let approval = RpcError {
+            message: "No such approval.".into(),
+            details: json!({ "approval_id": "087221d0-f16b-441f-9b93-aae6248bcd9c" }),
+            ..no_such_server()
+        };
+
+        assert!(super::no_cloud_row(&no_such_server()));
+        assert!(!super::no_cloud_row(&approval));
+    }
+
     /// An entry that lists `machines` and answers nothing else.
     async fn listing(
         machines: Vec<ployz_core::Machine>,
@@ -1219,7 +1253,7 @@ mod tests {
         let (mut client, server) =
             listing(vec![crate::global_fixtures::machine('a', "machine-1")]).await;
 
-        let forgot = super::cloud_forgot(&mut client, &selected).await;
+        let forgot = super::cloud_forgot(&mut client, &selected, no_such_server()).await;
 
         assert!(forgot.is_ok(), "{forgot:?}");
         server.abort();
@@ -1235,7 +1269,7 @@ mod tests {
         ])
         .await;
 
-        let report = super::cloud_forgot(&mut client, &selected)
+        let report = super::cloud_forgot(&mut client, &selected, no_such_server())
             .await
             .unwrap_err()
             .report();
