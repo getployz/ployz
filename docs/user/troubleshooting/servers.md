@@ -221,7 +221,8 @@ at step 2.
 1. Run the same command again. A first start can take several minutes.
 2. Make sure your servers reach each other on UDP 51820, in both directions, in the server's own
    firewall and in any firewall your provider runs in front of them.
-3. Read the server's logs with `sudo journalctl -u ployz -n 200`. Only if they say `refusing to
+3. Read the server's logs with `sudo journalctl -u ployz -n 200`, or the error's `cause:` line
+   when the wait reached the server over SSH. Only if they say `refusing to
    change the retained WireGuard interface` or `refusing to replace the existing Docker network`,
    follow [Ployz stops over a leftover network](#ployz-stops-over-a-leftover-network). If they say
    `UDP port 51820 is in use`, follow
@@ -375,7 +376,9 @@ covers the old identity left in your server list.
 
 `sudo systemctl status ployz` shows the service failed with `status=78`, and its logs say
 `refusing to change the retained WireGuard interface` or `refusing to replace the existing Docker
-network`. Something else, or an earlier install, left a network Ployz can't prove is its own, so
+network`. A `ployz` command that connects to that server over SSH says the same, after
+`ployzd refused to start:`. A command that goes through another server only says the server did not
+answer. Something else, or an earlier install, left a network Ployz can't prove is its own, so
 Ployz stops rather than take it over. It won't start again until you clear it. The log line ends
 with the safe recovery for your case.
 

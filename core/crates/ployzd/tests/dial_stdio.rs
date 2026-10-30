@@ -124,3 +124,62 @@ fn dial_stdio_reports_a_message_when_the_socket_is_unreachable() {
         "failure must mention the socket, stderr={stderr}"
     );
 }
+
+#[test]
+fn dial_stdio_names_the_refusal_when_a_refusing_daemon_closes_it_unanswered() {
+    let root =
+        std::env::temp_dir().join(format!("ployzd-dial-stdio-refused-{}", std::process::id()));
+    let socket = root.join("ployz.sock");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let refusal = "refusing to change the retained WireGuard interface: the existing device listen port differs from the mesh port; safe recovery: delete ployz-wg";
+    let listener = UnixListener::bind(&socket).unwrap();
+    let refused = root.join("refused");
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        fs::write(refused, format!("{refusal}\n")).unwrap();
+        drop(stream);
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args(["--socket", socket.to_str().unwrap(), "dial-stdio"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stderr={stderr}");
+    assert_eq!(stderr.trim(), format!("ployzd refused to start: {refusal}"));
+    server.join().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dial_stdio_names_no_refusal_after_a_daemon_that_answered() {
+    let root =
+        std::env::temp_dir().join(format!("ployzd-dial-stdio-answered-{}", std::process::id()));
+    let socket = root.join("ployz.sock");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("refused"), "refusing to change\n").unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(b"pong").unwrap();
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args(["--socket", socket.to_str().unwrap(), "dial-stdio"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"pong");
+    server.join().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}

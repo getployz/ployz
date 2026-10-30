@@ -29,9 +29,10 @@ use ployz_core::{
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::TcpStream,
-    process::{Child, ChildStdin, ChildStdout, Command},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
+    net::{TcpStream, UnixStream},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
+    sync::oneshot,
     time::{Instant, Sleep},
 };
 use tonic::transport::{Channel, Endpoint};
@@ -166,7 +167,7 @@ impl SystemConnector {
                 io::Error::new(io::ErrorKind::TimedOut, "management connection timed out")
             })?,
             Transport::Tcp(address) => connect_endpoint(format!("http://{address}")).await,
-            Transport::Unix(path) => connect_endpoint(format!("unix:{}", path.display())).await,
+            Transport::Unix(path) => connect_local(path).await,
             Transport::Ssh {
                 destination,
                 key_file,
@@ -300,6 +301,92 @@ async fn connect_endpoint(target: String) -> Result<Channel, ConnectError> {
         .connect()
         .await
         .map_err(ConnectError::from)
+}
+
+async fn connect_local(path: &Path) -> Result<Channel, ConnectError> {
+    let path = path.to_owned();
+    Endpoint::from_static("http://[::]:50051")
+        .connect_timeout(Duration::from_secs(5))
+        .connect_with_connector(tower::service_fn(move |_| {
+            let path = path.clone();
+            async move {
+                let run_dir = path.parent().map(Path::to_owned);
+                match UnixStream::connect(&path).await {
+                    Ok(stream) => Ok(TokioIo::new(LocalDaemon { stream, run_dir })),
+                    Err(error) => Err(
+                        match run_dir.as_deref().and_then(ployz_core::startup_refusal) {
+                            Some(refusal) => {
+                                io::Error::new(error.kind(), format!("{error}; {refusal}"))
+                            }
+                            None => error,
+                        },
+                    ),
+                }
+            }
+        }))
+        .await
+        .map_err(ConnectError::from)
+}
+
+/// A local daemon's socket. A start that refuses closes the connection that
+/// started it unanswered, so the stream's end names the refusal it left.
+struct LocalDaemon {
+    stream: UnixStream,
+    run_dir: Option<PathBuf>,
+}
+
+impl LocalDaemon {
+    fn ended<T>(&self, ended: io::Result<T>) -> io::Result<T> {
+        match self
+            .run_dir
+            .as_deref()
+            .and_then(ployz_core::startup_refusal)
+        {
+            Some(refusal) => Err(io::Error::new(io::ErrorKind::BrokenPipe, refusal)),
+            None => ended,
+        }
+    }
+}
+
+impl AsyncRead for LocalDaemon {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buffer.filled().len();
+        match std::task::ready!(Pin::new(&mut self.stream).poll_read(context, buffer)) {
+            Ok(()) if buffer.filled().len() == before && buffer.remaining() > 0 => {
+                Poll::Ready(self.ended(Ok(())))
+            }
+            Err(error) => Poll::Ready(self.ended(Err(error))),
+            read => Poll::Ready(read),
+        }
+    }
+}
+
+impl AsyncWrite for LocalDaemon {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match std::task::ready!(Pin::new(&mut self.stream).poll_write(context, buffer)) {
+            Err(error) => Poll::Ready(self.ended(Err(error))),
+            written => Poll::Ready(written),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(context)
+    }
 }
 
 async fn connect_ssh(
@@ -441,7 +528,7 @@ fn spawn_child(program: &Path, args: &[String]) -> io::Result<ChildIo> {
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .process_group(0)
         .kill_on_drop(true)
         .spawn()?;
@@ -453,17 +540,129 @@ fn spawn_child(program: &Path, args: &[String]) -> io::Result<ChildIo> {
         .stdin
         .take()
         .ok_or_else(|| io::Error::other("child stdin was not piped"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("child stderr was not piped"))?;
     Ok(ChildIo {
         reader,
         writer: Some(writer),
-        _child: child,
+        exit: Some(ChildExit::Running {
+            child,
+            stderr: drain_stderr(stderr),
+        }),
     })
+}
+
+/// How long a stream that ended waits for its child to exit and say why.
+const CHILD_EXIT_GRACE: Duration = Duration::from_secs(1);
+const CHILD_STDERR_KEPT: usize = 4096;
+
+/// Reads `stderr` to its end, so the child never blocks on a full pipe, and
+/// sends the last [`CHILD_STDERR_KEPT`] bytes.
+fn drain_stderr(mut stderr: ChildStderr) -> oneshot::Receiver<Vec<u8>> {
+    let (sender, receiver) = oneshot::channel();
+    tokio::spawn(async move {
+        let (mut kept, mut chunk) = (Vec::new(), [0; 1024]);
+        while let Ok(read @ 1..) = stderr.read(&mut chunk).await {
+            kept.extend(chunk.iter().take(read));
+            kept.drain(..kept.len().saturating_sub(CHILD_STDERR_KEPT));
+        }
+        let _ = sender.send(kept);
+    });
+    receiver
+}
+
+type Ending = Pin<Box<dyn Future<Output = (Child, Option<String>)> + Send>>;
+
+/// The SSH child behind a [`ChildIo`], and once its stream ended, why. A remote
+/// `ployzd dial-stdio` that fails, as when the daemon refused to start, says
+/// why on stderr and exits non-zero.
+enum ChildExit {
+    Running {
+        child: Child,
+        stderr: oneshot::Receiver<Vec<u8>>,
+    },
+    Ending(Ending),
+    Ended {
+        child: Child,
+        said: Option<String>,
+    },
+}
+
+/// The last line `child` wrote to stderr, when it exits unsuccessfully within
+/// [`CHILD_EXIT_GRACE`]. A clean exit's stderr holds only SSH's own notes.
+async fn last_words(
+    mut child: Child,
+    stderr: oneshot::Receiver<Vec<u8>>,
+) -> (Child, Option<String>) {
+    let failed = matches!(
+        tokio::time::timeout(CHILD_EXIT_GRACE, child.wait()).await,
+        Ok(Ok(status)) if !status.success()
+    );
+    let said = match failed {
+        true => tokio::time::timeout(CHILD_EXIT_GRACE, stderr)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|kept| {
+                String::from_utf8_lossy(&kept)
+                    .lines()
+                    .map(str::trim)
+                    .rfind(|line| !line.is_empty())
+                    .map(str::to_owned)
+            }),
+        false => None,
+    };
+    (child, said)
 }
 
 struct ChildIo {
     reader: ChildStdout,
     writer: Option<ChildStdin>,
-    _child: Child,
+    exit: Option<ChildExit>,
+}
+
+impl ChildIo {
+    /// `ended`, or once the child exits, the error it gave for ending the stream.
+    fn poll_ended<T>(
+        &mut self,
+        context: &mut TaskContext<'_>,
+        ended: io::Result<T>,
+    ) -> Poll<io::Result<T>> {
+        loop {
+            match self.exit.take() {
+                Some(ChildExit::Running { child, stderr }) => {
+                    self.exit = Some(ChildExit::Ending(Box::pin(last_words(child, stderr))));
+                }
+                Some(ChildExit::Ending(mut ending)) => match ending.as_mut().poll(context) {
+                    Poll::Ready((child, said)) => {
+                        self.exit = Some(ChildExit::Ended { child, said })
+                    }
+                    Poll::Pending => {
+                        self.exit = Some(ChildExit::Ending(ending));
+                        return Poll::Pending;
+                    }
+                },
+                Some(ChildExit::Ended { child, said }) => {
+                    let error = said
+                        .as_ref()
+                        .map(|said| io::Error::new(io::ErrorKind::BrokenPipe, said.clone()));
+                    self.exit = Some(ChildExit::Ended { child, said });
+                    return Poll::Ready(error.map_or(ended, Err));
+                }
+                None => return Poll::Ready(ended),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn child(&mut self) -> &mut Child {
+        match self.exit.as_mut() {
+            Some(ChildExit::Running { child, .. } | ChildExit::Ended { child, .. }) => child,
+            _ => panic!("the child is held while the stream ends"),
+        }
+    }
 }
 
 impl AsyncRead for ChildIo {
@@ -472,7 +671,14 @@ impl AsyncRead for ChildIo {
         context: &mut TaskContext<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.reader).poll_read(context, buffer)
+        let before = buffer.filled().len();
+        match std::task::ready!(Pin::new(&mut self.reader).poll_read(context, buffer)) {
+            Ok(()) if buffer.filled().len() == before && buffer.remaining() > 0 => {
+                self.poll_ended(context, Ok(()))
+            }
+            Err(error) => self.poll_ended(context, Err(error)),
+            read => Poll::Ready(read),
+        }
     }
 }
 
@@ -482,9 +688,13 @@ impl AsyncWrite for ChildIo {
         context: &mut TaskContext<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
-        match self.writer.as_mut() {
-            Some(writer) => Pin::new(writer).poll_write(context, buffer),
-            None => Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
+        let written = match self.writer.as_mut() {
+            Some(writer) => std::task::ready!(Pin::new(writer).poll_write(context, buffer)),
+            None => return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
+        };
+        match written {
+            Err(error) => self.poll_ended(context, Err(error)),
+            written => Poll::Ready(written),
         }
     }
 

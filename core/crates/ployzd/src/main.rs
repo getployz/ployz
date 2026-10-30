@@ -352,18 +352,35 @@ fn install_request(
 }
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {
-    let stream = wait_until_socket_accepts(path, DIAL_STDIO_SOCKET_TIMEOUT).await?;
-    bridge(stdin(), stdout(), stream).await
+    let run_dir = path.parent().unwrap_or_else(|| Path::new("/run/ployz"));
+    let stream = wait_until_socket_accepts(path, DIAL_STDIO_SOCKET_TIMEOUT)
+        .await
+        .map_err(|error| naming_refusal(run_dir, error))?;
+    let answered = bridge(stdin(), stdout(), stream).await?;
+    if answered == 0
+        && let Some(refusal) = ployz_core::startup_refusal(run_dir)
+    {
+        return Err(io::Error::other(refusal));
+    }
+    Ok(())
+}
+
+fn naming_refusal(run_dir: &Path, error: io::Error) -> io::Error {
+    match ployz_core::startup_refusal(run_dir) {
+        Some(refusal) => io::Error::new(error.kind(), format!("{error}; {refusal}")),
+        None => error,
+    }
 }
 
 // The daemon's side closing ends the bridge, so a daemon restart closes the
 // SSH session and the client's call fails instead of waiting forever. Stdin
-// closing first only half-closes: the reply still flows back.
+// closing first only half-closes: the reply still flows back. Returns how many
+// bytes the daemon sent.
 async fn bridge(
     mut input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
     stream: UnixStream,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     let (mut socket_read, mut socket_write) = stream.into_split();
     let forward = async {
         copy(&mut input, &mut socket_write).await?;
@@ -371,8 +388,8 @@ async fn bridge(
         std::future::pending().await
     };
     let back = async {
-        copy(&mut socket_read, &mut output).await?;
-        output.flush().await
+        let sent = copy(&mut socket_read, &mut output).await?;
+        output.flush().await.map(|()| sent)
     };
     let result = tokio::select! {
         result = forward => result,
@@ -383,7 +400,7 @@ async fn bridge(
     let flushed = tokio::time::timeout(STDOUT_FLUSH_BOUND, output.flush())
         .await
         .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()));
-    result.and(flushed)
+    result.and_then(|sent| flushed.map(|()| sent))
 }
 
 #[cfg(test)]
@@ -441,11 +458,12 @@ mod tests {
         };
         let bridged = tokio::time::timeout(Duration::from_secs(5), bridge(input, output, stream));
         let ((), bridged) = tokio::join!(daemon, bridged);
-        bridged
+        let sent = bridged
             .expect("bridge outlived the daemon's socket")
             .unwrap();
         let mut seen = Vec::new();
         client_output.read_to_end(&mut seen).await.unwrap();
+        assert_eq!(sent, seen.len() as u64);
         seen
     }
 

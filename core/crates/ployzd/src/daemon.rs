@@ -115,6 +115,30 @@ impl Error {
     }
 }
 
+fn record_refusal(path: &Path, error: &Error) {
+    if !error.needs_operator() {
+        return;
+    }
+    let line = format!("{}\n", ployz_core::error_chain::inline(error));
+    if let Err(write) = std::fs::write(path, line) {
+        eprintln!(
+            "WARNING: could not record the refusal in {}: {write}",
+            path.display()
+        );
+    }
+}
+
+fn clear_refusal(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        eprintln!(
+            "WARNING: could not clear the last refusal in {}: {error}",
+            path.display()
+        );
+    }
+}
+
 /// Closes every connection queued on the nonblocking `listener` when startup
 /// refused a conflict. Left queued, each would have `ployz.socket` start the
 /// daemon again at once, only for it to refuse again until systemd's start limit.
@@ -184,8 +208,12 @@ impl Daemon {
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
         let queued = socket.listener.try_clone()?;
+        let refusal = run_dir.join(ployz_core::STARTUP_REFUSAL_FILE);
+        clear_refusal(&refusal);
         let started = Self::start_planes(config, socket, build_policy, run_dir).await;
         if let Err(error) = &started {
+            // Recorded before the close, so a client it closes finds the line.
+            record_refusal(&refusal, error);
             close_queued_if_refused(&queued, error);
         }
         started
@@ -941,8 +969,8 @@ mod tests {
     use super::{
         ContainerMode, CorrosionError, Daemon, DaemonConfig, Error, InterruptedReset,
         LocalMachineStore, MachineApiSocket, ManagementConfig, NetworkError, Opened, StoreError,
-        close_queued_if_refused, finish_interrupted_reset, finish_reset, wait_for_participation,
-        wait_until_socket_accepts,
+        close_queued_if_refused, finish_interrupted_reset, finish_reset, record_refusal,
+        wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -1067,6 +1095,45 @@ mod tests {
                 .await
                 .supports(DESCRIBE_CONTRACT_CAPABILITY)
         );
+        daemon.request_stop();
+        daemon.wait().await.unwrap();
+    }
+
+    #[test]
+    fn a_refused_start_leaves_its_refusal_and_a_failed_one_leaves_none() {
+        let root = TestDir::new("ployzd-daemon-refusal-file");
+        fs::create_dir_all(&root.0).unwrap();
+        let path = root.0.join(ployz_core::STARTUP_REFUSAL_FILE);
+
+        record_refusal(&path, &Error::Io(io::Error::other("transient")));
+        assert_eq!(ployz_core::startup_refusal(&root.0), None);
+
+        record_refusal(
+            &path,
+            &Error::Network(NetworkError::WireGuardConflict {
+                reason: "the existing device listen port differs from the mesh port",
+                recovery: "delete ployz-wg",
+            }),
+        );
+        assert_eq!(
+            ployz_core::startup_refusal(&root.0).as_deref(),
+            Some(
+                "ployzd refused to start: refusing to change the retained WireGuard interface: the existing device listen port differs from the mesh port; safe recovery: delete ployz-wg"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clean_start_clears_the_last_refusal() {
+        let root = TestDir::new("ployzd-daemon-refusal-cleared");
+        let (config, _socket) = test_config(&root.0, ContainerMode::Absent);
+        let run_dir = config.socket.parent().unwrap().to_owned();
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::write(run_dir.join(ployz_core::STARTUP_REFUSAL_FILE), "refusing\n").unwrap();
+
+        let daemon = Daemon::start(config).await.unwrap();
+
+        assert_eq!(ployz_core::startup_refusal(&run_dir), None);
         daemon.request_stop();
         daemon.wait().await.unwrap();
     }
