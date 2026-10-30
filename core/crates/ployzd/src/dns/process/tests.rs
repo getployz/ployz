@@ -45,6 +45,7 @@ struct Harness {
     spec_file: SpecFile,
     spec: DnsSpec,
     exe: PathBuf,
+    refresh: Duration,
 }
 
 impl Harness {
@@ -75,6 +76,7 @@ impl Harness {
             spec_file,
             spec,
             exe,
+            refresh: REFRESH,
         }
     }
 
@@ -83,6 +85,7 @@ impl Harness {
         let spec = self.spec_file.clone();
         let resolv_conf = self.dir.path().join("resolv.conf");
         let exe = InstalledExe::at(self.exe.clone()).unwrap();
+        let refresh = self.refresh;
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
             serve_with(
@@ -92,7 +95,7 @@ impl Harness {
                     resolv_conf,
                     exe,
                     tick: TICK,
-                    refresh: REFRESH,
+                    refresh,
                     backoff: Backoff::between(
                         Duration::from_millis(20),
                         Duration::from_millis(100),
@@ -333,7 +336,9 @@ async fn a_stalled_resnapshot_reconnects_on_the_refresh() {
 
 #[tokio::test]
 async fn a_failed_rebuild_is_retried_on_the_tick() {
-    let harness = Harness::new();
+    let mut harness = Harness::new();
+    // Only the membership tick may retry here, not the slow re-read.
+    harness.refresh = Duration::from_secs(3600);
     harness.publish_replicas(2).await;
     let shutdown = CancellationToken::new();
     let process = harness.spawn(&shutdown);

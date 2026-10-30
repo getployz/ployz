@@ -3,6 +3,7 @@ use std::{
     net::SocketAddrV4,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -404,29 +405,53 @@ async fn watch_projection(
     // membership I/O never delays Container-change withdrawal.
     let membership = IntervalStream::new(interval).then(|_| load_down(machines, admin, &local_id));
     tokio::pin!(membership);
+    let replicated: &ReplicatedStore = replicated;
     // A quiet subscription and a stalled one look alike, so the snapshot is
     // re-read even without a change, and a re-snapshot still open is a lost stream.
+    // Like membership, the re-read stays in flight while other branches run. It
+    // counts the reloads before it, and one that lands after a newer reload is dropped.
+    let reloads = AtomicU64::new(0);
     let mut refresh =
         tokio::time::interval_at(tokio::time::Instant::now() + refresh_every, refresh_every);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let refreshes = IntervalStream::new(refresh).then(|_| {
+        let started = reloads.load(Ordering::Relaxed);
+        async move { (started, load_snapshot(replicated).await) }
+    });
+    tokio::pin!(refreshes);
     let mut pending_snapshot = false;
     loop {
         let rebuild = tokio::select! {
-            _ = refresh.tick() => {
+            Some((started, loaded)) = refreshes.next() => {
                 if changes.snapshot_in_progress() {
                     return Ok(Watched::Lost(Lost::Stream(CorrosionError::Protocol(
                         "subscription snapshot stalled".into(),
                     ))));
                 }
-                pending_snapshot = true;
-                reload_snapshot(replicated, inputs, &mut pending_snapshot).await
+                match loaded {
+                    Ok(observations) if started == reloads.load(Ordering::Relaxed) => {
+                        inputs.observations = observations;
+                        pending_snapshot = false;
+                        reloads.store(started + 1, Ordering::Relaxed);
+                        true
+                    }
+                    Ok(_) => false,
+                    // A failed re-read waits for the next one rather than for every tick.
+                    Err(error) => {
+                        eprintln!(
+                            "failed to re-read the DNS projection: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
+                        false
+                    }
+                }
             }
             changed = changes.changed() => {
                 if let Err(error) = changed {
                     return Ok(Watched::Lost(Lost::Stream(error)));
                 }
                 pending_snapshot = true;
-                reload_snapshot(replicated, inputs, &mut pending_snapshot).await
+                reload_snapshot(replicated, inputs, &mut pending_snapshot, &reloads).await
             }
             Some(result) = membership.next() => {
                 if read_token(token_file).is_ok_and(|current| &current != token) {
@@ -434,7 +459,7 @@ async fn watch_projection(
                 }
                 let membership = inputs.down.update(result);
                 let retried = pending_snapshot
-                    && reload_snapshot(replicated, inputs, &mut pending_snapshot).await;
+                    && reload_snapshot(replicated, inputs, &mut pending_snapshot, &reloads).await;
                 membership || retried
             }
             () = shutdown.cancelled() => return Ok(Watched::Shutdown),
@@ -449,11 +474,13 @@ async fn reload_snapshot(
     replicated: &ReplicatedStore,
     inputs: &mut ProjectionInputs,
     pending: &mut bool,
+    reloads: &AtomicU64,
 ) -> bool {
     match load_snapshot(replicated).await {
         Ok(observations) => {
             inputs.observations = observations;
             *pending = false;
+            reloads.fetch_add(1, Ordering::Relaxed);
             true
         }
         Err(error) => {
