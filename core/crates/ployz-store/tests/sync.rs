@@ -903,6 +903,82 @@ fn sealing_a_value_a_sync_replaced_keeps_no_plain_text_for_its_undo() {
     assert_eq!(backend::tables_holding(&url, "plain-own"), [""; 0]);
 }
 
+/// Sealing what a Sync landed keeps only its fingerprint in the arrival, owned by its
+/// proposal or deployed, and Undo is refused: sealing changed it.
+#[test]
+fn sealing_a_value_a_sync_landed_keeps_only_its_fingerprint() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), false);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.env.PAIR_X", json!("plain-landed")),
+            ("web.env.PAIR_Y", json!("plain-deployed")),
+        ],
+    );
+    let deployed = sync_into(
+        &store,
+        &who,
+        ("fix-web", "production"),
+        Some(&["web.env.PAIR_Y"]),
+    );
+    deploy(&store, &who, "production", 1);
+    let pending = sync_into(
+        &store,
+        &who,
+        ("fix-web", "production"),
+        Some(&["web.env.PAIR_X"]),
+    );
+    // The Branch moves on, so only production's arrivals hold what landed.
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.env.PAIR_X", json!("branch-again")),
+            ("web.env.PAIR_Y", json!("branch-again")),
+        ],
+    );
+    for marker in ["plain-landed", "plain-deployed"] {
+        assert!(backend::tables_holding(&url, marker).contains(&"config_sync_arrival".to_owned()));
+    }
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            (
+                "web.env.PAIR_X",
+                backend::sealed_secret(&uuid(2), &uuid(3), "PAIR_X", 1),
+            ),
+            (
+                "web.env.PAIR_Y",
+                backend::sealed_secret(&uuid(2), &uuid(3), "PAIR_Y", 2),
+            ),
+        ],
+    );
+    for marker in ["plain-landed", "plain-deployed"] {
+        assert!(!backend::tables_holding(&url, marker).contains(&"config_sync_arrival".to_owned()));
+    }
+    assert_eq!(
+        undo(&store, &who, &pending),
+        Err((
+            RpcErrorCode::Conflict,
+            "web.env.PAIR_X is sealed since it synced: set it as you want it instead".into()
+        ))
+    );
+    assert_eq!(
+        undo(&store, &who, &deployed),
+        Err((
+            RpcErrorCode::Conflict,
+            "web.env.PAIR_Y is deployed: change it back instead".into()
+        ))
+    );
+}
+
 /// A key sealed once and added again plain keeps its plain value for Undo, as History
 /// keeps it.
 #[test]

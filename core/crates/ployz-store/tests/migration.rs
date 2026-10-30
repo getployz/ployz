@@ -797,6 +797,90 @@ fn a_plain_value_kept_in_a_follows_arrival_is_gone_after_upgrade() {
     assert_eq!(incoming, ["web.env.TOKEN production"]);
 }
 
+/// What landed that an older Store kept plain in an arrival after its sender sealed it.
+#[test]
+fn a_plain_value_landed_in_an_arrival_is_gone_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    {
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse(uuid(1)).unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("web").unwrap(),
+                    image: Some("web:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        backend::deploy(&store, &who, "production", 1);
+        store
+            .write(
+                &who,
+                &CreateBranch {
+                    id: EnvironmentId::parse(uuid(9)).unwrap(),
+                    from: at("production"),
+                    name: EnvironmentName::parse("fix-web").unwrap(),
+                    copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                    live: Vec::new(),
+                    setup: Vec::new(),
+                    keep: false,
+                    fix: None,
+                },
+            )
+            .unwrap();
+        set(
+            &store,
+            &who,
+            "production",
+            &[("web.env.TOKEN", json!("plain-private"))],
+        );
+        backend::deploy(&store, &who, "production", 2);
+        set(
+            &store,
+            &who,
+            "production",
+            &[(
+                "web.env.TOKEN",
+                backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+            )],
+        );
+        let (empty, plain) = (
+            r#""kind":"literal","value":"""#,
+            r#""kind":"literal","value":"plain-private""#,
+        );
+        run(
+            &url,
+            &format!(
+                "UPDATE config_sync_arrival SET value = replace(value, '{empty}', '{plain}');
+                 DELETE FROM config_migration WHERE name = '0030_scrub_sealed_arrivals';",
+            ),
+        );
+        assert!(
+            backend::tables_holding(&url, "plain-private")
+                .contains(&"config_sync_arrival".to_owned())
+        );
+    }
+    let _store = ConfigStore::open(&url, backend::key()).unwrap();
+    assert!(
+        !backend::tables_holding(&url, "plain-private").contains(&"config_sync_arrival".to_owned())
+    );
+}
+
 /// The plain value an older Store kept in a Branch's Sync bases after its Parent
 /// sealed it.
 #[test]

@@ -828,11 +828,12 @@ pub(crate) fn undo(
             )
         });
     if let Some(changed) = changed {
-        let label = named(&[&into.working], &changed.row)
-            .map_or_else(|| changed.row.to_string(), |row| row.to_string());
-        return Err(error::conflict(
-            format!("{label} changed since it synced: change it back instead"),
-            json!({ "row": changed.row }),
+        let suffix = suffix(tx, &into)?;
+        return Err(pair::changed_since(
+            &into.working,
+            &suffix,
+            &changed.row,
+            &changed.value,
         ));
     }
     take_out(tx, &mut into, &proposal)?;

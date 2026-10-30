@@ -787,11 +787,12 @@ pub(crate) fn forget_unclaimed(tx: &mut dyn Tx, receiver: &str) -> Result<(), Rp
 }
 
 /// Keep no plain value `environment` ever sealed in a base it shares: what a Branch
-/// was made with, a pair's base, and a pending arrival's prior cell. Each keeps the
-/// value's fingerprint, which a Sync compares by. The receiver's own value a Sync's
-/// Undo keeps becomes sealed and Not set. It holds no lock on the other side
-/// of a pair, so each write replaces only the document it read: a base another writer
-/// moved since stays as that writer left it, for the next Save to empty.
+/// was made with, a pair's base, and an arrival's prior cell, what landed and what the
+/// other side held. Each keeps the value's fingerprint, which a Sync compares by. The
+/// receiver's own value a Sync's Undo keeps becomes sealed and Not set. It holds no
+/// lock on the other side of a pair, so each write replaces only the document it read:
+/// a base another writer moved since stays as that writer left it, for the next Save
+/// to empty.
 pub(crate) fn scrub_bases(tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
     let rows = review::sealed::sealed_rows(tx, environment)?;
     empty_in_bases(tx, environment, &rows)
@@ -849,6 +850,47 @@ pub(crate) fn empty_in_bases(
                     at.into(),
                     json_of(&prior).as_str().into(),
                     row.text(4)?.into(),
+                ],
+            )?;
+        }
+    }
+    // What landed and what the other side held, in any state: a plain value sealed
+    // since keeps only its fingerprint, which Undo and Deploy compare it by.
+    for row in tx.query(
+        "SELECT environment_id, other_id, lineage, at, value, source FROM config_sync_arrival \
+         WHERE environment_id = ?1 OR other_id = ?1",
+        &[environment.into()],
+    )? {
+        let (lineage, at) = (row.text(2)?, row.text(3)?);
+        let At::Variable(key) = row_id(lineage, at)?.at().clone() else {
+            continue;
+        };
+        if !rows.contains(&(lineage.to_owned(), key)) {
+            continue;
+        }
+        let mut value: Cell = row.json(4, "Sync")?;
+        let mut source: Option<Cell> = row
+            .optional_text(5)?
+            .map(|source| serde_json::from_str(source).map_err(|_| error::corrupt("Sync")))
+            .transpose()?;
+        let emptied_value = review::sealed::empty_plain_cell(&mut value);
+        let emptied_source = source
+            .as_mut()
+            .is_some_and(review::sealed::empty_plain_cell);
+        if emptied_value || emptied_source {
+            tx.execute(
+                "UPDATE config_sync_arrival SET value = ?5, source = ?6 \
+                 WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+                 AND value = ?7 AND COALESCE(source, '') = COALESCE(?8, '')",
+                &[
+                    row.text(0)?.into(),
+                    row.text(1)?.into(),
+                    lineage.into(),
+                    at.into(),
+                    json_of(&value).as_str().into(),
+                    source.as_ref().map(json_of).as_deref().into(),
+                    row.text(4)?.into(),
+                    row.optional_text(5)?.into(),
                 ],
             )?;
         }
@@ -1126,16 +1168,15 @@ pub(super) fn undo(
             was: claim.was()?,
         });
     }
-    receiver.working = match unapply(&receiver.working, &suffix(tx, receiver)?, &landed) {
+    let suffix = suffix(tx, receiver)?;
+    receiver.working = match unapply(&receiver.working, &suffix, &landed) {
         Ok(working) => working,
         Err(Unapplied::Changed(row)) => {
-            return Err(error::conflict(
-                format!(
-                    "{} changed since it synced: change it back instead",
-                    label(&row)
-                ),
-                json!({ "row": row }),
-            ));
+            let value = landed
+                .iter()
+                .find(|landed| landed.row == row)
+                .map_or(Cell::Absent, |landed| landed.value.clone());
+            return Err(changed_since(&receiver.working, &suffix, &row, &value));
         }
         Err(Unapplied::Invalid(error)) => return Err(config(error)),
     };
@@ -1151,6 +1192,23 @@ pub(super) fn undo(
         .collect();
     rewind_bases(tx, &receiver.summary.id, priors)?;
     Ok(true)
+}
+
+/// Undo refused: `row` holds other than the `value` a Sync landed there. A value
+/// sealed since never becomes plain again, so it can't be changed back.
+pub(super) fn changed_since(
+    working: &SavedEnvironmentIntent,
+    suffix: &str,
+    row: &RowId,
+    value: &Cell,
+) -> RpcError {
+    let label = named(&[working], row).map_or_else(|| row.to_string(), |row| row.to_string());
+    let message = if Cells::of(working, suffix).at(row).is_secret() && !value.is_secret() {
+        format!("{label} is sealed since it synced: set it as you want it instead")
+    } else {
+        format!("{label} changed since it synced: change it back instead")
+    };
+    error::conflict(message, json!({ "row": row }))
 }
 
 /// How many changes a Sync of `from` into `into` carries by default: the Sync view's
