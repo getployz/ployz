@@ -222,6 +222,61 @@ async fn client_assignment_publishes_through_entry_and_a_changed_register_overwr
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+/// A plain add of a forgotten Server that still holds its old id reaches Register on
+/// an Entry before the CLI refuses it. The Register must not list that id again (#3613).
+#[tokio::test]
+async fn register_of_a_forgotten_id_does_not_list_it_again() {
+    use crate::corrosion::store_tests::{corrosion_db, identity_store};
+
+    let db = corrosion_db();
+    // Register answers with the store's version, which cr-sqlite and Corrosion keep here.
+    db.execute_batch(
+        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
+         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
+         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
+    )
+    .unwrap();
+    let (replicated, server) = identity_store(db).await;
+    replicated
+        .publish_cluster_network("10.210.0.0/16".parse().unwrap())
+        .await
+        .unwrap();
+    let (data_dir, store, founder) = open_store("ployzd-register-forgotten");
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let local = LocalMachine::new(store).with_cluster(Some((
+        replicated.clone(),
+        AdminClient::new("/no/such/ployz-admin.sock"),
+    )));
+
+    let forgotten = request("gone", WireGuardPublicKey([31; 32]));
+    let mut published = local
+        .register(forgotten.clone())
+        .await
+        .unwrap()
+        .assigned_machine;
+    published.runtime.management_identity =
+        Some(crate::management::ManagementSecret::generate().public_key());
+    replicated.publish_local_machine(&published).await.unwrap();
+    replicated.forget_machine(&published.id).await.unwrap();
+
+    local.register(forgotten).await.unwrap();
+    assert_eq!(
+        replicated.machine(published.id.as_str()).await.unwrap(),
+        None
+    );
+
+    let mut fresh = request("back", WireGuardPublicKey([32; 32]));
+    fresh.assigned_subnet = Some("10.210.2.0/24".parse().unwrap());
+    let listed = local.register(fresh).await.unwrap().assigned_machine;
+    assert_eq!(
+        replicated.machine(listed.id.as_str()).await.unwrap(),
+        Some(listed)
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 #[tokio::test]
 async fn register_requires_a_valid_assignment_and_preserves_the_row_on_refusal() {
     let (data_dir, store, founder) = open_store("ployzd-register-publication");

@@ -288,25 +288,18 @@ impl ReplicatedStore {
         if current.as_ref() == Some(machine) {
             return Ok(());
         }
-        // A forgotten Machine whose daemon still runs would write its row straight back,
-        // undoing the forget (#3418). Its tombstone names its own id under its identity,
-        // so it stays gone; an Entry's Register carries no identity and still lists it.
-        let tombstone = machine
-            .runtime
-            .management_identity
-            .as_ref()
-            .map(forgotten_key);
+        // A forgotten id never comes back: a reset Machine rejoins under a new one. So
+        // neither the forgotten Machine's still-running publisher (#3418) nor an Entry's
+        // Register for a plain add of it (#3613) may write its row again. Its tombstone
+        // names the id, whatever identity it is keyed by; a Register carries none.
         self.api
             .execute([Statement::new(
                 "INSERT INTO machines (id, info) SELECT ?1, ?2 \
                  WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-                 OR NOT EXISTS (SELECT 1 FROM cluster WHERE key = ?3 AND value = ?1) \
+                 OR NOT EXISTS (SELECT 1 FROM cluster \
+                                WHERE key LIKE 'forgotten:%' AND value = ?1) \
                  ON CONFLICT (id) DO UPDATE SET info = excluded.info",
-                [
-                    json!(machine.id),
-                    json!(serde_json::to_string(machine)?),
-                    json!(tombstone),
-                ],
+                [json!(machine.id), json!(serde_json::to_string(machine)?)],
             )])
             .await?;
         Ok(())
