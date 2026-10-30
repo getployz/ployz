@@ -1,7 +1,8 @@
-import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue } from "@ployz/sdk";
+import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue, NodeChange } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { Caller } from "#/modules/identity/actor";
 import { rollbackConfirm } from "#/modules/config-store/store-deployments";
+import { holds } from "#/modules/support-access/support-view";
 
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
@@ -34,6 +35,23 @@ export type Redeploy = { deployment: number; rolls_back: number[] };
 export type ApprovalReview =
   | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy; prunes?: true; dropped?: string[] }
   | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply | VolumeApply };
+
+const isSealed = Schema.is(Schema.Struct({ secret: Schema.Boolean }));
+
+/**
+ * `diff` with each variable it seals shown sealed before too: saving the seal removes the earlier plain value from
+ * History, so an approval kept after it runs keeps none either.
+ */
+export function withoutSealedBefore<T extends DiffView>(diff: T): T {
+  const node = (change: NodeChange): NodeChange => ({
+    ...change,
+    settings: change.settings.map((row) =>
+      holds(row.row, row.path) === "variable" && isSealed(row.after) && row.before !== null && !isSealed(row.before) ? { ...row, before: { secret: true } } : row),
+  });
+  const shown = { ...diff, changes: diff.changes.map(node) };
+  if (diff.draft_changes) shown.draft_changes = diff.draft_changes.map(node);
+  return shown;
+}
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
 

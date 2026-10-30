@@ -1,6 +1,6 @@
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { it } from "@effect/vitest";
-import { type Approval, type ConfigCommand, type ConfigStore, RpcError, type RuntimeWatchView } from "@ployz/sdk";
+import { type Approval, type ConfigCommand, type ConfigStore, type DiffView, type NodeChange, type RowId, type ServiceSettingChange, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber } from "effect";
 import { expect, vi } from "vitest";
@@ -140,6 +140,25 @@ it.live("an ask for a Deploy that prunes keeps saying so, on its card and to the
     expect(answered.details).toMatchObject({ prunes: true, dropped: ["machine-3"] });
     const row = yield* provided(getApproval(ORGANIZATION, asked(answered).approval_id));
     expect(row.review).toMatchObject({ prunes: true, dropped: ["machine-3"] });
+  }));
+
+it.live("an ask that seals a plain variable stores no plain value for it, and reads none back", () =>
+  Effect.gen(function* () {
+    const { provided, refusal, caller } = yield* shopRemovingWeb();
+    const refused = yield* refusal;
+    const details = refused.details as { diff: DiffView };
+    const sealing: ServiceSettingChange = { path: "api.env.TOKEN", kind: "update", before: "fake-plain-marker", after: { secret: true }, canRestore: false, row: null };
+    const node: NodeChange = { type: "service", id: "api", name: "api", row: "api:node" as RowId, lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [sealing] };
+    const diff = { ...details.diff, changes: [...details.diff.changes, node], draft_changes: [...(details.diff.draft_changes ?? []), node] };
+    const answered = yield* provided(requestApproval(caller, publish, { ...refused, details: { ...details, diff } }, null));
+    const holding = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.select({ id: operationApprovals.id }).from(operationApprovals)
+        .where(sql`strpos(${operationApprovals.review}::text, 'fake-plain-marker') > 0`);
+    }));
+    expect(holding).toEqual([]);
+    const row = yield* provided(getApproval(ORGANIZATION, asked(answered).approval_id));
+    expect(JSON.stringify(row.review)).not.toContain("fake-plain-marker");
   }));
 
 it.live("a destructive CLI publish waits for a human to approve exactly what it destroys, once", () =>
