@@ -701,20 +701,60 @@ async fn a_machine_that_went_silent_at_run_time_is_never_a_destination() {
     server.abort();
 }
 
+/// Machine '2' is Up, but the entry's router couldn't dial it, as while its daemon is
+/// stopped.
+fn up_undialed() -> Pair {
+    Pair {
+        membership: MembershipObservation::Up,
+        lists: Lists::Undialed,
+        ..Pair::suspect_silent()
+    }
+}
+
 #[tokio::test(start_paused = true)]
-async fn an_up_machine_the_entry_couldnt_dial_fails_the_service_though_its_path_drops() {
+async fn an_up_machine_the_entry_couldnt_dial_does_not_stop_a_run_on_a_live_one() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) = live_and_second(std::sync::Arc::clone(&ensured), up_undialed()).await;
+    let plan = vec![run(&machine('1'), spec(None, None, None), true)];
+
+    let (outcome, warnings) = execute_named(plan, &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let above = Gen::new(STORED_GEN + 1);
+    assert_eq!(
+        *ensured.lock().unwrap(),
+        [(machine('1'), above), (machine('1'), above)],
+        "the copy starts on the live Machine only, above the silent Machine's stored copy"
+    );
+    let gaps: Vec<_> = warnings
+        .iter()
+        .filter_map(DeployWarning::observation_gap)
+        .map(|(machine_id, gap)| (machine_id, gap.reason))
+        .collect();
+    assert_eq!(
+        gaps,
+        [(machine('2'), ployz_core::ObservationGapReason::Failed)]
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_up_machine_the_entry_couldnt_dial_still_needs_the_store_floor() {
     let ensured = std::sync::Arc::default();
     let (client, server) = live_and_second(
         std::sync::Arc::clone(&ensured),
         Pair {
-            lists: Lists::Undialed,
-            ..Pair::up_dropped()
+            store: false,
+            ..up_undialed()
         },
     )
     .await;
     let plan = vec![run(&machine('1'), spec(None, None, None), true)];
 
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+    let (outcome, _) = execute_named(plan, &client).await;
 
     assert!(failed_listing(&outcome).is_some(), "{outcome:?}");
     assert!(ensured.lock().unwrap().is_empty(), "no copy starts");
@@ -794,6 +834,33 @@ async fn a_dependency_check_names_a_suspect_machine_that_never_lists_as_an_obser
             "machine-2".to_owned(),
             ployz_core::ObservationGapReason::Failed
         )]
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dependency_check_names_an_up_machine_the_entry_couldnt_dial_as_an_observation_gap() {
+    let (pair, plan) = dependency_check(MembershipObservation::Up);
+    let pair = Pair {
+        lists: Lists::Undialed,
+        ..pair
+    };
+    let (client, server) = live_and_second(std::sync::Arc::default(), pair).await;
+
+    let (outcome, warnings) = execute_named(plan, &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let gaps: Vec<_> = warnings
+        .iter()
+        .filter_map(DeployWarning::observation_gap)
+        .map(|(machine_id, gap)| (machine_id, gap.reason))
+        .collect();
+    assert_eq!(
+        gaps,
+        [(machine('2'), ployz_core::ObservationGapReason::Failed)]
     );
     server.abort();
 }

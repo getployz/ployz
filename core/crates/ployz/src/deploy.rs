@@ -334,12 +334,14 @@ pub enum HeldIngress<'snapshot> {
 }
 
 /// A Machine that left a Container listing unanswered is an observation gap a Deploy
-/// goes on without when its silence is explained: it is Suspect, or the entry's path
-/// probes find large packets to it dropped, so no listing's reply comes back (#3510).
-/// An Up Machine's unexplained silence stays an error, as does any answer.
+/// goes on without when its silence is explained: it is Suspect, the entry couldn't dial
+/// it, as while its daemon is stopped (#3396), or the entry's path probes find large
+/// packets to it dropped, so no listing's reply comes back (#3510). An Up Machine's
+/// silence after a dial that worked stays an error, as does any answer.
 pub(crate) fn listing_gap(machine: &MachineObservation, error: &RpcError) -> bool {
     error.target_unanswered()
         && (machine.membership == MembershipObservation::Suspect
+            || error.undialed()
             || dropped_large_packets(machine, error))
 }
 
