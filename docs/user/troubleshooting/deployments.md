@@ -382,9 +382,13 @@ After web-2 lost power and came back, some requests through your other servers g
 answer: an old version of your app, a redirect, or a 404 from something else on web-2. Deploys can
 wait several minutes and then fail with the message above. On an earlier Ployz release, web-2 could
 lose its last changes when the power went, and your other servers kept an out-of-date view of its
-replicas. Ployz now saves each change on the server before the others see it, so this no longer
-starts. A view that went out of date before you upgraded stays until web-2 reports those replicas
-again.
+replicas. Now, when web-2 starts after a power cut, it first asks the other servers whether they
+hold changes it lost. If they do, web-2 takes those changes back from them and saves its own new
+changes under a new name, so the other servers take every one. This adds up to about a minute
+to the start. Its log says `lost-tail check`, and `moving this Machine's writes to a new Corrosion
+actor` when it found a loss. A server still on an earlier release then shows web-2 as down, and a
+deploy through it places replicas around web-2, so upgrade every server. A view that went out of
+date before you upgraded stays until web-2 reports those replicas again.
 
 1. [Upgrade Ployz](../servers/manage-servers.md#upgrade-ployz-on-a-server) on every server.
 2. [Restart](../services/services.md#restart-stop-or-open-a-shell) each service that runs on

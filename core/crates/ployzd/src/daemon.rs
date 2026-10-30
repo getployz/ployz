@@ -73,6 +73,7 @@ pub struct Daemon {
     stop: CancellationToken,
     shutdown: CancellationToken,
     local: RecordOwner,
+    data_dir: PathBuf,
     corrosion: Option<RunningCorrosion>,
     dns: DnsService,
     ingest: Arc<ImageIngest>,
@@ -273,7 +274,12 @@ impl Daemon {
                 }
             }
         };
-        let corrosion = start_corrosion(&config, &local).await?;
+        let mut corrosion = start_corrosion(&config, &local).await?;
+        if let Some(running) = &mut corrosion {
+            let _extend =
+                extend_systemd_start_timeout("checking the store for commits a power cut lost");
+            crate::lost_tail::recover(running, network.as_mut(), &local, &config.data_dir).await?;
+        }
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let plugin = config
             .volume_plugin_socket
@@ -540,6 +546,7 @@ impl Daemon {
             stop: CancellationToken::new(),
             shutdown,
             local,
+            data_dir: config.data_dir.clone(),
             corrosion,
             dns,
             ingest,
@@ -644,6 +651,13 @@ impl Daemon {
         // rather than failing halfway through.
         match tokio::time::timeout(SERVER_DRAIN, self.local.admission_lock().write_owned()).await {
             Ok(_admission) => {
+                if !resetting && self.corrosion.is_some() {
+                    let store = CorrosionPaths::data_dir_under(&self.data_dir);
+                    if let Err(error) = crate::lost_tail::record_clean_stop(&self.data_dir, &store)
+                    {
+                        tracing::warn!(error = %ployz_core::error_chain::inline(&error), "could not record a clean stop; the next start after a reboot checks the store");
+                    }
+                }
                 if let Err(error) = self.local.close().await {
                     errors.push(ployz_core::error_chain::inline(&error));
                 }

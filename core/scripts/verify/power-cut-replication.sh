@@ -6,8 +6,11 @@
 # issued and Caddy renders no route, so it first pins a self-signed certificate on each custom
 # domain. Cuts power to <machine> (default: the last one), brings it back, cuts it again
 # 8 s after boot so the cut lands on its own fresh Corrosion commits, then brings it back.
-# 60 s later it fails when any Machine holds a different clock or value for one of <machine>'s
-# container rows, or when any proxy routes an address on <machine> that is not an In copy there.
+# With HOT_SERVICE=<service>, the first cut instead lands the moment `service restart` of that
+# Service returns, on the commits the restart just made.
+# From 60 s after the last boot, it fails when the Machines still hold different rows
+# CONVERGE_SECONDS (default 120) later (rows-agree.sh, which needs sqlite3 on every Machine),
+# or when any proxy routes an address on <machine> that is not an In copy there.
 set -Eeuo pipefail
 trap 'echo "could not run: line $LINENO"; exit 2' ERR
 cd "$(dirname "$0")/../.."
@@ -45,7 +48,18 @@ certify() {
   rm -rf "$dir"
 }
 
+for m in $names; do
+  vc exec "$run" "$m" -- sh -c 'command -v sqlite3' >/dev/null || { echo "needs sqlite3 on $m"; exit 2; }
+done
+copies="select count(*) from containers where machine_id = '$target_id' and rotation = 'in'
+  and namespace != 'ployz-system'"
+actor="select hex(site_id) from crsql_site_id where ordinal = 0"
+[ "$(store "$target" "$copies")" -gt 0 ] || { echo "needs a Service copy on $target"; exit 2; }
+actor_before=$(store "$target" "$actor")
 certify
+if [ -n "${HOT_SERVICE:-}" ]; then
+  vc cli "$run" -- service restart "$HOT_SERVICE" >/dev/null
+fi
 vc power off "$run" "$target" >/dev/null; down
 vc power on "$run" "$target" >/dev/null
 sleep 8
@@ -53,24 +67,14 @@ vc power off "$run" "$target" >/dev/null; down
 vc power on "$run" "$target" >/dev/null
 sleep 60
 
-clocks="select p.id||' '||c.col_name||' '||c.col_version||' '||c.db_version
-  from containers__crsql_clock c join containers__crsql_pks p on p.__crsql_key = c.key
-  join containers t on t.id = p.id where t.machine_id = '$target_id' order by 1"
-contents="select id||' '||gen||' '||rotation||' '||coalesce(json_extract(container, '\$.address'), '')
-  from containers where machine_id = '$target_id' order by 1"
 failed=0
-for query in "$clocks" "$contents"; do
-  reference=$(store "$target" "$query")
-  [ -n "$reference" ] || { echo "FAIL: $target holds no rows for its own containers"; failed=1; }
-  for m in $names; do
-    [ "$m" = "$target" ] && continue
-    if ! diff <(echo "$reference") <(store "$m" "$query") >/dev/null; then
-      echo "FAIL: $m disagrees with $target about $target's containers:"
-      diff <(echo "$reference") <(store "$m" "$query") || true
-      failed=1
-    fi
-  done
-done
+[ "$(store "$target" "$copies")" -gt 0 ] || { echo "FAIL: $target holds no Service copy after the cuts"; failed=1; }
+if [ "$(store "$target" "$actor")" = "$actor_before" ]; then
+  echo "$target kept its Corrosion actor"
+else
+  echo "$target moved to a new Corrosion actor"
+fi
+scripts/verify/rows-agree.sh "$run" "$target" || { status=$?; [ "$status" = 1 ] || exit "$status"; failed=1; }
 
 serving=$(store "$target" "select json_extract(container, '\$.address') from containers
   where machine_id = '$target_id' and rotation = 'in' and json_extract(container, '\$.address') is not null")
@@ -87,5 +91,5 @@ for m in $names; do
   done
 done
 
-[ "$failed" = 0 ] && echo "PASS: every Machine agrees on $target's containers and routes only its In copies"
+[ "$failed" = 0 ] && echo "PASS: every Machine holds the same rows and routes only In copies on $target"
 exit "$failed"

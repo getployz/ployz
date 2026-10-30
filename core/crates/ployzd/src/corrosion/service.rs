@@ -16,6 +16,7 @@ use bollard::{
         ContainerCreateBody, HostConfig, Mount, MountType, RestartPolicy, RestartPolicyNameEnum,
     },
 };
+use futures_util::TryStreamExt;
 use rustix::fs::{IFlags, Mode, OFlags};
 use serde::Serialize;
 
@@ -25,7 +26,7 @@ use crate::{
 };
 use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT};
 
-use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
+use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement, rotation};
 
 /// Built from the `ployz` branch of getployz/corrosion: upstream plus the patches its README lists.
 pub const IMAGE: &str = "ghcr.io/getployz/corrosion:20261024-b46434825343@sha256:281efeb3ca82eac25e4ebb8a2cb6c61100a9db2948dcf507627aaa48e22e7dff";
@@ -115,38 +116,35 @@ impl CorrosionConfig {
 
     pub async fn start(&self) -> Result<RunningCorrosion, Error> {
         bounded_start(async {
+            let docker = Docker::connect_with_socket_defaults()?;
+            // A daemon killed during a rotation leaves its CLI container behind, which
+            // must not write the staged copy that install() discards.
+            ManagedService::host(docker.clone(), CLI_CONTAINER_NAME, IMAGE)
+                .remove()
+                .await?;
             let files = self.install()?;
             let api = ApiClient::new(self.api_address, &files.token)?;
             let admin = AdminClient::new(self.paths.admin_socket());
-            let docker = Docker::connect_with_socket_defaults()?;
             let service = DockerService {
-                service: ManagedService::host(docker, self.container_name.clone(), IMAGE),
+                service: ManagedService::host(docker.clone(), self.container_name.clone(), IMAGE),
+                docker,
                 data_dir: self.paths.data_dir.clone(),
                 run_dir: self.paths.run_dir.clone(),
             };
             let ensured = service.start(&files).await?;
-            wait_ready_or_replace(
-                ensured == Ensure::Keep,
-                || async { api.query(Statement::new("SELECT 1", [])).await.is_ok() },
-                async {
-                    service.service.remove().await?;
-                    service.start(&files).await?;
-                    Ok(())
-                },
-            )
+            wait_ready_or_replace(ensured == Ensure::Keep, || answers(&api), async {
+                service.service.remove().await?;
+                service.start(&files).await?;
+                Ok(())
+            })
             .await?;
-            let kept = service.clone();
-            let keeper = tokio::spawn(keep(
-                move || {
-                    let (service, files) = (kept.clone(), files.clone());
-                    async move { service.start(&files).await }
-                },
-                KEEP_EVERY,
-            ));
+            let keeper = spawn_keeper(service.clone(), files.clone());
             Ok(RunningCorrosion {
-                store: ReplicatedStore::new(api),
+                store: ReplicatedStore::new(api.clone()),
+                api,
                 admin,
                 service,
+                files,
                 keeper,
             })
         })
@@ -155,13 +153,14 @@ impl CorrosionConfig {
 
     fn install(&self) -> Result<InstalledFiles, Error> {
         create_private_dir(&self.paths.data_dir)?;
-        let refused = sync_writes(&self.paths.data_dir);
+        rotation::finish(&self.paths.data_dir)?;
+        let refused = async_writes(&self.paths.data_dir);
         if let Some(first) = refused.first() {
             tracing::warn!(
                 data_dir = %self.paths.data_dir.display(),
                 refused = refused.len(),
                 error = %ployz_core::error_chain::inline(first),
-                "Corrosion's commits can be lost on power loss: files in its data directory do not write synchronously"
+                "files in Corrosion's data directory still write synchronously, which slows catch-up"
             );
         }
         create_private_dir(&self.paths.run_dir)?;
@@ -237,9 +236,25 @@ async fn remove(service: &ManagedService, run_dir: &Path) -> Result<(), Error> {
 
 pub struct RunningCorrosion {
     store: ReplicatedStore,
+    api: ApiClient,
     admin: AdminClient,
     service: DockerService,
+    files: InstalledFiles,
     keeper: tokio::task::JoinHandle<()>,
+}
+
+async fn answers(api: &ApiClient) -> bool {
+    api.query(Statement::new("SELECT 1", [])).await.is_ok()
+}
+
+fn spawn_keeper(service: DockerService, files: InstalledFiles) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(keep(
+        move || {
+            let (service, files) = (service.clone(), files.clone());
+            async move { service.start(&files).await }
+        },
+        KEEP_EVERY,
+    ))
 }
 
 impl Drop for RunningCorrosion {
@@ -303,29 +318,78 @@ impl RunningCorrosion {
     }
 
     pub async fn cleanup(&mut self) -> Result<(), Error> {
+        self.stop_keeper().await;
+        remove(&self.service.service, &self.service.run_dir).await
+    }
+
+    async fn stop_keeper(&mut self) {
         self.keeper.abort();
         if !self.keeper.is_finished() {
             let _ = (&mut self.keeper).await;
         }
-        remove(&self.service.service, &self.service.run_dir).await
+    }
+
+    /// Gives this Machine's store a new Corrosion actor and keeps every row, the way
+    /// `corrosion restore` does by default: `backup` moves the actor off cr-sqlite's
+    /// ordinal 0, and cr-sqlite mints a new one when the agent opens the copy. The old
+    /// actor is then a peer's like any other, so sync pulls back the versions of it that
+    /// peers hold and this store lost. Corrosion runs again on every exit but one: a
+    /// handoff left half done, which the next start finishes before Corrosion runs.
+    /// Whether a rotation stopped between dropping the old store's WAL and replacing it.
+    #[must_use]
+    pub fn handoff_pending(&self) -> bool {
+        rotation::half_done(&self.service.data_dir)
+    }
+
+    pub async fn rotate_actor(&mut self) -> Result<(), Error> {
+        self.stop_keeper().await;
+        let rotated = async {
+            self.service.service.remove().await?;
+            let data_dir = &self.service.data_dir;
+            let staged = rotation::staged(data_dir)?;
+            self.service
+                .run_cli(&["backup", &staged.to_string_lossy()])
+                .await?;
+            rotation::hand_off(data_dir)
+        }
+        .await;
+        // Mid-handoff, the old store has lost its WAL, so it must not run again.
+        if rotated.is_err() && self.handoff_pending() {
+            return rotated;
+        }
+        let started = self.service.start(&self.files).await;
+        self.keeper = spawn_keeper(self.service.clone(), self.files.clone());
+        rotated?;
+        started?;
+        tokio::time::timeout(KEPT_READY_TIMEOUT, wait_ready(|| answers(&self.api)))
+            .await
+            .map_err(|_| {
+                Error::Api(format!(
+                    "rotated Corrosion did not answer within {}s",
+                    KEPT_READY_TIMEOUT.as_secs()
+                ))
+            })
     }
 }
 
 #[derive(Clone)]
 struct DockerService {
     service: ManagedService,
+    docker: Docker,
     data_dir: PathBuf,
     run_dir: PathBuf,
 }
 
+const CLI_CONTAINER_NAME: &str = "ployz-corrosion-cli";
+
 impl DockerService {
-    async fn start(&self, files: &InstalledFiles) -> Result<Ensure, Error> {
+    fn owner(&self) -> Result<String, Error> {
         let owner = fs::metadata(&self.data_dir)?;
-        let config = container_config(
-            &self.data_dir,
-            &self.run_dir,
-            format!("{}:{}", owner.uid(), owner.gid()),
-        );
+        Ok(format!("{}:{}", owner.uid(), owner.gid()))
+    }
+
+    async fn start(&self, files: &InstalledFiles) -> Result<Ensure, Error> {
+        let config = container_config(&self.data_dir, &self.run_dir, self.owner()?);
         self.service
             .ensure_host(DesiredContainer::new(
                 config,
@@ -333,6 +397,74 @@ impl DockerService {
             ))
             .await
             .map_err(Into::into)
+    }
+
+    /// Runs one `corrosion` command against the stopped agent's config and files, and
+    /// fails with the command's last output lines when it exits non-zero.
+    async fn run_cli(&self, args: &[&str]) -> Result<(), Error> {
+        let mut config = container_config(&self.data_dir, &self.run_dir, self.owner()?);
+        let mut cmd = vec![
+            "corrosion".to_owned(),
+            "-c".to_owned(),
+            self.data_dir
+                .join("config.toml")
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        cmd.extend(args.iter().map(|arg| (*arg).to_owned()));
+        config.cmd = Some(cmd);
+        if let Some(host) = &mut config.host_config {
+            host.restart_policy = None;
+        }
+        let cli = ManagedService::host(self.docker.clone(), CLI_CONTAINER_NAME, IMAGE);
+        cli.remove().await?;
+        self.docker
+            .create_container(
+                Some(
+                    bollard::query_parameters::CreateContainerOptionsBuilder::default()
+                        .name(CLI_CONTAINER_NAME)
+                        .build(),
+                ),
+                config,
+            )
+            .await?;
+        self.docker
+            .start_container(CLI_CONTAINER_NAME, None)
+            .await?;
+        let exited = self
+            .docker
+            .wait_container(CLI_CONTAINER_NAME, None)
+            .try_collect::<Vec<_>>()
+            .await;
+        let output = match &exited {
+            Ok(_) => String::new(),
+            Err(_) => self
+                .docker
+                .logs(
+                    CLI_CONTAINER_NAME,
+                    Some(
+                        bollard::query_parameters::LogsOptionsBuilder::default()
+                            .stdout(true)
+                            .stderr(true)
+                            .tail("20")
+                            .build(),
+                    ),
+                )
+                .map_ok(|line| line.to_string())
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap_or_default()
+                .concat(),
+        };
+        let removed = cli.remove().await;
+        exited.map_err(|error| {
+            Error::Api(format!(
+                "`corrosion {}` failed: {}: {output}",
+                args.join(" "),
+                ployz_core::error_chain::inline(&error)
+            ))
+        })?;
+        Ok(removed?)
     }
 }
 
@@ -422,23 +554,30 @@ fn create_private_dir(path: &Path) -> Result<(), Error> {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("could not make {} write synchronously", path.display())]
+#[error("could not stop {} writing synchronously", path.display())]
 struct SyncWritesError {
     path: PathBuf,
     source: std::io::Error,
 }
 
-// Corrosion broadcasts a commit before SQLite syncs it, and peers never send a Machine its
-// own changes back, so a commit lost to power loss after broadcast is never recovered.
-fn sync_writes(dir: &Path) -> Vec<SyncWritesError> {
+// Earlier daemons set the synchronous-update flag on the whole store so a power cut could not
+// lose a commit Corrosion had broadcast. Each WAL page then waits for the disk, which slows the
+// large catch-up commits after a partition. A lost tail now comes back from peers under a new
+// actor (`lost_tail`), so the flag only costs.
+fn async_writes(dir: &Path) -> Vec<SyncWritesError> {
     let mut refused = Vec::new();
-    sync_tree(dir, OFlags::DIRECTORY, &mut refused);
-    refused.retain(|error| error.source.kind() != std::io::ErrorKind::NotFound);
+    clear_tree(dir, OFlags::DIRECTORY, &mut refused);
+    let unsupported = [rustix::io::Errno::OPNOTSUPP, rustix::io::Errno::NOTTY]
+        .map(|errno| Some(errno.raw_os_error()));
+    refused.retain(|error| {
+        error.source.kind() != std::io::ErrorKind::NotFound
+            && !unsupported.contains(&error.source.raw_os_error())
+    });
     refused
 }
 
-fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
-    if let Err(error) = set_sync_flag(dir, open) {
+fn clear_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
+    if let Err(error) = clear_sync_flag(dir, open) {
         refused.push(error);
     }
     let entries = match fs::read_dir(dir) {
@@ -465,10 +604,10 @@ fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
         let path = entry.path();
         match entry.file_type() {
             Ok(file_type) if file_type.is_dir() => {
-                sync_tree(&path, OFlags::DIRECTORY | OFlags::NOFOLLOW, refused)
+                clear_tree(&path, OFlags::DIRECTORY | OFlags::NOFOLLOW, refused)
             }
             Ok(file_type) if file_type.is_file() => {
-                if let Err(error) = set_sync_flag(&path, OFlags::NOFOLLOW) {
+                if let Err(error) = clear_sync_flag(&path, OFlags::NOFOLLOW) {
                     refused.push(error);
                 }
             }
@@ -478,7 +617,7 @@ fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
     }
 }
 
-fn set_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
+fn clear_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
     let set = || -> rustix::io::Result<()> {
         let fd = rustix::fs::open(
             path,
@@ -486,8 +625,8 @@ fn set_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
             Mode::empty(),
         )?;
         let flags = rustix::fs::ioctl_getflags(&fd)?;
-        if !flags.contains(IFlags::SYNC) {
-            rustix::fs::ioctl_setflags(&fd, flags | IFlags::SYNC)?;
+        if flags.contains(IFlags::SYNC) {
+            rustix::fs::ioctl_setflags(&fd, flags - IFlags::SYNC)?;
         }
         Ok(())
     };
@@ -703,71 +842,37 @@ mod tests {
     }
 
     #[test]
-    fn existing_store_files_write_synchronously() {
+    fn store_files_flagged_by_an_earlier_daemon_stop_writing_synchronously() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
         fs::create_dir(dir.join("snapshots")).unwrap();
         fs::write(dir.join("snapshots/old.db"), "").unwrap();
         fs::write(dir.join("store.db"), "").unwrap();
-
-        let refused = sync_writes(dir);
-        if refused.is_empty() {
-            for path in [
-                dir.to_path_buf(),
-                dir.join("snapshots"),
-                dir.join("snapshots/old.db"),
-                dir.join("store.db"),
-            ] {
-                let file = fs::File::open(&path).unwrap();
-                assert!(
-                    rustix::fs::ioctl_getflags(&file)
-                        .unwrap()
-                        .contains(IFlags::SYNC),
-                    "{} does not write synchronously",
-                    path.display()
-                );
-            }
-        } else {
-            let unsupported = [rustix::io::Errno::OPNOTSUPP, rustix::io::Errno::NOTTY]
-                .map(|errno| Some(errno.raw_os_error()));
-            assert!(refused.iter().any(|error| error.path == dir));
-            for error in &refused {
-                assert!(
-                    unsupported.contains(&error.source.raw_os_error()),
-                    "only the filesystem refusing the flag may leave files unflagged: {error}: {}",
-                    error.source
-                );
+        let paths = [
+            dir.to_path_buf(),
+            dir.join("snapshots"),
+            dir.join("snapshots/old.db"),
+            dir.join("store.db"),
+        ];
+        let flags = |path: &Path| rustix::fs::ioctl_getflags(fs::File::open(path).unwrap());
+        for path in &paths {
+            let Ok(current) = flags(path) else {
+                return;
+            };
+            if rustix::fs::ioctl_setflags(fs::File::open(path).unwrap(), current | IFlags::SYNC)
+                .is_err()
+            {
+                return;
             }
         }
-    }
 
-    #[test]
-    fn one_refused_file_leaves_the_rest_of_the_store_writing_synchronously() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path();
-        let refused = dir.join("refused");
-        fs::write(&refused, "").unwrap();
-        fs::set_permissions(&refused, fs::Permissions::from_mode(0o000)).unwrap();
-        let siblings: Vec<_> = (0..20).map(|n| dir.join(format!("store-{n}.db"))).collect();
-        for sibling in &siblings {
-            fs::write(sibling, "").unwrap();
-        }
+        assert!(async_writes(dir).is_empty());
 
-        let _ = sync_writes(dir);
-
-        let synchronous = |path: &Path| {
-            rustix::fs::ioctl_getflags(fs::File::open(path).unwrap())
-                .unwrap()
-                .contains(IFlags::SYNC)
-        };
-        if !synchronous(dir) {
-            return;
-        }
-        for sibling in &siblings {
+        for path in &paths {
             assert!(
-                synchronous(sibling),
-                "{} does not write synchronously",
-                sibling.display()
+                !flags(path).unwrap().contains(IFlags::SYNC),
+                "{} still writes synchronously",
+                path.display()
             );
         }
     }

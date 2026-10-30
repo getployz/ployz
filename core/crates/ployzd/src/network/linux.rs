@@ -473,7 +473,7 @@ impl NetworkPlane {
 
     /// Whether the snapshot is settled. `false` when the store couldn't be read, or when
     /// only adding kept peers the store can't yet vouch for, so a later tick reads again.
-    async fn rebuild(
+    pub(crate) async fn rebuild(
         &mut self,
         replicated: &ReplicatedStore,
         snapshot: &ReplicatedObservations<Machine, MachineId>,

@@ -32,6 +32,7 @@ mod host_capacity;
 pub(crate) mod ingress;
 pub mod installer;
 pub mod logs;
+mod lost_tail;
 pub mod machine;
 pub mod machine_api;
 pub(crate) mod machine_api_socket;
