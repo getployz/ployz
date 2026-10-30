@@ -319,8 +319,9 @@ pub(crate) fn copy_node(
         &none,
         (Owner::None, Some(trusted)),
     )?;
-    // The copy's variables have their own IDs: keep the owner's, for its seals.
-    for service in &owner.applied.services {
+    // The copy's variables have their own IDs: keep the owner's, from the very
+    // state the copy landed, for its seals.
+    for service in &own.from.services {
         if !copied.contains(&service.lineage_id) {
             continue;
         }
