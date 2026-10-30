@@ -986,15 +986,40 @@ fn a_secret_added_to_a_synced_node_is_a_change_not_a_seal() {
     let (store, who) = shop(false);
     service(&store, &who, "fix-web", 5, "api", "api:1");
     let synced = sync_into(&store, &who, ("fix-web", "production"), None);
+    let api = store
+        .read(
+            &who,
+            &ServiceQuery {
+                environment: at("production"),
+                service: ServiceName::parse("api").unwrap(),
+            },
+        )
+        .unwrap()
+        .service
+        .service
+        .id;
     set(
         &store,
         &who,
         "production",
         &[(
             "api.env.NEW",
-            backend::sealed_secret(&uuid(2), &uuid(5), "NEW", 1),
+            backend::sealed_secret(&uuid(2), api.as_str(), "NEW", 1),
         )],
     );
+    // Saved, so no proposal holds the Sync.
+    store
+        .write(
+            &who,
+            &Publish {
+                id: None,
+                environment: at("production"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+        )
+        .unwrap();
     assert_eq!(
         undo(&store, &who, &synced),
         Err((
