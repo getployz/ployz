@@ -25,25 +25,34 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
     }
 }
 
-/// Show sealed each plain value `introduced` keeps for a variable `working` holds
-/// sealed now: a Node Introduction keeps the value a Branch was made with, and a
-/// review compares a new node with it, but never reads a sealed value back. The
-/// fingerprint stays, so the comparison still sees whether the value changed.
+/// Show sealed each plain value `introduced` keeps for a variable the Environment
+/// holds sealed now, or held sealed before deleting it: a Node Introduction keeps
+/// the value a Branch was made with, and a review compares a new node with it, but
+/// never reads a sealed value back. The fingerprint stays, so the comparison still
+/// sees whether the value changed.
 pub(crate) fn hide_introduced(
+    tx: &mut dyn Tx,
+    environment: &str,
     introduced: &mut SavedEnvironmentIntent,
     working: &SavedEnvironmentIntent,
-) {
+) -> Result<(), RpcError> {
+    let ever = EverSealed::recorded(tx, environment)?;
     for service in &mut introduced.services {
-        let Some(now) = working.services.iter().find(|now| now.id == service.id) else {
-            continue;
-        };
+        let now = working
+            .services
+            .iter()
+            .find(|now| now.id == service.id)
+            .map(|now| &now.variables);
         for was in &mut service.variables {
-            let sealed_now = now
-                .variables
-                .iter()
-                .find(|now| now.id == was.id)
-                .or_else(|| now.variables.iter().find(|now| now.key == was.key))
-                .is_some_and(|now| sealed(&now.value));
+            let now = now.and_then(|now| {
+                now.iter()
+                    .find(|now| now.id == was.id)
+                    .or_else(|| now.iter().find(|now| now.key == was.key))
+            });
+            let sealed_now = match now {
+                Some(now) => sealed(&now.value),
+                None => ever.holds(&service.id, was),
+            };
             if sealed_now && !sealed(&was.value) {
                 was.value = SavedVariableValue::Secret {
                     encrypted_value: None,
@@ -52,6 +61,7 @@ pub(crate) fn hide_introduced(
             }
         }
     }
+    Ok(())
 }
 
 /// Whether a template reads a name in `names`. By key alone, whatever Service owns
@@ -168,6 +178,22 @@ pub(crate) struct EverSealed {
 
 impl EverSealed {
     pub(crate) fn load(tx: &mut dyn Tx, environment: &str) -> Result<Self, RpcError> {
+        let mut ever = Self::recorded(tx, environment)?;
+        // Saves hold seals made before Working State recorded them.
+        for row in tx.query(
+            "SELECT intent FROM config_saved WHERE environment_id = ?1",
+            &[environment.into()],
+        )? {
+            for (service, variable) in sealed_in(&row.intent(0, "Saved State")?) {
+                ever.ids.insert((service.to_owned(), variable.id.clone()));
+                ever.keys.insert((service.to_owned(), variable.key.clone()));
+            }
+        }
+        Ok(ever)
+    }
+
+    /// Those Working State recorded as it sealed them, without reading every save.
+    pub(crate) fn recorded(tx: &mut dyn Tx, environment: &str) -> Result<Self, RpcError> {
         let mut ever = Self::default();
         for row in tx.query(
             "SELECT service_id, variable_id, key FROM config_sealed_variable \
@@ -179,16 +205,6 @@ impl EverSealed {
                 .insert((service.to_owned(), row.text(1)?.to_owned()));
             ever.keys
                 .insert((service.to_owned(), row.text(2)?.to_owned()));
-        }
-        // Saves hold seals made before Working State recorded them.
-        for row in tx.query(
-            "SELECT intent FROM config_saved WHERE environment_id = ?1",
-            &[environment.into()],
-        )? {
-            for (service, variable) in sealed_in(&row.intent(0, "Saved State")?) {
-                ever.ids.insert((service.to_owned(), variable.id.clone()));
-                ever.keys.insert((service.to_owned(), variable.key.clone()));
-            }
         }
         Ok(ever)
     }

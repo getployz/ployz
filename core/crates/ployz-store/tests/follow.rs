@@ -1192,6 +1192,45 @@ fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_no_plain_base() {
     );
 }
 
+/// A Branch that deletes a variable sealed since it was made reviews the deletion
+/// from sealed, not from the plain value its Node Introduction keeps.
+#[test]
+fn a_branch_deleting_a_value_sealed_since_it_was_made_never_shows_the_plain_value() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    seal_token(&store, &who, 3);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("qa"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.TOKEN").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+
+    let review = diff(&store, &who, "qa");
+    let token = review
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|setting| setting.path == "web.env.TOKEN")
+        .unwrap();
+    assert_eq!(token.before, json!({ "secret": true }));
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
 /// Sealing a value in a Working State empties it in the bases its Branch shares,
 /// before anything is saved or deployed.
 #[test]

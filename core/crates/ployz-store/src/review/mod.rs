@@ -289,7 +289,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let saved = latest_saved(tx, id)?;
     let head = crate::deployment::head(tx, environment)?;
     let mut introductions = introductions(tx, environment)?;
-    sealed::hide_introduced(&mut introductions, &environment.working);
+    sealed::hide_introduced(tx, id.as_str(), &mut introductions, &environment.working)?;
     let deployed = approval::deployed(&head);
     let mut view = compare(
         environment,
