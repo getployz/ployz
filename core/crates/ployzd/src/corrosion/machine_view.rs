@@ -16,11 +16,8 @@ use ployz_core::{Machine, MachineId};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, ReplicatedObservations, ReplicatedStore, Subscription};
+use super::{Error, REFRESH_INTERVAL, ReplicatedObservations, ReplicatedStore, Subscription};
 
-/// Re-read even when no change was reported, so a stalled subscription cannot
-/// freeze the view.
-const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// Wait before reopening a failed subscription.
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// Quiet window after a change; a join fans several Machine rows out at once.

@@ -3,6 +3,7 @@ use std::{
     net::SocketAddrV4,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -22,7 +23,8 @@ use super::{
 };
 use crate::{
     corrosion::{
-        AdminClient, ApiClient, Error as CorrosionError, MachineView, ReplicatedStore, Subscription,
+        AdminClient, ApiClient, Error as CorrosionError, MachineView, REFRESH_INTERVAL,
+        ReplicatedStore, Subscription,
     },
     route_acks::load_down,
 };
@@ -76,6 +78,7 @@ pub async fn serve(run_dir: &Path) -> io::Result<DnsExit> {
             resolv_conf: PathBuf::from("/etc/resolv.conf"),
             exe: InstalledExe::current()?,
             tick: TICK,
+            refresh: REFRESH_INTERVAL,
             backoff: Backoff::default(),
         },
         shutdown,
@@ -89,6 +92,8 @@ pub(crate) struct Fixture<'a> {
     pub(crate) resolv_conf: PathBuf,
     pub(crate) exe: InstalledExe,
     pub(crate) tick: Duration,
+    /// How often the Container snapshot is re-read with no change reported.
+    pub(crate) refresh: Duration,
     pub(crate) backoff: Backoff,
 }
 
@@ -187,7 +192,7 @@ pub(crate) async fn serve_with(
     tokio::pin!(server);
     let exit = tokio::select! {
         served = &mut server => return served.map(|()| DnsExit::Stopped),
-        followed = session.follow(&answers, connection, fixture.tick, fixture.keeper, &shutdown) => {
+        followed = session.follow(&answers, connection, fixture.tick, fixture.refresh, fixture.keeper, &shutdown) => {
             followed?;
             DnsExit::Stopped
         }
@@ -273,6 +278,7 @@ impl Session {
         answers: &Answers,
         mut connection: Connection,
         tick: Duration,
+        refresh: Duration,
         keeper: &dyn Keeper,
         shutdown: &CancellationToken,
     ) -> io::Result<()> {
@@ -283,6 +289,7 @@ impl Session {
                 &mut self.inputs,
                 &self.endpoint.token_file,
                 tick,
+                refresh,
                 shutdown,
             )
             .await?
@@ -380,6 +387,7 @@ async fn watch_projection(
     inputs: &mut ProjectionInputs,
     token_file: &Path,
     tick: Duration,
+    refresh_every: Duration,
     shutdown: &CancellationToken,
 ) -> io::Result<Watched> {
     let Connection {
@@ -397,15 +405,55 @@ async fn watch_projection(
     // membership I/O never delays Container-change withdrawal.
     let membership = IntervalStream::new(interval).then(|_| load_down(machines, admin, &local_id));
     tokio::pin!(membership);
+    let replicated: &ReplicatedStore = replicated;
+    // A quiet subscription and a stalled one look alike, so the snapshot is
+    // re-read even without a change, and a re-snapshot still open is a lost stream.
+    // Like membership, the re-read stays in flight while other branches run, so it
+    // may land after newer facts. `epoch` advances on every change notification
+    // and every applied reload; a re-read applies only if it hasn't moved since the
+    // re-read started, so it can never undo a newer reload or clear a newer retry.
+    let epoch = AtomicU64::new(0);
+    let mut refresh =
+        tokio::time::interval_at(tokio::time::Instant::now() + refresh_every, refresh_every);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let refreshes = IntervalStream::new(refresh).then(|_| {
+        let started = epoch.load(Ordering::Relaxed);
+        async move { (started, load_snapshot(replicated).await) }
+    });
+    tokio::pin!(refreshes);
     let mut pending_snapshot = false;
     loop {
         let rebuild = tokio::select! {
+            Some((started, loaded)) = refreshes.next() => {
+                if changes.snapshot_in_progress() {
+                    return Ok(Watched::Lost(Lost::Stream(CorrosionError::Protocol(
+                        "subscription snapshot stalled".into(),
+                    ))));
+                }
+                match loaded {
+                    Ok(observations) if started == epoch.load(Ordering::Relaxed) => {
+                        inputs.observations = observations;
+                        pending_snapshot = false;
+                        true
+                    }
+                    Ok(_) => false,
+                    // A failed re-read waits for the next one rather than for every tick.
+                    Err(error) => {
+                        eprintln!(
+                            "failed to re-read the DNS projection: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
+                        false
+                    }
+                }
+            }
             changed = changes.changed() => {
                 if let Err(error) = changed {
                     return Ok(Watched::Lost(Lost::Stream(error)));
                 }
+                epoch.fetch_add(1, Ordering::Relaxed);
                 pending_snapshot = true;
-                reload_snapshot(replicated, inputs, &mut pending_snapshot).await
+                reload_snapshot(replicated, inputs, &mut pending_snapshot, &epoch).await
             }
             Some(result) = membership.next() => {
                 if read_token(token_file).is_ok_and(|current| &current != token) {
@@ -413,7 +461,7 @@ async fn watch_projection(
                 }
                 let membership = inputs.down.update(result);
                 let retried = pending_snapshot
-                    && reload_snapshot(replicated, inputs, &mut pending_snapshot).await;
+                    && reload_snapshot(replicated, inputs, &mut pending_snapshot, &epoch).await;
                 membership || retried
             }
             () = shutdown.cancelled() => return Ok(Watched::Shutdown),
@@ -428,11 +476,13 @@ async fn reload_snapshot(
     replicated: &ReplicatedStore,
     inputs: &mut ProjectionInputs,
     pending: &mut bool,
+    epoch: &AtomicU64,
 ) -> bool {
     match load_snapshot(replicated).await {
         Ok(observations) => {
             inputs.observations = observations;
             *pending = false;
+            epoch.fetch_add(1, Ordering::Relaxed);
             true
         }
         Err(error) => {

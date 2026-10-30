@@ -157,11 +157,12 @@ impl RuntimeWatchSnapshot {
 /// Serve complete Runtime Watch frames from the replicated store.
 ///
 /// Subscribes first, then yields one complete frame immediately. Later frames
-/// are assembled on store wakeups or
-/// once-per-second membership/RTT samples from the local admin source and the
-/// mesh echo. The notification payload is not the observation. Unchanged observations do not
-/// yield, including when only `observed_at` advances. Store failure ends the
-/// stream. Admin telemetry failure keeps replicated rows.
+/// are assembled on store wakeups, on a store re-read every 30s that catches a
+/// subscription gone quiet, or on once-per-second membership/RTT samples from
+/// the local admin source and the mesh echo. The notification payload is not
+/// the observation. Unchanged observations do not yield, including when only
+/// `observed_at` advances. Store failure ends the stream. Admin telemetry
+/// failure keeps replicated rows.
 ///
 /// # Errors
 ///

@@ -19,6 +19,12 @@ use super::Error;
 /// behind a burst of reads.
 const MAX_IN_FLIGHT: usize = 32;
 
+/// Every caller shares one HTTP/2 connection, and a timed-out request leaves it
+/// pooled. Pinging it lets hyper close a connection that has gone silent, failing
+/// its streams so the next request dials a fresh one within about 20s.
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Statement {
     query: String,
@@ -76,6 +82,9 @@ impl ApiClient {
             });
         let client = configure(Client::builder())
             .connect_timeout(Duration::from_secs(3))
+            .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
+            .http2_keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
+            .http2_keep_alive_while_idle(true)
             .default_headers(headers)
             .retry(retry)
             .build()?;
@@ -529,6 +538,50 @@ mod tests {
             matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
             "{error}"
         );
+        server.abort();
+    }
+
+    /// #2731: a connection that stops answering is dropped once its keepalive
+    /// goes unanswered, so the next query dials a fresh one instead of timing out
+    /// on the same dead connection forever.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_connection_is_replaced_after_its_keepalive_goes_unanswered() {
+        use hyper::server::conn::http2;
+        use hyper_util::{
+            rt::{TokioExecutor, TokioIo},
+            service::TowerToHyperService,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            // The first connection is accepted and never read, as a Corrosion that
+            // still takes packets but never answers them.
+            let (black_hole, _) = listener.accept().await.unwrap();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let router = Router::new().route(
+                    "/v1/queries",
+                    post(|| async { "{\"columns\":[\"x\"]}\n{\"eoq\":{\"time\":0.0}}\n" }),
+                );
+                tokio::spawn(
+                    http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), TowerToHyperService::new(router)),
+                );
+                let _ = &black_hole;
+            }
+        });
+        let client = ApiClient::new(address, &"a".repeat(64)).unwrap();
+
+        client
+            .query(Statement::new("SELECT x", []))
+            .await
+            .expect_err("the silent connection must time out");
+        tokio::time::sleep(super::KEEP_ALIVE_INTERVAL + super::KEEP_ALIVE_TIMEOUT).await;
+        client
+            .query(Statement::new("SELECT x", []))
+            .await
+            .expect("a fresh connection must answer");
         server.abort();
     }
 

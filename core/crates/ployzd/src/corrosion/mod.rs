@@ -67,6 +67,13 @@ pub enum Error {
 
 pub(crate) const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How often a subscriber re-reads its tables even when no change was reported.
+/// A quiet table sends nothing after its snapshot, so a stalled subscription looks
+/// the same as an idle one, and only the re-read bounds how stale a reader gets.
+/// A snapshot still in progress when it fires is a stuck stream, so the subscriber
+/// resubscribes instead.
+pub(crate) const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
 pub(crate) async fn within_io_timeout<T>(
     work: impl std::future::Future<Output = Result<T, Error>>,
 ) -> Result<T, Error> {
