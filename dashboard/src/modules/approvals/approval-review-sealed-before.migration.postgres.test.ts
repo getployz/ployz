@@ -16,7 +16,10 @@ const node = (settings: ServiceSettingChange[]): NodeChange =>
 const sealed = { secret: true };
 const environment = { id: "env-1", name: "production", project: "shop" };
 const diffOf = (fields: Partial<DiffView>) => asTestDouble<DiffView>()({ environment, version: "v1", ...fields });
-const reviewOf = (diff: DiffView): ApprovalReview => ({ effects: [{ kind: "removes_service", node: "web", path: "web", name: "web" }], diff });
+const reviewOf = (diff: DiffView): ApprovalReview => ({
+  effects: [{ kind: "removes_service", node: "web", path: "web", name: "web" }], diff, protected: { environment: "production" },
+  apply: { command: "publish", environment: { project: null, environment: null }, version: null, accept_volume_loss: [] },
+});
 
 const preFix = diffOf({
   changes: [node([
@@ -26,6 +29,9 @@ const preFix = diffOf({
     setting("api.env.KEPT", "api:variables.KEPT", sealed, sealed),
     setting("api.env.TOKEN.description", "", "fake description", sealed),
     setting("configs.@app.files.a", "app:files.a", "fake file text", sealed),
+    setting("api.env.FILED", "api:files.FILED", "fake row says file", sealed),
+    setting("api.custom", "api:variables.CUSTOM", `${MARKER}-row`, sealed),
+    asTestDouble<ServiceSettingChange>()({ path: "api.env.UNSET", kind: "add", after: sealed, canRestore: false, row: "api:variables.UNSET" as RowId }),
   ]), node([setting("web.env.PATH_ONLY", null, `${MARKER}-path`, sealed)])],
   draft_changes: [node([setting("api.variables.DRAFT", "", `${MARKER}-draft`, sealed)])],
 });
@@ -60,7 +66,7 @@ describe("the approval review sealed-before scrub", () => {
     expect(row?.review).toEqual(reviewOf(withoutSealedBefore(preFix)));
     const holding = await harness.pool.query(`select id from operation_approvals where strpos(review::text, $1) > 0`, [MARKER]);
     expect(holding.rows).toEqual([]);
-    for (const plain of ["fake-unsealed-value", "fake-still-plain", "fake description", "fake file text"]) expect(JSON.stringify(row?.review)).toContain(plain);
+    for (const plain of ["fake-unsealed-value", "fake-still-plain", "fake description", "fake file text", "fake row says file"]) expect(JSON.stringify(row?.review)).toContain(plain);
   });
 
   it("writes no row already in that shape, and changes nothing run again", async () => {
