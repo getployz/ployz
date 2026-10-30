@@ -1069,7 +1069,7 @@ impl Client {
                 return Err(stopped_answering(&observation.machine));
             }
             (HeldCopies::Answered(held), _) => held,
-            (HeldCopies::Gone, _) => return Ok(()),
+            (HeldCopies::Gone(_), _) => return Ok(()),
         };
         if !held.is_empty() {
             return Err(copies_left_behind(
@@ -1102,10 +1102,8 @@ impl Client {
             Err(error) if error.target_unanswered() => Ok(HeldCopies::Dead),
             Err(error) => {
                 let error = rpc_error(error);
-                if error.server_unlisted(&machine.machine.id) {
-                    return Ok(HeldCopies::Gone);
-                }
-                Err(RpcError {
+                let unlisted = error.server_unlisted(&machine.machine.id);
+                let unchecked = RpcError {
                     code: RpcErrorCode::Unavailable,
                     // Often only the entry was busy, as when several forgets share it.
                     message: format!(
@@ -1115,7 +1113,12 @@ impl Client {
                     ),
                     details: Value::Null,
                     cause: std::iter::once(error.message).chain(error.cause).collect(),
-                })
+                };
+                if unlisted {
+                    Ok(HeldCopies::Gone(unchecked))
+                } else {
+                    Err(unchecked)
+                }
             }
         }
     }
@@ -1580,8 +1583,10 @@ fn stopped_answering(machine: &Machine) -> RpcError {
 pub(crate) enum HeldCopies {
     Dead,
     Answered(BTreeSet<DockerVolumeName>),
-    /// The entry no longer lists the Server, as when Cloud's removal finished first.
-    Gone,
+    /// The entry refused the read because it no longer lists the Server, as when Cloud's
+    /// removal finished first. Only the entry that listed it proves it gone; from another
+    /// entry, which may not have learned of a fresh join yet, it stays this refusal.
+    Gone(RpcError),
 }
 
 /// Whether Cloud holds the last Machine. Cloud lets go of it by removing it itself:

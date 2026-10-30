@@ -720,7 +720,7 @@ async fn a_server_the_entry_no_longer_lists_reads_gone() {
 
     let held = client.held_copies(&machine('b')).await;
 
-    assert!(matches!(held, Ok(HeldCopies::Gone)), "{held:?}");
+    assert!(matches!(held, Ok(HeldCopies::Gone(_))), "{held:?}");
     server.abort();
 }
 
