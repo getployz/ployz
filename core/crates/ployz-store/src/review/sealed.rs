@@ -25,6 +25,55 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
     }
 }
 
+/// Show sealed each plain value `introduced` keeps for a variable the Environment
+/// holds sealed now, or held sealed before deleting it: a Node Introduction keeps
+/// the value a Branch was made with, and a review compares a new node with it, but
+/// never reads a sealed value back. The fingerprint stays, so the comparison still
+/// sees whether the value changed.
+pub(crate) fn hide_introduced(
+    tx: &mut dyn Tx,
+    environment: &str,
+    introduced: &mut SavedEnvironmentIntent,
+    working: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    // Read only for a deleted variable: it scans every save.
+    let mut ever = None;
+    for service in &mut introduced.services {
+        let now = working
+            .services
+            .iter()
+            .find(|now| now.id == service.id)
+            .map(|now| &now.variables);
+        for was in &mut service.variables {
+            if sealed(&was.value) {
+                continue;
+            }
+            let now = now.and_then(|now| {
+                now.iter()
+                    .find(|now| now.id == was.id)
+                    .or_else(|| now.iter().find(|now| now.key == was.key))
+            });
+            let sealed_now = match now {
+                Some(now) => sealed(&now.value),
+                None => {
+                    if ever.is_none() {
+                        ever = Some(EverSealed::load(tx, environment)?);
+                    }
+                    ever.as_ref()
+                        .is_some_and(|ever| ever.holds(&service.id, was))
+                }
+            };
+            if sealed_now {
+                was.value = SavedVariableValue::Secret {
+                    encrypted_value: None,
+                };
+                was.generated = None;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether a template reads a name in `names`. By key alone, whatever Service owns
 /// it, so a shared key counts.
 fn reads_any(value: &SavedVariableValue, names: &BTreeSet<String>) -> bool {

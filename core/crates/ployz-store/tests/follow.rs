@@ -1152,7 +1152,7 @@ fn a_seal_that_follows_leaves_no_plain_text_in_the_arrival() {
 
 /// A Branch made while the value was plain keeps no copy of it in what it syncs over,
 /// only in its Node Introduction. The seal follows into it cleanly, and its review
-/// still lists it.
+/// still lists it, from sealed rather than from the plain value (#3587).
 #[test]
 fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_no_plain_base() {
     let dir = tempfile::tempdir().unwrap();
@@ -1179,6 +1179,8 @@ fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_no_plain_base() {
             .flat_map(|change| &change.settings)
             .any(|setting| setting.path == "web.env.TOKEN")
     );
+    let shown = serde_json::to_string(&diff(&store, &who, "qa")).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
     assert_eq!(
         backend::tables_holding(&url, "plain-private"),
         ["config_node_introduction"]
@@ -1188,6 +1190,45 @@ fn a_seal_that_follows_into_a_branch_made_while_plain_leaves_no_plain_base() {
         backend::tables_holding(&url, "plain-private"),
         ["config_node_introduction"]
     );
+}
+
+/// A Branch that deletes a variable sealed since it was made reviews the deletion
+/// from sealed, not from the plain value its Node Introduction keeps.
+#[test]
+fn a_branch_deleting_a_value_sealed_since_it_was_made_never_shows_the_plain_value() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    seal_token(&store, &who, 3);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("qa"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.TOKEN").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+
+    let review = diff(&store, &who, "qa");
+    let token = review
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|setting| setting.path == "web.env.TOKEN")
+        .unwrap();
+    assert_eq!(token.before, json!({ "secret": true }));
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
 }
 
 /// Sealing a value in a Working State empties it in the bases its Branch shares,
