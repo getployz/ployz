@@ -756,10 +756,10 @@ The approval Ployz Cloud asks for names the server and each volume whose only co
 those are lost with it. A volume with a mirror or a writer on another server isn't listed.
 
 Once you approve, forgetting an offline server takes seconds. Forgetting one that is still up but
-doesn't answer takes Ployz Cloud longer: a minute or two when the server holds only mirrors, and
-about 11 minutes when it holds a volume's writer, since Ployz Cloud retries the server first in
-case it still writes the volume. `ployz server forget` prints a line each minute meanwhile, and
-says `Forgot Server web-2.` once it's done.
+doesn't answer takes Ployz Cloud about 12 minutes, even when the server holds only mirrors.
+Ployz Cloud can't tell which volumes a server writes until it answers, so it retries the server
+first in case it still writes one. `ployz server forget` says why after 30 seconds, then prints a
+line each minute so you can follow along, and says `Forgot Server web-2.` once it's done.
 
 `ployz server rm` on a server that doesn't answer stops before it changes anything and prints that
 command as its next step. When Ployz Cloud itself doesn't answer, it says to run `ployz server rm`
