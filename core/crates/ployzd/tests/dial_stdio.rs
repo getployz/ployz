@@ -137,15 +137,25 @@ fn dial_stdio_names_the_refusal_when_a_refusing_daemon_closes_it_unanswered() {
     let refused = root.join("refused");
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
+        thread::sleep(Duration::from_millis(200));
         fs::write(refused, format!("{refusal}\n")).unwrap();
         drop(stream);
     });
 
-    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+    // A client's request sits unread when the start closes it, which resets it.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .args(["--socket", socket.to_str().unwrap(), "dial-stdio"])
-        .stdin(Stdio::null())
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    drop(input);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "stderr={stderr}");

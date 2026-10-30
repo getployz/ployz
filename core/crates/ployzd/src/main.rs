@@ -356,13 +356,15 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
     let stream = wait_until_socket_accepts(path, DIAL_STDIO_SOCKET_TIMEOUT)
         .await
         .map_err(|error| naming_refusal(run_dir, error))?;
-    let answered = bridge(stdin(), stdout(), stream).await?;
-    if answered == 0
-        && let Some(refusal) = ployz_core::startup_refusal(run_dir)
-    {
-        return Err(io::Error::other(refusal));
+    // A refusing start closes the connection unread, so a request already sent
+    // ends it with a reset rather than an empty close.
+    match bridge(stdin(), stdout(), stream).await {
+        Ok(sent) if sent > 0 => Ok(()),
+        ended => match ployz_core::startup_refusal(run_dir) {
+            Some(refusal) => Err(io::Error::other(refusal)),
+            None => ended.map(drop),
+        },
     }
-    Ok(())
 }
 
 fn naming_refusal(run_dir: &Path, error: io::Error) -> io::Error {
