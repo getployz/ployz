@@ -130,7 +130,8 @@ pub(super) fn warnings(
             });
         }
     }
-    // A Server outside this Deploy's work leaves no gap, but its failure still names it.
+    // A Server outside this Deploy's work leaves no gap, but its failure still names
+    // it, unless another Server shares that name and only the ID tells them apart.
     for warning in &mut warnings {
         if let DeployWarning::ObservationFailed {
             machine_id,
@@ -142,6 +143,9 @@ pub(super) fn warnings(
                 .machines
                 .iter()
                 .find(|machine| machine.machine.id == *machine_id)
+            && !snapshot.machines.iter().any(|other| {
+                other.machine.id != *machine_id && other.machine.name == machine.machine.name
+            })
         {
             *machine_name = Some(machine.machine.name.clone());
         }

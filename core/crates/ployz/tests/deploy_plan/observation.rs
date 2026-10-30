@@ -344,7 +344,7 @@ fn a_volume_failure_on_a_server_outside_the_work_names_that_server() {
         details: serde_json::Value::Null,
         cause: Vec::new(),
     };
-    let snapshot = DeploySnapshot {
+    let mut snapshot = DeploySnapshot {
         machines: vec![
             machine('1', "available"),
             machine('2', "storage"),
@@ -365,19 +365,30 @@ fn a_volume_failure_on_a_server_outside_the_work_names_that_server() {
         .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
-    let preview = plan_deploy([&spec("web")], &snapshot, PlanOptions::default()).unwrap();
-    assert!(!preview.has_observation_gaps());
-    let failures: Vec<String> = preview
-        .warnings
-        .iter()
-        .filter(|warning| matches!(warning, DeployWarning::ObservationFailed { .. }))
-        .map(ToString::to_string)
-        .collect();
+    let failures = |snapshot: &DeploySnapshot| -> Vec<String> {
+        let preview = plan_deploy([&spec("web")], snapshot, PlanOptions::default()).unwrap();
+        assert!(!preview.has_observation_gaps());
+        preview
+            .warnings
+            .iter()
+            .filter(|warning| matches!(warning, DeployWarning::ObservationFailed { .. }))
+            .map(ToString::to_string)
+            .collect()
+    };
     assert_eq!(
-        failures,
+        failures(&snapshot),
         [
             "volume observation failed on Server storage: listing failed",
             "volume observation failed on Server archive: Docker Volume app_data could not be inspected: listing failed; resolve the reported Docker or storage error on that Server, then inspect the Volume again",
         ]
+    );
+    // Only the ID tells two Servers of one name apart.
+    snapshot.machines.push(machine('4', "storage"));
+    assert_eq!(
+        failures(&snapshot).first(),
+        Some(&format!(
+            "volume observation failed on {}: listing failed",
+            machine_id('2')
+        ))
     );
 }

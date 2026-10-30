@@ -858,7 +858,8 @@ pub enum DeployWarning {
         gap: Option<ObservationGap>,
         kind: ObservationKind,
         machine_id: MachineId,
-        /// The Machine's name. Absent from previews written before 0.3.11.
+        /// The Machine's name, set only on an uncounted failure whose name is unique.
+        /// Absent from previews written before 0.3.11.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         machine_name: Option<MachineName>,
