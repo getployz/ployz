@@ -212,7 +212,7 @@ const recordJoined = Effect.fn("MachineEnrollment.recordJoined")(
 
 /**
  * One setup report becomes one event for whoever made the token, as `server_enrolled` is.
- * Enrollment itself is never touched.
+ * Enrollment itself is touched only to give back the join slot of an add that failed before it joined.
  */
 export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetupReport")(
   function* (input: { readonly token: string; readonly report: SetupReport }) {
