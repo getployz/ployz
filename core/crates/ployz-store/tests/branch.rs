@@ -10,10 +10,10 @@
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AddDomain, Admit, Branched, Change, ConfigStore, CopyNode, CreateBranch, CreateProject,
-    CreateService, CreateVolume, Deploy, DeploymentId, DiffQuery, DomainName, DomainsQuery, Edit,
-    EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode, Mount, OrganizationId,
-    ProjectId, ProjectName, RunEvidence, RunnerId, SealedNamesQuery, ServiceLineageId,
-    ServiceQuery, SettingPath, SetupCommand, Trusted, VolumeId, VolumeName,
+    CreateService, CreateVolume, Deploy, DeploymentId, DiffQuery, Discard, DomainName,
+    DomainsQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode,
+    Mount, OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId, SealedNamesQuery,
+    ServiceLineageId, ServiceQuery, SettingPath, SetupCommand, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -1732,6 +1732,47 @@ fn an_own_copy_that_deleted_a_value_before_its_parent_sealed_it_never_shows_the_
         review_row(&store, &who, "fix-web", "db.env.TOKEN"),
         (json!({ "secret": true }), Value::Null)
     );
+}
+
+/// Discarding the delete a Branch's later Own Copy made of a variable its owner
+/// sealed since brings it back Not set, never as the earlier plain value.
+#[test]
+fn discarding_an_own_copys_delete_its_owner_sealed_since_brings_it_back_not_set() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 1, true);
+    copy_db_and_delete_token(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "db.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOKEN", 2),
+        )],
+    );
+    deploy(&store, &who, "production", 3, true);
+
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: at("fix-web"),
+                target: None,
+                path: Some(SettingPath::parse("db.env.TOKEN").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+
+    let values = values(&store, &who, "fix-web", "db");
+    assert_eq!(values["env"]["TOKEN"], json!({ "secret": false }));
+    assert!(!values.to_string().contains("plain-private"), "{values}");
 }
 
 /// The owner's seal of a variable it has since replaced with a plain one doesn't
