@@ -1013,7 +1013,7 @@ async fn check_enrolled(
     expected: ployz_core::MachineId,
 ) -> Result<(), ConnectError> {
     let details = client
-        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .read_once::<op::Inspect>(InspectRequest::default(), None)
         .await?;
     let reached = details.machine.map_or(details.id, |machine| machine.id);
     if reached != expected {

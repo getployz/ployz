@@ -309,15 +309,19 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ployzd.sock");
         let machine = founder();
-        let lists = Arc::new(AtomicUsize::new(0));
+        let (inspects, lists) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
         let daemon = crate::connect::test_support::unix_daemon(&path, move |body| {
-            let (machine, lists) = (machine.clone(), lists.clone());
+            let (machine, inspects, lists) = (machine.clone(), inspects.clone(), lists.clone());
             async move {
                 #[expect(
                     clippy::wildcard_enum_match_arm,
                     reason = "this fixture answers only readiness RPCs"
                 )]
                 Ok(match body {
+                    // The daemon shutting down for its restart takes the first read and never answers (#3620).
+                    RpcRequestBody::Inspect(_) if inspects.fetch_add(1, Ordering::SeqCst) == 0 => {
+                        std::future::pending().await
+                    }
                     RpcRequestBody::Inspect(_) => RpcResponse::from(ployz_core::MachineDetails {
                         id: machine.id,
                         phase: LocalMachinePhase::Participating,
@@ -387,4 +391,5 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
     );
     assert!(!stderr.contains("firewall"), "{stderr}");
     assert!(!stderr.contains("couldn't reach"), "{stderr}");
+    assert!(!stderr.contains("Could not reach"), "{stderr}");
 }
