@@ -1374,7 +1374,7 @@ enum Done {
 enum Published {
     Listed,
     /// Listed by every proxy but those on gap Servers, which may still route the
-    /// old copies, so those stay In.
+    /// old copies, so those stay where they are.
     Gapped,
     Unconfirmed(cleanup::Unconfirmed),
     /// The new copies are listed, but an old copy's Out was not seen through.
@@ -1463,8 +1463,10 @@ async fn publish_group<C: MachineOperations>(
             gone.push(copy);
             continue;
         }
+        // Any copy proxies ever routed, Out ones included, may still be on a gap
+        // Server's proxy.
         if let Some(gapped) = &gapped
-            && copy.rotation == CopyRotation::In
+            && copy.drains()
         {
             rows.leave_running(progress, &copy, Left::NotConfirmed(gapped.clone()));
             continue;
@@ -1810,7 +1812,7 @@ fn strength(policy: PullPolicy) -> u8 {
 struct Rows<'a> {
     namespace: &'a Namespace,
     /// Each Service whose publish ended with only gap Servers' proxies unconfirmed.
-    /// Those proxies may still route its old copies, so none goes Out.
+    /// Those proxies may still route any of its old copies, so none is retired.
     gapped: std::sync::Mutex<BTreeMap<QualifiedService, cleanup::Unconfirmed>>,
     #[expect(dead_code, reason = "the operations the rows describe")]
     operations: &'a [DeployOperation],
@@ -3313,7 +3315,7 @@ async fn remove_container<C: MachineOperations>(
             return Err(error.into());
         }
     };
-    if copy.rotation == CopyRotation::In
+    if copy.drains()
         && let Some(gapped) = rows.gapped(&copy.service)
     {
         rows.leave_running(progress, &copy, Left::NotConfirmed(gapped));

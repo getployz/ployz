@@ -1683,6 +1683,45 @@ async fn an_undialed_servers_proxy_keeps_a_surplus_copy_the_rollout_would_remove
     client.assert_done();
 }
 
+/// A copy an earlier deploy sent Out may still be on the undialed Server's stale
+/// proxy, which never drops it.
+#[tokio::test(start_paused = true)]
+async fn an_undialed_servers_proxy_keeps_a_surplus_copy_already_out() {
+    let (machine, undialed) = (machine('1'), machine('2'));
+    let (replaced, surplus, new) = (container('a'), container('b'), container('c'));
+    let plan = vec![
+        global_replacement(&machine, &replaced, UpdateOrder::StartFirst),
+        DeployOperation::RemoveContainer {
+            machine_id: machine,
+            container_id: surplus,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        },
+    ];
+    let client = Scripted {
+        acks: BTreeMap::from([(undialed, Ack::Never)]),
+        undialed: BTreeMap::from([(undialed, "machine-2")]),
+        ..Scripted::new(vec![
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            observed(Call::Inspect(machine, replaced), running()),
+            observed(Call::Inspect(machine, surplus), running()),
+        ])
+    }
+    .with_copy(&machine, &replaced, CopyRotation::In)
+    .with_copy(&machine, &surplus, CopyRotation::Out);
+    let groups = crate::deploy::planning::test_groups(&plan);
+    let began = tokio::time::Instant::now();
+
+    let (outcome, _) = execute_groups_reported(&plan, groups, &[machine, undialed], &client).await;
+
+    assert!(began.elapsed() < cleanup::ACK_WAIT);
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.moves(), [Move::To(new, CopyRotation::In)]);
+    client.assert_done();
+}
+
 /// A Suspect Server's proxy still turns Down or acks, so the switch waits for it as
 /// before.
 #[tokio::test(start_paused = true)]
