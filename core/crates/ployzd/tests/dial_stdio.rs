@@ -136,8 +136,9 @@ fn dial_stdio_names_the_refusal_when_a_refusing_daemon_closes_it_unanswered() {
     let listener = UnixListener::bind(&socket).unwrap();
     let refused = root.join("refused");
     let server = thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
-        thread::sleep(Duration::from_millis(200));
+        let (mut stream, _) = listener.accept().unwrap();
+        // Read one byte so the rest of the request is surely here, unread.
+        stream.read_exact(&mut [0; 1]).unwrap();
         fs::write(refused, format!("{refusal}\n")).unwrap();
         drop(stream);
     });
