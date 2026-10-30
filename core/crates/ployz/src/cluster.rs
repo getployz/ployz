@@ -317,17 +317,39 @@ impl Client {
             async |client| {
                 let reconnect = redial;
                 redial = true;
-                tokio::time::timeout(
-                    Duration::from_secs(5),
-                    client.unary_attempt::<T>(payload.clone(), target, reconnect),
-                )
-                .await
-                .unwrap_or_else(|_| {
-                    Err(tonic::Status::deadline_exceeded("Machine setup read timed out").into())
-                })
+                client
+                    .setup_read_attempt::<T>(payload.clone(), target, reconnect)
+                    .await
             },
         )
         .await
+    }
+
+    /// One read with no retry or notice of its own, for a readiness check whose
+    /// caller's wait retries it and owns what the user sees (#3620).
+    pub(crate) async fn read_once<T: Rpc>(
+        &mut self,
+        request: T::Request,
+        target: Option<&MachineTarget>,
+    ) -> Result<T::Response, ConnectError> {
+        let payload = T::into_request(request).encode()?;
+        self.setup_read_attempt::<T>(payload, target, false).await
+    }
+
+    async fn setup_read_attempt<T: Rpc>(
+        &mut self,
+        payload: OpaquePayload,
+        target: Option<&MachineTarget>,
+        redial: bool,
+    ) -> Result<T::Response, ConnectError> {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.unary_attempt::<T>(payload, target, redial),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(tonic::Status::deadline_exceeded("Machine setup read timed out").into())
+        })
     }
 
     /// Mutations that must not be replayed after a lost response. `reply_timeout` is

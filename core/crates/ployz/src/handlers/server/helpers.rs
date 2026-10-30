@@ -224,7 +224,7 @@ pub(super) async fn wait_direct_participating(
 /// so a Deploy right after Participating can see an empty Deploy Snapshot.
 pub(in crate::handlers) async fn check_listed(client: &mut Client) -> Result<(), ConnectError> {
     let details = client
-        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .read_once::<op::Inspect>(InspectRequest::default(), None)
         .await?;
     if details.phase != LocalMachinePhase::Participating {
         return Err(ConnectError::Attempt(
