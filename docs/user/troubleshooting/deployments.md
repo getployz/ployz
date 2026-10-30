@@ -235,6 +235,10 @@ on the deployment's page shows; it's left out when the logs couldn't be read, or
 This service references another in its variables, and that one didn't come up healthy, so
 Ployz didn't start this one. Fix the service the message names first; its **Logs** say why.
 
+If the cause says a server `did not answer`, that server didn't answer while Ployz checked the
+other service. From 0.3.12, a server whose Ployz is stopped is skipped instead, and the deploy
+exits 3 naming it. See [When a server goes down](../services/scaling.md#when-a-server-goes-down).
+
 ## My setup or pre-deploy command failed
 
 `The setup or pre-deploy command failed` with `exited with code 1`, or `timed out`

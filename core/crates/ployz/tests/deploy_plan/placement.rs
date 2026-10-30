@@ -2023,39 +2023,46 @@ fn a_docker_volume_is_not_placed_while_a_silent_machine_may_hold_it() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     add_named_volume(&mut requested, "data");
-    let mut silent = machine('2', "silent");
-    silent.membership = MembershipObservation::Suspect;
     let unanswered = || {
         ployz_core::RpcError::unanswered_target(
             ployz_core::RpcErrorCode::Unavailable,
             "target Machine RPC timed out".into(),
         )
     };
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "live"), silent],
-        container_failures: vec![ployz_core::MachineFailure {
-            machine_id: machine_id('2'),
-            error: unanswered(),
-        }],
-        volume_snapshot: VolumeSnapshot::try_from_parts(
-            Vec::new(),
-            Vec::new(),
-            vec![ployz_core::MachineFailure {
+    // A Suspect Machine that never answered, and an Up one whose daemon the entry
+    // couldn't dial (#3396).
+    for (membership, error) in [
+        (MembershipObservation::Suspect, unanswered()),
+        (MembershipObservation::Up, unanswered().undialed_target()),
+    ] {
+        let mut silent = machine('2', "silent");
+        silent.membership = membership;
+        let snapshot = DeploySnapshot {
+            machines: vec![machine('1', "live"), silent],
+            container_failures: vec![ployz_core::MachineFailure {
                 machine_id: machine_id('2'),
-                error: unanswered(),
+                error: error.clone(),
             }],
-            Vec::new(),
-        )
-        .unwrap(),
-        ..Default::default()
-    };
+            volume_snapshot: VolumeSnapshot::try_from_parts(
+                Vec::new(),
+                Vec::new(),
+                vec![ployz_core::MachineFailure {
+                    machine_id: machine_id('2'),
+                    error,
+                }],
+                Vec::new(),
+            )
+            .unwrap(),
+            ..Default::default()
+        };
 
-    let result = plan_deploy([&requested], &snapshot, PlanOptions::default());
+        let result = plan_deploy([&requested], &snapshot, PlanOptions::default());
 
-    let error = result.expect_err("nothing is placed and no Volume is created");
-    assert_eq!(
-        error.to_string(),
-        "silent did not answer, so whether it holds Docker volume data is unknown. \
-         Bring silent back, or deploy the other services by name"
-    );
+        let error = result.expect_err("nothing is placed and no Volume is created");
+        assert_eq!(
+            error.to_string(),
+            "silent did not answer, so whether it holds Docker volume data is unknown. \
+             Bring silent back, or deploy the other services by name"
+        );
+    }
 }

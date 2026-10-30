@@ -108,7 +108,10 @@ To bring services back:
    A server the others still count as online but that doesn't answer fails the deploy. From 0.3.8,
    one whose silence is explained, because
    [large packets to it are dropped](../troubleshooting/servers.md#large-packets-to-a-server-are-dropped),
-   is skipped the same way instead.
+   is skipped the same way instead. From 0.3.12, so is one whose Ployz isn't running, as while
+   it is stopped, restarting or upgrading: the server it entered by can't connect to it. A
+   service that references another, such as a cache running on a different server, deploys
+   and the deploy exits 3, where before it failed with `Dependency … failed its health gate`.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your
    next deploy removes it. It takes out only its own replicas, so an extra one on another server

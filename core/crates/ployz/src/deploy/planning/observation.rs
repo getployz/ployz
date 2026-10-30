@@ -361,9 +361,11 @@ mod tests {
             &silent()
         ));
         assert!(!gap(&observed(MembershipObservation::Up, None), &silent()));
-        // A router that couldn't dial it sent only small packets.
+        // A router that couldn't dial it explains the silence, as while its daemon is
+        // stopped (#3396).
         let undialed = silent().undialed_target();
-        assert!(!gap(
+        assert!(gap(&observed(MembershipObservation::Up, None), &undialed));
+        assert!(gap(
             &observed(MembershipObservation::Up, dropped),
             &undialed
         ));
