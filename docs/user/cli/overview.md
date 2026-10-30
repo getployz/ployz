@@ -138,7 +138,9 @@ Some things are not tools. Run these yourself in a terminal:
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` seals a secret on this
   computer. In a terminal it asks `Value for web.env.KEY:` and takes one line without showing what
   you type; Ctrl-C cancels. Pipe in a value of several lines, such as a PEM key. A new secret needs a Server first, so run `ployz server add` if you have none. An
-  older `ployz` can't set a secret and tells you to update. A new branch's secrets start Not
+  older `ployz` can't set a secret and tells you to update. A secret never goes on the command
+  line: `ployz set 'web.env.KEY={"secret":"…"}'` is refused and points at `--secret`, as an
+  inline `--patch` with a new secret is. A new branch's secrets start Not
   set: `ployz env branch`, `env copy` and `env keep` list them, like
   `1 secret not set in staging: web.env.TOKEN`, with the command to set one.
 

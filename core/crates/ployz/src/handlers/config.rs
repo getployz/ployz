@@ -245,17 +245,11 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             Error::usage("--patch expects a JSON object, for example '{\"replicas\":3}'")
         })?;
         // A new secret on the command line would land in shell history.
-        let sealing = |variable: &Value| {
-            [Some(variable), variable.get("value")]
-                .into_iter()
-                .flatten()
-                .any(|value| value.get("secret").is_some_and(Value::is_string))
-        };
         let inline_secret = value
             .get("env")
             .and_then(Value::as_object)
-            .is_some_and(|env| env.values().any(sealing))
-            || value.get("registryCredential").is_some_and(sealing);
+            .is_some_and(|env| env.values().any(seals))
+            || value.get("registryCredential").is_some_and(seals);
         if inline_secret && inline {
             return Err(Error::usage(
                 "A new secret never goes on the command line: use --patch -, --secret or --from-env-file",
@@ -319,6 +313,14 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))
         })
         .collect::<Result<Vec<_>, Error>>()?;
+    if let Some((path, _)) = assignments
+        .iter()
+        .find(|(path, value)| seals_as_text(path, value))
+    {
+        return Err(Error::usage(format!(
+            "A new secret never goes on the command line: pipe it in with printf %s \"$VALUE\" | ployz set {path} --secret"
+        )));
+    }
     let naming = assignments
         .iter()
         .any(|(path, value)| names_a_server(path, value));
@@ -361,6 +363,25 @@ fn resolved(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Whether a variable's or registry credential's value carries a new secret,
+/// `{"secret": "…"}`, alone or as its `value`.
+fn seals(variable: &Value) -> bool {
+    [Some(variable), variable.get("value")]
+        .into_iter()
+        .flatten()
+        .any(|value| value.get("secret").is_some_and(Value::is_string))
+}
+
+/// Whether `set PATH=VALUE` would send a new secret as text: `VALUE` parses as one on
+/// a `SERVICE.env.KEY` or `SERVICE.registryCredential` path.
+fn seals_as_text(path: &str, value: &str) -> bool {
+    let secret_path = matches!(
+        path.split('.').collect::<Vec<_>>()[..],
+        [_, "env", _] | [_, "registryCredential"]
+    );
+    secret_path && serde_json::from_str::<Value>(value).is_ok_and(|value| seals(&value))
 }
 
 /// Whether `value` names a Server, by ID or name, as `path`'s Preferred Builder.
@@ -720,6 +741,26 @@ mod tests {
                 "{value:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_assignment_shaped_like_a_new_secret_is_refused_but_text_and_kept_secrets_are_not() {
+        let fake = r#"{"secret":"FAKE-3588"}"#;
+        assert!(seals_as_text("web.env.RX", fake));
+        assert!(seals_as_text(
+            "web.env.RX",
+            r#"{"value":{"secret":"FAKE-3588"}}"#
+        ));
+        assert!(seals_as_text("web.registryCredential", fake));
+        // Keeping the stored secret carries no value.
+        assert!(!seals_as_text(
+            "web.registryCredential",
+            r#"{"secret":true}"#
+        ));
+        assert!(!seals_as_text("web.env.RX", "plain"));
+        assert!(!seals_as_text("web.env.RX", r#"{"other":"x"}"#));
+        assert!(!seals_as_text("web.env.RX.description", fake));
+        assert!(!seals_as_text("setup.web", fake));
     }
 
     #[test]
