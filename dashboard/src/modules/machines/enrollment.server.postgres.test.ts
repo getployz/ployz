@@ -1740,6 +1740,46 @@ describe("organization enrollment coordinator", () => {
         .toMatchObject({ success: { kind: "join" } });
     });
 
+    const reportFailure = (token: string, failedStep: "install" | "enroll" | "storage" | "join") =>
+      Effect.runPromise(recordMachineSetupReport({
+        token,
+        report: {
+          outcome: "failed", profile: {}, steps: [], totalSeconds: 1,
+          failedStep, failedStepSeconds: 1, error: "refused",
+        },
+      }).pipe(
+        Effect.provideService(Database, harness.database),
+        Effect.provideService(PostHog, {
+          capture: () => Effect.void,
+          identify: () => Effect.void,
+          identifyOrganization: () => Effect.void,
+          toolCall: () => Effect.void,
+        }),
+      ));
+
+    // A plain add of a Server that still participates is Registered, then refused by the CLI
+    // before it tells the Server to join (#3630).
+    it("gives back the slot of an add its CLI refused before telling the Server to join", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [refused, next] = [await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, refused, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, next, 2)).toEqual(queued(1));
+
+      await reportFailure(refused, "storage");
+      expect(await enrollIn(fake, next, 2)).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("keeps the slot of an add that failed after telling the Server to join", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [joining, next] = [await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, joining, 1)).toMatchObject({ success: { kind: "join" } });
+
+      await reportFailure(joining, "join");
+      expect(await enrollIn(fake, next, 2)).toEqual(queued(1));
+    });
+
     it("sends a resumed claim whose slot lapsed back into the line", async () => {
       const fake = fakeSession(harness.database);
       await readyFounder(fake);

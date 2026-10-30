@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
-import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Cause, Effect, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
@@ -229,6 +229,18 @@ export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetup
       .limit(1);
     if (!setupReportAccepted(row, input.report.outcome, new Date())) {
       return yield* new NotFound({ message: "Enrollment not found." });
+    }
+    // Every CLI since reports began (0.2.2) marks `join` just before it tells the Server to join, so
+    // an add that failed earlier, as one refused for a Server that still participates does, never
+    // joins: it gives its slot back rather than holding it for the idle limit (#3630).
+    if (input.report.outcome === "failed" && input.report.failedStep !== "join") {
+      yield* drizzle.update(schemaMachineEnrollmentToken)
+        .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: new Date() })
+        .where(and(
+          eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(input.token)),
+          isNotNull(schemaMachineEnrollmentToken.claimedMachineId),
+          isNull(schemaMachineEnrollmentToken.joinedMachineId),
+        ));
     }
     yield* (yield* PostHog).capture({
       userId: row.userId,
