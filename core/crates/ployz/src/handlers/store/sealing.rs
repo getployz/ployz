@@ -171,7 +171,9 @@ impl Store<'_> {
             Sealing::NoServer {
                 awaits_recovery: true,
             } => Err(Error::conflict(
-                "Your server needs the Sealing Key back before it can take sealed values.",
+                // Cloud learns of a recover from the Server's next report, a few seconds later.
+                "Your server needs the Sealing Key back before it can take sealed values. \
+                 If you just ran ployz recover, try again in a few seconds.",
             )
             .hint(Hint::Next("sudo ployz recover".into()))),
             Sealing::NoServer {

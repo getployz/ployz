@@ -49,6 +49,9 @@ values."
 3. Deploy again.
 
 Once it has the key back, you can add new sealed values too, even with only that server.
+Ployz Cloud sees the recovered key a few seconds after `ployz recover` finishes. Until then,
+`ployz set --secret` still refuses and says "If you just ran ployz recover, try again in a few
+seconds."
 
 Servers you add after that get the key from this one. If the code is wrong, `ployz recover`
 says so and changes nothing, so you can try again.
