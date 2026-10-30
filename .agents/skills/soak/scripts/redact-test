@@ -48,6 +48,17 @@ check "masks JWT after \\n" '"x\neyJFAKE.eyJFAKE.FAKE"' '"x\n<redacted JWT>"'
 check "masks Bearer after \\n" '"x\nBearer FAKEFAKEFAKE"' '"x\nBearer <redacted>"'
 check "masks PLOYZ_TOKEN after \\n" '"x\nPLOYZ_TOKEN=FAKEFAKE"' '"x\nPLOYZ_TOKEN=<redacted>"'
 check "masks the #3618 repro" 'x\npflt_FAKEFAKEFAKEFAKE1234 "a\nployz_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"' 'x\npflt_<redacted> "a\nployz_<redacted>"'
+# Fleet Tokens and enrollment tokens in every form a soak transcript has shown them.
+esc=$'\e'
+for prefix in pflt_ pmet_; do
+  t=$prefix$fake43
+  for form in "@" '\n@\n' '{"value":"@"}' '{"out":"line\n@\n"}' \
+    'https://ployz.cloud/enroll?token=@&x=1' 'https://h/x?u=a%0A@' 'https://h/x?q=%22@%22' \
+    'sudo PLOYZ_FLEET_TOKEN=@ sh -s -- 0.3.10 --enroll' 'export PLOYZ_ENROLL_TOKEN="@"' \
+    'ployz server add --token=@' 'x\x0a@' 'x\012@' "${esc}[1m@${esc}[0m"; do
+    check "masks $prefix in $form" "${form//@/$t}" "${form//@/$prefix<redacted>}"
+  done
+done
 check "masks ployz_ with - and _" "ployz_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE_FAKE-FAKE" "ployz_<redacted>"
 
 kept "cookie-name ployz_ identifier" "set ployz_claim_sign_in to expire"

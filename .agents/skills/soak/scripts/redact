@@ -33,6 +33,9 @@ while (my $line = <STDIN>) {
     $line =~ s/${start}(pflt_|plyz_|pmet_|ppair_)[A-Za-z0-9_\-]+/$1<redacted>/g;
     # Organization Tokens carry 43 base64url chars; the floor spares names like ployz_claim_sign_in.
     $line =~ s/${start}(ployz_)[A-Za-z0-9_\-]{32,}/$1<redacted>/g;
+    # A full-length token is masked even when glued to a URL escape (%0A), a terminal colour code or \x0a.
+    # Only a snake_case name like my_ployz_… is spared.
+    $line =~ s/(?<!_)(pflt_|plyz_|pmet_|ppair_|ployz_)[A-Za-z0-9_\-]{32,}/$1<redacted>/g;
     $line =~ s/${start}(ployz1:)[A-Za-z0-9_\-]+/$1<redacted>/g;
     $line =~ s/${start}(ployzgrant1:)[A-Za-z0-9._~+\/=:\-]+/$1<redacted>/g;
     # A recovery code prints as five dash-joined groups of uppercase base32 (A-Z, 2-7): 5-5-5-5-6.
