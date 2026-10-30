@@ -1648,3 +1648,122 @@ fn an_edit_reads_the_removed_service_it_showed_after_a_second_removal_shares_its
         json!("${{ <deleted #00000006>.PLOYZ_PRIVATE_DOMAIN }}/c/v2")
     );
 }
+
+/// The `before` and `after` of `path`'s row in `environment`'s review.
+fn review_row(store: &ConfigStore, who: &Actor, environment: &str, path: &str) -> (Value, Value) {
+    let review = store
+        .read(
+            who,
+            &DiffQuery {
+                environment: at(environment),
+            },
+        )
+        .unwrap();
+    let shown = serde_json::to_string(&review).unwrap();
+    let row = review
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|setting| setting.path == path)
+        .unwrap_or_else(|| panic!("no {path} row in {shown}"));
+    (row.before.clone(), row.after.clone())
+}
+
+/// fix-web copies `web` and uses `db` live, deploys, then makes its Own Copy of
+/// `db` and deletes `db.env.TOKEN` from it.
+fn copy_db_and_delete_token(store: &ConfigStore, who: &Actor) {
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(who, &create).unwrap();
+    deploy(store, who, "fix-web", 2, true);
+    let copy = CopyNode {
+        environment: at("fix-web"),
+        node: ServiceName::parse("db").unwrap(),
+        expect: None,
+    };
+    store.write(who, &copy).unwrap();
+    store
+        .write(
+            who,
+            &Edit {
+                environment: at("fix-web"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("db.env.TOKEN").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+/// A Branch that deleted a variable from its Own Copy of a node before the node's
+/// owner sealed it never shows the earlier plain value.
+#[test]
+fn an_own_copy_that_deleted_a_value_before_its_parent_sealed_it_never_shows_the_plain_value() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 1, true);
+    copy_db_and_delete_token(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "db.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOKEN", 2),
+        )],
+    );
+    deploy(&store, &who, "production", 3, true);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-web", "db.env.TOKEN"),
+        (json!({ "secret": true }), Value::Null)
+    );
+}
+
+/// The owner's seal of a variable it has since replaced with a plain one doesn't
+/// hide the plain one a Branch's later Own Copy deletes.
+#[test]
+fn an_own_copy_deleting_a_value_its_parent_added_plain_after_a_seal_still_shows_it() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "db.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOKEN", 2),
+        )],
+    );
+    deploy(&store, &who, "production", 1, true);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("db.env.TOKEN").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("public-new"))],
+    );
+    deploy(&store, &who, "production", 3, true);
+    copy_db_and_delete_token(&store, &who);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-web", "db.env.TOKEN"),
+        (json!("public-new"), Value::Null)
+    );
+}
