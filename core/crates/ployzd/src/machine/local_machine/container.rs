@@ -354,13 +354,15 @@ impl LocalMachine {
     /// already holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy
-    /// during the drain. An idle copy ends its drain early, so a proxy that has not
-    /// heard yet may dial the stopped copy and retry another. A daemon restart forgets
+    /// during the drain. An idle copy ends its drain early, though not before
+    /// `WITHDRAWAL_PROPAGATION`, so a proxy that has not heard yet may dial the stopped
+    /// copy and retry another. A daemon restart forgets
     /// the mark; a still-running Container returns to ingress and the resend redoes the
     /// drain.
     ///
     /// With a `fence`, the Container holds that Volume and the gen is checked against
-    /// its floor under the turn, after the drain: a Deploy that raised the floor
+    /// its floor once the drain ends, so a floor raised meanwhile returns the copy to
+    /// ingress without waiting for a turn, and again under the turn: a Deploy that raised the floor
     /// meanwhile may already have answered Done on this holder, so a raised floor
     /// drops the Withdrawal and stops nothing. The floor lock is held from that check
     /// through the stop, so a floor raised mid-stop waits and its Deploy reads the
@@ -385,8 +387,23 @@ impl LocalMachine {
             let mut floor = containers.floor_turn().await;
             Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
         };
-        self.stop_checked(installation, container, drain, stop, false, withdraw, admit)
-            .await
+        let drained = || async move {
+            let Some((name, r#gen)) = fence else {
+                return Ok(Ok(()));
+            };
+            Ok(containers.floor_turn().await.admit(name, r#gen).await?)
+        };
+        self.stop_checked(
+            installation,
+            container,
+            drain,
+            stop,
+            false,
+            withdraw,
+            drained,
+            admit,
+        )
+        .await
     }
 
     /// The rotation is read before the withdrawal, so a copy In is never taken out of
@@ -415,13 +432,16 @@ impl LocalMachine {
             stop,
             record,
             withdraw,
+            || async { Ok(Ok(())) },
             || leave_rotation(containers, container, target),
         )
         .await
     }
 
     /// Drains before the exclusive turn, then stops under it while holding what
-    /// `check` returned. A refusal from `withdraw` or `check` stops nothing.
+    /// `check` returned. `drained` may refuse once the drain ends, so a refusal it can
+    /// already see returns the copy to ingress before the turn, which other work may
+    /// hold long. A refusal from `withdraw`, `drained` or `check` stops nothing.
     ///
     /// With `record`, a stop that ended a run records it, so its exit reads as a stop.
     /// The run is read after the stop, under the turn, so it is the one the stop ended
@@ -429,9 +449,9 @@ impl LocalMachine {
     /// the stop was issued ended on its own, so its exit stays a crash.
     #[expect(
         clippy::too_many_arguments,
-        reason = "one stop's facts and its two guards, shared by every stop path"
+        reason = "one stop's facts and its three guards, shared by every stop path"
     )]
-    async fn stop_checked<G, R, W, WFut, F, Fut>(
+    async fn stop_checked<G, R, W, WFut, D, DFut, F, Fut>(
         &self,
         installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
@@ -439,11 +459,14 @@ impl LocalMachine {
         stop: &StopOptions,
         record: bool,
         withdraw: W,
+        drained: D,
         check: F,
     ) -> Result<Result<ContainerObservation, R>, Error>
     where
         W: FnOnce() -> WFut,
         WFut: std::future::Future<Output = Result<Result<Withdrawal, R>, Error>>,
+        D: FnOnce() -> DFut,
+        DFut: std::future::Future<Output = Result<Result<(), R>, Error>>,
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Result<G, R>, Error>>,
     {
@@ -458,8 +481,16 @@ impl LocalMachine {
             Ok(withdrawal) => withdrawal,
             Err(refused) => return Ok(Err(refused)),
         };
-        let _ =
-            tokio::time::timeout(drain.as_duration(), self.until_idle(containers, container)).await;
+        let _ = tokio::time::timeout(drain.as_duration(), async {
+            tokio::join!(
+                self.until_idle(containers, container),
+                tokio::time::sleep(WITHDRAWAL_PROPAGATION),
+            )
+        })
+        .await;
+        if let Err(refused) = drained().await? {
+            return Ok(Err(refused));
+        }
         let turn = self.owner.admission_lock().write_owned().await;
         let held = match check().await? {
             Ok(held) => held,
