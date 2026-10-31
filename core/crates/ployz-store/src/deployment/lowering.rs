@@ -740,15 +740,32 @@ pub(super) fn lower(
             let broken = resolved.broken.remove(id).unwrap_or_default();
             let left_out = not_set
                 .into_iter()
-                .map(|variable| (variable, false))
-                .chain(broken.into_iter().map(|variable| (variable, true)))
-                .map(|(variable, broken)| {
+                .map(|not_set| {
+                    let reads = not_set.reads.and_then(|read| {
+                        let owner = slugs
+                            .get(read.lineage.as_str())
+                            .copied()
+                            .or_else(|| branch.names.get(&read.lineage).map(String::as_str))?;
+                        Some((format!("{owner}.{}", read.key), read.sealed_elsewhere))
+                    });
+                    (not_set.variable, false, reads)
+                })
+                .chain(
+                    broken
+                        .into_iter()
+                        .map(|variable| (variable, true, None)),
+                )
+                .map(|(variable, broken, reads)| {
+                    let (reads, sealed_elsewhere) =
+                        reads.map_or((None, false), |(reads, elsewhere)| (Some(reads), elsewhere));
                     (
                         vec![&config.settings.private_dns],
                         DeploymentWarning::NotSet {
                             service: service.clone(),
                             variable,
                             broken,
+                            reads,
+                            sealed_elsewhere,
                         },
                     )
                 })

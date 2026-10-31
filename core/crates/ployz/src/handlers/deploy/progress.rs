@@ -355,6 +355,25 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
                     broken: true,
                 } => format!("Left {secret} empty in {config}/{file}: it is a broken reference."),
                 DeploymentWarning::NotSet {
+                    service,
+                    variable,
+                    reads: Some(reads),
+                    sealed_elsewhere: true,
+                    ..
+                } => {
+                    let (owner, key) = reads.split_once('.').unwrap_or((reads, ""));
+                    format!(
+                        "Left {variable} out of {service}: it reads {reads}, a sealed value this branch doesn't get from its parent. Run `ployz env copy {owner} --env {}`, then set {owner}.env.{key} there.",
+                        view.environment.name
+                    )
+                }
+                DeploymentWarning::NotSet {
+                    service,
+                    variable,
+                    reads: Some(reads),
+                    ..
+                } => format!("Left {variable} out of {service}: it reads {reads}, which is not set."),
+                DeploymentWarning::NotSet {
                     service, variable, ..
                 } => format!("Left {variable} out of {service}: it is not set."),
                 DeploymentWarning::NotSetInFile {
@@ -829,6 +848,68 @@ mod tests {
                 {"type": "volume", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "data", "outcome": "not_attempted", "rows": []}
             ]
         })).unwrap()
+    }
+
+    #[test]
+    fn a_variable_left_out_names_the_variable_without_a_value_it_reads() {
+        let mut view = view();
+        view.environment.name = "b4b".parse().unwrap();
+        view.deployment.warnings = serde_json::from_value(json!([
+            {"service": "app", "variable": "DBURL", "reads": "db.TOK3", "sealed_elsewhere": true},
+            {"service": "app", "variable": "CACHE", "reads": "app.TOKEN"},
+            {"service": "app", "variable": "TOKEN"},
+            {"service": "app", "variable": "LINK", "broken": true}
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            value_warnings(&view),
+            [
+                "Left DBURL out of app: it reads db.TOK3, a sealed value this branch doesn't get from its parent. Run `ployz env copy db --env b4b`, then set db.env.TOK3 there.",
+                "Left CACHE out of app: it reads app.TOKEN, which is not set.",
+                "Left TOKEN out of app: it is not set.",
+                "Left LINK out of app: it has a broken reference.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_not_set_warning_reads_the_same_with_or_without_what_it_reads() {
+        let old: DeploymentWarning =
+            serde_json::from_value(json!({"service": "app", "variable": "TOKEN"})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            json!({"service": "app", "variable": "TOKEN"})
+        );
+        // A client before 0.3.13 reads the new fields as nothing and says Not set.
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Before {
+            NotSet {
+                service: String,
+                variable: String,
+                #[serde(default)]
+                broken: bool,
+            },
+        }
+        let new = serde_json::to_value(DeploymentWarning::NotSet {
+            service: "app".parse().unwrap(),
+            variable: "DBURL".into(),
+            broken: false,
+            reads: Some("db.TOK3".into()),
+            sealed_elsewhere: true,
+        })
+        .unwrap();
+        assert_eq!(
+            new,
+            json!({"service": "app", "variable": "DBURL", "reads": "db.TOK3", "sealed_elsewhere": true})
+        );
+        let Before::NotSet {
+            service,
+            variable,
+            broken,
+        } = serde_json::from_value(new).unwrap();
+        assert_eq!((service.as_str(), variable.as_str(), broken), ("app", "DBURL", false));
     }
 
     #[test]

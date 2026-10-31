@@ -227,7 +227,11 @@ can't reference it, and it replaces a variable of yours with that name.
   values: its sealed variables start **Not set**, and deploys leave each out until you choose
   **Set value** on it in the branch. A [generated value](#generate-a-value) gets a new value in
   the copy. A reference to a service the branch shares with its parent reads the
-  parent's values.
+  parent's values, except sealed ones: the branch doesn't get those either, so deploys leave
+  the referencing variable out and say what it reads, such as
+  `Left DB_URL out of web: it reads db.PASSWORD, a sealed value this branch doesn't get from its parent.`
+  To give it a value, make the service separate in the branch (**Make it separate**, or
+  `ployz env copy db --env <branch>`), then choose **Set value** on the variable there.
 - **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
   `invalid_argument` and the limit. Split it into smaller changes.
 - **The CLI reads at most 32 MiB of an env file or a `--secret` on stdin.** A wrong path such
