@@ -979,7 +979,7 @@ async fn wait_phase(
         &format!("Waiting for the {} phase", phase.as_str()),
         expected,
         wait,
-        ConnectError::is_setup_retryable,
+        ConnectError::is_start_retryable,
         async |joining| {
             if let Awaited::Enrolled { id, via } = awaited {
                 let mut client = super::server::connect_direct(matches, via).await?;

@@ -208,7 +208,7 @@ pub(super) async fn wait_direct_participating(
         &format!("Waiting for {connection} to participate"),
         Some(STARTING),
         MACHINE_START_WAIT,
-        ConnectError::is_setup_retryable,
+        ConnectError::is_start_retryable,
         async |joining| {
             let mut client = connect_direct(matches, connection).await?;
             check_listed(&mut client, joining).await?;

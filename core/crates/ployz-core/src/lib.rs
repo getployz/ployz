@@ -77,7 +77,8 @@ pub const NETWORK_CONFLICT_EXIT_STATUS: u8 = 78;
 pub const STARTUP_REFUSAL_FILE: &str = "refused";
 
 /// How a startup refusal begins wherever a client reads it, including the
-/// stderr of a remote `ployzd dial-stdio`. Clients stop waiting on it.
+/// stderr of a remote `ployzd dial-stdio`. Clients of other releases stop
+/// waiting on this text, so it must not change.
 pub const STARTUP_REFUSED: &str = "ployzd refused to start: ";
 
 /// Why the daemon whose socket is in `run_dir` refused its last start, or `None`
