@@ -1596,7 +1596,7 @@
       "read_only": true
     },
     {
-      "description": "One Deployment, the latest unless you name its number: status, each Service's outcome, the variables it left out or that may break a Config file, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end. This call asks no human.",
+      "description": "One Deployment, the latest unless you name its number: status, each Service's outcome, the variables it left out or that may break a Config file, what its servers warned, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end. This call asks no human.",
       "destructive": false,
       "gate": "never",
       "input_schema": {

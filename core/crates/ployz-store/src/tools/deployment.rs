@@ -284,7 +284,7 @@ pub(crate) struct DeploymentShow {
 
 impl Tool for DeploymentShow {
     const NAME: &'static str = "deployment_show";
-    const DESCRIPTION: &'static str = "One Deployment, the latest unless you name its number: status, each Service's outcome, the variables it left out or that may break a Config file, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end.";
+    const DESCRIPTION: &'static str = "One Deployment, the latest unless you name its number: status, each Service's outcome, the variables it left out or that may break a Config file, what its servers warned, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
