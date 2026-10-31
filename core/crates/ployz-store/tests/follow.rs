@@ -1279,6 +1279,126 @@ fn a_branch_that_deleted_a_value_before_its_parent_sealed_it_never_shows_the_pla
     assert!(!shown.contains("plain-private"), "{shown}");
 }
 
+/// Discarding a Branch's delete of a variable its Parent sealed since brings it
+/// back Not set, never as the earlier plain value.
+#[test]
+fn discarding_a_delete_its_parent_sealed_since_brings_it_back_not_set() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    seal_token(&store, &who, 3);
+
+    discard(&store, &who, "qa", "web.env.TOKEN");
+
+    let values = web(&store, &who, "qa");
+    assert_eq!(values["env"]["TOKEN"], json!({ "secret": false }));
+    // The row stays: the variable needs a value before it deploys.
+    assert_eq!(
+        token_row(&diff(&store, &who, "qa")),
+        (json!({ "secret": true }), json!({ "secret": false }))
+    );
+    let shown = serde_json::to_string(&diff(&store, &who, "qa")).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// Discarding a Branch's delete of a variable its Parent replaced with a plain one
+/// after a seal brings back that plain value.
+#[test]
+fn discarding_a_delete_its_parent_added_plain_after_a_seal_brings_the_value_back() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    seal_token(&store, &who, 3);
+    unset(&store, &who, "production", "web.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("public-new"))],
+    );
+    deploy(&store, &who, "production", 4);
+    branch(&store, &who, 10, "production", "qa");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+
+    discard(&store, &who, "qa", "web.env.TOKEN");
+
+    assert_eq!(web(&store, &who, "qa")["env"]["TOKEN"], json!("public-new"));
+}
+
+/// Discarding a Branch's change to a variable it sealed since it was made never
+/// overwrites the sealed value, with the earlier plain one or with Not set.
+#[test]
+fn discarding_a_variable_a_branch_sealed_since_keeps_its_sealed_value() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    let sealed = token(&store, &who, "qa", 1);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!({ "secret": sealed }))],
+    );
+
+    let refused = store
+        .write(
+            &who,
+            &Discard {
+                environment: at("qa"),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: Some(SettingPath::parse("web.env.TOKEN").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": true })
+    );
+}
+
+/// Discarding a Branch's delete of a variable nothing sealed brings back its value.
+#[test]
+fn discarding_a_delete_nothing_sealed_brings_the_value_back() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+
+    discard(&store, &who, "qa", "web.env.TOKEN");
+
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+}
+
 /// A Parent's seal of a variable it has since replaced with a plain one doesn't
 /// hide the plain one a Branch made afterwards deletes.
 #[test]

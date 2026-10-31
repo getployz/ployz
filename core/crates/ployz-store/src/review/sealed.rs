@@ -38,6 +38,44 @@ pub(crate) fn hide_introduced(
     introduced: &mut SavedEnvironmentIntent,
     working: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
+    each_sealed_since(tx, environment, introduced, working, |was, _| {
+        was.value = SavedVariableValue::Secret {
+            encrypted_value: None,
+        };
+        was.generated = None;
+    })
+}
+
+/// Make Not set each plain value `introduced` keeps that [`hide_introduced`]
+/// shows sealed: a discard that brings a variable back from a Node Introduction
+/// brings it back sealed without a value, never as the earlier plain value. One
+/// the Environment holds sealed now keeps its plain value, so the discard refuses
+/// to overwrite the sealed one, as it always has.
+pub(crate) fn unset_introduced(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    introduced: &mut SavedEnvironmentIntent,
+    working: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    each_sealed_since(tx, environment, introduced, working, |was, held| {
+        if held {
+            return;
+        }
+        was.value = SavedVariableValue::SecretWithoutValue;
+        was.value_fingerprint.clear();
+        was.generated = None;
+    })
+}
+
+/// Apply `seal` to each plain variable `introduced` keeps that is sealed since,
+/// as [`hide_introduced`] says, with whether `working` holds it sealed now.
+fn each_sealed_since(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    introduced: &mut SavedEnvironmentIntent,
+    working: &SavedEnvironmentIntent,
+    seal: impl Fn(&mut SavedVariableIntent, bool),
+) -> Result<(), RpcError> {
     // Read only for a variable deleted or added again: they scan every save.
     let mut ever = None;
     let mut parent = None;
@@ -77,10 +115,7 @@ pub(crate) fn hide_introduced(
                 }
             };
             if sealed_now {
-                was.value = SavedVariableValue::Secret {
-                    encrypted_value: None,
-                };
-                was.generated = None;
+                seal(was, now.is_some_and(|now| sealed(&now.value)));
             }
         }
     }

@@ -2398,11 +2398,14 @@ pub(super) fn prepare_discard(
             && (path.target().is_some() || path.node_field().is_some())
             && !has_node(&baseline, &node)
         {
-            copy_node(
-                &mut baseline,
-                &super::introductions(tx, environment)?,
-                &node,
-            );
+            let mut introduced = super::introductions(tx, environment)?;
+            super::sealed::unset_introduced(
+                tx,
+                &environment.summary.id,
+                &mut introduced,
+                &environment.working,
+            )?;
+            copy_node(&mut baseline, &introduced, &node);
         }
         let plan = if let Some(plan) =
             Plan::variable_selection(path.target(), &node, &baseline, &environment.working)
