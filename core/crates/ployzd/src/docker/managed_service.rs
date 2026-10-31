@@ -7,7 +7,10 @@ use bollard::{
     Docker,
     errors::Error as DockerError,
     models::{ContainerCreateBody, ContainerInspectResponse},
-    query_parameters::{CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder},
+    query_parameters::{
+        CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptions,
+        StopContainerOptionsBuilder,
+    },
 };
 use ployz_core::PullPolicy;
 use sha2::{Digest as _, Sha256};
@@ -106,6 +109,7 @@ pub(crate) struct ManagedService {
     engine: Engine,
     name: String,
     image: &'static str,
+    stop_grace_seconds: Option<i32>,
 }
 
 #[derive(Clone)]
@@ -120,6 +124,7 @@ impl ManagedService {
             engine: Engine::Host(docker),
             name: name.into(),
             image,
+            stop_grace_seconds: None,
         }
     }
 
@@ -132,7 +137,15 @@ impl ManagedService {
             engine: Engine::Endpoint(docker),
             name: name.into(),
             image,
+            stop_grace_seconds: None,
         }
+    }
+
+    /// Seconds Docker waits after SIGTERM before it kills the container, instead of
+    /// its 10 s default.
+    pub(crate) fn with_stop_grace(mut self, seconds: i32) -> Self {
+        self.stop_grace_seconds = Some(seconds);
+        self
     }
 
     pub(crate) async fn ensure_host(
@@ -228,11 +241,20 @@ impl ManagedService {
     }
 
     async fn stop(&self) -> Result<(), DockerError> {
-        match self.docker().stop_container(&self.name, None).await {
+        match self
+            .docker()
+            .stop_container(&self.name, self.stop_options())
+            .await
+        {
             Ok(()) => Ok(()),
             Err(error) if is_already_stopped(&error) || is_not_found(&error) => Ok(()),
             Err(error) => Err(error),
         }
+    }
+
+    fn stop_options(&self) -> Option<StopContainerOptions> {
+        self.stop_grace_seconds
+            .map(|seconds| StopContainerOptionsBuilder::default().t(seconds).build())
     }
 
     pub(crate) async fn remove(&self) -> Result<(), DockerError> {
@@ -287,6 +309,19 @@ mod tests {
         assert!(is_not_found(&response(404)));
         assert!(!is_already_stopped(&response(500)));
         assert!(!is_not_found(&response(500)));
+    }
+
+    #[test]
+    fn stop_waits_docker_default_unless_given_a_grace() {
+        let docker =
+            Docker::connect_with_http("http://127.0.0.1:1", 1, bollard::API_DEFAULT_VERSION)
+                .unwrap();
+        let service = ManagedService::host(docker, "service", "image:1");
+        assert!(service.stop_options().is_none());
+        assert_eq!(
+            service.with_stop_grace(1).stop_options().unwrap().t,
+            Some(1)
+        );
     }
 
     fn body(image: &str) -> ContainerCreateBody {

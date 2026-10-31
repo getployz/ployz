@@ -120,7 +120,7 @@ impl CorrosionConfig {
             let admin = AdminClient::new(self.paths.admin_socket());
             let docker = Docker::connect_with_socket_defaults()?;
             let service = DockerService {
-                service: ManagedService::host(docker, self.container_name.clone(), IMAGE),
+                service: managed(docker, self.container_name.clone()),
                 data_dir: self.paths.data_dir.clone(),
                 run_dir: self.paths.run_dir.clone(),
             };
@@ -223,11 +223,17 @@ struct InstalledFiles {
 /// handle, for a reset the daemon did not finish before it stopped.
 pub async fn remove_retained(run_dir: &Path) -> Result<(), Error> {
     let docker = Docker::connect_with_socket_defaults()?;
-    remove(
-        &ManagedService::host(docker, DEFAULT_CONTAINER_NAME, IMAGE),
-        run_dir,
-    )
-    .await
+    remove(&managed(docker, DEFAULT_CONTAINER_NAME), run_dir).await
+}
+
+/// Seconds a replaced or removed Corrosion gets after SIGTERM. Its graceful exit waits up
+/// to 5 s for gossip connections that peers keep open to go idle, and the daemon waits
+/// on that stop (#3680). Nothing durable rides on it: each commit is synced before the
+/// API answers, and anything a peer missed reaches it through sync, as after a crash.
+const STOP_GRACE_SECONDS: i32 = 1;
+
+fn managed(docker: Docker, name: impl Into<String>) -> ManagedService {
+    ManagedService::host(docker, name, IMAGE).with_stop_grace(STOP_GRACE_SECONDS)
 }
 
 async fn remove(service: &ManagedService, run_dir: &Path) -> Result<(), Error> {
