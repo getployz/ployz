@@ -1,7 +1,7 @@
 //! Observer-local Internal DNS serving and answer projection.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
@@ -26,8 +26,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, MachineId, Namespace, ProxyRoutes, QualifiedService, ServiceId,
-    proxy_routes, service_containers,
+    ContainerId, ContainerObservation, ContainerRuntimeObservation, HealthObservation, MachineId,
+    Namespace, ProxyRoutes, QualifiedService, ServiceId, proxy_routes, service_containers,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -100,7 +100,9 @@ impl ProjectionInputs {
             |machine| self.down.contains(machine),
             &self.routed,
         );
-        let projection = Projection::from_routes(&self.observations, &routes);
+        let projection = Projection::from_routes(&self.observations, &routes, |machine| {
+            self.down.contains(machine)
+        });
         self.routed = routes;
         projection
     }
@@ -124,11 +126,35 @@ impl ServiceAddresses {
 }
 
 impl Projection {
-    fn from_routes(observations: &[ContainerObservation], routes: &ProxyRoutes) -> Self {
+    fn from_routes(
+        observations: &[ContainerObservation],
+        routes: &ProxyRoutes,
+        is_down: impl Fn(&MachineId) -> bool,
+    ) -> Self {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
-        for serving in routes.values().flatten() {
+        let stopped: HashSet<ContainerId> = observations
+            .iter()
+            .filter(|observation| {
+                !is_down(&observation.machine_id)
+                    && !matches!(
+                        &observation.runtime,
+                        ContainerRuntimeObservation::Running { health }
+                            if *health != HealthObservation::Stopping
+                    )
+            })
+            .map(|observation| observation.container_id)
+            .collect();
+        // A kept route may list a copy seen stopped or withdrawn for its stop, as a
+        // Volume move's source (#3679). Its address hangs a client, where no answer
+        // fails it fast. A Down owner's row is stale: its copy may run again unseen,
+        // so it stays.
+        for serving in routes
+            .values()
+            .flatten()
+            .filter(|serving| !stopped.contains(&serving.as_observation().container_id))
+        {
             let observation = serving.as_observation();
             let address = serving.address();
             let identity = observation.identity();
