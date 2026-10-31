@@ -297,7 +297,7 @@ def avoided(ip, ssh):
     nodes = set()
     for address in filter(None, (part.strip() for part in os.environ.get("PLOYZ_VERIFY_BOAT_AVOID_NODES", "").split(","))):
         nodes.add(boat_node(address) if ipaddress.ip_address(address).version == 6 else address)
-    return boat_node(ip) in nodes or endpoint(ssh)[0] in nodes
+    return bool(nodes) and (boat_node(ip) in nodes or endpoint(ssh)[0] in nodes)
 
 
 def registry(run_id):
