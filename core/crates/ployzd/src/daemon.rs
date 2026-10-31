@@ -727,21 +727,23 @@ fn socket_not_ready(error: &io::Error) -> bool {
 }
 
 /// Connect to the Machine API Unix socket, waiting while it is missing or refusing
-/// connections.
+/// connections, unless `refused` says no daemon will start to accept them.
 ///
 /// # Errors
 ///
-/// Returns a human-readable I/O error when `timeout` elapses or connect fails
-/// for a reason other than the socket not being ready.
+/// Returns a human-readable I/O error when `timeout` elapses, `refused` holds
+/// while the socket is not ready, or connect fails for a reason other than the
+/// socket not being ready.
 pub async fn wait_until_socket_accepts(
     path: &Path,
     timeout: Duration,
+    refused: impl Fn() -> bool,
 ) -> io::Result<tokio::net::UnixStream> {
     let deadline = Instant::now() + timeout;
     loop {
         match tokio::net::UnixStream::connect(path).await {
             Ok(stream) => return Ok(stream),
-            Err(error) if socket_not_ready(&error) && Instant::now() < deadline => {
+            Err(error) if socket_not_ready(&error) && Instant::now() < deadline && !refused() => {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             Err(error) if socket_not_ready(&error) => {
@@ -1648,7 +1650,7 @@ mod tests {
             let listener = UnixListener::bind(&listener_path).unwrap();
             listener.accept().await.unwrap()
         });
-        wait_until_socket_accepts(&path, std::time::Duration::from_secs(1))
+        wait_until_socket_accepts(&path, std::time::Duration::from_secs(1), || false)
             .await
             .unwrap();
         server.await.unwrap();
@@ -1659,9 +1661,10 @@ mod tests {
         let root = TestDir::new("ployzd-socket-wait-timeout");
         fs::create_dir_all(&root.0).unwrap();
         let path = root.0.join("missing.sock");
-        let error = wait_until_socket_accepts(&path, std::time::Duration::from_millis(20))
-            .await
-            .unwrap_err();
+        let error =
+            wait_until_socket_accepts(&path, std::time::Duration::from_millis(20), || false)
+                .await
+                .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("did not become ready"), "{message}");
         assert!(!message.contains("Os {"), "{message}");
