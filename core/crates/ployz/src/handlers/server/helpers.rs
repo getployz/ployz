@@ -247,7 +247,7 @@ impl Joining {
 
     /// `error` with [`Self::timeout_message`] when the wait ran out. A failure that
     /// stopped it early, as a startup refusal (#3703), supersedes any Joining seen
-    /// before it, so its own cause leads.
+    /// before it.
     pub(in crate::handlers) fn failed(
         &self,
         error: crate::setup_retry::Error<ConnectError>,
@@ -365,7 +365,7 @@ pub(in crate::handlers) async fn leave(client: &mut Client) -> Result<(), Error>
 /// shows rather than prescribing a recovery for one it never observed.
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {
     format!(
-        "{message}; check `journalctl -u ployz` (a first Corrosion image pull can take several minutes); if it shows ployzd `refusing to` change a network, follow the safe recovery that line ends with, then run the command again"
+        "{message}; check `journalctl -u ployz` (a first Corrosion image pull can take several minutes); if it shows ployzd `refusing to` change a network, follow the safe recovery that line ends with"
     )
 }
 
@@ -506,7 +506,6 @@ mod tests {
         let error = joining.failed(crate::setup_retry::Error::Permanent(refused), "not ready");
         let text = crate::ui::chain_text(&error);
         assert!(!text.contains("stayed joining"), "{text}");
-        assert!(text.contains("then run the command again"), "{text}");
         assert!(text.contains("ployzd refused to start"), "{text}");
     }
 

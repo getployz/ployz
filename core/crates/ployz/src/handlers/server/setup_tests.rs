@@ -397,7 +397,7 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
 /// A daemon that refused to start never comes back by itself, so the wait
 /// names its refusal at once instead of after its full deadline (#3703).
 #[tokio::test]
-async fn readiness_ends_at_a_startup_refusal() {
+async fn a_direct_readiness_wait_ends_at_a_startup_refusal() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join(ployz_core::STARTUP_REFUSAL_FILE),
