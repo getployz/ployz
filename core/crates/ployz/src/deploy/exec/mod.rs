@@ -2391,29 +2391,42 @@ impl<'a> Rows<'a> {
         .unwrap_or_default()
     }
 
-    /// [`Self::gaps`], listing `service` when nothing has yet, or None when there are
-    /// none. A listing that fails reads as None, so the
-    /// removal goes on as it would without a gap.
-    async fn listed_gaps<C: MachineOperations>(
+    /// The gap Servers, as in [`Self::gaps`], whose proxy may still route `copy`: its
+    /// route row lists the copy, is missing, or could not be read. None when there
+    /// are none, or when `copy`'s Service could not be listed, so the removal goes
+    /// on as it would without a gap.
+    async fn gaps_routing<C: MachineOperations>(
         &self,
         client: &C,
         progress: &Progress,
-        service: &QualifiedService,
+        copy: &cleanup::Copy,
         cancellation: &CancellationToken,
     ) -> Option<cleanup::Unconfirmed> {
         let numbered = self
-            .numbered(client, progress, service, cancellation)
+            .numbered(client, progress, &copy.service, cancellation)
             .await
             .ok()?;
-        let gaps: Vec<MachineId> = numbered
+        let gaps = numbered
             .silent
             .iter()
             .filter(|silent| silent.acks_unwritten)
-            .map(|silent| silent.failure.machine_id)
+            .map(|silent| silent.failure.machine_id);
+        let routes = client
+            .read_routes(&copy.machine_id, &copy.service)
+            .await
+            .ok()
+            .map(|read| read.routes);
+        let routing: Vec<MachineId> = gaps
+            .filter(|gap| {
+                routes
+                    .as_ref()
+                    .and_then(|routes| routes.get(gap).cloned().flatten())
+                    .is_none_or(|routed| routed.contains(&copy.container_id))
+            })
             .collect();
-        (!gaps.is_empty()).then(|| cleanup::Unconfirmed {
-            machines: gaps.clone(),
-            unanswered: gaps,
+        (!routing.is_empty()).then(|| cleanup::Unconfirmed {
+            machines: routing.clone(),
+            unanswered: routing,
         })
     }
 
@@ -3347,12 +3360,12 @@ async fn remove_container<C: MachineOperations>(
         rows.leave_running(progress, &copy, Left::NotConfirmed(gapped));
         return Ok(Ran::default());
     }
-    // A copy an earlier gapped Deploy left may be the one a gap Server's proxy still
-    // routes, and that proxy never acks its drain (#3676).
+    // A copy an earlier gapped Deploy left may still be routed by a gap Server's
+    // proxy, which never acks its drain (#3676).
     if copy.drains()
         && matches!(purpose, RemoveContainerPurpose::Rollout)
         && let Some(gaps) = rows
-            .listed_gaps(client, progress, &copy.service, cancellation)
+            .gaps_routing(client, progress, &copy, cancellation)
             .await
     {
         rows.leave_running(progress, &copy, Left::NotConfirmed(gaps));

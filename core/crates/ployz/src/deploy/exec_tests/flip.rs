@@ -1783,6 +1783,38 @@ async fn an_undialed_servers_proxy_keeps_a_copy_an_earlier_gapped_deploy_left() 
     client.assert_done();
 }
 
+/// A copy every proxy already dropped, the undialed Server's included, is removed.
+#[tokio::test(start_paused = true)]
+async fn an_undialed_servers_proxy_that_already_dropped_a_copy_lets_it_go() {
+    let (machine, undialed) = (machine('1'), machine('2'));
+    let (kept, dropped) = (container('a'), container('b'));
+    let plan = vec![DeployOperation::RemoveContainer {
+        machine_id: machine,
+        container_id: dropped,
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
+    }];
+    let client = Scripted {
+        acks: BTreeMap::from([(undialed, Ack::Never)]),
+        undialed: BTreeMap::from([(undialed, "machine-2")]),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, dropped), running()),
+            ok(Call::Remove(machine, dropped)),
+        ])
+    }
+    .with_copy(&machine, &kept, CopyRotation::In)
+    .with_copy(&machine, &dropped, CopyRotation::Out);
+
+    let (outcome, _) =
+        execute_groups_reported(&plan, scale_down_groups(), &[machine, undialed], &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.moves(), [Move::Gone(dropped)]);
+    client.assert_done();
+}
+
 /// A Suspect Server's proxy still turns Down or acks, so the removal goes on as before.
 #[tokio::test(start_paused = true)]
 async fn a_suspect_servers_proxy_still_refuses_a_copy_an_earlier_deploy_left() {
