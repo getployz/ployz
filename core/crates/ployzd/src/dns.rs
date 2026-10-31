@@ -100,7 +100,9 @@ impl ProjectionInputs {
             |machine| self.down.contains(machine),
             &self.routed,
         );
-        let projection = Projection::from_routes(&self.observations, &routes);
+        let projection = Projection::from_routes(&self.observations, &routes, |machine| {
+            self.down.contains(machine)
+        });
         self.routed = routes;
         projection
     }
@@ -124,22 +126,28 @@ impl ServiceAddresses {
 }
 
 impl Projection {
-    fn from_routes(observations: &[ContainerObservation], routes: &ProxyRoutes) -> Self {
+    fn from_routes(
+        observations: &[ContainerObservation],
+        routes: &ProxyRoutes,
+        is_down: impl Fn(&MachineId) -> bool,
+    ) -> Self {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
         let stopped: HashSet<ContainerId> = observations
             .iter()
             .filter(|observation| {
-                !matches!(
-                    observation.runtime,
-                    ContainerRuntimeObservation::Running { .. }
-                )
+                !is_down(&observation.machine_id)
+                    && !matches!(
+                        observation.runtime,
+                        ContainerRuntimeObservation::Running { .. }
+                    )
             })
             .map(|observation| observation.container_id)
             .collect();
         // A kept route may list a copy seen stopped, as a Volume move's source
-        // (#3679). Its address hangs a client, where no answer fails it fast.
+        // (#3679). Its address hangs a client, where no answer fails it fast. A
+        // Down owner's row is stale: its copy may run again unseen, so it stays.
         for serving in routes
             .values()
             .flatten()

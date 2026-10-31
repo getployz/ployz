@@ -840,6 +840,36 @@ fn a_routed_copy_out_of_view_keeps_answering() {
 }
 
 #[test]
+fn a_routed_copy_last_seen_stopped_on_a_down_machine_keeps_answering() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let remote = MachineId::parse("b".repeat(32)).unwrap();
+    let service = ServiceId::parse("d".repeat(32)).unwrap();
+    let name = ServiceName::parse("db").unwrap();
+    let mut inputs = ProjectionInputs::new(local);
+    let mut copy = observation(
+        1,
+        &remote,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 2, 2]),
+    );
+    inputs.observations = vec![copy.clone()];
+    let answers = |inputs: &mut ProjectionInputs| {
+        addresses(plan(&inputs.build(), "db.app.internal.", RecordType::A))
+    };
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
+
+    copy.try_update(|parts| parts.runtime = ContainerRuntimeObservation::Restarting)
+        .unwrap();
+    inputs.observations = vec![copy];
+    inputs.down.update(Ok(BTreeSet::from([remote])));
+
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
+}
+
+#[test]
 fn only_in_copies_answer() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let service = ServiceId::parse("b".repeat(32)).unwrap();
