@@ -1708,6 +1708,8 @@ async fn an_undialed_servers_proxy_keeps_a_surplus_copy_already_out() {
     }
     .with_copy(&machine, &replaced, CopyRotation::In)
     .with_copy(&machine, &surplus, CopyRotation::Out);
+    // machine-2's proxy last routed it before it went Out.
+    client.record(surplus, |copy| copy.in_before = true);
     let groups = crate::deploy::planning::test_groups(&plan);
     let began = tokio::time::Instant::now();
 
@@ -1779,6 +1781,194 @@ async fn an_undialed_servers_proxy_keeps_a_copy_an_earlier_gapped_deploy_left() 
             left_running("machine-1", "proxy on machine-2 did not confirm"),
             mixed_after_return("machine-2"),
         ]
+    );
+    client.assert_done();
+}
+
+/// A second gapped deploy replaces the copies the first one started, which the
+/// undialed Server's proxy never routed, and drains them as usual. Only the copy
+/// that proxy still routes is left, so old copies don't pile up (#3683).
+#[tokio::test(start_paused = true)]
+async fn an_undialed_servers_proxy_lets_the_copies_it_never_routed_go_at_the_switch() {
+    let (machine, other, undialed) = (machine('1'), machine('3'), machine('2'));
+    let (left, newer, newer_other) = (container('a'), container('b'), container('d'));
+    let (new, new_other) = (container('c'), container('e'));
+    let plan = vec![
+        global_replacement(&machine, &newer, UpdateOrder::StartFirst),
+        global_replacement(&other, &newer_other, UpdateOrder::StartFirst),
+        DeployOperation::RemoveContainer {
+            machine_id: machine,
+            container_id: left,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        },
+    ];
+    let client = Scripted {
+        acks: BTreeMap::from([(undialed, Ack::Never)]),
+        undialed: BTreeMap::from([(undialed, "machine-2")]),
+        ..Scripted::new(vec![
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            created(
+                Call::Run(other, ContainerKind::ServiceContainer),
+                &new_other,
+            ),
+            observed(Call::Inspect(machine, newer), running()),
+            observed(Call::Inspect(other, newer_other), running()),
+            ok(Call::Remove(machine, newer)),
+            ok(Call::Remove(other, newer_other)),
+            observed(Call::Inspect(machine, left), running()),
+        ])
+    }
+    .with_copy(&machine, &left, CopyRotation::In)
+    .with_copy(&machine, &newer, CopyRotation::In)
+    .with_copy(&other, &newer_other, CopyRotation::In);
+    client.record(newer, |copy| copy.in_before = false);
+    client.record(newer_other, |copy| copy.in_before = false);
+    let groups = crate::deploy::planning::test_groups(&plan);
+    let began = tokio::time::Instant::now();
+
+    let (outcome, warnings) =
+        execute_groups_reported(&plan, groups, &[machine, other, undialed], &client).await;
+
+    assert!(began.elapsed() < cleanup::ACK_WAIT);
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::Unconfirmed)])
+    );
+    assert_eq!(
+        client.moves(),
+        [
+            Move::To(new, CopyRotation::In),
+            Move::To(new_other, CopyRotation::In),
+            Move::To(newer, CopyRotation::Out),
+            Move::To(newer_other, CopyRotation::Out),
+            Move::Gone(newer),
+            Move::Gone(newer_other),
+        ],
+        "only the copy machine-2's proxy routes stays In"
+    );
+    assert_eq!(client.rotation(&left), Some(CopyRotation::In));
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|warning| warning.contains(" left running on "))
+            .cloned()
+            .collect::<Vec<_>>(),
+        [left_running(
+            "machine-1",
+            "proxy on machine-2 did not confirm"
+        )]
+    );
+    client.assert_done();
+}
+
+/// A surplus the gapped publish's undialed proxy never routed is removed beside the
+/// copy that proxy still routes, which is left.
+#[tokio::test(start_paused = true)]
+async fn a_gapped_publish_removes_a_surplus_the_undialed_proxy_never_routed() {
+    let (machine, undialed) = (machine('1'), machine('2'));
+    let (replaced, surplus, new) = (container('a'), container('b'), container('c'));
+    let plan = vec![
+        global_replacement(&machine, &replaced, UpdateOrder::StartFirst),
+        DeployOperation::RemoveContainer {
+            machine_id: machine,
+            container_id: surplus,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        },
+    ];
+    let client = Scripted {
+        acks: BTreeMap::from([(undialed, Ack::Never)]),
+        undialed: BTreeMap::from([(undialed, "machine-2")]),
+        ..Scripted::new(vec![
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            observed(Call::Inspect(machine, replaced), running()),
+            observed(Call::Inspect(machine, surplus), running()),
+            ok(Call::Remove(machine, surplus)),
+        ])
+    }
+    .with_copy(&machine, &replaced, CopyRotation::In)
+    .with_copy(&machine, &surplus, CopyRotation::In);
+    client.record(surplus, |copy| copy.in_before = false);
+    let groups = crate::deploy::planning::test_groups(&plan);
+    let began = tokio::time::Instant::now();
+
+    let (outcome, _) = execute_groups_reported(&plan, groups, &[machine, undialed], &client).await;
+
+    assert!(began.elapsed() < cleanup::ACK_WAIT);
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::Unconfirmed)])
+    );
+    assert_eq!(
+        client.moves(),
+        [
+            Move::To(new, CopyRotation::In),
+            Move::To(surplus, CopyRotation::Out),
+            Move::Gone(surplus)
+        ]
+    );
+    assert_eq!(client.rotation(&replaced), Some(CopyRotation::In));
+    client.assert_done();
+}
+
+/// When the undialed proxy routes no In copy, the owner refuses every Out (LastIn).
+/// The gapped run leaves those copies for the next deploy instead of failing.
+#[tokio::test(start_paused = true)]
+async fn a_gapped_publish_leaves_a_surplus_the_owner_refuses_to_take_out() {
+    let (machine, undialed) = (machine('1'), machine('2'));
+    let (routed, replaced, surplus, new) = (
+        container('a'),
+        container('b'),
+        container('d'),
+        container('c'),
+    );
+    let plan = vec![
+        global_replacement(&machine, &replaced, UpdateOrder::StartFirst),
+        DeployOperation::RemoveContainer {
+            machine_id: machine,
+            container_id: surplus,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        },
+    ];
+    let client = Scripted {
+        acks: BTreeMap::from([(undialed, Ack::Never)]),
+        undialed: BTreeMap::from([(undialed, "machine-2")]),
+        ..Scripted::new(vec![
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            observed(Call::Inspect(machine, replaced), running()),
+            observed(Call::Inspect(machine, surplus), running()),
+        ])
+    }
+    .with_copy(&machine, &routed, CopyRotation::Out)
+    .with_copy(&machine, &replaced, CopyRotation::In)
+    .with_copy(&machine, &surplus, CopyRotation::In);
+    client.record(routed, |copy| copy.in_before = true);
+    client.record(replaced, |copy| copy.in_before = false);
+    client.record(surplus, |copy| copy.in_before = false);
+    let groups = crate::deploy::planning::test_groups(&plan);
+
+    let (outcome, warnings) =
+        execute_groups_reported(&plan, groups, &[machine, undialed], &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::Unconfirmed)])
+    );
+    assert_eq!(client.moves(), [Move::To(new, CopyRotation::In)]);
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|warning| warning.contains(" left running on "))
+            .count(),
+        2,
+        "{warnings:?}"
     );
     client.assert_done();
 }
