@@ -444,7 +444,7 @@ it("words what a Deployment shipped despite", () => {
   expect(deploymentWarningText({ service: "web", variable: "TOKEN" })).toBe("TOKEN not set in web");
   expect(deploymentWarningText({ service: "web", variable: "VIA", reads: "web.TOKEN" })).toBe("VIA not set in web: it reads web.TOKEN, which is not set");
   expect(deploymentWarningText({ service: "app", variable: "DBURL", reads: "db.TOK3", sealed_elsewhere: true }))
-    .toBe("DBURL not set in app: it reads db.TOK3, a sealed value this branch doesn't get from its parent. Make db separate here, then set TOK3");
+    .toBe("DBURL not set in app: it reads db.TOK3, a sealed value this branch doesn't get from its parent. Set DBURL here, or make db separate and set TOK3 there, though its volumes start empty");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", secret: "web.TOKEN" })).toBe("web.TOKEN not set in sentry/config.yml");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", variable: "web.DSN" })).toBe("web.DSN may break sentry/config.yml");
   expect(deploymentWarningText({ service: "sentry", variable: "REDIS_URL", broken: true })).toBe("Broken reference: REDIS_URL in sentry");

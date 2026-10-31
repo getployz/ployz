@@ -364,7 +364,7 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
                 } => {
                     let (owner, key) = reads.split_once('.').unwrap_or((reads, ""));
                     format!(
-                        "Left {variable} out of {service}: it reads {reads}, a sealed value this branch doesn't get from its parent. Run `ployz env copy {owner} --env {}`, then set {owner}.env.{key} there.",
+                        "Left {variable} out of {service}: it reads {reads}, a sealed value this branch doesn't get from its parent. Set {service}.env.{variable} in this branch, or run `ployz env copy {owner} --env {}` and set {owner}.env.{key} in the copy, whose volumes start empty.",
                         view.environment.name
                     )
                 }
@@ -866,7 +866,7 @@ mod tests {
         assert_eq!(
             value_warnings(&view),
             [
-                "Left DBURL out of app: it reads db.TOK3, a sealed value this branch doesn't get from its parent. Run `ployz env copy db --env b4b`, then set db.env.TOK3 there.",
+                "Left DBURL out of app: it reads db.TOK3, a sealed value this branch doesn't get from its parent. Set app.env.DBURL in this branch, or run `ployz env copy db --env b4b` and set db.env.TOK3 in the copy, whose volumes start empty.",
                 "Left CACHE out of app: it reads app.TOKEN, which is not set.",
                 "Left TOKEN out of app: it is not set.",
                 "Left LINK out of app: it has a broken reference.",

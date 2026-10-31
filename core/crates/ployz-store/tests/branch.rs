@@ -2025,3 +2025,61 @@ fn a_branch_reference_to_a_value_its_parent_sealed_names_it_as_sealed_in_the_par
     );
     assert!(!json!(warnings).to_string().contains("fake-plain-3677"));
 }
+
+/// A sealed value a Branch reads through a node it shares, from a node it
+/// doesn't name, is named by the variable of the shared node it reads.
+#[test]
+fn a_branch_reference_through_a_shared_node_names_the_shared_variable_it_reads() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("vault").unwrap(),
+                image: Some("vault:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            ("vault.env.PASS", json!("fake-plain-3677")),
+            ("db.env.URL", json!("${{ vault.PASS }}")),
+            ("web.env.DBURL", json!("${{ db.URL }}")),
+        ],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "vault.env.PASS",
+            backend::sealed_secret(&uuid(2), &uuid(6), "PASS", 2),
+        )],
+    );
+    deploy(&store, &who, "production", 2, true);
+
+    let warnings = warnings(&store, &who, "fix-web", 3);
+    let dburl: Vec<&Value> = warnings
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|warning| warning["variable"] == "DBURL")
+        .collect();
+    assert_eq!(
+        dburl,
+        [
+            &json!({"service": "web", "variable": "DBURL", "reads": "db.URL", "sealed_elsewhere": true})
+        ]
+    );
+    assert!(!warnings.to_string().contains("fake-plain-3677"));
+}

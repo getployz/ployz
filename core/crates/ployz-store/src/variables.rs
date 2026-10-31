@@ -1077,14 +1077,14 @@ pub(crate) struct NotSet {
     pub(crate) reads: Option<NotSetRead>,
 }
 
-/// A variable without a value that another reads: its owner's lineage and key,
-/// never a value.
+/// A variable without a value that another reads, never a value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NotSetRead {
-    pub(crate) lineage: String,
-    pub(crate) key: String,
-    /// It holds a value sealed for another Environment, such as the parent's for a
-    /// node a Branch shares with it.
+    /// Each variable on the way, by owner lineage and key: the one referenced
+    /// first, through to the one without a value.
+    pub(crate) path: Vec<(String, String)>,
+    /// The last holds a value sealed for another Environment, such as the parent's
+    /// for a node a Branch shares with it.
     pub(crate) sealed_elsewhere: bool,
 }
 
@@ -1220,16 +1220,25 @@ fn resolve_values(
                     ResolveVariablesResult::NotSet { warnings } => {
                         let reads =
                             not_set_read(parts, &node.node_id, &producers, &mut BTreeSet::new())
-                                .map(|found| NotSetRead {
-                                    lineage: match &found.owner {
-                                        ValuePartOwner::Service { lineage_id } => {
-                                            lineage_id.clone()
-                                        }
-                                        ValuePartOwner::Self_ => node.node_lineage_id.clone(),
-                                    },
-                                    key: found.key.clone(),
-                                    sealed_elsewhere: elsewhere
-                                        .contains(&(found.owner_id.clone(), found.key.clone())),
+                                .map(|path| NotSetRead {
+                                    sealed_elsewhere: path.last().is_some_and(|found| {
+                                        elsewhere
+                                            .contains(&(found.owner_id.clone(), found.key.clone()))
+                                    }),
+                                    path: path
+                                        .into_iter()
+                                        .map(|found| {
+                                            let lineage = match &found.owner {
+                                                ValuePartOwner::Service { lineage_id } => {
+                                                    lineage_id.clone()
+                                                }
+                                                ValuePartOwner::Self_ => {
+                                                    node.node_lineage_id.clone()
+                                                }
+                                            };
+                                            (lineage, found.key.clone())
+                                        })
+                                        .collect(),
                                 });
                         not_set.push(NotSet {
                             variable: key.clone(),
@@ -1315,14 +1324,15 @@ fn resolve_values(
     Ok(resolved)
 }
 
-/// The first producer without a value that `parts` reads, directly or through other
-/// variables, found as [`resolve_variables`] finds producers.
+/// The way to the first producer without a value that `parts` reads, directly or
+/// through other variables, from the producer referenced first to that one, found
+/// as [`resolve_variables`] finds producers.
 fn not_set_read<'a>(
     parts: &[ValuePart],
     self_owner_id: &str,
     producers: &'a [VariableProducer],
     seen: &mut BTreeSet<(String, String)>,
-) -> Option<&'a VariableProducer> {
+) -> Option<Vec<&'a VariableProducer>> {
     parts.iter().find_map(|part| {
         let ValuePart::Ref { owner, key } = part else {
             return None;
@@ -1338,9 +1348,11 @@ fn not_set_read<'a>(
             return None;
         }
         match &found.value {
-            ResolverValue::NotSet => Some(found),
+            ResolverValue::NotSet => Some(vec![found]),
             ResolverValue::Template { parts } => {
-                not_set_read(parts, &found.owner_id, producers, seen)
+                let mut path = not_set_read(parts, &found.owner_id, producers, seen)?;
+                path.insert(0, found);
+                Some(path)
             }
             ResolverValue::Literal { .. }
             | ResolverValue::Secret { .. }

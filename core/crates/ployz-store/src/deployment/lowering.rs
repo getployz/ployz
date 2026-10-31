@@ -741,12 +741,18 @@ pub(super) fn lower(
             let left_out = not_set
                 .into_iter()
                 .map(|not_set| {
+                    // The deepest variable on the way this Environment has a name for: a
+                    // Live Node's own references can lead to nodes it doesn't name.
                     let reads = not_set.reads.and_then(|read| {
-                        let owner = slugs
-                            .get(read.lineage.as_str())
-                            .copied()
-                            .or_else(|| branch.names.get(&read.lineage).map(String::as_str))?;
-                        Some((format!("{owner}.{}", read.key), read.sealed_elsewhere))
+                        read.path.iter().rev().find_map(|(lineage, key)| {
+                            let own = slugs.get(lineage.as_str()).copied();
+                            let owner =
+                                own.or_else(|| branch.names.get(lineage).map(String::as_str))?;
+                            Some((
+                                format!("{owner}.{key}"),
+                                read.sealed_elsewhere && own.is_none(),
+                            ))
+                        })
                     });
                     (not_set.variable, false, reads)
                 })

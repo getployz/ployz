@@ -230,8 +230,9 @@ can't reference it, and it replaces a variable of yours with that name.
   parent's values, except sealed ones: the branch doesn't get those either, so deploys leave
   the referencing variable out and say what it reads, such as
   `Left DB_URL out of web: it reads db.PASSWORD, a sealed value this branch doesn't get from its parent.`
-  To give it a value, make the service separate in the branch (**Make it separate**, or
-  `ployz env copy db --env <branch>`), then choose **Set value** on the variable there.
+  To give it a value, set the referencing variable in the branch. Or make the service separate
+  in the branch (**Make it separate**, or `ployz env copy db --env <branch>`) and choose
+  **Set value** on the variable in the copy. A separate copy's volumes start empty.
 - **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
   `invalid_argument` and the limit. Split it into smaller changes.
 - **The CLI reads at most 32 MiB of an env file or a `--secret` on stdin.** A wrong path such
