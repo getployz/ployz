@@ -292,6 +292,14 @@ def boat_node(address):
     return str(ipaddress.IPv6Network(f"{address}/80", strict=False))
 
 
+def avoided(ip, ssh):
+    """Whether a sandbox runs on a node PLOYZ_VERIFY_BOAT_AVOID_NODES names, each by its IPv4 or an IPv6 in its /80."""
+    nodes = set()
+    for address in filter(None, (part.strip() for part in os.environ.get("PLOYZ_VERIFY_BOAT_AVOID_NODES", "").split(","))):
+        nodes.add(boat_node(address) if ipaddress.ip_address(address).version == 6 else address)
+    return boat_node(ip) in nodes or endpoint(ssh)[0] in nodes
+
+
 def registry(run_id):
     return REGISTRY / f"{run_id}.json"
 
@@ -396,7 +404,8 @@ def pick(entries, image, want):
     """Parked sandboxes of `image` a run may claim, newest first and one per node; tidy() the entries first."""
     picked, nodes = [], set()
     for entry in sorted(entries, key=lambda entry: -entry["parked_at"]):
-        if entry["image"] == image and not entry.get("retiring") and len(picked) < want and boat_node(entry["ip"]) not in nodes:
+        if (entry["image"] == image and not entry.get("retiring") and len(picked) < want and boat_node(entry["ip"]) not in nodes
+                and not avoided(entry["ip"], entry["ssh"])):
             picked.append(entry)
             nodes.add(boat_node(entry["ip"]))
     return picked
@@ -775,13 +784,13 @@ class Provider:
         raise RuntimeError(f"{node['name']}: boat new kept answering boat_starting or rate_limited")
 
     def place(self, name, info):
-        """Record a sandbox's address unless a peer in this run already holds its node; True when recorded."""
+        """Record a sandbox's address unless a peer in this run already holds its node or it is avoided; True when recorded."""
         placed = []
 
         def claim(record):
             taken = {boat_node(entry["ip"]) for other, entry in record["sandboxes"].items()
                      if other != name and entry.get("ip") and entry.get("state") != "deleted"}
-            if boat_node(info["ip"]) not in taken:
+            if boat_node(info["ip"]) not in taken and not avoided(info["ip"], info["sshEndpoint"]):
                 record["sandboxes"][name].update(ssh=info["sshEndpoint"], ip=info["ip"])
                 placed.append(True)
         self.record(claim)
@@ -794,11 +803,12 @@ class Provider:
             info = json.loads(self.boat("info", sandbox).stdout)["sandbox"]
             if self.place(node["name"], info):
                 break
-            # Peers on one node share an on-link /80 and their WireGuard over IPv6 never handshakes.
+            # Peers on one node share an on-link /80 and their WireGuard over IPv6 never handshakes; an avoided node is suspect.
             self.boat("delete", sandbox, "--yes")
         else:
             if not reused:
-                raise RuntimeError(f"{node['name']}: Boat kept placing the sandbox on a node another Machine uses")
+                raise RuntimeError(f"{node['name']}: Boat kept placing the sandbox on a node another Machine uses "
+                                   "or PLOYZ_VERIFY_BOAT_AVOID_NODES names")
         if self.run["image"] in (SNAPSHOT, None):
             self.install_key(node, sandbox)
         self.wait_agent(node)

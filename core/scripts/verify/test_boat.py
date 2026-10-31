@@ -392,6 +392,15 @@ class Registry(unittest.TestCase):
         self.assertTrue(self.provider.place("machine-2", apart))
         self.assertEqual(self.provider.record()["sandboxes"]["machine-2"]["ssh"], "213.32.24.158:19040")
 
+    def test_a_sandbox_on_an_avoided_node_is_refused_by_its_ipv4_or_any_ipv6_in_its_80(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running")})
+        sandbox = dict(ip="2001:41d0:1004:389e:100::40", sshEndpoint="213.32.24.158:19040")
+        for avoid in ["198.51.100.7, 213.32.24.158", "2001:41d0:1004:389e:100::2"]:
+            with unittest.mock.patch.dict(os.environ, PLOYZ_VERIFY_BOAT_AVOID_NODES=avoid):
+                self.assertFalse(self.provider.place("machine-1", sandbox))
+        with unittest.mock.patch.dict(os.environ, PLOYZ_VERIFY_BOAT_AVOID_NODES="198.51.100.7"):
+            self.assertTrue(self.provider.place("machine-1", sandbox))
+
 
 def locked(name):
     """Whether some open file holds REGISTRY/name's lock now."""
@@ -464,6 +473,8 @@ class Pool(unittest.TestCase):
                    parked("bx_other", 4, image="bake-b", at=9)]
         self.assertEqual([entry["id"] for entry in boat.pick(entries, "bake-a", 2)], ["bx_new", "bx_two"])
         self.assertEqual([entry["id"] for entry in boat.pick(entries, "bake-a", 5)], ["bx_new", "bx_two", "bx_three"])
+        with unittest.mock.patch.dict(os.environ, PLOYZ_VERIFY_BOAT_AVOID_NODES="203.0.113.2"):
+            self.assertEqual([entry["id"] for entry in boat.pick(entries, "bake-a", 5)], ["bx_new", "bx_three"])
 
     def listing(self, **states):
         return lambda *args: dict(sandboxes=[dict(id=sandbox, state=state) for sandbox, state in states.items()])
