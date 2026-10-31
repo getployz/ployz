@@ -1743,6 +1743,43 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
     assert!(closed.is_start_retryable(), "{text}");
 }
 
+#[test]
+fn a_start_wait_ends_on_a_refusal_but_waits_out_a_daemon_that_is_only_down() {
+    let socket = |message: &str| {
+        ConnectError::Io(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            message.to_owned(),
+        ))
+    };
+    let tried = |attempts, error| ConnectError::AllFailed {
+        relayed: false,
+        selection: ConnectionSource::Direct,
+        attempts,
+        server: None,
+        retry: Retry::AfterRestart,
+        reached: false,
+        last: Some(Box::new(error)),
+    };
+    // An older ployzd's dial-stdio never names a refusal, so its wait runs as before.
+    let down = "Machine API socket did not become ready: Connection refused (os error 111)";
+    let refused = format!(
+        "{down}; {}refusing to change ployz-wg",
+        ployz_core::STARTUP_REFUSED
+    );
+    for (error, waits) in [
+        (ConnectError::EntryNotReady, true),
+        (socket(down), true),
+        (tried(1, socket(down)), true),
+        (socket(&refused), false),
+        (tried(1, socket(&refused)), false),
+        // Another Server may still come up.
+        (tried(2, socket(&refused)), true),
+    ] {
+        assert_eq!(error.is_start_retryable(), waits, "{error}");
+        assert_ne!(error.retry(), Retry::Never, "{error}");
+    }
+}
+
 #[tokio::test]
 async fn a_child_stream_ends_with_the_last_line_of_a_failed_child() {
     use tokio::io::AsyncReadExt as _;
