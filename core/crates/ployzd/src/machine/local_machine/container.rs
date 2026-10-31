@@ -481,12 +481,11 @@ impl LocalMachine {
             Ok(withdrawal) => withdrawal,
             Err(refused) => return Ok(Err(refused)),
         };
-        let _ = tokio::time::timeout(drain.as_duration(), async {
-            tokio::join!(
-                self.until_idle(containers, container),
-                tokio::time::sleep(WITHDRAWAL_PROPAGATION),
-            )
-        })
+        let spread = tokio::time::Instant::now() + WITHDRAWAL_PROPAGATION;
+        let _ = tokio::time::timeout(
+            drain.as_duration(),
+            self.until_idle(containers, container, spread),
+        )
         .await;
         if let Err(refused) = drained().await? {
             return Ok(Err(refused));
@@ -521,8 +520,9 @@ impl LocalMachine {
 
     /// Ends once the copy holds no connection it may still answer, per
     /// `drain_idle::holds_connection`, with the listening ports remembered across the
-    /// drain's reads. A copy with no connection from off its loopback reads idle at
-    /// once. A copy whose sockets cannot be read never reads idle, so its drain waits
+    /// drain's reads, and no earlier than `not_before`: a client may still connect
+    /// until then, so idleness counts only when read at or after it. A copy with no
+    /// connection from off its loopback reads idle at once. A copy whose sockets cannot be read never reads idle, so its drain waits
     /// the full cap.
     ///
     /// Every Service copy joins the Ployz network, so its pid's tables list only its
@@ -532,6 +532,7 @@ impl LocalMachine {
         &self,
         containers: &crate::docker::ContainerRuntime,
         container: &ContainerId,
+        not_before: tokio::time::Instant,
     ) {
         let Ok(Some(pid)) = containers.pid(container).await else {
             return std::future::pending().await;
@@ -540,7 +541,8 @@ impl LocalMachine {
         while !matches!(
             drain_idle::holds_connection(&self.proc_root, pid, &mut listening),
             Ok(false)
-        ) {
+        ) || tokio::time::Instant::now() < not_before
+        {
             tokio::time::sleep(DRAIN_POLL).await;
         }
     }

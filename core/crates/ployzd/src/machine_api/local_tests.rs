@@ -1730,14 +1730,14 @@ mod set_volume_copy {
         let local = service.local();
         let containers = local.containers().unwrap();
 
+        let turn = local.owner().admission_lock().write_owned().await;
         let cut = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            set_copy(&service, at_gen(draining_cut(300), 1)),
+            set_copy(&service, at_gen(draining_cut(1000), 1)),
         );
-        let (refused, turn) = tokio::join!(cut, async {
+        let (refused, ()) = tokio::join!(cut, async {
             drain_started(&service, &holder).await;
             reply(&set_copy(&service, floor(2)).await);
-            local.owner().admission_lock().write_owned().await
         });
         let refused = refused.expect("the refused cut waited for the turn");
         let error = refusal(&refused);

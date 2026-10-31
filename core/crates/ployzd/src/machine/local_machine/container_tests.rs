@@ -1652,6 +1652,48 @@ mod stopped_on_request {
         }
 
         #[tokio::test]
+        async fn stop_checked_waits_for_a_connection_opened_while_the_withdrawal_spreads() {
+            let fixture = Fixture::start().await;
+            fixture.sockets(&[(8080, LISTEN)]);
+            let mut stopping = fixture.runtime.subscribe_stopping_for_test();
+
+            let (stopped, _) = {
+                let stop = fixture.stop_timed(Drain::MAX);
+                tokio::pin!(stop);
+                tokio::select! {
+                    _ = &mut stop => panic!("the stop ended before the withdrawal spread"),
+                    withdrawn = stopping.wait_for(|stopping| stopping.contains_key(&fixture.id)) => {
+                        withdrawn.unwrap();
+                    }
+                }
+                // The drain has read the copy idle by now; the client connects after.
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(300), &mut stop)
+                        .await
+                        .is_err(),
+                    "the stop waits for the withdrawal to spread"
+                );
+                fixture.sockets(&[(8080, LISTEN), (8080, ESTABLISHED)]);
+                assert!(
+                    tokio::time::timeout(
+                        super::super::super::WITHDRAWAL_PROPAGATION * 2,
+                        &mut stop
+                    )
+                    .await
+                    .is_err(),
+                    "a client that connected before DNS heard keeps the copy draining"
+                );
+                fixture.sockets(&[(8080, LISTEN), (8080, TIME_WAIT)]);
+                tokio::time::timeout(Duration::from_secs(10), stop)
+                    .await
+                    .expect("the drain ends once the connection closes")
+            };
+
+            assert_exited(&stopped);
+            fixture.finish();
+        }
+
+        #[tokio::test]
         async fn stop_checked_keeps_an_idle_copy_withdrawn_no_longer_than_a_short_drain() {
             let fixture = Fixture::start().await;
             fixture.sockets(&[(8080, LISTEN)]);
