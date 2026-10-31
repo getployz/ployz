@@ -125,6 +125,17 @@ impl CorrosionConfig {
                 run_dir: self.paths.run_dir.clone(),
             };
             let ensured = service.start(&files).await?;
+            // Only now does the running Corrosion sync each commit itself. An older one,
+            // still serving while the new image pulls, relies on the flag.
+            let refused = clear_sync_writes(&self.paths.data_dir);
+            if let Some(first) = refused.first() {
+                tracing::warn!(
+                    data_dir = %self.paths.data_dir.display(),
+                    refused = refused.len(),
+                    error = %ployz_core::error_chain::inline(first),
+                    "Corrosion's commits stay slow: files in its data directory still write every page synchronously"
+                );
+            }
             wait_ready_or_replace(
                 ensured == Ensure::Keep,
                 || async { api.query(Statement::new("SELECT 1", [])).await.is_ok() },
@@ -155,15 +166,6 @@ impl CorrosionConfig {
 
     fn install(&self) -> Result<InstalledFiles, Error> {
         create_private_dir(&self.paths.data_dir)?;
-        let refused = clear_sync_writes(&self.paths.data_dir);
-        if let Some(first) = refused.first() {
-            tracing::warn!(
-                data_dir = %self.paths.data_dir.display(),
-                refused = refused.len(),
-                error = %ployz_core::error_chain::inline(first),
-                "Corrosion's commits stay slow: files in its data directory still write every page synchronously"
-            );
-        }
         create_private_dir(&self.paths.run_dir)?;
         let token = load_or_create_token(&self.paths.token_file())?;
         let schema_path = self.paths.data_dir.join("schema.sql");
