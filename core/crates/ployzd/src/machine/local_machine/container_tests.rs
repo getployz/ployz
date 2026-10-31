@@ -1636,6 +1636,38 @@ mod stopped_on_request {
         }
 
         #[tokio::test]
+        async fn stop_checked_keeps_an_idle_copy_withdrawn_until_its_withdrawal_spreads() {
+            let fixture = Fixture::start().await;
+            fixture.sockets(&[(8080, LISTEN)]);
+
+            let (stopped, took) = fixture.stop_timed(Drain::MAX).await;
+
+            assert_exited(&stopped);
+            assert!(
+                took >= super::super::super::WITHDRAWAL_PROPAGATION,
+                "Internal DNS elsewhere hears of the withdrawal before the stop, took {took:?}"
+            );
+            assert!(took < Duration::from_secs(10), "took {took:?}");
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn stop_checked_keeps_an_idle_copy_withdrawn_no_longer_than_a_short_drain() {
+            let fixture = Fixture::start().await;
+            fixture.sockets(&[(8080, LISTEN)]);
+
+            let (stopped, took) = fixture.stop_timed(Drain::try_from(250).unwrap()).await;
+
+            assert_exited(&stopped);
+            assert!(
+                took >= Duration::from_millis(250)
+                    && took < super::super::super::WITHDRAWAL_PROPAGATION,
+                "the drain still caps the wait, took {took:?}"
+            );
+            fixture.finish();
+        }
+
+        #[tokio::test]
         async fn stop_checked_ends_the_drain_when_the_last_connection_closes() {
             let fixture = Fixture::start().await;
             fixture.sockets(&[(8080, LISTEN), (8080, ESTABLISHED)]);

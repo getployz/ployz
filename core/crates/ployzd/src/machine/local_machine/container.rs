@@ -41,6 +41,12 @@ const SETTLE_POLL: Duration = Duration::from_millis(100);
 /// an idle copy is seen.
 const DRAIN_POLL: Duration = Duration::from_millis(50);
 
+/// How long an idle copy stays withdrawn before its stop, so every Server's Internal
+/// DNS stops answering it first: a withdrawal reached them 0.3 to 0.72 s later on a
+/// Boat Cluster (#3688). A lookup before then still gets the old address, and a
+/// client that connects to it after the stop hangs until its connect times out.
+const WITHDRAWAL_PROPAGATION: Duration = Duration::from_secs(1);
+
 /// Where a test holds an `ensure_container` call so a Leave can run against it.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

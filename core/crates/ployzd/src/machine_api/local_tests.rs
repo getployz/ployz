@@ -1716,6 +1716,39 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A sole holder is out of Internal DNS while withdrawn, so a cut the floor already
+    /// refuses must return it before queueing for a turn other work may hold long.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_raised_during_the_drain_returns_the_holder_without_waiting_for_a_turn() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-fenced-busy").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let holder = running_holder(&service, &fake).await;
+        let local = service.local();
+        let containers = local.containers().unwrap();
+
+        let cut = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            set_copy(&service, at_gen(draining_cut(300), 1)),
+        );
+        let (refused, turn) = tokio::join!(cut, async {
+            drain_started(&service, &holder).await;
+            reply(&set_copy(&service, floor(2)).await);
+            local.owner().admission_lock().write_owned().await
+        });
+        let refused = refused.expect("the refused cut waited for the turn");
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert!(containers.stopping_ids_for_test().is_empty());
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        drop(turn);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     /// A Deploy that floors the Volume while the cut stops its holder reads the holder
     /// next and keeps a running one, so the floor must wait for the stop to land.
     #[tokio::test]
