@@ -522,8 +522,8 @@ impl LocalMachine {
     /// `drain_idle::holds_connection`, with the listening ports remembered across the
     /// drain's reads, and no earlier than `not_before`: a client may still connect
     /// until then, so idleness counts only when read at or after it. A copy with no
-    /// connection from off its loopback reads idle at once. A copy whose sockets cannot be read never reads idle, so its drain waits
-    /// the full cap.
+    /// connection from off its loopback reads idle at once. A copy whose sockets cannot
+    /// be read never reads idle, so its drain waits the full cap.
     ///
     /// Every Service copy joins the Ployz network, so its pid's tables list only its
     /// own sockets. A copy in the host's namespace would list the host's, and read
