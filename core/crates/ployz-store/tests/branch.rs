@@ -1948,3 +1948,80 @@ fn an_own_copy_from_a_grandparent_never_shows_a_value_it_sealed_since() {
         (json!({ "secret": true }), Value::Null)
     );
 }
+
+/// The warnings of a Deploy of `environment`, claimed and left not executed.
+fn warnings(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value {
+    let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
+    store
+        .write_trusted(
+            who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: at(environment),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id, &runner).unwrap();
+    store
+        .record(&id, &runner, RunEvidence::NotExecuted("no Servers".into()))
+        .unwrap();
+    json!(claimed.deployment.warnings)
+}
+
+/// A Branch's variable that reads a value its parent sealed in a node they share
+/// is left out, and the warning names what it reads and that it's sealed there.
+#[test]
+fn a_branch_reference_to_a_value_its_parent_sealed_names_it_as_sealed_in_the_parent() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            ("db.env.TOK3", json!("fake-plain-3677")),
+            ("web.env.DBURL", json!("${{ db.TOK3 }}")),
+        ],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.VIA", json!("${{ TOKEN }}"))],
+    );
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "db.env.TOK3",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOK3", 2),
+        )],
+    );
+    deploy(&store, &who, "production", 2, true);
+
+    let warnings = warnings(&store, &who, "fix-web", 3);
+    let mut warnings: Vec<Value> = warnings.as_array().unwrap().clone();
+    warnings.sort_by_key(|warning| warning["variable"].as_str().map(str::to_owned));
+    assert_eq!(
+        warnings,
+        [
+            json!({"service": "web", "variable": "DBURL", "reads": "db.TOK3", "sealed_elsewhere": true}),
+            json!({"service": "web", "variable": "TOKEN"}),
+            json!({"service": "web", "variable": "VIA", "reads": "web.TOKEN"}),
+        ]
+    );
+    assert!(!json!(warnings).to_string().contains("fake-plain-3677"));
+}
