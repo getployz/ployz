@@ -9,7 +9,8 @@ use std::{
 
 use bytes::Bytes;
 use http_body::Frame;
-use ployz_core::op;
+use http_body_util::{BodyExt, Full};
+use ployz_core::{OpaquePayload, RpcRequestBody, op};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tonic::{
     body::Body,
@@ -18,11 +19,12 @@ use tonic::{
 
 /// Serves `S`, ending its open-ended streams with UNAVAILABLE once `shutdown` fires.
 ///
-/// Exec, TailLogs and RuntimeWatch end only when their caller leaves. The daemon's
-/// server drain would otherwise wait them out until it gives up and aborts every
-/// server, dropping the management endpoint unclosed (#3699). Their callers already
-/// reconnect on UNAVAILABLE, the status a stopped daemon gives too. Every other call,
-/// Build and Leave's reply among them, drains as before.
+/// Exec, RuntimeWatch and a following TailLogs end only when their caller leaves. The
+/// daemon's server drain would otherwise wait them out until it gives up and aborts
+/// every server, dropping the management endpoint unclosed (#3699). Their callers
+/// already reconnect on UNAVAILABLE, the status a stopped daemon gives too. Every
+/// other call, a bounded TailLogs read, Build and Leave's reply among them, drains as
+/// before.
 #[derive(Clone)]
 pub struct EndsOnShutdown<S> {
     inner: S,
@@ -38,7 +40,10 @@ impl<S> EndsOnShutdown<S> {
 
 impl<S> Service<http::Request<Body>> for EndsOnShutdown<S>
 where
-    S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>,
+    S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
     S::Future: Send + 'static,
 {
     type Response = http::Response<Body>;
@@ -50,29 +55,68 @@ where
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
-        let open_ended = open_ended(request.uri().path());
-        let response = self.inner.call(request);
-        if !open_ended {
-            return Box::pin(response);
-        }
+        let path = request.uri().path();
         let shutdown = self.shutdown.clone();
-        Box::pin(async move {
-            tokio::select! {
-                response = response => Ok(response?.map(|body| {
-                    Body::new(UntilShutdown {
-                        body,
-                        shutdown: Box::pin(shutdown.cancelled_owned()),
-                        ended: false,
-                    })
-                })),
-                () = shutdown.cancelled() => Ok(shutting_down().into_http()),
-            }
-        })
+        if path == op::TailLogs::PATH {
+            // The readied service answers; its clone takes the next call.
+            let ready = self.inner.clone();
+            let mut inner = std::mem::replace(&mut self.inner, ready);
+            return Box::pin(async move {
+                let (parts, body) = request.into_parts();
+                let frame = match body.collect().await {
+                    Ok(collected) => collected.to_bytes(),
+                    Err(status) => return Ok(status.into_http()),
+                };
+                let follows = tail_follows(&frame);
+                let request = http::Request::from_parts(parts, Body::new(Full::new(frame)));
+                let response = inner.call(request);
+                if follows {
+                    until_shutdown(response, shutdown).await
+                } else {
+                    response.await
+                }
+            });
+        }
+        let open_ended = path == op::Exec::PATH || path == op::RuntimeWatch::PATH;
+        let response = self.inner.call(request);
+        if open_ended {
+            Box::pin(until_shutdown(response, shutdown))
+        } else {
+            Box::pin(response)
+        }
     }
 }
 
-fn open_ended(path: &str) -> bool {
-    [op::Exec::PATH, op::TailLogs::PATH, op::RuntimeWatch::PATH].contains(&path)
+async fn until_shutdown(
+    response: impl Future<Output = Result<http::Response<Body>, Infallible>>,
+    shutdown: CancellationToken,
+) -> Result<http::Response<Body>, Infallible> {
+    tokio::select! {
+        response = response => Ok(response?.map(|body| {
+            Body::new(UntilShutdown {
+                body,
+                shutdown: Box::pin(shutdown.cancelled_owned()),
+                ended: false,
+            })
+        })),
+        () = shutdown.cancelled() => Ok(shutting_down().into_http()),
+    }
+}
+
+/// Whether a TailLogs request's single gRPC frame asks to follow. A frame this cannot
+/// read counts as following; the handler refuses a malformed one at once anyway.
+fn tail_follows(frame: &[u8]) -> bool {
+    // Uncompressed flag, then a four-byte length; no client compresses requests.
+    let Some(message) = frame.strip_prefix(&[0]).and_then(|rest| rest.get(4..)) else {
+        return true;
+    };
+    let Ok(payload) = <OpaquePayload as prost::Message>::decode(message) else {
+        return true;
+    };
+    match payload.decode_request().map(|request| request.body) {
+        Ok(RpcRequestBody::TailLogs(request)) => request.options.follow,
+        _ => true,
+    }
 }
 
 fn shutting_down() -> tonic::Status {
@@ -109,17 +153,40 @@ impl http_body::Body for UntilShutdown {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::Rpc;
+    use ployz_core::{LiveLogTarget, LogsOptions, MachineLogService, TailLogsRequest};
 
     use super::*;
 
+    fn tail(follow: bool) -> Vec<u8> {
+        let message = prost::Message::encode_to_vec(
+            &op::TailLogs::into_request(TailLogsRequest {
+                target: LiveLogTarget::Machine(MachineLogService::Docker),
+                options: LogsOptions {
+                    follow,
+                    tail: 10,
+                    since_nanos: None,
+                    until_unix_seconds: None,
+                },
+            })
+            .encode()
+            .unwrap(),
+        );
+        let mut frame = vec![0];
+        frame.extend_from_slice(&u32::try_from(message.len()).unwrap().to_be_bytes());
+        frame.extend_from_slice(&message);
+        frame
+    }
+
     #[test]
-    fn only_streams_without_an_end_are_open_ended() {
-        for path in [op::Exec::PATH, op::TailLogs::PATH, op::RuntimeWatch::PATH] {
-            assert!(open_ended(path), "{path}");
-        }
-        for path in [op::Build::PATH, op::LogHistory::PATH, op::Leave::PATH] {
-            assert!(!open_ended(path), "{path}");
-        }
+    fn only_a_following_tail_is_open_ended() {
+        assert!(tail_follows(&tail(true)));
+        assert!(!tail_follows(&tail(false)));
+        let mut compressed = tail(false);
+        compressed.splice(..1, [1]);
+        assert!(
+            tail_follows(&compressed),
+            "an unreadable frame counts as following"
+        );
+        assert!(tail_follows(&[]));
     }
 }
