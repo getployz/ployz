@@ -149,6 +149,11 @@ pub struct MachineRuntime {
     /// and from older daemons.
     #[ts(optional = nullable)]
     pub store_filesystem: Option<String>,
+    /// Whether the replicated store syncs each commit to disk before peers see it, so a
+    /// power cut loses none of this Machine's changes. Absent from older daemons, so
+    /// absence claims nothing.
+    #[ts(optional = nullable)]
+    pub store_syncs_commits: Option<bool>,
     /// Every capability name the daemon binary serves. Empty from a daemon
     /// that predates the field, and when an older entry relays a newer peer's
     /// record, so empty claims nothing.

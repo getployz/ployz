@@ -398,9 +398,10 @@ The restart makes web-2 report its replicas again, and every server sends reques
 deploy or **Redeploy** with nothing changed doesn't help, because it leaves the replicas as they are.
 If some requests still reach web-2's old replicas a minute later, restart the service again.
 
-A server whose root disk uses ZFS, Btrfs or tmpfs can still lose its last changes in a power cut. If that
-happens, restart the services on it, as above. `ployz server ls` names each such server, and
-`ployz server show` adds a `store` line that says so.
+A server whose root disk uses tmpfs can still lose its last changes in a power cut, and so can a
+server on ZFS or Btrfs that runs an older Ployz. If that happens, restart the services on it, as
+above. `ployz server ls` names each such server, and `ployz server show` adds a `store` line that
+says so.
 
 ## My deploy failed when a server lost power or its network
 

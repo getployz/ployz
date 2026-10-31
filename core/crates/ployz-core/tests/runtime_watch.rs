@@ -249,6 +249,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                     pool_committable_bytes: None,
                     sealing: None,
                     store_filesystem: None,
+                    store_syncs_commits: None,
                     capabilities: BTreeSet::new(),
                     management_identity: None,
                     leaving: false,
