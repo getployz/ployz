@@ -393,3 +393,34 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
     assert!(!stderr.contains("couldn't reach"), "{stderr}");
     assert!(!stderr.contains("Could not reach"), "{stderr}");
 }
+
+/// A daemon that refused to start never comes back by itself, so the wait
+/// names its refusal at once instead of after its full deadline (#3703).
+#[tokio::test]
+async fn readiness_ends_at_a_startup_refusal() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join(ployz_core::STARTUP_REFUSAL_FILE),
+        "refusing to change the retained WireGuard interface\n",
+    )
+    .unwrap();
+    let matches = crate::cli::command()
+        .try_get_matches_from(["ployz", "server", "ls"])
+        .unwrap();
+    let connection = crate::context::Connection::unix(root.path().join("ployz.sock")).unwrap();
+    let refused = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        super::wait_direct_participating(&matches, &connection, "not ready"),
+    )
+    .await
+    .expect("a refusal ends the wait")
+    .err()
+    .expect("a refusing daemon is not ready");
+    let text = crate::ui::chain_text(&refused);
+    assert!(
+        text.contains(
+            "ployzd refused to start: refusing to change the retained WireGuard interface"
+        ),
+        "{text}"
+    );
+}

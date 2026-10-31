@@ -999,11 +999,9 @@ async fn wait_phase(
         },
     )
     .await
-    .map_err(|error| {
-        Error::from(error).context(match awaited {
-            Awaited::Enrolled { .. } => joining.timeout_message(timeout_message),
-            Awaited::Uninitialized => timeout_message.to_owned(),
-        })
+    .map_err(|error| match awaited {
+        Awaited::Enrolled { .. } => joining.failed(error, timeout_message),
+        Awaited::Uninitialized => Error::from(error).context(timeout_message.to_owned()),
     })
 }
 
@@ -1287,6 +1285,44 @@ mod tests {
         enrolled_server.shutdown_background();
         earlier_server.shutdown_background();
         assert_eq!(ready.unwrap().connection(), &via);
+    }
+
+    /// A daemon that refused to start never comes back by itself, so the wait
+    /// names its refusal at once instead of after its full deadline (#3703).
+    #[tokio::test]
+    async fn readiness_ends_at_a_startup_refusal() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join(ployz_core::STARTUP_REFUSAL_FILE),
+            "refusing to change the retained WireGuard interface\n",
+        )
+        .unwrap();
+        let cli = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "add", "--yes"])
+            .unwrap();
+        let via = Connection::unix(root.path().join("ployz.sock")).unwrap();
+        let refused = tokio::time::timeout(
+            Duration::from_secs(10),
+            wait_phase(
+                leaf_matches(&cli),
+                Awaited::Enrolled {
+                    id: crate::global_fixtures::machine('a', "machine-a").id,
+                    via: &via,
+                },
+                "the joined Server did not become ready",
+            ),
+        )
+        .await
+        .expect("a refusal ends the wait")
+        .err()
+        .expect("a refusing daemon is not ready");
+        let text = crate::ui::chain_text(&refused);
+        assert!(
+            text.contains(
+                "ployzd refused to start: refusing to change the retained WireGuard interface"
+            ),
+            "{text}"
+        );
     }
 
     async fn assert_resumed_enrollment_waits_for_published_machine(founder: bool) {

@@ -76,8 +76,8 @@ pub const NETWORK_CONFLICT_EXIT_STATUS: u8 = 78;
 /// exited with [`NETWORK_CONFLICT_EXIT_STATUS`]. Each start removes it first.
 pub const STARTUP_REFUSAL_FILE: &str = "refused";
 
-/// How a startup refusal begins wherever a client reads it, including the
-/// stderr of a remote `ployzd dial-stdio`. Clients of other releases stop
+/// The text that introduces a startup refusal wherever a client reads it,
+/// including the stderr of a remote `ployzd dial-stdio`. Clients of other releases stop
 /// waiting on this text, so it must not change.
 pub const STARTUP_REFUSED: &str = "ployzd refused to start: ";
 
