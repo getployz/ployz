@@ -1777,6 +1777,7 @@ async fn an_undialed_servers_proxy_keeps_a_copy_an_earlier_gapped_deploy_left() 
         [
             "Could not fully observe containers on Server machine-2: tcp connect error".to_owned(),
             left_running("machine-1", "proxy on machine-2 did not confirm"),
+            mixed_after_return("machine-2"),
         ]
     );
     client.assert_done();
