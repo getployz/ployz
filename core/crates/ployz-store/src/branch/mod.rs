@@ -45,7 +45,8 @@ use ployz_core::config::{
     SavedServiceIntent, SavedVariableProducer, SavedVariableValue, SealedCell, SealedSecret,
     ServiceImageCredentials, ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner,
     Verdict, Way, Why, canonicalize_environment_intent, compile_environment_intent, dependents,
-    live_values, marks_on, parse_service_setting, plan, plan_branch, put_back, unapply,
+    live_values, marks_on, parse_service_setting, plan, plan_branch, put_back,
+    referenced_by_others, unapply, unchanged_since,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};

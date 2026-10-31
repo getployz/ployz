@@ -700,6 +700,11 @@ impl Plan {
                 if let Some(base) = base.as_mut() {
                     adopt(base, &self.into, id);
                     put_into(base, id, &row.from)?;
+                    // The base holds what landed, a new variable's description and
+                    // export with it.
+                    if let (At::Variable(key), SealedCell::Cell(Cell::Absent)) = (&id.at, &was) {
+                        self.describe(base, &id.lineage, key);
+                    }
                 }
             }
             landed.push(Landed {
@@ -837,7 +842,7 @@ impl Plan {
             .collect()
     }
 
-    /// A variable new to `next` takes `from`'s description and export.
+    /// A variable new to `next`, or to a base, takes `from`'s description and export.
     // ponytail: rows compare a variable's value only; a changed description or export
     // never moves on its own. Add a row for them when someone misses it.
     fn describe(&self, next: &mut Intent, lineage: &str, key: &str) {
@@ -972,6 +977,46 @@ impl<'service> Uncelled<'service> {
     }
 }
 
+/// Whether `into` holds node `lineage` as `base` does or as it arrived, both with
+/// generated addresses ending in `suffix`: each of its rows holds what `base` holds
+/// there or what `arrived` says landed there last (a secret lands without its
+/// value), and what its cells leave out is as `base` has it (a variable's
+/// description or export, a route's target port, its template, a Volume's shared
+/// writes and restore point).
+#[must_use]
+pub fn unchanged_since(
+    base: &Intent,
+    into: &Intent,
+    suffix: &str,
+    lineage: &str,
+    arrived: &BTreeMap<RowId, Cell>,
+) -> bool {
+    let (base_cells, into_cells) = (Cells::of(base, suffix), Cells::of(into, suffix));
+    let same = |row: &RowId| {
+        let held = into_cells.at(row);
+        base_cells.at(row) == held || arrived.get(row) == Some(held)
+    };
+    let node = RowId::node(lineage);
+    let services_same = match (service(base, lineage), service(into, lineage)) {
+        (Some(base), Some(into)) => Uncelled::of(base) == Uncelled::of(into),
+        (None, None) => true,
+        _ => false,
+    };
+    let volumes_same = match (volume(base, lineage), volume(into, lineage)) {
+        (Some(base), Some(into)) => {
+            (base.shared_writes, &base.restored_from) == (into.shared_writes, &into.restored_from)
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    *into_cells.at(&node) != Cell::Absent
+        && same(&node)
+        && base_cells.places(lineage).all(|(row, _)| same(row))
+        && into_cells.places(lineage).all(|(row, _)| same(row))
+        && services_same
+        && volumes_same
+}
+
 /// Whether `env` references a lineage it does not own, i.e. uses it live.
 fn uses(env: &Intent, lineage: &str) -> bool {
     env.services
@@ -981,6 +1026,24 @@ fn uses(env: &Intent, lineage: &str) -> bool {
         .chain(
             env.configs
                 .iter()
+                .flat_map(|c| c.files.values())
+                .flat_map(SavedConfigFile::referenced_lineages),
+        )
+        .any(|used| used == lineage)
+}
+
+/// Whether a variable or Config file of another node in `env` references `lineage`.
+#[must_use]
+pub fn referenced_by_others(env: &Intent, lineage: &str) -> bool {
+    env.services
+        .iter()
+        .filter(|s| s.lineage_id != lineage)
+        .flat_map(|s| &s.variables)
+        .flat_map(|v| v.value.referenced_lineages())
+        .chain(
+            env.configs
+                .iter()
+                .filter(|c| c.resource_lineage_id != lineage)
                 .flat_map(|c| c.files.values())
                 .flat_map(SavedConfigFile::referenced_lineages),
         )

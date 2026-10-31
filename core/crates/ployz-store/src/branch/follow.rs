@@ -31,7 +31,8 @@ pub struct IncomingChange {
 }
 
 /// Parent `parent` deployed the nodes of `lineages`: stage each change it made to them
-/// in each of its Branches. Changes a Branch refuses (one of its rules, say) stay
+/// in each of its Branches, and take back each node it removed that a Follow brought
+/// there untouched. Changes a Branch refuses (one of its rules, say) stay
 /// hints there, and never fail the Parent's Deployment. The caller holds the
 /// Project's lock.
 pub(crate) fn follow(
@@ -49,6 +50,13 @@ pub(crate) fn follow(
         return Ok(());
     }
     let parent = scope::load_by_id(tx, parent)?;
+    // The nodes of `lineages` the Parent removed.
+    let applied = deployment::applied_state(tx, &parent.summary.id, &parent.working)?;
+    let applied = Cells::of(&applied, &suffix(tx, &parent)?);
+    let gone: Vec<&String> = lineages
+        .iter()
+        .filter(|lineage| *applied.at(&RowId::node(lineage)) == Cell::Absent)
+        .collect();
     for row in &branches {
         let branch = row.parse::<EnvironmentId>(0, "Branch")?;
         let shut_down = crate::removal::latest(tx, &branch)?.is_some_and(|removal| {
@@ -64,6 +72,32 @@ pub(crate) fn follow(
         match into(tx, &who, &parent, &branch, lineages) {
             Err(error) if crate::automation::skippable(&error) => {}
             done => done?,
+        }
+        // After the rest lands, so a node the Parent unmounted in the same deploy is
+        // no longer mounted in the Branch either. One the Branch's rules refuse, or
+        // another node still references, as a Volume a Service still being withdrawn
+        // mounts, is tried again while others go; what stays refused, the Branch keeps.
+        let mut left = gone.clone();
+        loop {
+            let tried = left.len();
+            let mut refused = Vec::new();
+            for lineage in left {
+                let withdrawn = crate::storage::attempt(tx, |tx| {
+                    let mut branch = scope::lock_id(tx, &who, &branch)?;
+                    withdraw(tx, &mut branch, &parent.summary.id, lineage)
+                });
+                match withdrawn {
+                    Ok(false) => refused.push(lineage),
+                    Err(error) if crate::automation::skippable(&error) => refused.push(lineage),
+                    done => {
+                        done?;
+                    }
+                }
+            }
+            if refused.is_empty() || refused.len() == tried {
+                break;
+            }
+            left = refused;
         }
     }
     Ok(())

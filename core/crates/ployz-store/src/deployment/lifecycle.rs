@@ -2348,26 +2348,16 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
         let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
         let mut volumes = saved.volumes.clone();
         crate::volume::size::held(tx, &stored.summary.environment_id, &mut volumes)?;
+        // What a removed node was, so its removal follows too (#3705).
+        let before = applied_state(tx, &stored.summary.environment_id, &saved)?;
         let mut deployed = std::collections::BTreeSet::new();
         for node in advanced {
-            let applied = match node {
-                TargetNode::Service { .. } => saved
-                    .services
-                    .iter()
-                    .find(|service| service.id == node.id())
-                    .map(scope::Node::Service),
-                TargetNode::Volume { .. } => volumes
-                    .iter()
-                    .find(|volume| volume.resource_id == node.id())
-                    .map(scope::Node::Volume),
-                TargetNode::Config { .. } => saved
-                    .configs
-                    .iter()
-                    .find(|config| config.resource_id == node.id())
-                    .map(scope::Node::Config),
-            };
-            if let Some(applied) = applied {
-                deployed.insert(applied.lineage().to_owned());
+            let applied = node_in((&saved, &volumes), node);
+            if let Some(lineage) = applied
+                .or_else(|| node_in((&before, &before.volumes), node))
+                .map(scope::Node::lineage)
+            {
+                deployed.insert(lineage.to_owned());
             }
             match applied {
                 Some(applied) => tx.execute(
@@ -2397,6 +2387,32 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
         crate::branch::follow(tx, &stored.summary.environment_id, &deployed)?;
     }
     Ok(())
+}
+
+/// `node` as `intent` holds it, its Volumes as `volumes` has them.
+fn node_in<'intent>(
+    (intent, volumes): (
+        &'intent SavedEnvironmentIntent,
+        &'intent [SavedVolumeIntent],
+    ),
+    node: &TargetNode,
+) -> Option<scope::Node<'intent>> {
+    match node {
+        TargetNode::Service { .. } => intent
+            .services
+            .iter()
+            .find(|service| service.id == node.id())
+            .map(scope::Node::Service),
+        TargetNode::Volume { .. } => volumes
+            .iter()
+            .find(|volume| volume.resource_id == node.id())
+            .map(scope::Node::Volume),
+        TargetNode::Config { .. } => intent
+            .configs
+            .iter()
+            .find(|config| config.resource_id == node.id())
+            .map(scope::Node::Config),
+    }
 }
 
 /// `next`, with every node `prior` already advanced kept as it was: Applied State

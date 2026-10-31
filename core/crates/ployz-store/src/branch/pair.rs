@@ -1194,6 +1194,75 @@ pub(super) fn undo(
     Ok(true)
 }
 
+/// `other` deployed the removal of node `lineage`: take it back from `receiver`,
+/// whose lock the caller holds, if a Follow from `other` brought it as a new node and
+/// `receiver` holds it just as it arrived, never saved or deployed, and rewind the
+/// pair's base to before it arrived. Nothing `receiver` holds as its own is removed
+/// (#3705). False when only another of its nodes still referencing it keeps it:
+/// try again once that one goes.
+pub(super) fn withdraw(
+    tx: &mut dyn Tx,
+    receiver: &mut Environment,
+    other: &EnvironmentId,
+    lineage: &str,
+) -> Result<bool, RpcError> {
+    let id = receiver.summary.id.clone();
+    let node = RowId::node(lineage);
+    let arrivals: Vec<Arrived> = arrived(tx, &id, Which::From(other))?
+        .into_iter()
+        .filter(|arrived| arrived.row.lineage() == lineage)
+        .collect();
+    // Only what a Follow staged and nobody claims, still pending, the node among it.
+    let followed = arrivals.iter().any(|arrived| arrived.row == node)
+        && arrivals.iter().all(|arrived| {
+            matches!(
+                (&arrived.how, &arrived.arrival),
+                (
+                    How::Follow,
+                    Arrival::Pending {
+                        claim: Claim::Nobody,
+                        ..
+                    }
+                )
+            )
+        });
+    if !followed {
+        return Ok(true);
+    }
+    let suffix = suffix(tx, receiver)?;
+    if let Some(saved) = review::latest_saved(tx, &id)?
+        && *Cells::of(&saved.intent, &suffix).at(&node) != Cell::Absent
+    {
+        return Ok(true);
+    }
+    // The base holds what landed, the Parent's later changes too: a row the receiver
+    // holds otherwise, and not as it arrived, is its own.
+    let Some(base) = stored(tx, (&id, other))? else {
+        return Ok(true);
+    };
+    let landed: BTreeMap<RowId, Cell> = arrivals
+        .into_iter()
+        .map(|arrived| (arrived.row, arrived.value))
+        .collect();
+    if !unchanged_since(&base, &receiver.working, &suffix, lineage, &landed) {
+        return Ok(true);
+    }
+    // A node another of the receiver's nodes references holds that reference up,
+    // until that node goes too.
+    if referenced_by_others(&receiver.working, lineage) {
+        return Ok(false);
+    }
+    receiver.working = put_back(&receiver.working, &node, &Cell::Absent).map_err(config)?;
+    scope::save_working(tx, receiver)?;
+    tx.execute(
+        "DELETE FROM config_sync_arrival \
+         WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3",
+        &[id.as_str().into(), other.as_str().into(), lineage.into()],
+    )?;
+    rewind_bases(tx, &id, vec![(other.clone(), node, Cell::Absent)])?;
+    Ok(true)
+}
+
 /// Undo refused: `row` holds other than the `value` a Sync landed there, if it landed
 /// one. A plain value sealed since never becomes plain again, so it can't be changed
 /// back.

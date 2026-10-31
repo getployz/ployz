@@ -201,6 +201,11 @@ When production deploys something new, the change arrives in staging as a staged
 setting, staging's value stays, and Details offers production's beside it: click **Use theirs**
 to take it.
 
+A removal doesn't follow, with one exception. When production removes a service, volume or config
+that reached staging only from production's deploys, staging never changed, saved or deployed it,
+and nothing else in staging references it, staging loses it too. Otherwise staging keeps it as its own: remove it there if you don't want
+it.
+
 ### Sync to another environment
 
 Click **Sync**, then pick the environment in the dialog's title, "Make [production ▾] match
