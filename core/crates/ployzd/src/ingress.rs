@@ -4,7 +4,7 @@ use ployz_core::{
     CertificateHost, ContainerAddress, ContainerId, ContainerObservation,
     ContainerRuntimeObservation, DeploymentLogId, HttpProtocol, IngressHost, Machine, MachineId,
     PortPublication, ProxyRoutes, QualifiedService, ServiceContainer, hostname_owners,
-    proxy_routes, service_containers,
+    proxy_routes, reachable_routes, service_containers,
 };
 use serde::Serialize;
 use std::{
@@ -646,10 +646,13 @@ where
             ) {
                 (Ok(containers), Ok(rows)) => {
                     let containers = service_containers(containers.observations);
-                    let routes =
-                        proxy_routes(&containers, |machine| down.contains(machine), &routed);
-                    let mut projection =
-                        IngressProjection::derive(&machine, &containers, &rows, &routes);
+                    let (routes, mut projection) = next_pass(
+                        &machine,
+                        &containers,
+                        &rows,
+                        |machine| down.contains(machine),
+                        &routed,
+                    );
                     certificates.quarantine(&mut projection);
                     Ok((
                         newest_local_ingress(&machine, &containers),
@@ -805,6 +808,28 @@ where
             }
         }
     }
+}
+
+/// One watch pass: the route this proxy carries and acks, and what Caddy loads.
+///
+/// Caddy dials only the copies a client can reach now. The route keeps every copy
+/// [`proxy_routes`] keeps, so the acks and the next pass match a proxy that
+/// dialed them all.
+fn next_pass(
+    machine: &Machine,
+    containers: &[ServiceContainer],
+    certificates: &BTreeMap<CertificateHost, CertificateRow>,
+    is_down: impl Fn(&MachineId) -> bool,
+    routed: &ProxyRoutes,
+) -> (ProxyRoutes, IngressProjection) {
+    let routes = proxy_routes(containers, &is_down, routed);
+    let reachable = reachable_routes(
+        &routes,
+        containers.iter().map(ServiceContainer::as_observation),
+        &is_down,
+    );
+    let projection = IngressProjection::derive(machine, containers, certificates, &reachable);
+    (routes, projection)
 }
 
 fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAck> {
