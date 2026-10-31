@@ -2391,8 +2391,9 @@ impl<'a> Rows<'a> {
         .unwrap_or_default()
     }
 
-    /// The gap Servers, as in [`Self::gaps`], whose proxy may still route `copy`: its
-    /// route row lists the copy, is missing, or could not be read. None when there
+    /// The gap Servers, as in [`Self::gaps`], whose proxy may still route `copy`: one
+    /// the route read doesn't report Down whose row lists the copy or is missing, or
+    /// any when the read failed. None when there
     /// are none, or when `copy`'s Service could not be listed, so the removal goes
     /// on as it would without a gap.
     async fn gaps_routing<C: MachineOperations>(
@@ -2411,17 +2412,22 @@ impl<'a> Rows<'a> {
             .iter()
             .filter(|silent| silent.acks_unwritten)
             .map(|silent| silent.failure.machine_id);
-        let routes = client
+        let read = client
             .read_routes(&copy.machine_id, &copy.service)
             .await
-            .ok()
-            .map(|read| read.routes);
+            .ok();
         let routing: Vec<MachineId> = gaps
             .filter(|gap| {
-                routes
-                    .as_ref()
-                    .and_then(|routes| routes.get(gap).cloned().flatten())
-                    .is_none_or(|routed| routed.contains(&copy.container_id))
+                // A Down Server's proxy no longer counts, as in any drain.
+                read.as_ref().is_none_or(|read| {
+                    !read.down.contains(gap)
+                        && read
+                            .routes
+                            .get(gap)
+                            .cloned()
+                            .flatten()
+                            .is_none_or(|routed| routed.contains(&copy.container_id))
+                })
             })
             .collect();
         (!routing.is_empty()).then(|| cleanup::Unconfirmed {

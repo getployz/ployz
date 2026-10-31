@@ -1815,6 +1815,41 @@ async fn an_undialed_servers_proxy_that_already_dropped_a_copy_lets_it_go() {
     client.assert_done();
 }
 
+/// The owner's route read reports the undialed Server Down, so its proxy no longer
+/// counts and the left copy goes.
+#[tokio::test(start_paused = true)]
+async fn an_undialed_server_the_owner_reads_down_does_not_keep_a_left_copy() {
+    let (machine, undialed) = (machine('1'), machine('2'));
+    let plan = the_left_copys_removal(&machine);
+    let client = left_by_a_gapped_deploy(
+        Scripted {
+            undialed: BTreeMap::from([(undialed, "machine-2")]),
+            down: BTreeSet::from([undialed]),
+            ..Scripted::new(vec![
+                observed(Call::Inspect(machine, container('a')), running()),
+                ok(Call::Remove(machine, container('a'))),
+            ])
+        },
+        &machine,
+    );
+
+    let (outcome, _) =
+        execute_groups_reported(&plan, scale_down_groups(), &[machine, undialed], &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        client.moves(),
+        [
+            Move::To(container('a'), CopyRotation::Out),
+            Move::Gone(container('a'))
+        ]
+    );
+    client.assert_done();
+}
+
 /// A Suspect Server's proxy still turns Down or acks, so the removal goes on as before.
 #[tokio::test(start_paused = true)]
 async fn a_suspect_servers_proxy_still_refuses_a_copy_an_earlier_deploy_left() {
