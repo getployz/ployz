@@ -382,7 +382,7 @@ export function deploymentWarningText(warning: DeploymentWarning, service?: stri
     if (!warning.reads) return notSet;
     if (!warning.sealed_elsewhere) return `${notSet}: it reads ${warning.reads}, which is not set`;
     const [owner, key] = warning.reads.split(".", 2);
-    return `${notSet}: it reads ${warning.reads}, a sealed value this branch doesn't get from its parent. Set ${warning.variable} here, or make ${owner} separate and set ${key} there, though its volumes start empty`;
+    return `${notSet}: it reads ${warning.reads}, which depends on a sealed value this branch doesn't get from its parent. Set ${warning.variable} here, or make ${owner} separate and set ${key} there, though its volumes start empty`;
   }
   if ("secret" in warning) {
     const at = `${warning.config}/${warning.file}`;
