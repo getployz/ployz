@@ -2391,6 +2391,32 @@ impl<'a> Rows<'a> {
         .unwrap_or_default()
     }
 
+    /// [`Self::gaps`], listing `service` when nothing has yet, or None when there are
+    /// none. A listing that fails reads as None, so the
+    /// removal goes on as it would without a gap.
+    async fn listed_gaps<C: MachineOperations>(
+        &self,
+        client: &C,
+        progress: &Progress,
+        service: &QualifiedService,
+        cancellation: &CancellationToken,
+    ) -> Option<cleanup::Unconfirmed> {
+        let numbered = self
+            .numbered(client, progress, service, cancellation)
+            .await
+            .ok()?;
+        let gaps: Vec<MachineId> = numbered
+            .silent
+            .iter()
+            .filter(|silent| silent.acks_unwritten)
+            .map(|silent| silent.failure.machine_id)
+            .collect();
+        (!gaps.is_empty()).then(|| cleanup::Unconfirmed {
+            machines: gaps.clone(),
+            unanswered: gaps,
+        })
+    }
+
     /// The proxies that never confirmed `service`'s publish, when only gap Servers'
     /// did not.
     fn gapped(&self, service: &QualifiedService) -> Option<cleanup::Unconfirmed> {
@@ -3319,6 +3345,17 @@ async fn remove_container<C: MachineOperations>(
         && let Some(gapped) = rows.gapped(&copy.service)
     {
         rows.leave_running(progress, &copy, Left::NotConfirmed(gapped));
+        return Ok(Ran::default());
+    }
+    // A copy an earlier gapped Deploy left may be the one a gap Server's proxy still
+    // routes, and that proxy never acks its drain (#3676).
+    if copy.drains()
+        && matches!(purpose, RemoveContainerPurpose::Rollout)
+        && let Some(gaps) = rows
+            .listed_gaps(client, progress, &copy.service, cancellation)
+            .await
+    {
+        rows.leave_running(progress, &copy, Left::NotConfirmed(gaps));
         return Ok(Ran::default());
     }
     let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);

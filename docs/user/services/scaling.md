@@ -115,7 +115,9 @@ To bring services back:
    knew, so the deploy doesn't wait for it to confirm the switch. Instead the replicas the switch
    replaced keep running and answering beside the new ones, the deploy names each one, and it
    exits 3. Until 0.3.12 the deploy waited 5 minutes for that proxy, then failed with
-   `proxy on web-3 did not confirm`.
+   `proxy on web-3 did not confirm`. Another deploy while Ployz is still stopped there leaves
+   those replicas running too, names them again and exits 3, even for a service it doesn't
+   change. In 0.3.12 it failed with `no other In copy … is acked by every live proxy`.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your
    next deploy removes it. It takes out only its own replicas, so an extra one on another server
