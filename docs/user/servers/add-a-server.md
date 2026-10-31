@@ -120,7 +120,7 @@ from and its provider, its CPU, memory and main disk size, and its status. **Ins
 still getting ready, and **Ready** means Docker is in place. **Building ZFS** under **Ready** means
 its ZFS build is still running, and an enrollment with ZFS volumes waits for it. **Blocked** rows say what
 is wrong with the server, in the server's own words, such as `Disk is 20 GiB. Ployz needs 30 GiB.`
-A server that still belongs to another organization is blocked until you run `ployz server rm` for it there. A server
+A server that still belongs to another organization is blocked until you run `ployz server rm` for it there. A server you installed again within a week of its join, while the server it was is still listed, is blocked and names that server, for example `This server was web-2, which is still listed.` [Forget](manage-servers.md#forget-a-server-that-is-gone) that server and this one waits like any new server. A server
 where another program holds UDP port 51820, which Ployz needs for WireGuard, is blocked and names that program, for
 example `UDP port 51820 is in use by avahi-daemon (pid 812).` Free the port and the block clears on its next
 check-in.

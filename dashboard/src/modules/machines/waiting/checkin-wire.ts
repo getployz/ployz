@@ -70,10 +70,12 @@ export const CheckinRequest = Schema.Struct({
     bindFailed: Schema.Array(Schema.String),
   })),
   prep: Schema.optionalKey(Prep),
+  /** The Local Machine Phase the host's ployzd reported; absent from older CLIs and when ployzd didn't answer. */
+  machinePhase: Schema.optionalKey(Schema.String),
 });
 export type CheckinRequest = typeof CheckinRequest.Type;
 
-export type StoredReport = HostReport & { readonly prep?: Prep; readonly cliVersion?: string };
+export type StoredReport = HostReport & { readonly prep?: Prep; readonly cliVersion?: string; readonly machinePhase?: string };
 
 export type CheckinStopReason = "rejected" | "token_expired" | "token_revoked";
 

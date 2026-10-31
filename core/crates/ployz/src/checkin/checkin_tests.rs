@@ -73,6 +73,9 @@ struct FakeHost {
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
     member_of_cluster_as: Option<String>,
+    phase: Option<ployz_core::LocalMachinePhase>,
+    /// How many times a pass asked ployzd about its Machine.
+    looks: AtomicU32,
     wireguard_port_holder: Option<String>,
 }
 
@@ -130,7 +133,16 @@ impl Host for FakeHost {
     }
 
     async fn participating(&self) -> Option<String> {
+        self.looks.fetch_add(1, Ordering::SeqCst);
         self.member_of_cluster_as.clone()
+    }
+
+    async fn local_machine(&self) -> LocalMachine {
+        self.looks.fetch_add(1, Ordering::SeqCst);
+        LocalMachine {
+            phase: self.phase.clone(),
+            participating: self.member_of_cluster_as.clone(),
+        }
     }
 
     fn wireguard_port_holder(&self) -> Option<String> {
@@ -2696,6 +2708,103 @@ async fn a_server_in_another_cluster_is_blocked_before_enroll() {
     assert!(request.contains("ployz server rm box-1"), "{request}");
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Blocked");
+}
+
+#[tokio::test]
+async fn a_check_in_names_its_daemons_phase_so_cloud_can_tell_a_fresh_install_from_a_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let host = FakeHost {
+        phase: Some(ployz_core::LocalMachinePhase::Uninitialized),
+        ..FakeHost::default()
+    };
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(
+        request.contains(r#""machinePhase":"uninitialized""#),
+        "{request}"
+    );
+
+    // Installed again under another Fleet Token, which drops the joined Server's attempt.
+    let mut status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    status.token_fingerprint = Some("another token".to_owned());
+    status.attempt = Some(wire::Attempt {
+        attempt_id: "att_1".to_owned(),
+        stage: crate::cloud_enroll::EnrollStage::Publishing,
+        failure: None,
+    });
+    record(&status, &paths);
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(
+        request.contains(r#""machinePhase":"uninitialized""#),
+        "{request}"
+    );
+
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    let request = server.await.unwrap();
+    assert!(!request.contains("machinePhase"), "{request}");
+}
+
+#[tokio::test]
+async fn a_pass_asks_ployzd_about_its_machine_once_even_when_it_checks_for_a_join() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    server.await.unwrap();
+    // An attempt that didn't fail, so a Wait answer makes the pass check whether it joined.
+    let mut status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    status.attempt = Some(wire::Attempt {
+        attempt_id: "att_1".to_owned(),
+        stage: crate::cloud_enroll::EnrollStage::Publishing,
+        failure: None,
+    });
+    record(&status, &paths);
+    let host = FakeHost {
+        phase: Some(ployz_core::LocalMachinePhase::Uninitialized),
+        ..FakeHost::default()
+    };
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    server.await.unwrap();
+    assert_eq!(host.looks.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn joined_asks_ployzd_nothing_without_an_attempt_that_succeeded() {
+    let host = FakeHost {
+        member_of_cluster_as: Some("box-1".to_owned()),
+        ..FakeHost::default()
+    };
+    let failed = wire::Attempt {
+        attempt_id: "att_1".to_owned(),
+        stage: crate::cloud_enroll::EnrollStage::Publishing,
+        failure: Some(wire::AttemptFailure {
+            stage: crate::cloud_enroll::EnrollStage::Publishing,
+            message: "Install failed".to_owned(),
+        }),
+    };
+    assert!(!joined(&host, None).await);
+    assert!(!joined(&host, Some(&failed)).await);
+    assert_eq!(host.looks.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
