@@ -360,9 +360,7 @@ fn socket_dir(socket: &Path) -> &Path {
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {
     let run_dir = socket_dir(path);
-    let stream = wait_until_socket_accepts(path, DIAL_STDIO_SOCKET_TIMEOUT)
-        .await
-        .map_err(|error| naming_refusal(run_dir, error))?;
+    let stream = connect_unless_refused(path, DIAL_STDIO_SOCKET_TIMEOUT).await?;
     // A refusing start closes the connection unread, so a request already sent
     // ends it with a reset rather than an empty close.
     match bridge(stdin(), stdout(), stream).await {
@@ -372,6 +370,18 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
             None => ended.map(drop),
         },
     }
+}
+
+// Every daemon process clears the refusal first, so a socket that is not
+// listening while one is recorded was stopped by it, most often by systemd's
+// start limit after repeated refusals. Waiting would only outlast the client.
+async fn connect_unless_refused(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
+    let run_dir = socket_dir(path);
+    wait_until_socket_accepts(path, timeout, || {
+        ployz_core::startup_refusal(run_dir).is_some()
+    })
+    .await
+    .map_err(|error| naming_refusal(run_dir, error))
 }
 
 fn naming_refusal(run_dir: &Path, error: io::Error) -> io::Error {
@@ -484,6 +494,24 @@ mod tests {
         })
         .await;
         assert_eq!(seen, b"reply");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dial_names_a_recorded_refusal_without_waiting_out_the_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let refused = dir.path().join(ployz_core::STARTUP_REFUSAL_FILE);
+        std::fs::write(&refused, "refusing to change\n").unwrap();
+        let started = tokio::time::Instant::now();
+        let error =
+            connect_unless_refused(&dir.path().join("ployz.sock"), DIAL_STDIO_SOCKET_TIMEOUT)
+                .await
+                .unwrap_err();
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        let message = error.to_string();
+        assert!(
+            message.contains("ployzd refused to start: refusing to change"),
+            "{message}"
+        );
     }
 
     /// Holds written bytes until a flush after `open` is set, like tokio's stdout
