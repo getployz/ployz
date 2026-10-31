@@ -17,7 +17,7 @@ COPY --from=docker-bin /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/
 # The classic store cannot load an OCI archive; only priming, which runs on the
 # containerd store, loads these tars.
 RUN mkdir -p /opt/ployz/images \
- && skopeo copy --all docker://ghcr.io/getployz/corrosion@sha256:281efeb3ca82eac25e4ebb8a2cb6c61100a9db2948dcf507627aaa48e22e7dff oci-archive:/opt/ployz/images/corrosion.tar:ghcr.io/getployz/corrosion:20261024-b46434825343 \
+ && skopeo copy --all docker://ghcr.io/getployz/corrosion@sha256:384f1e20dbbe187135c4c75ae0eb41943df64c2306b5b4eecffa88ba04b46cc1 oci-archive:/opt/ployz/images/corrosion.tar:ghcr.io/getployz/corrosion:20261031-28f00b417271 \
  && skopeo copy docker://docker.io/library/alpine:3.23.3 docker-archive:/opt/ployz/images/alpine.tar:alpine:3.23.3 \
  && skopeo copy docker://docker.io/library/caddy:2.10.2 docker-archive:/opt/ployz/images/caddy.tar:caddy:2.10.2 \
  && skopeo copy docker://ghcr.io/psviderski/unregistry:0.4.1 docker-archive:/opt/ployz/images/unregistry.tar:ghcr.io/psviderski/unregistry:0.4.1
