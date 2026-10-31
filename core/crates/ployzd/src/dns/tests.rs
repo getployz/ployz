@@ -745,6 +745,93 @@ fn an_out_copy_that_exits_and_recovers_keeps_answering_beside_an_exited_in_sibli
     assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 1, 2)]);
 }
 
+/// A Volume move stops the source copy, still In, before its replacement runs
+/// (#3679). Its old address would hang a client until the SYN times out.
+#[test]
+fn a_routed_copy_observed_stopped_does_not_answer_until_it_runs_again() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let remote = MachineId::parse("b".repeat(32)).unwrap();
+    let service = ServiceId::parse("d".repeat(32)).unwrap();
+    let name = ServiceName::parse("db").unwrap();
+    let mut inputs = ProjectionInputs::new(local);
+    let mut source = observation(
+        1,
+        &local,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::NotConfigured),
+        Some([10, 210, 1, 2]),
+    );
+    let mut target = observation(
+        2,
+        &remote,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        ContainerRuntimeObservation::Created,
+        Some([10, 210, 2, 2]),
+    );
+    target
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Pending))
+        .unwrap();
+    inputs.observations = vec![source.clone()];
+    let answers = |inputs: &mut ProjectionInputs| plan(&inputs.build(), "db.app.internal.", RecordType::A);
+    assert_eq!(addresses(answers(&mut inputs)), vec![Ipv4Addr::new(10, 210, 1, 2)]);
+
+    source
+        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 0 })
+        .unwrap();
+    inputs.observations = vec![source.clone(), target];
+
+    assert_nxdomain(answers(&mut inputs));
+
+    source
+        .try_update(|parts| parts.runtime = running(HealthObservation::NotConfigured))
+        .unwrap();
+    inputs.observations = vec![source];
+
+    assert_eq!(addresses(answers(&mut inputs)), vec![Ipv4Addr::new(10, 210, 1, 2)]);
+}
+
+#[test]
+fn a_routed_copy_out_of_view_keeps_answering() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let remote = MachineId::parse("b".repeat(32)).unwrap();
+    let service = ServiceId::parse("d".repeat(32)).unwrap();
+    let name = ServiceName::parse("db").unwrap();
+    let mut inputs = ProjectionInputs::new(local);
+    let mut pending = observation(
+        2,
+        &local,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        ContainerRuntimeObservation::Created,
+        Some([10, 210, 1, 3]),
+    );
+    pending
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Pending))
+        .unwrap();
+    inputs.observations = vec![observation(
+        1,
+        &remote,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 2, 2]),
+    )];
+    let answers = |inputs: &mut ProjectionInputs| {
+        addresses(plan(&inputs.build(), "db.app.internal.", RecordType::A))
+    };
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
+
+    inputs.observations = vec![pending];
+
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
+}
+
 #[test]
 fn only_in_copies_answer() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
