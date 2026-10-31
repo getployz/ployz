@@ -185,6 +185,13 @@ impl DeployPlan {
         }
     }
 
+    /// Its rows name the Service of each copy `snapshot` holds, as a planned Deploy's do.
+    #[cfg(test)]
+    pub(super) fn with_snapshot(mut self, snapshot: &DeploySnapshot) -> Self {
+        self.preview.operations = super::pending_rows(&self.operations, snapshot);
+        self
+    }
+
     /// This Deploy removes `services`, by name or by pruning.
     #[cfg(test)]
     pub(super) fn with_retiring(mut self, services: &[QualifiedService]) -> Self {

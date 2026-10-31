@@ -3479,3 +3479,110 @@ async fn a_removal_whose_owner_does_not_answer_names_the_copy_left_running() {
     );
     assert!(client.moves().is_empty(), "{:?}", client.moves());
 }
+
+/// A sibling's failure aborts the run after `api` switched, so `api`'s old copy
+/// is never removed. `api` still reads as switched, not as not started (#3684).
+#[tokio::test(start_paused = true)]
+async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
+    let machine = machine('1');
+    let plan = vec![
+        run(&machine, spec(None, None, None), true),
+        web_run(&machine),
+        DeployOperation::RemoveContainer {
+            machine_id: machine,
+            container_id: container('e'),
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        },
+    ];
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::CreatedAfter(container('a'), || {
+                tokio::time::sleep(std::time::Duration::from_secs(1))
+            }),
+        ),
+        failed(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            "start failed",
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ])
+    .with_copy(&machine, &container('e'), CopyRotation::In);
+    let api = ServiceName::parse("api").unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    let groups = vec![
+        crate::deploy::schedule::ServiceGroup {
+            service: Some(api.clone()),
+            dependencies: Vec::new(),
+            steps: vec![crate::deploy::schedule::Step::Parallel(vec![0])],
+            publish: true,
+        },
+        crate::deploy::schedule::ServiceGroup {
+            service: Some(web.clone()),
+            dependencies: Vec::new(),
+            steps: vec![crate::deploy::schedule::Step::Parallel(vec![1])],
+            publish: true,
+        },
+        crate::deploy::schedule::ServiceGroup {
+            service: None,
+            dependencies: vec![api.clone()],
+            steps: vec![crate::deploy::schedule::Step::Serial(2)],
+            publish: false,
+        },
+    ];
+    let plan =
+        crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups)
+            .with_snapshot(&client.snapshot());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::New), ("web", ServiceResult::Old)])
+    );
+    let mut rows = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows: latest, .. } = event {
+            rows = latest;
+        }
+    }
+    assert_eq!(
+        rows.last().map(|row| &row.status),
+        Some(&ployz_core::OperationStatus::Unexecuted),
+        "the abort left api's old copy unremoved"
+    );
+    let mut preview = plan.preview().clone();
+    preview.depths = [(api, 0), (web, 0)].into();
+    let mut direct = crate::deploy::report::Direct::new(&preview, "Deploying app".into());
+    direct.observe(&rows);
+    let states: Vec<_> = direct
+        .frame()
+        .rows
+        .into_iter()
+        .filter_map(|row| match row.subject {
+            crate::ui::progress::Subject::Service(graph) => {
+                Some((graph.service.name.to_string(), row.state))
+            }
+            crate::ui::progress::Subject::ServiceOnServer { .. }
+            | crate::ui::progress::Subject::Unlocated(_)
+            | crate::ui::progress::Subject::Operation { .. }
+            | crate::ui::progress::Subject::Node { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        states,
+        [
+            ("api".to_owned(), crate::ui::progress::State::Completed),
+            ("web".to_owned(), crate::ui::progress::State::Failed),
+        ]
+    );
+    client.assert_done();
+}

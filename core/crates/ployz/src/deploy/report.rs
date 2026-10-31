@@ -218,6 +218,18 @@ pub(crate) fn service_row<'a>(
         })
         .count();
     let old_wait_for_routes = running.is_none() && ready == counted.len() && draining > 0;
+    // Every new copy switched and only old copies' removals never ran, as when a
+    // later failure aborted the run (#3684).
+    let switched = !removal
+        && !counted.is_empty()
+        && replicas.iter().all(|replica| match replica.state {
+            RowState::Completed => true,
+            RowState::NotAttempted => !replica.starts,
+            RowState::Pending
+            | RowState::Running { .. }
+            | RowState::Failed { .. }
+            | RowState::Unknown => false,
+        });
     let state = if failed > 0 {
         running.map_or(State::Failed, |(_, phase)| State::Running(phase))
     } else if replicas
@@ -231,7 +243,7 @@ pub(crate) fn service_row<'a>(
         State::Running(RowPhase::RemovingContainer)
     } else if all(|state| matches!(state, RowState::Pending)) {
         State::Pending
-    } else if all(|state| matches!(state, RowState::Completed)) {
+    } else if all(|state| matches!(state, RowState::Completed)) || switched {
         State::Completed
     } else if any_stopped_by(StoppedBy::CANCEL) {
         State::Cancelled

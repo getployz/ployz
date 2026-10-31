@@ -573,6 +573,39 @@ fn a_start_first_switch_reads_switched_while_old_containers_drain() {
     );
 }
 
+/// A later failure aborted the run after `web` switched, so its old copies'
+/// removals never ran, on a Server it started on or on one it didn't (#3684).
+#[test]
+fn a_switch_a_later_failure_left_its_removals_unexecuted_still_reads_switched() {
+    let (one, two) = (MachineId::random(), MachineId::random());
+    let switched = |removed_on| {
+        vec![
+            planned(
+                0,
+                replace(one, UpdateOrder::StartFirst),
+                OperationStatus::Completed,
+            ),
+            operation(1, two, OperationStatus::Completed),
+            planned(2, remove(removed_on), OperationStatus::Unexecuted),
+        ]
+    };
+    assert_eq!(tracked(switched(two)), ["depth 0", "  ✔ web  switched 2/2"]);
+    let third = MachineId::random();
+    assert_eq!(
+        tracked(switched(third)),
+        ["depth 0", "  ✔ web  switched 2/2"]
+    );
+    let held = vec![
+        operation(0, one, OperationStatus::Unexecuted),
+        planned(1, remove(one), OperationStatus::Unexecuted),
+    ];
+    assert_eq!(
+        tracked(held),
+        ["depth 0", "  ⊘ web  not started"],
+        "a copy whose switch never landed did not start"
+    );
+}
+
 #[test]
 fn a_start_first_switch_counts_only_servers_that_start_a_container() {
     let (one, two) = (MachineId::random(), MachineId::random());
