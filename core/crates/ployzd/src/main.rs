@@ -376,10 +376,10 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
 }
 
 // Every daemon process clears the refusal first, so a socket that stays down
-// while one is recorded was stopped by it, most often by systemd's start limit
-// after repeated refusals; waiting longer would only outlast the client. The
-// grace covers a socket restarting, which comes back before a daemon process
-// has cleared the last refusal.
+// while one is recorded was most likely stopped by it: systemd's start limit
+// trips after repeated refusals, and waiting longer would only outlast the
+// client. The grace covers a socket restarting, which comes back before a
+// daemon process has cleared the last refusal.
 async fn connect_unless_refused(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
     let run_dir = socket_dir(path);
     let refused_since = Cell::new(None);
@@ -520,11 +520,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn dial_names_a_recorded_refusal_without_waiting_out_the_socket() {
         let dir = refused_dir();
+        let path = dir.path().join("ployz.sock");
+        // A socket unit that hit its start limit leaves its file unanswered.
+        drop(UnixListener::bind(&path).unwrap());
         let started = tokio::time::Instant::now();
-        let error =
-            connect_unless_refused(&dir.path().join("ployz.sock"), DIAL_STDIO_SOCKET_TIMEOUT)
-                .await
-                .unwrap_err();
+        let error = connect_unless_refused(&path, DIAL_STDIO_SOCKET_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
         assert!(started.elapsed() < REFUSED_SOCKET_GRACE + Duration::from_millis(50));
         let message = error.to_string();
         assert!(
