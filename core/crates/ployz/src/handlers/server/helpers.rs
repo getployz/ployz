@@ -245,9 +245,9 @@ impl Joining {
         }
     }
 
-    /// `error` with [`Self::timeout_message`] when the wait ran out. A wait that
-    /// stopped early, as on a startup refusal (#3703), never showed the daemon
-    /// stay joining, so its own cause leads.
+    /// `error` with [`Self::timeout_message`] when the wait ran out. A failure that
+    /// stopped it early, as a startup refusal (#3703), supersedes any Joining seen
+    /// before it, so its own cause leads.
     pub(in crate::handlers) fn failed(
         &self,
         error: crate::setup_retry::Error<ConnectError>,
