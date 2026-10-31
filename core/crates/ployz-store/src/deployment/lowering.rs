@@ -750,11 +750,7 @@ pub(super) fn lower(
                     });
                     (not_set.variable, false, reads)
                 })
-                .chain(
-                    broken
-                        .into_iter()
-                        .map(|variable| (variable, true, None)),
-                )
+                .chain(broken.into_iter().map(|variable| (variable, true, None)))
                 .map(|(variable, broken, reads)| {
                     let (reads, sealed_elsewhere) =
                         reads.map_or((None, false), |(reads, elsewhere)| (Some(reads), elsewhere));

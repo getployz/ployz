@@ -347,6 +347,7 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
                     service,
                     variable,
                     broken: true,
+                    ..
                 } => format!("Left {variable} out of {service}: it has a broken reference."),
                 DeploymentWarning::NotSetInFile {
                     config,
@@ -853,7 +854,7 @@ mod tests {
     #[test]
     fn a_variable_left_out_names_the_variable_without_a_value_it_reads() {
         let mut view = view();
-        view.environment.name = "b4b".parse().unwrap();
+        view.environment.name = ployz_store::EnvironmentName::parse("b4b").unwrap();
         view.deployment.warnings = serde_json::from_value(json!([
             {"service": "app", "variable": "DBURL", "reads": "db.TOK3", "sealed_elsewhere": true},
             {"service": "app", "variable": "CACHE", "reads": "app.TOKEN"},
@@ -909,7 +910,10 @@ mod tests {
             variable,
             broken,
         } = serde_json::from_value(new).unwrap();
-        assert_eq!((service.as_str(), variable.as_str(), broken), ("app", "DBURL", false));
+        assert_eq!(
+            (service.as_str(), variable.as_str(), broken),
+            ("app", "DBURL", false)
+        );
     }
 
     #[test]
