@@ -776,8 +776,12 @@ fn a_routed_copy_observed_stopped_does_not_answer_until_it_runs_again() {
         .try_update(|parts| parts.rotation = Some(CopyRotation::Pending))
         .unwrap();
     inputs.observations = vec![source.clone()];
-    let answers = |inputs: &mut ProjectionInputs| plan(&inputs.build(), "db.app.internal.", RecordType::A);
-    assert_eq!(addresses(answers(&mut inputs)), vec![Ipv4Addr::new(10, 210, 1, 2)]);
+    let answers =
+        |inputs: &mut ProjectionInputs| plan(&inputs.build(), "db.app.internal.", RecordType::A);
+    assert_eq!(
+        addresses(answers(&mut inputs)),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
 
     source
         .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 0 })
@@ -791,7 +795,10 @@ fn a_routed_copy_observed_stopped_does_not_answer_until_it_runs_again() {
         .unwrap();
     inputs.observations = vec![source];
 
-    assert_eq!(addresses(answers(&mut inputs)), vec![Ipv4Addr::new(10, 210, 1, 2)]);
+    assert_eq!(
+        addresses(answers(&mut inputs)),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
 }
 
 #[test]
