@@ -353,18 +353,18 @@ impl LocalMachine {
     /// helper takes the exclusive turn for the Docker stop itself, so a caller
     /// already holding a turn deadlocks.
     ///
-    /// The stopping mark is set without a turn so replication tells every proxy
-    /// during the drain. An idle copy ends its drain early, though not before
-    /// `WITHDRAWAL_PROPAGATION`, so a proxy that has not heard yet may dial the stopped
-    /// copy and retry another. A daemon restart forgets
-    /// the mark; a still-running Container returns to ingress and the resend redoes the
-    /// drain.
+    /// The stopping mark is set without a turn so replication tells every proxy and
+    /// Internal DNS during the drain. An idle copy ends its drain early, though not
+    /// before `WITHDRAWAL_PROPAGATION`, so Internal DNS has heard before the stop. A
+    /// drain shorter than that, or a proxy slower to hear, may still dial the stopped
+    /// copy and retry another. A daemon restart forgets the mark; a still-running
+    /// Container returns to ingress and the resend redoes the drain.
     ///
     /// With a `fence`, the Container holds that Volume and the gen is checked against
     /// its floor once the drain ends, so a floor raised meanwhile returns the copy to
-    /// ingress without waiting for a turn, and again under the turn: a Deploy that raised the floor
-    /// meanwhile may already have answered Done on this holder, so a raised floor
-    /// drops the Withdrawal and stops nothing. The floor lock is held from that check
+    /// ingress without waiting for a turn, and again under the turn: a Deploy that
+    /// raised the floor meanwhile may already have answered Done on this holder, so a
+    /// raised floor drops the Withdrawal and stops nothing. The floor lock is held from that check
     /// through the stop, so a floor raised mid-stop waits and its Deploy reads the
     /// holder stopped, not still running. A start ordered after that check waits for
     /// the turn, so it runs after the stop.
@@ -552,8 +552,9 @@ impl LocalMachine {
     /// under the turn, so one started during the drain is `Busy` too, as is one the
     /// stop left running. A `Busy` cut leaves the root a writer.
     ///
-    /// `gen` is checked against the floor before each holder's drain and again under the
-    /// floor lock, held from that last check through `zfs`, so a floor raised during the
+    /// `gen` is checked against the floor before each holder's drain, after it (see
+    /// `stop_behind_ingress`), and again under the floor lock, held from that last
+    /// check through `zfs`, so a floor raised during the
     /// drain makes the cut `Stale` and a floor read never sees the flip half done. A
     /// `Stale` cut leaves the root a writer and stops no holder after the raise, since
     /// the raiser may have kept that holder or started it.
