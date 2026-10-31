@@ -881,7 +881,17 @@ fn state(
             serving,
         };
     }
-    if completed == statuses.len() {
+    // A new copy completes only once its switch lands, so a Server whose old copy's
+    // removal a later failure left unexecuted still switched (#3684).
+    let switched = statuses.iter().any(|(_, starts)| *starts)
+        && statuses.iter().all(|(status, starts)| match status {
+            OperationStatus::Completed => true,
+            OperationStatus::Unexecuted => !starts,
+            OperationStatus::Pending
+            | OperationStatus::Running { .. }
+            | OperationStatus::Failed { .. } => false,
+        });
+    if completed == statuses.len() || switched {
         RowState::Completed
     } else if pending == statuses.len() {
         RowState::Pending
@@ -1319,6 +1329,28 @@ mod tests {
             ),
             running(RowPhase::WaitingForSwitch),
             "the old copy's removal waits for the switch, not the Server"
+        );
+    }
+
+    /// A later failure that aborts the run leaves the old copy's removal unexecuted
+    /// after the new copy switched, which still reads as switched (#3684).
+    #[test]
+    fn a_server_whose_new_copy_switched_reads_completed_when_only_its_removal_did_not_run() {
+        let read = |start: &OperationStatus| {
+            super::state(
+                &[],
+                any_machine(),
+                &[(start, true), (&OperationStatus::Unexecuted, false)],
+                None,
+                true,
+                false,
+            )
+        };
+        assert_eq!(read(&OperationStatus::Completed), RowState::Completed);
+        assert_eq!(
+            read(&OperationStatus::Unexecuted),
+            RowState::NotAttempted,
+            "a copy whose switch never landed did not start"
         );
     }
 
