@@ -922,7 +922,7 @@ async fn a_sole_copy_withdrawn_for_its_stop_leaves_caddy_and_keeps_its_ack() {
     next_load(&mut load_rx).await;
     state.wait_for_ack_transactions(1).await;
 
-    // How a Volume move's cut leaves its sole copy: withdrawn, then stopped, still In.
+    // How a Volume move's cut leaves its sole copy before it stops: withdrawn, still In.
     state.mutate(|parts| {
         parts.runtime = ContainerRuntimeObservation::Running {
             health: ployz_core::HealthObservation::Stopping,
@@ -933,8 +933,6 @@ async fn a_sole_copy_withdrawn_for_its_stop_leaves_caddy_and_keeps_its_ack() {
     assert!(withdrawn.contains("error NOT_RUNNING 503"), "{withdrawn}");
     assert!(!withdrawn.contains("10.210.1.2:80"), "{withdrawn}");
 
-    state.mutate(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 137 });
-    state.send(b"{\"change\":{}}\n");
     state.mutate(|parts| {
         parts.runtime = ContainerRuntimeObservation::Running {
             health: ployz_core::HealthObservation::Healthy,

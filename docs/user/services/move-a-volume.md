@@ -84,9 +84,9 @@ gives an estimate and says why: `web was stopped about 43s (its start was retrie
 code it exited with. The row goes once the replica on `web-2` runs.
 
 If `web` has one replica, its domain answers
-[`503 · NOT_RUNNING`](../troubleshooting/app-not-reachable.md#this-app-isnt-running) from shortly
-before the old replica stops until the replica on `web-2` runs. Clients can retry at once rather
-than wait on the stopped replica.
+[`503 · NOT_RUNNING`](../troubleshooting/app-not-reachable.md#this-app-isnt-running) from about when
+the old replica stops until the replica on `web-2` serves. Clients can retry at once rather than
+wait on the stopped replica.
 
 The old server keeps an old copy, `data-web-1`. If the volume already has a mirror on `web-2`, the
 move starts from it. To move to a third server, first remove the old copy with

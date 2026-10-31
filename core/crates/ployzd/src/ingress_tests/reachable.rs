@@ -255,8 +255,9 @@ fn a_routed_copy_out_of_view_stays_in_caddy() {
     assert_eq!(next.dialed, Some(BTreeSet::from([1])));
 }
 
-/// The route and its acks are exactly what [`proxy_routes`] carries, unfiltered,
-/// for every rotation and runtime of two copies across three passes.
+/// `next_pass` returns exactly the route [`proxy_routes`] carries, unfiltered, for
+/// every rotation and runtime of two copies across passes. That `watch_caddy` acks
+/// and carries this route is pinned by the watcher's withdrawn-copy test.
 #[test]
 fn caddys_filter_never_changes_the_carried_route_or_its_acks() {
     let rotations = [
