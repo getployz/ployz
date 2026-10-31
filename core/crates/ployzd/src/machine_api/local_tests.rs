@@ -1733,7 +1733,7 @@ mod set_volume_copy {
         let turn = local.owner().admission_lock().write_owned().await;
         let cut = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            set_copy(&service, at_gen(draining_cut(1000), 1)),
+            set_copy(&service, at_gen(draining_cut(3000), 1)),
         );
         let (refused, ()) = tokio::join!(cut, async {
             drain_started(&service, &holder).await;

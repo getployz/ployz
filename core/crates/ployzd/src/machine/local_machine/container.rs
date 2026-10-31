@@ -364,10 +364,10 @@ impl LocalMachine {
     /// its floor once the drain ends, so a floor raised meanwhile returns the copy to
     /// ingress without waiting for a turn, and again under the turn: a Deploy that
     /// raised the floor meanwhile may already have answered Done on this holder, so a
-    /// raised floor drops the Withdrawal and stops nothing. The floor lock is held from that check
-    /// through the stop, so a floor raised mid-stop waits and its Deploy reads the
-    /// holder stopped, not still running. A start ordered after that check waits for
-    /// the turn, so it runs after the stop.
+    /// raised floor drops the Withdrawal and stops nothing. The floor lock is held from
+    /// that check through the stop, so a floor raised mid-stop waits and its Deploy
+    /// reads the holder stopped, not still running. A start ordered after that check
+    /// waits for the turn, so it runs after the stop.
     ///
     /// Polls no proxy and reads no other Machine.
     pub(crate) async fn stop_behind_ingress(
@@ -522,8 +522,9 @@ impl LocalMachine {
     /// `drain_idle::holds_connection`, with the listening ports remembered across the
     /// drain's reads, and no earlier than `not_before`: a client may still connect
     /// until then, so idleness counts only when read at or after it. A copy with no
-    /// connection from off its loopback reads idle at once. A copy whose sockets cannot
-    /// be read never reads idle, so its drain waits the full cap.
+    /// connection from off its loopback reads idle, so its drain ends at `not_before`.
+    /// A copy whose sockets cannot be read never reads idle, so its drain waits the
+    /// full cap.
     ///
     /// Every Service copy joins the Ployz network, so its pid's tables list only its
     /// own sockets. A copy in the host's namespace would list the host's, and read
@@ -538,11 +539,15 @@ impl LocalMachine {
             return std::future::pending().await;
         };
         let mut listening = std::collections::BTreeSet::new();
-        while !matches!(
-            drain_idle::holds_connection(&self.proc_root, pid, &mut listening),
-            Ok(false)
-        ) || tokio::time::Instant::now() < not_before
-        {
+        loop {
+            let late = tokio::time::Instant::now() >= not_before;
+            let idle = matches!(
+                drain_idle::holds_connection(&self.proc_root, pid, &mut listening),
+                Ok(false)
+            );
+            if late && idle {
+                return;
+            }
             tokio::time::sleep(DRAIN_POLL).await;
         }
     }
@@ -554,10 +559,10 @@ impl LocalMachine {
     ///
     /// `gen` is checked against the floor before each holder's drain, after it (see
     /// `stop_behind_ingress`), and again under the floor lock, held from that last
-    /// check through `zfs`, so a floor raised during the
-    /// drain makes the cut `Stale` and a floor read never sees the flip half done. A
-    /// `Stale` cut leaves the root a writer and stops no holder after the raise, since
-    /// the raiser may have kept that holder or started it.
+    /// check through `zfs`, so a floor raised during the drain makes the cut `Stale` and
+    /// a floor read never sees the flip half done. A `Stale` cut leaves the root a
+    /// writer and stops no holder after the raise, since the raiser may have kept that
+    /// holder or started it.
     ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.

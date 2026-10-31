@@ -1668,7 +1668,7 @@ mod stopped_on_request {
                 }
                 // The drain has read the copy idle by now; the client connects after.
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(300), &mut stop)
+                    tokio::time::timeout(Duration::from_millis(150), &mut stop)
                         .await
                         .is_err(),
                     "the stop waits for the withdrawal to spread"
@@ -1815,7 +1815,7 @@ mod stopped_on_request {
         }
 
         #[tokio::test]
-        async fn stop_checked_stops_a_copy_without_sockets_at_once() {
+        async fn stop_checked_stops_a_copy_without_sockets_without_waiting_for_the_cap() {
             let fixture = Fixture::start().await;
             fixture.sockets(&[]);
 
