@@ -881,8 +881,9 @@ fn state(
             serving,
         };
     }
-    // A new copy completes only once its switch lands, so a Server whose old copy's
-    // removal a later failure left unexecuted still switched (#3684).
+    // A new copy completes only once its switch lands, and an in-place update once it
+    // changed the serving copy, so a Server whose old copy's removal a later failure
+    // left unexecuted still switched (#3684).
     let switched = statuses.iter().any(|(_, starts)| *starts)
         && statuses.iter().all(|(status, starts)| match status {
             OperationStatus::Completed => true,
