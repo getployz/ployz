@@ -118,9 +118,9 @@ To bring services back:
    `proxy on web-3 did not confirm`. Another deploy while Ployz is still stopped there leaves
    those replicas running too, names them again and exits 3, even for a service it doesn't
    change. In 0.3.12 it failed with `no other In copy … is acked by every live proxy`. From
-   0.3.13, when such a deploy replaces or scales down replicas an earlier one started while
+   0.3.14, when such a deploy replaces or scales down replicas an earlier one started while
    Ployz was stopped, it removes them, since that server's proxy never sent them requests. Only
-   the replicas that proxy knew stay beside the new ones. In 0.3.12 each deploy left one more set
+   the replicas that proxy knew stay beside the new ones. Until 0.3.14 each deploy left one more set
    running.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your
