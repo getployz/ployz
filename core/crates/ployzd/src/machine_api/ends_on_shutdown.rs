@@ -7,10 +7,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use http_body::Frame;
-use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
-use ployz_core::{OpaquePayload, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcRequestBody, op};
+use http_body_util::BodyExt;
+use ployz_core::{OpaquePayload, RpcRequestBody, op};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tonic::{
     body::Body,
@@ -26,9 +26,9 @@ use tonic::{
 /// other call, a bounded TailLogs read, Build and Leave's reply among them, drains as
 /// before.
 ///
-/// To tell a following tail from a bounded one, a TailLogs request is read whole
-/// before `S` sees it, up to the gRPC frame tonic would accept, and refused past it as
-/// tonic would.
+/// To tell a following tail from a bounded one, the wrapper peeks at most one small
+/// frame of a TailLogs request, then hands `S` every byte unchanged, so tonic checks and
+/// refuses the request exactly as without it.
 #[derive(Clone)]
 pub struct EndsOnShutdown<S> {
     inner: S,
@@ -67,12 +67,8 @@ where
             let mut inner = std::mem::replace(&mut self.inner, ready);
             return Box::pin(async move {
                 let (parts, body) = request.into_parts();
-                let frame = match Limited::new(body, TAIL_REQUEST_LIMIT).collect().await {
-                    Ok(collected) => collected.to_bytes(),
-                    Err(error) => return Ok(unreadable_tail(error).into_http()),
-                };
-                let follows = tail_follows(&frame);
-                let request = http::Request::from_parts(parts, Body::new(Full::new(frame)));
+                let (follows, body) = peek_tail(body).await;
+                let request = http::Request::from_parts(parts, body);
                 let response = inner.call(request);
                 if follows {
                     until_shutdown(response, shutdown).await
@@ -107,32 +103,96 @@ async fn until_shutdown(
     }
 }
 
-/// One gRPC frame: its five-byte header and the largest message the Machine API decodes.
-const TAIL_REQUEST_LIMIT: usize = 5 + RUNTIME_WATCH_MESSAGE_SIZE_LIMIT;
+/// The most of a TailLogs request read to find its follow flag. A real one is a few
+/// hundred bytes; a larger first frame counts as following.
+const TAIL_PEEK_LIMIT: usize = 64 * 1024;
 
-fn unreadable_tail(error: Box<dyn std::error::Error + Send + Sync>) -> tonic::Status {
-    match error.downcast::<tonic::Status>() {
-        Ok(status) => *status,
-        Err(error) if error.is::<LengthLimitError>() => tonic::Status::out_of_range(format!(
-            "TailLogs request is over the {RUNTIME_WATCH_MESSAGE_SIZE_LIMIT} byte message limit"
-        )),
-        Err(error) => tonic::Status::from_error(error),
-    }
+/// Reads `body` until its first gRPC frame is whole or can't be peeked. Returns whether
+/// that frame asks to follow, and a body replaying every frame read, then the rest.
+async fn peek_tail(mut body: Body) -> (bool, Body) {
+    let mut prefix = BytesMut::new();
+    let mut held = None;
+    let mut ended = false;
+    let follows = loop {
+        if let Some(follows) = first_frame_follows(&prefix) {
+            break follows;
+        }
+        match body.frame().await {
+            Some(Ok(frame)) => match frame.into_data() {
+                Ok(data) => prefix.extend_from_slice(&data),
+                Err(frame) => {
+                    held = Some(Ok(frame));
+                    break true;
+                }
+            },
+            Some(Err(status)) => {
+                held = Some(Err(status));
+                break true;
+            }
+            None => {
+                ended = true;
+                break true;
+            }
+        }
+    };
+    let replayed = Replayed {
+        prefix: Some(prefix.freeze()).filter(|prefix| !prefix.is_empty()),
+        held,
+        rest: (!ended).then_some(body),
+    };
+    (follows, Body::new(replayed))
 }
 
-/// Whether a TailLogs request's single gRPC frame asks to follow. A frame this cannot
-/// read counts as following; the handler refuses a malformed one at once anyway.
-fn tail_follows(frame: &[u8]) -> bool {
-    // Uncompressed flag, then a four-byte length; no client compresses requests.
-    let Some(message) = frame.strip_prefix(&[0]).and_then(|rest| rest.get(4..)) else {
-        return true;
-    };
+/// `Some` once `prefix` holds the first frame whole, or a header too large or
+/// compressed to peek past; such a frame counts as following.
+fn first_frame_follows(prefix: &[u8]) -> Option<bool> {
+    let (&flag, rest) = prefix.split_first()?;
+    let length: [u8; 4] = rest.get(..4)?.try_into().ok()?;
+    let length = usize::try_from(u32::from_be_bytes(length)).ok()?;
+    // No client compresses requests.
+    if flag != 0 || length > TAIL_PEEK_LIMIT {
+        return Some(true);
+    }
+    Some(tail_follows(rest.get(4..4 + length)?))
+}
+
+/// Whether a TailLogs request message asks to follow. One this cannot read counts as
+/// following; the handler refuses a malformed one at once anyway.
+fn tail_follows(message: &[u8]) -> bool {
     let Ok(payload) = <OpaquePayload as prost::Message>::decode(message) else {
         return true;
     };
     match payload.decode_request().map(|request| request.body) {
         Ok(RpcRequestBody::TailLogs(request)) => request.options.follow,
         _ => true,
+    }
+}
+
+/// A request body replaying what [`peek_tail`] read, then the rest unread.
+struct Replayed {
+    prefix: Option<Bytes>,
+    held: Option<Result<Frame<Bytes>, tonic::Status>>,
+    rest: Option<Body>,
+}
+
+impl http_body::Body for Replayed {
+    type Data = Bytes;
+    type Error = tonic::Status;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        if let Some(prefix) = self.prefix.take() {
+            return Poll::Ready(Some(Ok(Frame::data(prefix))));
+        }
+        if let Some(held) = self.held.take() {
+            return Poll::Ready(Some(held));
+        }
+        match self.rest.as_mut() {
+            Some(rest) => Pin::new(rest).poll_frame(cx),
+            None => Poll::Ready(None),
+        }
     }
 }
 
@@ -170,12 +230,11 @@ impl http_body::Body for UntilShutdown {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
+    use std::{sync::Arc, time::Duration};
 
+    use futures_util::StreamExt;
     use ployz_core::{LiveLogTarget, LogsOptions, MachineLogService, TailLogsRequest};
+    use tokio::sync::Mutex;
 
     use super::*;
 
@@ -199,56 +258,90 @@ mod tests {
         frame
     }
 
-    /// Records that a request got past the wrapper.
-    #[derive(Clone)]
-    struct Reached(Arc<AtomicBool>);
+    #[test]
+    fn only_a_following_tail_is_open_ended() {
+        assert_eq!(first_frame_follows(&tail(true)), Some(true));
+        assert_eq!(first_frame_follows(&tail(false)), Some(false));
+        let whole = tail(false);
+        assert_eq!(
+            first_frame_follows(whole.get(..whole.len() - 1).unwrap()),
+            None
+        );
+        assert_eq!(first_frame_follows(&[0, 0]), None);
+        let mut compressed = tail(false);
+        compressed.splice(..1, [1]);
+        assert_eq!(first_frame_follows(&compressed), Some(true));
+    }
 
-    impl Service<http::Request<Body>> for Reached {
+    /// Keeps the body each request hands it.
+    #[derive(Clone, Default)]
+    struct Received(Arc<Mutex<Vec<u8>>>);
+
+    impl Service<http::Request<Body>> for Received {
         type Response = http::Response<Body>;
         type Error = Infallible;
-        type Future = std::future::Ready<Result<Self::Response, Infallible>>;
+        type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Infallible>> + Send>>;
 
         fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
             Poll::Ready(Ok(()))
         }
 
-        fn call(&mut self, _: http::Request<Body>) -> Self::Future {
-            self.0.store(true, Ordering::SeqCst);
-            std::future::ready(Ok(http::Response::new(Body::empty())))
+        fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+            let received = Arc::clone(&self.0);
+            Box::pin(async move {
+                let body = request.into_body().collect().await.unwrap().to_bytes();
+                received.lock().await.extend_from_slice(&body);
+                Ok(http::Response::new(Body::empty()))
+            })
         }
     }
 
+    fn chunked(bytes: &[u8]) -> Body {
+        let chunks: Vec<Result<Frame<Bytes>, Box<tonic::Status>>> = bytes
+            .chunks(7)
+            .map(|chunk| Ok(Frame::data(Bytes::copy_from_slice(chunk))))
+            .collect();
+        Body::new(http_body_util::StreamBody::new(futures_util::stream::iter(
+            chunks,
+        )))
+    }
+
     #[tokio::test]
-    async fn an_oversized_tail_request_is_refused_before_it_is_buffered() {
-        let shutdown = CancellationToken::new();
-        let reached = Arc::new(AtomicBool::new(false));
-        let inner = Reached(Arc::clone(&reached));
-        let endless = futures_util::stream::repeat_with(|| {
-            Ok::<_, Box<tonic::Status>>(Frame::data(Bytes::from_static(&[0; 64 * 1024])))
-        });
+    async fn the_peeked_request_reaches_the_service_unchanged() {
+        let frame = tail(false);
+        let received = Received::default();
         let request = http::Request::builder()
             .uri(op::TailLogs::PATH)
-            .body(Body::new(http_body_util::StreamBody::new(endless)))
+            .body(chunked(&frame))
             .unwrap();
-        let response = EndsOnShutdown::new(inner, shutdown)
+        EndsOnShutdown::new(received.clone(), CancellationToken::new())
             .call(request)
             .await
             .unwrap();
-        let status = tonic::Status::from_header_map(response.headers()).expect("a gRPC status");
-        assert_eq!(status.code(), tonic::Code::OutOfRange);
-        assert!(!reached.load(Ordering::SeqCst));
+        assert_eq!(*received.0.lock().await, frame);
     }
 
-    #[test]
-    fn only_a_following_tail_is_open_ended() {
-        assert!(tail_follows(&tail(true)));
-        assert!(!tail_follows(&tail(false)));
-        let mut compressed = tail(false);
-        compressed.splice(..1, [1]);
-        assert!(
-            tail_follows(&compressed),
-            "an unreadable frame counts as following"
-        );
-        assert!(tail_follows(&[]));
+    #[tokio::test]
+    async fn a_header_too_large_to_peek_is_passed_on_unread() {
+        let mut header = vec![0];
+        header.extend_from_slice(&u32::MAX.to_be_bytes());
+        let body = Body::new(http_body_util::StreamBody::new(
+            futures_util::stream::iter([Ok::<_, Box<tonic::Status>>(Frame::data(Bytes::from(
+                header.clone(),
+            )))])
+            .chain(futures_util::stream::pending()),
+        ));
+        let (follows, mut replayed) = tokio::time::timeout(Duration::from_secs(5), peek_tail(body))
+            .await
+            .expect("an oversized header is decided without reading on");
+        assert!(follows);
+        let first = replayed
+            .frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap();
+        assert_eq!(first, header);
     }
 }
