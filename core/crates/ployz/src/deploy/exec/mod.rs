@@ -3391,7 +3391,6 @@ async fn remove_container<C: MachineOperations>(
     // A copy an earlier gapped Deploy left may still be routed by a gap Server's
     // proxy, which never acks its drain (#3676).
     if copy.drains()
-        && gapped.is_none()
         && matches!(purpose, RemoveContainerPurpose::Rollout)
         && let Some(gaps) = rows
             .gaps_routing(client, progress, &copy, cancellation)
