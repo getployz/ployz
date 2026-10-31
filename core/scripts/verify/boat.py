@@ -822,7 +822,9 @@ class Provider:
                 self.wait_agent(node, 600)
             return
         # A baked sandbox already holds BAKE's result; it keeps its own ployz install for reset to restore.
-        bake = BAKE if self.run["image"] == SNAPSHOT else KEEP_INSTALL + (RECORD_IMAGES if POOL_SIZE else "")
+        # Every clone waits out Boat's image restore: on a slow node it saturates the disk for minutes, and an
+        # install under it times out writing its units.
+        bake = BAKE if self.run["image"] == SNAPSHOT else KEEP_INSTALL + (RECORD_IMAGES if POOL_SIZE else HOLDS)
         self.exec(node, ["bash", "-ec", f"""
 {SETTLE}
 main=$(systemctl show -p MainPID --value ssh.service)
