@@ -28,7 +28,7 @@ use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT};
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
 /// Built from the `ployz` branch of getployz/corrosion: upstream plus the patches its README lists.
-pub const IMAGE: &str = "ghcr.io/getployz/corrosion:20261024-b46434825343@sha256:281efeb3ca82eac25e4ebb8a2cb6c61100a9db2948dcf507627aaa48e22e7dff";
+pub const IMAGE: &str = "ghcr.io/getployz/corrosion:20261031-28f00b417271@sha256:384f1e20dbbe187135c4c75ae0eb41943df64c2306b5b4eecffa88ba04b46cc1";
 pub const DEFAULT_CONTAINER_NAME: &str = "ployz-corrosion";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
@@ -125,6 +125,17 @@ impl CorrosionConfig {
                 run_dir: self.paths.run_dir.clone(),
             };
             let ensured = service.start(&files).await?;
+            // Only now does the running Corrosion sync each commit itself. An older one,
+            // still serving while the new image pulls, relies on the flag.
+            let refused = clear_sync_writes(&self.paths.data_dir);
+            if let Some(first) = refused.first() {
+                tracing::warn!(
+                    data_dir = %self.paths.data_dir.display(),
+                    refused = refused.len(),
+                    error = %ployz_core::error_chain::inline(first),
+                    "Corrosion's commits stay slow: files in its data directory still write every page synchronously"
+                );
+            }
             wait_ready_or_replace(
                 ensured == Ensure::Keep,
                 || async { api.query(Statement::new("SELECT 1", [])).await.is_ok() },
@@ -155,15 +166,6 @@ impl CorrosionConfig {
 
     fn install(&self) -> Result<InstalledFiles, Error> {
         create_private_dir(&self.paths.data_dir)?;
-        let refused = sync_writes(&self.paths.data_dir);
-        if let Some(first) = refused.first() {
-            tracing::warn!(
-                data_dir = %self.paths.data_dir.display(),
-                refused = refused.len(),
-                error = %ployz_core::error_chain::inline(first),
-                "Corrosion's commits can be lost on power loss: files in its data directory do not write synchronously"
-            );
-        }
         create_private_dir(&self.paths.run_dir)?;
         let token = load_or_create_token(&self.paths.token_file())?;
         let schema_path = self.paths.data_dir.join("schema.sql");
@@ -173,6 +175,7 @@ impl CorrosionConfig {
             db: DbConfig {
                 path: self.paths.data_dir.join("store.db"),
                 schema_paths: vec![schema_path],
+                synchronous: "full",
             },
             gossip: GossipConfig {
                 addr: self.gossip_address,
@@ -422,23 +425,29 @@ fn create_private_dir(path: &Path) -> Result<(), Error> {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("could not make {} write synchronously", path.display())]
+#[error("could not stop {} writing every page synchronously", path.display())]
 struct SyncWritesError {
     path: PathBuf,
     source: std::io::Error,
 }
 
-// Corrosion broadcasts a commit before SQLite syncs it, and peers never send a Machine its
-// own changes back, so a commit lost to power loss after broadcast is never recovered.
-fn sync_writes(dir: &Path) -> Vec<SyncWritesError> {
+// Daemons up to 0.3.11 set the inode sync flag on the store so a broadcast commit survived
+// power loss. `synchronous = "full"` now syncs each commit, and the flag would sync every
+// page on top, which held Corrosion's one write connection for minutes on a slow disk (#2925).
+fn clear_sync_writes(dir: &Path) -> Vec<SyncWritesError> {
     let mut refused = Vec::new();
     sync_tree(dir, OFlags::DIRECTORY, &mut refused);
-    refused.retain(|error| error.source.kind() != std::io::ErrorKind::NotFound);
+    let unsupported = [rustix::io::Errno::OPNOTSUPP, rustix::io::Errno::NOTTY]
+        .map(|errno| Some(errno.raw_os_error()));
+    refused.retain(|error| {
+        error.source.kind() != std::io::ErrorKind::NotFound
+            && !unsupported.contains(&error.source.raw_os_error())
+    });
     refused
 }
 
 fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
-    if let Err(error) = set_sync_flag(dir, open) {
+    if let Err(error) = clear_sync_flag(dir, open) {
         refused.push(error);
     }
     let entries = match fs::read_dir(dir) {
@@ -468,7 +477,7 @@ fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
                 sync_tree(&path, OFlags::DIRECTORY | OFlags::NOFOLLOW, refused)
             }
             Ok(file_type) if file_type.is_file() => {
-                if let Err(error) = set_sync_flag(&path, OFlags::NOFOLLOW) {
+                if let Err(error) = clear_sync_flag(&path, OFlags::NOFOLLOW) {
                     refused.push(error);
                 }
             }
@@ -478,7 +487,7 @@ fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
     }
 }
 
-fn set_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
+fn clear_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
     let set = || -> rustix::io::Result<()> {
         let fd = rustix::fs::open(
             path,
@@ -486,8 +495,8 @@ fn set_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
             Mode::empty(),
         )?;
         let flags = rustix::fs::ioctl_getflags(&fd)?;
-        if !flags.contains(IFlags::SYNC) {
-            rustix::fs::ioctl_setflags(&fd, flags | IFlags::SYNC)?;
+        if flags.contains(IFlags::SYNC) {
+            rustix::fs::ioctl_setflags(&fd, flags - IFlags::SYNC)?;
         }
         Ok(())
     };
@@ -543,6 +552,7 @@ struct FileConfig {
 struct DbConfig {
     path: PathBuf,
     schema_paths: Vec<PathBuf>,
+    synchronous: &'static str,
 }
 
 #[derive(Serialize)]
@@ -702,73 +712,67 @@ mod tests {
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
     }
 
+    fn writes_synchronously(path: &Path) -> bool {
+        rustix::fs::ioctl_getflags(fs::File::open(path).unwrap())
+            .unwrap()
+            .contains(IFlags::SYNC)
+    }
+
+    /// Flags `paths` the way daemons up to 0.3.11 did, or returns false where the
+    /// filesystem refuses the flag, as tmpfs and ZFS do.
+    fn flag_as_an_older_daemon(paths: &[PathBuf]) -> bool {
+        paths.iter().all(|path| {
+            let file = fs::File::open(path).unwrap();
+            rustix::fs::ioctl_getflags(&file)
+                .and_then(|flags| rustix::fs::ioctl_setflags(&file, flags | IFlags::SYNC))
+                .is_ok()
+        })
+    }
+
     #[test]
-    fn existing_store_files_write_synchronously() {
+    fn a_store_an_older_daemon_flagged_stops_writing_every_page_synchronously() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
-        fs::create_dir(dir.join("snapshots")).unwrap();
-        fs::write(dir.join("snapshots/old.db"), "").unwrap();
+        fs::create_dir(dir.join("subscriptions")).unwrap();
+        fs::write(dir.join("subscriptions/sub.sqlite"), "").unwrap();
         fs::write(dir.join("store.db"), "").unwrap();
+        let paths = [
+            dir.to_path_buf(),
+            dir.join("subscriptions"),
+            dir.join("subscriptions/sub.sqlite"),
+            dir.join("store.db"),
+        ];
+        let flagged = flag_as_an_older_daemon(&paths);
 
-        let refused = sync_writes(dir);
-        if refused.is_empty() {
-            for path in [
-                dir.to_path_buf(),
-                dir.join("snapshots"),
-                dir.join("snapshots/old.db"),
-                dir.join("store.db"),
-            ] {
-                let file = fs::File::open(&path).unwrap();
-                assert!(
-                    rustix::fs::ioctl_getflags(&file)
-                        .unwrap()
-                        .contains(IFlags::SYNC),
-                    "{} does not write synchronously",
-                    path.display()
-                );
-            }
-        } else {
-            let unsupported = [rustix::io::Errno::OPNOTSUPP, rustix::io::Errno::NOTTY]
-                .map(|errno| Some(errno.raw_os_error()));
-            assert!(refused.iter().any(|error| error.path == dir));
-            for error in &refused {
-                assert!(
-                    unsupported.contains(&error.source.raw_os_error()),
-                    "only the filesystem refusing the flag may leave files unflagged: {error}: {}",
-                    error.source
-                );
+        let refused = clear_sync_writes(dir);
+
+        assert!(refused.is_empty(), "{refused:?}");
+        if flagged {
+            for path in &paths {
+                assert!(!writes_synchronously(path), "{}", path.display());
             }
         }
     }
 
     #[test]
-    fn one_refused_file_leaves_the_rest_of_the_store_writing_synchronously() {
+    fn one_unreadable_file_leaves_the_rest_of_the_store_cleared() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
-        let refused = dir.join("refused");
-        fs::write(&refused, "").unwrap();
-        fs::set_permissions(&refused, fs::Permissions::from_mode(0o000)).unwrap();
         let siblings: Vec<_> = (0..20).map(|n| dir.join(format!("store-{n}.db"))).collect();
         for sibling in &siblings {
             fs::write(sibling, "").unwrap();
         }
-
-        let _ = sync_writes(dir);
-
-        let synchronous = |path: &Path| {
-            rustix::fs::ioctl_getflags(fs::File::open(path).unwrap())
-                .unwrap()
-                .contains(IFlags::SYNC)
-        };
-        if !synchronous(dir) {
+        if !flag_as_an_older_daemon(&siblings) {
             return;
         }
+        let unreadable = dir.join("unreadable");
+        fs::write(&unreadable, "").unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let _ = clear_sync_writes(dir);
+
         for sibling in &siblings {
-            assert!(
-                synchronous(sibling),
-                "{} does not write synchronously",
-                sibling.display()
-            );
+            assert!(!writes_synchronously(sibling), "{}", sibling.display());
         }
     }
 

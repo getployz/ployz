@@ -381,6 +381,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         pool_committable_bytes: None,
         sealing: None,
         store_filesystem: None,
+        store_syncs_commits: None,
         capabilities: Default::default(),
         management_identity: None,
         leaving: false,

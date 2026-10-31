@@ -601,6 +601,7 @@ impl LocalMachineRecord {
 
 #[must_use]
 pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
+    let store_filesystem = store_filesystem(data_dir);
     MachineRuntime {
         daemon_version: env!("CARGO_PKG_VERSION").into(),
         docker_version: docker_version(Path::new("docker"), DOCKER_VERSION_TIMEOUT),
@@ -626,7 +627,9 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
         running_builds: 0,
         pool_committable_bytes: None,
         sealing: None,
-        store_filesystem: store_filesystem(data_dir),
+        // Corrosion syncs each commit; on tmpfs a sync reaches only memory.
+        store_syncs_commits: store_filesystem.as_deref().map(|name| name != "tmpfs"),
+        store_filesystem,
         capabilities: ployz_core::served_capabilities(),
         management_identity: None,
         leaving: false,

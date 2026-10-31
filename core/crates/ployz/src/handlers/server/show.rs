@@ -123,12 +123,16 @@ fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Op
     }
 }
 
-/// Filesystems that refuse, or don't pass on, the flag that makes the store write
-/// synchronously, by the name the daemon reports and the name a person knows.
+/// Filesystems that refuse, or don't pass on, the flag that made the store of a daemon
+/// up to 0.3.11 write synchronously, by the name the daemon reports and the name a
+/// person knows. A daemon that reports its store syncs each commit is not among them.
 const POWER_CUT_STORES: [(&str, &str); 3] =
     [("zfs", "ZFS"), ("btrfs", "Btrfs"), ("tmpfs", "tmpfs")];
 
 fn power_cut_store(runtime: &MachineRuntime) -> Option<&'static str> {
+    if runtime.store_syncs_commits == Some(true) {
+        return None;
+    }
     let filesystem = runtime.store_filesystem.as_deref()?;
     POWER_CUT_STORES
         .iter()
@@ -852,6 +856,16 @@ mod tests {
             ]),
             None
         );
+    }
+
+    #[test]
+    fn a_server_whose_store_syncs_each_commit_is_not_warned_about_on_any_filesystem() {
+        let mut zfs = on("web-1", Some("zfs"));
+        zfs.machine.runtime.store_syncs_commits = Some(true);
+        assert_eq!(power_cut_warning(&[zfs]), None);
+        let mut tmpfs = on("web-2", Some("tmpfs"));
+        tmpfs.machine.runtime.store_syncs_commits = Some(false);
+        assert!(power_cut_warning(&[tmpfs]).is_some());
     }
 
     #[test]
