@@ -801,6 +801,37 @@ fn a_routed_copy_observed_stopped_does_not_answer_until_it_runs_again() {
     );
 }
 
+/// The cut withdraws the source copy before it drains and stops it, so a client
+/// that reconnects during the stop never gets the address.
+#[test]
+fn a_routed_copy_withdrawn_for_its_stop_does_not_answer() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let service = ServiceId::parse("d".repeat(32)).unwrap();
+    let name = ServiceName::parse("db").unwrap();
+    let mut inputs = ProjectionInputs::new(local);
+    let mut source = observation(
+        1,
+        &local,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 2]),
+    );
+    inputs.observations = vec![source.clone()];
+    assert_eq!(
+        addresses(plan(&inputs.build(), "db.app.internal.", RecordType::A)),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+
+    source
+        .try_update(|parts| parts.runtime = running(HealthObservation::Stopping))
+        .unwrap();
+    inputs.observations = vec![source];
+
+    assert_nxdomain(plan(&inputs.build(), "db.app.internal.", RecordType::A));
+}
+
 #[test]
 fn a_routed_copy_out_of_view_keeps_answering() {
     let local = MachineId::parse("a".repeat(32)).unwrap();

@@ -26,8 +26,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerId, ContainerObservation, ContainerRuntimeObservation, MachineId, Namespace,
-    ProxyRoutes, QualifiedService, ServiceId, proxy_routes, service_containers,
+    ContainerId, ContainerObservation, ContainerRuntimeObservation, HealthObservation, MachineId,
+    Namespace, ProxyRoutes, QualifiedService, ServiceId, proxy_routes, service_containers,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -139,15 +139,17 @@ impl Projection {
             .filter(|observation| {
                 !is_down(&observation.machine_id)
                     && !matches!(
-                        observation.runtime,
-                        ContainerRuntimeObservation::Running { .. }
+                        &observation.runtime,
+                        ContainerRuntimeObservation::Running { health }
+                            if *health != HealthObservation::Stopping
                     )
             })
             .map(|observation| observation.container_id)
             .collect();
-        // A kept route may list a copy seen stopped, as a Volume move's source
-        // (#3679). Its address hangs a client, where no answer fails it fast. A
-        // Down owner's row is stale: its copy may run again unseen, so it stays.
+        // A kept route may list a copy seen stopped or withdrawn for its stop, as a
+        // Volume move's source (#3679). Its address hangs a client, where no answer
+        // fails it fast. A Down owner's row is stale: its copy may run again unseen,
+        // so it stays.
         for serving in routes
             .values()
             .flatten()
