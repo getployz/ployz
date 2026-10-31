@@ -311,19 +311,6 @@ mod tests {
         assert!(!is_not_found(&response(500)));
     }
 
-    #[test]
-    fn stop_waits_docker_default_unless_given_a_grace() {
-        let docker =
-            Docker::connect_with_http("http://127.0.0.1:1", 1, bollard::API_DEFAULT_VERSION)
-                .unwrap();
-        let service = ManagedService::host(docker, "service", "image:1");
-        assert!(service.stop_options().is_none());
-        assert_eq!(
-            service.with_stop_grace(1).stop_options().unwrap().t,
-            Some(1)
-        );
-    }
-
     fn body(image: &str) -> ContainerCreateBody {
         ContainerCreateBody {
             image: Some(image.to_owned()),

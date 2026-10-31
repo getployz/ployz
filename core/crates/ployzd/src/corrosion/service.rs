@@ -228,8 +228,9 @@ pub async fn remove_retained(run_dir: &Path) -> Result<(), Error> {
 
 /// Seconds a replaced or removed Corrosion gets after SIGTERM. Its graceful exit waits up
 /// to 5 s for gossip connections that peers keep open to go idle, and the daemon waits
-/// on that stop (#3680). Nothing durable rides on it: each commit is synced before the
-/// API answers, and anything a peer missed reaches it through sync, as after a crash.
+/// on that stop (#3680). Nothing durable rides on it: a killed Corrosion keeps every
+/// committed write, its graceful exit already drops queued changes, and peers resend
+/// those through sync, as after a crash.
 const STOP_GRACE_SECONDS: i32 = 1;
 
 fn managed(docker: Docker, name: impl Into<String>) -> ManagedService {
