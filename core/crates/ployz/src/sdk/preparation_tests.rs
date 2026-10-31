@@ -1499,10 +1499,15 @@ async fn a_settings_only_deploy_of_an_upload_rebuilds_from_the_held_upload() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_build_still_queued_at_its_start_limit_reports_queued_and_starts_nothing() {
     let (root, service, builds) = fixture();
     builds.hold_in_queue.store(true, Ordering::SeqCst);
+    // A running blocking task stops the paused clock from auto-advancing, so the
+    // start limit cannot pass while the Builder's Queued stage is still on the wire.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let clock =
+        tokio::task::spawn_blocking(move || held.recv_timeout(std::time::Duration::from_secs(30)));
     let (session, server) = session(service).await;
     let running = session
         .build(
@@ -1510,17 +1515,21 @@ async fn a_build_still_queued_at_its_start_limit_reports_queued_and_starts_nothi
             Some(std::time::Duration::from_millis(300)),
         )
         .unwrap();
+    let mut stages = Vec::new();
+    while let Some(event) = running.next().await {
+        if let Some(stage) = event.pointer("/Build/Stage") {
+            if stage == "Queued" {
+                release.send(()).unwrap();
+            }
+            stages.push(stage.clone());
+        }
+    }
+    clock.await.unwrap().expect("the Builder reported Queued");
     let outcome = running.finished().await.unwrap();
     assert!(
         matches!(outcome, crate::sdk::BuildOutcome::Queued),
         "{outcome:?}"
     );
-    let mut stages = Vec::new();
-    while let Some(event) = running.next().await {
-        if let Some(stage) = event.pointer("/Build/Stage") {
-            stages.push(stage.clone());
-        }
-    }
     assert!(stages.contains(&json!("Queued")), "{stages:?}");
     assert!(!stages.contains(&json!("Upload")), "{stages:?}");
     assert!(builds.definitions.lock().unwrap().is_empty());
