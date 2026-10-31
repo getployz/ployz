@@ -1957,6 +1957,10 @@ async fn a_gapped_publish_leaves_a_surplus_the_owner_refuses_to_take_out() {
         matches!(outcome, DeployOutcome::Success { .. }),
         "{outcome:?}"
     );
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::Unconfirmed)])
+    );
     assert_eq!(client.moves(), [Move::To(new, CopyRotation::In)]);
     assert_eq!(
         warnings

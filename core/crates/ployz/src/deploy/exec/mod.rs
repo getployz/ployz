@@ -3411,14 +3411,13 @@ async fn remove_container<C: MachineOperations>(
             rows.leave_unreached(progress, unreached.copies());
             Ok(Ran::default())
         }
-        // The run already ends with its Service's publish gapped, so a copy the
-        // owner keeps In or a proxy keeps listing is left for the next Deploy.
-        Ok(cleanup::Step::Refused(refusal)) if gapped.is_some() => {
+        // The run already ends with its Service's publish gapped, and no In copy
+        // the gap proxy routes is acked by every proxy: the owner keeps this one In
+        // for the next Deploy.
+        Ok(cleanup::Step::Refused(refusal))
+            if gapped.is_some() && refusal.reason == ContainerRefusalReason::LastIn =>
+        {
             rows.leave_running(progress, &copy, Left::Refused(refusal));
-            Ok(Ran::default())
-        }
-        Ok(cleanup::Step::NotConfirmed(machines)) if gapped.is_some() => {
-            rows.leave_running(progress, &copy, Left::NotConfirmed(machines));
             Ok(Ran::default())
         }
         Ok(cleanup::Step::Refused(refusal)) => {
