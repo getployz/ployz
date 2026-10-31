@@ -1412,6 +1412,16 @@ impl DeployOperation {
         }
     }
 
+    /// Whether this operation leaves a Service Container serving the new spec: a
+    /// fresh start, or a running Container updated in place.
+    #[must_use]
+    pub const fn serves_new_spec(&self) -> bool {
+        matches!(
+            self,
+            Self::RunContainer { .. } | Self::ReplaceContainer(_) | Self::UpdateContainer(_)
+        )
+    }
+
     /// Service Name when this operation carries a spec.
     #[must_use]
     pub fn service_name(&self) -> Option<&ServiceName> {

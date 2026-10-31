@@ -678,12 +678,7 @@ type Key = (ServiceName, MachineId);
 /// start, or a running Container updated in place.
 #[must_use]
 pub const fn starts_container(operation: &DeployOperation) -> bool {
-    matches!(
-        operation,
-        DeployOperation::RunContainer { .. }
-            | DeployOperation::ReplaceContainer(_)
-            | DeployOperation::UpdateContainer(_)
-    )
+    operation.serves_new_spec()
 }
 
 /// Turns a runner's Deploy Progress snapshots into the rows that changed, so it
