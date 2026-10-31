@@ -17,7 +17,8 @@ review what's staged, restore or undo a saved version, save without deploying, a
 also remove services, volumes, domains and configs, discard staged changes, remove an environment
 or a project with its volumes' data, protect or unprotect a project's own environment, and turn
 preview environments on or off. It can list an
-environment's deployments, follow one to its end and say which variables it left out, as `ployz deploy` does, redeploy a failed, cancelled or unknown one, start
+environment's deployments, follow one to its end and say which variables it left out, as
+`ployz deploy` does, redeploy a failed, cancelled or unknown one, start
 a queued one now, and cancel one, like the
 [deployment page](../deploy/history-and-rollback.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
