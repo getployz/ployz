@@ -4,6 +4,7 @@ compile_error!("ployzd supports Linux only");
 mod volume_plugin;
 
 use std::{
+    cell::Cell,
     io,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -30,6 +31,8 @@ use tokio::{
 };
 
 const DIAL_STDIO_SOCKET_TIMEOUT: Duration = Duration::from_secs(20);
+/// Under the client's 5 s wait for an answer, so its error names the refusal.
+const REFUSED_SOCKET_GRACE: Duration = Duration::from_secs(2);
 const STDOUT_FLUSH_BOUND: Duration = Duration::from_secs(2);
 
 #[derive(Parser)]
@@ -372,13 +375,24 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
     }
 }
 
-// Every daemon process clears the refusal first, so a socket that is not
-// listening while one is recorded was stopped by it, most often by systemd's
-// start limit after repeated refusals. Waiting would only outlast the client.
+// Every daemon process clears the refusal first, so a socket that stays down
+// while one is recorded was stopped by it, most often by systemd's start limit
+// after repeated refusals; waiting longer would only outlast the client. The
+// grace covers a socket restarting, which comes back before a daemon process
+// has cleared the last refusal.
 async fn connect_unless_refused(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
     let run_dir = socket_dir(path);
+    let refused_since = Cell::new(None);
     wait_until_socket_accepts(path, timeout, || {
-        ployz_core::startup_refusal(run_dir).is_some()
+        if ployz_core::startup_refusal(run_dir).is_none() {
+            refused_since.set(None);
+            return false;
+        }
+        let since = refused_since
+            .get()
+            .unwrap_or_else(tokio::time::Instant::now);
+        refused_since.set(Some(since));
+        since.elapsed() >= REFUSED_SOCKET_GRACE
     })
     .await
     .map_err(|error| naming_refusal(run_dir, error))
@@ -496,22 +510,43 @@ mod tests {
         assert_eq!(seen, b"reply");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn dial_names_a_recorded_refusal_without_waiting_out_the_socket() {
+    fn refused_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let refused = dir.path().join(ployz_core::STARTUP_REFUSAL_FILE);
         std::fs::write(&refused, "refusing to change\n").unwrap();
+        dir
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dial_names_a_recorded_refusal_without_waiting_out_the_socket() {
+        let dir = refused_dir();
         let started = tokio::time::Instant::now();
         let error =
             connect_unless_refused(&dir.path().join("ployz.sock"), DIAL_STDIO_SOCKET_TIMEOUT)
                 .await
                 .unwrap_err();
-        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert!(started.elapsed() < REFUSED_SOCKET_GRACE + Duration::from_millis(50));
         let message = error.to_string();
         assert!(
             message.contains("ployzd refused to start: refusing to change"),
             "{message}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dial_reaches_a_socket_restarting_after_a_refusal() {
+        let dir = refused_dir();
+        let path = dir.path().join("ployz.sock");
+        let listener_path = path.clone();
+        let socket = tokio::spawn(async move {
+            tokio::time::sleep(REFUSED_SOCKET_GRACE / 2).await;
+            let listener = UnixListener::bind(&listener_path).unwrap();
+            listener.accept().await.unwrap()
+        });
+        connect_unless_refused(&path, DIAL_STDIO_SOCKET_TIMEOUT)
+            .await
+            .unwrap();
+        socket.await.unwrap();
     }
 
     /// Holds written bytes until a flush after `open` is set, like tokio's stdout
