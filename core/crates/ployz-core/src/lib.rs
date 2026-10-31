@@ -76,6 +76,10 @@ pub const NETWORK_CONFLICT_EXIT_STATUS: u8 = 78;
 /// exited with [`NETWORK_CONFLICT_EXIT_STATUS`]. Each start removes it first.
 pub const STARTUP_REFUSAL_FILE: &str = "refused";
 
+/// How a startup refusal begins wherever a client reads it, including the
+/// stderr of a remote `ployzd dial-stdio`. Clients stop waiting on it.
+pub const STARTUP_REFUSED: &str = "ployzd refused to start: ";
+
 /// Why the daemon whose socket is in `run_dir` refused its last start, or `None`
 /// when it did not. A refusing start closes the connection that started it
 /// unanswered, so a client reads this to say why.
@@ -83,7 +87,7 @@ pub const STARTUP_REFUSAL_FILE: &str = "refused";
 pub fn startup_refusal(run_dir: &std::path::Path) -> Option<String> {
     let line = std::fs::read_to_string(run_dir.join(STARTUP_REFUSAL_FILE)).ok()?;
     let line = line.trim();
-    (!line.is_empty()).then(|| format!("ployzd refused to start: {line}"))
+    (!line.is_empty()).then(|| format!("{STARTUP_REFUSED}{line}"))
 }
 
 /// Safe operator recovery shared by daemon diagnostics and lifecycle commands.

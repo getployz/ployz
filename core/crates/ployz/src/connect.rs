@@ -1251,6 +1251,16 @@ impl ConnectError {
     }
 
     pub(crate) fn retry(&self) -> Retry {
+        // A refusal is final until an operator follows its safe recovery, and
+        // systemd's start limit stops the socket within seconds (#3703). An
+        // aggregate keeps its own verdict: another connection may come up.
+        if !matches!(self, Self::AllFailed { .. })
+            && std::iter::once(self.to_string())
+                .chain(ployz_core::error_chain::causes(self))
+                .any(|line| line.contains(ployz_core::STARTUP_REFUSED))
+        {
+            return Retry::Never;
+        }
         match self {
             Self::Attempt(_) | Self::Exhausted(_) | Self::Dial(_) | Self::Join(_) => Retry::Now,
             Self::Io(error) if transient_io(error) => Retry::Now,

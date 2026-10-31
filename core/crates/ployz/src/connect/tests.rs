@@ -1708,6 +1708,29 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
         "{text}"
     );
     assert!(!text.contains("Permanently added"), "{text}");
+    // A refusal is final, so a readiness wait stops on it (#3703).
+    assert_eq!(refused.retry(), Retry::Never, "{text}");
+    let mut attempts = 0;
+    let waited = crate::setup_retry::run(
+        &mut attempts,
+        "Waiting for the participating phase",
+        ployz_core::MACHINE_START_WAIT,
+        ConnectError::is_setup_retryable,
+        async |attempts| {
+            *attempts += 1;
+            connect_selected_with(
+                selected("user@refused"),
+                Arc::new(SystemConnector::new(program)),
+            )
+            .await
+        },
+    )
+    .await;
+    assert!(matches!(
+        waited,
+        Err(crate::setup_retry::Error::Permanent(_))
+    ));
+    assert_eq!(attempts, 1);
 
     let closed = connect_selected_with(
         selected("user@closed"),
@@ -1718,6 +1741,7 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
     .expect("a session that closes unanswered must fail the connect");
     let text = crate::ui::chain_text(&closed);
     assert!(!text.contains("Permanently added"), "{text}");
+    assert_ne!(closed.retry(), Retry::Never, "{text}");
 }
 
 #[tokio::test]
@@ -1771,6 +1795,7 @@ async fn a_local_daemon_that_refused_to_start_names_its_refusal() {
         ),
         "{text}"
     );
+    assert_eq!(error.retry(), Retry::Never, "{text}");
 }
 
 #[tokio::test]

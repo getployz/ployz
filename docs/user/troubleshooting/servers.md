@@ -214,6 +214,10 @@ its apps go down; volume data stays on the disk.
 You'll see `the joined Server did not become ready`, or `the first Server did not become ready` on
 your first server.
 
+When the wait reaches the server over SSH and the cause says `ployzd refused to start:`, the error
+comes as soon as Ployz reads that refusal, without waiting out the full start time. Go straight to
+step 3.
+
 If the wait printed `The Server's daemon is running but still joining`, or the error says the
 daemon `stayed joining`, the server started but couldn't catch up with your other servers. Start
 at step 2.
