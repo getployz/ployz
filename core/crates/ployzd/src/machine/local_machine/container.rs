@@ -41,6 +41,12 @@ const SETTLE_POLL: Duration = Duration::from_millis(100);
 /// an idle copy is seen.
 const DRAIN_POLL: Duration = Duration::from_millis(50);
 
+/// How long an idle copy stays withdrawn before its stop, so every Server's Internal
+/// DNS stops answering it first: a withdrawal reached them 0.3 to 0.72 s later on a
+/// Boat Cluster (#3688). A lookup before then still gets the old address, and a
+/// client that connects to it after the stop hangs until its connect times out.
+const WITHDRAWAL_PROPAGATION: Duration = Duration::from_secs(1);
+
 /// Where a test holds an `ensure_container` call so a Leave can run against it.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -347,19 +353,21 @@ impl LocalMachine {
     /// helper takes the exclusive turn for the Docker stop itself, so a caller
     /// already holding a turn deadlocks.
     ///
-    /// The stopping mark is set without a turn so replication tells every proxy
-    /// during the drain. An idle copy ends its drain early, so a proxy that has not
-    /// heard yet may dial the stopped copy and retry another. A daemon restart forgets
-    /// the mark; a still-running Container returns to ingress and the resend redoes the
-    /// drain.
+    /// The stopping mark is set without a turn so replication tells every proxy and
+    /// Internal DNS during the drain. An idle copy ends its drain early, though not
+    /// before `WITHDRAWAL_PROPAGATION`, so Internal DNS has heard before the stop. A
+    /// drain shorter than that, or a proxy slower to hear, may still dial the stopped
+    /// copy and retry another. A daemon restart forgets the mark; a still-running
+    /// Container returns to ingress and the resend redoes the drain.
     ///
     /// With a `fence`, the Container holds that Volume and the gen is checked against
-    /// its floor under the turn, after the drain: a Deploy that raised the floor
-    /// meanwhile may already have answered Done on this holder, so a raised floor
-    /// drops the Withdrawal and stops nothing. The floor lock is held from that check
-    /// through the stop, so a floor raised mid-stop waits and its Deploy reads the
-    /// holder stopped, not still running. A start ordered after that check waits for
-    /// the turn, so it runs after the stop.
+    /// its floor once the drain ends, so a floor raised meanwhile returns the copy to
+    /// ingress without waiting for a turn, and again under the turn: a Deploy that
+    /// raised the floor meanwhile may already have answered Done on this holder, so a
+    /// raised floor drops the Withdrawal and stops nothing. The floor lock is held from
+    /// that check through the stop, so a floor raised mid-stop waits and its Deploy
+    /// reads the holder stopped, not still running. A start ordered after that check
+    /// waits for the turn, so it runs after the stop.
     ///
     /// Polls no proxy and reads no other Machine.
     pub(crate) async fn stop_behind_ingress(
@@ -379,8 +387,23 @@ impl LocalMachine {
             let mut floor = containers.floor_turn().await;
             Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
         };
-        self.stop_checked(installation, container, drain, stop, false, withdraw, admit)
-            .await
+        let drained = || async move {
+            let Some((name, r#gen)) = fence else {
+                return Ok(Ok(()));
+            };
+            Ok(containers.floor_turn().await.admit(name, r#gen).await?)
+        };
+        self.stop_checked(
+            installation,
+            container,
+            drain,
+            stop,
+            false,
+            withdraw,
+            drained,
+            admit,
+        )
+        .await
     }
 
     /// The rotation is read before the withdrawal, so a copy In is never taken out of
@@ -409,13 +432,16 @@ impl LocalMachine {
             stop,
             record,
             withdraw,
+            || async { Ok(Ok(())) },
             || leave_rotation(containers, container, target),
         )
         .await
     }
 
     /// Drains before the exclusive turn, then stops under it while holding what
-    /// `check` returned. A refusal from `withdraw` or `check` stops nothing.
+    /// `check` returned. `drained` may refuse once the drain ends, so a refusal it can
+    /// already see returns the copy to ingress before the turn, which other work may
+    /// hold long. A refusal from `withdraw`, `drained` or `check` stops nothing.
     ///
     /// With `record`, a stop that ended a run records it, so its exit reads as a stop.
     /// The run is read after the stop, under the turn, so it is the one the stop ended
@@ -423,9 +449,9 @@ impl LocalMachine {
     /// the stop was issued ended on its own, so its exit stays a crash.
     #[expect(
         clippy::too_many_arguments,
-        reason = "one stop's facts and its two guards, shared by every stop path"
+        reason = "one stop's facts and its three guards, shared by every stop path"
     )]
-    async fn stop_checked<G, R, W, WFut, F, Fut>(
+    async fn stop_checked<G, R, W, WFut, D, DFut, F, Fut>(
         &self,
         installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
@@ -433,11 +459,14 @@ impl LocalMachine {
         stop: &StopOptions,
         record: bool,
         withdraw: W,
+        drained: D,
         check: F,
     ) -> Result<Result<ContainerObservation, R>, Error>
     where
         W: FnOnce() -> WFut,
         WFut: std::future::Future<Output = Result<Result<Withdrawal, R>, Error>>,
+        D: FnOnce() -> DFut,
+        DFut: std::future::Future<Output = Result<Result<(), R>, Error>>,
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Result<G, R>, Error>>,
     {
@@ -452,8 +481,15 @@ impl LocalMachine {
             Ok(withdrawal) => withdrawal,
             Err(refused) => return Ok(Err(refused)),
         };
-        let _ =
-            tokio::time::timeout(drain.as_duration(), self.until_idle(containers, container)).await;
+        let spread = tokio::time::Instant::now() + WITHDRAWAL_PROPAGATION;
+        let _ = tokio::time::timeout(
+            drain.as_duration(),
+            self.until_idle(containers, container, spread),
+        )
+        .await;
+        if let Err(refused) = drained().await? {
+            return Ok(Err(refused));
+        }
         let turn = self.owner.admission_lock().write_owned().await;
         let held = match check().await? {
             Ok(held) => held,
@@ -484,9 +520,11 @@ impl LocalMachine {
 
     /// Ends once the copy holds no connection it may still answer, per
     /// `drain_idle::holds_connection`, with the listening ports remembered across the
-    /// drain's reads. A copy with no connection from off its loopback reads idle at
-    /// once. A copy whose sockets cannot be read never reads idle, so its drain waits
-    /// the full cap.
+    /// drain's reads, and no earlier than `not_before`: a client may still connect
+    /// until then, so idleness counts only when read at or after it. A copy with no
+    /// connection from off its loopback reads idle, so its drain ends at `not_before`.
+    /// A copy whose sockets cannot be read never reads idle, so its drain waits the
+    /// full cap.
     ///
     /// Every Service copy joins the Ployz network, so its pid's tables list only its
     /// own sockets. A copy in the host's namespace would list the host's, and read
@@ -495,15 +533,21 @@ impl LocalMachine {
         &self,
         containers: &crate::docker::ContainerRuntime,
         container: &ContainerId,
+        not_before: tokio::time::Instant,
     ) {
         let Ok(Some(pid)) = containers.pid(container).await else {
             return std::future::pending().await;
         };
         let mut listening = std::collections::BTreeSet::new();
-        while !matches!(
-            drain_idle::holds_connection(&self.proc_root, pid, &mut listening),
-            Ok(false)
-        ) {
+        loop {
+            let late = tokio::time::Instant::now() >= not_before;
+            let idle = matches!(
+                drain_idle::holds_connection(&self.proc_root, pid, &mut listening),
+                Ok(false)
+            );
+            if late && idle {
+                return;
+            }
             tokio::time::sleep(DRAIN_POLL).await;
         }
     }
@@ -513,11 +557,12 @@ impl LocalMachine {
     /// under the turn, so one started during the drain is `Busy` too, as is one the
     /// stop left running. A `Busy` cut leaves the root a writer.
     ///
-    /// `gen` is checked against the floor before each holder's drain and again under the
-    /// floor lock, held from that last check through `zfs`, so a floor raised during the
-    /// drain makes the cut `Stale` and a floor read never sees the flip half done. A
-    /// `Stale` cut leaves the root a writer and stops no holder after the raise, since
-    /// the raiser may have kept that holder or started it.
+    /// `gen` is checked against the floor before each holder's drain, after it (see
+    /// `stop_behind_ingress`), and again under the floor lock, held from that last
+    /// check through `zfs`, so a floor raised during the drain makes the cut `Stale` and
+    /// a floor read never sees the flip half done. A `Stale` cut leaves the root a
+    /// writer and stops no holder after the raise, since the raiser may have kept that
+    /// holder or started it.
     ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
