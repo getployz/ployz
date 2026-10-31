@@ -254,3 +254,84 @@ fn per_service_outcomes_name_each_planned_service_at_most_once() {
         "the same Service twice"
     );
 }
+
+#[test]
+fn a_service_that_switched_before_a_later_failure_is_confirmed_though_its_removal_never_ran() {
+    let mut spec = secret_spec();
+    spec["name"] = json!("web");
+    let [start, ..] = spec_carrying_operations(&spec);
+    let (removal, bad) = (operation("c"), operation("b"));
+    let preview = |operations: &[(&str, &Value)]| {
+        parse_runtime_preview(json!({
+            "namespace":"production",
+            "operations":operations.iter().enumerate().map(|(index, (service, operation))|
+                json!({"index":index,"machine_id":"a".repeat(32),"service_name":service,"operation":operation,"status":{"type":"pending"}})
+            ).collect::<Vec<_>>(),
+            "warnings":[]
+        }))
+        .unwrap()
+    };
+    let planned = preview(&[("web", &start), ("bad", &bad), ("web", &removal)]);
+    let failed = |completed: Value, failed: &Value, unexecuted: Value, web: Option<&str>| {
+        let mut outcome = json!({"type":"failed","completed":completed,
+            "failed":{"type":"operation","operation":failed,"error":{"type":"cancelled"}},
+            "unexecuted":unexecuted});
+        if let Some(web) = web {
+            outcome["services"] =
+                json!([{"service":"web","result":web},{"service":"bad","result":"old"}]);
+        }
+        outcome
+    };
+    let split = |projection: Value| {
+        (
+            projection["confirmedServices"].clone(),
+            projection["failedServices"].clone(),
+        )
+    };
+
+    for result in ["new", "updated", "unconfirmed"] {
+        assert_eq!(
+            split(project(
+                &planned,
+                failed(json!([start]), &bad, json!([removal]), Some(result))
+            )),
+            (json!(["web"]), json!(["bad"])),
+            "{result}"
+        );
+    }
+    for (why, web) in [
+        ("no Service Outcome", None),
+        ("it still serves the old", Some("old")),
+    ] {
+        assert_eq!(
+            split(project(
+                &planned,
+                failed(json!([start]), &bad, json!([removal]), web)
+            )),
+            (json!([]), json!(["bad", "web"])),
+            "{why}"
+        );
+    }
+    let held = preview(&[
+        ("web", &start),
+        ("web", &start),
+        ("bad", &bad),
+        ("web", &removal),
+    ]);
+    assert_eq!(
+        split(project(
+            &held,
+            failed(json!([start]), &bad, json!([start, removal]), Some("new"))
+        )),
+        (json!([]), json!(["bad", "web"])),
+        "a start that never switched"
+    );
+    assert_eq!(
+        split(project(
+            &planned,
+            failed(json!([start]), &removal, json!([bad]), Some("new"))
+        )),
+        (json!([]), json!(["web"])),
+        "its own removal failed"
+    );
+}

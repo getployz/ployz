@@ -9,7 +9,7 @@ use ts_rs::TS;
 use super::ConfigError;
 use crate::{
     DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation, ServiceName,
-    ServiceOutcome,
+    ServiceOutcome, ServiceResult,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -64,10 +64,12 @@ pub enum RuntimeOutcomeSummary {
 pub struct RuntimeOutcomeProjection {
     /// Sanitized whole-attempt counts and disposition.
     pub summary: RuntimeOutcomeSummary,
-    /// Services whose every planned operation completed, ordered by name.
+    /// Services whose every planned operation completed, or that switched to their
+    /// new copies before a later failure left their old ones unremoved. Ordered by
+    /// name.
     pub confirmed_services: Vec<ServiceName>,
     /// Services work started on but didn't finish: one of their operations
-    /// completed or failed. Ordered by name.
+    /// completed or failed, and they did not switch. Ordered by name.
     pub failed_services: Vec<ServiceName>,
     /// Services with planned operations an earlier failure stopped before any ran.
     /// Ordered by name.
@@ -150,8 +152,9 @@ pub fn redacted_runtime_preview(mut preview: DeployPreview) -> DeployPreview {
 
 /// Validate one version-1 SDK outcome against its exact preview, as
 /// [`parse_runtime_preview`] returned it, then identify Services whose every
-/// planned operation completed. A partial replica update, failed replacement, or
-/// skipped hook cannot advance a whole Service.
+/// planned operation completed, or that switched and only their old copies'
+/// removals did not run. A partial replica update, failed replacement, or skipped
+/// hook cannot advance a whole Service.
 ///
 /// # Errors
 /// Rejects unsupported versions, malformed evidence, missing Service identities,
@@ -223,6 +226,9 @@ pub fn project_runtime_outcome(
     let preview = redacted_runtime_preview(preview.clone());
     let mut matched = vec![false; preview.operations.len()];
     let mut services: BTreeMap<ServiceName, Progress> = BTreeMap::new();
+    // Per Service: whether a start completed, and whether one did not.
+    let mut starts: BTreeMap<ServiceName, (bool, bool)> = BTreeMap::new();
+    let mut failed_service = None;
     for (mut operation, progress) in completed
         .into_iter()
         .map(|operation| (operation, Progress::Completed))
@@ -260,6 +266,14 @@ pub fn project_runtime_outcome(
             Some(service) => {
                 let entry = services.entry(service.clone()).or_insert(progress);
                 *entry = entry.merge(progress);
+                if operation.serves_new_spec() {
+                    let (completed, left) = starts.entry(service.clone()).or_default();
+                    *completed |= progress == Progress::Completed;
+                    *left |= progress != Progress::Completed;
+                }
+                if progress == Progress::Failed {
+                    failed_service = Some(service.clone());
+                }
             }
             None if matches!(
                 operation,
@@ -274,6 +288,21 @@ pub fn project_runtime_outcome(
         .all(|ended| services.contains_key(&ended.service) && seen.insert(&ended.service))
     {
         return Err(invalid());
+    }
+    // A start completes only once its switch lands, and an in-place update once it
+    // changed the serving copy. A Service whose every start completed, that the
+    // runner says serves its new copies, and that a later failure only stopped
+    // before removing its old ones, was deployed (#3696).
+    for ServiceOutcome { service, result } in &ended {
+        if matches!(
+            result,
+            ServiceResult::New | ServiceResult::Updated | ServiceResult::Unconfirmed
+        ) && starts.get(service) == Some(&(true, false))
+            && failed_service.as_ref() != Some(service)
+            && let Some(progress) = services.get_mut(service)
+        {
+            *progress = Progress::Completed;
+        }
     }
     let named = |wanted: Progress| {
         services
