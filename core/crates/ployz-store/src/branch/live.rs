@@ -123,6 +123,8 @@ pub(crate) struct Lowering {
     pub(crate) live: Vec<SavedVariableProducer>,
     /// Setup Commands by Service ID.
     pub(crate) setup: BTreeMap<String, Vec<String>>,
+    /// The name of each Live Node, by lineage, as [`live_names`] finds it.
+    pub(crate) names: BTreeMap<String, String>,
 }
 
 /// [`Lowering`] for a Deployment of `saved` in Environment `id`, as things stand now.
@@ -152,6 +154,7 @@ pub(crate) fn lowering(
     Ok(Lowering {
         live: live_producers(tx, &row.parent, &used_live(saved))?,
         setup,
+        names: live_names(tx, id, saved)?,
     })
 }
 

@@ -1838,7 +1838,7 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
     assert_eq!(
         json!(shipped.deployment.warnings),
         json!([
-            { "service": "web", "variable": "KEY_URL" },
+            { "service": "web", "variable": "KEY_URL", "reads": "api.KEY" },
             { "service": "api", "variable": "KEY" },
         ])
     );

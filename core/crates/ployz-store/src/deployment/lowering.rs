@@ -740,15 +740,34 @@ pub(super) fn lower(
             let broken = resolved.broken.remove(id).unwrap_or_default();
             let left_out = not_set
                 .into_iter()
-                .map(|variable| (variable, false))
-                .chain(broken.into_iter().map(|variable| (variable, true)))
-                .map(|(variable, broken)| {
+                .map(|not_set| {
+                    // The deepest variable on the way this Environment has a name for: a
+                    // Live Node's own references can lead to nodes it doesn't name.
+                    let reads = not_set.reads.and_then(|read| {
+                        read.path.iter().rev().find_map(|(lineage, key)| {
+                            let own = slugs.get(lineage.as_str()).copied();
+                            let owner =
+                                own.or_else(|| branch.names.get(lineage).map(String::as_str))?;
+                            Some((
+                                format!("{owner}.{key}"),
+                                read.sealed_elsewhere && own.is_none(),
+                            ))
+                        })
+                    });
+                    (not_set.variable, false, reads)
+                })
+                .chain(broken.into_iter().map(|variable| (variable, true, None)))
+                .map(|(variable, broken, reads)| {
+                    let (reads, sealed_elsewhere) =
+                        reads.map_or((None, false), |(reads, elsewhere)| (Some(reads), elsewhere));
                     (
                         vec![&config.settings.private_dns],
                         DeploymentWarning::NotSet {
                             service: service.clone(),
                             variable,
                             broken,
+                            reads,
+                            sealed_elsewhere,
                         },
                     )
                 })

@@ -8,7 +8,7 @@
 //! once per Environment: a copy, Sync or Follow brings only the [`Generator`].
 //! `exported` marks a variable other Services are meant to reference.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use ployz_core::config::{
@@ -1059,7 +1059,7 @@ pub(crate) struct Resolved {
     pub(crate) configs: BTreeMap<String, BTreeMap<ConfigFileName, ResolvedConfigFile>>,
     /// Each Service's variables left out because a secret without a value reaches
     /// them, by Service ID.
-    pub(crate) not_set: BTreeMap<String, Vec<String>>,
+    pub(crate) not_set: BTreeMap<String, Vec<NotSet>>,
     /// Each Service's variables left out because they reference, directly or through
     /// another variable, a Service or variable that isn't there, by Service ID.
     pub(crate) broken: BTreeMap<String, Vec<String>>,
@@ -1067,6 +1067,25 @@ pub(crate) struct Resolved {
     /// environment or a Config's files: Not set there, and a Deploy that ships the
     /// reader waits for the reseal instead.
     pub(crate) legacy: Vec<LegacyRead>,
+}
+
+/// A Service variable left out because a secret without a value reaches it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NotSet {
+    pub(crate) variable: String,
+    /// The other variable without a value it reads, if it reads one.
+    pub(crate) reads: Option<NotSetRead>,
+}
+
+/// A variable without a value that another reads, never a value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NotSetRead {
+    /// Each variable on the way, by owner lineage and key: the one referenced
+    /// first, through to the one without a value.
+    pub(crate) path: Vec<(String, String)>,
+    /// The last holds a value sealed for another Environment, such as the parent's
+    /// for a node a Branch shares with it.
+    pub(crate) sealed_elsewhere: bool,
 }
 
 /// A Legacy secret, by its owner's Service ID and key, that reaches `reader`.
@@ -1119,7 +1138,21 @@ fn resolve_values(
         None => Err(error::corrupt("sealed secret")),
     };
     let mut producers = Vec::new();
+    // Producers of nodes this Environment doesn't own, such as a Branch's Live Nodes,
+    // holding a value sealed for another Environment, by owner ID and key.
+    let mut elsewhere = BTreeSet::new();
     for producer in &compiled.variable_producers {
+        if let SavedVariableValue::Secret {
+            encrypted_value: Some(SecretCiphertext::ClientSealed(client)),
+        } = &producer.value
+            && environment != Some(client.sealed_for)
+            && !compiled
+                .node_snapshots
+                .iter()
+                .any(|node| node.node_id == producer.owner_id)
+        {
+            elsewhere.insert((producer.owner_id.clone(), producer.key.clone()));
+        }
         let value = match &producer.value {
             SavedVariableValue::Literal { value } => ResolverValue::Literal {
                 value: value.clone(),
@@ -1185,7 +1218,32 @@ fn resolve_values(
                     }
                     ResolveVariablesResult::Resolved { value, .. } => Some(value),
                     ResolveVariablesResult::NotSet { warnings } => {
-                        not_set.push(key.clone());
+                        let reads =
+                            not_set_read(parts, &node.node_id, &producers, &mut BTreeSet::new())
+                                .map(|path| NotSetRead {
+                                    sealed_elsewhere: path.last().is_some_and(|found| {
+                                        elsewhere
+                                            .contains(&(found.owner_id.clone(), found.key.clone()))
+                                    }),
+                                    path: path
+                                        .into_iter()
+                                        .map(|found| {
+                                            let lineage = match &found.owner {
+                                                ValuePartOwner::Service { lineage_id } => {
+                                                    lineage_id.clone()
+                                                }
+                                                ValuePartOwner::Self_ => {
+                                                    node.node_lineage_id.clone()
+                                                }
+                                            };
+                                            (lineage, found.key.clone())
+                                        })
+                                        .collect(),
+                                });
+                        not_set.push(NotSet {
+                            variable: key.clone(),
+                            reads,
+                        });
                         if !warnings.is_empty() {
                             broken.push(key.clone());
                         }
@@ -1201,7 +1259,10 @@ fn resolve_values(
                     fingerprint,
                     ..
                 } if fingerprint.is_empty() => {
-                    not_set.push(key.clone());
+                    not_set.push(NotSet {
+                        variable: key.clone(),
+                        reads: None,
+                    });
                     None
                 }
                 ServiceEnvValue::Secret {
@@ -1220,7 +1281,10 @@ fn resolve_values(
                         template: vec![EnvPart::Sealed(value)],
                     })),
                     ResolverValue::NotSet => {
-                        not_set.push(key.clone());
+                        not_set.push(NotSet {
+                            variable: key.clone(),
+                            reads: None,
+                        });
                         None
                     }
                     ResolverValue::Secret { .. }
@@ -1258,6 +1322,43 @@ fn resolve_values(
         resolved.env.insert(node.node_id.clone(), env);
     }
     Ok(resolved)
+}
+
+/// The way to the first producer without a value that `parts` reads, directly or
+/// through other variables, from the producer referenced first to that one, found
+/// as [`resolve_variables`] finds producers.
+fn not_set_read<'a>(
+    parts: &[ValuePart],
+    self_owner_id: &str,
+    producers: &'a [VariableProducer],
+    seen: &mut BTreeSet<(String, String)>,
+) -> Option<Vec<&'a VariableProducer>> {
+    parts.iter().find_map(|part| {
+        let ValuePart::Ref { owner, key } = part else {
+            return None;
+        };
+        let found = producers.iter().rev().find(|producer| {
+            producer.key == *key
+                && match owner {
+                    ValuePartOwner::Self_ => producer.owner_id == self_owner_id,
+                    ValuePartOwner::Service { .. } => producer.owner == *owner,
+                }
+        })?;
+        if !seen.insert((found.owner_id.clone(), key.clone())) {
+            return None;
+        }
+        match &found.value {
+            ResolverValue::NotSet => Some(vec![found]),
+            ResolverValue::Template { parts } => {
+                let mut path = not_set_read(parts, &found.owner_id, producers, seen)?;
+                path.insert(0, found);
+                Some(path)
+            }
+            ResolverValue::Literal { .. }
+            | ResolverValue::Secret { .. }
+            | ResolverValue::Sealed { .. } => None,
+        }
+    })
 }
 
 /// A Service ID as a UUID; one that isn't parses to nil, which no Sealed scope names.

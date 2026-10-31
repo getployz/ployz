@@ -254,6 +254,16 @@ pub enum DeploymentWarning {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(optional, as = "Option<bool>")]
         broken: bool,
+        /// The other variable without a value it reads, such as `db.TOKEN`: a name,
+        /// never a value. Clients before 0.3.13 read it as Not set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reads: Option<String>,
+        /// What `reads` names holds a value sealed for another Environment: a node
+        /// a Branch shares with its parent, whose secrets it never gets.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        sealed_elsewhere: bool,
     },
     /// A Config file reference left empty: it is, or reads, a secret without a
     /// value, or with `broken`, a Service or variable that isn't there.
