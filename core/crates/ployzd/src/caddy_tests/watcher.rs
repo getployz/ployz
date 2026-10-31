@@ -898,6 +898,59 @@ async fn empty_route_writes_empty_ack() {
 }
 
 #[tokio::test]
+async fn a_sole_copy_withdrawn_for_its_stop_leaves_caddy_and_keeps_its_ack() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+
+    // How a Volume move's cut leaves its sole copy before it stops: withdrawn, still In.
+    state.mutate(|parts| {
+        parts.runtime = ContainerRuntimeObservation::Running {
+            health: ployz_core::HealthObservation::Stopping,
+        };
+    });
+    state.send(b"{\"change\":{}}\n");
+    let withdrawn = next_load(&mut load_rx).await;
+    assert!(withdrawn.contains("error NOT_RUNNING 503"), "{withdrawn}");
+    assert!(!withdrawn.contains("10.210.1.2:80"), "{withdrawn}");
+
+    state.mutate(|parts| {
+        parts.runtime = ContainerRuntimeObservation::Running {
+            health: ployz_core::HealthObservation::Healthy,
+        };
+    });
+    state.send(b"{\"change\":{}}\n");
+    let running = next_load(&mut load_rx).await;
+    assert!(running.contains("10.210.1.2:80"), "{running}");
+    assert_eq!(state.ack_transactions(), 1);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn removed_service_deletes_its_ack() {
     let WatcherFixture {
         machine,

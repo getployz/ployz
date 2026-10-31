@@ -1,10 +1,10 @@
 //! Serving Containers and Machine-local occupancy of one Serving Shape.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    ContainerAddress, ContainerObservation, ContainerRuntimeObservation, CopyRotation, MachineId,
-    QualifiedService, ServiceContainer, ServingShape,
+    ContainerAddress, ContainerId, ContainerObservation, ContainerRuntimeObservation, CopyRotation,
+    HealthObservation, MachineId, QualifiedService, ServiceContainer, ServingShape,
 };
 
 /// Proof that a Service Container is In, may serve, and is addressed.
@@ -94,6 +94,47 @@ pub fn proxy_routes(
         .map(|(service, siblings)| {
             let route = next_route(&siblings, &is_down, current.get(&service));
             (service, route)
+        })
+        .collect()
+}
+
+/// The copies of `routes` a client can reach now, for what a proxy dials or answers.
+///
+/// A kept route may list a copy seen stopped or withdrawn for its stop, as a Volume
+/// move's source (#3679, #3682). Its address hangs a client, where none fails it
+/// fast. So this leaves out a routed copy whose observation in `observations` is
+/// not `Running`, or is `Running` with health `Stopping`. A copy out of view stays,
+/// and so does one on a Down Machine, whose row is stale while the copy may run
+/// again unseen. The route itself is not filtered: a proxy carries and acks
+/// `routes`, so a copy that runs again, or whose withdrawal is released, is
+/// reachable again on the next pass.
+#[must_use]
+pub fn reachable_routes<'observed>(
+    routes: &ProxyRoutes,
+    observations: impl IntoIterator<Item = &'observed ContainerObservation>,
+    is_down: impl Fn(&MachineId) -> bool,
+) -> ProxyRoutes {
+    let unreachable: BTreeSet<ContainerId> = observations
+        .into_iter()
+        .filter(|observation| {
+            !is_down(&observation.machine_id)
+                && !matches!(
+                    &observation.runtime,
+                    ContainerRuntimeObservation::Running { health }
+                        if *health != HealthObservation::Stopping
+                )
+        })
+        .map(|observation| observation.container_id)
+        .collect();
+    routes
+        .iter()
+        .map(|(service, route)| {
+            let reachable = route
+                .iter()
+                .filter(|serving| !unreachable.contains(&serving.as_observation().container_id))
+                .cloned()
+                .collect();
+            (service.clone(), reachable)
         })
         .collect()
 }

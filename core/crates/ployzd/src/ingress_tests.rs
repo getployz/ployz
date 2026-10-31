@@ -449,3 +449,6 @@ mod rule_f {
         assert_eq!(acks.len(), 1);
     }
 }
+
+#[path = "ingress_tests/reachable.rs"]
+mod reachable;
