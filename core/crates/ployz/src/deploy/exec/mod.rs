@@ -3380,9 +3380,10 @@ async fn remove_container<C: MachineOperations>(
             return Err(error.into());
         }
     };
-    if copy.drains()
-        && let Some(gapped) = rows.gapped(&copy.service)
-        && let Some(routing) = gaps_still_routing(client, &copy, gapped.machines).await
+    let gapped = copy.drains().then(|| rows.gapped(&copy.service)).flatten();
+    if let Some(gapped) = &gapped
+        && let Some(routing) =
+            gaps_still_routing(client, &copy, gapped.machines.iter().copied()).await
     {
         rows.leave_running(progress, &copy, Left::NotConfirmed(routing));
         return Ok(Ran::default());
@@ -3390,6 +3391,7 @@ async fn remove_container<C: MachineOperations>(
     // A copy an earlier gapped Deploy left may still be routed by a gap Server's
     // proxy, which never acks its drain (#3676).
     if copy.drains()
+        && gapped.is_none()
         && matches!(purpose, RemoveContainerPurpose::Rollout)
         && let Some(gaps) = rows
             .gaps_routing(client, progress, &copy, cancellation)
@@ -3408,6 +3410,16 @@ async fn remove_container<C: MachineOperations>(
     match retired {
         Ok(cleanup::Step::Done) => {
             rows.leave_unreached(progress, unreached.copies());
+            Ok(Ran::default())
+        }
+        // The run already ends with its Service's publish gapped, so a copy the
+        // owner keeps In or a proxy keeps listing is left for the next Deploy.
+        Ok(cleanup::Step::Refused(refusal)) if gapped.is_some() => {
+            rows.leave_running(progress, &copy, Left::Refused(refusal));
+            Ok(Ran::default())
+        }
+        Ok(cleanup::Step::NotConfirmed(machines)) if gapped.is_some() => {
+            rows.leave_running(progress, &copy, Left::NotConfirmed(machines));
             Ok(Ran::default())
         }
         Ok(cleanup::Step::Refused(refusal)) => {
