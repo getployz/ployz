@@ -1915,12 +1915,16 @@ async fn a_local_daemon_that_refused_mid_call_names_its_refusal() {
     drop(done);
 
     let text = crate::ui::chain_text(&error);
-    assert!(
-        text.contains(
+    assert_eq!(
+        text.matches(
             "ployzd refused to start: refusing to change the retained WireGuard interface"
-        ),
+        )
+        .count(),
+        1,
         "{text}"
     );
+    // A start wait stops on it (#3703).
+    assert!(!error.is_start_retryable(), "{text}");
 }
 
 #[tokio::test]

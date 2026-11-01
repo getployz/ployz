@@ -1010,17 +1010,18 @@ fn naming_local_refusal(connection: &Connection, error: ConnectError) -> Connect
     let Transport::Unix(path) = connection.transport() else {
         return error;
     };
+    if error.startup_refused() {
+        return error;
+    }
     let ConnectError::Rpc(transport) = error else {
         return error;
     };
-    let named = ployz_core::error_chain::causes(&transport)
-        .iter()
-        .any(|line| line.contains(ployz_core::STARTUP_REFUSED));
+    if !transport.local {
+        return ConnectError::Rpc(transport);
+    }
     match path.parent().and_then(ployz_core::startup_refusal) {
-        Some(refusal) if transport.local && !named => {
-            ConnectError::Rpc(transport.caused_by(refusal))
-        }
-        Some(_) | None => ConnectError::Rpc(transport),
+        Some(refusal) => ConnectError::Rpc(transport.caused_by(refusal)),
+        None => ConnectError::Rpc(transport),
     }
 }
 
