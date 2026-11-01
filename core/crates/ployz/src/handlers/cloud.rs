@@ -932,7 +932,7 @@ async fn ensure_uninitialized(
     }
     if !reset {
         return Err(Error::conflict(
-            "This Server is already initialised. This add's token now belongs to the Server's current identity, which --reset replaces: make a new token with `ployz server add --command --reset` where you're signed in, and run the line it prints on the Server."
+            "This Server is already initialised. This add's token now belongs to the Server's current identity, which --reset replaces: make a new token with `ployz server add --command --reset` where you're signed in, and run the line it prints on the Server, or rerun a signed-in `ployz server add root@HOST --reset`, which makes its own token."
                 .to_owned(),
         ));
     }

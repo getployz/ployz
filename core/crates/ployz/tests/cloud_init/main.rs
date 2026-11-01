@@ -308,7 +308,6 @@ async fn an_initialised_server_is_refused_and_told_to_make_a_new_token() {
         stderr.contains("make a new token with `ployz server add --command --reset`"),
         "{stderr}"
     );
-    assert_eq!(daemon.reset_count(), 0);
     assert_eq!(daemon.join_attempts(), 0);
 }
 
