@@ -50,19 +50,20 @@ pub(crate) fn follow(
         return Ok(());
     }
     let parent = scope::load_by_id(tx, parent)?;
-    // What the Parent's Applied State and latest Saved State both lack, it removed. A
-    // forgotten Cluster empties Applied State alone.
+    // What the Parent's Applied State lacks, it removed. An earlier removal must be
+    // gone from its latest Saved State too: a forgotten Cluster empties Applied State
+    // alone. This Deployment's own removals hold even when it ships an older revision.
     let suffix_of_parent = suffix(tx, &parent)?;
     let applied = deployment::applied_state(tx, &parent.summary.id, &parent.working)?;
     let applied = Cells::of(&applied, &suffix_of_parent);
     let saved = review::latest_saved(tx, &parent.summary.id)?
         .map(|saved| Cells::of(&saved.intent, &suffix_of_parent));
-    let removed = |lineage: &str| {
-        let node = RowId::node(lineage);
-        *applied.at(&node) == Cell::Absent
+    let removed = |lineage: &str| *applied.at(&RowId::node(lineage)) == Cell::Absent;
+    let removed_since = |lineage: &str| {
+        removed(lineage)
             && saved
                 .as_ref()
-                .is_none_or(|saved| *saved.at(&node) == Cell::Absent)
+                .is_none_or(|saved| *saved.at(&RowId::node(lineage)) == Cell::Absent)
     };
     for row in &branches {
         let branch = row.parse::<EnvironmentId>(0, "Branch")?;
@@ -98,7 +99,7 @@ pub(crate) fn follow(
             if arrived.row == RowId::node(lineage)
                 && matches!(arrived.how, How::Follow)
                 && matches!(arrived.arrival, Arrival::Pending { .. })
-                && removed(lineage)
+                && removed_since(lineage)
             {
                 left.insert(lineage.to_owned());
             }

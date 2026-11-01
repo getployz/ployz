@@ -2542,3 +2542,34 @@ fn a_node_the_parent_still_holds_stays_after_its_cluster_is_forgotten() {
     backend::confirm(&store, &admitted, &claimed, &[&["web"], &["alpha"]], 1);
     assert!(holds(&store, &who, "fix-web", "alpha"));
 }
+
+/// Redeploying an older revision removes what came after it, though the latest Saved
+/// State still holds it: the removal follows as one saved does.
+#[test]
+fn a_node_a_rollback_removes_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    add_service(&store, &who, 20, "alpha");
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "alpha"));
+    let rollback =
+        ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::Retry(ployz_store::Retry {
+                id: rollback.clone(),
+                deployment: ployz_store::DeploymentId::parse(
+                    "00000000-0000-4000-8000-000000000101",
+                )
+                .unwrap(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    backend::run(&store, &rollback);
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+}
