@@ -288,17 +288,9 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let id = &environment.summary.id;
     let saved = latest_saved(tx, id)?;
     let head = crate::deployment::head(tx, environment)?;
-    let mut introductions = introductions(tx, environment)?;
-    sealed::hide_sealed(tx, id, &mut introductions, &environment.working)?;
     let before = Before::of(tx, environment, saved.as_ref(), &head)?;
     let deployed = approval::deployed(&head);
-    let mut view = compare(
-        environment,
-        saved.as_ref(),
-        &head,
-        &deployed,
-        (&before, &introductions),
-    )?;
+    let mut view = compare(environment, saved.as_ref(), &head, &deployed, &before)?;
     let cluster_domains = if crate::domain::has_generated(&deployed) {
         crate::deployment::cluster_domains(tx, id, &head)?
     } else {
@@ -349,12 +341,15 @@ fn by_name(changes: &mut [NodeChange]) {
     });
 }
 
-/// What a review shows as the before side: Applied State, the submitted revision
-/// and Saved State, with each plain value sealed since shown sealed. Only shown:
-/// tokens, effects and planning read them as they are.
+/// What a review shows as the before side: Node Introductions, Applied State, the
+/// submitted revision and Saved State, with each plain value sealed since shown
+/// sealed. Only shown: tokens, effects and planning read Head and Saved State as
+/// they are.
 struct Before {
+    introductions: SavedEnvironmentIntent,
     applied: SavedEnvironmentIntent,
-    submitted: SavedEnvironmentIntent,
+    /// None when nothing submitted differs from Applied State.
+    submitted: Option<SavedEnvironmentIntent>,
     saved: Option<SavedEnvironmentIntent>,
 }
 
@@ -365,14 +360,19 @@ impl Before {
         saved: Option<&Saved>,
         head: &Head,
     ) -> Result<Self, RpcError> {
-        let id = &environment.summary.id;
+        let mut since = sealed::SealedSince::new(&environment.summary.id, &environment.working);
+        let mut introductions = introductions(tx, environment)?;
+        since.hide(tx, &mut introductions)?;
         let mut hidden = |intent: &SavedEnvironmentIntent| {
             let mut intent = intent.clone();
-            sealed::hide_sealed(tx, id, &mut intent, &environment.working).map(|()| intent)
+            since.hide(tx, &mut intent).map(|()| intent)
         };
         Ok(Self {
+            introductions,
             applied: hidden(&head.applied)?,
-            submitted: hidden(&head.intent)?,
+            submitted: (head.intent != head.applied)
+                .then(|| hidden(&head.intent))
+                .transpose()?,
             saved: saved.map(|saved| hidden(&saved.intent)).transpose()?,
         })
     }
@@ -390,7 +390,7 @@ fn compare(
     saved: Option<&Saved>,
     head: &Head,
     deployed: &SavedEnvironmentIntent,
-    (before, introductions): (&Before, &SavedEnvironmentIntent),
+    before: &Before,
 ) -> Result<DiffView, RpcError> {
     let id = &environment.summary.id;
     let project = |token: &str, intent: &SavedEnvironmentIntent| projection(id, token, intent);
@@ -398,8 +398,11 @@ fn compare(
         working: project("working", &environment.working),
         applied: project("applied", &before.applied),
         saved: before.saved.as_ref().map(|saved| project("saved", saved)),
-        submitted: (head.intent != head.applied).then(|| project(&head.token, &before.submitted)),
-        node_introductions: project("introductions", introductions),
+        submitted: before
+            .submitted
+            .as_ref()
+            .map(|submitted| project(&head.token, submitted)),
+        node_introductions: project("introductions", &before.introductions),
     })
     .map_err(|_| error::corrupt("Environment document"))?;
     let intents = [&environment.working, &head.intent];

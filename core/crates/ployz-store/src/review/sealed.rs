@@ -27,28 +27,6 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
     }
 }
 
-/// Show sealed each plain value `baseline` keeps that is sealed since: by the
-/// Environment, now or before it deleted or added the variable again, or, for the
-/// value it was made with or copied, by its Parent, the node's owner or an
-/// Environment above them. A review compares Working State with a Node
-/// Introduction, Applied State, a submitted revision or Saved State, each of which
-/// may keep a plain value from before the seal, but never reads a sealed value
-/// back. The fingerprint stays, so the comparison still sees whether the value
-/// changed.
-pub(crate) fn hide_sealed(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    baseline: &mut SavedEnvironmentIntent,
-    working: &SavedEnvironmentIntent,
-) -> Result<(), RpcError> {
-    each_sealed_since(tx, environment, baseline, working, |was, _| {
-        was.value = SavedVariableValue::Secret {
-            encrypted_value: None,
-        };
-        was.generated = None;
-    })
-}
-
 /// Read each plain variable of the `copied` Services in `running`, what `owner`
 /// runs or tried to, as the owner holds it now: a seal saved but not yet deployed,
 /// or whose deploy failed, leaves the plain value in Applied State, and one made
@@ -102,95 +80,145 @@ pub(crate) fn seal_running(
     Ok(())
 }
 
-/// Make Not set each plain value `baseline` keeps that [`hide_sealed`] shows
-/// sealed: a discard brings the variable back sealed without a value, never as the
-/// earlier plain value. One the Environment holds sealed now, with a value, keeps
-/// its plain value, so the discard refuses to overwrite the sealed one, as it
-/// always has.
-pub(crate) fn unset_sealed(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    baseline: &mut SavedEnvironmentIntent,
-    working: &SavedEnvironmentIntent,
-) -> Result<(), RpcError> {
-    each_sealed_since(tx, environment, baseline, working, |was, held| {
-        if held {
-            return;
-        }
-        was.value = SavedVariableValue::SecretWithoutValue;
-        was.value_fingerprint.clear();
-        was.generated = None;
-    })
+/// What sealed each variable since a baseline kept it, read once for every baseline
+/// a review or discard compares Working State with: a Node Introduction, Applied
+/// State, a submitted revision or Saved State, each of which may keep a plain
+/// value from before the seal. A variable is sealed since when the Environment
+/// holds it sealed now, or held it sealed before deleting or adding it again, or,
+/// for the value it was made with or copied, when its Parent, the node's owner or
+/// an Environment above them sealed it.
+pub(crate) struct SealedSince<'env> {
+    environment: &'env EnvironmentId,
+    working: &'env SavedEnvironmentIntent,
+    // Read only for a variable changed, deleted or added again: the ledgers here
+    // and above scan every save.
+    ever: Option<EverSealed>,
+    chain: Option<Chain>,
 }
 
-/// Apply `seal` to each plain variable `baseline` keeps that is sealed since, as
-/// [`hide_sealed`] says, with whether `working` holds it sealed now, with a value.
-fn each_sealed_since(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    baseline: &mut SavedEnvironmentIntent,
-    working: &SavedEnvironmentIntent,
-    seal: impl Fn(&mut SavedVariableIntent, bool),
-) -> Result<(), RpcError> {
-    // Read only for a variable changed, deleted or added again: the ledgers here and
-    // above scan every save.
-    let mut ever = None;
-    let mut chain = None;
-    for service in &mut baseline.services {
-        let now = working
-            .services
-            .iter()
-            .find(|now| now.id == service.id)
-            .map(|now| &now.variables);
-        for was in &mut service.variables {
-            if sealed(&was.value) {
-                continue;
+impl<'env> SealedSince<'env> {
+    pub(crate) const fn new(
+        environment: &'env EnvironmentId,
+        working: &'env SavedEnvironmentIntent,
+    ) -> Self {
+        Self {
+            environment,
+            working,
+            ever: None,
+            chain: None,
+        }
+    }
+
+    /// Show sealed each plain value `baseline` keeps that is sealed since: a review
+    /// never reads a sealed value back. The fingerprint stays, so the comparison
+    /// still sees whether the value changed.
+    pub(crate) fn hide(
+        &mut self,
+        tx: &mut dyn Tx,
+        baseline: &mut SavedEnvironmentIntent,
+    ) -> Result<(), RpcError> {
+        self.each(tx, baseline, |was, _| {
+            was.value = SavedVariableValue::Secret {
+                encrypted_value: None,
+            };
+            was.generated = None;
+        })
+    }
+
+    /// Make Not set each plain value `baseline` keeps that [`Self::hide`] shows
+    /// sealed: a discard brings the variable back sealed without a value, never as
+    /// the earlier plain value. One the Environment holds sealed now, with a value,
+    /// keeps its plain value, so the discard refuses to overwrite the sealed one, as
+    /// it always has.
+    pub(crate) fn unset(
+        &mut self,
+        tx: &mut dyn Tx,
+        baseline: &mut SavedEnvironmentIntent,
+    ) -> Result<(), RpcError> {
+        self.each(tx, baseline, |was, held| {
+            if held {
+                return;
             }
-            let now = now.and_then(|now| {
-                now.iter()
-                    .find(|now| now.id == was.id)
-                    .or_else(|| now.iter().find(|now| now.key == was.key))
-            });
-            let sealed_now = match now {
-                Some(now) if sealed(&now.value) => true,
-                Some(now) if now.id == was.id && now.key == was.key && now.value == was.value => {
-                    false
+            was.value = SavedVariableValue::SecretWithoutValue;
+            was.value_fingerprint.clear();
+            was.generated = None;
+        })
+    }
+
+    /// Apply `seal` to each plain variable `baseline` keeps that is sealed since,
+    /// with whether Working State holds it sealed now, with a value.
+    fn each(
+        &mut self,
+        tx: &mut dyn Tx,
+        baseline: &mut SavedEnvironmentIntent,
+        seal: impl Fn(&mut SavedVariableIntent, bool),
+    ) -> Result<(), RpcError> {
+        let Self {
+            environment,
+            working,
+            ever,
+            chain,
+        } = self;
+        for service in &mut baseline.services {
+            let now = working
+                .services
+                .iter()
+                .find(|now| now.id == service.id)
+                .map(|now| &now.variables);
+            for was in &mut service.variables {
+                if sealed(&was.value) {
+                    continue;
                 }
-                // Changed in place: never sealed here, as a sealed value never turns plain.
-                Some(now) if now.id == was.id => sealed_above(
-                    tx,
-                    &mut chain,
-                    environment,
-                    (&service.id, &service.lineage_id),
-                    was,
-                )?,
-                Some(_) | None => {
-                    if ever.is_none() {
-                        ever = Some(EverSealed::load(tx, environment.as_str())?);
+                let now = now.and_then(|now| {
+                    now.iter()
+                        .find(|now| now.id == was.id)
+                        .or_else(|| now.iter().find(|now| now.key == was.key))
+                });
+                let sealed_now = match now {
+                    Some(now) if sealed(&now.value) => true,
+                    Some(now)
+                        if now.id == was.id && now.key == was.key && now.value == was.value =>
+                    {
+                        false
                     }
-                    let own = ever.as_ref().is_some_and(|ever| match now {
-                        Some(_) => ever.holds_id(&service.id, was),
-                        None => ever.holds(&service.id, was),
-                    });
-                    own || sealed_above(
+                    // Changed in place: never sealed here, as a sealed value never turns plain.
+                    Some(now) if now.id == was.id => sealed_above(
                         tx,
-                        &mut chain,
+                        chain,
                         environment,
                         (&service.id, &service.lineage_id),
                         was,
-                    )?
+                    )?,
+                    Some(_) | None => {
+                        if ever.is_none() {
+                            *ever = Some(EverSealed::load(tx, environment.as_str())?);
+                        }
+                        let own = ever.as_ref().is_some_and(|ever| match now {
+                            Some(_) => ever.holds_id(&service.id, was),
+                            None => ever.holds(&service.id, was),
+                        });
+                        own || sealed_above(
+                            tx,
+                            chain,
+                            environment,
+                            (&service.id, &service.lineage_id),
+                            was,
+                        )?
+                    }
+                };
+                if sealed_now {
+                    // Only a sealed value is kept: one Not set has nothing to keep.
+                    seal(
+                        was,
+                        now.is_some_and(|now| {
+                            matches!(now.value, SavedVariableValue::Secret { .. })
+                        }),
+                    );
                 }
-            };
-            if sealed_now {
-                // Only a sealed value is kept: one Not set has nothing to keep.
-                seal(
-                    was,
-                    now.is_some_and(|now| matches!(now.value, SavedVariableValue::Secret { .. })),
-                );
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Whether `was`, of `environment`'s node with this ID and lineage, is the value

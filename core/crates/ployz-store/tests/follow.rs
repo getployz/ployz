@@ -2248,7 +2248,7 @@ fn discarding_a_seal_before_it_deploys_never_brings_the_plain_value_back() {
         &[("web.env.TOKEN", json!({ "secret": sealed }))],
     );
 
-    let _ = store.write(
+    let discarded = store.write(
         &who,
         &Discard {
             environment: at("production"),
@@ -2258,6 +2258,7 @@ fn discarding_a_seal_before_it_deploys_never_brings_the_plain_value_back() {
         },
     );
 
+    assert_eq!(discarded.unwrap_err().code, RpcErrorCode::Conflict);
     assert_eq!(
         web(&store, &who, "production")["env"]["TOKEN"],
         json!({ "secret": true })
@@ -2286,6 +2287,76 @@ fn a_deployed_branchs_own_deployed_value_still_shows_after_its_parent_seals() {
     );
     discard(&store, &who, "qa", "web.env.TOKEN");
     assert_eq!(web(&store, &who, "qa")["env"]["TOKEN"], json!("plain-own"));
+}
+
+/// A value a deployed Branch set and saved itself before any seal was never sealed
+/// either: its review still shows it.
+#[test]
+fn a_deployed_branchs_own_saved_value_still_shows_after_its_parent_seals() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    set(&store, &who, "qa", &[("web.env.TOKEN", json!("plain-own"))]);
+    let publish = Publish {
+        id: None,
+        environment: at("qa"),
+        version: Some(diff(&store, &who, "qa").version),
+        message: None,
+        accept_volume_loss: Vec::new(),
+    };
+    store
+        .write_trusted(&who, &publish, &Trusted::default())
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    let review = diff(&store, &who, "qa");
+    let draft = review
+        .draft_changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|setting| setting.path == "web.env.TOKEN")
+        .unwrap();
+    assert_eq!(
+        (draft.before.clone(), draft.after.clone()),
+        (json!("plain-own"), json!("plain-edit"))
+    );
+}
+
+/// Discarding back to Saved State a deployed Branch's edit of a value its Parent
+/// sealed since brings it back Not set.
+#[test]
+fn discarding_to_saved_a_value_its_parent_sealed_since_brings_it_back_not_set() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: at("qa"),
+                target: Some(ployz_store::DiscardTarget::Saved),
+                path: Some(SettingPath::parse("web.env.TOKEN").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
 }
 
 /// A deployed Branch's in-place edit of a value nothing sealed still shows the
