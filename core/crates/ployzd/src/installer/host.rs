@@ -22,7 +22,8 @@ use super::{
     Error, InstallPaths, PLOYZ_USER, command_exists, refuse, run_apt, run_host, systemctl,
 };
 
-const INSTALL_UNITS_TIMEOUT: Duration = Duration::from_secs(10);
+// Guards a wedged child, not latency: its fsyncs can take seconds each on a busy disk.
+const INSTALL_UNITS_TIMEOUT: Duration = Duration::from_secs(60);
 const USAGE_ERROR: i32 = 2;
 
 const DOCKER_DAEMON_CONFIG: &str = r#"{
