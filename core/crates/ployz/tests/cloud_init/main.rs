@@ -258,6 +258,60 @@ async fn cloud_zfs_rejects_a_remote_machine_before_join() {
     assert_eq!(details.phase, LocalMachinePhase::Uninitialized);
 }
 
+/// Cloud registers a forgotten Server afresh, so the plain add is refused. Its token now
+/// belongs to the forgotten identity, which `--reset` replaces, so the refusal sends the
+/// user for a new token before resetting anything.
+#[tokio::test]
+async fn a_forgotten_server_is_refused_and_told_to_make_a_new_token() {
+    let registration = registration();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration).participating();
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let mut child = harness::cli()
+        .args([
+            "--connect",
+            &format!("ssh://root@{machine_addr}"),
+            "server",
+            "add",
+            "--token-stdin",
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(
+        &mut child.stdin.take().unwrap(),
+        format!("{TOKEN}\n").as_bytes(),
+    )
+    .await
+    .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("already participates, but Cloud doesn't list it as joined"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("make a new token with `ployz server add --command`"),
+        "{stderr}"
+    );
+    assert_eq!(daemon.reset_count(), 0);
+    assert_eq!(daemon.join_attempts(), 0);
+}
+
 #[tokio::test]
 async fn cloud_init_initialize_participates() {
     let founder = founder_machine();
