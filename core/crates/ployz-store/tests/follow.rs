@@ -1855,7 +1855,7 @@ fn a_branch_of_a_branch_that_deleted_a_value_before_the_root_sealed_it_never_sho
     assert!(!shown.contains("plain-private"), "{shown}");
 }
 
-/// Nor does one three Branches down.
+/// Nor does one three Branches down, though neither Branch above it took the seal.
 #[test]
 fn a_branch_three_down_that_deleted_a_value_before_the_root_sealed_it_never_shows_it() {
     let (store, who) = shop();
@@ -1869,6 +1869,8 @@ fn a_branch_three_down_that_deleted_a_value_before_the_root_sealed_it_never_show
     branch(&store, &who, 10, "production", "qa");
     branch(&store, &who, 11, "qa", "qa-two");
     branch(&store, &who, 12, "qa-two", "qa-three");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    unset(&store, &who, "qa-two", "web.env.TOKEN");
     unset(&store, &who, "qa-three", "web.env.TOKEN");
     seal_token(&store, &who, 3);
 
@@ -1923,6 +1925,109 @@ fn a_branch_of_a_branch_follows_a_renamed_variable_to_the_root_seal() {
     );
     let shown = serde_json::to_string(&review).unwrap();
     assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// A Parent's own in-place change isn't what the root sealed: a Branch made from
+/// it after the change that deletes it still shows it, and a discard brings it back.
+#[test]
+fn a_branch_of_a_branch_deleting_a_value_its_parent_changed_before_a_seal_still_shows_it() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    branch(&store, &who, 11, "qa", "qa-two");
+    unset(&store, &who, "qa-two", "web.env.TOKEN");
+    seal_token(&store, &who, 3);
+
+    assert_eq!(
+        token_row(&diff(&store, &who, "qa-two")),
+        (json!("plain-edit"), Value::Null)
+    );
+    discard(&store, &who, "qa-two", "web.env.TOKEN");
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-edit")
+    );
+}
+
+/// A Branch of a Branch that changes in place a value the root sealed since
+/// reviews it from sealed.
+#[test]
+fn a_branch_of_a_branch_changing_a_value_before_the_root_sealed_it_never_shows_it() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    branch(&store, &who, 11, "qa", "qa-two");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "qa-two",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    let review = diff(&store, &who, "qa-two");
+    assert_eq!(
+        token_row(&review),
+        (json!({ "secret": true }), json!("plain-edit"))
+    );
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// A Branch's rename of a variable its Parent sealed since reviews the old name
+/// from sealed.
+#[test]
+fn a_rename_made_before_its_parent_sealed_reviews_the_old_name_from_sealed() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("qa"),
+                expect: None,
+                changes: vec![Change::Rename {
+                    path: SettingPath::parse("web.env.TOKEN").unwrap(),
+                    to: "API_TOKEN".to_owned(),
+                    update_references: false,
+                }],
+            },
+        )
+        .unwrap();
+    seal_token(&store, &who, 3);
+
+    let review = diff(&store, &who, "qa");
+    assert_eq!(
+        token_row(&review).0,
+        json!({ "secret": true }),
+        "{review:?}"
+    );
 }
 
 /// A Parent's plain variable added after the root sealed one under its key isn't

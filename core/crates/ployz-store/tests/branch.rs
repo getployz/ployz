@@ -1953,6 +1953,42 @@ fn an_own_copy_of_an_own_copy_that_deleted_a_value_before_the_root_sealed_it_nev
     );
 }
 
+/// An owner's own in-place change isn't what the root sealed: an Own Copy of it
+/// that deletes it still shows it.
+#[test]
+fn an_own_copy_deleting_a_value_its_owner_changed_before_a_seal_still_shows_it() {
+    let (store, who) = shop();
+    copy_db_with_plain_token(&store, &who);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("db.env.TOKEN", json!("plain-edit"))],
+    );
+    deploy(&store, &who, "fix-web", 3, true);
+    let mut create = branch("fix-db", "fix-web", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    deploy(&store, &who, "fix-db", 4, true);
+    store
+        .write(
+            &who,
+            &CopyNode {
+                environment: at("fix-db"),
+                node: ServiceName::parse("db").unwrap(),
+                expect: None,
+            },
+        )
+        .unwrap();
+    unset(&store, &who, "fix-db", "db.env.TOKEN");
+    seal_db_token(&store, &who, 5);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-db", "db.env.TOKEN"),
+        (json!("plain-edit"), Value::Null)
+    );
+}
+
 fn discard_db_token(store: &ConfigStore, who: &Actor, environment: &str) {
     store
         .write(
