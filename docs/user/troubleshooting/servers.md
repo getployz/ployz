@@ -437,7 +437,7 @@ still holds the founding for that server, and `--reset` gives the server a new i
 rerun with `--reset` alone waits for a founder that never comes.
 
 1. Wait 10 minutes. Until then Ployz Cloud counts the founding as a server still joining.
-2. Where you're signed in, run `ployz server forget --confirm <your organization>`, or go to
+2. Where you're signed in, run `ployz server forget --confirm <your organization's slug>`, or go to
    **Organization** and, under **Danger**, click **Forget servers**. This drops the founding.
    **Reset founding attempt** can't drop it yet
    ([#3743](https://github.com/getployz/ployz/issues/3743)).
@@ -458,9 +458,9 @@ because it already runs Ployz, see
    `ployz server add --command` for a new one; it picks up where the server left off.
 2. If that server is gone, or you want to start over, make sure it's stopped or erased at your
    provider. Then go to **Organization** and, under **Danger**, click **Forget servers**, or run
-   `ployz server forget --confirm <your organization>` where you're signed in. **Reset founding
-   attempt** can't yet clear a first server that never finished, and it deletes your enrollment
-   tokens ([#3743](https://github.com/getployz/ployz/issues/3743)).
+   `ployz server forget --confirm <your organization's slug>` where you're signed in. **Reset
+   founding attempt** can't yet clear a first server that never finished
+   ([#3743](https://github.com/getployz/ployz/issues/3743)).
 3. Add a server again.
 
 ## Can't reach your servers right now
