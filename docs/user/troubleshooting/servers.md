@@ -465,7 +465,7 @@ still holds the founding for that server, and `--reset` gives the server a new i
 rerun with `--reset` alone waits for a founder that never comes.
 
 1. Wait 10 minutes. Until then Ployz Cloud counts the founding as a server still joining.
-2. Where you're signed in, run `ployz server forget --confirm <your organization>`, or go to
+2. Where you're signed in, run `ployz server forget --confirm <your organization's slug>`, or go to
    **Organization** and, under **Danger**, click **Forget servers**. This drops the founding.
    **Reset founding attempt** can't drop it yet
    ([#3743](https://github.com/getployz/ployz/issues/3743)).
