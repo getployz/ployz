@@ -219,14 +219,46 @@ pub fn finish(
     id: &ployz_store::DeploymentId,
     claimed: ployz_store::Claimed,
 ) -> serde_json::Value {
+    finish_confirming(store, id, claimed, &[])
+}
+
+/// Deploy `environment` as `n`, the runner confirming the Services of each of
+/// `batches` mid-run, in order, as it does when they finish at different times.
+pub fn deploy_in_batches(
+    store: &ConfigStore,
+    who: &ployz_store::Actor,
+    environment: &str,
+    n: u8,
+    batches: &[&[&str]],
+) -> serde_json::Value {
+    let id = admit(store, who, environment, n);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id, &runner).unwrap();
+    finish_confirming(store, &id, claimed, batches)
+}
+
+/// [`finish`], confirming the Services of each of `batches` before the outcome.
+pub fn finish_confirming(
+    store: &ConfigStore,
+    id: &ployz_store::DeploymentId,
+    claimed: ployz_store::Claimed,
+    batches: &[&[&str]],
+) -> serde_json::Value {
     use serde_json::json;
     let runner = ployz_store::RunnerId::parse("runner").unwrap();
-    let names: Vec<String> = claimed
+    let mut names: Vec<String> = claimed
         .intent
         .target
         .iter()
         .map(|service| service.name.to_string())
         .collect();
+    // A Service a batch confirms, removals among them, has its own operation, so it
+    // waits for its batch.
+    for name in batches.iter().flat_map(|batch| batch.iter()) {
+        if !names.iter().any(|known| known == name) {
+            names.push((*name).to_owned());
+        }
+    }
     let operation = |index: usize| {
         json!({"type": "remove_container", "machine_id": "a".repeat(32),
                "container_id": format!("{index:064x}")})
@@ -243,6 +275,15 @@ pub fn finish(
     store
         .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
         .unwrap();
+    for batch in batches {
+        let services = batch
+            .iter()
+            .map(|name| ployz_core::ServiceName::parse(*name).unwrap())
+            .collect();
+        store
+            .record(id, &runner, ployz_store::RunEvidence::Confirmed(services))
+            .unwrap();
+    }
     let outcome: ployz_core::DeployOutcome<ployz_core::ExecutionError> =
         serde_json::from_value(json!({
             "type": "success",

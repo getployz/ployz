@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 mod backend;
-use backend::deploy;
+use backend::{deploy, deploy_in_batches};
 
 fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
@@ -2271,4 +2271,250 @@ fn seal_token(store: &ConfigStore, who: &Actor, n: u8) {
         &[("web.env.TOKEN", json!({ "secret": sealed }))],
     );
     deploy(store, who, "production", n);
+}
+
+/// production adds Service `name` as lineage `n`, `FOO=1`.
+fn add_service(store: &ConfigStore, who: &Actor, n: u8, name: &str) {
+    store
+        .write(
+            who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                environment: at("production"),
+                name: ServiceName::parse(name).unwrap(),
+                image: Some("nginx:1.29-alpine".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        store,
+        who,
+        "production",
+        &[(&format!("{name}.env.FOO"), json!("1"))],
+    );
+}
+
+/// production adds `alpha` as lineage `n` and `beta` as `n + 1`, which references it.
+fn add_pair(store: &ConfigStore, who: &Actor, n: u8, (alpha, beta): (&str, &str)) {
+    add_service(store, who, n, alpha);
+    add_service(store, who, n + 1, beta);
+    set(
+        store,
+        who,
+        "production",
+        &[(
+            &format!("{beta}.env.A"),
+            json!(format!("${{{{ {alpha}.FOO }}}}")),
+        )],
+    );
+}
+
+fn remove_services(store: &ConfigStore, who: &Actor, names: &[&str]) {
+    for name in names {
+        store
+            .write(
+                who,
+                &ployz_store::RemoveService {
+                    environment: at("production"),
+                    service: ServiceName::parse(*name).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+}
+
+/// Whether `environment`'s Working State holds Service `name`.
+fn holds(store: &ConfigStore, who: &Actor, environment: &str, name: &str) -> bool {
+    services(store, who, environment).contains(&name.to_owned())
+}
+
+/// #3733: the runner confirms a removal before the one referencing it, so the first
+/// Follow keeps the referenced node; the next one, for the referrer, takes it too.
+#[test]
+fn a_node_confirmed_before_its_referrer_still_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    add_pair(&store, &who, 20, ("alpha", "beta"));
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "alpha"));
+    remove_services(&store, &who, &["alpha", "beta"]);
+    deploy_in_batches(&store, &who, "production", 3, &[&["alpha"], &["beta"]]);
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+    assert!(!holds(&store, &who, "fix-web", "beta"));
+}
+
+/// #3733 as the soak found it: a node the Branch references stays beside them.
+#[test]
+fn a_node_confirmed_before_its_referrer_follows_out_beside_one_the_branch_references() {
+    let (store, who) = shop();
+    add_service(&store, &who, 22, "refd");
+    add_pair(&store, &who, 20, ("alpha", "beta"));
+    deploy(&store, &who, "production", 2);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.REF", json!("${{ refd.FOO }}"))],
+    );
+    remove_services(&store, &who, &["alpha", "beta", "refd"]);
+    deploy_in_batches(
+        &store,
+        &who,
+        "production",
+        3,
+        &[&["refd"], &["alpha"], &["beta"]],
+    );
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+    assert!(!holds(&store, &who, "fix-web", "beta"));
+    assert!(holds(&store, &who, "fix-web", "refd"));
+}
+
+/// Round g of the soak: three pairs and a referenced node, each confirmed alone.
+#[test]
+fn pairs_confirmed_one_by_one_all_follow_out_of_the_branch() {
+    let (store, who) = shop();
+    add_service(&store, &who, 30, "refd");
+    for (n, pair) in [
+        (20, ("alpha1", "beta1")),
+        (22, ("alpha2", "beta2")),
+        (24, ("alpha3", "beta3")),
+    ] {
+        add_pair(&store, &who, n, pair);
+    }
+    deploy(&store, &who, "production", 2);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.REF", json!("${{ refd.FOO }}"))],
+    );
+    let all = [
+        "refd", "alpha1", "alpha2", "beta1", "alpha3", "beta3", "beta2",
+    ];
+    remove_services(&store, &who, &all);
+    let batches: Vec<&[&str]> = all.iter().map(std::slice::from_ref).collect();
+    deploy_in_batches(&store, &who, "production", 3, &batches);
+
+    for name in &all[1..] {
+        assert!(!holds(&store, &who, "fix-web", name), "{name}");
+    }
+    assert!(holds(&store, &who, "fix-web", "refd"));
+}
+
+/// A node the Branch kept while it referenced it goes at the Parent's next deploy
+/// once nothing references it.
+#[test]
+fn a_kept_node_the_branch_stops_referencing_follows_out_at_the_next_deploy() {
+    let (store, who) = shop();
+    add_service(&store, &who, 20, "alpha");
+    deploy(&store, &who, "production", 2);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.REF", json!("${{ alpha.FOO }}"))],
+    );
+    remove_services(&store, &who, &["alpha"]);
+    deploy(&store, &who, "production", 3);
+    assert!(holds(&store, &who, "fix-web", "alpha"));
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("fix-web"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.REF").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    set(&store, &who, "production", &[("db.env.OTHER", json!("1"))]);
+    deploy(&store, &who, "production", 4);
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+}
+
+/// The referrer confirmed first: the referenced node goes in the next Follow.
+#[test]
+fn a_referrer_confirmed_first_takes_what_it_references_out_too() {
+    let (store, who) = shop();
+    add_pair(&store, &who, 20, ("alpha", "beta"));
+    deploy(&store, &who, "production", 2);
+    remove_services(&store, &who, &["alpha", "beta"]);
+    deploy_in_batches(&store, &who, "production", 3, &[&["beta"], &["alpha"]]);
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+    assert!(!holds(&store, &who, "fix-web", "beta"));
+}
+
+/// What the Branch made its own stays, however the runner confirms the removals.
+#[test]
+fn a_node_the_branch_made_its_own_stays_across_confirmed_batches() {
+    type Own = fn(&ConfigStore, &Actor);
+    let changed: Own = |store, who| set(store, who, "fix-web", &[("alpha.env.MINE", json!("1"))]);
+    let saved: Own = |store, who| {
+        let publish = Publish {
+            id: None,
+            environment: at("fix-web"),
+            version: Some(diff(store, who, "fix-web").version),
+            message: None,
+            accept_volume_loss: Vec::new(),
+        };
+        store
+            .write_trusted(who, &publish, &Trusted::default())
+            .unwrap();
+    };
+    let deployed: Own = |store, who| {
+        deploy(store, who, "fix-web", 10);
+    };
+    let referenced: Own = |store, who| {
+        set(
+            store,
+            who,
+            "fix-web",
+            &[("web.env.REF", json!("${{ alpha.FOO }}"))],
+        )
+    };
+    for (case, own) in [
+        ("changed", changed),
+        ("saved", saved),
+        ("deployed", deployed),
+        ("referenced", referenced),
+    ] {
+        let (store, who) = shop();
+        add_pair(&store, &who, 20, ("alpha", "beta"));
+        deploy(&store, &who, "production", 2);
+        own(&store, &who);
+        remove_services(&store, &who, &["alpha", "beta"]);
+        deploy_in_batches(&store, &who, "production", 3, &[&["alpha"], &["beta"]]);
+        assert!(holds(&store, &who, "fix-web", "alpha"), "{case}");
+    }
+}
+
+/// A Branch being shut down gets nothing taken back: Follow skips it.
+#[test]
+fn a_branch_being_shut_down_keeps_what_followed() {
+    let (store, who) = shop();
+    add_pair(&store, &who, 20, ("alpha", "beta"));
+    deploy(&store, &who, "production", 2);
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::ShutDown(ployz_store::ShutDown {
+                id: ployz_store::DeploymentId::parse(uuid(50)).unwrap(),
+                environment: at("fix-web"),
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    remove_services(&store, &who, &["alpha", "beta"]);
+    deploy_in_batches(&store, &who, "production", 3, &[&["alpha"], &["beta"]]);
+
+    assert!(holds(&store, &who, "fix-web", "alpha"));
+    assert!(holds(&store, &who, "fix-web", "beta"));
 }
