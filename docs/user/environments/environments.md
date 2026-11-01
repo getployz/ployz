@@ -203,7 +203,10 @@ to take it.
 
 A removal doesn't follow, with one exception. When production removes a service, volume or config
 that reached staging only from production's deploys, staging never changed, saved or deployed it,
-and nothing else in staging references it, staging loses it too. Otherwise staging keeps it as its own: remove it there if you don't want
+and nothing else in staging references it, staging loses it too. One that something in staging
+still references goes at a later production deploy, once nothing does. Rolling production back to
+a revision without a service also removes it from staging, the same way, when staging only got it
+from production's deploys. Otherwise staging keeps it as its own: remove it there if you don't want
 it.
 
 ### Sync to another environment
