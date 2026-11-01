@@ -460,13 +460,21 @@ pub(crate) async fn follow_globals(
         },
     );
     let mut unarrived = Vec::new();
+    // A Server enrolled moments ago looks the same as one that never will join,
+    // so forgetting it is offered only with its condition.
+    let list = command(&["server", "ls"]);
     for (id, name) in not_arrived {
-        crate::ui::warn(format!(
-            "Server {name} shows no sign it ever joined, so Global catch-up did not wait on it."
-        ));
         let next = command(&["server", "forget", id.as_str(), "--confirm", "dead"]);
-        crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
+        crate::ui::warn(format!(
+            "Server {name} may still be joining, so Global catch-up did not wait on it; if `{}` \
+             keeps showing it down with no version, remove it with `{}`.",
+            crate::ui::pasteable(&list),
+            crate::ui::pasteable(&next)
+        ));
         unarrived.push(serde_json::json!({ "id": id, "name": name, "next": next }));
+    }
+    if !unarrived.is_empty() {
+        crate::ui::hint(&crate::ui::Hint::Inspect(list));
     }
     (unarrived, result)
 }

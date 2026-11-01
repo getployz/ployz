@@ -398,7 +398,8 @@ A check that can't finish adds no row. Instead it warns why, naming the servers 
 answer when it knows them, so no row doesn't prove a server answered. Status then exits 3, as it
 does when a server is down or didn't answer, so a script can tell its servers weren't all checked.
 A server that never joined shows as **Down** too, but it doesn't make status exit 3, since it never
-ran anything to miss. Take it out with `ployz server forget`.
+ran anything to miss. A server whose add is still running looks the same, so if `ployz server ls`
+keeps showing it down with no version, take it out with `ployz server forget`.
 While a deployment runs, status skips the copy check on purpose, and that alone doesn't make it exit 3. A context or `--connect` that reaches Ployz on this server
 through its local socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
 Cloud for server access once per run. The first `ployz status` or other server command for a
