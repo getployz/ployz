@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
-import type { DeploymentView } from "@ployz/sdk";
+import type { DeploymentView, DeploymentWarning } from "@ployz/sdk";
 import { ArrowLeftIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DeletionDialog } from "#/components/deletion-dialog";
@@ -141,19 +141,7 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
       ) : null}
       {storage ? <p role="status" className="text-sm">{storage}</p> : null}
 
-      {/* What it shipped despite: a secret or broken reference left out, or a Config file reference left empty. */}
-      {variableWarnings.length ? (
-        <ul aria-label="Warnings" className="flex flex-wrap gap-1.5">
-          {variableWarnings.map((warning) => (
-            <li key={deploymentWarningText(warning)}>
-              <Badge variant="warning">
-                {"broken" in warning && warning.broken ? <TriangleAlertIcon /> : <LockIcon />}
-                {deploymentWarningText(warning)}
-              </Badge>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <VariableWarnings warnings={variableWarnings} />
       {ingressWarnings.map((warning) => (
         <p key={warning.server} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
           <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}.
@@ -180,6 +168,24 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
         );
       })}
     </div>
+  );
+}
+
+/** What a Deployment shipped despite: a secret or broken reference left out, or a Config file reference left empty. */
+export function VariableWarnings({ warnings }: { warnings: readonly DeploymentWarning[] }) {
+  if (!warnings.length) return null;
+  return (
+    <ul aria-label="Warnings" className="flex flex-wrap gap-1.5">
+      {warnings.map((warning) => (
+        <li key={deploymentWarningText(warning)}>
+          {/* Wraps: a sealed reference's hint runs past the card, and its ways out are at the end. */}
+          <Badge variant="warning" className="h-auto items-start whitespace-normal text-left [&>svg]:mt-0.5 [&>svg]:shrink-0">
+            {"broken" in warning && warning.broken ? <TriangleAlertIcon /> : <LockIcon />}
+            {deploymentWarningText(warning)}
+          </Badge>
+        </li>
+      ))}
+    </ul>
   );
 }
 
