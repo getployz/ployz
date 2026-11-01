@@ -412,22 +412,25 @@ where
     EFut: Future<Output = Result<Ensure, Error>>,
     R: Future<Output = Result<(), Error>>,
 {
-    if kept
-        && tokio::time::timeout(KEPT_READY_TIMEOUT, wait_ready(&mut ready, &mut ensure))
-            .await
-            .is_err()
-    {
+    let kept_until = tokio::time::Instant::now() + KEPT_READY_TIMEOUT;
+    if kept && !wait_ready(&mut ready, &mut ensure, Some(kept_until)).await {
         tracing::warn!("kept Corrosion container did not answer; replacing it");
         replace.await?;
     }
-    wait_ready(ready, ensure).await;
+    wait_ready(ready, ensure, None).await;
     Ok(())
 }
 
-/// Polls until Corrosion answers. The keeper only starts once it does, so until then
-/// this ensures the container every [`KEEP_EVERY`] itself: one stopped through Docker
-/// would otherwise hold the daemon until [`START_TIMEOUT`] (#3706).
-async fn wait_ready<F, Fut, E, EFut>(mut ready: F, mut ensure: E)
+/// Polls until Corrosion answers, or returns false once `until` passes. The keeper only
+/// starts once it answers, so until then this ensures the container every [`KEEP_EVERY`]
+/// itself: one stopped through Docker would otherwise hold the daemon until
+/// [`START_TIMEOUT`] (#3706). `until` is checked between steps, never cancelling an
+/// ensure, so a slow Docker can't cost a kept Corrosion its last probe.
+async fn wait_ready<F, Fut, E, EFut>(
+    mut ready: F,
+    mut ensure: E,
+    until: Option<tokio::time::Instant>,
+) -> bool
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = bool>,
@@ -438,7 +441,10 @@ where
     let mut next_ensure = tokio::time::Instant::now() + KEEP_EVERY;
     loop {
         if ready().await {
-            return;
+            return true;
+        }
+        if until.is_some_and(|until| tokio::time::Instant::now() >= until) {
+            return false;
         }
         if tokio::time::Instant::now() >= next_ensure {
             report(ensure().await, &mut failing, KEEP_EVERY);
@@ -659,6 +665,7 @@ mod tests {
         wait_ready(
             || async { started.elapsed() >= Duration::from_secs(16) },
             || async { Ok(Ensure::Keep) },
+            None,
         )
         .await;
         assert!(
@@ -735,6 +742,74 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn kept_corrosion_stopped_through_docker_is_started_again_not_replaced() {
+        let started = Instant::now();
+        let running = std::cell::Cell::new(false);
+        // Docker refuses the first start; the next ensure starts it.
+        let ensures = std::cell::Cell::new(0);
+        let replaced = std::cell::Cell::new(false);
+        bounded_start(wait_ready_or_replace(
+            true,
+            || {
+                let ready = running.get();
+                async move { ready }
+            },
+            || {
+                ensures.set(ensures.get() + 1);
+                let ensured = if ensures.get() == 1 {
+                    Err(Error::Api("Docker refused the start".into()))
+                } else {
+                    Ok(if running.replace(true) {
+                        Ensure::Keep
+                    } else {
+                        Ensure::Start
+                    })
+                };
+                async move { ensured }
+            },
+            async {
+                replaced.set(true);
+                Ok(())
+            },
+        ))
+        .await
+        .unwrap();
+        assert!(!replaced.get());
+        assert_eq!(ensures.get(), 2);
+        assert!(
+            started.elapsed() < KEPT_READY_TIMEOUT,
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_docker_does_not_cost_a_kept_corrosion_its_last_probe() {
+        let started = Instant::now();
+        let answers_at = KEPT_READY_TIMEOUT - Duration::from_secs(2);
+        let replaced = std::cell::Cell::new(false);
+        bounded_start(wait_ready_or_replace(
+            true,
+            || {
+                let ready = started.elapsed() >= answers_at;
+                async move { ready }
+            },
+            // An inspect on a loaded dockerd, still running when the kept wait ends.
+            || async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(Ensure::Keep)
+            },
+            async {
+                replaced.set(true);
+                Ok(())
+            },
+        ))
+        .await
+        .unwrap();
+        assert!(!replaced.get());
     }
 
     #[test]
