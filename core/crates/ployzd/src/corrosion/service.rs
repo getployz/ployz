@@ -700,7 +700,10 @@ mod tests {
     async fn kept_corrosion_that_never_answers_is_replaced() {
         let (replaced, elapsed) = start_with(true, None).await;
         assert!(replaced);
-        assert!(elapsed >= KEPT_READY_TIMEOUT, "{elapsed:?}");
+        assert!(
+            elapsed >= KEPT_READY_TIMEOUT && elapsed < KEPT_READY_TIMEOUT + KEEP_EVERY,
+            "{elapsed:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
