@@ -224,6 +224,17 @@ attempt**, tick the confirmation and click **Reset enrollment**. The confirmatio
 erase the old Machine, but this server can keep running in its Cluster: the reset revokes Ployz
 Cloud's own access to it.
 
+## A forgotten server is refused when you add it again
+
+You'll see `Server web-2 already participates, but Cloud doesn't list it as joined`.
+
+If an add of this server just stopped partway, run the same command again in a minute. If you
+[forgot the server](../servers/manage-servers.md#forget-a-server-that-is-gone) and it kept running,
+its token is now tied to the server as it was before you forgot it, and `--reset` gives the server
+a new identity, so that token won't work after a reset. Make a new token with
+`ployz server add --command`, then run its line on the server with `--reset` added at the end. The
+reset removes every container Ployz runs on that server; volume data stays on the disk.
+
 ## The server doesn't finish joining
 
 You'll see `the joined Server did not become ready`, or `the first Server did not become ready` on
