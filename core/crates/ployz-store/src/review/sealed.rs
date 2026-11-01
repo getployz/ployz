@@ -49,10 +49,11 @@ pub(crate) fn hide_introduced(
 /// Read each plain variable of the `copied` Services in `running`, what `owner`
 /// runs or tried to, as the owner holds it now: a seal saved but not yet deployed,
 /// or whose deploy failed, leaves the plain value in Applied State, and one made
-/// after a failed save leaves it in that revision. A copy of either never takes it. A variable the owner's Working State holds sealed, by ID or
-/// else key, takes that seal; one it sealed and deleted since is sealed without a
-/// value (Not set); another added plain since under its key stays as it is, as
-/// History's [`super::Scrub`] reads them.
+/// after a failed save leaves it in that revision. A copy of either never takes
+/// it. A variable the owner's Working State holds sealed, by ID or else key, takes
+/// that seal; one it sealed and deleted since is sealed without a value (Not set);
+/// another added plain since under its key stays as it is, as History's
+/// [`super::Scrub`] reads them.
 pub(crate) fn seal_running(
     tx: &mut dyn Tx,
     owner: &scope::Environment,
