@@ -428,13 +428,28 @@ joined all the same. Forget the old row by its ID, which `ployz --json server ls
 [Forget a server that is gone](../servers/manage-servers.md#forget-a-server-that-is-gone). Then
 redeploy, so your apps and the ingress proxy start on the server again.
 
+## Your first server is refused because it isn't new
+
+You'll see `a new founding claim requires an uninitialized Server, but its local phase is ...`.
+
+Your first server already runs Ployz, so it can't found your organization as it is. Ployz Cloud
+still holds the founding for that server, and `--reset` gives the server a new identity, so a
+rerun with `--reset` alone waits for a founder that never comes.
+
+1. Where you're signed in, run `ployz cloud reset --yes` to give up that founding. You can also go
+   to **Organization** and click **Reset founding attempt**.
+2. Run `ployz server add --command --reset` for a new token, and run the line it prints on the
+   server. The reset removes every container Ployz runs on that server.
+
 ## My first server never finished joining
 
 You'll see `This Organization's Servers can't be reached` when you add another server, and an
 alert on the **Organization** page. The alert also shows while your first server installs, so give
 it a few minutes first.
 
-No other server can join until the first one finishes.
+No other server can join until the first one finishes. If adding the first server was refused
+because it already runs Ployz, see
+[Your first server is refused because it isn't new](#your-first-server-is-refused-because-it-isnt-new).
 
 1. If the first server still exists, run its command on it again. If its token expired, run
    `ployz server add --command` for a new one; it picks up where the server left off.

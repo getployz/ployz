@@ -443,6 +443,10 @@ where
     ))
 }
 
+/// Cloud holds the Organization's founding for this Server as it is, and `--reset`
+/// gives it a new identity, so a reset alone would wait on that founding.
+const FOUNDING_HELD: &str = "Cloud now holds your Organization's founding for this Server as it is, and --reset gives it a new identity: where you're signed in, run `ployz cloud reset --yes` to give up that founding, then make a new token with `ployz server add --command --reset` and run the line it prints on this Server.";
+
 enum FounderLocalState {
     Initialize,
     Resume { machine: Box<Machine> },
@@ -489,13 +493,13 @@ where
         | (InitializeMode::New, LocalMachinePhase::Uninitialized) => FounderLocalState::Initialize,
         (InitializeMode::New, phase) => {
             return Err(Error::conflict(format!(
-                "a new founding claim requires an uninitialized Server, but its local phase is {}",
+                "a new founding claim requires an uninitialized Server, but its local phase is {}. {FOUNDING_HELD}",
                 phase.as_str().escape_debug()
             )));
         }
         (InitializeMode::Resume, phase) => {
             return Err(Error::conflict(format!(
-                "the matching founding Server cannot resume from local phase {}",
+                "the matching founding Server cannot resume from local phase {}. {FOUNDING_HELD}",
                 phase.as_str().escape_debug()
             )));
         }
