@@ -221,7 +221,7 @@ fn assert_unarrived_on_stderr(stderr: &str) {
     );
     let forget = stderr
         .lines()
-        .find(|line| line.contains("if it stays down with no version, remove it with `"))
+        .find(|line| line.contains("keeps showing it down with no version, remove it with `"))
         .unwrap_or_else(|| panic!("{stderr}"));
     assert!(
         forget.contains(&format!("server forget {} --confirm dead", "c".repeat(32))),

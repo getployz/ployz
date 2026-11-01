@@ -465,12 +465,14 @@ pub(crate) async fn follow_globals(
     for (id, name) in not_arrived {
         let next = command(&["server", "forget", id.as_str(), "--confirm", "dead"]);
         crate::ui::warn(format!(
-            "Server {name} may still be joining: this Server sees no sign it ever joined, so \
-             Global catch-up did not wait on it; if it stays down with no version, remove it \
-             with `{next}`."
+            "Server {name} may still be joining, so Global catch-up did not wait on it; if \
+             `ployz server ls` keeps showing it down with no version, remove it with `{}`.",
+            crate::ui::pasteable(&next)
         ));
-        crate::ui::hint(&crate::ui::Hint::Inspect(command(&["server", "ls"])));
         unarrived.push(serde_json::json!({ "id": id, "name": name, "next": next }));
+    }
+    if !unarrived.is_empty() {
+        crate::ui::hint(&crate::ui::Hint::Inspect(command(&["server", "ls"])));
     }
     (unarrived, result)
 }

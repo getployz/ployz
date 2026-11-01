@@ -378,9 +378,9 @@ images from ghcr.io.
 - **A server that never joined doesn't hold up the next one.** If a token was used but its server
   never joined, `ployz server ls` lists it as down with no version. The next `ployz server add`
   doesn't wait on it: it warns `Server web-3 may still be joining` and points you to
-  `ployz server ls`. A server whose add is still running looks the same, so check first: if it
-  stays down with no version, take it out with the `ployz server forget <its ID> --confirm dead`
-  the warning names. With `--json`, the result lists each such server under `unarrived`, with its
+  `ployz server ls`. A server whose add is still running looks the same, so check first: if it's
+  still down with no version after a few minutes, take it out with the
+  `ployz server forget <its ID> --confirm dead` the warning names. With `--json`, the result lists each such server under `unarrived`, with its
   `id`, `name` and that command as `next`; run it only on the same condition. You get the warning,
   the command and the list even when the add then fails for another reason, such as a down
   server.
