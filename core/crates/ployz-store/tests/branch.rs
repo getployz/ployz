@@ -1989,6 +1989,59 @@ fn an_own_copy_deleting_a_value_its_owner_changed_before_a_seal_still_shows_it()
     );
 }
 
+/// A deployed Own Copy changed in place before its owner sealed the value reviews
+/// from sealed.
+#[test]
+fn a_deployed_own_copys_in_place_edit_made_before_its_owner_sealed_never_shows_the_plain_value() {
+    let (store, who) = shop();
+    copy_db_with_plain_token(&store, &who);
+    deploy(&store, &who, "fix-web", 3, true);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("db.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_db_token(&store, &who, 4);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-web", "db.env.TOKEN"),
+        (json!({ "secret": true }), json!("plain-edit"))
+    );
+    let review = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// A Branch whose Deploy of the plain value ran nothing, so the saved revision is
+/// what the review compares with, reviews from sealed once the owner seals it.
+#[test]
+fn a_branch_whose_deploy_ran_nothing_never_shows_a_value_its_owner_sealed_since() {
+    let (store, who) = shop();
+    copy_db_with_plain_token(&store, &who);
+    deploy(&store, &who, "fix-web", 3, false);
+    unset(&store, &who, "fix-web", "db.env.TOKEN");
+    seal_db_token(&store, &who, 4);
+
+    let review = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
 fn discard_db_token(store: &ConfigStore, who: &Actor, environment: &str) {
     store
         .write(
