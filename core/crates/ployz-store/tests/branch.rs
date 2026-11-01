@@ -1799,17 +1799,7 @@ fn discarding_an_own_copys_delete_its_owner_added_plain_after_a_seal_brings_the_
 }
 
 fn discard_token(store: &ConfigStore, who: &Actor) {
-    store
-        .write(
-            who,
-            &Discard {
-                environment: at("fix-web"),
-                target: None,
-                path: Some(SettingPath::parse("db.env.TOKEN").unwrap()),
-                version: None,
-            },
-        )
-        .unwrap();
+    discard_db_token(store, who, "fix-web");
 }
 
 /// The owner's seal of a variable it has since replaced with a plain one doesn't
@@ -1841,6 +1831,176 @@ fn an_own_copy_deleting_a_value_its_parent_added_plain_after_a_seal_still_shows_
         review_row(&store, &who, "fix-web", "db.env.TOKEN"),
         (json!("public-new"), Value::Null)
     );
+}
+
+/// production seals and deploys `db.env.TOKEN`, which held "plain-private".
+fn seal_db_token(store: &ConfigStore, who: &Actor, n: u8) {
+    set(
+        store,
+        who,
+        "production",
+        &[(
+            "db.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOKEN", 2),
+        )],
+    );
+    deploy(store, who, "production", n, true);
+}
+
+/// fix-web copies `web` and uses `db` live from production, which holds
+/// `db.env.TOKEN` plain, deploys, then makes its Own Copy of `db`.
+fn copy_db_with_plain_token(store: &ConfigStore, who: &Actor) {
+    set(
+        store,
+        who,
+        "production",
+        &[("db.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(store, who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(who, &create).unwrap();
+    deploy(store, who, "fix-web", 2, true);
+    copy_db(store, who);
+}
+
+/// An in-place plain edit of an Own Copy's variable the owner sealed since reviews
+/// from sealed.
+#[test]
+fn an_own_copys_in_place_edit_made_before_its_owner_sealed_never_shows_the_plain_value() {
+    let (store, who) = shop();
+    copy_db_with_plain_token(&store, &who);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("db.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_db_token(&store, &who, 3);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-web", "db.env.TOKEN"),
+        (json!({ "secret": true }), json!("plain-edit"))
+    );
+}
+
+/// A Branch made from a Branch's Own Copy follows it to the owner's seal of a
+/// variable both deleted before it.
+#[test]
+fn a_branch_of_an_own_copy_that_deleted_a_value_before_its_owner_sealed_it_never_shows_it() {
+    let (store, who) = shop();
+    copy_db_with_plain_token(&store, &who);
+    store
+        .write(&who, &branch("fix-db", "fix-web", &["web", "db"]))
+        .unwrap();
+    unset(&store, &who, "fix-web", "db.env.TOKEN");
+    unset(&store, &who, "fix-db", "db.env.TOKEN");
+    seal_db_token(&store, &who, 3);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-db", "db.env.TOKEN"),
+        (json!({ "secret": true }), Value::Null)
+    );
+}
+
+/// Discarding that delete brings the variable back Not set.
+#[test]
+fn discarding_a_delete_in_a_branch_of_an_own_copy_its_owner_sealed_since_brings_it_back_not_set() {
+    let (store, who) = shop();
+    copy_db_with_plain_token(&store, &who);
+    store
+        .write(&who, &branch("fix-db", "fix-web", &["web", "db"]))
+        .unwrap();
+    unset(&store, &who, "fix-web", "db.env.TOKEN");
+    unset(&store, &who, "fix-db", "db.env.TOKEN");
+    seal_db_token(&store, &who, 3);
+
+    discard_db_token(&store, &who, "fix-db");
+
+    let values = values(&store, &who, "fix-db", "db");
+    assert_eq!(values["env"]["TOKEN"], json!({ "secret": false }));
+    assert!(!values.to_string().contains("plain-private"), "{values}");
+}
+
+/// An Own Copy of a node its owner itself copied follows that copy to the seal,
+/// though the owner deleted the variable since and so took no seal.
+#[test]
+fn an_own_copy_of_an_own_copy_that_deleted_a_value_before_the_root_sealed_it_never_shows_it() {
+    let (store, who) = shop();
+    copy_db_with_plain_token(&store, &who);
+    deploy(&store, &who, "fix-web", 3, true);
+    let mut create = branch("fix-db", "fix-web", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    deploy(&store, &who, "fix-db", 4, true);
+    store
+        .write(
+            &who,
+            &CopyNode {
+                environment: at("fix-db"),
+                node: ServiceName::parse("db").unwrap(),
+                expect: None,
+            },
+        )
+        .unwrap();
+    unset(&store, &who, "fix-web", "db.env.TOKEN");
+    unset(&store, &who, "fix-db", "db.env.TOKEN");
+    seal_db_token(&store, &who, 5);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-db", "db.env.TOKEN"),
+        (json!({ "secret": true }), Value::Null)
+    );
+}
+
+/// An owner's own in-place change isn't what the root sealed: an Own Copy of it
+/// that deletes it still shows it.
+#[test]
+fn an_own_copy_deleting_a_value_its_owner_changed_before_a_seal_still_shows_it() {
+    let (store, who) = shop();
+    copy_db_with_plain_token(&store, &who);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("db.env.TOKEN", json!("plain-edit"))],
+    );
+    deploy(&store, &who, "fix-web", 3, true);
+    let mut create = branch("fix-db", "fix-web", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    deploy(&store, &who, "fix-db", 4, true);
+    store
+        .write(
+            &who,
+            &CopyNode {
+                environment: at("fix-db"),
+                node: ServiceName::parse("db").unwrap(),
+                expect: None,
+            },
+        )
+        .unwrap();
+    unset(&store, &who, "fix-db", "db.env.TOKEN");
+    seal_db_token(&store, &who, 5);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-db", "db.env.TOKEN"),
+        (json!("plain-edit"), Value::Null)
+    );
+}
+
+fn discard_db_token(store: &ConfigStore, who: &Actor, environment: &str) {
+    store
+        .write(
+            who,
+            &Discard {
+                environment: at(environment),
+                target: None,
+                path: Some(SettingPath::parse("db.env.TOKEN").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
 }
 
 /// A copy removed and made again matches the owner's seals by its own source: the

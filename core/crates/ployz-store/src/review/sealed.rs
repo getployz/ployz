@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    Cell, SavedEnvironmentIntent, SavedVariableIntent, SavedVariableValue, ValuePart,
+    Cell, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
+    SavedVariableValue, ValuePart,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,12 +27,12 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
     }
 }
 
-/// Show sealed each plain value `introduced` keeps for a variable the Environment
-/// holds sealed now, or held sealed before deleting or adding it again, or one it
-/// was made with or copied that its Parent or the node's owner sealed since: a
-/// Node Introduction keeps the value a Branch was made with, and a review compares
-/// a new node with it, but never reads a sealed value back. The fingerprint stays,
-/// so the comparison still sees whether the value changed.
+/// Show sealed each plain value `introduced` keeps that is sealed since: by the
+/// Environment, now or before it deleted or added the variable again, or, for one
+/// it was made with or copied, by its Parent, the node's owner or an Environment
+/// above them. A Node Introduction keeps the value a Branch was made with, and a
+/// review compares a new node with it, but never reads a sealed value back. The
+/// fingerprint stays, so the comparison still sees whether the value changed.
 pub(crate) fn hide_introduced(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -129,9 +130,10 @@ fn each_sealed_since(
     working: &SavedEnvironmentIntent,
     seal: impl Fn(&mut SavedVariableIntent, bool),
 ) -> Result<(), RpcError> {
-    // Read only for a variable deleted or added again: they scan every save.
+    // Read only for a variable changed, deleted or added again: the ledgers here and
+    // above scan every save.
     let mut ever = None;
-    let mut parent = None;
+    let mut chain = None;
     for service in &mut introduced.services {
         let now = working
             .services
@@ -148,7 +150,18 @@ fn each_sealed_since(
                     .or_else(|| now.iter().find(|now| now.key == was.key))
             });
             let sealed_now = match now {
-                Some(now) if now.id == was.id || sealed(&now.value) => sealed(&now.value),
+                Some(now) if sealed(&now.value) => true,
+                Some(now) if now.id == was.id && now.key == was.key && now.value == was.value => {
+                    false
+                }
+                // Changed in place: never sealed here, as a sealed value never turns plain.
+                Some(now) if now.id == was.id => sealed_above(
+                    tx,
+                    &mut chain,
+                    environment,
+                    (&service.id, &service.lineage_id),
+                    was,
+                )?,
                 Some(_) | None => {
                     if ever.is_none() {
                         ever = Some(EverSealed::load(tx, environment.as_str())?);
@@ -157,14 +170,13 @@ fn each_sealed_since(
                         Some(_) => ever.holds_id(&service.id, was),
                         None => ever.holds(&service.id, was),
                     });
-                    own || {
-                        if parent.is_none() {
-                            parent = Some(parent_sealed(tx, environment)?);
-                        }
-                        parent.as_ref().is_some_and(|parent| {
-                            parent.holds(&service.id, &service.lineage_id, &was.key)
-                        })
-                    }
+                    own || sealed_above(
+                        tx,
+                        &mut chain,
+                        environment,
+                        (&service.id, &service.lineage_id),
+                        was,
+                    )?
                 }
             };
             if sealed_now {
@@ -175,63 +187,222 @@ fn each_sealed_since(
     Ok(())
 }
 
+/// Whether `environment` was made with or copied `was`, of its node with this ID
+/// and lineage, and an Environment above it sealed that since. Reads the [`Chain`]
+/// the first time.
+fn sealed_above(
+    tx: &mut dyn Tx,
+    chain: &mut Option<Chain>,
+    environment: &EnvironmentId,
+    (node, lineage): (&str, &str),
+    was: &SavedVariableIntent,
+) -> Result<bool, RpcError> {
+    let chain = match chain {
+        Some(chain) => chain,
+        None => {
+            let mut read = Chain::default();
+            read.load(tx, environment.as_str())?;
+            chain.insert(read)
+        }
+    };
+    Ok(chain.holds(environment.as_str(), node, lineage, &was.key))
+}
+
 /// Each variable a Branch was made with, or copied from a node's owner since, that
-/// the Parent or owner sealed since. The Branch's own copy has its
-/// own ID, so the seal is matched by the ID of the variable the copy came from,
-/// never by key alone, which a variable added since under that key shares.
+/// the Parent or owner sealed since, or kept as it was made with or copied and an
+/// Environment above it sealed. The Branch's own copy has its own ID, so the seal
+/// is matched by the ID of the variable the copy came from, never by key alone,
+/// which a variable added since under that key shares.
 #[derive(Default)]
-struct ParentSealed {
+struct SealedAbove {
     /// By Service lineage and key, for a node the Branch was made with.
     made_with: BTreeSet<(String, String)>,
     /// By the Branch's node ID, then key, for each Own Copy made since: a copy
     /// removed and made again has a new ID, and its own source.
-    copied: BTreeMap<String, BTreeSet<String>>,
+    copied: BTreeMap<String, BTreeMap<String, CopiedFrom>>,
 }
 
-impl ParentSealed {
-    fn holds(&self, node: &str, lineage: &str, key: &str) -> bool {
-        match self.copied.get(node) {
-            Some(keys) => keys.contains(key),
-            None => self
+/// Where an Own Copy's variable was sealed. The copy's row keeps no lineage, so
+/// one sealed above its owner is read when a review asks, with the lineage it has.
+enum CopiedFrom {
+    Owner,
+    /// The owner's node `node` was made with or copied it under `key`, and kept it.
+    Above {
+        owner: String,
+        node: String,
+        key: String,
+    },
+}
+
+/// The [`SealedAbove`] of an Environment and of every one above it a review
+/// reaches: its Parent and each owner its Own Copies came from, up to the root.
+/// Each is above the one that reaches it, so the chain never loops.
+#[derive(Default)]
+struct Chain {
+    sealed: BTreeMap<String, SealedAbove>,
+    ledgers: BTreeMap<String, EverSealed>,
+    /// By Environment, its Node Introductions' variables: what it was made with or
+    /// copied, never a variable added since.
+    introduced: BTreeMap<String, Vec<Introduced>>,
+}
+
+/// A variable as a Node Introduction holds it.
+#[derive(Clone)]
+struct Introduced {
+    node: String,
+    id: String,
+    key: String,
+    fingerprint: String,
+}
+
+impl Chain {
+    /// Whether the variable `environment`'s node `node` was made with or copied
+    /// under `key` was sealed above it. `environment` is loaded.
+    fn holds(&self, environment: &str, node: &str, lineage: &str, key: &str) -> bool {
+        let Some(sealed) = self.sealed.get(environment) else {
+            return false;
+        };
+        match sealed.copied.get(node) {
+            Some(keys) => keys.get(key).is_some_and(|from| match from {
+                CopiedFrom::Owner => true,
+                CopiedFrom::Above {
+                    owner,
+                    node: at,
+                    key: was,
+                } => self.holds(owner, at, lineage, was),
+            }),
+            None => sealed
                 .made_with
                 .contains(&(lineage.to_owned(), key.to_owned())),
         }
     }
-}
 
-fn parent_sealed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<ParentSealed, RpcError> {
-    let mut sealed = ParentSealed::default();
-    let mut ledgers = BTreeMap::new();
-    for row in tx.query(
-        "SELECT parent_id, made_with FROM config_environment_branch WHERE environment_id = ?1",
-        &[environment.as_str().into()],
-    )? {
-        let ever = ledger(tx, &mut ledgers, row.text(0)?)?;
-        for service in row.intent(1, "Branch")?.services {
-            for variable in &service.variables {
-                if ever.holds_id(&service.id, variable) {
-                    sealed
-                        .made_with
-                        .insert((service.lineage_id.clone(), variable.key.clone()));
+    /// Read what `environment` was made with and copied, and what sealed it.
+    fn load(&mut self, tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
+        if self.sealed.contains_key(environment) {
+            return Ok(());
+        }
+        let mut sealed = SealedAbove::default();
+        for row in tx.query(
+            "SELECT parent_id, made_with FROM config_environment_branch WHERE environment_id = ?1",
+            &[environment.into()],
+        )? {
+            let parent = row.text(0)?;
+            for service in row.intent(1, "Branch")?.services {
+                for variable in &service.variables {
+                    if ledger(tx, &mut self.ledgers, parent)?.holds_id(&service.id, variable)
+                        || self.kept_and_sealed(tx, parent, &service, variable)?
+                    {
+                        sealed
+                            .made_with
+                            .insert((service.lineage_id.clone(), variable.key.clone()));
+                    }
                 }
             }
         }
-    }
-    for row in tx.query(
-        "SELECT node_id, source_id, source_node_id, variable_id, key \
-         FROM config_node_copied_from WHERE environment_id = ?1",
-        &[environment.as_str().into()],
-    )? {
-        let keys = sealed.copied.entry(row.text(0)?.to_owned()).or_default();
-        let ever = ledger(tx, &mut ledgers, row.text(1)?)?;
-        if ever
-            .ids
-            .contains(&(row.text(2)?.to_owned(), row.text(3)?.to_owned()))
-        {
-            keys.insert(row.text(4)?.to_owned());
+        for row in tx.query(
+            "SELECT node_id, source_id, source_node_id, variable_id, key \
+             FROM config_node_copied_from WHERE environment_id = ?1",
+            &[environment.into()],
+        )? {
+            let (copy, owner, node, variable, key) = (
+                row.text(0)?,
+                row.text(1)?,
+                row.text(2)?,
+                row.text(3)?,
+                row.text(4)?,
+            );
+            let from = if ledger(tx, &mut self.ledgers, owner)?
+                .ids
+                .contains(&(node.to_owned(), variable.to_owned()))
+            {
+                Some(CopiedFrom::Owner)
+            } else {
+                // Only the value the owner kept as it was made with or copied it.
+                let came = self.introduced(tx, environment, copy, |was| was.key == key)?;
+                match came {
+                    Some(came) => self
+                        .introduced(tx, owner, node, |was| {
+                            was.id == variable && was.fingerprint == came.fingerprint
+                        })?
+                        .map(|was| CopiedFrom::Above {
+                            owner: owner.to_owned(),
+                            node: node.to_owned(),
+                            key: was.key,
+                        }),
+                    None => None,
+                }
+            };
+            if matches!(from, Some(CopiedFrom::Above { .. })) {
+                self.load(tx, owner)?;
+            }
+            let keys = sealed.copied.entry(copy.to_owned()).or_default();
+            if let Some(from) = from {
+                keys.insert(key.to_owned(), from);
+            }
         }
+        self.sealed.insert(environment.to_owned(), sealed);
+        Ok(())
     }
-    Ok(sealed)
+
+    /// Whether `environment` kept `variable` of its node `service` as it was made
+    /// with or copied, and an Environment above it sealed that.
+    fn kept_and_sealed(
+        &mut self,
+        tx: &mut dyn Tx,
+        environment: &str,
+        service: &SavedServiceIntent,
+        variable: &SavedVariableIntent,
+    ) -> Result<bool, RpcError> {
+        let Some(was) = self.introduced(tx, environment, &service.id, |was| {
+            was.id == variable.id && was.fingerprint == variable.value_fingerprint
+        })?
+        else {
+            return Ok(false);
+        };
+        self.load(tx, environment)?;
+        // By the key it was made with or copied under: a rename since keeps the ID.
+        Ok(self.holds(environment, &service.id, &service.lineage_id, &was.key))
+    }
+
+    /// The variable of `environment`'s Node Introduction of `node` that `matches`.
+    fn introduced(
+        &mut self,
+        tx: &mut dyn Tx,
+        environment: &str,
+        node: &str,
+        matches: impl Fn(&Introduced) -> bool,
+    ) -> Result<Option<Introduced>, RpcError> {
+        let introduced = match self.introduced.entry(environment.to_owned()) {
+            Entry::Occupied(introduced) => introduced.into_mut(),
+            Entry::Vacant(at) => {
+                let mut introduced = Vec::new();
+                for row in tx.query(
+                    "SELECT node FROM config_node_introduction \
+                     WHERE environment_id = ?1 AND node_type = ?2",
+                    &[
+                        environment.into(),
+                        crate::storage::name_of(EnvironmentNodeType::Service)
+                            .as_str()
+                            .into(),
+                    ],
+                )? {
+                    let service: SavedServiceIntent = row.json(0, "Node Introduction")?;
+                    introduced.extend(service.variables.into_iter().map(|variable| Introduced {
+                        node: service.id.clone(),
+                        id: variable.id,
+                        key: variable.key,
+                        fingerprint: variable.value_fingerprint,
+                    }));
+                }
+                at.insert(introduced)
+            }
+        };
+        Ok(introduced
+            .iter()
+            .find(|was| was.node == node && matches(was))
+            .cloned())
+    }
 }
 
 /// `source`'s [`EverSealed`], loaded once per review.
