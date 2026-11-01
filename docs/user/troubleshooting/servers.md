@@ -203,11 +203,15 @@ you pass with `--name` is refused; pass the suggested name and run the command a
 
 ## The server is already initialised
 
-You'll see `This Server is already initialised; rerun with --reset to reset it before enrollment`.
+You'll see `This Server is already initialised`, followed by advice to make a new token.
 
-The server belongs to an organization, or was never fully removed from one. Add `--reset` to the
-end of the command and run it again. This removes every container Ployz runs on that server, so
-its apps go down; volume data stays on the disk.
+The server is already in a cluster, or partway through joining or leaving one. The token that add
+used is now tied to the server as it is, and `--reset` gives the server a new identity, so that
+token won't work after a reset. Add it again with `--reset` and a new token. Signed in, either run
+`ployz server add --command --reset` and run the line it prints on the server, or run
+`ployz server add root@HOST --reset` to add it over SSH, which makes its own token. The reset
+removes every container Ployz runs on that server, so its apps go down, and it can delete its
+mirrors, so don't use it while a mirror there may be the last copy of a volume.
 
 ## The server doesn't finish joining
 

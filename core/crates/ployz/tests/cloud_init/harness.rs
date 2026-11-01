@@ -106,6 +106,7 @@ struct JoinInner {
     public_key: Mutex<WireGuardPublicKey>,
     daemon_version: Mutex<String>,
     joined: AtomicBool,
+    resetting: AtomicBool,
     enrolled: Mutex<Option<(EnrollRequest, WireGuardPublicKey)>>,
     join_request: Mutex<Option<MemberEnroll>>,
     join_attempts: AtomicUsize,
@@ -150,6 +151,7 @@ impl JoinDaemon {
                 registration,
                 daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
                 joined: AtomicBool::new(false),
+                resetting: AtomicBool::new(false),
                 enrolled: Mutex::new(None),
                 join_request: Mutex::new(None),
                 join_attempts: AtomicUsize::new(0),
@@ -248,6 +250,12 @@ impl JoinDaemon {
 
     pub fn revoked_on_publication(self, events: EventLog) -> Self {
         *self.inner.revoked_on_publication.lock().unwrap() = Some(events);
+        self
+    }
+
+    /// A Server still resetting, which Cloud enrolls as the identity it is about to drop.
+    pub fn resetting(self) -> Self {
+        self.inner.resetting.store(true, Ordering::SeqCst);
         self
     }
 
@@ -592,6 +600,8 @@ impl FakeMachine for JoinDaemon {
                 .unwrap_or(self.inner.registration.assigned_machine.id),
             phase: if joined {
                 LocalMachinePhase::Participating
+            } else if self.inner.resetting.load(Ordering::SeqCst) {
+                LocalMachinePhase::Resetting
             } else {
                 LocalMachinePhase::Uninitialized
             },
