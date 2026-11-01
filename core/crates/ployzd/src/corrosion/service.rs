@@ -114,7 +114,9 @@ impl CorrosionConfig {
     }
 
     pub async fn start(&self) -> Result<RunningCorrosion, Error> {
-        bounded_start(async {
+        // Boxed: starting Corrosion is a large future, and inline it overflows the stack
+        // of a daemon start.
+        bounded_start(Box::pin(async {
             let files = self.install()?;
             let api = ApiClient::new(self.api_address, &files.token)?;
             let admin = AdminClient::new(self.paths.admin_socket());
@@ -139,6 +141,7 @@ impl CorrosionConfig {
             wait_ready_or_replace(
                 ensured == Ensure::Keep,
                 || async { api.query(Statement::new("SELECT 1", [])).await.is_ok() },
+                || service.start(&files),
                 async {
                     service.service.remove().await?;
                     service.start(&files).await?;
@@ -160,7 +163,7 @@ impl CorrosionConfig {
                 service,
                 keeper,
             })
-        })
+        }))
         .await
     }
 
@@ -277,22 +280,26 @@ where
     let mut failing = false;
     loop {
         ticks.tick().await;
-        match ensure().await {
-            Ok(Ensure::Keep) => failing = false,
-            Ok(ensure) => {
-                failing = false;
-                tracing::warn!(?ensure, "Corrosion wasn't running; ployzd started it again");
+        report(ensure().await, &mut failing, every);
+    }
+}
+
+fn report(ensured: Result<Ensure, Error>, failing: &mut bool, every: Duration) {
+    match ensured {
+        Ok(Ensure::Keep) => *failing = false,
+        Ok(ensure) => {
+            *failing = false;
+            tracing::warn!(?ensure, "Corrosion wasn't running; ployzd started it again");
+        }
+        Err(error) => {
+            if !*failing {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&error),
+                    "Corrosion isn't running and ployzd couldn't start it; it tries again every {}s",
+                    every.as_secs()
+                );
             }
-            Err(error) => {
-                if !failing {
-                    tracing::warn!(
-                        error = %ployz_core::error_chain::inline(&error),
-                        "Corrosion isn't running and ployzd couldn't start it; it tries again every {}s",
-                        every.as_secs()
-                    );
-                }
-                failing = true;
-            }
+            *failing = true;
         }
     }
 }
@@ -394,32 +401,56 @@ where
         })?
 }
 
-async fn wait_ready_or_replace<F, Fut, R>(kept: bool, mut ready: F, replace: R) -> Result<(), Error>
+async fn wait_ready_or_replace<F, Fut, E, EFut, R>(
+    kept: bool,
+    mut ready: F,
+    mut ensure: E,
+    replace: R,
+) -> Result<(), Error>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = bool>,
+    E: FnMut() -> EFut,
+    EFut: Future<Output = Result<Ensure, Error>>,
     R: Future<Output = Result<(), Error>>,
 {
-    if kept
-        && tokio::time::timeout(KEPT_READY_TIMEOUT, wait_ready(&mut ready))
-            .await
-            .is_err()
-    {
+    let kept_until = tokio::time::Instant::now() + KEPT_READY_TIMEOUT;
+    if kept && !wait_ready(&mut ready, &mut ensure, Some(kept_until)).await {
         tracing::warn!("kept Corrosion container did not answer; replacing it");
         replace.await?;
     }
-    wait_ready(ready).await;
+    wait_ready(ready, ensure, None).await;
     Ok(())
 }
 
-async fn wait_ready<F, Fut>(mut ready: F)
+/// Polls until Corrosion answers, or returns false once `until` passes. The keeper only
+/// starts once it answers, so until then this ensures the container every [`KEEP_EVERY`]
+/// itself: one stopped through Docker would otherwise hold the daemon until
+/// [`START_TIMEOUT`] (#3706). `until` is checked between steps, never cancelling an
+/// ensure, so a slow Docker can't cost a kept Corrosion its last probe.
+async fn wait_ready<F, Fut, E, EFut>(
+    mut ready: F,
+    mut ensure: E,
+    until: Option<tokio::time::Instant>,
+) -> bool
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = bool>,
+    E: FnMut() -> EFut,
+    EFut: Future<Output = Result<Ensure, Error>>,
 {
+    let mut failing = false;
+    let mut next_ensure = tokio::time::Instant::now() + KEEP_EVERY;
     loop {
         if ready().await {
-            return;
+            return true;
+        }
+        if until.is_some_and(|until| tokio::time::Instant::now() >= until) {
+            return false;
+        }
+        if tokio::time::Instant::now() >= next_ensure {
+            report(ensure().await, &mut failing, KEEP_EVERY);
+            next_ensure = tokio::time::Instant::now() + KEEP_EVERY;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -633,7 +664,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn corrosion_readiness_wait_keeps_polling_after_fifteen_seconds() {
         let started = Instant::now();
-        wait_ready(|| async { started.elapsed() >= Duration::from_secs(16) }).await;
+        wait_ready(
+            || async { started.elapsed() >= Duration::from_secs(16) },
+            || async { Ok(Ensure::Keep) },
+            None,
+        )
+        .await;
         assert!(
             started.elapsed() >= Duration::from_secs(16),
             "probe must succeed only after 15 seconds, got {:?}",
@@ -651,6 +687,7 @@ mod tests {
                     replaced.get() || ready_after.is_some_and(|after| started.elapsed() >= after);
                 async move { ready }
             },
+            || async { Ok(Ensure::Keep) },
             async {
                 replaced.set(true);
                 Ok(())
@@ -665,7 +702,10 @@ mod tests {
     async fn kept_corrosion_that_never_answers_is_replaced() {
         let (replaced, elapsed) = start_with(true, None).await;
         assert!(replaced);
-        assert!(elapsed >= KEPT_READY_TIMEOUT, "{elapsed:?}");
+        assert!(
+            elapsed >= KEPT_READY_TIMEOUT && elapsed < KEPT_READY_TIMEOUT + KEEP_EVERY,
+            "{elapsed:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -678,6 +718,103 @@ mod tests {
         let (replaced, elapsed) = start_with(false, Some(Duration::from_secs(120))).await;
         assert!(!replaced);
         assert!(elapsed >= Duration::from_secs(120), "{elapsed:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn new_corrosion_stopped_through_docker_is_started_again_before_it_answers() {
+        let started = Instant::now();
+        // Someone stopped the container the daemon just created; only an ensure starts it.
+        let running = std::cell::Cell::new(false);
+        let ensures = std::cell::Cell::new(0);
+        bounded_start(wait_ready_or_replace(
+            false,
+            || {
+                let ready = running.get();
+                async move { ready }
+            },
+            || {
+                ensures.set(ensures.get() + 1);
+                let was = running.replace(true);
+                async move { Ok(if was { Ensure::Keep } else { Ensure::Start }) }
+            },
+            async { unreachable!("a new Corrosion is never replaced") },
+        ))
+        .await
+        .unwrap();
+        assert_eq!(ensures.get(), 1);
+        assert!(
+            started.elapsed() <= KEEP_EVERY + Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn kept_corrosion_stopped_through_docker_is_started_again_not_replaced() {
+        let started = Instant::now();
+        let running = std::cell::Cell::new(false);
+        // Docker refuses the first start; the next ensure starts it.
+        let ensures = std::cell::Cell::new(0);
+        let replaced = std::cell::Cell::new(false);
+        bounded_start(wait_ready_or_replace(
+            true,
+            || {
+                let ready = running.get();
+                async move { ready }
+            },
+            || {
+                ensures.set(ensures.get() + 1);
+                let ensured = if ensures.get() == 1 {
+                    Err(Error::Api("Docker refused the start".into()))
+                } else {
+                    Ok(if running.replace(true) {
+                        Ensure::Keep
+                    } else {
+                        Ensure::Start
+                    })
+                };
+                async move { ensured }
+            },
+            async {
+                replaced.set(true);
+                Ok(())
+            },
+        ))
+        .await
+        .unwrap();
+        assert!(!replaced.get());
+        assert_eq!(ensures.get(), 2);
+        assert!(
+            started.elapsed() < KEPT_READY_TIMEOUT,
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_docker_does_not_cost_a_kept_corrosion_its_last_probe() {
+        let started = Instant::now();
+        let answers_at = KEPT_READY_TIMEOUT - Duration::from_secs(2);
+        let replaced = std::cell::Cell::new(false);
+        bounded_start(wait_ready_or_replace(
+            true,
+            || {
+                let ready = started.elapsed() >= answers_at;
+                async move { ready }
+            },
+            // An inspect on a loaded dockerd, still running when the kept wait ends.
+            || async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(Ensure::Keep)
+            },
+            async {
+                replaced.set(true);
+                Ok(())
+            },
+        ))
+        .await
+        .unwrap();
+        assert!(!replaced.get());
     }
 
     #[test]
@@ -781,6 +918,17 @@ mod tests {
         for sibling in &siblings {
             assert!(!writes_synchronously(sibling), "{}", sibling.display());
         }
+    }
+
+    #[test]
+    fn starting_corrosion_stays_off_the_daemon_start_stack() {
+        let config = CorrosionConfig::local("/nonexistent/data", "/nonexistent/run");
+        let start = config.start();
+        assert!(
+            std::mem::size_of_val(&start) < 1024,
+            "{} bytes",
+            std::mem::size_of_val(&start)
+        );
     }
 
     #[tokio::test(start_paused = true)]

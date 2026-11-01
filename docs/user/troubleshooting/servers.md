@@ -495,7 +495,8 @@ don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
 
 `error: Corrosion HTTP request failed`, with the cause `Connection refused`, means the server
 answered but its cluster store wasn't running. If it was stopped, as by
-`docker stop ployz-corrosion`, Ployz starts it again within a few seconds; try again then.
+`docker stop ployz-corrosion`, Ployz starts it again within a few seconds, including while the
+daemon is still starting; try again then.
 
 ## A server's cluster store was lost
 
