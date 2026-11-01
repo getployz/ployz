@@ -2424,3 +2424,40 @@ fn a_fix_copying_the_service_whose_seal_failed_takes_it_not_set() {
     );
     only_what_production_ran(&url);
 }
+
+/// A fix of a failed Deploy, made after the Parent sealed a value only in its
+/// Working State, takes it Not set, never as the failed revision saved it.
+#[test]
+fn a_fix_made_after_its_parent_sealed_a_value_the_failed_revision_held_plain_takes_it_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.API_KEY", json!(FAKE))],
+    );
+    deploy(&store, &who, "production", 1, true);
+    set(&store, &who, "production", &[("web.image", json!("web:2"))]);
+    deploy(&store, &who, "production", 2, false);
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "web.env.API_KEY",
+            backend::sealed_secret(&uuid(2), &uuid(3), "API_KEY", 3),
+        )],
+    );
+    let mut fix = branch("fix", "production", &[]);
+    fix.fix = Some(DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap());
+
+    let made = store.write(&who, &fix).unwrap();
+
+    assert_eq!(texts(&made.staged), ["web"]);
+    let web = values(&store, &who, "fix", "web");
+    assert_eq!(web["image"], json!("web:2"));
+    assert_eq!(web["env"]["API_KEY"], json!({ "secret": false }));
+    only_what_production_ran(&url);
+}

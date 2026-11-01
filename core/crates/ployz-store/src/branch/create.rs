@@ -134,13 +134,17 @@ pub(crate) fn create_branch(
         ));
     }
     let mut from = working.clone();
+    let mut stand_in = BTreeSet::new();
     for failed in fixed {
         for service in &mut from.services {
             if service.lineage_id == failed.lineage_id {
                 *service = failed.clone();
             }
         }
+        stand_in.insert(failed.lineage_id);
     }
+    // The failed revision may predate a seal the Parent made since.
+    crate::review::sealed::seal_running(tx, &parent, &mut from, &stand_in)?;
 
     let into = crate::scope::empty(create.name.as_str());
     let hostnames = Hostnames {
