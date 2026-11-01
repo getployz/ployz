@@ -15,8 +15,8 @@ use super::step::{Gate, RequestKey};
 use crate::catalog::NODE_NAME;
 use crate::{
     Admit, Cancel, DeployedNode, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary, NodeOutcome,
-    NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start, VolumeName,
+    DeploymentWarning, DeploymentsQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary,
+    NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start, VolumeName,
 };
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
@@ -161,6 +161,19 @@ fn summary(deployment: &DeploymentSummary) -> Value {
     summary
 }
 
+/// Whether a warning holds only names the Config Store wrote, such as a variable
+/// a Deploy left out, rather than text a Server reported.
+fn named(warning: &DeploymentWarning) -> bool {
+    match warning {
+        DeploymentWarning::Fragile { .. }
+        | DeploymentWarning::NotSet { .. }
+        | DeploymentWarning::NotSetInFile { .. } => true,
+        DeploymentWarning::IngressNotServing { .. }
+        | DeploymentWarning::IngressUnchecked { .. }
+        | DeploymentWarning::Deploy { .. } => false,
+    }
+}
+
 fn show(view: &DeploymentView) -> Value {
     let mut shown = summary(&view.deployment);
     if let Value::Object(object) = &mut shown {
@@ -169,6 +182,19 @@ fn show(view: &DeploymentView) -> Value {
             "nodes".into(),
             json!(view.nodes.iter().map(node).collect::<Vec<_>>()),
         );
+        let (stored, reported): (Vec<_>, Vec<_>) = view
+            .deployment
+            .warnings
+            .iter()
+            .partition(|warning| named(warning));
+        if !stored.is_empty() {
+            object.insert("warnings".into(), json!(stored));
+        }
+        if let (false, Some(Value::Object(untrusted))) =
+            (reported.is_empty(), object.get_mut("untrusted"))
+        {
+            untrusted.insert("warnings".into(), json!(reported));
+        }
     }
     shown
 }
@@ -258,7 +284,7 @@ pub(crate) struct DeploymentShow {
 
 impl Tool for DeploymentShow {
     const NAME: &'static str = "deployment_show";
-    const DESCRIPTION: &'static str = "One Deployment, the latest unless you name its number: status, each Service's outcome, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end.";
+    const DESCRIPTION: &'static str = "One Deployment, the latest unless you name its number: status, each Service's outcome, variables left out or Config-breaking, server warnings, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {

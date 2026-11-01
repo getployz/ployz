@@ -634,12 +634,12 @@ mod tests {
     }
 
     fn rotate_json(root: &ArgMatches) -> (Result<(), Error>, Option<Value>) {
-        ui::init(true, ui::Color::Never);
+        let _mode = ui::test_mode(true);
         ui::captured(|| rotate(root))
     }
 
     fn recover_json(root: &ArgMatches, stdin: &str) -> (Result<(), Error>, Option<Value>) {
-        ui::init(true, ui::Color::Never);
+        let _mode = ui::test_mode(true);
         ui::captured(|| recover_from(root, Cursor::new(stdin.to_owned())))
     }
 
@@ -684,7 +684,7 @@ mod tests {
             let dir = config_dir(Some(&cloud.url), "");
             let daemon = daemon(dir.path(), key(1), true);
             let root = root(dir.path(), Some(&daemon.socket), tail);
-            ui::init(json, ui::Color::Never);
+            let _mode = ui::test_mode(json);
 
             let (result, printed) = ui::captured(|| rotate_for(&root, terminal));
 

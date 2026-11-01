@@ -1,5 +1,6 @@
 //! This Machine's Machine API, with Machine Target routing applied by construction.
 
+mod ends_on_shutdown;
 mod local;
 mod routing;
 
@@ -21,6 +22,7 @@ use crate::{
     machine::RecordOwner,
 };
 
+pub use ends_on_shutdown::EndsOnShutdown;
 pub use routing::{MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route};
 
 #[cfg(test)]

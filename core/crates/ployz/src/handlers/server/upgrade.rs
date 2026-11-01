@@ -1654,10 +1654,10 @@ mod tests {
         let attempts =
             vec![serde_json::json!({ "server": machines[0].id, "outcome": "succeeded" })];
         let error = Error::coded(RpcErrorCode::Unavailable, "Could not reach Cloud.");
-        crate::ui::init(true, crate::ui::Color::Never);
+        let mode = crate::ui::test_mode(true);
         let (result, captured) =
             crate::ui::captured(|| cut_short(attempts, &machines[2..], &[], "b", error));
-        crate::ui::init(false, crate::ui::Color::Never);
+        drop(mode);
         assert_eq!(
             result.unwrap_err().json().pointer("/message").unwrap(),
             "Could not reach Cloud."

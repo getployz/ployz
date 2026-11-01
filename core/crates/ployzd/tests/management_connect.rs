@@ -28,13 +28,13 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, DescribeContractRequest, DeviceKey, EnrollAs, EnrollRequest,
     ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN, MachineId,
     MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, ManagementIdentity,
-    RpcErrorCode, SetDeviceRequest, SetManagementClientRequest, TUNNEL_ALPN, TUNNEL_FAILED,
-    TUNNEL_OPEN, op,
+    OpaquePayload, RpcErrorCode, SetDeviceRequest, SetManagementClientRequest, TUNNEL_ALPN,
+    TUNNEL_FAILED, TUNNEL_OPEN, op,
 };
 use ployzd::{
     corrosion::ReplicatedStore,
     machine::{LocalMachine, LocalMachineStore, RecordOwner},
-    machine_api::MachineApi,
+    machine_api::{EndsOnShutdown, MachineApi},
     management::{self, ManagementConfig},
 };
 use tokio::sync::{Semaphore, mpsc};
@@ -403,6 +403,110 @@ async fn a_reply_finished_as_shutdown_drains_reaches_the_caller() {
         machine_id
     );
     server.await.unwrap();
+}
+
+/// An open RuntimeWatch never ends on its own, and the drain once waited it out until
+/// the daemon aborted the endpoint unclosed (#3699). Shutdown ends it at once, while a
+/// unary reply standing in for Leave's and a Build stream still finish and drain.
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_ends_open_streams_while_replies_and_builds_drain() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
+    let machine_id = local.record().id();
+    let capability = local
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let (connections, _observed) = mpsc::unbounded_channel();
+    let gate = Arc::new(RequestGate::default());
+    let build_release = Arc::new(Semaphore::new(0));
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        EndsOnShutdown::new(
+            StreamingApi {
+                api: ObservedApi {
+                    api: MachineApi::builder(owner).build(),
+                    connections,
+                    seen: Arc::default(),
+                    gate: Arc::clone(&gate),
+                },
+                build_release: Arc::clone(&build_release),
+            },
+            shutdown.clone(),
+        ),
+        Arc::default(),
+        None::<ReplicatedStore>,
+        shutdown.clone(),
+    ));
+    let channel = SystemConnector::new("/ployz-missing-ssh-client")
+        .with_management_relay(ManagementRelay::custom(
+            relay_url,
+            CaTlsConfig::insecure_skip_verify(),
+        ))
+        .connect(&connection(&capability))
+        .await
+        .unwrap();
+    activate(channel.clone()).await;
+    let mut client = MachineRpcClient::new(channel.clone());
+    let mut watch = client
+        .runtime_watch(OpaquePayload {
+            json: b"{}".to_vec(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(watch.message().await.unwrap().unwrap().json, b"watching");
+    let mut build = client
+        .build(futures_util::stream::empty::<OpaquePayload>())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(build.message().await.unwrap().unwrap().json, b"building");
+    gate.hold.store(true, Ordering::SeqCst);
+    let reply = tokio::spawn(describe(channel));
+    wait_until(|| gate.active.load(Ordering::SeqCst) == 1).await;
+
+    shutdown.cancel();
+    let ended = tokio::time::timeout(Duration::from_secs(2), watch.message())
+        .await
+        .expect("shutdown must end the open stream, not wait it out")
+        .expect_err("the open stream ends with a status");
+    assert_eq!(ended.code(), tonic::Code::Unavailable);
+    // real-wait: hyper's GOAWAY and PING round trip crosses real sockets and signals nothing.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    gate.release.add_permits(1);
+    build_release.add_permits(1);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), reply)
+            .await
+            .expect("the reply must drain")
+            .unwrap()
+            .expect("the drain must not drop the reply"),
+        machine_id
+    );
+    assert_eq!(build.message().await.unwrap().unwrap().json, b"built");
+    assert!(
+        build.message().await.unwrap().is_none(),
+        "Build ends cleanly"
+    );
+    tokio::time::timeout(Duration::from_secs(3), server)
+        .await
+        .expect("serve must close well inside the daemon's 5 s server drain")
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2038,6 +2142,70 @@ impl Service<http::Request<Body>> for ObservedApi {
             future.await
         })
     }
+}
+
+/// Answers RuntimeWatch with a stream that never ends and Build with one that ends after
+/// `build_release`; everything else goes to `api`.
+#[derive(Clone)]
+struct StreamingApi {
+    api: ObservedApi,
+    build_release: Arc<Semaphore>,
+}
+
+impl Service<http::Request<Body>> for StreamingApi {
+    type Response = http::Response<Body>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.api.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        use futures_util::StreamExt;
+        let path = request.uri().path();
+        if path == op::RuntimeWatch::PATH {
+            let frames = futures_util::stream::once(async { grpc_message(b"watching") })
+                .chain(futures_util::stream::pending());
+            return Box::pin(async move { Ok(grpc_response(frames)) });
+        }
+        if path == op::Build::PATH {
+            let release = Arc::clone(&self.build_release);
+            let frames = futures_util::stream::once(async { grpc_message(b"building") })
+                .chain(futures_util::stream::once(async move {
+                    release.acquire().await.unwrap().forget();
+                    grpc_message(b"built")
+                }))
+                .chain(futures_util::stream::once(async {
+                    let mut trailers = http::HeaderMap::new();
+                    tonic::Status::ok("").add_header(&mut trailers).unwrap();
+                    Ok::<_, Box<tonic::Status>>(http_body::Frame::trailers(trailers))
+                }));
+            return Box::pin(async move { Ok(grpc_response(frames)) });
+        }
+        self.api.call(request)
+    }
+}
+
+fn grpc_message(json: &[u8]) -> Result<http_body::Frame<bytes::Bytes>, Box<tonic::Status>> {
+    // OpaquePayload { json }: field 1, length-delimited.
+    let mut payload = vec![0x0a, u8::try_from(json.len()).unwrap()];
+    payload.extend_from_slice(json);
+    let mut frame = vec![0];
+    frame.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(http_body::Frame::data(frame.into()))
+}
+
+fn grpc_response(
+    frames: impl futures_util::Stream<Item = Result<http_body::Frame<bytes::Bytes>, Box<tonic::Status>>>
+    + Send
+    + 'static,
+) -> http::Response<Body> {
+    http::Response::builder()
+        .header("content-type", "application/grpc")
+        .body(Body::new(http_body_util::StreamBody::new(frames)))
+        .unwrap()
 }
 
 /// The Machine's own refusal, which the SDK must not mark unanswered.

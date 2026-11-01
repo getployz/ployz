@@ -4143,6 +4143,7 @@ dependencies = [
  "ployz-core",
  "ployz-store",
  "ployz-testkit",
+ "prost",
  "rand_core 0.9.5",
  "rcgen",
  "regex",
