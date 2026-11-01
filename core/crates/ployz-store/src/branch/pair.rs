@@ -249,7 +249,9 @@ impl Move {
         copied: &BTreeSet<String>,
     ) -> Result<Self, RpcError> {
         let nothing = format!("Nothing to copy from {}", owner.summary.name);
-        Self::deployed(tx, (owner, branch), Way::Copy, nothing, copied)
+        let mut way = Self::deployed(tx, (owner, branch), Way::Copy, nothing, copied)?;
+        review::sealed::seal_running(tx, owner, &mut way.from, copied)?;
+        Ok(way)
     }
 
     /// The rows from `from` into `into`.

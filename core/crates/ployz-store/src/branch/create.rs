@@ -134,13 +134,17 @@ pub(crate) fn create_branch(
         ));
     }
     let mut from = working.clone();
+    let mut stand_in = BTreeSet::new();
     for failed in fixed {
         for service in &mut from.services {
             if service.lineage_id == failed.lineage_id {
                 *service = failed.clone();
             }
         }
+        stand_in.insert(failed.lineage_id);
     }
+    // The failed revision may predate a seal the Parent made since.
+    crate::review::sealed::seal_running(tx, &parent, &mut from, &stand_in)?;
 
     let into = crate::scope::empty(create.name.as_str());
     let hostnames = Hostnames {
@@ -173,13 +177,17 @@ pub(crate) fn create_branch(
     let none = BTreeMap::new();
     crate::domain::refuse_long_subdomains(&creating(&from), &picks)?;
     let applied = creating(&from).apply(&picks, &none).map_err(config)?;
-    // A fix's base is what the Parent runs, so the failed change shows as staged.
+    // A fix's base is what the Parent runs, so the failed change shows as staged,
+    // with no plain value the Parent sealed but doesn't run sealed yet.
     let base = match create.fix {
         Some(_) => {
-            creating(&applied_state)
+            let mut base = creating(&applied_state)
                 .apply(&BTreeSet::new(), &none)
                 .map_err(config)?
-                .base
+                .base;
+            let sealed = review::sealed::sealed_rows(tx, parent.summary.id.as_str())?;
+            review::sealed::empty_plain_in(&mut base, &sealed);
+            base
         }
         None => applied.base,
     };
