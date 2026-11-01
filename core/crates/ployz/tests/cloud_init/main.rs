@@ -711,13 +711,24 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
     )
     .await;
     assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("new founding claim requires an uninitialized Server"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("new founding claim requires an uninitialized Server"),
+        "{stderr}"
+    );
+    // Cloud now holds the founding for this identity, which --reset replaces, so a
+    // --reset rerun alone would wait on it.
+    assert!(
+        stderr.contains("After 10 minutes, where you're signed in, run `ployz server forget --confirm <your organization's slug>`"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("cloud reset"), "{stderr}");
+    assert!(
+        stderr.contains("make a new token with `ployz server add --command --reset`"),
+        "{stderr}"
     );
     assert_eq!(daemon.reset_count(), 0);
+    assert_eq!(daemon.initialize_requests().len(), 1);
     assert_eq!(enroll.posts().len(), 1);
 }
 
