@@ -130,7 +130,8 @@ fn each_sealed_since(
     working: &SavedEnvironmentIntent,
     seal: impl Fn(&mut SavedVariableIntent, bool),
 ) -> Result<(), RpcError> {
-    // Read only for a variable changed, deleted or added again: they scan every save.
+    // Read only for a variable changed, deleted or added again: the ledgers here and
+    // above scan every save.
     let mut ever = None;
     let mut chain = None;
     for service in &mut introduced.services {
