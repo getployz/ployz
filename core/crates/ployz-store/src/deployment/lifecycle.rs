@@ -1626,10 +1626,14 @@ pub(crate) fn record(
                 |service: &ServiceName| failed.iter().any(|(s, _)| s == service);
             // The runner names only the first failure it saw. A Service that failed
             // on its own beside it reaches the outcome as never attempted, and a
-            // cancel named before it would hide why the run failed.
+            // cancel named before it would hide why the run failed. One that switched
+            // reaches it as deployed, though its old copy's removal failed.
             for (service, _) in &failed {
-                if projection.unattempted_services.contains(service) {
+                if projection.unattempted_services.contains(service)
+                    || projection.confirmed_services.contains(service)
+                {
                     projection.unattempted_services.retain(|s| s != service);
+                    projection.confirmed_services.retain(|s| s != service);
                     projection.failed_services.push(service.clone());
                 }
             }
@@ -2039,7 +2043,8 @@ pub(super) enum Evidence<'run> {
 
 /// Each target node's Node Outcome from `evidence`. A Service the preview plans
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
-/// completed is Deployed (Removed once it left Saved State), some ran is Failed and
+/// completed, or switched with only its old copies' removals left, is Deployed
+/// (Removed once it left Saved State), some ran is Failed and
 /// none ran is Not attempted, as is one the planner blocked. A Service that left Saved State with nothing planned
 /// is Removed, whether or not the snapshot saw every Machine: the Deploy removed
 /// every copy it could reach, and a copy on a Machine it could not check is the
