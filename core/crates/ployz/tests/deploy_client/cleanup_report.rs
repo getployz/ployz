@@ -1,8 +1,8 @@
-//! Rung 3: a cleanup no proxy confirms ends with the old copy left running, named by Machine.
+//! Rung 3: a cleanup no proxy confirms ends with the old copy left running, named by copy and Machine.
 
 use super::support::*;
 use ployz::deploy::{DeployEvent, DeployIntent, DeployOutcome, DeployWarning};
-use ployz_core::{CopyRotation, Namespace, RequestedServiceSpec};
+use ployz_core::{ContainerId, CopyRotation, Namespace, RequestedServiceSpec};
 use tokio_util::sync::CancellationToken;
 
 fn image(name: &str, image: &str) -> RequestedServiceSpec {
@@ -19,6 +19,7 @@ async fn replace_with_a_sticky_proxy(
 ) -> (
     DeployOutcome<ployz::deploy::ExecutionError>,
     Vec<DeployWarning>,
+    ContainerId,
 ) {
     let (one, two) = (machine('a', "one"), machine('b', "two"));
     let mut old = running_container(&one, &image("web", "web:1"));
@@ -65,7 +66,7 @@ async fn replace_with_a_sticky_proxy(
         }
     }
     server.abort();
-    (outcome, warnings)
+    (outcome, warnings, old_id)
 }
 
 fn left_running(warnings: &[DeployWarning]) -> Vec<String> {
@@ -78,7 +79,7 @@ fn left_running(warnings: &[DeployWarning]) -> Vec<String> {
 
 #[tokio::test(start_paused = true)]
 async fn report_names_left_running() {
-    let (outcome, warnings) = replace_with_a_sticky_proxy(false).await;
+    let (outcome, warnings, old) = replace_with_a_sticky_proxy(false).await;
 
     assert!(
         !matches!(outcome, DeployOutcome::Success { .. }),
@@ -86,20 +87,24 @@ async fn report_names_left_running() {
     );
     assert_eq!(
         left_running(&warnings),
-        [
-            "app/web left running on one (proxy on two did not confirm). The next deploy cleans it up."
-        ],
+        [format!(
+            "app/web copy {} left running on one (proxy on two did not confirm). The next deploy cleans it up.",
+            &old.as_str()[..12]
+        )],
         "{warnings:?}"
     );
 }
 
 #[tokio::test(start_paused = true)]
 async fn interrupting_cleanup_names_the_copy_left_running() {
-    let (_, warnings) = replace_with_a_sticky_proxy(true).await;
+    let (_, warnings, old) = replace_with_a_sticky_proxy(true).await;
 
     assert_eq!(
         left_running(&warnings),
-        ["app/web left running on one (interrupted). The next deploy cleans it up."],
+        [format!(
+            "app/web copy {} left running on one (interrupted). The next deploy cleans it up.",
+            &old.as_str()[..12]
+        )],
         "{warnings:?}"
     );
 }

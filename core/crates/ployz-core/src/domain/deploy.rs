@@ -1007,14 +1007,17 @@ impl Display for DeployWarning {
                 join_ports(exposed),
                 join_ports(routed),
             ),
+            // The short ID `service ls` and `docker ps` show tells two copies on one
+            // Machine apart.
             Self::LeftRunning {
                 service,
+                container_id,
                 machine,
                 reason,
-                ..
             } => write!(
                 f,
-                "{service} left running on {machine} ({reason}). The next deploy cleans it up."
+                "{service} copy {} left running on {machine} ({reason}). The next deploy cleans it up.",
+                container_id.as_str().get(..12).unwrap_or(container_id.as_str())
             ),
             Self::MixedAfterReturn { machine } => write!(
                 f,

@@ -1073,6 +1073,7 @@ async fn a_restore_a_newer_deploy_refuses_reads_as_the_newer_deploy_serving() {
             assert_eq!(
                 warnings,
                 [left_running(
+                    &old,
                     "machine-1",
                     "a newer deploy is already serving app/api, and removing it failed: the disk is busy"
                 )]
@@ -1605,8 +1606,8 @@ async fn a_cancel_while_the_stop_first_step_withdraws_brings_every_held_copy_bac
     assert_eq!(
         warnings,
         [
-            left_running("machine-1", "interrupted"),
-            left_running("machine-2", "interrupted"),
+            left_running(&old_first, "machine-1", "interrupted"),
+            left_running(&old_second, "machine-2", "interrupted"),
         ]
     );
     client.assert_done();

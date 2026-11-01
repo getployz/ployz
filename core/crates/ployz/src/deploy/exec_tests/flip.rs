@@ -261,6 +261,7 @@ async fn an_old_copy_a_newer_copy_refuses_that_will_not_go_is_left_saying_why() 
     assert_eq!(
         warnings,
         [left_running(
+            &old,
             "machine-1",
             "a newer deploy is already serving app/api, and removing it failed: the disk is busy"
         )]
@@ -522,6 +523,7 @@ async fn a_removal_whose_out_no_proxy_confirms_fails_the_deploy() {
     assert_eq!(
         warnings,
         [left_running(
+            &removed,
             "machine-1",
             "proxy on machine-1 did not confirm"
         )]
@@ -1529,10 +1531,11 @@ pub(super) async fn reported_warnings<C: MachineOperations>(
     (outcome, warnings)
 }
 
-pub(super) fn left_running(machine: &str, reason: &str) -> String {
+pub(super) fn left_running(copy: &ContainerId, machine: &str, reason: &str) -> String {
     format!(
-        "{} left running on {machine} ({reason}). The next deploy cleans it up.",
-        api()
+        "{} copy {} left running on {machine} ({reason}). The next deploy cleans it up.",
+        api(),
+        &copy.as_str()[..12]
     )
 }
 
@@ -1629,7 +1632,7 @@ async fn an_undialed_servers_proxy_does_not_hold_the_switch_and_its_routes_keep_
         warnings,
         [
             "Could not fully observe containers on Server machine-2: tcp connect error".to_owned(),
-            left_running("machine-1", "proxy on machine-2 did not confirm"),
+            left_running(&old, "machine-1", "proxy on machine-2 did not confirm"),
             mixed_after_return("machine-2"),
         ]
     );
@@ -1778,7 +1781,11 @@ async fn an_undialed_servers_proxy_keeps_a_copy_an_earlier_gapped_deploy_left() 
         warnings,
         [
             "Could not fully observe containers on Server machine-2: tcp connect error".to_owned(),
-            left_running("machine-1", "proxy on machine-2 did not confirm"),
+            left_running(
+                &container('a'),
+                "machine-1",
+                "proxy on machine-2 did not confirm"
+            ),
             mixed_after_return("machine-2"),
         ]
     );
@@ -1787,7 +1794,8 @@ async fn an_undialed_servers_proxy_keeps_a_copy_an_earlier_gapped_deploy_left() 
 
 /// A second gapped deploy replaces the copies the first one started, which the
 /// undialed Server's proxy never routed, and drains them as usual. Only the copy
-/// that proxy still routes is left, so old copies don't pile up (#3683).
+/// that proxy still routes is left, so old copies don't pile up (#3683), and the
+/// report names that copy alone, not one the Server removes after the deploy (#3704).
 #[tokio::test(start_paused = true)]
 async fn an_undialed_servers_proxy_lets_the_copies_it_never_routed_go_at_the_switch() {
     let (machine, other, undialed) = (machine('1'), machine('3'), machine('2'));
@@ -1858,6 +1866,7 @@ async fn an_undialed_servers_proxy_lets_the_copies_it_never_routed_go_at_the_swi
             .cloned()
             .collect::<Vec<_>>(),
         [left_running(
+            &left,
             "machine-1",
             "proxy on machine-2 did not confirm"
         )]
@@ -2244,6 +2253,7 @@ async fn a_retirement_no_proxy_confirms_leaves_the_old_copy_running() {
     assert_eq!(
         warnings,
         [left_running(
+            &old,
             "machine-1",
             "proxy on machine-1 did not confirm"
         )]
@@ -2272,7 +2282,11 @@ async fn only_a_machine_whose_proxy_row_never_arrived_is_named_as_serving_on_ret
     assert_eq!(
         warnings,
         [
-            left_running("machine-1", "proxy on machine-1, machine-2 did not confirm"),
+            left_running(
+                &old,
+                "machine-1",
+                "proxy on machine-1, machine-2 did not confirm"
+            ),
             mixed_after_return("machine-2"),
         ],
         "machine-1's proxy answered, so it is not away"
@@ -2309,7 +2323,7 @@ async fn an_owner_powered_off_during_cleanup_is_named_with_the_copy_left_on_it()
     assert_eq!(
         warnings,
         [
-            left_running("machine-1", "machine-1 did not answer"),
+            left_running(&old, "machine-1", "machine-1 did not answer"),
             mixed_after_return("machine-1"),
         ]
     );
@@ -2345,6 +2359,7 @@ async fn a_retirement_out_refused_for_a_moved_copy_leaves_it_where_it_moved() {
     assert_eq!(
         warnings,
         [left_running(
+            &old,
             "machine-1",
             "the copy moved since it was read"
         )],
@@ -2386,8 +2401,8 @@ async fn a_cancel_mid_cleanup_reports_each_copy_left_running() {
     assert_eq!(
         warnings,
         [
-            left_running("machine-1", "interrupted"),
-            left_running("machine-2", "interrupted"),
+            left_running(&one, "machine-1", "interrupted"),
+            left_running(&two, "machine-2", "interrupted"),
         ]
     );
     assert_eq!(client.rotation(&one), Some(CopyRotation::Out));
@@ -2429,7 +2444,7 @@ async fn a_cancel_during_a_stop_first_hold_brings_the_old_copy_back_in() {
             Move::To(old, CopyRotation::In),
         ]
     );
-    assert_eq!(warnings, [left_running("machine-1", "interrupted")]);
+    assert_eq!(warnings, [left_running(&old, "machine-1", "interrupted")]);
     client.assert_done();
 }
 
@@ -2455,6 +2470,7 @@ async fn an_unconfirmed_stop_first_hold_brings_the_old_copy_back_in() {
     assert_eq!(
         warnings,
         [left_running(
+            &old,
             "machine-1",
             "proxy on machine-1 did not confirm"
         )]
@@ -2485,6 +2501,7 @@ async fn a_refused_restore_after_an_interrupted_hold_is_reported() {
     assert_eq!(
         warnings,
         [left_running(
+            &old,
             "machine-1",
             "interrupted, and it could not go back In: the copy moved since it was read"
         )]
@@ -2645,6 +2662,7 @@ async fn global_with_no_matching_machine_keeps_last_copy_serving() {
     assert_eq!(
         warnings,
         [left_running(
+            &last,
             "machine-1",
             "no other In copy is acked by every live proxy"
         )]
@@ -2734,10 +2752,12 @@ async fn a_restored_old_copy_whose_listing_is_unconfirmed_keeps_the_new_copy_sto
         warnings,
         [
             left_running(
+                &old,
                 "machine-1",
                 "the Deploy failed, and it could not go back In: read routes failed: the route read failed"
             ),
             left_running(
+                &new,
                 "machine-1",
                 "the Deploy failed, and it could not go back In: its old copy may be serving"
             ),
@@ -2780,6 +2800,7 @@ async fn an_unconfirmed_stop_first_publish_keeps_the_old_copy_stopped() {
     assert_eq!(
         warnings,
         [left_running(
+            &old,
             "machine-1",
             "the Deploy failed, and it could not go back In: its new copy may be serving"
         )]
@@ -2815,7 +2836,11 @@ async fn a_stop_failure_after_held_brings_the_old_copy_back_in() {
     );
     assert_eq!(
         warnings,
-        [left_running("machine-1", "the docker daemon timed out")]
+        [left_running(
+            &old,
+            "machine-1",
+            "the docker daemon timed out"
+        )]
     );
     client.assert_done();
 }
@@ -2866,7 +2891,7 @@ async fn a_route_read_error_after_held_brings_the_old_copy_back_in() {
     assert_eq!(client.rotation(&old), Some(CopyRotation::In));
     assert_eq!(
         warnings,
-        [left_running("machine-1", "the route query failed")]
+        [left_running(&old, "machine-1", "the route query failed")]
     );
     client.assert_done();
 }
@@ -3009,8 +3034,16 @@ async fn an_unconfirmed_unlisting_leaves_every_old_copy_of_the_group_running() {
     assert_eq!(
         warnings,
         [
-            left_running("machine-1", "proxy on machine-1, machine-2 did not confirm"),
-            left_running("machine-2", "proxy on machine-1, machine-2 did not confirm"),
+            left_running(
+                &one,
+                "machine-1",
+                "proxy on machine-1, machine-2 did not confirm"
+            ),
+            left_running(
+                &two,
+                "machine-2",
+                "proxy on machine-1, machine-2 did not confirm"
+            ),
         ]
     );
     client.assert_done();
@@ -3054,10 +3087,12 @@ async fn a_failed_route_read_after_the_outs_leaves_every_old_copy_of_the_group_r
         warnings,
         [
             left_running(
+                &one,
                 "machine-1",
                 "the routes could not be read through the Machine this Deploy connects to: the route read failed",
             ),
             left_running(
+                &two,
                 "machine-2",
                 "the routes could not be read through the Machine this Deploy connects to: the route read failed",
             ),
@@ -3110,7 +3145,7 @@ async fn a_cut_off_owner_leaves_only_its_own_old_copy_of_the_group_running() {
     assert_eq!(
         warnings,
         [
-            left_running("machine-1", "machine-1 did not answer"),
+            left_running(&one, "machine-1", "machine-1 did not answer"),
             mixed_after_return("machine-1"),
         ]
     );
@@ -3240,13 +3275,15 @@ async fn only_the_machine_that_did_not_answer_is_named_away() {
     assert_eq!(
         warnings,
         [
-            left_running("machine-3", "machine-3 did not answer"),
+            left_running(&olds[2], "machine-3", "machine-3 did not answer"),
             mixed_after_return("machine-3"),
             left_running(
+                &olds[0],
                 "machine-1",
                 "the routes could not be read through the Machine this Deploy connects to: the route read failed",
             ),
             left_running(
+                &olds[1],
                 "machine-2",
                 "the routes could not be read through the Machine this Deploy connects to: the route read failed",
             ),
@@ -3573,13 +3610,15 @@ async fn an_owner_whose_calls_time_out_on_this_client_is_named_away() {
     assert_eq!(
         warnings,
         [
-            left_running("machine-3", "machine-3 did not answer"),
+            left_running(&olds[2], "machine-3", "machine-3 did not answer"),
             mixed_after_return("machine-3"),
             left_running(
+                &olds[0],
                 "machine-1",
                 "the routes could not be read through the Machine this Deploy connects to: the route read failed",
             ),
             left_running(
+                &olds[1],
                 "machine-2",
                 "the routes could not be read through the Machine this Deploy connects to: the route read failed",
             ),
@@ -3622,7 +3661,7 @@ async fn an_applied_deploy_names_the_copy_its_cut_off_owner_kept() {
     assert_eq!(
         warnings,
         [
-            left_running("machine-1", "machine-1 did not answer"),
+            left_running(&old, "machine-1", "machine-1 did not answer"),
             mixed_after_return("machine-1"),
         ]
     );
@@ -3663,7 +3702,7 @@ async fn a_removal_whose_owner_does_not_answer_names_the_copy_left_running() {
     assert_eq!(
         warnings,
         [
-            left_running("machine-1", "machine-1 did not answer"),
+            left_running(&removed, "machine-1", "machine-1 did not answer"),
             mixed_after_return("machine-1"),
         ]
     );
