@@ -32,6 +32,9 @@ pub(super) struct CheckinRequest<'a> {
     pub(super) probe: Option<probe::Report>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) attempt: Option<&'a Attempt>,
+    /// Lets Cloud tell a host installed again under a joined Server's check-in key from that Server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) machine_phase: Option<ployz_core::LocalMachinePhase>,
 }
 
 /// The enroll attempt this host is running, or last ran, for Cloud's instruction `attempt_id`.
