@@ -216,10 +216,11 @@ You'll see `Server web-2 already participates, but Cloud doesn't list it as join
 If an add of this server just stopped partway, run the same command again in a minute. If you
 [forgot the server](../servers/manage-servers.md#forget-a-server-that-is-gone) and it kept running,
 the token that add used is now tied to the server as it was before you forgot it. `--reset` gives
-the server a new identity, so that token won't work after a reset. Add it again with a new token:
-signed in, run `ployz server add --command --reset` and run the line it prints on the server, or
-run `ployz server add <host> --reset` to add it over SSH. The reset removes every container Ployz
-runs on that server; volume data stays on the disk.
+the server a new identity, so that token won't work after a reset. Add it again with a new token.
+Signed in, either run `ployz server add --command --reset` and run the line it prints on the
+server, or run `ployz server add <host> --reset` to add it over SSH. The reset removes every
+container Ployz runs on that server and can delete its mirrors, so don't use it while a mirror
+there may be the last copy of a volume.
 
 ## The server doesn't finish joining
 
