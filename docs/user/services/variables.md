@@ -101,9 +101,12 @@ service still gets the real value when it deploys.
   variable or adds it again plain. They also show it as **Sealed** when the branch deleted,
   renamed or changed the variable before the seal, including in a service it made separate
   after it was created, and in a branch made from a branch that still had the value it was
-  created with. Discarding that change brings the variable back **Not set**, never with the
-  earlier value. A service made separate before Ployz 0.3.12 still shows that earlier value
-  there, and a discard brings it back. If the branch
+  created with. This holds whether or not the branch deployed the earlier value, and after it
+  takes the seal. Discarding that change brings the variable back **Not set**, never with the
+  earlier value. A value the branch set and deployed itself before the seal wasn't sealed, so
+  it still shows. Until a seal deploys, the review of the environment that sealed it shows the
+  earlier value as **Sealed** too. A service made separate before Ployz 0.3.12 still shows
+  that earlier value there, and a discard brings it back. If the branch
   adds it again plain after taking the seal, its History keeps no copy of the earlier value
   either.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to

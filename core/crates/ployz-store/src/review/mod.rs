@@ -289,14 +289,15 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let saved = latest_saved(tx, id)?;
     let head = crate::deployment::head(tx, environment)?;
     let mut introductions = introductions(tx, environment)?;
-    sealed::hide_introduced(tx, id, &mut introductions, &environment.working)?;
+    sealed::hide_sealed(tx, id, &mut introductions, &environment.working)?;
+    let before = Before::of(tx, environment, saved.as_ref(), &head)?;
     let deployed = approval::deployed(&head);
     let mut view = compare(
         environment,
         saved.as_ref(),
         &head,
         &deployed,
-        &introductions,
+        (&before, &introductions),
     )?;
     let cluster_domains = if crate::domain::has_generated(&deployed) {
         crate::deployment::cluster_domains(tx, id, &head)?
@@ -312,10 +313,9 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .collect::<Vec<_>>(),
     );
     view.broken = crate::rules::broken_in(tx, environment, names)?;
-    let baseline = saved.as_ref().map_or_else(
-        || crate::scope::empty(environment.summary.name.as_str()),
-        |saved| saved.intent.clone(),
-    );
+    let baseline = before
+        .saved
+        .unwrap_or_else(|| crate::scope::empty(environment.summary.name.as_str()));
     let draft = saved_comparison(environment, &baseline)?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
@@ -349,6 +349,35 @@ fn by_name(changes: &mut [NodeChange]) {
     });
 }
 
+/// What a review shows as the before side: Applied State, the submitted revision
+/// and Saved State, with each plain value sealed since shown sealed. Only shown:
+/// tokens, effects and planning read them as they are.
+struct Before {
+    applied: SavedEnvironmentIntent,
+    submitted: SavedEnvironmentIntent,
+    saved: Option<SavedEnvironmentIntent>,
+}
+
+impl Before {
+    fn of(
+        tx: &mut dyn Tx,
+        environment: &Environment,
+        saved: Option<&Saved>,
+        head: &Head,
+    ) -> Result<Self, RpcError> {
+        let id = &environment.summary.id;
+        let mut hidden = |intent: &SavedEnvironmentIntent| {
+            let mut intent = intent.clone();
+            sealed::hide_sealed(tx, id, &mut intent, &environment.working).map(|()| intent)
+        };
+        Ok(Self {
+            applied: hidden(&head.applied)?,
+            submitted: hidden(&head.intent)?,
+            saved: saved.map(|saved| hidden(&saved.intent)).transpose()?,
+        })
+    }
+}
+
 fn saved_comparison(
     environment: &Environment,
     baseline: &SavedEnvironmentIntent,
@@ -361,15 +390,15 @@ fn compare(
     saved: Option<&Saved>,
     head: &Head,
     deployed: &SavedEnvironmentIntent,
-    introductions: &SavedEnvironmentIntent,
+    (before, introductions): (&Before, &SavedEnvironmentIntent),
 ) -> Result<DiffView, RpcError> {
     let id = &environment.summary.id;
     let project = |token: &str, intent: &SavedEnvironmentIntent| projection(id, token, intent);
     let changes = project_environment_changes(ChangeSetInput {
         working: project("working", &environment.working),
-        applied: project("applied", &head.applied),
-        saved: saved.as_ref().map(|saved| project("saved", &saved.intent)),
-        submitted: (head.intent != head.applied).then(|| project(&head.token, &head.intent)),
+        applied: project("applied", &before.applied),
+        saved: before.saved.as_ref().map(|saved| project("saved", saved)),
+        submitted: (head.intent != head.applied).then(|| project(&head.token, &before.submitted)),
         node_introductions: project("introductions", introductions),
     })
     .map_err(|_| error::corrupt("Environment document"))?;

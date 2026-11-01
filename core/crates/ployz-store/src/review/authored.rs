@@ -2380,6 +2380,13 @@ pub(super) fn prepare_discard(
         DiscardTarget::Review => saved.unwrap_or(&reviewed.head.intent).clone(),
         DiscardTarget::Head => reviewed.head.intent.clone(),
     };
+    // A plain value sealed since comes back Not set, never as it was.
+    super::sealed::unset_sealed(
+        tx,
+        &environment.summary.id,
+        &mut baseline,
+        &environment.working,
+    )?;
     if target == DiscardTarget::Review && path.is_some() {
         return Err(error::invalid(
             "Review discard takes the whole reviewed list",
@@ -2399,7 +2406,7 @@ pub(super) fn prepare_discard(
             && !has_node(&baseline, &node)
         {
             let mut introduced = super::introductions(tx, environment)?;
-            super::sealed::unset_introduced(
+            super::sealed::unset_sealed(
                 tx,
                 &environment.summary.id,
                 &mut introduced,

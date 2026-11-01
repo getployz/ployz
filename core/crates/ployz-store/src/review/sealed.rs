@@ -27,19 +27,21 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
     }
 }
 
-/// Show sealed each plain value `introduced` keeps that is sealed since: by the
-/// Environment, now or before it deleted or added the variable again, or, for one
-/// it was made with or copied, by its Parent, the node's owner or an Environment
-/// above them. A Node Introduction keeps the value a Branch was made with, and a
-/// review compares a new node with it, but never reads a sealed value back. The
-/// fingerprint stays, so the comparison still sees whether the value changed.
-pub(crate) fn hide_introduced(
+/// Show sealed each plain value `baseline` keeps that is sealed since: by the
+/// Environment, now or before it deleted or added the variable again, or, for the
+/// value it was made with or copied, by its Parent, the node's owner or an
+/// Environment above them. A review compares Working State with a Node
+/// Introduction, Applied State, a submitted revision or Saved State, each of which
+/// may keep a plain value from before the seal, but never reads a sealed value
+/// back. The fingerprint stays, so the comparison still sees whether the value
+/// changed.
+pub(crate) fn hide_sealed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    introduced: &mut SavedEnvironmentIntent,
+    baseline: &mut SavedEnvironmentIntent,
     working: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
-    each_sealed_since(tx, environment, introduced, working, |was, _| {
+    each_sealed_since(tx, environment, baseline, working, |was, _| {
         was.value = SavedVariableValue::Secret {
             encrypted_value: None,
         };
@@ -100,18 +102,18 @@ pub(crate) fn seal_running(
     Ok(())
 }
 
-/// Make Not set each plain value `introduced` keeps that [`hide_introduced`]
-/// shows sealed: a discard that brings a variable back from a Node Introduction
-/// brings it back sealed without a value, never as the earlier plain value. One
-/// the Environment holds sealed now keeps its plain value, so the discard refuses
-/// to overwrite the sealed one, as it always has.
-pub(crate) fn unset_introduced(
+/// Make Not set each plain value `baseline` keeps that [`hide_sealed`] shows
+/// sealed: a discard brings the variable back sealed without a value, never as the
+/// earlier plain value. One the Environment holds sealed now, with a value, keeps
+/// its plain value, so the discard refuses to overwrite the sealed one, as it
+/// always has.
+pub(crate) fn unset_sealed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    introduced: &mut SavedEnvironmentIntent,
+    baseline: &mut SavedEnvironmentIntent,
     working: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
-    each_sealed_since(tx, environment, introduced, working, |was, held| {
+    each_sealed_since(tx, environment, baseline, working, |was, held| {
         if held {
             return;
         }
@@ -121,12 +123,12 @@ pub(crate) fn unset_introduced(
     })
 }
 
-/// Apply `seal` to each plain variable `introduced` keeps that is sealed since,
-/// as [`hide_introduced`] says, with whether `working` holds it sealed now.
+/// Apply `seal` to each plain variable `baseline` keeps that is sealed since, as
+/// [`hide_sealed`] says, with whether `working` holds it sealed now, with a value.
 fn each_sealed_since(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    introduced: &mut SavedEnvironmentIntent,
+    baseline: &mut SavedEnvironmentIntent,
     working: &SavedEnvironmentIntent,
     seal: impl Fn(&mut SavedVariableIntent, bool),
 ) -> Result<(), RpcError> {
@@ -134,7 +136,7 @@ fn each_sealed_since(
     // above scan every save.
     let mut ever = None;
     let mut chain = None;
-    for service in &mut introduced.services {
+    for service in &mut baseline.services {
         let now = working
             .services
             .iter()
@@ -180,16 +182,20 @@ fn each_sealed_since(
                 }
             };
             if sealed_now {
-                seal(was, now.is_some_and(|now| sealed(&now.value)));
+                // Only a sealed value is kept: one Not set has nothing to keep.
+                seal(
+                    was,
+                    now.is_some_and(|now| matches!(now.value, SavedVariableValue::Secret { .. })),
+                );
             }
         }
     }
     Ok(())
 }
 
-/// Whether `environment` was made with or copied `was`, of its node with this ID
-/// and lineage, and an Environment above it sealed that since. Reads the [`Chain`]
-/// the first time.
+/// Whether `was`, of `environment`'s node with this ID and lineage, is the value
+/// that node was made with or copied, and an Environment above it sealed that
+/// since. Reads the [`Chain`] the first time.
 fn sealed_above(
     tx: &mut dyn Tx,
     chain: &mut Option<Chain>,
@@ -205,7 +211,15 @@ fn sealed_above(
             chain.insert(read)
         }
     };
-    Ok(chain.holds(environment.as_str(), node, lineage, &was.key))
+    // A value the Environment set itself, and deployed or saved, was never sealed
+    // above it.
+    let Some(made) = chain.introduced(tx, environment.as_str(), node, |made| {
+        made.id == was.id && made.fingerprint == was.value_fingerprint
+    })?
+    else {
+        return Ok(false);
+    };
+    Ok(chain.holds(environment.as_str(), node, lineage, &made.key))
 }
 
 /// Each variable a Branch was made with, or copied from a node's owner since, that
