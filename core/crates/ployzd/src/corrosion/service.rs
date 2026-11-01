@@ -114,7 +114,9 @@ impl CorrosionConfig {
     }
 
     pub async fn start(&self) -> Result<RunningCorrosion, Error> {
-        bounded_start(async {
+        // Boxed: starting Corrosion is a large future, and inline it overflows the stack
+        // of a daemon start.
+        bounded_start(Box::pin(async {
             let files = self.install()?;
             let api = ApiClient::new(self.api_address, &files.token)?;
             let admin = AdminClient::new(self.paths.admin_socket());
@@ -161,7 +163,7 @@ impl CorrosionConfig {
                 service,
                 keeper,
             })
-        })
+        }))
         .await
     }
 
@@ -916,6 +918,17 @@ mod tests {
         for sibling in &siblings {
             assert!(!writes_synchronously(sibling), "{}", sibling.display());
         }
+    }
+
+    #[test]
+    fn starting_corrosion_stays_off_the_daemon_start_stack() {
+        let config = CorrosionConfig::local("/nonexistent/data", "/nonexistent/run");
+        let start = config.start();
+        assert!(
+            std::mem::size_of_val(&start) < 1024,
+            "{} bytes",
+            std::mem::size_of_val(&start)
+        );
     }
 
     #[tokio::test(start_paused = true)]
