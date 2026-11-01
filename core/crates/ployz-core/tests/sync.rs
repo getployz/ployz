@@ -11,7 +11,7 @@ use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
     PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, SecretCiphertext,
     Sides, Verdict, Way, Why, dependents, name_of, parse_environment_intent, plan, put, put_back,
-    redact_environment_intent, unapply,
+    redact_environment_intent, unapply, unchanged_since,
 };
 use serde_json::{Value, json};
 
@@ -2368,4 +2368,120 @@ fn a_new_node_named_as_a_renamed_one_was_keeps_the_renamed_ones_base() {
         find(&base["services"], "lineageId", API)["volumeAttachments"],
         json!([{"volumeResourceId": data["resourceId"], "mountPath": "/data"}])
     );
+}
+
+/// A node is unchanged while each row holds the base's cell or what arrived there,
+/// and what cells leave out matches: a Volume's shared writes, a variable's export.
+#[test]
+fn unchanged_since_reads_what_cells_leave_out() {
+    let base = parent();
+    let none = BTreeMap::new();
+    let same = |into: &Value, lineage: &str| {
+        unchanged_since(&intent(&base), &intent(into), "", lineage, &none)
+    };
+    assert!(same(&base, DATA));
+    assert!(same(&base, API));
+
+    let mut shared = base.clone();
+    shared["volumes"][0]["sharedWrites"] = json!(true);
+    assert!(!same(&shared, DATA));
+
+    let mut exported = base.clone();
+    var(&mut exported, API, "PLAIN")["exported"] = json!(true);
+    assert!(!same(&exported, API));
+
+    let mut edited = base.clone();
+    var(&mut edited, API, "PLAIN")["value"] = literal("b");
+    var(&mut edited, API, "PLAIN")["valueFingerprint"] = json!("fp-plain-b");
+    assert!(!same(&edited, API));
+    // What arrived there last counts as unchanged too.
+    let row: RowId = format!("{API}:variables.PLAIN").parse().unwrap();
+    let held = Cells::of(&intent(&edited), "").at(&row).clone();
+    let arrived = BTreeMap::from([(row, held)]);
+    assert!(unchanged_since(
+        &intent(&base),
+        &intent(&edited),
+        "",
+        API,
+        &arrived
+    ));
+}
+
+/// A variable that lands new carries its description and export into the pair base
+/// too, so a Merge that removes its Service sees no conflict while the receiver keeps
+/// them as they landed, and still sees one once the receiver changes them.
+#[test]
+fn a_landed_variables_labels_reach_the_base_and_a_real_merge_conflict_stays() {
+    let mut from = parent();
+    svc(&mut from, API)["variables"]
+        .as_array_mut()
+        .unwrap()
+        .push(variable(0xb000_0000, 13, "NEW", literal("n"), "fp-new"));
+    var(&mut from, API, "NEW")["exported"] = json!(true);
+    var(&mut from, API, "NEW")["description"] = json!("shared");
+    let synced = compare(Some(&parent()), &from, &parent(), Way::Sync);
+    let applied = land(&synced, &[format!("{API}:variables.NEW")]).unwrap();
+    let (base, into) = (json_of(&applied.base), json_of(&applied.next));
+    for side in [&base, &into] {
+        let new = find(
+            &find(&side["services"], "lineageId", API)["variables"],
+            "key",
+            "NEW",
+        );
+        assert_eq!(
+            (&new["exported"], &new["description"]),
+            (&json!(true), &json!("shared"))
+        );
+    }
+
+    // The sender removes the Service; Merge compares the receiver to the base.
+    let mut removed = into.clone();
+    removed["services"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|s| s["lineageId"] != API);
+    let node = RowId::node(API);
+    let verdict = |into: &Value| {
+        compare(Some(&base), &removed, into, Way::Merge)
+            .rows()
+            .iter()
+            .find(|row| row.id == node)
+            .map(|row| row.verdict)
+    };
+    assert!(matches!(
+        verdict(&into),
+        Some(Verdict::Moves {
+            conflict: false,
+            ..
+        })
+    ));
+    let mut relabelled = into.clone();
+    var(&mut relabelled, API, "NEW")["exported"] = json!(false);
+    assert!(matches!(
+        verdict(&relabelled),
+        Some(Verdict::Moves { conflict: true, .. })
+    ));
+}
+
+/// A base stored before labels reached it lacks a landed variable's export: the node
+/// reads as changed, so a Follow keeps it rather than take it back.
+#[test]
+fn an_older_base_without_labels_reads_as_changed() {
+    let mut old_base = parent();
+    svc(&mut old_base, API)["variables"]
+        .as_array_mut()
+        .unwrap()
+        .push(variable(0xb000_0000, 13, "NEW", literal("n"), "fp-new"));
+    let mut into = old_base.clone();
+    var(&mut into, API, "NEW")["exported"] = json!(true);
+    let row: RowId = format!("{API}:variables.NEW").parse().unwrap();
+    let held = Cells::of(&intent(&into), "").at(&row).clone();
+    let arrived = BTreeMap::from([(row, held)]);
+    assert!(!unchanged_since(
+        &intent(&old_base),
+        &intent(&into),
+        "",
+        API,
+        &arrived
+    ));
 }

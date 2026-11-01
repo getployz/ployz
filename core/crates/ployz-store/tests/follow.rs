@@ -9,7 +9,7 @@
 //! deploy; and a secret follows only into a Branch that never set its own.
 
 use ployz_core::config::{At, Setting};
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{ConfigName, RpcErrorCode, ServiceName};
 use ployz_store::RowId;
 use ployz_store::{
     Actor, Batch, BatchCommand, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
@@ -953,6 +953,417 @@ fn a_service_the_parent_removes_and_adds_again_follows_into_a_readable_branch() 
         incoming(&store, &who, "fix-web"),
         ["db production", "web.env.PLAIN production"]
     );
+}
+
+/// The Services `environment`'s Working State holds, by name.
+fn services(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
+    store
+        .read(
+            who,
+            &ServicesQuery {
+                environment: at(environment),
+            },
+        )
+        .unwrap()
+        .services
+        .into_iter()
+        .map(|listing| listing.service.name.to_string())
+        .collect()
+}
+
+/// production adds `gone` with `SHARED=1` and deploys it as `n`, then removes it and
+/// deploys that as `n + 1`.
+fn add_and_remove_gone(store: &ConfigStore, who: &Actor, n: u8, between: impl FnOnce()) {
+    store
+        .write(
+            who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: at("production"),
+                name: ServiceName::parse("gone").unwrap(),
+                image: Some("nginx:1.29-alpine".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(store, who, "production", &[("gone.env.SHARED", json!("1"))]);
+    deploy(store, who, "production", n);
+    between();
+    store
+        .write(
+            who,
+            &ployz_store::RemoveService {
+                environment: at("production"),
+                service: ServiceName::parse("gone").unwrap(),
+            },
+        )
+        .unwrap();
+    deploy(store, who, "production", n + 1);
+}
+
+/// #3705: a Service the Parent adds and then removes leaves nothing staged in a
+/// Branch that never deployed it.
+#[test]
+fn a_service_the_parent_adds_then_removes_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    add_and_remove_gone(&store, &who, 2, || {
+        assert!(services(&store, &who, "fix-web").contains(&"gone".to_owned()));
+    });
+
+    assert!(!services(&store, &who, "fix-web").contains(&"gone".to_owned()));
+    assert!(
+        diff(&store, &who, "fix-web")
+            .changes
+            .iter()
+            .all(|change| change.name != "gone")
+    );
+    assert!(incoming(&store, &who, "fix-web").is_empty());
+}
+
+/// The Parent's own changes after it arrived don't make it the Branch's.
+#[test]
+fn a_service_the_parent_changed_then_removed_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    add_and_remove_gone(&store, &who, 2, || {
+        set(
+            &store,
+            &who,
+            "production",
+            &[("gone.image", json!("nginx:1.30-alpine"))],
+        );
+        deploy(&store, &who, "production", 10);
+    });
+
+    assert!(!services(&store, &who, "fix-web").contains(&"gone".to_owned()));
+    assert!(
+        diff(&store, &who, "fix-web")
+            .changes
+            .iter()
+            .all(|change| change.name != "gone")
+    );
+}
+
+/// A new Config the Parent mounts, then unmounts and removes in one deploy, leaves
+/// the Branch with neither.
+#[test]
+fn a_config_the_parent_unmounts_and_removes_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(uuid(7)).unwrap(),
+                environment: at("production"),
+                name: ConfigName::parse("extra").unwrap(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/extra".into(),
+                }],
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "production", 2);
+    let staged = |name: &str| {
+        diff(&store, &who, "fix-web")
+            .changes
+            .iter()
+            .any(|change| change.name == name)
+    };
+    assert!(staged("extra"));
+    store
+        .write(
+            &who,
+            &ployz_store::DetachConfig {
+                environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+                config: ConfigName::parse("extra").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: at("production"),
+                config: ConfigName::parse("extra").unwrap(),
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "production", 3);
+
+    assert!(!staged("extra"));
+}
+
+/// The ID of Service `name` in `environment`: its own, not its lineage.
+fn service_id(store: &ConfigStore, who: &Actor, environment: &str, name: &str) -> String {
+    store
+        .read(
+            who,
+            &ServicesQuery {
+                environment: at(environment),
+            },
+        )
+        .unwrap()
+        .services
+        .into_iter()
+        .find(|listing| listing.service.name.as_str() == name)
+        .unwrap()
+        .service
+        .id
+        .to_string()
+}
+
+fn create_gone(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: at("production"),
+                name: ServiceName::parse("gone").unwrap(),
+                image: Some("nginx:1.29-alpine".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+}
+
+fn remove_gone(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &ployz_store::RemoveService {
+                environment: at("production"),
+                service: ServiceName::parse("gone").unwrap(),
+            },
+        )
+        .unwrap();
+}
+
+/// Whether `environment` stages a change to node `name`.
+fn staged(store: &ConfigStore, who: &Actor, environment: &str, name: &str) -> bool {
+    diff(store, who, environment)
+        .changes
+        .iter()
+        .any(|change| change.name == name)
+}
+
+/// A secret sealed for the Parent arrives Not set, which is as it arrived.
+#[test]
+fn a_service_with_a_parents_secret_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    create_gone(&store, &who);
+    let sealed = backend::client_sealed(
+        &uuid(2),
+        &service_id(&store, &who, "production", "gone"),
+        "TOKEN",
+        1,
+    );
+    set(
+        &store,
+        &who,
+        "production",
+        &[("gone.env.TOKEN", json!({ "secret": sealed }))],
+    );
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "gone"));
+    remove_gone(&store, &who);
+    deploy(&store, &who, "production", 3);
+
+    assert!(!staged(&store, &who, "fix-web", "gone"));
+}
+
+/// What the Parent described or exported arrives with the variable, so it is as it
+/// arrived.
+#[test]
+fn a_service_with_a_variable_the_parent_exported_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    create_gone(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("gone.env.SHARED", json!({ "value": "1", "exported": true }))],
+    );
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "gone"));
+    remove_gone(&store, &who);
+    deploy(&store, &who, "production", 3);
+
+    assert!(!staged(&store, &who, "fix-web", "gone"));
+}
+
+/// Two new Services, one referencing the other, removed in one deploy, both leave,
+/// whichever is tried first.
+#[test]
+fn a_service_and_the_one_referencing_it_follow_out_of_the_branch_together() {
+    let (store, who) = shop();
+    // Its lineage sorts before `gone`'s, so it is tried while still referenced.
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(5)).unwrap(),
+                environment: at("production"),
+                name: ServiceName::parse("alpha").unwrap(),
+                image: Some("nginx:1.29-alpine".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    create_gone(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("gone.env.ALPHA_URL", json!("${{ alpha.PRIVATE_URL }}"))],
+    );
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "alpha"));
+    for name in ["gone", "alpha"] {
+        store
+            .write(
+                &who,
+                &ployz_store::RemoveService {
+                    environment: at("production"),
+                    service: ServiceName::parse(name).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+    deploy(&store, &who, "production", 3);
+
+    assert!(!staged(&store, &who, "fix-web", "gone"));
+    assert!(!staged(&store, &who, "fix-web", "alpha"));
+}
+
+/// A node another of the Branch's nodes references stays, so the reference holds.
+#[test]
+fn a_service_the_branch_references_stays_when_the_parent_removes_it() {
+    let (store, who) = shop();
+    create_gone(&store, &who);
+    deploy(&store, &who, "production", 2);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.GONE_URL", json!("${{ gone.PRIVATE_URL }}"))],
+    );
+    remove_gone(&store, &who);
+    deploy(&store, &who, "production", 3);
+
+    assert!(staged(&store, &who, "fix-web", "gone"));
+}
+
+/// A new Config mounted on a new Service, both removed in one deploy, both leave,
+/// whichever is tried first.
+#[test]
+fn a_config_and_the_service_mounting_it_follow_out_of_the_branch_together() {
+    let (store, who) = shop();
+    create_gone(&store, &who);
+    // Its lineage sorts before the Service's, so it is tried while still mounted.
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(uuid(5)).unwrap(),
+                environment: at("production"),
+                name: ConfigName::parse("extra").unwrap(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("gone").unwrap(),
+                    dir: "/etc/extra".into(),
+                }],
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "gone"));
+    assert!(staged(&store, &who, "fix-web", "extra"));
+    remove_gone(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: at("production"),
+                config: ConfigName::parse("extra").unwrap(),
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "production", 3);
+
+    assert!(!staged(&store, &who, "fix-web", "gone"));
+    assert!(!staged(&store, &who, "fix-web", "extra"));
+}
+
+/// A Branch that changed the Service it followed keeps it: a Follow never removes
+/// what a Branch made its own.
+#[test]
+fn a_service_the_branch_edited_stays_when_the_parent_removes_it() {
+    let (store, who) = shop();
+    add_and_remove_gone(&store, &who, 2, || {
+        set(&store, &who, "fix-web", &[("gone.env.MINE", json!("1"))]);
+    });
+
+    // A removal never moves, so it is no hint either: the Service stays as the
+    // Branch left it, staged.
+    assert!(services(&store, &who, "fix-web").contains(&"gone".to_owned()));
+    assert!(hints(&store, &who, "fix-web").is_empty());
+    assert!(
+        diff(&store, &who, "fix-web")
+            .changes
+            .iter()
+            .any(|change| change.name == "gone")
+    );
+}
+
+/// A change no row tracks, such as a variable's export, makes it the Branch's own too.
+#[test]
+fn a_service_the_branch_exported_a_variable_of_stays_when_the_parent_removes_it() {
+    let (store, who) = shop();
+    add_and_remove_gone(&store, &who, 2, || {
+        set(
+            &store,
+            &who,
+            "fix-web",
+            &[("gone.env.SHARED.exported", json!(true))],
+        );
+    });
+
+    assert!(services(&store, &who, "fix-web").contains(&"gone".to_owned()));
+}
+
+/// A Branch that deployed the Service it followed keeps it.
+#[test]
+fn a_service_the_branch_deployed_stays_when_the_parent_removes_it() {
+    let (store, who) = shop();
+    add_and_remove_gone(&store, &who, 2, || {
+        deploy(&store, &who, "fix-web", 10);
+    });
+
+    // Left out: nothing staged, nothing to take, and it keeps running.
+    assert!(services(&store, &who, "fix-web").contains(&"gone".to_owned()));
+    assert!(diff(&store, &who, "fix-web").changes.is_empty());
+    assert!(hints(&store, &who, "fix-web").is_empty());
+}
+
+/// A Branch that saved the Service it followed keeps it, as if it deployed it.
+#[test]
+fn a_service_the_branch_saved_stays_when_the_parent_removes_it() {
+    let (store, who) = shop();
+    add_and_remove_gone(&store, &who, 2, || {
+        let publish = Publish {
+            id: None,
+            environment: at("fix-web"),
+            version: Some(diff(&store, &who, "fix-web").version),
+            message: None,
+            accept_volume_loss: Vec::new(),
+        };
+        store
+            .write_trusted(&who, &publish, &Trusted::default())
+            .unwrap();
+    });
+
+    assert!(services(&store, &who, "fix-web").contains(&"gone".to_owned()));
 }
 
 #[test]
