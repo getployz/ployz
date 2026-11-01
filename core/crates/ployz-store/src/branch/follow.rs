@@ -30,10 +30,9 @@ pub struct IncomingChange {
     pub from: EnvironmentName,
 }
 
-/// Parent `parent` deployed the nodes of `lineages` of its Saved revision `shipped`:
-/// stage each change it made to them
-/// in each of its Branches, and take back each node it removed that a Follow brought
-/// there untouched. Changes a Branch refuses (one of its rules, say) stay
+/// Parent `parent` deployed the nodes of `lineages`, shipping its Saved revision
+/// `shipped`: stage each change it made to them in each of its Branches, and take
+/// back each node it removed that a Follow brought there untouched. Changes a Branch refuses (one of its rules, say) stay
 /// hints there, and never fail the Parent's Deployment. The caller holds the
 /// Project's lock.
 pub(crate) fn follow(
