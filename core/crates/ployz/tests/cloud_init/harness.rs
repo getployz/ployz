@@ -251,6 +251,12 @@ impl JoinDaemon {
         self
     }
 
+    /// A Server that already participates as its assigned Machine, as a forgotten one does.
+    pub fn participating(self) -> Self {
+        self.inner.joined.store(true, Ordering::SeqCst);
+        self
+    }
+
     /// Report `id` as this daemon's own, as an entry Machine other than the one being added does.
     pub fn with_id(self, id: MachineId) -> Self {
         *self.inner.own_id.lock().unwrap() = Some(id);
