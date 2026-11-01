@@ -355,7 +355,7 @@ for.
 ## Old and new versions answer at once
 
 `If web-2 restarts and confirms the new copies within a few minutes of starting, it takes its replaced copies out of traffic. Otherwise they keep answering beside the new copies. Either way they keep running, and a left worker still takes jobs, until the next deploy.`
-or `my-app-production/web copy 4dd0ca20bb39 left running on web-2 (web-2 did not answer). The next deploy cleans it up.`
+or `my-app-production/web copy 3f9c1e2a7b04 left running on web-2 (web-2 did not answer). The next deploy cleans it up.`
 
 A deploy couldn't reach web-2 to retire its old replica, because web-2 was cut off or powered
 off. From 0.3.12 this also happens when Ployz is stopped on web-2. Its proxy keeps sending

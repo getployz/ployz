@@ -121,9 +121,9 @@ To bring services back:
    0.3.14, when such a deploy replaces or scales down replicas an earlier one started while
    Ployz was stopped, it removes them, since that server's proxy never sent them requests. Only
    the replicas that proxy knew stay beside the new ones. Until 0.3.14 each deploy left one more set
-   running. From 0.3.14 each line names the replica by the container ID `docker ps` shows on that
-   server, such as
-   `my-app-production/web copy 4dd0ca20bb39 left running on web-1 (proxy on web-3 did not confirm)`.
+   running. From 0.3.14 each `left running` warning names its replica by the CONTAINER ID column
+   of `docker ps` on that server, not the name's suffix, such as
+   `my-app-production/web copy 3f9c1e2a7b04 left running on web-1 (proxy on web-3 did not confirm)`.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your
    next deploy removes it. It takes out only its own replicas, so an extra one on another server

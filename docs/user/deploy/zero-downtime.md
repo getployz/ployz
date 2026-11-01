@@ -62,7 +62,7 @@ web-2 was already down as the deploy started:
 When web-2 stopped answering during the deploy:
 
 ```text
-! my-app-production/web copy 4dd0ca20bb39 left running on web-2 (web-2 did not answer). The next deploy cleans it up.
+! my-app-production/web copy 3f9c1e2a7b04 left running on web-2 (web-2 did not answer). The next deploy cleans it up.
 ```
 
 Removing a service while a server that may run one of its replicas is down, or Ployz couldn't
