@@ -1275,6 +1275,61 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
 }
 
 #[test]
+fn a_service_that_switched_before_a_later_failure_is_deployed_though_its_old_copy_stayed() {
+    let start = json!({"type": "run_container", "machine_id": "a".repeat(32), "skip_health_monitor": false,
+        "spec": {"service_id": "c".repeat(32), "name": "web", "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": "nginx:1", "pull_policy": "missing"}}});
+    let busy = json!({"type": "machine", "action": "RemoveContainer",
+        "error": {"code": "internal", "message": "the daemon is busy", "details": {}}});
+    // The runner names only the first failure, so a removal that failed beside it
+    // reaches the outcome as unexecuted; its row says it failed.
+    for (removal, web) in [
+        (json!({"type": "pending"}), NodeStatus::Deployed),
+        (json!({"type": "failed", "error": busy}), NodeStatus::Failed),
+    ] {
+        let (store, who) = shop();
+        admit(&store, &who, 1, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(1), &a).unwrap();
+        let mut prepared = preview(&["web", "api", "web"]);
+        prepared.operations[0].operation = serde_json::from_value(start.clone()).unwrap();
+        store
+            .record(&id(1), &a, RunEvidence::Prepared(prepared))
+            .unwrap();
+        let mut rows = progress(&[
+            ("web", "alpha", json!({"type": "completed"})),
+            ("api", "alpha", json!({"type": "failed", "error": busy})),
+            ("web", "alpha", removal),
+        ]);
+        rows[0].operation = serde_json::from_value(start.clone()).unwrap();
+        store
+            .record(
+                &id(1),
+                &a,
+                RunEvidence::Executed {
+                    progress: RowTracker::default().changes(&rows),
+                    outcome: Box::new(outcome(json!({
+                        "type": "failed", "completed": [start],
+                        "failed": {"type": "operation", "operation": operation("api"), "error": busy},
+                        "unexecuted": [operation("web")],
+                        "services": [{"service": "web", "result": "new"}, {"service": "api", "result": "old"}]
+                    }))),
+                    removed: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            nodes(&store, &who, 1),
+            [
+                ("api".to_owned(), NodeStatus::Failed),
+                ("web".to_owned(), web)
+            ]
+        );
+    }
+}
+
+#[test]
 fn an_executed_deployment_reads_where_each_service_ended() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();

@@ -208,7 +208,7 @@ pub(super) async fn wait_direct_participating(
         &format!("Waiting for {connection} to participate"),
         Some(STARTING),
         MACHINE_START_WAIT,
-        ConnectError::is_setup_retryable,
+        ConnectError::is_start_retryable,
         async |joining| {
             let mut client = connect_direct(matches, connection).await?;
             check_listed(&mut client, joining).await?;
@@ -216,7 +216,7 @@ pub(super) async fn wait_direct_participating(
         },
     )
     .await
-    .map_err(|error| Error::from(error).context(joining.timeout_message(timeout_message)))
+    .map_err(|error| joining.failed(error, timeout_message))
 }
 
 /// How long an answering daemon stays Joining before the wait says what it waits on.
@@ -243,6 +243,21 @@ impl Joining {
             crate::ui::note(STILL_JOINING);
             self.told = true;
         }
+    }
+
+    /// `error` with [`Self::timeout_message`] when the wait ran out. A failure that
+    /// stopped it early, as a startup refusal (#3703), supersedes any Joining seen
+    /// before it.
+    pub(in crate::handlers) fn failed(
+        &self,
+        error: crate::setup_retry::Error<ConnectError>,
+        message: &str,
+    ) -> Error {
+        let context = match &error {
+            crate::setup_retry::Error::Exhausted { .. } => self.timeout_message(message),
+            crate::setup_retry::Error::Permanent(_) => readiness_timeout_message(message),
+        };
+        Error::from(error).context(context)
     }
 
     /// The timeout context: the joining cause once the daemon was last seen Joining, otherwise
@@ -478,6 +493,20 @@ mod tests {
         assert!(message.contains("stayed joining"), "{message}");
         assert!(message.contains("UDP 51820"), "{message}");
         assert!(!message.contains("Corrosion"), "{message}");
+    }
+
+    #[test]
+    fn a_refusal_after_joining_is_not_blamed_on_joining() {
+        let mut joining = Joining::default();
+        joining.seen(&LocalMachinePhase::Joining);
+        let refused = ConnectError::Io(std::io::Error::other(format!(
+            "{}refusing to change ployz-wg",
+            ployz_core::STARTUP_REFUSED
+        )));
+        let error = joining.failed(crate::setup_retry::Error::Permanent(refused), "not ready");
+        let text = crate::ui::chain_text(&error);
+        assert!(!text.contains("stayed joining"), "{text}");
+        assert!(text.contains("ployzd refused to start"), "{text}");
     }
 
     #[tokio::test(start_paused = true)]

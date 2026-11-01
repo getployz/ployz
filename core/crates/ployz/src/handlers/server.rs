@@ -1895,7 +1895,7 @@ mod tests {
             .start_paused(true)
             .build()
             .unwrap();
-        crate::ui::init(true, crate::ui::Color::Never);
+        let mode = crate::ui::test_mode(true);
         let (result, captured) = crate::ui::captured(|| {
             runtime.block_on(async {
                 let mut stale = web("machine-3", false, None, MembershipObservation::Up);
@@ -1968,7 +1968,7 @@ mod tests {
                 result
             })
         });
-        crate::ui::init(false, crate::ui::Color::Never);
+        drop(mode);
         result.unwrap();
         let captured = captured.unwrap();
         assert_eq!(

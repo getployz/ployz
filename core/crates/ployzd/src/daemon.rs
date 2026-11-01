@@ -36,7 +36,7 @@ use crate::{
         InterruptedReset, LocalMachineBody, LocalMachineRecord, LocalMachineStore, Opened,
         RecordOwner, RecordOwnerStopped, StoreError,
     },
-    machine_api::MachineApi,
+    machine_api::{EndsOnShutdown, MachineApi},
     machine_api_socket::MachineApiSocket,
     management::{self, ManagementConfig},
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
@@ -78,6 +78,9 @@ pub struct Daemon {
     ingest: Arc<ImageIngest>,
     restart_requested: watch::Receiver<bool>,
     servers: JoinHandle<io::Result<()>>,
+    /// Closed after the server drain even when the drain aborted the server that owns
+    /// it, so peers hear the close instead of waiting out their idle timeout (#3699).
+    endpoint: iroh::Endpoint,
     observe: Option<JoinHandle<()>>,
     _socket_lock: File,
 }
@@ -363,6 +366,7 @@ impl Daemon {
             .with_image_ingest(Arc::clone(&ingest))
             .with_published_routes(published_routes.clone())
             .build();
+        let machine_api = EndsOnShutdown::new(machine_api, shutdown.clone());
 
         let rpc = Server::builder()
             .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
@@ -393,6 +397,7 @@ impl Daemon {
                 .map_err(io::Error::other)?;
         let roster = replicated_store.clone();
         let fence_endpoint = management_endpoint.clone();
+        let endpoint = management_endpoint.clone();
         let fence_relay = config.management.relay_url.clone();
         let socket_path = config.socket.clone();
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
@@ -576,6 +581,7 @@ impl Daemon {
             ingest,
             restart_requested,
             servers,
+            endpoint,
             observe: None,
             _socket_lock: socket.lock,
         })
@@ -646,6 +652,12 @@ impl Daemon {
         if let Err(error) = server_result {
             errors.push(ployz_core::error_chain::inline(&error));
         }
+        if tokio::time::timeout(ENDPOINT_CLOSE, self.endpoint.close())
+            .await
+            .is_err()
+        {
+            tracing::debug!("management endpoint did not finish closing in time");
+        }
 
         if let Err(error) = self.ingest.shutdown().await {
             errors.push(ployz_core::error_chain::inline(&error));
@@ -695,6 +707,8 @@ impl Daemon {
 }
 
 const SERVER_DRAIN: Duration = Duration::from_secs(5);
+/// How long closed management connections get to tell their peers before exit.
+const ENDPOINT_CLOSE: Duration = Duration::from_secs(1);
 
 async fn stop_servers(
     completed: Option<io::Result<()>>,
@@ -770,7 +784,7 @@ pub async fn wait_until_socket_accepts(
 
 async fn serve_machine_api(
     listener: Option<TcpListener>,
-    machine_api: MachineApi,
+    machine_api: EndsOnShutdown<MachineApi>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     match listener {

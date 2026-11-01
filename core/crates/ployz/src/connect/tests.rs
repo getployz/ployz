@@ -1708,6 +1708,28 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
         "{text}"
     );
     assert!(!text.contains("Permanently added"), "{text}");
+    // A refusal is final, so a wait for the daemon to start stops on it (#3703).
+    assert!(!refused.is_start_retryable(), "{text}");
+    // Other waits still retry it: an upgrade's compensation clears it on its own.
+    assert_ne!(refused.retry(), Retry::Never, "{text}");
+    let waited = crate::setup_retry::run(
+        &mut (),
+        "Waiting for the participating phase",
+        Duration::from_secs(5),
+        ConnectError::is_start_retryable,
+        async |()| {
+            connect_selected_with(
+                selected("user@refused"),
+                Arc::new(SystemConnector::new(program)),
+            )
+            .await
+        },
+    )
+    .await;
+    assert!(matches!(
+        waited,
+        Err(crate::setup_retry::Error::Permanent(_))
+    ));
 
     let closed = connect_selected_with(
         selected("user@closed"),
@@ -1718,6 +1740,44 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
     .expect("a session that closes unanswered must fail the connect");
     let text = crate::ui::chain_text(&closed);
     assert!(!text.contains("Permanently added"), "{text}");
+    assert!(closed.is_start_retryable(), "{text}");
+}
+
+#[test]
+fn a_start_wait_ends_on_a_refusal_but_waits_out_a_daemon_that_is_only_down() {
+    let socket = |message: &str| {
+        ConnectError::Io(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            message.to_owned(),
+        ))
+    };
+    let tried = |attempts, error| ConnectError::AllFailed {
+        relayed: false,
+        selection: ConnectionSource::Direct,
+        attempts,
+        server: None,
+        retry: Retry::AfterRestart,
+        reached: false,
+        last: Some(Box::new(error)),
+    };
+    // An older ployzd's dial-stdio never names a refusal, so its wait runs as before.
+    let down = "Machine API socket did not become ready: Connection refused (os error 111)";
+    let refused = format!(
+        "{down}; {}refusing to change ployz-wg",
+        ployz_core::STARTUP_REFUSED
+    );
+    for (error, waits) in [
+        (ConnectError::EntryNotReady, true),
+        (socket(down), true),
+        (tried(1, socket(down)), true),
+        (socket(&refused), false),
+        (tried(1, socket(&refused)), false),
+        // Another Server may still come up.
+        (tried(2, socket(&refused)), true),
+    ] {
+        assert_eq!(error.is_start_retryable(), waits, "{error}");
+        assert_ne!(error.retry(), Retry::Never, "{error}");
+    }
 }
 
 #[tokio::test]
@@ -1771,6 +1831,7 @@ async fn a_local_daemon_that_refused_to_start_names_its_refusal() {
         ),
         "{text}"
     );
+    assert!(!error.is_start_retryable(), "{text}");
 }
 
 #[tokio::test]

@@ -1295,6 +1295,24 @@ impl ConnectError {
         self.retry() != Retry::Never
     }
 
+    /// [`Self::is_setup_retryable`] for a wait on one Server's daemon to start: its
+    /// startup refusal ends the wait, since only an operator's safe recovery clears
+    /// it (#3703). Not part of [`Self::retry`], because an upgrade's compensation
+    /// restores the previous release and clears a refusal on its own.
+    pub(crate) fn is_start_retryable(&self) -> bool {
+        self.is_setup_retryable() && !self.startup_refused()
+    }
+
+    fn startup_refused(&self) -> bool {
+        if let Self::AllFailed { attempts, last, .. } = self {
+            // Another connection may still come up.
+            return *attempts == 1 && last.as_deref().is_some_and(Self::startup_refused);
+        }
+        std::iter::once(self.to_string())
+            .chain(ployz_core::error_chain::causes(self))
+            .any(|line| line.contains(ployz_core::STARTUP_REFUSED))
+    }
+
     pub(crate) fn is_unreachable(&self) -> bool {
         matches!(
             self,

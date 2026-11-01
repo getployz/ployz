@@ -1017,16 +1017,36 @@ fn discard_keeps_a_contrib_source_preparation_did_not_add() {
 /// build beside it.
 #[test]
 fn the_lock_outlives_its_holder_in_a_child() {
+    // The lock is meant to be inherited, so a child another test spawns while it is held
+    // keeps it too. Run alone in a child, where no other test spawns.
+    const CASE: &str = "PLOYZ_PREPARE_LOCK_CHILD_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let held = lock(&paths, Wait::No).unwrap().unwrap();
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        drop(held);
+        let contended = lock(&paths, Wait::No).unwrap().is_none();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(contended, "the lock fell with its holder while a child ran");
+        assert!(lock(&paths, Wait::No).unwrap().is_some());
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
     let fixture = fixture("lock-child");
-    let paths = InstallPaths::at(fixture.path());
-    let held = lock(&paths, Wait::No).unwrap().unwrap();
-    let mut child = Command::new("sleep").arg("30").spawn().unwrap();
-    drop(held);
-    let contended = lock(&paths, Wait::No).unwrap().is_none();
-    child.kill().unwrap();
-    child.wait().unwrap();
-    assert!(contended, "the lock fell with its holder while a child ran");
-    assert!(lock(&paths, Wait::No).unwrap().is_some());
+    let root = fixture.path();
+    fs::create_dir_all(root.join("commands")).unwrap();
+    symlink("/usr/bin/sleep", root.join("commands/sleep")).unwrap();
+    run_contract_child_with_environment(
+        "installer::prepare::tests::the_lock_outlives_its_holder_in_a_child",
+        root,
+        OsString::from(CASE),
+        OsString::from("lock-child"),
+        "lock-child",
+        [],
+    );
 }
 
 /// A Docker that `docker.socket` would start but that doesn't answer isn't ready: the step asks

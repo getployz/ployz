@@ -160,6 +160,27 @@ pub fn init(json: bool, color: Color) {
     color.apply(mode);
 }
 
+/// The process's mode for one test. The mode is process-wide, so tests that set it take
+/// turns, and it is plain again when the guard drops.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn test_mode(json: bool) -> impl Drop {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    struct Turn {
+        _held: std::sync::MutexGuard<'static, ()>,
+    }
+    impl Drop for Turn {
+        fn drop(&mut self) {
+            init(false, Color::Never);
+        }
+    }
+    let held = TURN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    init(json, Color::Never);
+    Turn { _held: held }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

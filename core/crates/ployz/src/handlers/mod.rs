@@ -1014,14 +1014,14 @@ mod tests {
         let error = ingress_hints(error, |args| rerun(leaf_matches(&matches), args))
             .context("Server updated; the Ingress Proxy did not follow.");
         assert!(error.is_interrupted());
-        crate::ui::init(true, crate::ui::Color::Never);
+        let mode = crate::ui::test_mode(true);
         let (result, captured) = crate::ui::captured(|| {
             crate::ui::emit_committed(
                 serde_json::json!({"server": {"machine": {"id": original}}}),
                 Err(error),
             )
         });
-        crate::ui::init(false, crate::ui::Color::Never);
+        drop(mode);
         assert!(result.unwrap_err().is_interrupted());
         let captured = captured.unwrap();
         assert_eq!(

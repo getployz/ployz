@@ -3813,5 +3813,18 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
             ("web".to_owned(), crate::ui::progress::State::Failed),
         ]
     );
+    // The Node Outcome agrees: api's Service is deployed (#3696).
+    let recorded = ployz_core::config::project_runtime_outcome(
+        plan.preview(),
+        serde_json::json!({ "version": 1, "outcome": outcome }),
+    )
+    .unwrap();
+    assert_eq!(
+        (recorded.confirmed_services, recorded.failed_services),
+        (
+            vec![ServiceName::parse("api").unwrap()],
+            vec![ServiceName::parse("web").unwrap()]
+        )
+    );
     client.assert_done();
 }
