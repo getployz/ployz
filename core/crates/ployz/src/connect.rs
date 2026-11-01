@@ -999,8 +999,29 @@ pub(crate) async fn connect_one(
     let mut stage = diagnostics::StageGuard::begin(diagnostics::Stage::EntryDescribeContract);
     let confirmed = client.confirm_entry().await;
     stage.finish(&confirmed);
-    confirmed?;
+    confirmed.map_err(|error| naming_local_refusal(connection, error))?;
     Ok(client)
+}
+
+/// A refusing start can stop a local socket while the first call is still being
+/// written. h2 then fails the call with its own broken pipe, dropping the words
+/// [`LocalDaemon`] attached, so read the refusal here as well (#3715).
+fn naming_local_refusal(connection: &Connection, error: ConnectError) -> ConnectError {
+    let Transport::Unix(path) = connection.transport() else {
+        return error;
+    };
+    let ConnectError::Rpc(transport) = error else {
+        return error;
+    };
+    let named = ployz_core::error_chain::causes(&transport)
+        .iter()
+        .any(|line| line.contains(ployz_core::STARTUP_REFUSED));
+    match path.parent().and_then(ployz_core::startup_refusal) {
+        Some(refusal) if transport.local && !named => {
+            ConnectError::Rpc(transport.caused_by(refusal))
+        }
+        Some(_) | None => ConnectError::Rpc(transport),
+    }
 }
 
 pub fn resolve_connections(
@@ -1505,6 +1526,22 @@ impl TransportError {
         {
             self.details = details;
         }
+        self
+    }
+
+    /// This error with `line` as its deepest cause.
+    fn caused_by(mut self, line: String) -> Self {
+        let mut lines: Vec<String> = self
+            .cause
+            .as_ref()
+            .map(|cause| {
+                std::iter::once(cause.to_string())
+                    .chain(ployz_core::error_chain::causes(cause))
+                    .collect()
+            })
+            .unwrap_or_default();
+        lines.push(line);
+        self.cause = crate::failure::JoinedChain::of(lines);
         self
     }
 
