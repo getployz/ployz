@@ -173,13 +173,17 @@ pub(crate) fn create_branch(
     let none = BTreeMap::new();
     crate::domain::refuse_long_subdomains(&creating(&from), &picks)?;
     let applied = creating(&from).apply(&picks, &none).map_err(config)?;
-    // A fix's base is what the Parent runs, so the failed change shows as staged.
+    // A fix's base is what the Parent runs, so the failed change shows as staged,
+    // with no plain value the Parent sealed but doesn't run sealed yet.
     let base = match create.fix {
         Some(_) => {
-            creating(&applied_state)
+            let mut base = creating(&applied_state)
                 .apply(&BTreeSet::new(), &none)
                 .map_err(config)?
-                .base
+                .base;
+            let sealed = review::sealed::sealed_rows(tx, parent.summary.id.as_str())?;
+            review::sealed::empty_plain_in(&mut base, &sealed);
+            base
         }
         None => applied.base,
     };

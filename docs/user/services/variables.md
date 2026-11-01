@@ -225,7 +225,9 @@ can't reference it, and it replaces a variable of yours with that name.
   [preview](../environments/preview-environments.md) starts with its parent's variables, and
   changing them leaves the parent alone. By design, a branch never gets its parent's secret
   values: its sealed variables start **Not set**, and deploys leave each out until you choose
-  **Set value** on it in the branch. A [generated value](#generate-a-value) gets a new value in
+  **Set value** on it in the branch. That includes a value the parent sealed but hasn't deployed
+  sealed yet: a separate copy made then starts with it **Not set**, never with the earlier plain
+  value the parent still runs. A [generated value](#generate-a-value) gets a new value in
   the copy. A reference to a service the branch shares with its parent reads the
   parent's values, except sealed ones: the branch doesn't get those either, so deploys leave
   the referencing variable out and say what it reads, such as

@@ -46,6 +46,33 @@ pub(crate) fn hide_introduced(
     })
 }
 
+/// Make Not set each plain variable of the `copied` Services in `running`, what
+/// `environment` runs, that it ever sealed: a seal saved but not yet deployed, or
+/// whose deploy failed, leaves the plain value in Applied State, and an Own Copy of
+/// what runs never takes it. Only this very variable: one added again plain since
+/// and deployed is plain.
+pub(crate) fn unset_sealed_since(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    running: &mut SavedEnvironmentIntent,
+    copied: &BTreeSet<String>,
+) -> Result<(), RpcError> {
+    let ever = EverSealed::load(tx, environment.as_str())?;
+    for service in &mut running.services {
+        if !copied.contains(&service.lineage_id) {
+            continue;
+        }
+        for variable in &mut service.variables {
+            if !sealed(&variable.value) && ever.holds_id(&service.id, variable) {
+                variable.value = SavedVariableValue::SecretWithoutValue;
+                variable.value_fingerprint.clear();
+                variable.generated = None;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Make Not set each plain value `introduced` keeps that [`hide_introduced`]
 /// shows sealed: a discard that brings a variable back from a Node Introduction
 /// brings it back sealed without a value, never as the earlier plain value. One

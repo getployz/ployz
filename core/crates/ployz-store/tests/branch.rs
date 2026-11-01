@@ -2083,3 +2083,288 @@ fn a_branch_reference_through_a_shared_node_names_the_shared_variable_it_reads()
     );
     assert!(!warnings.to_string().contains("fake-plain-3677"));
 }
+
+/// A fake plain value no Branch may keep once production seals it.
+const FAKE: &str = "fake-plain-3666";
+
+/// production runs `db.env.TOKEN` plain [`FAKE`] beside a plain and a generated
+/// variable, and fix-web copies `web` and uses `db` live. On `url`, a fresh database.
+fn running_plain_token(url: &str) -> (ConfigStore, Actor) {
+    let (store, who) = shop_on(ConfigStore::open(url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            ("db.env.TOKEN", json!(FAKE)),
+            ("db.env.REGION", json!("fake-region")),
+            ("db.env.SALT", json!("${{ secret(32, \"a-z\") }}")),
+        ],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    deploy(&store, &who, "fix-web", 2, true);
+    (store, who)
+}
+
+fn seal_token(store: &ConfigStore, who: &Actor) {
+    set(
+        store,
+        who,
+        "production",
+        &[(
+            "db.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(4), "TOKEN", 2),
+        )],
+    );
+}
+
+fn copy_db_into(store: &ConfigStore, who: &Actor, environment: &str) -> Branched {
+    store
+        .write(
+            who,
+            &CopyNode {
+                environment: at(environment),
+                node: ServiceName::parse("db").unwrap(),
+                expect: None,
+            },
+        )
+        .unwrap()
+}
+
+/// The copy's `TOKEN` is Not set and named so, and its other variables are as the
+/// owner runs them.
+fn assert_token_not_set(store: &ConfigStore, who: &Actor, environment: &str, copied: &Branched) {
+    let values = values(store, who, environment, "db");
+    assert_eq!(values["env"]["TOKEN"], json!({ "secret": false }));
+    assert_eq!(values["env"]["REGION"], json!("fake-region"));
+    assert!(values["env"]["SALT"].is_string(), "{values}");
+    assert!(!values.to_string().contains(FAKE), "{values}");
+    assert!(
+        copied
+            .not_set
+            .iter()
+            .any(|unset| unset.service.as_str() == "db" && unset.key == "TOKEN"),
+        "{:?}",
+        copied.not_set
+    );
+}
+
+/// Every table production still legitimately holds [`FAKE`] in: what it ran.
+fn only_what_production_ran(url: &str) {
+    let held = backend::tables_holding(url, FAKE);
+    for branch_held in [
+        "config_environment",
+        "config_environment_branch",
+        "config_node_introduction",
+        "config_sync_arrival",
+        "config_sync_base",
+    ] {
+        assert!(!held.iter().any(|t| t == branch_held), "{held:?}");
+    }
+}
+
+/// An Own Copy made after its owner saved a seal whose Deploy didn't run copies the
+/// value Not set, never the plain value the owner still runs (#3666).
+#[test]
+fn an_own_copy_made_while_its_owners_seal_is_not_yet_running_copies_it_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = running_plain_token(&url);
+    seal_token(&store, &who);
+    deploy(&store, &who, "production", 3, false);
+
+    let copied = copy_db_into(&store, &who, "fix-web");
+
+    assert_token_not_set(&store, &who, "fix-web", &copied);
+    only_what_production_ran(&url);
+    let input = deploy(&store, &who, "fix-web", 4, true);
+    assert!(!input.to_string().contains(FAKE));
+}
+
+/// Saved without a Deploy, the seal still keeps the plain value out of a copy.
+#[test]
+fn an_own_copy_made_after_its_owner_only_saved_a_seal_copies_it_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = running_plain_token(&url);
+    seal_token(&store, &who);
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Publish {
+                id: None,
+                environment: at("production"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+
+    let copied = copy_db_into(&store, &who, "fix-web");
+
+    assert_token_not_set(&store, &who, "fix-web", &copied);
+    only_what_production_ran(&url);
+}
+
+/// A seal only in the owner's Working State counts, as it does for a new Branch.
+#[test]
+fn an_own_copy_made_after_its_owner_sealed_without_saving_copies_it_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = running_plain_token(&url);
+    seal_token(&store, &who);
+
+    let copied = copy_db_into(&store, &who, "fix-web");
+
+    assert_token_not_set(&store, &who, "fix-web", &copied);
+    only_what_production_ran(&url);
+}
+
+/// A value the owner sealed and then deleted, still running plain, copies Not set.
+#[test]
+fn an_own_copy_of_a_value_its_owner_sealed_then_deleted_copies_it_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = running_plain_token(&url);
+    seal_token(&store, &who);
+    unset(&store, &who, "production", "db.env.TOKEN");
+
+    let copied = copy_db_into(&store, &who, "fix-web");
+
+    assert_token_not_set(&store, &who, "fix-web", &copied);
+    only_what_production_ran(&url);
+}
+
+/// A variable the owner sealed, deleted and added again plain, then deployed, is a
+/// new plain variable: the copy takes its value.
+#[test]
+fn an_own_copy_of_a_value_its_owner_added_plain_again_after_a_seal_copies_the_new_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = running_plain_token(&url);
+    seal_token(&store, &who);
+    deploy(&store, &who, "production", 3, true);
+    unset(&store, &who, "production", "db.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("fake-public-new"))],
+    );
+    deploy(&store, &who, "production", 4, true);
+
+    copy_db_into(&store, &who, "fix-web");
+
+    assert_eq!(
+        values(&store, &who, "fix-web", "db")["env"]["TOKEN"],
+        json!("fake-public-new")
+    );
+}
+
+/// A Branch of a Branch copies from production, the node's owner, and takes its seal.
+#[test]
+fn an_own_copy_from_a_grandparent_whose_seal_is_not_yet_running_copies_it_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = running_plain_token(&url);
+    store
+        .write(&who, &branch("child", "fix-web", &["web"]))
+        .unwrap();
+    deploy(&store, &who, "child", 3, true);
+    seal_token(&store, &who);
+    deploy(&store, &who, "production", 4, false);
+
+    let copied = copy_db_into(&store, &who, "child");
+
+    assert_token_not_set(&store, &who, "child", &copied);
+    only_what_production_ran(&url);
+}
+
+/// Once the seal runs, the copy is Not set as it always was.
+#[test]
+fn an_own_copy_made_after_its_owners_seal_deployed_copies_it_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = running_plain_token(&url);
+    seal_token(&store, &who);
+    deploy(&store, &who, "production", 3, true);
+
+    let copied = copy_db_into(&store, &who, "fix-web");
+
+    assert_token_not_set(&store, &who, "fix-web", &copied);
+}
+
+/// Deleting the copy's Not set value and discarding that brings it back Not set.
+#[test]
+fn discarding_a_delete_of_a_copy_made_before_its_owners_seal_ran_brings_it_back_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = running_plain_token(&url);
+    seal_token(&store, &who);
+    deploy(&store, &who, "production", 3, false);
+    copy_db_into(&store, &who, "fix-web");
+    deploy(&store, &who, "fix-web", 4, true);
+    unset(&store, &who, "fix-web", "db.env.TOKEN");
+
+    discard_token(&store, &who);
+
+    let values = values(&store, &who, "fix-web", "db");
+    assert_eq!(values["env"]["TOKEN"], json!({ "secret": false }));
+    assert!(!values.to_string().contains(FAKE), "{values}");
+    only_what_production_ran(&url);
+}
+
+/// A fix of a failed Deploy that sealed a value in a Service the fix Branch neither
+/// copies nor uses keeps the plain value production still runs out of what the
+/// Branch shares with it.
+#[test]
+fn a_fix_of_a_failed_seal_keeps_no_plain_value_in_what_it_shares_with_its_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(7)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("jobs").unwrap(),
+                image: Some("jobs:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("jobs.env.API_KEY", json!(FAKE))],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let jobs = id_of(&store, &who, "production", "jobs");
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            ("web.image", json!("web:2")),
+            (
+                "jobs.env.API_KEY",
+                backend::sealed_secret(&uuid(2), &jobs, "API_KEY", 3),
+            ),
+        ],
+    );
+    deploy(&store, &who, "production", 2, false);
+    let mut fix = branch("fix", "production", &["web"]);
+    fix.fix = Some(DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap());
+
+    let made = store.write(&who, &fix).unwrap();
+
+    assert_eq!(texts(&made.staged), ["web"]);
+    only_what_production_ran(&url);
+}
