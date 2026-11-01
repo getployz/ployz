@@ -293,7 +293,7 @@ fn unlisted_participation(details: &MachineDetails, assigned: &Machine) -> Resul
         return Ok(());
     }
     Err(Error::conflict(format!(
-        "Server {} already participates, but Cloud doesn't list it as joined. If an add of this Server just stopped partway, run the same command again in a minute. If the Server was forgotten, this token now belongs to its old identity, which --reset replaces: make a new token with `ployz server add --command` and run its line with --reset.",
+        "Server {} already participates, but Cloud doesn't list it as joined. If an add of this Server just stopped partway, run the same command again in a minute. If the Server was forgotten, this add's token now belongs to its old identity, which --reset replaces: make a new token with `ployz server add --command --reset` where you're signed in, and run the line it prints on the Server.",
         assigned.name
     )))
 }
@@ -1697,7 +1697,7 @@ mod tests {
             "an unlisted participant may be a rerun that outran its publication or a forgotten Server: {refusal}"
         );
         assert!(
-            refusal.contains("make a new token with `ployz server add --command`"),
+            refusal.contains("make a new token with `ployz server add --command --reset`"),
             "this token now belongs to the forgotten identity, which --reset replaces: {refusal}"
         );
         assert!(

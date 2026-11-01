@@ -824,8 +824,10 @@ it, forget says "No copies of Replicated Services were seen on the remaining Ser
 that the service runs none. With `--json` it lists them as `no_copies` all the same.
 
 To add a forgotten server back, run `ployz server add` for it. A server that already reset itself
-joins as it is. One that didn't says it is already initialised: add `--reset`, and it resets the
-server first, as `ployz server rm` would have, and asks before it does; `--yes` skips the question.
+joins as it is. One that didn't is refused, and the token that add used can't add it again; see
+[A forgotten server is refused when you add it again](../troubleshooting/servers.md#a-forgotten-server-is-refused-when-you-add-it-again).
+Add it with `--reset` and a new token, and it resets the server first, as `ployz server rm` would
+have, and asks before it does; `--yes` skips the question.
 That reset can delete the server's mirrors, so don't use it while a mirror there may be the last copy
 of a volume.
 
