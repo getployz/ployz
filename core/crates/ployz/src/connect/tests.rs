@@ -1834,6 +1834,99 @@ async fn a_local_daemon_that_refused_to_start_names_its_refusal() {
     assert!(!error.is_start_retryable(), "{text}");
 }
 
+/// Dials the local socket, then hands the channel over only once its daemon
+/// stopped reading, so the first call's own write is what fails.
+struct DialsBeforeTheRefusal(std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>);
+
+#[tonic::async_trait]
+impl Connector for DialsBeforeTheRefusal {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        let Transport::Unix(path) = connection.transport() else {
+            unreachable!("the test dials a local socket")
+        };
+        let channel = connect_local(path).await?;
+        let refused = self.0.lock().unwrap().take().unwrap();
+        refused.await.unwrap();
+        Ok(channel)
+    }
+
+    async fn dial_proxy(
+        &self,
+        _: &Connection,
+        _: &str,
+        _: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        unreachable!("connect opens no proxy")
+    }
+}
+
+/// A refusing start can stop the socket while the first call is being written. h2
+/// then fails the call with its own broken pipe, which drops the words
+/// [`LocalDaemon`] attached, so the connect reads the refusal itself (#3715).
+#[tokio::test]
+async fn a_local_daemon_that_refused_mid_call_names_its_refusal() {
+    use tokio::io::AsyncReadExt as _;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ployz.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let record = root.path().join(ployz_core::STARTUP_REFUSAL_FILE);
+    let (refused, dialled) = tokio::sync::oneshot::channel();
+    let (done, held) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        // The client preface and SETTINGS end the dial; no call has started yet.
+        let mut preface = [0; 24];
+        stream.read_exact(&mut preface).await.unwrap();
+        loop {
+            let mut header = [0; 9];
+            stream.read_exact(&mut header).await.unwrap();
+            let length = u32::from_be_bytes([0, header[0], header[1], header[2]]);
+            let mut payload = vec![0; usize::try_from(length).unwrap()];
+            stream.read_exact(&mut payload).await.unwrap();
+            if header[3] == 0x4 {
+                break;
+            }
+        }
+        fs::write(
+            &record,
+            "refusing to change the retained WireGuard interface\n",
+        )
+        .unwrap();
+        // Stop reading but keep the socket open, so the client sees no end to read
+        // and fails on writing the call.
+        let stream = stream.into_std().unwrap();
+        stream.shutdown(std::net::Shutdown::Read).unwrap();
+        refused.send(()).unwrap();
+        let _ = held.await;
+        drop(stream);
+    });
+    let selected = SelectedConnections {
+        source: ConnectionSource::Direct,
+        connections: vec![Connection::unix(&path).unwrap()],
+    };
+
+    let error = connect_selected_with(
+        selected,
+        Arc::new(DialsBeforeTheRefusal(std::sync::Mutex::new(Some(dialled)))),
+    )
+    .await
+    .err()
+    .expect("a refusing daemon must fail the connect");
+    drop(done);
+
+    let text = crate::ui::chain_text(&error);
+    assert_eq!(
+        text.matches(
+            "ployzd refused to start: refusing to change the retained WireGuard interface"
+        )
+        .count(),
+        1,
+        "{text}"
+    );
+    // A start wait stops on it (#3703).
+    assert!(!error.is_start_retryable(), "{text}");
+}
+
 #[tokio::test]
 async fn a_forward_ends_when_its_stdout_closes_though_ssh_lives_on() {
     use tokio::io::AsyncReadExt as _;
