@@ -46,28 +46,53 @@ pub(crate) fn hide_introduced(
     })
 }
 
-/// Make Not set each plain variable of the `copied` Services in `running`, what
-/// `environment` runs, that it ever sealed: a seal saved but not yet deployed, or
-/// whose deploy failed, leaves the plain value in Applied State, and an Own Copy of
-/// what runs never takes it. Only this very variable: one added again plain since
-/// and deployed is plain.
-pub(crate) fn unset_sealed_since(
+/// Read each plain variable of the `copied` Services in `running`, what `owner`
+/// runs, as the owner holds it now: a seal saved but not yet deployed, or whose
+/// deploy failed, leaves the plain value in Applied State, and an Own Copy of what
+/// runs never takes it. A variable the owner's Working State holds sealed, by ID or
+/// else key, takes that seal; one it sealed and deleted since is sealed without a
+/// value (Not set); another added plain since under its key stays as it is, as
+/// History's [`super::Scrub`] reads them.
+pub(crate) fn seal_running(
     tx: &mut dyn Tx,
-    environment: &EnvironmentId,
+    owner: &scope::Environment,
     running: &mut SavedEnvironmentIntent,
     copied: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
-    let ever = EverSealed::load(tx, environment.as_str())?;
+    let ever = EverSealed::load(tx, owner.summary.id.as_str())?;
+    if ever.is_empty() {
+        return Ok(());
+    }
     for service in &mut running.services {
         if !copied.contains(&service.lineage_id) {
             continue;
         }
+        let now = owner
+            .working
+            .services
+            .iter()
+            .find(|now| now.id == service.id)
+            .map(|now| &now.variables);
         for variable in &mut service.variables {
-            if !sealed(&variable.value) && ever.holds_id(&service.id, variable) {
-                variable.value = SavedVariableValue::SecretWithoutValue;
-                variable.value_fingerprint.clear();
-                variable.generated = None;
+            if sealed(&variable.value) {
+                continue;
             }
+            let now = now.and_then(|now| {
+                now.iter()
+                    .find(|now| now.id == variable.id)
+                    .or_else(|| now.iter().find(|now| now.key == variable.key))
+            });
+            let (value, fingerprint) = match now {
+                Some(now) if sealed(&now.value) => {
+                    (now.value.clone(), now.value_fingerprint.clone())
+                }
+                Some(_) if !ever.holds_id(&service.id, variable) => continue,
+                None if !ever.holds(&service.id, variable) => continue,
+                Some(_) | None => (SavedVariableValue::SecretWithoutValue, String::new()),
+            };
+            variable.value = value;
+            variable.value_fingerprint = fingerprint;
+            variable.generated = None;
         }
     }
     Ok(())

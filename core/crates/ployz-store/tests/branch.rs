@@ -2240,6 +2240,22 @@ fn an_own_copy_of_a_value_its_owner_sealed_then_deleted_copies_it_not_set() {
     only_what_production_ran(&url);
 }
 
+/// A plain variable the owner deleted and added back sealed under its key, not yet
+/// saved, copies Not set: the seal is a new variable, matched by key.
+#[test]
+fn an_own_copy_of_a_value_its_owner_replaced_with_a_sealed_one_copies_it_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = running_plain_token(&url);
+    unset(&store, &who, "production", "db.env.TOKEN");
+    seal_token(&store, &who);
+
+    let copied = copy_db_into(&store, &who, "fix-web");
+
+    assert_token_not_set(&store, &who, "fix-web", &copied);
+    only_what_production_ran(&url);
+}
+
 /// A variable the owner sealed, deleted and added again plain, then deployed, is a
 /// new plain variable: the copy takes its value.
 #[test]
@@ -2366,5 +2382,45 @@ fn a_fix_of_a_failed_seal_keeps_no_plain_value_in_what_it_shares_with_its_parent
     let made = store.write(&who, &fix).unwrap();
 
     assert_eq!(texts(&made.staged), ["web"]);
+    only_what_production_ran(&url);
+}
+
+/// A fix that copies the Service whose Deploy failed to seal a value takes it Not set
+/// and keeps no plain value.
+#[test]
+fn a_fix_copying_the_service_whose_seal_failed_takes_it_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.API_KEY", json!(FAKE))],
+    );
+    deploy(&store, &who, "production", 1, true);
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            ("web.image", json!("web:2")),
+            (
+                "web.env.API_KEY",
+                backend::sealed_secret(&uuid(2), &uuid(3), "API_KEY", 3),
+            ),
+        ],
+    );
+    deploy(&store, &who, "production", 2, false);
+    let mut fix = branch("fix", "production", &[]);
+    fix.fix = Some(DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap());
+
+    let made = store.write(&who, &fix).unwrap();
+
+    assert_eq!(texts(&made.staged), ["web"]);
+    assert_eq!(
+        values(&store, &who, "fix", "web")["env"]["API_KEY"],
+        json!({ "secret": false })
+    );
     only_what_production_ran(&url);
 }
