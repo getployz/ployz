@@ -464,9 +464,12 @@ Your first server already runs Ployz, so it can't found your organization as it 
 still holds the founding for that server, and `--reset` gives the server a new identity, so a
 rerun with `--reset` alone waits for a founder that never comes.
 
-1. Where you're signed in, run `ployz cloud reset --yes` to give up that founding. You can also go
-   to **Organization** and click **Reset founding attempt**.
-2. Run `ployz server add --command --reset` for a new token, and run the line it prints on the
+1. Wait 10 minutes. Until then Ployz Cloud counts the founding as a server still joining.
+2. Where you're signed in, run `ployz server forget --confirm <your organization>`, or go to
+   **Organization** and, under **Danger**, click **Forget servers**. This drops the founding.
+   **Reset founding attempt** can't drop it yet
+   ([#3743](https://github.com/getployz/ployz/issues/3743)).
+3. Run `ployz server add --command --reset` for a new token, and run the line it prints on the
    server. The reset removes every container Ployz runs on that server.
 
 ## My first server never finished joining
