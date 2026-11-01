@@ -50,10 +50,20 @@ pub(crate) fn follow(
         return Ok(());
     }
     let parent = scope::load_by_id(tx, parent)?;
-    // What the Parent's Applied State lacks, it removed.
+    // What the Parent's Applied State and latest Saved State both lack, it removed. A
+    // forgotten Cluster empties Applied State alone.
+    let suffix_of_parent = suffix(tx, &parent)?;
     let applied = deployment::applied_state(tx, &parent.summary.id, &parent.working)?;
-    let applied = Cells::of(&applied, &suffix(tx, &parent)?);
-    let removed = |lineage: &str| *applied.at(&RowId::node(lineage)) == Cell::Absent;
+    let applied = Cells::of(&applied, &suffix_of_parent);
+    let saved = review::latest_saved(tx, &parent.summary.id)?
+        .map(|saved| Cells::of(&saved.intent, &suffix_of_parent));
+    let removed = |lineage: &str| {
+        let node = RowId::node(lineage);
+        *applied.at(&node) == Cell::Absent
+            && saved
+                .as_ref()
+                .is_none_or(|saved| *saved.at(&node) == Cell::Absent)
+    };
     for row in &branches {
         let branch = row.parse::<EnvironmentId>(0, "Branch")?;
         let shut_down = crate::removal::latest(tx, &branch)?.is_some_and(|removal| {
@@ -86,6 +96,7 @@ pub(crate) fn follow(
         for arrived in arrived(tx, &branch, Which::From(&parent.summary.id))? {
             let lineage = arrived.row.lineage();
             if arrived.row == RowId::node(lineage)
+                && matches!(arrived.how, How::Follow)
                 && matches!(arrived.arrival, Arrival::Pending { .. })
                 && removed(lineage)
             {

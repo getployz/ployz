@@ -2518,3 +2518,27 @@ fn a_branch_being_shut_down_keeps_what_followed() {
     assert!(holds(&store, &who, "fix-web", "alpha"));
     assert!(holds(&store, &who, "fix-web", "beta"));
 }
+
+/// A forgotten Cluster empties Applied State without the Parent removing anything:
+/// what followed stays while the next deploy has yet to confirm it again.
+#[test]
+fn a_node_the_parent_still_holds_stays_after_its_cluster_is_forgotten() {
+    let (store, who) = shop();
+    add_service(&store, &who, 20, "alpha");
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "alpha"));
+    store
+        .system(
+            &who.organization,
+            &ployz_store::SystemEvent::ClusterForgotten,
+            &Trusted::default(),
+        )
+        .unwrap();
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    let admitted = backend::admit(&store, &who, "production", 3);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&admitted, &runner).unwrap();
+    // The runner confirms web first: alpha is still on its way.
+    backend::confirm(&store, &admitted, &claimed, &[&["web"], &["alpha"]], 1);
+    assert!(holds(&store, &who, "fix-web", "alpha"));
+}
