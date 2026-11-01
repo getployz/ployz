@@ -436,9 +436,12 @@ Your first server already runs Ployz, so it can't found your organization as it 
 still holds the founding for that server, and `--reset` gives the server a new identity, so a
 rerun with `--reset` alone waits for a founder that never comes.
 
-1. Where you're signed in, run `ployz cloud reset --yes` to give up that founding. You can also go
-   to **Organization** and click **Reset founding attempt**.
-2. Run `ployz server add --command --reset` for a new token, and run the line it prints on the
+1. Wait 10 minutes. Until then Ployz Cloud counts the founding as a server still joining.
+2. Where you're signed in, run `ployz server forget --confirm <your organization>`, or go to
+   **Organization** and, under **Danger**, click **Forget servers**. This drops the founding.
+   **Reset founding attempt** can't drop it yet
+   ([#3743](https://github.com/getployz/ployz/issues/3743)).
+3. Run `ployz server add --command --reset` for a new token, and run the line it prints on the
    server. The reset removes every container Ployz runs on that server.
 
 ## My first server never finished joining
@@ -454,8 +457,10 @@ because it already runs Ployz, see
 1. If the first server still exists, run its command on it again. If its token expired, run
    `ployz server add --command` for a new one; it picks up where the server left off.
 2. If that server is gone, or you want to start over, make sure it's stopped or erased at your
-   provider. Then go to **Organization**, click **Reset founding attempt**, tick **I confirm the
-   old Machine has been stopped or erased.** and click **Reset enrollment**.
+   provider. Then go to **Organization** and, under **Danger**, click **Forget servers**, or run
+   `ployz server forget --confirm <your organization>` where you're signed in. **Reset founding
+   attempt** can't yet clear a first server that never finished, and it deletes your enrollment
+   tokens ([#3743](https://github.com/getployz/ployz/issues/3743)).
 3. Add a server again.
 
 ## Can't reach your servers right now

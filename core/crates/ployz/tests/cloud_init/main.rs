@@ -718,7 +718,11 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
     );
     // Cloud now holds the founding for this identity, which --reset replaces, so a
     // --reset rerun alone would wait on it.
-    assert!(stderr.contains("run `ployz cloud reset --yes`"), "{stderr}");
+    assert!(
+        stderr.contains("After 10 minutes, where you're signed in, run `ployz server forget --confirm <your organization>`"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("cloud reset"), "{stderr}");
     assert!(
         stderr.contains("make a new token with `ployz server add --command --reset`"),
         "{stderr}"
