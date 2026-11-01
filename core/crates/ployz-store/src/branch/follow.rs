@@ -30,7 +30,8 @@ pub struct IncomingChange {
     pub from: EnvironmentName,
 }
 
-/// Parent `parent` deployed the nodes of `lineages`: stage each change it made to them
+/// Parent `parent` deployed the nodes of `lineages` of its Saved revision `shipped`:
+/// stage each change it made to them
 /// in each of its Branches, and take back each node it removed that a Follow brought
 /// there untouched. Changes a Branch refuses (one of its rules, say) stay
 /// hints there, and never fail the Parent's Deployment. The caller holds the
@@ -38,6 +39,7 @@ pub struct IncomingChange {
 pub(crate) fn follow(
     tx: &mut dyn Tx,
     parent: &EnvironmentId,
+    shipped: &SavedEnvironmentIntent,
     lineages: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
     let branches = tx.query(
@@ -50,20 +52,16 @@ pub(crate) fn follow(
         return Ok(());
     }
     let parent = scope::load_by_id(tx, parent)?;
-    // What the Parent's Applied State lacks, it removed. An earlier removal must be
-    // gone from its latest Saved State too: a forgotten Cluster empties Applied State
-    // alone. This Deployment's own removals hold even when it ships an older revision.
+    // What both the Parent's Applied State and the revision it ships lack, it removed:
+    // a forgotten Cluster empties Applied State alone, and a rollback ships a revision
+    // older than the latest Saved State.
     let suffix_of_parent = suffix(tx, &parent)?;
     let applied = deployment::applied_state(tx, &parent.summary.id, &parent.working)?;
     let applied = Cells::of(&applied, &suffix_of_parent);
-    let saved = review::latest_saved(tx, &parent.summary.id)?
-        .map(|saved| Cells::of(&saved.intent, &suffix_of_parent));
-    let removed = |lineage: &str| *applied.at(&RowId::node(lineage)) == Cell::Absent;
-    let removed_since = |lineage: &str| {
-        removed(lineage)
-            && saved
-                .as_ref()
-                .is_none_or(|saved| *saved.at(&RowId::node(lineage)) == Cell::Absent)
+    let shipped = Cells::of(shipped, &suffix_of_parent);
+    let removed = |lineage: &str| {
+        let node = RowId::node(lineage);
+        *applied.at(&node) == Cell::Absent && *shipped.at(&node) == Cell::Absent
     };
     for row in &branches {
         let branch = row.parse::<EnvironmentId>(0, "Branch")?;
@@ -99,7 +97,7 @@ pub(crate) fn follow(
             if arrived.row == RowId::node(lineage)
                 && matches!(arrived.how, How::Follow)
                 && matches!(arrived.arrival, Arrival::Pending { .. })
-                && removed_since(lineage)
+                && removed(lineage)
             {
                 left.insert(lineage.to_owned());
             }
