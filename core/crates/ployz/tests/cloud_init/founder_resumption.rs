@@ -567,6 +567,7 @@ async fn resumed_founder_refuses_a_cluster_its_claim_did_not_found() {
             stderr.contains("let go of this founding attempt"),
             "{founding:?}: {stderr}"
         );
+        assert!(!stderr.contains("--reset"), "{founding:?}: {stderr}");
         assert!(daemon.initialize_requests().is_empty(), "{founding:?}");
         assert_eq!(enroll.callbacks(), [release_callback()], "{founding:?}");
     }
@@ -600,6 +601,12 @@ async fn new_claim_on_a_participating_server_lets_go_of_the_claim() {
     assert!(!output.status.success(), "{stderr}");
     assert!(
         stderr.contains("let go of this founding attempt"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "then add a Server that isn't in a Cluster with a new token, or add this Server: make a new token with `ployz server add --command --reset` and run the line it prints on this Server. The reset takes it out of its Cluster"
+        ),
         "{stderr}"
     );
     assert!(daemon.initialize_requests().is_empty());

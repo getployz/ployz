@@ -223,13 +223,20 @@ the token is used up and nothing else is left to reset.
 
 An organization's first server starts a new Cluster, so it can't be a server that already has other
 servers, or that something other than Ployz Cloud manages. The server stays in its Cluster. Don't run
-another token on it.
+another token on it as it is.
 
 Run `ployz server add --command` for a new token, and add a server that isn't in a Cluster. If that
 says `This Organization's Servers can't be reached`, go to **Organization**, click **Reset founding
 attempt**, tick the confirmation and click **Reset enrollment**. The confirmation asks you to stop or
 erase the old Machine, but this server can keep running in its Cluster: the reset revokes Ployz
 Cloud's own access to it.
+
+When the message is `a new founding claim requires an uninitialized Server`, you can add this
+server itself instead, once Ployz Cloud let go of the founding attempt or you reset it: run
+`ployz server add --command --reset` for a new token, and run the line it prints on the server. The
+reset takes the server out of its Cluster and removes every container Ployz runs on it, so its apps
+go down, and it can delete its mirrors, so don't use it while a mirror there may be the last copy
+of a volume.
 
 ## A forgotten server is refused when you add it again
 

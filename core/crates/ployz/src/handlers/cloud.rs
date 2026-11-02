@@ -454,13 +454,14 @@ fn resumes_founding(founding: ployz_core::Founding, claim: ployz_core::FoundingC
 }
 
 /// Refuse to found on this Server, first letting go of the Founding Claim so the Organization
-/// can start with another Server.
+/// can start with another Server, or with this one once it is reset when `resettable`.
 async fn refuse_founding(
     cloud_url: &str,
     token: &CloudEnrollToken,
     machine_id: ployz_core::MachineId,
     pairing: &CloudPairing,
     found: &str,
+    resettable: bool,
 ) -> Error {
     let released = cloud_enroll::release(
         &cloud_enroll::callback_url(cloud_url),
@@ -474,8 +475,13 @@ async fn refuse_founding(
     } else {
         "In Ployz Cloud, reset the founding attempt"
     };
+    let or_this = if resettable {
+        ", or add this Server: make a new token with `ployz server add --command --reset` and run the line it prints on this Server. The reset takes it out of its Cluster and removes every container Ployz runs on it"
+    } else {
+        ""
+    };
     Error::conflict(format!(
-        "{found}. An Organization's first Server starts a new Cluster. {next}, then add a Server that isn't in a Cluster with a new token."
+        "{found}. An Organization's first Server starts a new Cluster. {next}, then add a Server that isn't in a Cluster with a new token{or_this}."
     ))
 }
 
@@ -523,6 +529,7 @@ where
                     details.id,
                     &pairing,
                     "this Server is already in a Cluster this enrollment didn't found",
+                    false,
                 )
                 .await);
             }
@@ -541,7 +548,9 @@ where
                 "a new founding claim requires an uninitialized Server, but its local phase is {}",
                 phase.as_str().escape_debug()
             );
-            return Err(refuse_founding(cloud_url, token, details.id, &pairing, &found).await);
+            return Err(
+                refuse_founding(cloud_url, token, details.id, &pairing, &found, true).await,
+            );
         }
         (InitializeMode::Resume, phase) => {
             return Err(Error::conflict(format!(
