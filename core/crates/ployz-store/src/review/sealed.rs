@@ -240,7 +240,7 @@ fn sealed_above(
         }
     };
     // A value the Environment set itself, and deployed or saved, was never sealed
-    // above it.
+    // above it, unless it shares that value with one above that sealed it since.
     let made = chain.introduced(tx, environment.as_str(), node, |made| made.id == was.id)?;
     if let Some(made) = &made
         && made.fingerprint == was.value_fingerprint
@@ -884,6 +884,39 @@ pub(crate) fn newly_sealed(
     };
     let before = rows(before);
     rows(after).difference(&before).cloned().collect()
+}
+
+/// Each variable `after` holds sealed with another value than `before` holds it,
+/// by Service lineage and key: sealed, or sealed again.
+pub(crate) fn sealed_again(
+    before: Option<&SavedEnvironmentIntent>,
+    after: &SavedEnvironmentIntent,
+) -> BTreeSet<(String, String)> {
+    let value = |intent: &SavedEnvironmentIntent, lineage: &str, key: &str| {
+        intent
+            .services
+            .iter()
+            .filter(|service| service.lineage_id == lineage)
+            .flat_map(|service| &service.variables)
+            .find(|variable| variable.key == key)
+            .map(|variable| variable.value.clone())
+    };
+    after
+        .services
+        .iter()
+        .flat_map(|service| {
+            service
+                .variables
+                .iter()
+                .filter(|variable| sealed(&variable.value))
+                .map(|variable| (service.lineage_id.as_str(), variable))
+        })
+        .filter(|(lineage, variable)| {
+            before.and_then(|before| value(before, lineage, &variable.key))
+                != Some(variable.value.clone())
+        })
+        .map(|(lineage, variable)| (lineage.to_owned(), variable.key.clone()))
+        .collect()
 }
 
 /// Empty the plain value of each of `rows` in a Sync base. It keeps its kind and

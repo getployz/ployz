@@ -797,21 +797,18 @@ pub(crate) fn forget_unclaimed(tx: &mut dyn Tx, receiver: &str) -> Result<(), Rp
 /// to empty.
 pub(crate) fn scrub_bases(tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
     let rows = review::sealed::sealed_rows(tx, environment)?;
-    empty_in_bases(tx, environment, &rows, None)
+    empty_in_bases(tx, environment, &rows)
 }
 
-/// [`scrub_bases`] for `rows` only, by Service lineage and key. `before`, the
-/// Working State a write replaces, may hold a value it seals that nothing saved.
+/// [`scrub_bases`] for `rows` only, by Service lineage and key.
 pub(crate) fn empty_in_bases(
     tx: &mut dyn Tx,
     environment: &str,
     rows: &BTreeSet<(String, String)>,
-    before: Option<&SavedEnvironmentIntent>,
 ) -> Result<(), RpcError> {
     if rows.is_empty() {
         return Ok(());
     }
-    let held = held(tx, environment, rows, before)?;
     for row in tx.query(
         "SELECT environment_id, made_with FROM config_environment_branch \
          WHERE environment_id = ?1 OR parent_id = ?1",
@@ -967,12 +964,32 @@ pub(crate) fn empty_in_bases(
             )?;
         }
     }
+    Ok(())
+}
+
+/// Empty each plain value `environment` held for `rows`, which it seals now, in
+/// what every Branch below it was made with, shares and holds as arrived: a
+/// Branch of a Branch can keep it where the seal never landed, as in a Branch that
+/// changed the value itself. `before`, the Working State a write replaces, may
+/// hold a value it seals that nothing saved. Run where a write seals a value or a
+/// Save seals one again, never on every Save: it reads the whole tree below.
+pub(crate) fn empty_sealed_below(
+    tx: &mut dyn Tx,
+    environment: &str,
+    rows: &BTreeSet<(String, String)>,
+    before: Option<&SavedEnvironmentIntent>,
+) -> Result<(), RpcError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let held = held(tx, environment, rows, before)?;
     empty_below(tx, environment, &held)
 }
 
 /// Each fingerprint `environment` held for `rows`: in what its Working State held
-/// before the write, its saves, and what it was made with or shares with its
-/// Parent and Branches, which keep a value's fingerprint once emptied.
+/// before the write, and what it was made with or shares with its Parent and
+/// Branches, which keep a value's fingerprint once emptied. Its History holds none
+/// once scrubbed, and a write that seals a value passes what it replaced.
 fn held(
     tx: &mut dyn Tx,
     environment: &str,
@@ -1006,15 +1023,11 @@ fn held(
     if let Some(before) = before {
         review::sealed::hold(&mut held, before, rows);
     }
-    // Only what it held itself: its saves, what it and its Branches were made
-    // with, and what it shares with its Parent or a Branch, which starts as what
-    // the Branch was made with and moves only by what lands. A Sync base with any
-    // other Environment can start as that one's value.
+    // Only what it held itself: what it and its Branches were made with, and
+    // what it shares with its Parent or a Branch, which starts as what the Branch
+    // was made with and moves only by what lands. A Sync base with any other
+    // Environment can start as that one's value.
     for (sql, what) in [
-        (
-            "SELECT intent FROM config_saved WHERE environment_id = ?1",
-            "Saved State",
-        ),
         (
             "SELECT made_with FROM config_environment_branch \
              WHERE environment_id = ?1 OR parent_id = ?1",
@@ -1035,10 +1048,7 @@ fn held(
     Ok(held)
 }
 
-/// Empty each copy of a value `environment` sealed, by its fingerprint in `held`,
-/// in what every Branch below it was made with, shares and holds as arrived: a
-/// Branch of a Branch can keep it where the seal never landed, as in a Branch that
-/// changed the value itself.
+/// [`empty_sealed_below`] by the fingerprints in `held`.
 fn empty_below(
     tx: &mut dyn Tx,
     environment: &str,
@@ -1078,6 +1088,10 @@ fn empty_below(
                 )?;
             }
         }
+    }
+    // Arrivals before bases, the order Discard and Sync lock them in.
+    for branch in &below {
+        let branch = branch.as_str();
         for row in tx.query(
             "SELECT environment_id, other_id, lineage, at, value, source, prior \
              FROM config_sync_arrival WHERE environment_id = ?1 OR other_id = ?1",
@@ -1121,6 +1135,9 @@ fn empty_below(
                 )?;
             }
         }
+    }
+    for branch in &below {
+        let branch = branch.as_str();
         for row in tx.query(
             "SELECT environment_id, other_id, base FROM config_sync_base \
              WHERE environment_id = ?1 OR other_id = ?1",

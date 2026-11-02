@@ -3078,7 +3078,9 @@ fn a_branch_of_a_branch_whose_parent_took_a_value_by_follow_never_shows_it_once_
 /// Nor one whose variable reached its Parent after it was made (#3727, case 3).
 #[test]
 fn a_branch_of_a_branch_never_shows_a_value_that_arrived_after_it_was_made_once_sealed() {
-    let (store, who) = shop();
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
     branch(&store, &who, 10, "production", "qa");
     deploy(&store, &who, "qa", 2);
     branch(&store, &who, 11, "qa", "qa-two");
@@ -3111,6 +3113,12 @@ fn a_branch_of_a_branch_never_shows_a_value_that_arrived_after_it_was_made_once_
     );
     let shown = serde_json::to_string(&review).unwrap();
     assert!(!shown.contains("plain-private"), "{shown}");
+    // What arrived in `qa-two` from `qa` holds no copy either.
+    let holding = backend::tables_holding(&url, "plain-private");
+    assert!(
+        !holding.contains(&"config_sync_arrival".to_owned()),
+        "{holding:?}"
+    );
 }
 
 /// `qa`, `qa-two` and `qa-three`, each a Branch of the one before, made while
@@ -3469,6 +3477,10 @@ fn saving_a_seal_again_empties_the_value_a_base_below_kept_from_before() {
     seal_token(&store, &who, 6);
     restore_bases(&url);
     assert_eq!(below_holding(&url, "plain-private"), 2);
+    // A Save that leaves the sealed value as it was reads nothing below.
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    deploy(&store, &who, "production", 7);
+    assert_eq!(below_holding(&url, "plain-private"), 2);
 
     let sealed = token(&store, &who, "production", 2);
     set(
@@ -3477,7 +3489,7 @@ fn saving_a_seal_again_empties_the_value_a_base_below_kept_from_before() {
         "production",
         &[("web.env.TOKEN", json!({ "secret": sealed }))],
     );
-    deploy(&store, &who, "production", 7);
+    deploy(&store, &who, "production", 8);
     assert_eq!(below_holding(&url, "plain-private"), 0);
 }
 
