@@ -1284,7 +1284,9 @@ it.live("a sign-out of the browser that is allowing an agent waits for the Allow
     const waitingOnGrants = shop.provided(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       return yield* drizzle.execute<{ waiting: number }>(
-        sql`select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted`, "objects");
+        sql`select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted
+          and database = (select oid from pg_database where datname = current_database())
+          and objid::bigint = hashtext(${`agent-grants:${shop.boId}`})::bigint & 4294967295`, "objects");
     }));
     yield* Effect.promise(() => vi.waitFor(async () => {
       expect((await Effect.runPromise(waitingOnGrants))[0]?.waiting).toBe(1);
