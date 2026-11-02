@@ -211,15 +211,15 @@ its apps go down; volume data stays on the disk.
 
 ## The first server is already in a Cluster
 
-You'll see `This Server is already in a Cluster with other Servers or management clients. Only a new
-Cluster can start this Organization: add a Server that isn't in a Cluster.`
+You'll see `This Server is already in a Cluster with other Servers, or something other than Ployz
+Cloud manages it.`
 
 An organization's first server starts a new Cluster, so it can't be a server that already has other
-servers, or that something other than Ployz Cloud manages. Running the command again on this server
-gets the same answer.
+servers, or that something other than Ployz Cloud manages. The server stays in its Cluster, and
+running the command on it again gets the same answer.
 
-Run `ployz server add --command` for a new token, and add a server that isn't in a Cluster. If
-that says `This Organization's Servers can't be reached`, follow
+Run `ployz server add --command` for a new token, and add a server that isn't in a Cluster. If that
+says `This Organization's Servers can't be reached`, follow
 [My first server never finished joining](#my-first-server-never-finished-joining).
 
 ## The server doesn't finish joining

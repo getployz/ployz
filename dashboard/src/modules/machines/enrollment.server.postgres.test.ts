@@ -106,7 +106,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     beforeRegister: async (_assignment: EnrollmentAssignment) => {},
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
-  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, managementClients: ["cloud"], revocable: false };
+  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
@@ -120,7 +120,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
       observeEnrollment: async () => { observations += 1; return cluster.snapshot; },
       inspect: async () => {
         const [entry] = options.connections;
-        return { id: entry && "machine_id" in entry ? entry.machine_id : "", management_clients: cluster.managementClients };
+        return { id: cluster.inspectedId ?? (entry && "machine_id" in entry ? entry.machine_id : ""), management_clients: cluster.managementClients };
       },
       setPushTarget: async () => {},
       clearManagementClient: async (label: string) => {
@@ -951,24 +951,68 @@ describe("organization enrollment coordinator", () => {
     const dialRows = async () => (await harness.pool.query("select machine_id from organization_machine")).rows;
     const founderRow = async () => (await harness.pool.query("select founder_machine_id from organization_pairing")).rows;
 
-    it("refuses publication while the Cluster has other Machines", async () => {
+    /** A refused first publication leaves the Organization free to start over: a new token founds another Server. */
+    async function expectReleased(fake: ReturnType<typeof fakeSession>, attempt: Awaited<ReturnType<typeof pendingFounder>>) {
+      expect(await dialRows()).toEqual([]);
+      expect(await founderRow()).toEqual([]);
+      expect(fake.cluster.managementClients).not.toContain("cloud");
+      expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) })).toMatchObject({ failure: { _tag: "Unauthorized" } });
+      expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) }))
+        .toMatchObject({ success: { kind: "initialize", resumed: false } });
+    }
+
+    it("refuses publication while the Cluster has other Machines, and lets go of the attempt", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);
       fake.cluster.snapshot = { ...snapshot, machines: [await otherMachine(attempt)] };
+      fake.cluster.revocable = true;
       expect(await fake.coordinator.publish({ ...attempt, capability }))
         .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
-      expect(await dialRows()).toEqual([]);
-      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "Conflict" } });
-      expect(await founderRow()).toEqual([{ founder_machine_id: null }]);
+      await expectReleased(fake, attempt);
     });
 
-    it("refuses publication while another management client holds the Server", async () => {
+    it.each([["laptop"], ["cli-other-organization"], ["device-other-organization"]])(
+      "refuses a first publication while the Server holds a %s management client", async (label) => {
+        const fake = fakeSession(harness.database);
+        const attempt = await pendingFounder(fake);
+        fake.cluster.managementClients = ["cloud", label];
+        fake.cluster.revocable = true;
+        expect(await fake.coordinator.publish({ ...attempt, capability }))
+          .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+        expect(fake.cluster.managementClients).toEqual([label]);
+        await expectReleased(fake, attempt);
+      },
+    );
+
+    it("refuses a Server that answers as another Machine", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);
-      fake.cluster.managementClients = ["cloud", "laptop"];
+      fake.cluster.inspectedId = identity(2).machineId;
       expect(await fake.coordinator.publish({ ...attempt, capability }))
         .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
       expect(await dialRows()).toEqual([]);
+    });
+
+    it("refuses a refreshed publication once the Cluster grew, keeping the working credential for reset", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      fake.cluster.snapshot = { ...snapshot, machines: [await otherMachine(attempt)] };
+      expect(await fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" }))
+        .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+      const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
+      expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual(["ployz1:rotated"]);
+      fake.cluster.revocable = true;
+      expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    });
+
+    it("counts the slots Cloud fills through its connection as Cloud's", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      fake.cluster.managementClients = ["cloud", "cli-signed-in", "device-approved"];
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect(await founderRow()).toEqual([{ founder_machine_id: attempt.machineId }]);
     });
 
     it("refuses completion once another Machine is in the Cluster, keeping the credential reset revokes", async () => {
