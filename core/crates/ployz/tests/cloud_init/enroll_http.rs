@@ -132,22 +132,28 @@ impl EnrollListen {
         let report_reply = Arc::new(Mutex::new(ReportReply::Status(200)));
         let reply_report = Arc::clone(&report_reply);
         let server = tokio::spawn(async move {
-            loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    return;
-                };
-                let mut buf = vec![0; 8192];
-                let n = stream.read(&mut buf).await.unwrap();
-                let raw = buf.get(..n).expect("read count is in bounds");
+            let (sent, mut requests) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(accept_requests(listener, sent));
+            while let Some((mut stream, raw)) = requests.recv().await {
+                let raw: &[u8] = &raw;
                 let request = String::from_utf8_lossy(raw);
-                let path = request
+                // Anything else on this port, such as a stray probe, is refused and changes
+                // nothing a test observes. It used to take the scripted enroll reply (#3732).
+                let Some(path) = request
                     .lines()
                     .next()
-                    .unwrap()
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap()
-                    .to_owned();
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .filter(|path| {
+                        matches!(
+                            *path,
+                            "/api/enroll" | "/api/enroll/callback" | "/api/enroll/report"
+                        ) || path.starts_with("/api/cli/")
+                    })
+                    .map(str::to_owned)
+                else {
+                    write_http(&mut stream, 404, "Not Found", &[]).await;
+                    continue;
+                };
                 if path.starts_with("/api/enroll")
                     && !request
                         .lines()
@@ -362,19 +368,115 @@ async fn write_http(stream: &mut TcpStream, status: u16, reason: &str, body: &[u
         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    stream.write_all(header.as_bytes()).await.unwrap();
-    stream.write_all(body).await.unwrap();
+    // A client that hung up has nothing to read the answer; its outcome is the client's to see.
+    if stream.write_all(header.as_bytes()).await.is_ok() {
+        let _ = stream.write_all(body).await;
+    }
+}
+
+/// Reads each connection on its own, so a client that never finishes its request can't hold
+/// up the CLI's, and hands over only whole requests, in the order they complete.
+async fn accept_requests(
+    listener: TcpListener,
+    requests: tokio::sync::mpsc::UnboundedSender<(TcpStream, Vec<u8>)>,
+) {
+    while let Ok((mut stream, _)) = listener.accept().await {
+        let requests = requests.clone();
+        tokio::spawn(async move {
+            if let Some(raw) = read_request(&mut stream).await {
+                let _ = requests.send((stream, raw));
+            }
+        });
+    }
+}
+
+/// One whole request: the head, then its `Content-Length` body, however the client split
+/// them across writes. `None` when the client hangs up first.
+async fn read_request(stream: &mut TcpStream) -> Option<Vec<u8>> {
+    let mut raw = Vec::new();
+    let mut chunk = [0; 8192];
+    let head = loop {
+        if let Some(sep) = header_end(&raw) {
+            break sep;
+        }
+        let n = stream.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        raw.extend_from_slice(chunk.get(..n)?);
+    };
+    let length = String::from_utf8_lossy(raw.get(..head)?)
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while raw.len() < head + 4 + length {
+        let n = stream.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        raw.extend_from_slice(chunk.get(..n)?);
+    }
+    Some(raw)
+}
+
+fn header_end(raw: &[u8]) -> Option<usize> {
+    raw.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 fn enroll_json_body(raw: &[u8]) -> serde_json::Value {
-    let sep = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .expect("HTTP request has a header separator");
+    let sep = header_end(raw).expect("HTTP request has a header separator");
     let body = raw.get(sep + 4..).expect("body follows headers");
     // A GET has no body.
     if body.is_empty() {
         return serde_json::Value::Null;
     }
     serde_json::from_slice(body).unwrap()
+}
+
+/// Connections other than the CLI's leave the fake Cloud as they found it: a stray request
+/// is refused without taking the scripted enroll reply, and a client that hangs up or stalls
+/// mid-request holds up nothing (#3732).
+#[tokio::test]
+async fn stray_connections_leave_the_scripted_enroll_for_the_cli() {
+    let enroll = EnrollListen::start(serde_json::json!({ "kind": "not_yet" })).await;
+    let address = enroll.url.trim_start_matches("http://");
+    let exchange = |request: Vec<u8>| async move {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream.write_all(&request).await.unwrap();
+        stream.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response).await;
+        String::from_utf8_lossy(&response).into_owned()
+    };
+
+    let probe = exchange(format!("GET / HTTP/1.1\r\nhost: {address}\r\n\r\n").into_bytes()).await;
+    assert!(probe.starts_with("HTTP/1.1 404"), "{probe}");
+    let hung_up = exchange(b"\x16\x03\x01\x02\x00".to_vec()).await;
+    assert_eq!(hung_up, "");
+    // Stays open, mid-request, while the CLI enrolls.
+    let mut held = TcpStream::connect(address).await.unwrap();
+    held.write_all(b"GET / HT").await.unwrap();
+    let body = br#"{"publicKey":"cli"}"#;
+    let mut enrolled = format!(
+        "POST /api/enroll HTTP/1.1\r\nhost: {address}\r\nauthorization: Bearer {}\r\ncontent-length: {}\r\n\r\n",
+        super::TOKEN,
+        body.len()
+    )
+    .into_bytes();
+    enrolled.extend_from_slice(body);
+    let enrolled = exchange(enrolled).await;
+
+    assert!(enrolled.starts_with("HTTP/1.1 200"), "{enrolled}");
+    assert!(enrolled.ends_with(r#"{"kind":"not_yet"}"#), "{enrolled}");
+    assert_eq!(
+        enroll.posts(),
+        vec![serde_json::json!({ "publicKey": "cli" })]
+    );
+    assert_eq!(enroll.paths(), ["/api/enroll".to_owned()]);
+    drop(held);
 }
