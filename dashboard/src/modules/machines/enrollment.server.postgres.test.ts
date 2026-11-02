@@ -106,7 +106,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     beforeRegister: async (_assignment: EnrollmentAssignment) => {},
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
-  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined };
+  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined, accepted: undefined as string | undefined };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
@@ -120,6 +120,8 @@ function fakeSession(database: PostgresTestHarness["database"]) {
       observeEnrollment: async () => { observations += 1; return cluster.snapshot; },
       inspect: async () => {
         const [entry] = options.connections;
+        // An operational RPC activates the credential it came in on, as the daemon does.
+        if (entry && "management" in entry) cluster.accepted = entry.management;
         return { id: cluster.inspectedId ?? (entry && "machine_id" in entry ? entry.machine_id : ""), management_clients: cluster.managementClients };
       },
       setPushTarget: async () => {},
@@ -1016,30 +1018,19 @@ describe("organization enrollment coordinator", () => {
       return { release, waiting: () => vi.waitFor(() => expect(state.held).toBe(true)) };
     }
 
-    it("keeps a racing publication's connection over a first publication verified before it was saved", async () => {
+    it.each([[0x02], [0x01]])("takes one Machine's publications in turn, saving the credential its Server accepted last", async (second) => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);
       const hold = holdNextConnection(fake);
-      const delayed = fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x01) });
+      const first = fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x01) });
       await hold.waiting();
-      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) })).toMatchObject({ success: { machineId: attempt.machineId } });
+      const next = fake.coordinator.publish({ ...attempt, capability: keyed(0xab, second) });
       hold.release();
-      expect(await delayed).toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(await first).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect(await next).toMatchObject({ success: { machineId: attempt.machineId } });
       const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
-      expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([keyed(0xab, 0x02)]);
-    });
-
-    it("accepts a duplicate first publication once its racing twin saved the connection and Cloud filled a slot", async () => {
-      const fake = fakeSession(harness.database);
-      const attempt = await pendingFounder(fake);
-      const hold = holdNextConnection(fake);
-      const delayed = fake.coordinator.publish({ ...attempt, capability });
-      await hold.waiting();
-      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
-      fake.cluster.managementClients = ["cloud", "cli-signed-in"];
-      hold.release();
-      expect(await delayed).toMatchObject({ success: { machineId: attempt.machineId } });
-      expect(await dialRows()).toEqual([{ machine_id: attempt.machineId }]);
+      expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([fake.cluster.accepted]);
+      expect(fake.cluster.accepted).toBe(keyed(0xab, second));
     });
 
     it("counts the slots Cloud fills through its connection as Cloud's", async () => {
@@ -1128,9 +1119,12 @@ describe("organization enrollment coordinator", () => {
     expect((await harness.pool.query("select * from organization_machine")).rows).toEqual(before.rows);
   });
 
+  // A founder's publications take turns instead ("takes one Machine's publications in turn"), so a joiner's refresh is overtaken.
   it.each(["new publication", "removal", "expired token"])("rejects a refresh overtaken by %s", async (change) => {
     const fake = fakeSession(harness.database);
-    const attempt = await pendingFounder(fake);
+    const founder = await readyFounder(fake);
+    expect(await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+    const attempt = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
     await fake.coordinator.publish({ ...attempt, capability });
     let entered = () => {};
     let release = () => {};

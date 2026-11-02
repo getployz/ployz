@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
-import { Cause, Effect, Option, Schema } from "effect";
+import { Cause, Effect, Option, Schema, Semaphore } from "effect";
 import {
   enrollmentAllocation,
   organizationMachine,
@@ -51,6 +51,7 @@ import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollmen
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+import { whileLocked } from "#/server/advisory-lock.server";
 import { Conflict, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
 import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { managementIdentity as managementIdentityOf } from "#/modules/machines/management-identity";
@@ -838,6 +839,15 @@ const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(f
   }));
 });
 
+/** Founder publications holding their Machine's lock at once, each keeping a pooled connection while it verifies. */
+const founderPublications = Semaphore.makeUnsafe(4);
+
+const publicationLock = (organizationId: string, machineId: MachineId) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`founder-publication:${organizationId}:${machineId}`}))`);
+  return true;
+});
+
 /** `machineId` enrolled in this attempt under the WireGuard key that claimed the token. */
 const requireEnrollmentMachine = Effect.fn("MachineEnrollment.requireMachine")(function* (
   organizationId: string, pairing: PairingRow, secret: string, machineId: MachineId, claimedPublicKey: string,
@@ -929,11 +939,12 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       }
       return null;
     }));
-    const verify = yield* publish();
-    if (verify !== null) {
-      // Shared negotiation confirms the intended Machine; no SQL lock spans the network call. Cloud times the connect
+    const verifyAndSave = Effect.gen(function* () {
+      const verify = yield* publish();
+      if (verify === null) return false;
+      // Shared negotiation confirms the intended Machine; no row lock spans the network call. Cloud times the connect
       // itself, since the SDK's own deadline fails like any cancellation.
-      const refused = yield* Effect.scoped(Effect.gen(function* () {
+      return yield* Effect.scoped(Effect.gen(function* () {
         const session = yield* (yield* Ployz).connect({
           connections: [{ machine_id: input.machineId, management: input.capability }],
         }, { closeWithin: clusterRead }).pipe(Effect.timeout(SERVER_REACH_TIMEOUT_MS), Effect.mapError(unlessAnswered));
@@ -961,8 +972,15 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         // A released attempt leaves the `cloud` slot as the CLI set it: Cloud never saved its key, and the CLI may use it.
         return true;
       })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
-      if (refused) return yield* notFresh();
-    }
+    });
+    // A founder's freshness reads activate its credential before Cloud saves it, so its publications take turns: the
+    // last to activate a credential is the last to save one.
+    const [pairing] = yield* loadPairingRow(token.organizationId);
+    const refused = pairing !== undefined && isFounding(pairing, input.machineId)
+      ? yield* whileLocked(founderPublications, publicationLock(token.organizationId, input.machineId), verifyAndSave)
+        .pipe(Effect.map(Option.getOrElse(() => false)))
+      : yield* verifyAndSave;
+    if (refused) return yield* notFresh();
     yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(
       Effect.catch((error) => Effect.logWarning("Push target request failed; the 5-minute sweep sets it.", error)),
     );
