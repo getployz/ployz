@@ -168,6 +168,18 @@ describe("ensure-cluster-sealing-key", () => {
       expect(requests).toEqual([{ expected: null, generator: null }, { expected: sealingKey("A"), generator: null }]);
     });
 
+    it("records no distributed key that another Organization's Cluster recorded, and stops", async () => {
+      const other = "00000000-0000-4000-8000-0000000089bb";
+      await harness.pool.query("insert into organization (id, name, slug) values ($1, 'Owner', 'backfill-owner')", [other]);
+      await harness.pool.query("insert into sealing_key_owner (public_key, organization_id) values ($1, $2)", [sealingKey("A"), other]);
+      reports = [{ result: "distributed", public_key: sealingKey("A"), machines: [] }];
+
+      const output = await ensure();
+
+      expect(output.result).toEqual({ organizationId, result: "distributed", awaitsOperator: false });
+      expect(await recordedKeys()).toEqual([]);
+    });
+
     it("chooses the candidate and reruns once with it as generator", async () => {
       reports = [
         { result: "needs_generator", candidate: machine("2") },

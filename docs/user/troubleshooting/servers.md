@@ -251,6 +251,16 @@ server, or run `ployz server add root@HOST --reset` to add it over SSH. The rese
 container Ployz runs on that server and can delete its mirrors, so don't use it while a mirror
 there may be the last copy of a volume.
 
+## The server's Cluster is connected to another Organization
+
+You'll see `This Server's Cluster is already connected to another Organization in Ployz Cloud.`
+
+Ployz Cloud connects a Cluster to one Organization: the first one that added it. The server you're
+adding belongs to a Cluster another Organization already added, so this Organization can't manage
+it. Add a server that isn't in that Cluster, or manage it from the Organization that added it. To
+move the Cluster to this Organization, or if you don't recognize the other one, contact Ployz
+support.
+
 ## The server doesn't finish joining
 
 You'll see `the joined Server did not become ready`, or `the first Server did not become ready` on

@@ -2,13 +2,13 @@ import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { MachineId, SealingPublicKey } from "@ployz/sdk";
 import { and, eq, isNull, ne } from "drizzle-orm";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createClusterResealRequestedEvent } from "#/modules/inngest/events";
 import { currentGeneration } from "#/modules/machines/connections.server";
 import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
 import type { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
-import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey } from "#/modules/machines/tables";
+import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey, sealingKeyOwner } from "#/modules/machines/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccessById } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
@@ -19,9 +19,16 @@ const generatorOf = (organizationId: string, clusterKey: string) => and(
   eq(clusterSealingKeyGenerator.clusterKey, clusterKey),
 );
 
+/** A Server reported a Sealing Key that another Organization's Cluster already recorded. Nothing was recorded. */
+export class SealingKeyHeldElsewhere extends Data.TaggedError("SealingKeyHeldElsewhere")<{
+  readonly organizationId: string;
+}> {}
+
 /**
  * Keeps the first Sealing Key a Cluster reports, and gives it to the Organization unless a backup holds another; the first
  * one asks for its Organization's Legacy secrets to be resealed to it, waiting on that send unless `delivery` detaches it.
+ * A key is recorded for one Organization only: the first to record it, which may record it again for a later pairing.
+ * Another Organization's report of it records nothing and fails with {@link SealingKeyHeldElsewhere}.
  */
 export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(function* (
   organizationId: string, clusterKey: string, publicKey: SealingPublicKey, delivery: "await" | "detach" = "await",
@@ -29,6 +36,15 @@ export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(fu
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    // A racing first record waits on this key's row, so exactly one Organization takes it.
+    yield* drizzle.insert(sealingKeyOwner).values({ publicKey, organizationId }).onConflictDoNothing();
+    const [owner] = yield* drizzle.select({ organizationId: sealingKeyOwner.organizationId }).from(sealingKeyOwner)
+      .where(eq(sealingKeyOwner.publicKey, publicKey));
+    if (owner !== undefined && owner.organizationId !== organizationId) {
+      yield* Effect.logError("A Server reported a Sealing Key another Organization's Cluster recorded; Cloud didn't record it.")
+        .pipe(Effect.annotateLogs({ organizationId, recordedBy: owner.organizationId }));
+      return yield* new SealingKeyHeldElsewhere({ organizationId });
+    }
     const inserted = yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey }).onConflictDoNothing()
       .returning({ clusterKey: clusterSealingKey.clusterKey });
     if (inserted.length > 0) yield* enqueueEvent(createClusterResealRequestedEvent({ organizationId, clusterKey }), delivery);

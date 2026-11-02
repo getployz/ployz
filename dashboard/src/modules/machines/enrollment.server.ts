@@ -1190,7 +1190,12 @@ const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
       Effect.catch((error) => Effect.logWarning("Sealing Key backfill request failed; enrollment continues.", error)),
     );
   }
-  yield* recordSealingPublicKey(organizationId, clusterKey, sealing.publicKey).pipe(Effect.annotateLogs(annotations));
+  yield* recordSealingPublicKey(organizationId, clusterKey, sealing.publicKey).pipe(
+    Effect.annotateLogs(annotations),
+    Effect.catchTag("SealingKeyHeldElsewhere", () => Effect.fail(new Conflict({
+      userFacing: true, message: "This Server's Cluster is already connected to another Organization in Ployz Cloud.",
+    }))),
+  );
 });
 
 const reportAttemptCompleted = Effect.fn("MachineEnrollment.reportAttemptCompleted")(
