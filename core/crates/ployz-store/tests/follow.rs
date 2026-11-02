@@ -3344,10 +3344,10 @@ fn every_read(store: &ConfigStore, who: &Actor, environment: &str, parent: &str)
     serde_json::to_string(&reads).unwrap()
 }
 
-/// Put back what `qa-two` was made with and shares as they were when this ran
+/// Put back what Branch `n` was made with and shares as they were when this ran
 /// [`keep_bases`]: storage written before a seal emptied values below its Branches.
-fn restore_bases(url: &str) {
-    let branch = uuid(11);
+fn restore_bases(url: &str, n: u8) {
+    let branch = uuid(n);
     backend::execute(
         url,
         &format!(
@@ -3390,7 +3390,7 @@ fn no_read_shows_a_value_a_base_below_still_holds_from_before_the_seal_emptied_i
     followed_then_branched(&store, &who);
     keep_bases(&url);
     seal_token(&store, &who, 6);
-    restore_bases(&url);
+    restore_bases(&url, 11);
     let holding = backend::tables_holding(&url, "plain-private");
     assert!(
         holding.contains(&"config_sync_base".to_owned())
@@ -3411,7 +3411,13 @@ fn no_read_shows_a_value_a_base_below_still_holds_from_before_the_seal_emptied_i
 /// `qa-two`'s Sync base with `qa` and what it was made with, counted where they
 /// hold `marker`.
 fn below_holding(url: &str, marker: &str) -> i64 {
-    let branch = uuid(11);
+    holding_of(url, 11, marker)
+}
+
+/// Branch `n`'s Sync bases and what it was made with, counted where they hold
+/// `marker`.
+fn holding_of(url: &str, n: u8, marker: &str) -> i64 {
+    let branch = uuid(n);
     backend::count(
         url,
         &format!(
@@ -3475,7 +3481,7 @@ fn saving_a_seal_again_empties_the_value_a_base_below_kept_from_before() {
     followed_then_branched(&store, &who);
     keep_bases(&url);
     seal_token(&store, &who, 6);
-    restore_bases(&url);
+    restore_bases(&url, 11);
     assert_eq!(below_holding(&url, "plain-private"), 2);
     // A Save that leaves the sealed value as it was reads nothing below.
     set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
@@ -3624,4 +3630,56 @@ fn a_seal_leaves_a_value_only_a_sync_base_of_the_sealer_holds() {
     seal_token(&store, &who, 3);
 
     assert_eq!(held(), 2);
+}
+
+/// A Branch that took the seal by Follow before Ployz 0.3.15 left the value plain
+/// in what the Branches below it share: saving the seal again in production
+/// clears it, by the value that Branch shared, which production no longer holds.
+#[test]
+fn saving_a_seal_again_empties_what_a_branch_that_took_it_left_below() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-one"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 3);
+    deploy(&store, &who, "qa", 4);
+    branch(&store, &who, 11, "qa", "qa-two");
+    branch(&store, &who, 12, "qa-two", "qa-three");
+    set(
+        &store,
+        &who,
+        "qa-two",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    keep_bases(&url);
+    seal_token(&store, &who, 5);
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    restore_bases(&url, 12);
+    assert_eq!(holding_of(&url, 12, "plain-private"), 2);
+
+    let sealed = token(&store, &who, "production", 2);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!({ "secret": sealed }))],
+    );
+    deploy(&store, &who, "production", 6);
+    assert_eq!(holding_of(&url, 12, "plain-private"), 0);
 }

@@ -982,8 +982,42 @@ pub(crate) fn empty_sealed_below(
     if rows.is_empty() {
         return Ok(());
     }
-    let held = held(tx, environment, rows, before)?;
-    empty_below(tx, environment, &held)
+    let below = below(tx, environment)?;
+    let mut sealed = held(tx, environment, rows, before, Took::Sealer)?;
+    // A Branch that took the seal held what it shares below as the sealer did:
+    // its own write emptied that, but not one before Ployz 0.3.15.
+    for branch in &below {
+        for (row, fingerprints) in held(tx, branch, rows, None, Took::Seal)? {
+            sealed.entry(row).or_default().extend(fingerprints);
+        }
+    }
+    empty_below(tx, &below, &sealed)
+}
+
+/// Each Environment below `environment`, Parents before their Branches.
+fn below(tx: &mut dyn Tx, environment: &str) -> Result<Vec<String>, RpcError> {
+    let mut below = Vec::new();
+    let mut next = std::collections::VecDeque::from([environment.to_owned()]);
+    while let Some(parent) = next.pop_front() {
+        for row in tx.query(
+            "SELECT environment_id FROM config_environment_branch WHERE parent_id = ?1",
+            &[parent.as_str().into()],
+        )? {
+            let branch = row.text(0)?.to_owned();
+            next.push_back(branch.clone());
+            below.push(branch);
+        }
+    }
+    Ok(below)
+}
+
+/// Which of `rows` an Environment's fingerprints count for in [`held`].
+#[derive(Clone, Copy)]
+enum Took {
+    /// The sealer: each row but one it holds plain now.
+    Sealer,
+    /// A Branch below it: each row it holds sealed now.
+    Seal,
 }
 
 /// Each fingerprint `environment` held for `rows`: in what its Working State held
@@ -995,6 +1029,7 @@ fn held(
     environment: &str,
     rows: &BTreeSet<(String, String)>,
     before: Option<&SavedEnvironmentIntent>,
+    took: Took,
 ) -> Result<review::sealed::Held, RpcError> {
     // A row it holds plain now was added again since: the seal was another
     // variable's, whose copies History alone reads as sealed.
@@ -1009,12 +1044,16 @@ fn held(
     let rows: BTreeSet<(String, String)> = rows
         .iter()
         .filter(|(lineage, key)| {
-            !working
+            let mut now = working
                 .services
                 .iter()
                 .filter(|service| service.lineage_id == *lineage)
                 .flat_map(|service| &service.variables)
-                .any(|variable| variable.key == *key && !review::sealed::sealed(&variable.value))
+                .filter(|variable| variable.key == *key);
+            match took {
+                Took::Sealer => !now.any(|variable| !review::sealed::sealed(&variable.value)),
+                Took::Seal => now.any(|variable| review::sealed::sealed(&variable.value)),
+            }
         })
         .cloned()
         .collect();
@@ -1051,25 +1090,13 @@ fn held(
 /// [`empty_sealed_below`] by the fingerprints in `held`.
 fn empty_below(
     tx: &mut dyn Tx,
-    environment: &str,
+    below: &[String],
     held: &review::sealed::Held,
 ) -> Result<(), RpcError> {
     if held.is_empty() {
         return Ok(());
     }
-    let mut below = Vec::new();
-    let mut next = vec![environment.to_owned()];
-    while let Some(parent) = next.pop() {
-        for row in tx.query(
-            "SELECT environment_id FROM config_environment_branch WHERE parent_id = ?1",
-            &[parent.as_str().into()],
-        )? {
-            let branch = row.text(0)?.to_owned();
-            next.push(branch.clone());
-            below.push(branch);
-        }
-    }
-    for branch in &below {
+    for branch in below {
         let branch = branch.as_str();
         for row in tx.query(
             "SELECT made_with FROM config_environment_branch WHERE environment_id = ?1",
@@ -1090,7 +1117,7 @@ fn empty_below(
         }
     }
     // Arrivals before bases, the order Discard and Sync lock them in.
-    for branch in &below {
+    for branch in below {
         let branch = branch.as_str();
         for row in tx.query(
             "SELECT environment_id, other_id, lineage, at, value, source, prior \
@@ -1136,7 +1163,7 @@ fn empty_below(
             }
         }
     }
-    for branch in &below {
+    for branch in below {
         let branch = branch.as_str();
         for row in tx.query(
             "SELECT environment_id, other_id, base FROM config_sync_base \
