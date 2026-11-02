@@ -444,10 +444,9 @@ where
 }
 
 /// Cloud took the Organization's founding for this Server as it is, and `--reset` gives
-/// it a new identity, so a reset alone would wait on that founding. Cloud's reset can't
-/// release a founding that never published (#3743); forgetting the Servers can, once it
-/// stops counting as joining.
-const FOUNDING_HELD: &str = "Cloud now holds your Organization's founding for this Server as it is, and --reset gives it a new identity, so a --reset rerun would wait on it. After 10 minutes, where you're signed in, run `ployz server forget --confirm <your organization's slug>` to drop it, then make a new token with `ployz server add --command --reset` and run the line it prints on this Server.";
+/// it a new identity, so a reset alone would wait on that founding until Cloud's reset
+/// gives it up, or forgetting the Servers does when that reset can't.
+const FOUNDING_HELD: &str = "Cloud now holds your Organization's founding for this Server as it is, and --reset gives it a new identity, so a --reset rerun would wait on it. Where you're signed in, run `ployz cloud reset --yes` to give it up (if that says to use Forget Servers, run `ployz server forget --confirm <your organization's slug>` instead), then make a new token with `ployz server add --command --reset` and run the line it prints on this Server.";
 
 enum FounderLocalState {
     Initialize,
