@@ -136,6 +136,10 @@ pub(crate) fn history(
 ) -> Result<HistoryView, RpcError> {
     let mut environment = scope::environment(tx, who, &query.environment)?;
     let scrub = review::Scrub::load(tx, &environment.summary.id)?;
+    // What an Environment above sealed since reads as Sealed here too, as in a review
+    // (#3756). The loop below reuses `environment` for each revision.
+    let (id, working) = (environment.summary.id.clone(), environment.working.clone());
+    let mut since = review::sealed::SealedSince::above(&id, &working);
     let limit = query.limit.unwrap_or(HISTORY_PAGE).max(1);
     // One extra row is the oldest shown revision's predecessor, and says more exist.
     let mut rows = tx.query(
@@ -155,6 +159,7 @@ pub(crate) fn history(
         let revision = Revision(row.number(0, "revision")?);
         let mut intent = row.intent(1, "Saved State")?;
         scrub.apply(revision, &mut intent);
+        since.hide(tx, &mut intent)?;
         if index >= first {
             environment.working = intent.clone();
             // The first revision is what it created, against an empty Environment.
@@ -332,6 +337,11 @@ fn snapshot(
         })?
         .intent(0, "Saved State")?;
     scrub.apply(revision, &mut intent);
+    // A value an Environment above sealed since reads Sealed, as History shows it
+    // (#3756). Its fingerprint stays, so Undo still sees each change to it, and
+    // `keep_sealed` brings it back Not set, never plain.
+    review::sealed::SealedSince::above(&environment.summary.id, &environment.working)
+        .hide(tx, &mut intent)?;
     Ok(intent)
 }
 
