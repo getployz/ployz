@@ -25,7 +25,8 @@ pub(crate) fn command(command: Command) -> Command {
          Without a Server, forget every Server of the Organization when they were \
          deleted. Cloud tries each Server first, waiting up to ten seconds for it, and \
          refuses while any answers. Projects, settings and Deployment history stay; \
-         Volume data on these Servers can't be recovered. The next ployz server add \
+         Volume data on these Servers can't be recovered, and the Organization's \
+         enrollment tokens are deleted. The next ployz server add \
          starts over, and Environments with a saved or deployed revision deploy to it. Type the Organization's \
          slug with --confirm.\n\n\
          A human approves it in Ployz Cloud first.\n\n\
@@ -143,8 +144,8 @@ async fn unanswered(
             RpcErrorCode::ConfirmationRequired,
             format!(
                 "Server {} did not answer and is the last Server: forgetting it lets go of the \
-                 Cluster, and the data of its Volumes ({}) can't be recovered. It needs dead \
-                 typed. No changes made.",
+                 Cluster and deletes the Organization's enrollment tokens, and the data of its \
+                 Volumes ({}) can't be recovered. It needs dead typed. No changes made.",
                 server.name,
                 volumes(&check),
             ),
@@ -189,6 +190,10 @@ fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
             "Volume data they held can't be recovered: {}.",
             volumes(check)
         ));
+        crate::ui::stream(format_args!(
+            "Cloud deleted the Organization's enrollment tokens with them, so make a new one \
+             for each Server you add: ployz server add --command."
+        ));
         if !forgotten.cancelled.is_empty() {
             crate::ui::stream(format_args!(
                 "Cancelled {} Deployment(s) that might still have run.",
@@ -208,7 +213,7 @@ fn unconfirmed(check: &ForgetCheck) -> Error {
         RpcErrorCode::ConfirmationRequired,
         format!(
             "Forgetting the Servers of Organization {slug} ({}) loses the data of its Volumes \
-             ({}); this can't be undone. No changes made.",
+             ({}) and deletes its enrollment tokens; this can't be undone. No changes made.",
             server_names(check),
             volumes(check),
         ),
