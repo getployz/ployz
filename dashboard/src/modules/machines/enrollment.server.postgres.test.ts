@@ -106,7 +106,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     beforeRegister: async (_assignment: EnrollmentAssignment) => {},
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
-  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, managementClients: ["cloud"] };
+  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, managementClients: ["cloud"], revocable: false };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
@@ -121,6 +121,11 @@ function fakeSession(database: PostgresTestHarness["database"]) {
       inspect: async () => {
         const [entry] = options.connections;
         return { id: entry && "machine_id" in entry ? entry.machine_id : "", management_clients: cluster.managementClients };
+      },
+      setPushTarget: async () => {},
+      clearManagementClient: async (label: string) => {
+        if (!cluster.revocable) throw new Error("Revocation unanswered");
+        cluster.managementClients = cluster.managementClients.filter((held) => held !== label);
       },
       register: async (assignment: EnrollmentAssignment) => {
         registerCalls += 1;
@@ -939,6 +944,8 @@ describe("organization enrollment coordinator", () => {
         organizationId, pairing: attempt.pairingCredential,
         identity: registerRequestFromEnrollmentIdentity(identity(2)), snapshot,
       }));
+      // It joined some other way: the Organization's own allocation holds no claim to it.
+      await harness.pool.query("delete from enrollment_allocation");
       return reserved.machine;
     }
     const dialRows = async () => (await harness.pool.query("select machine_id from organization_machine")).rows;
@@ -964,7 +971,7 @@ describe("organization enrollment coordinator", () => {
       expect(await dialRows()).toEqual([]);
     });
 
-    it("refuses completion once another Machine is in the Cluster, and keeps no connection into it", async () => {
+    it("refuses completion once another Machine is in the Cluster, keeping the credential reset revokes", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);
       expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
@@ -972,7 +979,25 @@ describe("organization enrollment coordinator", () => {
       expect(await fake.coordinator.completeFounding(attempt))
         .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
       expect(await founderRow()).toEqual([{ founder_machine_id: null }]);
-      expect(await dialRows()).toEqual([]);
+      expect(await dialRows()).toEqual([{ machine_id: attempt.machineId }]);
+      fake.cluster.revocable = true;
+      expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    });
+
+    it("accepts a completion that raced the one committing the founder, once the Cluster grew", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let holding = true;
+      fake.connection.beforeConnect = async () => { if (holding) { holding = false; await held; } };
+      const late = fake.coordinator.completeFounding(attempt);
+      await vi.waitFor(() => expect(holding).toBe(false));
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+      fake.cluster.managementClients = ["cloud", "cli-user"];
+      release();
+      expect(await late).toMatchObject({ success: { machineId: attempt.machineId } });
     });
 
     it("founds a Cluster whose only Machine is the founder, holding only Cloud's management client", async () => {

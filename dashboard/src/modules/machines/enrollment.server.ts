@@ -793,23 +793,6 @@ const requireFreshCluster = Effect.fn("MachineEnrollment.requireFreshCluster")(f
   }
 });
 
-/** Cloud keeps no connection into a Cluster its founder couldn't start. */
-const dropUnfoundedConnection = Effect.fn("MachineEnrollment.dropUnfoundedConnection")(function* (
-  organizationId: string, machineId: MachineId,
-) {
-  const database = yield* Database;
-  yield* database.transaction(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const [pairing] = yield* drizzle.select(organizationPairingProjection).from(schemaOrganizationPairing)
-      .where(eq(schemaOrganizationPairing.organizationId, organizationId)).for("update");
-    if (!pairing || !isFounding(pairing, machineId)) return;
-    yield* drizzle.delete(organizationMachine).where(and(
-      eq(organizationMachine.organizationId, organizationId),
-      eq(organizationMachine.machineId, machineId),
-    ));
-  }));
-});
-
 /** `machineId` enrolled in this attempt under the WireGuard key that claimed the token. */
 const requireEnrollmentMachine = Effect.fn("MachineEnrollment.requireMachine")(function* (
   organizationId: string, pairing: PairingRow, secret: string, machineId: MachineId, claimedPublicKey: string,
@@ -970,9 +953,16 @@ export const completeMachineEnrollment = Effect.fn(
       }
       if (opened.status !== "connected") return yield* cantReachServer(opened);
       if (isFounding(row, machineId)) {
-        yield* requireFreshCluster(opened.connected, machineId).pipe(Effect.tapError((error) => error instanceof Conflict
-          ? dropUnfoundedConnection(token.organizationId, machineId)
-          : Effect.void));
+        // A racing completion may have committed this founder since `row` was read; its Cluster may grow from then on.
+        yield* requireFreshCluster(opened.connected, machineId).pipe(Effect.catchIf(
+          (error) => error instanceof Conflict,
+          (error) => Effect.gen(function* () {
+            const [current] = yield* loadPairingRow(token.organizationId);
+            const committed = current !== undefined && current.founderMachineId === machineId && current.removalStartedAt === null
+              && isDeepStrictEqual(current.encryptedPairingSecret, row.encryptedPairingSecret);
+            if (!committed) return yield* error;
+          }),
+        ));
       }
     })).pipe(
       Effect.catchIf((error) => error instanceof ClusterOutOfTime, (error) => Effect.fail(cantReachServer(error))),
