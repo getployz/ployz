@@ -2348,13 +2348,17 @@ describe("organization enrollment coordinator", () => {
       const fake = fakeSession(harness.database);
       const { attempt, assignment } = await registeredJoiner(fake);
       fake.cluster.snapshot = joinedSnapshot(assignment);
-      let askedOrganization = () => {};
-      const organizationAsked = new Promise<void>((resolve) => { askedOrganization = resolve; });
+      const dialed = new Map<string, () => void>();
+      const started = (management: string) => new Promise<void>((resolve) => { dialed.set(management, resolve); });
+      const organizationDialed = started(capability);
+      const serverDialed = started(joinerCapability);
       fake.connection.beforeConnect = async (options) => {
         const [entry] = options.connections;
-        if (entry && "management" in entry && entry.management === capability) askedOrganization();
-        // The Server answers only once Cloud is asking the Organization too, so asking one after the other runs out of time.
-        if (entry && "management" in entry && entry.management === joinerCapability) await organizationAsked;
+        if (!entry || !("management" in entry)) return;
+        dialed.get(entry.management)?.();
+        // Each answers only once Cloud is dialing the other too, so asking one after the other runs out of time.
+        if (entry.management === capability) await serverDialed;
+        if (entry.management === joinerCapability) await organizationDialed;
       };
       expect(await fake.coordinator.publish(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
     });

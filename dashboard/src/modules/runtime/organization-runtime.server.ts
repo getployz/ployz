@@ -315,9 +315,10 @@ export function makeOrganizationRuntimeLayer(
           const noConnection = { status: "no_connection" as const };
           return yield* Effect.gen(function* () {
             // Taken before loading, so a change committed while loading is still seen.
-            // Uninterruptible for the same reason as the watcher: the cancel race below can interrupt it.
+            // Both queries are uninterruptible for the same reason as the watcher: the cancel race below, or a caller
+            // abandoning the open, can interrupt them.
             const cursor = yield* Effect.uninterruptible(pairingChanges.current);
-            const access = yield* loadConnections(organizationId);
+            const access = yield* Effect.uninterruptible(loadConnections(organizationId));
             if (session.closed || access.kind === "missing") return noConnection;
             session.generation = access.generation;
             if (session.removed.has(access.generation)) {
