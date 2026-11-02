@@ -75,6 +75,11 @@ async function seedClusterKeys(client: Client) {
       ($3, $8, $9, '2026-01-15T00:00:00Z')`,
     [first, second, third, "a".repeat(64), "b".repeat(64), key("K"), "c".repeat(64), "d".repeat(64), key("L")],
   );
+  // Second kept M after forgetting its Servers, so no pairing records it.
+  await client.query(
+    `insert into organization_sealing_key (organization_id, public_key, created_at) values ($1, $2, '2026-01-20T00:00:00Z')`,
+    [second, key("M")],
+  );
 }
 
 describe("Sealing Key owner migration", () => {
@@ -86,16 +91,23 @@ describe("Sealing Key owner migration", () => {
       await migrate(database.url, migrations);
       await withClient(database.url, async (client) => {
         const owners = await client.query(`select public_key, organization_id from sealing_key_owner order by public_key`);
-        expect(owners.rows).toEqual([{ public_key: key("K"), organization_id: first }, { public_key: key("L"), organization_id: third }]);
+        expect(owners.rows).toEqual([
+          { public_key: key("K"), organization_id: first },
+          { public_key: key("L"), organization_id: third },
+          { public_key: key("M"), organization_id: second },
+        ]);
         expect((await client.query(`select count(*)::int as count from cluster_sealing_key`)).rows).toEqual([{ count: 4 }]);
 
-        const warnings: string[] = [];
-        client.on("notice", (notice) => warnings.push(notice.message ?? ""));
+        const warnings: { message?: string; hint?: string }[] = [];
+        client.on("notice", (notice) => warnings.push({ message: notice.message, hint: notice.hint }));
         const sql = readFileSync(join(migrations, migration, "migration.sql"), "utf8");
         const report = sql.split("--> statement-breakpoint").find((part) => part.includes("RAISE WARNING"));
         if (report === undefined) throw new Error("the migration lost its report");
         await client.query(report);
-        expect(warnings).toEqual([expect.stringContaining("1 Sealing public key(s) are recorded for more than one Organization")]);
+        expect(warnings).toEqual([{
+          message: expect.stringContaining("1 Sealing public key(s) are recorded for more than one Organization"),
+          hint: expect.stringContaining("List them with"),
+        }]);
       });
     } finally {
       await database.drop();

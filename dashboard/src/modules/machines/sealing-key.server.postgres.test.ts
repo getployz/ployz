@@ -94,6 +94,33 @@ describe("the Organization's Sealing Key", () => {
       expect((await harness.pool.query("select 1 from organization_sealing_key where organization_id = $1", [other])).rows).toEqual([]);
     });
 
+    it("keeps recording a key for an Organization that recorded it before another owned it", async () => {
+      await harness.pool.query("insert into sealing_key_owner (public_key, organization_id) values ($1, $2)", [sealingKey("A"), organizationId]);
+      await harness.pool.query(
+        "insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1, $2, $3)", [other, clusterA, sealingKey("A")],
+      );
+      await run(recordSealingPublicKey(other, clusterA, sealingKey("A")));
+      await run(recordSealingPublicKey(other, clusterB, sealingKey("A")));
+
+      expect(await clusterKeys()).toEqual([{ organization_id: other, cluster_key: clusterA }, { organization_id: other, cluster_key: clusterB }]);
+      expect(await owner()).toEqual([{ organization_id: organizationId }]);
+    });
+
+    it("lets an Organization that kept its key after forgetting its Servers record it again", async () => {
+      await harness.pool.query("insert into sealing_key_owner (public_key, organization_id) values ($1, $2)", [sealingKey("A"), other]);
+      await store(sealingKey("A"), backup(2));
+      await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("A")));
+
+      expect(await clusterKeys()).toEqual([{ organization_id: organizationId, cluster_key: clusterB }]);
+    });
+
+    it("takes no key a pairing that already records another doesn't record", async () => {
+      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
+      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("B")));
+
+      expect((await harness.pool.query("select public_key from sealing_key_owner")).rows).toEqual([{ public_key: sealingKey("A") }]);
+    });
+
     it("gives a key two Organizations report at once to exactly one of them", async () => {
       const results = await Promise.allSettled([
         run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A"))),
