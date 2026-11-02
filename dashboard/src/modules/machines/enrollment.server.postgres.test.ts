@@ -2334,6 +2334,21 @@ describe("organization enrollment coordinator", () => {
       expect(await dialRows()).toHaveLength(1);
     });
 
+    it("asks the Organization's Cluster while the Server's own connection still opens", async () => {
+      const fake = fakeSession(harness.database);
+      const { attempt, assignment } = await registeredJoiner(fake);
+      fake.cluster.snapshot = joinedSnapshot(assignment);
+      let askedOrganization = () => {};
+      const organizationAsked = new Promise<void>((resolve) => { askedOrganization = resolve; });
+      fake.connection.beforeConnect = async (options) => {
+        const [entry] = options.connections;
+        if (entry && "management" in entry && entry.management === capability) askedOrganization();
+        // The Server answers only once Cloud is asking the Organization too, so asking one after the other runs out of time.
+        if (entry && "management" in entry && entry.management === joinerCapability) await organizationAsked;
+      };
+      expect(await fake.coordinator.publish(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+    });
+
     it("waits while the Organization's Cluster can't be asked", async () => {
       const fake = fakeSession(harness.database);
       const { attempt, assignment } = await registeredJoiner(fake);

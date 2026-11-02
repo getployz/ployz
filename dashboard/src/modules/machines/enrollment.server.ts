@@ -991,19 +991,21 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       // Shared negotiation confirms the intended Machine; no row lock spans the network call. Cloud times the connect
       // itself, since the SDK's own deadline fails like any cancellation.
       return yield* Effect.scoped(Effect.gen(function* () {
-        const session = yield* (yield* Ployz).connect({
+        const connect = (yield* Ployz).connect({
           connections: [{ machine_id: input.machineId, management: input.capability }],
         }, { closeWithin: clusterRead }).pipe(Effect.timeout(SERVER_REACH_TIMEOUT_MS), Effect.mapError(unlessAnswered));
         if (!verify.founding) {
           // Cloud dials an Organization through any Server it holds a connection for, so the Organization's own Cluster
-          // must have seen this one join before Cloud keeps its connection.
-          const observed = yield* observeClusterEnrollment(token.organizationId);
+          // must have seen this one join before Cloud keeps its connection. Both are asked at once, so the two deadlines
+          // overlap inside the CLI's request.
+          const [, observed] = yield* Effect.all([connect, observeClusterEnrollment(token.organizationId)], { concurrency: "unbounded" });
           if (observed.kind === "no_connection") return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
           if (observed.kind === "unreachable") return yield* notJoinedYet();
           if (!joinedOrganizationCluster(observed.snapshot, input.machineId, token.claimedPublicKey)) return yield* notJoinedYet();
           yield* publish(saving);
           return false;
         }
+        const session = yield* connect;
         const connected = verify.iv !== undefined;
         // The first read may have activated this credential before a later one failed: a refresh keeps the one that works,
         // as main saved a refresh once negotiated. A first publication saves nothing whose Cluster it didn't see.
