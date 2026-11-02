@@ -27,6 +27,7 @@ import {
   reserveEnrollmentAssignment,
   hashEnrollmentToken,
   mintCliMachineEnrollment,
+  CLUSTER_NOT_FRESH,
   CLUSTER_UNREACHABLE,
   mintMachineEnrollment,
   readMachineEnrollment,
@@ -103,9 +104,10 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     closeHangs: false,
     beforeConnect: async (_options: ConnectOptions) => {},
     beforeRegister: async (_assignment: EnrollmentAssignment) => {},
+    beforeObserve: async () => {},
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
-  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot };
+  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined, accepted: undefined as string | undefined };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
@@ -116,7 +118,22 @@ function fakeSession(database: PostgresTestHarness["database"]) {
         closed += 1;
         return connection.closeHangs ? new Promise<void>(() => {}) : Promise.resolve();
       },
-      observeEnrollment: async () => { observations += 1; return cluster.snapshot; },
+      observeEnrollment: async () => {
+        observations += 1;
+        await connection.beforeObserve();
+        return cluster.snapshot;
+      },
+      inspect: async () => {
+        const [entry] = options.connections;
+        // An operational RPC activates the credential it came in on, as the daemon does.
+        if (entry && "management" in entry) cluster.accepted = entry.management;
+        return { id: cluster.inspectedId ?? (entry && "machine_id" in entry ? entry.machine_id : ""), management_clients: cluster.managementClients };
+      },
+      setPushTarget: async () => {},
+      clearManagementClient: async (label: string) => {
+        if (!cluster.revocable) throw new Error("Revocation unanswered");
+        cluster.managementClients = cluster.managementClients.filter((held) => held !== label);
+      },
       register: async (assignment: EnrollmentAssignment) => {
         registerCalls += 1;
         published.push(assignment);
@@ -176,8 +193,9 @@ function enrollmentTestClient(
     inngest,
     disable: (id = organizationId) => runtime.runPromise(disableOrganizationPairing(id)),
     dropRemoved: (input: Parameters<typeof dropRemovedServer>[0]) => runtime.runPromise(dropRemovedServer(input)),
-    publish: (input: Parameters<typeof publishMachineEnrollment>[0]) => runtime.runPromise(
-      Effect.result(publishMachineEnrollment(input)),
+    /** `signal` aborts the publication as the callback route's request would. */
+    publish: (input: Parameters<typeof publishMachineEnrollment>[0], signal?: AbortSignal) => runtime.runPromise(
+      Effect.result(publishMachineEnrollment(input)), { signal },
     ),
     reject: (id: string) => runtime.runPromise(rejectWaitingServers({ userId }, { organizationSlug: "enroll", ids: [id] })),
     checkin: (input: Parameters<typeof checkIn>[0]) => runtime.runPromise(checkIn(input)),
@@ -511,7 +529,7 @@ describe("organization enrollment coordinator", () => {
     const failed = await fake.coordinator.enroll({ token: (tokens[1] ?? ""), identity: identity(1) });
     expect(failed).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
     expect(fake.registerCalls()).toBe(1);
-    expect(fake.closed()).toBe(2);
+    expect(fake.closed()).toBe(3);
     const saved = await harness.pool.query("select assignments from enrollment_allocation");
     expect(saved.rows[0].assignments).toEqual(fake.published);
     fake.fail.publish = false;
@@ -587,14 +605,14 @@ describe("organization enrollment coordinator", () => {
     fake.fail.publish = true;
     expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) }))
       .toMatchObject({ failure: { _tag: "PloyzProviderError" } });
-    expect(fake.connected).toHaveLength(2);
+    expect(fake.connected).toHaveLength(3);
     expect(fake.connected.at(-1)).toMatchObject({ connections: [
       { management: capability, machine_id: attempt.machineId },
       { management: "ployz1:other-entry", machine_id: identity(3).machineId },
     ] });
-    expect(fake.observations()).toBe(1);
+    expect(fake.observations()).toBe(3);
     expect(fake.registerCalls()).toBe(1);
-    expect(fake.closed()).toBe(2);
+    expect(fake.closed()).toBe(3);
   });
 
   async function pendingFounder(fake: ReturnType<typeof fakeSession>, token = tokens[0] ?? "") {
@@ -802,12 +820,12 @@ describe("organization enrollment coordinator", () => {
     expect((await harness.pool.query("select founder_machine_id, founder_claim_machine_id from organization_pairing")).rows).toEqual([
       { founder_machine_id: null, founder_claim_machine_id: attempt.machineId },
     ]);
-    expect(fake.connected).toEqual([]);
-    expect(fake.observations()).toBe(0);
+    expect(fake.connected).toEqual([expect.objectContaining({ connections: [{ management: capability, machine_id: attempt.machineId }] })]);
+    expect(fake.observations()).toBe(1);
     expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
-    expect(fake.connected).toEqual([expect.objectContaining({ connections: [{ management: capability, machine_id: attempt.machineId, name: "node-0" }] })]);
-    expect(fake.closed()).toBe(1);
-    expect(fake.observations()).toBe(0);
+    expect(fake.connected).toEqual([expect.objectContaining({ connections: [{ management: capability, machine_id: attempt.machineId }] }), expect.objectContaining({ connections: [{ management: capability, machine_id: attempt.machineId, name: "node-0" }] })]);
+    expect(fake.closed()).toBe(2);
+    expect(fake.observations()).toBe(2);
     expect(await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(0) })).toMatchObject({ success: { kind: "initialize", resumed: true } });
     expect(await fake.coordinator.tryRevokePairing(organizationId)).toBe(false);
     expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ failure: { _tag: "Conflict" } });
@@ -927,6 +945,223 @@ describe("organization enrollment coordinator", () => {
     expect(requests()).toBe(2);
   });
 
+  describe("a founder's Cluster", () => {
+    /** A Machine of the Cluster other than the founder. */
+    async function otherMachine(attempt: { pairingCredential: string }) {
+      const reserved = await harness.runEffect(reserveEnrollmentAssignment({
+        organizationId, pairing: attempt.pairingCredential,
+        identity: registerRequestFromEnrollmentIdentity(identity(2)), snapshot,
+      }));
+      // It joined some other way: the Organization's own allocation holds no claim to it.
+      await harness.pool.query("delete from enrollment_allocation");
+      return reserved.machine;
+    }
+    const dialRows = async () => (await harness.pool.query("select machine_id from organization_machine")).rows;
+    const founderRow = async () => (await harness.pool.query("select founder_machine_id from organization_pairing")).rows;
+
+    /** A refused first publication leaves the Organization free to start over: a new token founds another Server. */
+    async function expectReleased(fake: ReturnType<typeof fakeSession>, attempt: Awaited<ReturnType<typeof pendingFounder>>) {
+      expect(await dialRows()).toEqual([]);
+      expect(await founderRow()).toEqual([]);
+      expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) })).toMatchObject({ failure: { _tag: "Unauthorized" } });
+      expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) }))
+        .toMatchObject({ success: { kind: "initialize", resumed: false } });
+    }
+
+    it("refuses publication while the Cluster has other Machines, and lets go of the attempt", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      fake.cluster.snapshot = { ...snapshot, machines: [await otherMachine(attempt)] };
+      expect(await fake.coordinator.publish({ ...attempt, capability }))
+        .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+      await expectReleased(fake, attempt);
+    });
+
+    it.each([["laptop"], ["cli-other-organization"], ["device-other-organization"]])(
+      "refuses a first publication while the Server holds a %s management client", async (label) => {
+        const fake = fakeSession(harness.database);
+        const attempt = await pendingFounder(fake);
+        fake.cluster.managementClients = ["cloud", label];
+        expect(await fake.coordinator.publish({ ...attempt, capability }))
+          .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+        expect(fake.cluster.managementClients).toEqual(["cloud", label]);
+        await expectReleased(fake, attempt);
+      },
+    );
+
+    it("refuses a Server that answers as another Machine", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      fake.cluster.inspectedId = identity(2).machineId;
+      expect(await fake.coordinator.publish({ ...attempt, capability }))
+        .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+      expect(await dialRows()).toEqual([]);
+    });
+
+    it("refuses a refreshed publication once the Cluster grew, keeping the working credential for reset", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      fake.cluster.snapshot = { ...snapshot, machines: [await otherMachine(attempt)] };
+      expect(await fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" }))
+        .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+      const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
+      expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual(["ployz1:rotated"]);
+      fake.cluster.revocable = true;
+      expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    });
+
+    /** Holds the next connection until the returned release, and resolves `held` once it waits. */
+    function holdNextConnection(fake: ReturnType<typeof fakeSession>) {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const state = { held: false };
+      fake.connection.beforeConnect = async () => {
+        if (state.held) return;
+        state.held = true;
+        await gate;
+      };
+      return { release, waiting: () => vi.waitFor(() => expect(state.held).toBe(true)) };
+    }
+
+    it("takes one Machine's publications in turn, none waiting, saving the credential its Server accepted last", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      const hold = holdNextConnection(fake);
+      const first = fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x01) });
+      await hold.waiting();
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) })).toMatchObject({ failure: { _tag: "Unavailable" } });
+      hold.release();
+      expect(await first).toMatchObject({ success: { machineId: attempt.machineId } });
+      // The CLI retries the 503.
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) })).toMatchObject({ success: { machineId: attempt.machineId } });
+      const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
+      expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([fake.cluster.accepted]);
+      expect(fake.cluster.accepted).toBe(keyed(0xab, 0x02));
+      expect((await harness.pool.query("select founder_publication from organization_pairing")).rows).toEqual([{ founder_publication: null }]);
+    });
+
+    it("saves the credential a founder's reads activated even when its request is cancelled", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x01) })).toMatchObject({ success: { machineId: attempt.machineId } });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let observing = false;
+      fake.connection.beforeObserve = async () => { observing = true; await gate; };
+      const request = new AbortController();
+      const rotated = fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) }, request.signal).catch(() => undefined);
+      await vi.waitFor(() => expect(observing).toBe(true));
+      expect(fake.cluster.accepted).toBe(keyed(0xab, 0x02));
+      request.abort();
+      release();
+      await rotated;
+      await vi.waitFor(async () => {
+        const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
+        expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([keyed(0xab, 0x02)]);
+      });
+      await vi.waitFor(async () => {
+        expect((await harness.pool.query("select founder_publication from organization_pairing")).rows).toEqual([{ founder_publication: null }]);
+      });
+    });
+
+    it("keeps the credential a refresh's first read activated when a later read fails", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x01) })).toMatchObject({ success: { machineId: attempt.machineId } });
+      fake.connection.beforeObserve = () => new Promise(() => {});
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) })).toMatchObject({ failure: { _tag: "Unavailable" } });
+      expect(fake.cluster.accepted).toBe(keyed(0xab, 0x02));
+      const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
+      expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([keyed(0xab, 0x02)]);
+    });
+
+    it("takes the turn of a publication that never finished once it lapses", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await harness.pool.query("update organization_pairing set founder_publication=gen_random_uuid(), founder_publication_until=now()+interval '1 minute'");
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ failure: { _tag: "Unavailable" } });
+      await harness.pool.query("update organization_pairing set founder_publication_until=now()-interval '1 second'");
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect((await harness.pool.query("select founder_publication from organization_pairing")).rows).toEqual([{ founder_publication: null }]);
+    });
+
+    it("lets another Organization's founder publish while one Organization's founder verifies", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      const otherId = "00000000-0000-4000-8000-000000000403";
+      const otherToken = "pmet_other_organization";
+      await harness.pool.query("insert into organization(id,name,slug) values($1,'Other','other')", [otherId]);
+      await harness.pool.query("insert into machine_enrollment_token(organization_id,created_by_user_id,token_hash,expires_at) values($1,$2,$3,now()+interval '1 day')", [otherId, userId, hashEnrollmentToken(otherToken)]);
+      const other = await fake.coordinator.enroll({ token: otherToken, identity: identity(1) });
+      if (Result.isFailure(other) || other.success.kind !== "initialize") throw new Error("Other founder missing");
+      const hold = holdNextConnection(fake);
+      const held = fake.coordinator.publish({ ...attempt, capability });
+      await hold.waiting();
+      expect(await fake.coordinator.publish({ token: otherToken, machineId: identity(1).machineId, pairingCredential: other.success.pairing.secret, capability }))
+        .toMatchObject({ success: { machineId: identity(1).machineId } });
+      hold.release();
+      expect(await held).toMatchObject({ success: { machineId: attempt.machineId } });
+    });
+
+    it("counts the slots Cloud fills through its connection as Cloud's", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      fake.cluster.managementClients = ["cloud", "cli-signed-in", "device-approved"];
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect(await founderRow()).toEqual([{ founder_machine_id: attempt.machineId }]);
+    });
+
+    it("refuses completion once another Machine is in the Cluster, keeping the credential reset revokes", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
+      fake.cluster.snapshot = { ...snapshot, machines: [await otherMachine(attempt)] };
+      expect(await fake.coordinator.completeFounding(attempt))
+        .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+      expect(await founderRow()).toEqual([{ founder_machine_id: null }]);
+      expect(await dialRows()).toEqual([{ machine_id: attempt.machineId }]);
+      fake.cluster.revocable = true;
+      expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    });
+
+    it("accepts a completion that raced the one committing the founder, once the Cluster grew", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let holding = true;
+      fake.connection.beforeConnect = async () => { if (holding) { holding = false; await held; } };
+      const late = fake.coordinator.completeFounding(attempt);
+      await vi.waitFor(() => expect(holding).toBe(false));
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+      fake.cluster.managementClients = ["cloud", "laptop"];
+      release();
+      expect(await late).toMatchObject({ success: { machineId: attempt.machineId } });
+    });
+
+    it("founds a Cluster whose only Machine is the founder, holding only Cloud's management client", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      fake.cluster.snapshot = { ...snapshot, machines: [{ ...(await otherMachine(attempt)), id: attempt.machineId }] };
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect(await founderRow()).toEqual([{ founder_machine_id: attempt.machineId }]);
+    });
+
+    it("lets a founded Cluster grow: joins and a retried completion don't need it fresh", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await readyFounder(fake);
+      fake.cluster.managementClients = ["cloud", "laptop"];
+      fake.cluster.snapshot = { ...snapshot, machines: [await otherMachine(attempt)] };
+      expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect(await founderRow()).toEqual([{ founder_machine_id: attempt.machineId }]);
+    });
+  });
+
   it("refuses a refresh that hands Cloud a different management key", async () => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);
@@ -955,9 +1190,12 @@ describe("organization enrollment coordinator", () => {
     expect((await harness.pool.query("select * from organization_machine")).rows).toEqual(before.rows);
   });
 
+  // A founder's publications take turns instead ("takes one Machine's publications in turn"), so a joiner's refresh is overtaken.
   it.each(["new publication", "removal", "expired token"])("rejects a refresh overtaken by %s", async (change) => {
     const fake = fakeSession(harness.database);
-    const attempt = await pendingFounder(fake);
+    const founder = await readyFounder(fake);
+    expect(await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+    const attempt = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
     await fake.coordinator.publish({ ...attempt, capability });
     let entered = () => {};
     let release = () => {};
@@ -1129,7 +1367,7 @@ describe("organization enrollment coordinator", () => {
     expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "Conflict" } });
     expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ failure: { _tag: "Conflict" } });
     expect(await fake.coordinator.completeFounding({ ...attempt, pairingCredential: "ppair_replacement" })).toMatchObject({ failure: { _tag: "Conflict" } });
-    expect(fake.connected).toEqual([]);
+    expect(fake.connected).toHaveLength(2);
   });
 
   it.each(["connection timed out", "Machine identity mismatch"])("keeps the published claim pending after %s", async (message) => {
@@ -1143,7 +1381,7 @@ describe("organization enrollment coordinator", () => {
     expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) })).toMatchObject({ success: { kind: "not_yet" } });
     fake.connection.error = null;
     expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
-    expect(fake.observations()).toBe(0);
+    expect(fake.observations()).toBe(2);
   });
 
   it("accepts both exact completions racing the ready transaction", async () => {
@@ -1158,7 +1396,7 @@ describe("organization enrollment coordinator", () => {
     };
     const results = await Promise.all([fake.coordinator.completeFounding(attempt), fake.coordinator.completeFounding(attempt)]);
     expect(results.every(Result.isSuccess)).toBe(true);
-    expect(fake.closed()).toBe(2);
+    expect(fake.closed()).toBe(3);
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: attempt.machineId }]);
   });
 
@@ -1174,9 +1412,9 @@ describe("organization enrollment coordinator", () => {
     };
     expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) }))
       .toMatchObject({ failure: { _tag: "Conflict" } });
-    expect(fake.observations()).toBe(1);
+    expect(fake.observations()).toBe(3);
     expect(fake.registerCalls()).toBe(0);
-    expect(fake.closed()).toBe(2);
+    expect(fake.closed()).toBe(3);
     expect((await harness.pool.query("select * from enrollment_allocation")).rowCount).toBe(0);
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows)
       .toEqual([{ founder_machine_id: founder.machineId }]);
@@ -1192,7 +1430,7 @@ describe("organization enrollment coordinator", () => {
       ]);
     };
     expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "Conflict" } });
-    expect(fake.closed()).toBe(1);
+    expect(fake.closed()).toBe(2);
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
     await harness.pool.query("delete from organization_pairing where organization_id = $1", [organizationId]);
     expect(await fake.coordinator.connections()).toEqual({ kind: "missing" });
@@ -1446,7 +1684,7 @@ describe("organization enrollment coordinator", () => {
     expect(await pending).toMatchObject({ failure: { _tag: phase === "join" ? "Conflict" : "Unavailable" } });
     expect(aborted).toBe(true);
     expect(fake.registerCalls()).toBe(0);
-    expect(fake.observations()).toBe(0);
+    expect(fake.observations()).toBe(phase === "join" ? 2 : 1);
     expect(await fake.coordinator.open()).toEqual({ status: "no_connection" });
     expect((await harness.pool.query("select * from organization_machine")).rowCount).toBe(0);
     expect((await harness.pool.query("select * from enrollment_allocation")).rowCount).toBe(0);
@@ -1463,11 +1701,11 @@ describe("organization enrollment coordinator", () => {
     expect(await fake.coordinator.open()).toEqual({ status: "unreachable", error: null });
     await fake.coordinator.publish({ ...attempt, capability });
     expect(await fake.coordinator.open()).toMatchObject({ status: "connected" });
-    expect(fake.connected).toEqual([expect.objectContaining({ connections: [{ management: capability, machine_id: attempt.machineId, name: "node-0" }] })]);
-    expect(fake.closed()).toBe(1);
+    expect(fake.connected).toEqual([expect.objectContaining({ connections: [{ management: capability, machine_id: attempt.machineId }] }), expect.objectContaining({ connections: [{ management: capability, machine_id: attempt.machineId, name: "node-0" }] })]);
+    expect(fake.closed()).toBe(2);
     fake.connection.error = new Error("candidate unreachable");
     expect(await fake.coordinator.open()).toMatchObject({ status: "unreachable", error: { _tag: "PloyzProviderError" } });
-    expect(fake.observations()).toBe(0);
+    expect(fake.observations()).toBe(1);
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
   });
 

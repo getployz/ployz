@@ -13,7 +13,7 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
-import { Ployz, type PloyzProviderError, ployzVersion, RpcError } from "#/modules/runtime/ployz.server";
+import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, ployzVersion, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
@@ -368,6 +368,7 @@ const organizationPairingProjection = {
   founderMachineId: schemaOrganizationPairing.founderMachineId,
   removalStartedAt: schemaOrganizationPairing.removalStartedAt,
   createdAt: schemaOrganizationPairing.createdAt,
+  founderPublication: schemaOrganizationPairing.founderPublication,
 };
 
 const loadPairingRow = Effect.fn("MachineEnrollment.loadPairing")(
@@ -770,6 +771,93 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   },
 );
 
+/** `machineId` holds the Founding Claim and no founder is committed yet. */
+const isFounding = (pairing: PairingRow, machineId: MachineId) =>
+  pairing.founderMachineId === null && pairing.founderClaimMachineId === machineId;
+
+/** Cluster time for a founder's freshness reads, inside the CLI's 15s wait for a founding stage. */
+const FRESHNESS_CLUSTER_MS = 2_000;
+
+export const CLUSTER_NOT_FRESH = "This Server is already in a Cluster with other Servers, or something other than Ployz Cloud "
+  + "manages it. An Organization's first Server starts a new Cluster: run `ployz server add --command` for a new token, and "
+  + "add a Server that isn't in a Cluster.";
+
+const notFresh = () => new Conflict({ message: CLUSTER_NOT_FRESH, userFacing: true });
+
+/** A freshness read Cloud couldn't finish: an unanswered one says Cloud can't reach the Server, as its connect does. */
+const freshnessRead = <A>(read: Effect.Effect<A, PloyzSdkError>) => clusterRead(read).pipe(Effect.mapError((error) =>
+  error instanceof ClusterOutOfTime ? cantReachServer(error)
+    : error._tag === "PloyzProviderError" ? unlessAnswered(error) : error));
+
+/** What a founder's Server reports about its Cluster. Like any operational RPC, the reads activate the session's credential. */
+const readCluster = Effect.fn("MachineEnrollment.readCluster")(function* (session: PloyzSession) {
+  const details = yield* freshnessRead(session.inspect());
+  const snapshot = yield* freshnessRead(session.observeEnrollment());
+  return { details, snapshot };
+});
+
+/**
+ * Whether a founder's Cluster is new: the Server is its only Machine, and only Cloud manages it. Once Cloud holds a
+ * connection to the Server, the `cli-` and `device-` slots Cloud fills through it count as Cloud's too.
+ */
+const isFreshCluster = (
+  { details, snapshot }: Effect.Success<ReturnType<typeof readCluster>>, machineId: MachineId, connected: boolean,
+) => {
+  // A Server's own operator can approve a `device-` slot too; on a Server that is its Cluster's only Machine, that's theirs to do.
+  const cloudFilled = (label: string) => label === "cloud" || (connected && (label.startsWith("cli-") || label.startsWith("device-")));
+  return details.id === machineId
+    && details.management_clients.every(cloudFilled)
+    && snapshot.machines.every((machine) => machine.id === machineId);
+};
+
+/**
+ * Lets go of a founding attempt refused before Cloud held any connection into its Server: the Organization starts over
+ * with another Server, and the claimant's tokens stop working. Kept when the attempt moved on, or when Cloud holds a
+ * connection, which resetting the attempt revokes instead.
+ */
+const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(function* (
+  organizationId: string, machineId: MachineId, encryptedPairingSecret: EncryptedSecretValue,
+) {
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    yield* lockOrganizationEnrollment(organizationId);
+    const { drizzle } = yield* Database;
+    const [pairing] = yield* drizzle.select(organizationPairingProjection).from(schemaOrganizationPairing)
+      .where(eq(schemaOrganizationPairing.organizationId, organizationId)).for("update");
+    if (!pairing || pairing.removalStartedAt !== null || !isFounding(pairing, machineId)
+      || !isDeepStrictEqual(pairing.encryptedPairingSecret, encryptedPairingSecret)) return "moved" as const;
+    const [held] = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
+      .where(eq(organizationMachine.organizationId, organizationId)).limit(1);
+    if (held) return "connected" as const;
+    yield* drizzle.delete(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organizationId));
+    yield* drizzle.update(schemaMachineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: new Date() }).where(and(
+      eq(schemaMachineEnrollmentToken.organizationId, organizationId),
+      eq(schemaMachineEnrollmentToken.claimedMachineId, machineId),
+      isNull(schemaMachineEnrollmentToken.joinedMachineId),
+    ));
+    return "released" as const;
+  }));
+});
+
+/**
+ * How long a founder publication's turn lasts if it never finishes: past its connect, reads and close, which Cloud bounds
+ * well inside the CLI's 15s, so a turn lapses only for a publication that died or stalled. The save's fence keeps a
+ * stalled one from saving after another took over.
+ */
+const PUBLICATION_TURN_MS = 30_000;
+
+/** Ends founder publication `turn` if it is still the pairing's; a later turn or a released pairing stays as it is. */
+const endPublicationTurn = (organizationId: string, turn: string) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(schemaOrganizationPairing).set({ founderPublication: null, founderPublicationUntil: null }).where(and(
+    eq(schemaOrganizationPairing.organizationId, organizationId),
+    eq(schemaOrganizationPairing.founderPublication, turn),
+  ));
+});
+
+/** A founder publication that found another's turn running; the CLI retries a 503. */
+const publicationBusy = () => new Unavailable({ message: "Another enrollment step is verifying this Server. Retrying.", userFacing: true });
+
 /** `machineId` enrolled in this attempt under the WireGuard key that claimed the token. */
 const requireEnrollmentMachine = Effect.fn("MachineEnrollment.requireMachine")(function* (
   organizationId: string, pairing: PairingRow, secret: string, machineId: MachineId, claimedPublicKey: string,
@@ -801,7 +889,12 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
     const managementIdentity = managementIdentityOf(input.capability);
-    const publish = (expectedIv?: string) => database.transaction(Effect.gen(function* () {
+    /**
+     * `verified` once the Machine answered on this capability: the saved capability it replaces, if any, and the founder
+     * publication turn it verified in.
+     */
+    const publish = (verified?: { readonly iv: string | undefined; readonly turn: string | undefined }) => database.transaction(Effect.gen(function* () {
+      const expectedIv = verified?.iv;
       const { drizzle } = yield* Database;
       const [pairing] = yield* drizzle.select(organizationPairingProjection)
         .from(schemaOrganizationPairing)
@@ -815,12 +908,35 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         return yield* new Conflict({ message: "The founding attempt is no longer current." });
       }
       yield* requireEnrollmentMachine(token.organizationId, pairing, secret, input.machineId, token.claimedPublicKey);
+      if (verified?.turn !== undefined) {
+        // A turn that lapsed may have been taken since: whatever this one verified is no longer the newest.
+        if (pairing.founderPublication !== verified.turn) {
+          return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
+        }
+        yield* endPublicationTurn(token.organizationId, verified.turn);
+      }
       yield* renewJoinSlot(input.token);
       const scope = and(
         eq(organizationMachine.organizationId, token.organizationId),
         eq(organizationMachine.machineId, input.machineId),
       );
       const clusterKey = hashEnrollmentToken(secret);
+      const founding = isFounding(pairing, input.machineId);
+      // A founder's freshness reads activate its credential before Cloud saves it, so its publications take turns, none
+      // waiting: the last to activate a credential is the last to save one.
+      const verification = (iv: string | undefined) => Effect.gen(function* () {
+        if (!founding) return { iv, founding, encryptedPairingSecret: pairing.encryptedPairingSecret, turn: undefined };
+        const turn = crypto.randomUUID();
+        const [taken] = yield* drizzle.update(schemaOrganizationPairing).set({
+          founderPublication: turn,
+          founderPublicationUntil: sql`clock_timestamp() + ${PUBLICATION_TURN_MS} * interval '1 millisecond'`,
+        }).where(and(
+          eq(schemaOrganizationPairing.organizationId, token.organizationId),
+          or(isNull(schemaOrganizationPairing.founderPublication), lt(schemaOrganizationPairing.founderPublicationUntil, sql`clock_timestamp()`)),
+        )).returning({ organizationId: schemaOrganizationPairing.organizationId });
+        if (!taken) return yield* publicationBusy();
+        return { iv, founding, encryptedPairingSecret: pairing.encryptedPairingSecret, turn };
+      });
       const [saved] = yield* drizzle.select().from(organizationMachine).where(scope);
       if (expectedIv !== undefined && (saved?.clusterKey !== clusterKey || saved.encryptedCapability.iv !== expectedIv)) {
         return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
@@ -832,12 +948,18 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         if (managementIdentityOf(previous) !== managementIdentity) {
           return yield* new Conflict({ message: "The Machine's management identity changed. Remove the Server and enroll it again.", userFacing: true });
         }
-        if (expectedIv === undefined) return saved.encryptedCapability.iv;
+        if (verified === undefined) return yield* verification(saved.encryptedCapability.iv);
+        // Verified while no connection was saved: a racing publication saved this one since, unverified against it.
+        if (verified.iv === undefined) {
+          return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
+        }
         yield* drizzle.update(organizationMachine).set({
           encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
           machineName: token.claimedName ?? saved.machineName, updatedAt: new Date(),
         }).where(scope);
       } else {
+        // A founder's Cluster is checked fresh before Cloud holds a connection into it.
+        if (founding && verified === undefined) return yield* verification(undefined);
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
           clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
@@ -852,17 +974,55 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       }
       return null;
     }));
-    const expectedIv = yield* publish();
-    if (expectedIv !== null) {
-      // Shared negotiation confirms the intended Machine; no SQL lock spans the network call. Cloud times the connect
+    // A turn is ended however the publication that took it ends, a cancelled request included.
+    const refused = yield* Effect.acquireUseRelease(publish(), (verify) => Effect.gen(function* () {
+      if (verify === null) return false;
+      const saving = { iv: verify.iv, turn: verify.turn };
+      // Shared negotiation confirms the intended Machine; no row lock spans the network call. Cloud times the connect
       // itself, since the SDK's own deadline fails like any cancellation.
-      yield* Effect.scoped(Effect.gen(function* () {
-        yield* (yield* Ployz).connect({
+      return yield* Effect.scoped(Effect.gen(function* () {
+        const session = yield* (yield* Ployz).connect({
           connections: [{ machine_id: input.machineId, management: input.capability }],
         }, { closeWithin: clusterRead }).pipe(Effect.timeout(SERVER_REACH_TIMEOUT_MS), Effect.mapError(unlessAnswered));
-        yield* publish(expectedIv);
-      })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
-    }
+        if (!verify.founding) {
+          yield* publish(saving);
+          return false;
+        }
+        const connected = verify.iv !== undefined;
+        // The first read may have activated this credential before a later one failed: a refresh keeps the one that works,
+        // as main saved a refresh once negotiated. A first publication saves nothing whose Cluster it didn't see.
+        const cluster = yield* readCluster(session).pipe(
+          withClusterBudget(FRESHNESS_CLUSTER_MS),
+          Effect.onError(() => connected
+            ? publish(saving).pipe(Effect.ignoreCause({ log: true, message: "Founder's credential not saved after a failed read" }))
+            : Effect.void),
+        );
+        if (isFreshCluster(cluster, input.machineId, connected)) {
+          yield* publish(saving);
+          return false;
+        }
+        // The reads activated this credential and retired the saved one: Cloud keeps the one that works, for reset to revoke.
+        if (connected) {
+          yield* publish(saving).pipe(Effect.ignoreCause({ log: true, message: "Refused founder's working credential not saved" }));
+          return true;
+        }
+        const release = yield* releaseRefusedClaim(token.organizationId, input.machineId, verify.encryptedPairingSecret);
+        // A racing publication saved Cloud's connection since: the slots Cloud fills through it are Cloud's.
+        if (release === "connected" && isFreshCluster(cluster, input.machineId, true)) {
+          yield* publish(saving);
+          return false;
+        }
+        // A released attempt leaves the `cloud` slot as the CLI set it: Cloud never saved its key, and the CLI may use it.
+        return true;
+      })).pipe(
+        withClusterBudget(SESSION_CLOSE_CLUSTER_MS),
+        // Once a founder's reads may have activated its credential, a cancelled request still saves it; the connect, reads
+        // and close keep their own deadlines.
+        (verifying) => verify.founding ? Effect.uninterruptible(verifying) : verifying,
+      );
+    }), (verify) => verify?.turn === undefined ? Effect.void
+      : endPublicationTurn(token.organizationId, verify.turn).pipe(Effect.ignoreCause({ log: true, message: "Founder publication turn not ended" })));
+    if (refused) return yield* notFresh();
     yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(
       Effect.catch((error) => Effect.logWarning("Push target request failed; the 5-minute sweep sets it.", error)),
     );
@@ -918,6 +1078,15 @@ export const completeMachineEnrollment = Effect.fn(
         return yield* new Unavailable({ message: "This Server refused Cloud's connection.", userFacing: true, cause: opened.error });
       }
       if (opened.status !== "connected") return yield* cantReachServer(opened);
+      if (isFounding(row, machineId)
+        && !isFreshCluster(yield* readCluster(opened.connected).pipe(withClusterBudget(FRESHNESS_CLUSTER_MS)), machineId, true)) {
+        // A racing completion may have committed this founder since `row` was read; its Cluster may grow from then on.
+        // Otherwise Cloud keeps its connection, for resetting the attempt to revoke.
+        const [current] = yield* loadPairingRow(token.organizationId);
+        const committed = current !== undefined && current.founderMachineId === machineId && current.removalStartedAt === null
+          && isDeepStrictEqual(current.encryptedPairingSecret, row.encryptedPairingSecret);
+        if (!committed) return yield* notFresh();
+      }
     })).pipe(
       Effect.catchIf((error) => error instanceof ClusterOutOfTime, (error) => Effect.fail(cantReachServer(error))),
       withClusterBudget(SERVER_REACH_TIMEOUT_MS),

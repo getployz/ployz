@@ -209,6 +209,21 @@ The server belongs to an organization, or was never fully removed from one. Add 
 end of the command and run it again. This removes every container Ployz runs on that server, so
 its apps go down; volume data stays on the disk.
 
+## The first server is already in a Cluster
+
+You'll see `This Server is already in a Cluster with other Servers, or something other than Ployz
+Cloud manages it.`
+
+An organization's first server starts a new Cluster, so it can't be a server that already has other
+servers, or that something other than Ployz Cloud manages. The server stays in its Cluster. Don't run
+another token on it.
+
+Run `ployz server add --command` for a new token, and add a server that isn't in a Cluster. If that
+says `This Organization's Servers can't be reached`, go to **Organization**, click **Reset founding
+attempt**, tick the confirmation and click **Reset enrollment**. The confirmation asks you to stop or
+erase the old Machine, but this server can keep running in its Cluster: the reset revokes Ployz
+Cloud's own access to it.
+
 ## The server doesn't finish joining
 
 You'll see `the joined Server did not become ready`, or `the first Server did not become ready` on

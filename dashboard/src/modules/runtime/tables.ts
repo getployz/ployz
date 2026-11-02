@@ -20,6 +20,9 @@ export const organizationPairing = pgTable(
     founderPublicKey: text("founder_public_key"),
     founderClaimMachineId: text("founder_claim_machine_id").notNull().$type<MachineId>(),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),
+    /** The founder publication verifying its Server now, and when its turn lapses if it never finishes. */
+    founderPublication: uuid("founder_publication"),
+    founderPublicationUntil: timestamp("founder_publication_until", { mode: "date", withTimezone: true }),
     createdAt,
     updatedAt,
   },
