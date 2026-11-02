@@ -76,7 +76,7 @@ export const handleSealingBackfillReport = Effect.fn("SealingBackfill.handleRepo
   const stop = (awaitsOperator = false): SealingBackfillNext => ({ next: "stop", result: report.result, awaitsOperator });
   switch (report.result) {
     case "distributed": {
-      // Through its founder, the founder reported it; with a key recorded, this only checks the report against it.
+      // Keyless, the pass ran through the founder, so this is its Cluster's key; with a key recorded, it is only compared.
       const recorded = yield* recordReportedSealingPublicKey(organizationId, clusterKey, report.public_key, target.founder).pipe(
         Effect.as(true), Effect.catchTag("SealingKeyHeldElsewhere", () => Effect.succeed(false)),
       );

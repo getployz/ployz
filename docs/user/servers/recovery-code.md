@@ -53,6 +53,12 @@ Ployz Cloud sees the recovered key a few seconds after `ployz recover` finishes.
 `ployz set --secret` still refuses and says "If you just ran ployz recover, try again in a few
 seconds."
 
+Ployz Cloud reads the recovered key through the first server you added after forgetting the
+others, so keep that server until Cloud has seen the key. If you removed it first,
+`ployz set --secret` keeps saying "Add a server to set sealed values." even after another server
+recovers the key: [forget every server](manage-servers.md#forget-servers-you-deleted), add them
+again, and run `ployz recover` once more.
+
 Servers you add after that get the key from this one. If the code is wrong, `ployz recover`
 says so and changes nothing, so you can try again.
 

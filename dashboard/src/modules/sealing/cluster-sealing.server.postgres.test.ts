@@ -152,26 +152,20 @@ describe("readClusterSealing", () => {
     expect(await readToSeal()).toEqual({ state: "ready", publicKey });
   });
 
-  it("to seal, asks only the Cluster's first Server and records its key while another Server holds another", async () => {
+  it("to seal, reads the Cluster only through its first Server, and records the key another of its Servers recovered", async () => {
     await pair();
-    cluster = frameOf({ [founder]: held(publicKey), [joiner]: held(otherKey) });
+    cluster = frameOf({ [founder]: { kind: "needs_access" }, [joiner]: held(publicKey) });
     expect(await readToSeal()).toEqual({ state: "ready", publicKey });
     expect(entries).toEqual([{ only: founder }]);
   });
 
-  it("to seal, records no key only a Server other than the first holds", async () => {
+  it("to seal, has no server while two Servers hold different keys or the first Server doesn't answer", async () => {
     await pair();
-    for (const answer of [frameOf({ [joiner]: held(publicKey) }), frameOf({ [founder]: awaitsRecovery, [joiner]: held(publicKey) })]) {
+    for (const answer of [frameOf({ [founder]: held(publicKey), [joiner]: held(otherKey) }), "unreachable" as const]) {
       cluster = answer;
-      expect((await readToSeal()).state).toBe("no_server");
-      expect(await read()).toEqual({ state: "no_server" });
+      expect(await readToSeal()).toEqual({ state: "no_server" });
     }
-  });
-
-  it("to seal, has no server while the Cluster doesn't answer", async () => {
-    await pair();
-    cluster = "unreachable";
-    expect(await readToSeal()).toEqual({ state: "no_server" });
+    expect(await read()).toEqual({ state: "no_server" });
   });
 
   it("to seal, says the Cluster awaits recovery while a Server does and none holds a key", async () => {
