@@ -574,7 +574,8 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Join(_) => RpcErrorCode::Internal,
         ConnectError::IdentityMismatch { .. }
         | ConnectError::ClusterMismatch { .. }
-        | ConnectError::ClusterUnverified { .. } => RpcErrorCode::Unauthenticated,
+        | ConnectError::ClusterUnverified { .. }
+        | ConnectError::PredatesSealing { .. } => RpcErrorCode::Unauthenticated,
         ConnectError::Attempt(_)
         | ConnectError::Exhausted(_)
         | ConnectError::EntryNotReady

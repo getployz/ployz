@@ -787,6 +787,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         error @ (ConnectError::IdentityMismatch { .. }
         | ConnectError::ClusterMismatch { .. }
         | ConnectError::ClusterUnverified { .. }
+        | ConnectError::PredatesSealing { .. }
         | ConnectError::ClientRefused
         | ConnectError::TunnelNeedsFull) => RpcError {
             code: RpcErrorCode::Unauthenticated,
@@ -877,6 +878,17 @@ pub struct ClusterExpectation {
     pub sealing_public_key: ployz_core::SealingPublicKey,
     /// Accept an entry that holds no Sealing Key, which can't show its Cluster either way.
     pub allow_unverified: bool,
+}
+
+/// The first release whose daemon holds a Sealing Key and reports it in Inspect.
+const SEALING_SINCE: &str = "0.3.3";
+
+/// The release of an entry whose daemon predates the Sealing Key, read from the Machine
+/// record it reported; None when it is newer or doesn't say.
+pub(crate) fn predates_sealing(details: &ployz_core::MachineDetails) -> Option<ployz_core::MachineVersion> {
+    let version = ployz_core::MachineVersion::parse(&details.machine.as_ref()?.runtime.daemon_version).ok()?;
+    let since = ployz_core::MachineVersion::parse(SEALING_SINCE).ok()?;
+    (version < since).then_some(version)
 }
 
 /// What a dial with a [`ClusterExpectation`] confirmed about the entry's Cluster.
@@ -990,7 +1002,7 @@ async fn connect_selected(
             }
         }
     }
-    let mut last_error = None;
+    let mut last_error: Option<ConnectError> = None;
     let mut server = None;
     let mut relayed = false;
     let mut retry = Retry::Never;
@@ -1010,9 +1022,13 @@ async fn connect_selected(
             retry = Retry::AfterRestart;
         }
         reached |= !error.unreached();
-        last_error = Some(error);
-        server = connection.server();
-        relayed = matches!(connection.transport(), Transport::Management(_));
+        // A Server that needs an upgrade is the one failure the user can act on, so it
+        // outlasts the failures after it (#3763).
+        if error.needs_upgrade() || !last_error.as_ref().is_some_and(ConnectError::needs_upgrade) {
+            last_error = Some(error);
+            server = connection.server();
+            relayed = matches!(connection.transport(), Transport::Management(_));
+        }
     }
     Err(ConnectError::AllFailed {
         selection: selected.source,
@@ -1174,6 +1190,15 @@ pub enum ConnectError {
     /// The entry holds no Sealing Key to tell its Cluster by, and this dial needs one.
     #[error("Machine {machine_id} can't show which Cluster it belongs to")]
     ClusterUnverified { machine_id: MachineId },
+    /// The entry holds no Sealing Key because its daemon predates the key (#3763).
+    #[error(
+        "Machine {machine_id} runs Ployz {version}, which can't show which Cluster it belongs to. \
+         Upgrade it to {SEALING_SINCE} or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST"
+    )]
+    PredatesSealing {
+        machine_id: MachineId,
+        version: ployz_core::MachineVersion,
+    },
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
     #[error(transparent)]
@@ -1298,6 +1323,10 @@ fn all_failed(
         (_, false, None) => format!(
             "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}."
         ),
+        (_, true, Some(server)) if last.is_some_and(ConnectError::needs_upgrade) => format!(
+            "A Server's daemon answered, but the {attempts} connections from {selection} all failed. \
+             Server {server} needs an upgrade."
+        ),
         (_, true, Some(server)) => {
             let how = if last.is_some_and(|last| !last.unreached()) {
                 "refused the connection."
@@ -1352,6 +1381,7 @@ impl ConnectError {
             | Self::IdentityMismatch { .. }
             | Self::ClusterMismatch { .. }
             | Self::ClusterUnverified { .. }
+            | Self::PredatesSealing { .. }
             | Self::ClientRefused
             | Self::OlderMachine
             | Self::ClientCleared
@@ -1395,6 +1425,11 @@ impl ConnectError {
             .any(|line| line.contains(ployz_core::STARTUP_REFUSED))
     }
 
+    /// The daemon answered but is too old for this dial; only its upgrade lets it be used.
+    pub(crate) fn needs_upgrade(&self) -> bool {
+        matches!(self, Self::OlderMachine | Self::PredatesSealing { .. })
+    }
+
     pub(crate) fn is_unreachable(&self) -> bool {
         matches!(
             self,
@@ -1429,6 +1464,7 @@ impl ConnectError {
             Self::IdentityMismatch { .. }
             | Self::ClusterMismatch { .. }
             | Self::ClusterUnverified { .. }
+            | Self::PredatesSealing { .. }
             | Self::MissingMachineDetails
             | Self::ClientRefused
             | Self::OlderMachine

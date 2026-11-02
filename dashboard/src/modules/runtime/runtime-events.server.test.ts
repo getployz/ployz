@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
-import { CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR } from "#/modules/runtime/runtime.collection";
+import { CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR, PREDATES_SEALING_ERROR } from "#/modules/runtime/runtime.collection";
 import { createRuntimeEventsResponse } from "#/modules/runtime/runtime-events.server";
 import {
   runtimeWatchCertificateFixture,
@@ -252,6 +252,31 @@ describe("createRuntimeEventsResponse", () => {
     const statusText = new TextDecoder().decode((await reader?.read())?.value);
 
     expect(statusText).toContain(`"error":${JSON.stringify(OLDER_SERVERS_ERROR)}`);
+  });
+
+  it.each([
+    {
+      code: "internal",
+      message: "Server machine-2's daemon answered, but the connection was refused: Machine 0123 runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST",
+      details: null,
+    },
+    {
+      code: "internal",
+      message: "A Server's daemon answered, but the 2 connections from Ployz Cloud all failed. Server machine-2 needs an upgrade: Machine 0123 runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST",
+      details: null,
+    },
+  ])("says a Server needs its upgrade when its Ployz predates the Sealing Key", async (cause) => {
+    const response = createRuntimeEventsResponse({
+      request: new Request("http://localhost/api/runtime/events"),
+      status: "unreachable",
+      error: new PloyzProviderError({ operation: "connect", cause }),
+    });
+    const reader = response.body?.getReader();
+
+    await reader?.read();
+    const statusText = new TextDecoder().decode((await reader?.read())?.value);
+
+    expect(statusText).toContain(`"error":${JSON.stringify(PREDATES_SEALING_ERROR)}`);
   });
 
   it("falls back to the cluster unreachable copy when the provider error has no message", async () => {
