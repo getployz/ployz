@@ -921,6 +921,7 @@ pub(crate) fn publish(
             changed.as_deref().into(),
         ],
     )?;
+    sealed::record(tx, environment.as_str(), &intent)?;
     // Saving a sealed value again clears what an earlier seal left plain below.
     crate::branch::empty_sealed_below(
         tx,

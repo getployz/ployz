@@ -91,9 +91,12 @@ pub(crate) struct SealedSince<'env> {
     environment: &'env EnvironmentId,
     working: &'env SavedEnvironmentIntent,
     // Read only for a variable changed, deleted or added again: the ledgers here
-    // and above scan every save.
+    // and above, and what each Branch was made with and shares.
     ever: Option<EverSealed>,
     chain: Option<Chain>,
+    // Only what an Environment above sealed: History scrubs the Environment's own
+    // seals itself, and keeps a revision a deployment still runs.
+    above_only: bool,
 }
 
 impl<'env> SealedSince<'env> {
@@ -106,6 +109,21 @@ impl<'env> SealedSince<'env> {
             working,
             ever: None,
             chain: None,
+            above_only: false,
+        }
+    }
+
+    /// Only what an Environment above sealed since, for History (#3756).
+    pub(crate) const fn above(
+        environment: &'env EnvironmentId,
+        working: &'env SavedEnvironmentIntent,
+    ) -> Self {
+        Self {
+            environment,
+            working,
+            ever: None,
+            chain: None,
+            above_only: true,
         }
     }
 
@@ -158,6 +176,7 @@ impl<'env> SealedSince<'env> {
             working,
             ever,
             chain,
+            above_only,
         } = self;
         for service in &mut baseline.services {
             let now = working
@@ -175,12 +194,19 @@ impl<'env> SealedSince<'env> {
                         .or_else(|| now.iter().find(|now| now.key == was.key))
                 });
                 let sealed_now = match now {
-                    Some(now) if sealed(&now.value) => true,
                     Some(now)
                         if now.id == was.id && now.key == was.key && now.value == was.value =>
                     {
                         false
                     }
+                    _ if *above_only => sealed_above(
+                        tx,
+                        chain,
+                        environment,
+                        (&service.id, &service.lineage_id),
+                        was,
+                    )?,
+                    Some(now) if sealed(&now.value) => true,
                     // Changed in place: never sealed here, as a sealed value never turns plain.
                     Some(now) if now.id == was.id => sealed_above(
                         tx,
@@ -733,16 +759,6 @@ impl EverSealed {
             ever.keys
                 .insert((service.to_owned(), row.text(2)?.to_owned()));
         }
-        // Saves hold seals made before Working State recorded them.
-        for row in tx.query(
-            "SELECT intent FROM config_saved WHERE environment_id = ?1",
-            &[environment.into()],
-        )? {
-            for (service, variable) in sealed_in(&row.intent(0, "Saved State")?) {
-                ever.ids.insert((service.to_owned(), variable.id.clone()));
-                ever.keys.insert((service.to_owned(), variable.key.clone()));
-            }
-        }
         Ok(ever)
     }
 
@@ -782,6 +798,15 @@ pub(crate) fn record(
                 variable.key.as_str().into(),
             ],
         )?;
+    }
+    Ok(())
+}
+
+/// Record each variable every saved version holds sealed: seals saved before every
+/// Save recorded them, which the ledger alone now answers for (#3752).
+pub(crate) fn record_saved(tx: &mut dyn Tx) -> Result<(), RpcError> {
+    for row in tx.query("SELECT environment_id, intent FROM config_saved", &[])? {
+        record(tx, row.text(0)?, &row.intent(1, "Saved State")?)?;
     }
     Ok(())
 }

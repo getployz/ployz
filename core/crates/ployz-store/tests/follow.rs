@@ -3991,3 +3991,115 @@ fn a_seal_past_a_change_stops_at_a_never_sync_mark_on_the_way() {
         );
     }
 }
+
+/// `environment`'s History, as JSON.
+fn history_of(store: &ConfigStore, who: &Actor, environment: &str) -> String {
+    serde_json::to_string(
+        &store
+            .read(
+                who,
+                &ployz_store::HistoryQuery {
+                    environment: at(environment),
+                    limit: None,
+                },
+            )
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// `qa`, a Branch of production, deployed `plain-private`, then changed it with
+/// `change` so the seal production makes since stays back there (#3756).
+fn qa_saved_before_a_seal(store: &ConfigStore, who: &Actor, change: impl Fn(&ConfigStore, &Actor)) {
+    set(
+        store,
+        who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(store, who, "production", 2);
+    branch(store, who, 10, "production", "qa");
+    deploy(store, who, "qa", 3);
+    change(store, who);
+    seal_token(store, who, 4);
+}
+
+fn edit_qa(store: &ConfigStore, who: &Actor) {
+    set(store, who, "qa", &[("web.env.TOKEN", json!("plain-edit"))]);
+}
+
+/// A Branch's History reads a value it was made with and an Environment above sealed
+/// since as Sealed, as its review does (#3756).
+#[test]
+fn a_branchs_history_shows_a_value_its_parent_sealed_since_as_sealed() {
+    let (store, who) = shop();
+    qa_saved_before_a_seal(&store, &who, edit_qa);
+
+    let history = history_of(&store, &who, "qa");
+    assert!(!history.contains("plain-private"), "{history}");
+}
+
+/// Restoring that version, after the Branch deleted the variable, brings it back Not
+/// set, never plain (#3756).
+#[test]
+fn restoring_a_branchs_version_from_before_a_seal_above_brings_it_back_not_set() {
+    let (store, who) = shop();
+    qa_saved_before_a_seal(&store, &who, |store, who| {
+        unset(store, who, "qa", "web.env.TOKEN");
+    });
+    let revision = store
+        .read(
+            &who,
+            &ployz_store::HistoryQuery {
+                environment: at("qa"),
+                limit: None,
+            },
+        )
+        .unwrap()
+        .revisions
+        .first()
+        .unwrap()
+        .revision;
+    let restore = ployz_store::HistoryPreviewQuery {
+        environment: at("qa"),
+        revision,
+        action: ployz_store::HistoryAction::Restore,
+        change: None,
+    };
+    let preview = store.read(&who, &restore).unwrap();
+    assert!(
+        !serde_json::to_string(&preview)
+            .unwrap()
+            .contains("plain-private"),
+        "{preview:?}"
+    );
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: at("qa"),
+                revision,
+                action: restore.action,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+}
+
+/// A value the Branch saved itself before the seal above still shows in its History:
+/// it wasn't the sealed one (#3756).
+#[test]
+fn a_branchs_history_still_shows_a_value_it_set_itself() {
+    let (store, who) = shop();
+    qa_saved_before_a_seal(&store, &who, edit_qa);
+    deploy(&store, &who, "qa", 5);
+
+    assert!(history_of(&store, &who, "qa").contains("plain-edit"));
+}

@@ -190,6 +190,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0032_node_copied_from",
         Step::Sql(include_str!("migrations/0032_node_copied_from.sql")),
     ),
+    (
+        "0033_record_saved_seals",
+        Step::Rust(|tx, _| crate::review::sealed::record_saved(tx).map(|()| None)),
+    ),
 ];
 
 enum Step {
@@ -807,5 +811,31 @@ mod mixed_version_tests {
             })
             .unwrap();
         assert_eq!(migrated.len(), 1);
+    }
+
+    /// A Store from before 0033, as 0.3.15 is, opens a database 0033 filled the ledger
+    /// of, skipping the step it doesn't know, and reads and writes as before.
+    #[test]
+    fn a_store_from_before_0033_opens_a_database_it_backfilled() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}", dir.path().join("store.db").display());
+        drop(Storage::open(&url).unwrap());
+        let older = Storage::open_through(&url, "0032_node_copied_from").unwrap();
+        let (migrated, ledger) = older
+            .read(|tx| {
+                let migrated = tx.query(
+                    "SELECT name FROM config_migration WHERE name = ?1",
+                    &["0033_record_saved_seals".into()],
+                )?;
+                let ledger = tx.query(
+                    "SELECT environment_id, service_id, variable_id, key FROM config_sealed_variable",
+                    &[],
+                )?;
+                Ok((migrated, ledger))
+            })
+            .unwrap();
+        assert_eq!(migrated.len(), 1);
+        assert!(ledger.is_empty());
+        assert_eq!(create(&older, Some("{}")).unwrap(), 1);
     }
 }
