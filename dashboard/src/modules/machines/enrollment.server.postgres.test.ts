@@ -112,9 +112,8 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     beforeObserve: async () => {},
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
-  /** `views` answers a session opened on that capability with its own Cluster's view instead of `snapshot`. */
-  /** With `joins`, every Machine registered through the fake runs in the Cluster it was registered into. */
-  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, joins: true, views: new Map<string, EnrollmentSnapshot>(), managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined, accepted: undefined as string | undefined };
+  /** With `joins`, every Machine registered through the fake is then listed running in the Cluster it joined. */
+  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, joins: false, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined, accepted: undefined as string | undefined };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
@@ -128,8 +127,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
       observeEnrollment: async () => {
         observations += 1;
         await connection.beforeObserve();
-        const [entry] = options.connections;
-        const view = (entry && "management" in entry ? cluster.views.get(entry.management) : undefined) ?? cluster.snapshot;
+        const view = cluster.snapshot;
         if (!cluster.joins) return view;
         const joined = published.filter((assignment) => !view.machines.some((machine) => machine.id === assignment.machine.id));
         return { ...view, machines: [...view.machines, ...joined.flatMap((assignment) => joinedSnapshot(assignment).machines)] };
@@ -679,6 +677,7 @@ describe("organization enrollment coordinator", () => {
 
   it.each(["joining", "publishing"])("finishes a rejected %s attempt through enroll, publish and callback", async (stage) => {
     const fake = fakeSession(harness.database);
+    fake.cluster.joins = true;
     await readyFounder(fake);
     const token = await issueToken(undefined, "joiner");
     const claimed = await fake.coordinator.enroll({ token, identity: identity(1) });
@@ -1298,6 +1297,7 @@ describe("organization enrollment coordinator", () => {
 
   it("stores the name each Server enrolled with, and refreshes it from what the Cluster reports", async () => {
     const fake = fakeSession(harness.database);
+    fake.cluster.joins = true;
     const names = async () => (await harness.pool.query<{ machine_id: string; machine_name: string | null }>(
       "select machine_id, machine_name from organization_machine order by machine_id",
     )).rows.map((row) => [row.machine_id, row.machine_name]);
@@ -1466,6 +1466,7 @@ describe("organization enrollment coordinator", () => {
 
   it("keeps the first Sealing Key its pairing reports and logs a different one as an error", async () => {
     const fake = fakeSession(harness.database);
+    fake.cluster.joins = true;
     const founder = await pendingFounder(fake);
     await fake.coordinator.publish({ ...founder, capability });
     expect(await fake.coordinator.completeFounding({ ...founder, sealing: held("A") })).toMatchObject({ success: { machineId: founder.machineId } });
@@ -1747,8 +1748,6 @@ describe("organization enrollment coordinator", () => {
       .toMatchObject({ success: { kind: "initialize", resumed: true } });
     await fake.coordinator.publish({ ...founder, capability });
     await fake.coordinator.completeFounding(founder);
-    // Registered, but not yet running in the Cluster.
-    fake.cluster.joins = false;
     const token = await issueToken();
     const first = await fake.coordinator.enroll({ token, identity: identity(1) });
     const again = await fake.coordinator.enroll({ token, identity: identity(1) });
@@ -1842,6 +1841,7 @@ describe("organization enrollment coordinator", () => {
 
   it("spends a token for good once its Machine completes enrollment, keeping only the completion retry", async () => {
     const fake = fakeSession(harness.database);
+    fake.cluster.joins = true;
     const founder = await readyFounder(fake);
     const joiner = await joinedServer(fake, founder, 1);
     expect(await fake.coordinator.completeFounding(joiner)).toMatchObject({ success: { machineId: joiner.machineId } });
@@ -1862,6 +1862,7 @@ describe("organization enrollment coordinator", () => {
 
   it("refuses a removed Server's token for enrollment, publication and completion", async () => {
     const fake = fakeSession(harness.database);
+    fake.cluster.joins = true;
     const founder = await readyFounder(fake);
     const joiner = await joinedServer(fake, founder, 1);
     await fake.coordinator.completeFounding(joiner);
@@ -1881,6 +1882,7 @@ describe("organization enrollment coordinator", () => {
 
   it("resumes a founder Cloud still lists, and joins one it forgot like any other Server", async () => {
     const fake = fakeSession(harness.database);
+    fake.cluster.joins = true;
     const founder = await readyFounder(fake);
     const joiner = await joinedServer(fake, founder, 1);
     await fake.coordinator.completeFounding(joiner);
@@ -1900,6 +1902,7 @@ describe("organization enrollment coordinator", () => {
 
   it("refuses a publication that waited on the pairing lock while its Server was removed", async () => {
     const fake = fakeSession(harness.database);
+    fake.cluster.joins = true;
     const founder = await readyFounder(fake);
     const unfinished = await joinedServer(fake, founder, 2);
     const removal = await harness.pool.connect();
@@ -2010,6 +2013,7 @@ describe("organization enrollment coordinator", () => {
 
     it("lets one join at a time and admits the line in order as joins complete", async () => {
       const fake = fakeSession(harness.database);
+      fake.cluster.joins = true;
       const founder = await readyFounder(fake);
       const [first, second, third] = [await issueToken(undefined, "joiner"), await issueToken(undefined, "joiner"), await issueToken()];
 
@@ -2030,6 +2034,7 @@ describe("organization enrollment coordinator", () => {
 
     it("answers completion with a retryable 503 while the joining Machine is unreachable, then completes", async () => {
       const fake = fakeSession(harness.database);
+      fake.cluster.joins = true;
       const founder = await readyFounder(fake);
       const token = await issueToken();
       expect(await enrollIn(fake, token, 1)).toMatchObject({ success: { kind: "join" } });
@@ -2173,6 +2178,7 @@ describe("organization enrollment coordinator", () => {
 
     it("keeps a claimant whose join failed before it was sent ahead of later arrivals", async () => {
       const fake = fakeSession(harness.database);
+      fake.cluster.joins = true;
       const founder = await readyFounder(fake);
       const first = await issueToken();
       fake.connection.error = new Error("Candidate unreachable");
@@ -2183,6 +2189,7 @@ describe("organization enrollment coordinator", () => {
 
     it("keeps a claimant whose slot lapsed ahead of later arrivals", async () => {
       const fake = fakeSession(harness.database);
+      fake.cluster.joins = true;
       const founder = await readyFounder(fake);
       const first = await issueToken();
       expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
@@ -2296,20 +2303,23 @@ describe("organization enrollment coordinator", () => {
 
     async function registeredJoiner(fake: ReturnType<typeof fakeSession>) {
       const founder = await readyFounder(fake);
-      fake.cluster.joins = false;
       const joined = await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
       if (Result.isFailure(joined) || joined.success.kind !== "join") throw new Error("Joiner missing");
       const attempt = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: joined.success.pairing.secret, capability: joinerCapability };
       return { founder, attempt, assignment: fake.published.at(-1) };
     }
 
-    it("keeps no connection for a Server the Organization's Cluster hasn't seen join", async () => {
+    it("keeps no connection for a Server registered to the Organization's Cluster but not running there", async () => {
       const fake = fakeSession(harness.database);
       const { founder, attempt, assignment } = await registeredJoiner(fake);
-      // The Server answers as itself, but it runs in another Cluster.
-      const elsewhere = joinedSnapshot(assignment);
-      fake.cluster.views.set(joinerCapability, { ...elsewhere, network: "10.99.0.0/16" });
+      if (!assignment) throw new Error("Assignment missing");
+      // Register leaves the row without a daemon version until the Server's own daemon runs in the Cluster.
+      fake.cluster.snapshot = { ...snapshot, machines: [assignment.machine] };
+      const before = fake.connected.length;
       expect(await fake.coordinator.publish(attempt)).toMatchObject({ failure: { _tag: "Unavailable" } });
+      // Cloud asks the Organization through the connection it already holds, not through the Server asking to join.
+      expect(fake.connected.slice(before).map((options) => options.connections.map((entry) => "management" in entry ? entry.management : undefined)))
+        .toEqual(expect.arrayContaining([[capability], [joinerCapability]]));
       expect(await dialRows()).toEqual([{ machine_id: founder.machineId }]);
       const connections = await fake.coordinator.connections();
       expect(connections.kind === "ready" ? connections.connections.map((entry) => entry.machine_id) : connections).toEqual([founder.machineId]);
