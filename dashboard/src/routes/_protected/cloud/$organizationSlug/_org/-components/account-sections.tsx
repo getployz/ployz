@@ -1,7 +1,7 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useRouteContext } from "@tanstack/react-router";
-import { MonitorIcon, TerminalIcon } from "lucide-react";
+import { BotIcon, MonitorIcon, TerminalIcon } from "lucide-react";
 import { toast } from "sonner";
 import { prefetchRemote } from "#/collections/route-data";
 import type { CollectionScope } from "#/collections/scope";
@@ -13,13 +13,24 @@ import { Avatar, AvatarFallback, AvatarImage } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { distinctNames } from "#/lib/distinct-names";
-import { accountSessionsRead, getAccountSessionsCollection, getLinkedAccountsCollection, linkedAccountsRead, revokeAccountSession, type AccountSessionRow } from "#/modules/account/account.collection";
+import {
+  accountSessionsRead,
+  connectedAgentsRead,
+  disconnectAgent,
+  getAccountSessionsCollection,
+  getConnectedAgentsCollection,
+  getLinkedAccountsCollection,
+  linkedAccountsRead,
+  revokeAccountSession,
+  type AccountSessionRow,
+  type ConnectedAgentRow,
+} from "#/modules/account/account.collection";
 import { notificationSettingsQueryOptions, useSetNotificationChannel } from "#/modules/notifications/notifications.queries";
 import { formatRelativeTime } from "#/utils/relative-time";
 import { NotificationsSection } from "./notifications-section";
 
 export function prefetchAccount(scope: CollectionScope) {
-  return prefetchRemote(scope, notificationSettingsQueryOptions(), accountSessionsRead(scope), linkedAccountsRead(scope));
+  return prefetchRemote(scope, notificationSettingsQueryOptions(), accountSessionsRead(scope), linkedAccountsRead(scope), connectedAgentsRead(scope));
 }
 
 /** The whole Account page: inside an Organization, or on its own for a user in none. */
@@ -28,6 +39,7 @@ export function AccountSections() {
     <div className="flex flex-col gap-6">
       <ProfileSection />
       <SessionsSection />
+      <ConnectedAgentsSection />
       <AccountNotificationsSection />
     </div>
   );
@@ -120,6 +132,51 @@ export function SessionList({ sessions, currentSessionId, onSignOut }: {
     </SettingsList>
   );
 }
+
+/** The agents you allowed on /connect. Self-hosted Cloud takes none, so the section shows only once there is one. */
+function ConnectedAgentsSection() {
+  const scope = useCollectionScope();
+  const { data } = useLiveSuspenseQuery(getConnectedAgentsCollection(scope));
+  if (data.length === 0) return null;
+  // A collection iterates by key, not in the server's order.
+  const agents = [...data].sort((a, b) => b.allowedAt.localeCompare(a.allowedAt));
+  return (
+    <SettingsSection id="connected-agents" title="Connected agents"
+      description="Disconnecting an agent stops it at once.">
+      <ConnectedAgentList agents={agents} onDisconnect={(id) => {
+        disconnectAgent(scope, id).catch(() => toast.error("Couldn't disconnect that agent."));
+      }} />
+    </SettingsSection>
+  );
+}
+
+export function ConnectedAgentList({ agents, onDisconnect }: {
+  agents: readonly ConnectedAgentRow[];
+  onDisconnect: (consent: string) => void;
+}) {
+  const names = distinctNames(agents.map((row) =>
+    [agentLabel(row), row.organization, `allowed ${formatRelativeTime(new Date(row.allowedAt))}`]));
+  return (
+    <SettingsList label="Connected agents">
+      {agents.map((row, index) => (
+        <SettingsListItem
+          key={row.id}
+          media={<BotIcon />}
+          label={agentLabel(row)}
+          hint={`${row.organization} · Allowed ${formatRelativeTime(new Date(row.allowedAt))}`}
+          commit="change"
+          actions={(
+            <Button variant="outline" size="sm" aria-label={`Disconnect ${names[index]}`} onClick={() => onDisconnect(row.id)}>
+              Disconnect
+            </Button>
+          )}
+        />
+      ))}
+    </SettingsList>
+  );
+}
+
+const agentLabel = (row: ConnectedAgentRow) => row.name ?? "Unnamed agent";
 
 function AccountNotificationsSection() {
   const { data: settings } = useSuspenseQuery(notificationSettingsQueryOptions());

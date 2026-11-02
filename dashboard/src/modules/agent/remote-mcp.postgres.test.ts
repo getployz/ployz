@@ -2,12 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { it } from "@effect/vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { and, asc, eq, sql, type Table } from "drizzle-orm";
+import { and, asc, desc, eq, sql, type Table } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
 import { Effect, Fiber, Layer, Option, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
-import { revokeAccountSession } from "#/modules/account/account.server";
+import { disconnectAgent, listConnectedAgents, revokeAccountSession } from "#/modules/account/account.server";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
@@ -1227,3 +1227,101 @@ it.live("an agent that authorizes by POST with only ployz consents once and gets
     const issued = Schema.decodeUnknownSync(Issued)((yield* redeem(shop, { clientId, code, verifier })).body);
     expect(issued.refresh_token).toBeDefined();
   }).pipe(Effect.scoped), 30_000);
+
+it.live("the account page lists a connected agent, and disconnecting it there stops it at once", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const issued = yield* connectTokens(shop, clientId);
+    const bo = { userId: shop.boId };
+
+    const [agent, ...others] = yield* shop.provided(listConnectedAgents(bo));
+    expect(others).toEqual([]);
+    expect(agent).toMatchObject({ name: "test agent", organization: expect.any(String), allowedAt: expect.any(String) });
+    yield* shop.provided(disconnectAgent(bo, agent?.id ?? expect.fail("no agent listed")));
+
+    expect(yield* shop.provided(listConnectedAgents(bo))).toEqual([]);
+    expect((yield* raw(shop, issued.access_token)).status).toBe(401);
+    expect(yield* refresh(shop, clientId, issued.refresh_token ?? expect.fail("connect issued no refresh token"))).toMatchObject(STOPPED);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("the account page lists an agent whose browser lapsed, and drops each agent a sign-out disconnects", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const lapsed = yield* registerAgent(shop);
+    yield* connectTokens(shop, lapsed);
+    yield* lapseSessions(shop);
+    const signedOut = { ...shop, cookie: yield* signIn(shop) };
+    yield* connectTokens(signedOut, yield* registerAgent(signedOut));
+    const bo = { userId: shop.boId };
+    expect(yield* shop.provided(listConnectedAgents(bo))).toHaveLength(2);
+
+    expect((yield* signOut(signedOut)).status).toBe(200);
+    expect(yield* shop.provided(listConnectedAgents(bo))).toEqual([]);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("disconnecting another member's agent does nothing", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const issued = yield* connectTokens(shop, yield* registerAgent(shop));
+    const [agent] = yield* shop.provided(listConnectedAgents({ userId: shop.boId }));
+
+    yield* shop.provided(disconnectAgent(shop.ada, agent?.id ?? expect.fail("no agent listed")));
+    expect((yield* raw(shop, issued.access_token)).status).toBe(200);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a sign-out of the browser that is allowing an agent waits for the Allow, then disconnects it", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const { toConnect, verifier } = yield* authorize(shop, clientId);
+    const hold = yield* holdRead(oauthConsent);
+    const allowing = yield* Effect.forkScoped(shop.provided(connectAgent(new Headers({ cookie: shop.cookie }), {
+      organizationId: ORGANIZATION, accept: true, oauthQuery: toConnect.search.slice(1),
+    })));
+    yield* hold.reached;
+    const signingOut = yield* Effect.forkScoped(signOut(shop));
+    const waitingOnGrants = shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.execute<{ waiting: number }>(
+        sql`select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted
+          and database = (select oid from pg_database where datname = current_database())
+          and objid::bigint = hashtext(${`agent-grants:${shop.boId}`})::bigint & 4294967295`, "objects");
+    }));
+    yield* Effect.promise(() => vi.waitFor(async () => {
+      expect((await Effect.runPromise(waitingOnGrants))[0]?.waiting).toBe(1);
+    }, { timeout: 10_000 })).pipe(Effect.ensuring(hold.release));
+
+    const decided = yield* Fiber.join(allowing);
+    expect((yield* Fiber.join(signingOut)).status).toBe(200);
+    const code = new URL(decided.url).searchParams.get("code") ?? expect.fail(`consent answered ${decided.url}`);
+    expect((yield* redeem(shop, { clientId, code, verifier })).status).toBe(400);
+  }).pipe(Effect.scoped), 30_000);
+
+for (const path of ["/revoke-session", "/revoke-other-sessions"] as const) {
+  it.live(`${path} disconnects an agent whose own browser's sign-in ran out`, () =>
+    Effect.gen(function* () {
+      const shop = yield* hostedShop();
+      const clientId = yield* registerAgent(shop);
+      const issued = yield* connectTokens(shop, clientId);
+      yield* lapseSessions(shop);
+      yield* authJson(shop, "/api/auth/get-session", { method: "GET", headers: { cookie: shop.cookie } });
+      const later = { ...shop, cookie: yield* signIn(shop) };
+      yield* signIn(shop);
+      const [newest] = yield* shop.provided(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        return yield* drizzle.select({ token: session.token }).from(session).where(eq(session.userId, shop.boId))
+          .orderBy(desc(session.createdAt)).limit(1);
+      }));
+
+      const body = path === "/revoke-session" ? { token: newest?.token ?? expect.fail("no session") } : {};
+      const revoked = yield* authJson(later, `/api/auth${path}`, {
+        method: "POST",
+        headers: { cookie: later.cookie, origin, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(revoked.status).toBe(200);
+      expect((yield* raw(shop, issued.access_token)).status).toBe(401);
+      expect(yield* refresh(shop, clientId, issued.refresh_token ?? expect.fail("connect issued no refresh token"))).toMatchObject(STOPPED);
+    }).pipe(Effect.scoped), 30_000);
+}
