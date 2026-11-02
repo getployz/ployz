@@ -11,10 +11,10 @@ import { ForgetServersDialog, useForgetServersGate } from "../../../-components/
 export const SSH_UPGRADE = "curl -fsSL https://ployz.sh | sh\nployz server upgrade stable SERVER --connect ssh://USER@HOST";
 
 /** Why Cloud can't use a Server that answers, by which older Ployz it runs. */
-const OLDER: Record<OlderServers, string> = {
+const OLDER = {
   relay: "A server runs an older Ployz that Ployz Cloud can’t reach through the relay.",
   sealing: "A server runs a Ployz older than 0.3.3, which can’t show Ployz Cloud that it belongs to your cluster.",
-};
+} satisfies Record<OlderServers, string>;
 
 /**
  * There is nothing to show: Cloud can't reach the cluster, or the watch dropped or came back incomplete without the
