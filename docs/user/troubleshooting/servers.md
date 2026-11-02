@@ -465,7 +465,9 @@ still holds the founding for that server, and `--reset` gives the server a new i
 rerun with `--reset` alone waits for a founder that never comes.
 
 1. Give up that founding: where you're signed in, run `ployz cloud reset --yes`, or go to
-   **Organization** and click **Reset founding attempt**. The server can keep running through it.
+   **Organization** and click **Reset founding attempt**. The confirmation asks you to stop or
+   erase the old Machine, but this server can keep running: it never founded anything, and the
+   reset only gives up the founding Ployz Cloud holds for it.
    If the reset says to use Forget Servers, run
    `ployz server forget --confirm <your organization's slug>`, or go to **Organization** and, under
    **Danger**, click **Forget servers**.
