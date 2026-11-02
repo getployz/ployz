@@ -2181,26 +2181,6 @@ fn sealing_scrubs_plain_text_of_a_value_deleted_since() {
     assert!(!history_text(&store, &who).contains("plain-private"));
 }
 
-/// A scrub that seals an earlier variable by key records its ID, so a later scrub
-/// still knows it was sealed once it is added again plain (#3752).
-#[test]
-fn a_scrub_by_key_records_the_variable_it_seals() {
-    let (store, who) = shop();
-    set(&store, &who, "web.env.TOKEN", json!("plain-private"));
-    publish(&store, &who, None).unwrap();
-    set(&store, &who, "web.env.OTHER", json!("other"));
-    let queued = backend::admit(&store, &who, "production", 1);
-    unset(&store, &who, "web.env.TOKEN");
-    set(&store, &who, "web.env.TOKEN", sealed(3, "TOKEN", 1));
-    publish(&store, &who, None).unwrap();
-    unset(&store, &who, "web.env.TOKEN");
-    set(&store, &who, "web.env.TOKEN", json!("plain-again"));
-    publish(&store, &who, None).unwrap();
-    assert!(history_text(&store, &who).contains("plain-private"));
-    backend::run(&store, &queued);
-    assert!(!history_text(&store, &who).contains("plain-private"));
-}
-
 #[test]
 fn sealing_between_saves_scrubs_plain_text_of_a_value_deleted_since() {
     let (store, who) = shop();

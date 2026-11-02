@@ -91,7 +91,7 @@ pub(crate) struct SealedSince<'env> {
     environment: &'env EnvironmentId,
     working: &'env SavedEnvironmentIntent,
     // Read only for a variable changed, deleted or added again: the ledgers here
-    // and above, and what each Branch was made with and shares.
+    // and above scan every save.
     ever: Option<EverSealed>,
     chain: Option<Chain>,
     // Only what an Environment above sealed: History scrubs the Environment's own
@@ -759,6 +759,16 @@ impl EverSealed {
             ever.keys
                 .insert((service.to_owned(), row.text(2)?.to_owned()));
         }
+        // Saves hold seals made before Working State recorded them.
+        for row in tx.query(
+            "SELECT intent FROM config_saved WHERE environment_id = ?1",
+            &[environment.into()],
+        )? {
+            for (service, variable) in sealed_in(&row.intent(0, "Saved State")?) {
+                ever.ids.insert((service.to_owned(), variable.id.clone()));
+                ever.keys.insert((service.to_owned(), variable.key.clone()));
+            }
+        }
         Ok(ever)
     }
 
@@ -798,22 +808,6 @@ pub(crate) fn record(
                 variable.key.as_str().into(),
             ],
         )?;
-    }
-    Ok(())
-}
-
-/// Record each variable every saved version holds sealed: seals saved before every
-/// Save recorded them, which the ledger alone now answers for (#3752).
-pub(crate) fn record_saved(tx: &mut dyn Tx) -> Result<(), RpcError> {
-    // One Environment's saves at a time, so a Store of many holds only one in memory.
-    for environment in tx.query("SELECT id FROM config_environment", &[])? {
-        let environment = environment.text(0)?;
-        for row in tx.query(
-            "SELECT intent FROM config_saved WHERE environment_id = ?1",
-            &[environment.into()],
-        )? {
-            record(tx, environment, &row.intent(0, "Saved State")?)?;
-        }
     }
     Ok(())
 }

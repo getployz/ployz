@@ -209,7 +209,6 @@ pub(crate) fn reseal(
                 environment.as_str().into(),
             ],
         )?;
-        crate::review::sealed::record(tx, environment.as_str(), &working)?;
     }
     let head = tx.query(
         "SELECT revision, intent FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC LIMIT 1",
@@ -229,7 +228,6 @@ pub(crate) fn reseal(
                         .into(),
                 ],
             )?;
-            crate::review::sealed::record(tx, environment.as_str(), &intent)?;
         }
     }
     for (table, what) in SERVICE_NODES {
@@ -1405,50 +1403,5 @@ mod tests {
             &deploy(&store, &who, 3, &["web"]).unwrap_err(),
             "auth.TOKEN",
         );
-    }
-
-    /// A seal only a save holds, from before every Save recorded it, is in the ledger
-    /// once 0033 runs, so the ledger alone answers for it (#3752).
-    #[test]
-    fn migration_0033_records_a_seal_only_a_save_holds() {
-        let dir = tempfile::tempdir().unwrap();
-        let url = format!("sqlite:{}", dir.path().join("store.db").display());
-        let (store, _) = shop_at(&url);
-        plant_saved(&store, 1, |intent| {
-            intent
-                .services
-                .first_mut()
-                .unwrap()
-                .variables
-                .push(secret("OLD", legacy(&store.sealing, "older")));
-        });
-        let ledger = |store: &ConfigStore| {
-            store
-                .storage
-                .read(|tx| {
-                    tx.query(
-                        "SELECT key FROM config_sealed_variable WHERE environment_id = ?1",
-                        &[environment().as_str().into()],
-                    )
-                })
-                .unwrap()
-                .iter()
-                .map(|row| row.text(0).unwrap().to_owned())
-                .collect::<Vec<_>>()
-        };
-        assert!(ledger(&store).is_empty());
-        store
-            .storage
-            .write(|tx| {
-                tx.execute(
-                    "DELETE FROM config_migration WHERE name = '0033_record_saved_seals'",
-                    &[],
-                )
-            })
-            .unwrap();
-        drop(store);
-
-        let store = ConfigStore::open(&url, SealingKey::new(b"test").unwrap()).unwrap();
-        assert_eq!(ledger(&store), ["OLD"]);
     }
 }
