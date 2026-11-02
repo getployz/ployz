@@ -1008,6 +1008,9 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         return true;
       })).pipe(
         withClusterBudget(SESSION_CLOSE_CLUSTER_MS),
+        // Once a founder's reads may have activated its credential, a cancelled request still saves it; the connect, reads
+        // and close keep their own deadlines.
+        (verifying) => verify.founding ? Effect.uninterruptible(verifying) : verifying,
         Effect.ensuring(verify.turn === undefined ? Effect.void
           : endPublicationTurn(token.organizationId, verify.turn).pipe(Effect.ignoreCause({ log: true, message: "Founder publication turn not ended" }))),
       );

@@ -104,6 +104,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     closeHangs: false,
     beforeConnect: async (_options: ConnectOptions) => {},
     beforeRegister: async (_assignment: EnrollmentAssignment) => {},
+    beforeObserve: async () => {},
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
   const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined, accepted: undefined as string | undefined };
@@ -117,7 +118,11 @@ function fakeSession(database: PostgresTestHarness["database"]) {
         closed += 1;
         return connection.closeHangs ? new Promise<void>(() => {}) : Promise.resolve();
       },
-      observeEnrollment: async () => { observations += 1; return cluster.snapshot; },
+      observeEnrollment: async () => {
+        observations += 1;
+        await connection.beforeObserve();
+        return cluster.snapshot;
+      },
       inspect: async () => {
         const [entry] = options.connections;
         // An operational RPC activates the credential it came in on, as the daemon does.
@@ -188,8 +193,9 @@ function enrollmentTestClient(
     inngest,
     disable: (id = organizationId) => runtime.runPromise(disableOrganizationPairing(id)),
     dropRemoved: (input: Parameters<typeof dropRemovedServer>[0]) => runtime.runPromise(dropRemovedServer(input)),
-    publish: (input: Parameters<typeof publishMachineEnrollment>[0]) => runtime.runPromise(
-      Effect.result(publishMachineEnrollment(input)),
+    /** `signal` aborts the publication as the callback route's request would. */
+    publish: (input: Parameters<typeof publishMachineEnrollment>[0], signal?: AbortSignal) => runtime.runPromise(
+      Effect.result(publishMachineEnrollment(input)), { signal },
     ),
     reject: (id: string) => runtime.runPromise(rejectWaitingServers({ userId }, { organizationSlug: "enroll", ids: [id] })),
     checkin: (input: Parameters<typeof checkIn>[0]) => runtime.runPromise(checkIn(input)),
@@ -1033,6 +1039,27 @@ describe("organization enrollment coordinator", () => {
       expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([fake.cluster.accepted]);
       expect(fake.cluster.accepted).toBe(keyed(0xab, 0x02));
       expect((await harness.pool.query("select founder_publication from organization_pairing")).rows).toEqual([{ founder_publication: null }]);
+    });
+
+    it("saves the credential a founder's reads activated even when its request is cancelled", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x01) })).toMatchObject({ success: { machineId: attempt.machineId } });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let observing = false;
+      fake.connection.beforeObserve = async () => { observing = true; await gate; };
+      const request = new AbortController();
+      const rotated = fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) }, request.signal).catch(() => undefined);
+      await vi.waitFor(() => expect(observing).toBe(true));
+      expect(fake.cluster.accepted).toBe(keyed(0xab, 0x02));
+      request.abort();
+      release();
+      await rotated;
+      await vi.waitFor(async () => {
+        const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
+        expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([keyed(0xab, 0x02)]);
+      });
     });
 
     it("takes the turn of a publication that never finished once it lapses", async () => {
