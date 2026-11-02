@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, index, integer, jsonb, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 
 import { createdAt, updatedAt } from "#/db/tables";
 import { session, user } from "#/modules/identity/tables";
@@ -181,6 +181,25 @@ export const oauthConsent = pgTable(
     index("oauth_consent_client_id_idx").on(table.clientId),
     index("oauth_consent_user_id_idx").on(table.userId),
     unique().on(table.clientId, table.userId, table.referenceId),
+  ],
+);
+
+/**
+ * Ployz's own record, not better-auth's: each browser session a member allowed a consent from on /connect, and when that
+ * browser was signed out. A grant acts only while one of its browsers hasn't been. It names the session without
+ * referencing it, so better-auth clearing a lapsed session leaves the link standing.
+ */
+export const oauthConsentSession = pgTable(
+  "oauth_consent_session",
+  {
+    consentId: uuid("consent_id").notNull().references(() => oauthConsent.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id").notNull(),
+    createdAt,
+    signedOutAt: timestamp("signed_out_at", { mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.consentId, table.sessionId] }),
+    index("oauth_consent_session_session_id_idx").on(table.sessionId),
   ],
 );
 

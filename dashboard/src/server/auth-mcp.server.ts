@@ -57,12 +57,13 @@ const boundGrant = (ctx: OAuthClaimExtensionInput["ctx"]) =>
 // A request mints only under the grant the hook bound to its credential. A request the hook bound nothing for mints
 // nothing: for the code and refresh grants that means no credential row stood, which the provider refuses first anyway,
 // and this Cloud issues no other token with a user and Organization behind it.
-const grantClaims = async ({ ctx, user, client, referenceId }: OAuthClaimExtensionInput) => {
+// A grant every browser of which was signed out mints nothing either, so the agent hears it was revoked when it refreshes.
+const grantClaims = (signedIn: GrantSignedIn) => async ({ ctx, user, client, referenceId }: OAuthClaimExtensionInput) => {
   if (user === undefined || user === null || referenceId === undefined) return {};
   const bound = boundGrant(ctx);
   if (Option.isNone(bound)) throw revoked();
   const consent = await currentConsent(ctx.context.adapter, { clientId: client.clientId, userId: user.id, referenceId });
-  if (consent === null || consent.id !== bound.value) throw revoked();
+  if (consent === null || consent.id !== bound.value || !(await signedIn(consent.id))) throw revoked();
   return { org: referenceId, grant: consent.id };
 };
 
@@ -106,7 +107,7 @@ const ClientScopes = Schema.Struct({ scopes: Schema.NullOr(Schema.Array(Schema.S
 /**
  * The MCP spec keeps `offline_access` out of the resource's challenge and metadata and leaves refresh tokens to the
  * authorization server, so a client that requests exactly the challenged scope (Glama does) never asks for one. A
- * connection lasts until it's disconnected or its sign-in ends, so every client allowed `offline_access` is asked for
+ * connection lasts until it's disconnected or the browser it was made in signs out, so every client allowed `offline_access` is asked for
  * it and gets a refresh token rather than an hour of access.
  *
  * Only the client's own authorize request is widened. Consent and sign-in re-run authorize with the query `/connect`
@@ -182,7 +183,10 @@ const bindCredentialsToGrant = (resource: string): BetterAuthPlugin => ({
   },
 });
 
-export const hostedMcpPlugins = (appUrl: URL) => {
+/** Whether a browser that allowed consent `consentId` is still signed in. */
+export type GrantSignedIn = (consentId: string) => Promise<boolean>;
+
+export const hostedMcpPlugins = (appUrl: URL, signedIn: GrantSignedIn) => {
   const { issuer, resource } = mcpEndpoints(appUrl);
   return [
     jwt({ jwt: { issuer }, disableSettingJwtHeader: true }),
@@ -199,7 +203,7 @@ export const hostedMcpPlugins = (appUrl: URL) => {
         shouldRedirect: (context) => chosenOrganization(context) === undefined,
         consentReferenceId: chosenOrganization,
       },
-      extensions: [{ claims: { accessToken: grantClaims } }],
+      extensions: [{ claims: { accessToken: grantClaims(signedIn) } }],
     }),
     cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),
     bindCredentialsToGrant(resource),
