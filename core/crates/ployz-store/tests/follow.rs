@@ -3937,3 +3937,27 @@ fn sync_token(store: &ConfigStore, who: &Actor, from: &str, into: &str) {
         )
         .unwrap();
 }
+
+/// A Branch below that marks the variable Never sync keeps it, as Follow does (#3760).
+#[test]
+fn a_seal_past_a_change_leaves_a_row_the_branch_below_marks_never_sync() {
+    let (store, who) = shop();
+    sealed_past_a_change(&store, &who, |store, who| {
+        store
+            .write(
+                who,
+                &NeverSync {
+                    environment: at("qa-two"),
+                    rows: vec![row("variables.TOKEN").into()],
+                    off: false,
+                },
+            )
+            .unwrap();
+        unset(store, who, "qa", "web.env.TOKEN");
+    });
+
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+}

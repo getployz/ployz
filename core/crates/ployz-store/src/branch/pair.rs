@@ -1241,7 +1241,7 @@ pub(crate) fn seal_inherited_below(
 /// it was made with it, or it arrived from that Parent. Compared as Sync compares it,
 /// by key and fingerprint, since each side's copy of a Service has its own variable
 /// IDs. A value the Branch set itself and shared up holds the same base, but came
-/// from neither.
+/// from neither. None for a row it marks Never sync.
 fn inherited(
     tx: &mut dyn Tx,
     branch: &mut Environment,
@@ -1252,6 +1252,11 @@ fn inherited(
     let Some(parent) = row(tx, &branch.summary.id)?.map(|row| row.parent) else {
         return Ok(None);
     };
+    // A row it marks Never sync takes nothing from above, as Follow leaves it.
+    let at = RowId::of(lineage, At::Variable(key.to_owned()));
+    if marked(tx, &branch.summary.id)?.contains(&at) {
+        return Ok(None);
+    }
     let Some(fingerprint) = variable(&mut branch.working, lineage, key)
         .filter(|variable| {
             !review::sealed::sealed(&variable.value)
@@ -1270,9 +1275,8 @@ fn inherited(
     let made = made_with(tx, &branch.summary.id)?.is_some_and(|mut made| {
         variable(&mut made, lineage, key).is_some_and(|made| made.value_fingerprint == fingerprint)
     });
-    let row = RowId::of(lineage, At::Variable(key.to_owned()));
     let arrived = arrivals(tx, &branch.summary.id, &parent)?
-        .get(&row)
+        .get(&at)
         .is_some_and(|cell| plain_fingerprint(cell) == Some(fingerprint.as_str()));
     Ok((made || arrived).then_some(parent))
 }
