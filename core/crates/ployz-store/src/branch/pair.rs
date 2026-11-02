@@ -797,18 +797,21 @@ pub(crate) fn forget_unclaimed(tx: &mut dyn Tx, receiver: &str) -> Result<(), Rp
 /// to empty.
 pub(crate) fn scrub_bases(tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
     let rows = review::sealed::sealed_rows(tx, environment)?;
-    empty_in_bases(tx, environment, &rows)
+    empty_in_bases(tx, environment, &rows, None)
 }
 
-/// [`scrub_bases`] for `rows` only, by Service lineage and key.
+/// [`scrub_bases`] for `rows` only, by Service lineage and key. `before`, the
+/// Working State a write replaces, may hold a value it seals that nothing saved.
 pub(crate) fn empty_in_bases(
     tx: &mut dyn Tx,
     environment: &str,
     rows: &BTreeSet<(String, String)>,
+    before: Option<&SavedEnvironmentIntent>,
 ) -> Result<(), RpcError> {
     if rows.is_empty() {
         return Ok(());
     }
+    let held = held(tx, environment, rows, before)?;
     for row in tx.query(
         "SELECT environment_id, made_with FROM config_environment_branch \
          WHERE environment_id = ?1 OR parent_id = ?1",
@@ -962,6 +965,173 @@ pub(crate) fn empty_in_bases(
                     row.text(2)?.into(),
                 ],
             )?;
+        }
+    }
+    empty_below(tx, environment, &held)
+}
+
+/// Each fingerprint `environment` held for `rows`: in what its Working State held
+/// before the write, its saves, and what it was made with or shares, which keep a
+/// value's fingerprint once emptied.
+fn held(
+    tx: &mut dyn Tx,
+    environment: &str,
+    rows: &BTreeSet<(String, String)>,
+    before: Option<&SavedEnvironmentIntent>,
+) -> Result<review::sealed::Held, RpcError> {
+    // A row it holds plain now was added again since: the seal was another
+    // variable's, whose copies History alone reads as sealed.
+    let working = tx
+        .query(
+            "SELECT working FROM config_environment WHERE id = ?1",
+            &[environment.into()],
+        )?
+        .first()
+        .ok_or_else(|| error::corrupt("Environment"))?
+        .intent(0, "Working State")?;
+    let rows: BTreeSet<(String, String)> = rows
+        .iter()
+        .filter(|(lineage, key)| {
+            !working
+                .services
+                .iter()
+                .filter(|service| service.lineage_id == *lineage)
+                .flat_map(|service| &service.variables)
+                .any(|variable| variable.key == *key && !review::sealed::sealed(&variable.value))
+        })
+        .cloned()
+        .collect();
+    let rows = &rows;
+    let mut held = review::sealed::Held::new();
+    if let Some(before) = before {
+        review::sealed::hold(&mut held, before, rows);
+    }
+    for (sql, what) in [
+        (
+            "SELECT intent FROM config_saved WHERE environment_id = ?1",
+            "Saved State",
+        ),
+        (
+            "SELECT made_with FROM config_environment_branch \
+             WHERE environment_id = ?1 OR parent_id = ?1",
+            "Branch",
+        ),
+        (
+            "SELECT base FROM config_sync_base WHERE environment_id = ?1 OR other_id = ?1",
+            "Sync base",
+        ),
+    ] {
+        for row in tx.query(sql, &[environment.into()])? {
+            review::sealed::hold(&mut held, &row.intent(0, what)?, rows);
+        }
+    }
+    Ok(held)
+}
+
+/// Empty each copy of a value `environment` sealed, by its fingerprint in `held`,
+/// in what every Branch below it was made with, shares and holds as arrived: a
+/// Branch of a Branch can keep it where the seal never landed, as in a Branch that
+/// changed the value itself.
+fn empty_below(
+    tx: &mut dyn Tx,
+    environment: &str,
+    held: &review::sealed::Held,
+) -> Result<(), RpcError> {
+    if held.is_empty() {
+        return Ok(());
+    }
+    let mut below = Vec::new();
+    let mut next = vec![environment.to_owned()];
+    while let Some(parent) = next.pop() {
+        for row in tx.query(
+            "SELECT environment_id FROM config_environment_branch WHERE parent_id = ?1",
+            &[parent.as_str().into()],
+        )? {
+            let branch = row.text(0)?.to_owned();
+            next.push(branch.clone());
+            below.push(branch);
+        }
+    }
+    for branch in &below {
+        let branch = branch.as_str();
+        for row in tx.query(
+            "SELECT made_with FROM config_environment_branch WHERE environment_id = ?1",
+            &[branch.into()],
+        )? {
+            let mut made_with = row.intent(0, "Branch")?;
+            if review::sealed::empty_held_in(&mut made_with, held) {
+                tx.execute(
+                    "UPDATE config_environment_branch SET made_with = ?2 \
+                     WHERE environment_id = ?1 AND made_with = ?3",
+                    &[
+                        branch.into(),
+                        document(&made_with).as_str().into(),
+                        row.text(0)?.into(),
+                    ],
+                )?;
+            }
+        }
+        for row in tx.query(
+            "SELECT environment_id, other_id, lineage, at, value, source, prior \
+             FROM config_sync_arrival WHERE environment_id = ?1 OR other_id = ?1",
+            &[branch.into()],
+        )? {
+            let (lineage, at) = (row.text(2)?, row.text(3)?);
+            let At::Variable(key) = row_id(lineage, at)?.at().clone() else {
+                continue;
+            };
+            let Some(fingerprints) = held.get(&(lineage.to_owned(), key)) else {
+                continue;
+            };
+            let cell = |index: usize| -> Result<Option<Cell>, RpcError> {
+                row.optional_text(index)?
+                    .map(|cell| serde_json::from_str(cell).map_err(|_| error::corrupt("Sync")))
+                    .transpose()
+            };
+            let (mut value, mut source, mut prior) = (cell(4)?, cell(5)?, cell(6)?);
+            let mut emptied = false;
+            for cell in [&mut value, &mut source, &mut prior].into_iter().flatten() {
+                emptied |= review::sealed::empty_held_cell(cell, fingerprints);
+            }
+            if emptied {
+                tx.execute(
+                    "UPDATE config_sync_arrival SET value = ?5, source = ?6, prior = ?7 \
+                     WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+                     AND value = ?8 AND COALESCE(source, '') = COALESCE(?9, '') \
+                     AND COALESCE(prior, '') = COALESCE(?10, '')",
+                    &[
+                        row.text(0)?.into(),
+                        row.text(1)?.into(),
+                        lineage.into(),
+                        at.into(),
+                        value.as_ref().map(json_of).as_deref().into(),
+                        source.as_ref().map(json_of).as_deref().into(),
+                        prior.as_ref().map(json_of).as_deref().into(),
+                        row.text(4)?.into(),
+                        row.optional_text(5)?.into(),
+                        row.optional_text(6)?.into(),
+                    ],
+                )?;
+            }
+        }
+        for row in tx.query(
+            "SELECT environment_id, other_id, base FROM config_sync_base \
+             WHERE environment_id = ?1 OR other_id = ?1",
+            &[branch.into()],
+        )? {
+            let mut base = row.intent(2, "Sync base")?;
+            if review::sealed::empty_held_in(&mut base, held) {
+                tx.execute(
+                    "UPDATE config_sync_base SET base = ?3 \
+                     WHERE environment_id = ?1 AND other_id = ?2 AND base = ?4",
+                    &[
+                        row.text(0)?.into(),
+                        row.text(1)?.into(),
+                        document(&base).as_str().into(),
+                        row.text(2)?.into(),
+                    ],
+                )?;
+            }
         }
     }
     Ok(())

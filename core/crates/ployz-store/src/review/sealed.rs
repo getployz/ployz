@@ -241,13 +241,23 @@ fn sealed_above(
     };
     // A value the Environment set itself, and deployed or saved, was never sealed
     // above it.
-    let Some(made) = chain.introduced(tx, environment.as_str(), node, |made| {
-        made.id == was.id && made.fingerprint == was.value_fingerprint
-    })?
-    else {
-        return Ok(false);
-    };
-    Ok(chain.holds(environment.as_str(), node, lineage, &made.key))
+    let made = chain.introduced(tx, environment.as_str(), node, |made| made.id == was.id)?;
+    if let Some(made) = &made
+        && made.fingerprint == was.value_fingerprint
+        && chain.holds(environment.as_str(), node, lineage, &made.key)
+    {
+        return Ok(true);
+    }
+    // One that reached it since, by Follow or Sync, is in what it shares above.
+    let mut keys = vec![was.key.clone()];
+    keys.extend(made.map(|made| made.key));
+    chain.shared_sealed(
+        tx,
+        environment.as_str(),
+        lineage,
+        keys,
+        &was.value_fingerprint,
+    )
 }
 
 /// Each variable a Branch was made with, or copied from a node's owner since, that
@@ -286,6 +296,17 @@ struct Chain {
     /// By Environment, its Node Introductions' variables: what it was made with or
     /// copied, never a variable added since.
     introduced: BTreeMap<String, Vec<Introduced>>,
+    /// By Branch, its Parent and what the two last shared; none for a root.
+    shared: BTreeMap<String, Option<(String, SavedEnvironmentIntent)>>,
+    /// By Environment, its Working State.
+    working: BTreeMap<String, SavedEnvironmentIntent>,
+}
+
+/// How an Environment holds a row now, for [`Chain::shared_sealed`].
+enum Now {
+    Sealed,
+    Plain { fingerprint: String },
+    Gone,
 }
 
 /// A variable as a Node Introduction holds it.
@@ -385,6 +406,132 @@ impl Chain {
         }
         self.sealed.insert(environment.to_owned(), sealed);
         Ok(())
+    }
+
+    /// Whether `environment` holds the value with `fingerprint` of the row `lineage`,
+    /// under one of `keys`, because it shares it with an Environment above that
+    /// sealed it since: up through each base that holds that very value, to one that
+    /// holds the row sealed now, or sealed it and deleted it, as History reads it. A
+    /// base keeps a value's fingerprint once a seal empties it, and a value an
+    /// Environment set itself, never shared, is never matched.
+    fn shared_sealed(
+        &mut self,
+        tx: &mut dyn Tx,
+        environment: &str,
+        lineage: &str,
+        mut keys: Vec<String>,
+        fingerprint: &str,
+    ) -> Result<bool, RpcError> {
+        let mut at = environment.to_owned();
+        loop {
+            let Some((parent, base)) = self.shared_above(tx, &at)? else {
+                return Ok(false);
+            };
+            let shared = base
+                .services
+                .iter()
+                .filter(|service| service.lineage_id == lineage)
+                .flat_map(|service| &service.variables)
+                .find(|variable| keys.contains(&variable.key));
+            let Some(shared) = shared else {
+                return Ok(false);
+            };
+            if shared.value_fingerprint != fingerprint {
+                return Ok(false);
+            }
+            let key = shared.key.clone();
+            let parent = parent.clone();
+            match self.now(tx, &parent, lineage, &key)? {
+                Now::Sealed => return Ok(true),
+                // Added again plain since: only the very variable was sealed.
+                Now::Plain { fingerprint: held } if held != fingerprint => return Ok(false),
+                Now::Plain { .. } | Now::Gone => {}
+            }
+            keys = vec![key];
+            at = parent;
+        }
+    }
+
+    /// How `environment` holds the row `lineage`, `key` now: sealed in its Working
+    /// State, or deleted after it sealed it, counts as sealed.
+    fn now(
+        &mut self,
+        tx: &mut dyn Tx,
+        environment: &str,
+        lineage: &str,
+        key: &str,
+    ) -> Result<Now, RpcError> {
+        if !self.working.contains_key(environment) {
+            let working = tx
+                .query(
+                    "SELECT working FROM config_environment WHERE id = ?1",
+                    &[environment.into()],
+                )?
+                .first()
+                .ok_or_else(|| crate::error::corrupt("Environment"))?
+                .intent(0, "Working State")?;
+            self.working.insert(environment.to_owned(), working);
+        }
+        let Some(service) = self
+            .working
+            .get(environment)
+            .and_then(|working| working.services.iter().find(|s| s.lineage_id == lineage))
+        else {
+            return Ok(Now::Gone);
+        };
+        let variable = service.variables.iter().find(|v| v.key == key);
+        let held =
+            variable.map(|variable| (sealed(&variable.value), variable.value_fingerprint.clone()));
+        let service = service.id.clone();
+        Ok(match held {
+            Some((true, _)) => Now::Sealed,
+            Some((false, fingerprint)) => Now::Plain { fingerprint },
+            None if ledger(tx, &mut self.ledgers, environment)?
+                .keys
+                .contains(&(service, key.to_owned())) =>
+            {
+                Now::Sealed
+            }
+            None => Now::Gone,
+        })
+    }
+
+    /// `environment`'s Parent and the base the two last shared, read once.
+    fn shared_above(
+        &mut self,
+        tx: &mut dyn Tx,
+        environment: &str,
+    ) -> Result<Option<&(String, SavedEnvironmentIntent)>, RpcError> {
+        if !self.shared.contains_key(environment) {
+            let parent = tx
+                .query(
+                    "SELECT parent_id FROM config_environment_branch WHERE environment_id = ?1",
+                    &[environment.into()],
+                )?
+                .first()
+                .map(|row| row.text(0).map(str::to_owned))
+                .transpose()?;
+            let shared = match parent {
+                Some(parent) => {
+                    let pair = if environment <= parent.as_str() {
+                        [environment, parent.as_str()]
+                    } else {
+                        [parent.as_str(), environment]
+                    };
+                    tx.query(
+                        "SELECT base FROM config_sync_base WHERE environment_id = ?1 AND other_id = ?2",
+                        &[pair[0].into(), pair[1].into()],
+                    )?
+                    .first()
+                    .map(|row| row.intent(0, "Sync base"))
+                    .transpose()?
+                    .map(|base| (parent, base))
+                }
+                None => None,
+            };
+            self.shared.insert(environment.to_owned(), shared);
+        }
+        Ok(self.shared.get(environment).and_then(Option::as_ref))
     }
 
     /// Whether `environment` kept `variable` of its node `service` as it was made
@@ -735,6 +882,59 @@ pub(crate) fn empty_plain_in(
         }
     }
     emptied
+}
+
+/// By Service lineage and key, each fingerprint of a plain value an Environment
+/// held for a variable it seals: what a copy of that value elsewhere matches.
+pub(crate) type Held = BTreeMap<(String, String), BTreeSet<String>>;
+
+/// Add to `held` the fingerprint of each plain value `intent` keeps for `rows`. An
+/// emptied value keeps the fingerprint of the text it had, so it counts.
+pub(crate) fn hold(
+    held: &mut Held,
+    intent: &SavedEnvironmentIntent,
+    rows: &BTreeSet<(String, String)>,
+) {
+    for service in &intent.services {
+        for variable in &service.variables {
+            let row = (service.lineage_id.clone(), variable.key.clone());
+            if rows.contains(&row) && !sealed(&variable.value) {
+                held.entry(row)
+                    .or_default()
+                    .insert(variable.value_fingerprint.clone());
+            }
+        }
+    }
+}
+
+/// [`empty_plain_in`] for only the values with a fingerprint `held` holds for their
+/// row: a copy of a sealed value's text, never another value under its key.
+pub(crate) fn empty_held_in(base: &mut SavedEnvironmentIntent, held: &Held) -> bool {
+    let mut emptied = false;
+    for service in &mut base.services {
+        for variable in &mut service.variables {
+            let row = (service.lineage_id.clone(), variable.key.clone());
+            if held
+                .get(&row)
+                .is_some_and(|held| held.contains(&variable.value_fingerprint))
+            {
+                emptied |= empty_plain(&mut variable.value);
+            }
+        }
+    }
+    emptied
+}
+
+/// [`empty_plain_cell`] for a cell whose fingerprint is one of `held`.
+pub(crate) fn empty_held_cell(cell: &mut Cell, held: &BTreeSet<String>) -> bool {
+    let Cell::Value(Value::Object(fields)) = &*cell else {
+        return false;
+    };
+    let matches = fields
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .is_some_and(|fingerprint| held.contains(fingerprint));
+    matches && empty_plain_cell(cell)
 }
 
 fn empty_plain(value: &mut SavedVariableValue) -> bool {
