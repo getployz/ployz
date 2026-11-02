@@ -216,8 +216,9 @@ fn into(
             )?;
         }
     }
-    // A seal the Branch's own change holds back, as a hint or with none at all. Read
-    // against its Working State before this Follow, so a seal that landed isn't one.
+    // A seal the Branch's own change, a plain value or a deletion, holds back, as a
+    // hint or with none at all. Read against its Working State before this Follow, so
+    // a seal that landed isn't one, nor one the Branch holds a secret of.
     let (from, base, now) = (
         Cells::of(&follow.from, ""),
         Cells::of(&follow.base, ""),
@@ -230,6 +231,7 @@ fn into(
             matches!(row.at(), At::Variable(_))
                 && lineages.contains(row.lineage())
                 && from.is_secret()
+                && !now.is_secret()
                 && from != base
                 && now != base
                 && now != from
