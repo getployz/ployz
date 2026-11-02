@@ -839,14 +839,23 @@ const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(f
   }));
 });
 
-/** Founder publications holding their Machine's lock at once, each keeping a pooled connection while it verifies. */
-const founderPublications = Semaphore.makeUnsafe(4);
+/**
+ * Founder publications verifying at once on this process. Each pins a pooled connection for its lock, so two, beside
+ * sync's two and staging's one, leave the pool's 10 five. None waits for a slot: `founderAdmission` hands out only free
+ * ones, so `whileLocked` never queues on `founderPublications`.
+ */
+const founderAdmission = Semaphore.makeUnsafe(2);
+const founderPublications = Semaphore.makeUnsafe(2);
 
-const publicationLock = (organizationId: string, machineId: MachineId) => Effect.gen(function* () {
-  const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`founder-publication:${organizationId}:${machineId}`}))`);
-  return true;
+/** Whether this Machine's publication lock was free, now held: false while another of its publications verifies. */
+const publicationLock = Effect.fn("MachineEnrollment.publicationLock")(function* (organizationId: string, machineId: MachineId) {
+  const [row] = yield* (yield* Database).drizzle.execute<{ held: boolean }>(
+    sql`select pg_try_advisory_xact_lock(hashtext(${`founder-publication:${organizationId}:${machineId}`})) as held`, "objects");
+  return row?.held === true;
 });
+
+/** A founder publication that found its Machine's lock or every slot taken; the CLI retries a 503. */
+const publicationBusy = () => new Unavailable({ message: "Another enrollment step is verifying this Server. Retrying.", userFacing: true });
 
 /** `machineId` enrolled in this attempt under the WireGuard key that claimed the token. */
 const requireEnrollmentMachine = Effect.fn("MachineEnrollment.requireMachine")(function* (
@@ -973,12 +982,16 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         return true;
       })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     });
-    // A founder's freshness reads activate its credential before Cloud saves it, so its publications take turns: the
-    // last to activate a credential is the last to save one.
+    // A founder's freshness reads activate its credential before Cloud saves it, so its publications take turns, none
+    // waiting: the last to activate a credential is the last to save one.
     const [pairing] = yield* loadPairingRow(token.organizationId);
     const refused = pairing !== undefined && isFounding(pairing, input.machineId)
-      ? yield* whileLocked(founderPublications, publicationLock(token.organizationId, input.machineId), verifyAndSave)
-        .pipe(Effect.map(Option.getOrElse(() => false)))
+      ? yield* founderAdmission.withPermitsIfAvailable(1)(
+        whileLocked(founderPublications, publicationLock(token.organizationId, input.machineId), verifyAndSave),
+      ).pipe(Effect.flatMap((held) => Option.match(Option.flatten(held), {
+        onNone: () => Effect.fail(publicationBusy()),
+        onSome: Effect.succeed,
+      })))
       : yield* verifyAndSave;
     if (refused) return yield* notFresh();
     yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(

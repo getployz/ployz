@@ -1018,19 +1018,38 @@ describe("organization enrollment coordinator", () => {
       return { release, waiting: () => vi.waitFor(() => expect(state.held).toBe(true)) };
     }
 
-    it.each([[0x02], [0x01]])("takes one Machine's publications in turn, saving the credential its Server accepted last", async (second) => {
+    it("takes one Machine's publications in turn, none waiting, saving the credential its Server accepted last", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);
       const hold = holdNextConnection(fake);
       const first = fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x01) });
       await hold.waiting();
-      const next = fake.coordinator.publish({ ...attempt, capability: keyed(0xab, second) });
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) })).toMatchObject({ failure: { _tag: "Unavailable" } });
       hold.release();
       expect(await first).toMatchObject({ success: { machineId: attempt.machineId } });
-      expect(await next).toMatchObject({ success: { machineId: attempt.machineId } });
+      // The CLI retries the 503.
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) })).toMatchObject({ success: { machineId: attempt.machineId } });
       const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
       expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([fake.cluster.accepted]);
-      expect(fake.cluster.accepted).toBe(keyed(0xab, second));
+      expect(fake.cluster.accepted).toBe(keyed(0xab, 0x02));
+    });
+
+    it("lets another Organization's founder publish while one Organization's founder verifies", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      const otherId = "00000000-0000-4000-8000-000000000403";
+      const otherToken = "pmet_other_organization";
+      await harness.pool.query("insert into organization(id,name,slug) values($1,'Other','other')", [otherId]);
+      await harness.pool.query("insert into machine_enrollment_token(organization_id,created_by_user_id,token_hash,expires_at) values($1,$2,$3,now()+interval '1 day')", [otherId, userId, hashEnrollmentToken(otherToken)]);
+      const other = await fake.coordinator.enroll({ token: otherToken, identity: identity(1) });
+      if (Result.isFailure(other) || other.success.kind !== "initialize") throw new Error("Other founder missing");
+      const hold = holdNextConnection(fake);
+      const held = fake.coordinator.publish({ ...attempt, capability });
+      await hold.waiting();
+      expect(await fake.coordinator.publish({ token: otherToken, machineId: identity(1).machineId, pairingCredential: other.success.pairing.secret, capability }))
+        .toMatchObject({ success: { machineId: identity(1).machineId } });
+      hold.release();
+      expect(await held).toMatchObject({ success: { machineId: attempt.machineId } });
     });
 
     it("counts the slots Cloud fills through its connection as Cloud's", async () => {
