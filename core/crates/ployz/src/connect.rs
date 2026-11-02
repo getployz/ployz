@@ -885,8 +885,12 @@ const SEALING_SINCE: &str = "0.3.3";
 
 /// The release of an entry whose daemon predates the Sealing Key, read from the Machine
 /// record it reported; None when it is newer or doesn't say.
-pub(crate) fn predates_sealing(details: &ployz_core::MachineDetails) -> Option<ployz_core::MachineVersion> {
-    let version = ployz_core::MachineVersion::parse(&details.machine.as_ref()?.runtime.daemon_version).ok()?;
+pub(crate) fn predates_sealing(
+    details: &ployz_core::MachineDetails,
+) -> Option<ployz_core::MachineVersion> {
+    let version =
+        ployz_core::MachineVersion::parse(&details.machine.as_ref()?.runtime.daemon_version)
+            .ok()?;
     let since = ployz_core::MachineVersion::parse(SEALING_SINCE).ok()?;
     (version < since).then_some(version)
 }

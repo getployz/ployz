@@ -2092,7 +2092,9 @@ fn cluster_entries_versioned(
     versions: Vec<(usize, &'static str)>,
 ) -> Arc<ClusterConnector> {
     let (connector, _) = cluster_entries_silent(sealings, silent);
-    let ClusterConnector { entries, silent, .. } = Arc::into_inner(connector).unwrap();
+    let ClusterConnector {
+        entries, silent, ..
+    } = Arc::into_inner(connector).unwrap();
     Arc::new(ClusterConnector {
         entries,
         silent,
@@ -2134,9 +2136,12 @@ async fn an_entry_whose_daemon_predates_the_sealing_key_says_to_upgrade_it() {
 async fn an_entry_holding_no_key_on_a_current_daemon_is_not_told_to_upgrade() {
     for versions in [vec![(0, "0.3.15")], vec![(0, "fixture")], Vec::new()] {
         let connector = cluster_entries_versioned(vec![None], Vec::new(), versions);
-        let refused =
-            connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
-                .await;
+        let refused = connect_selected_expecting(
+            connector.selected(),
+            connector.clone(),
+            expecting(7, false),
+        )
+        .await;
         assert!(
             matches!(refused, Err(ConnectError::AllFailed { last: Some(ref last), .. })
             if matches!(**last, ConnectError::ClusterUnverified { .. }))
