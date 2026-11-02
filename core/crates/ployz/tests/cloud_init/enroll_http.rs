@@ -137,8 +137,8 @@ impl EnrollListen {
             while let Some((mut stream, raw)) = requests.recv().await {
                 let raw: &[u8] = &raw;
                 let request = String::from_utf8_lossy(raw);
-                // Anything else on this port, such as a stray probe, is refused and changes
-                // nothing a test observes. It used to take the scripted enroll reply (#3732).
+                // Refused without changing anything a test observes, so a stray probe on this
+                // port can't take the scripted enroll reply (#3732).
                 let Some(path) = request
                     .lines()
                     .next()
@@ -445,12 +445,17 @@ fn enroll_json_body(raw: &[u8]) -> serde_json::Value {
 async fn stray_connections_leave_the_scripted_enroll_for_the_cli() {
     let enroll = EnrollListen::start(serde_json::json!({ "kind": "not_yet" })).await;
     let address = enroll.url.trim_start_matches("http://");
+    // Bounded, so a fake Cloud that stops answering fails the test rather than hanging it.
     let exchange = |request: Vec<u8>| async move {
         let mut stream = TcpStream::connect(address).await.unwrap();
         stream.write_all(&request).await.unwrap();
         stream.shutdown().await.unwrap();
         let mut response = Vec::new();
-        let _ = stream.read_to_end(&mut response).await;
+        let read = stream.read_to_end(&mut response);
+        tokio::time::timeout(std::time::Duration::from_secs(5), read)
+            .await
+            .expect("the fake Cloud answers while another client stalls")
+            .ok();
         String::from_utf8_lossy(&response).into_owned()
     };
 
