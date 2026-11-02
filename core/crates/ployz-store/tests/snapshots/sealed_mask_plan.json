@@ -1,0 +1,77 @@
+{
+  "plan": {
+    "namespace": "shop-qa",
+    "unresolved": [
+      "operations"
+    ],
+    "version": "3:1:0.1"
+  },
+  "review": {
+    "draft_count": 1,
+    "effects": [],
+    "total_count": 1,
+    "version": "3:1:0.1"
+  },
+  "shipped": {
+    "lineages": {
+      "00000000-0000-4000-8000-000000000003": "<id-0>"
+    },
+    "namespace": "shop-qa",
+    "sealedFor": {
+      "environment": "00000000-0000-4000-8000-000000000010",
+      "organization": "org"
+    },
+    "selected": [],
+    "snapshots": [
+      {
+        "config": {
+          "build": {
+            "buildMethod": "railpack",
+            "command": null,
+            "dockerfilePath": null
+          },
+          "cpuLimit": null,
+          "env": {
+            "PLAIN": {
+              "kind": "literal",
+              "value": "1"
+            },
+            "TOKEN": {
+              "kind": "literal",
+              "value": "plain-edit"
+            }
+          },
+          "healthcheck": {
+            "type": "none"
+          },
+          "managedHostnames": [],
+          "maxRetries": 10,
+          "memLimit": null,
+          "mounts": [],
+          "preDeployCommand": null,
+          "privateDns": "web",
+          "replicas": 1,
+          "restartPolicy": "unless-stopped",
+          "routes": [],
+          "source": {
+            "credentials": {
+              "type": "none"
+            },
+            "image": "web:1",
+            "type": "image",
+            "version": 1
+          },
+          "startCommand": null,
+          "version": 2
+        },
+        "resolvedEnv": {
+          "PLAIN": "1",
+          "TOKEN": "plain-edit"
+        },
+        "serviceId": "<id-0>",
+        "setupCommands": []
+      }
+    ],
+    "volumes": []
+  }
+}
