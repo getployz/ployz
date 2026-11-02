@@ -1018,9 +1018,17 @@ const resetPendingEnrollment = Effect.fn("MachineEnrollment.resetPendingState")(
     if (pairing?.founderMachineId !== null && pairing?.founderMachineId !== undefined) {
       return yield* new Conflict({ message: "A completed enrollment cannot be reset as a pending founder." });
     }
-    if (!(yield* revokeOrganizationPairing(organizationId)).confirmed) {
-      return yield* new Conflict({ message: "Cloud access is disabled. Endpoint revocation is unconfirmed; the founding claim is retained." });
+    const revoked = yield* revokeOrganizationPairing(organizationId, { releaseClaim: true });
+    if (revoked.confirmed) return { reset: true as const };
+    const refused = "refused" in revoked ? revoked.refused : null;
+    if (refused === "kept") {
+      return yield* new Conflict({ message: "A completed enrollment cannot be reset as a pending founder." });
     }
-    return { reset: true as const };
+    return yield* new Conflict({
+      message: refused === "unconfirmable"
+        ? "An earlier server may still hold Cloud's pairing. Use Forget Servers."
+        : "Cloud access is disabled, but Cloud couldn't reach the first server to confirm. Try again, or use Forget Servers.",
+      userFacing: true,
+    });
   },
 );

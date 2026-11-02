@@ -23,6 +23,15 @@ export type EnrollmentRequest = { readonly attemptId: string; readonly organizat
 const open = isNull(serverEnrollment.endedAt);
 const ownedBy = (runId: string) => and(eq(serverEnrollment.inngestRunId, runId), open);
 
+export const openFounderAttempt = Effect.fn("ServerEnrollment.openFounder")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [founding] = yield* drizzle
+    .select({ id: serverEnrollment.id })
+    .from(serverEnrollment)
+    .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.role, "founder"), open));
+  return founding;
+});
+
 export const bindServerEnrollment = Effect.fn("ServerEnrollment.bind")(function* (request: EnrollmentRequest, runId: string) {
   const { drizzle } = yield* Database;
   const [bound] = yield* drizzle.update(serverEnrollment).set({ inngestRunId: runId }).where(and(

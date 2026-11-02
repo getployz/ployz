@@ -1330,28 +1330,83 @@ describe("organization enrollment coordinator", () => {
     });
   });
 
-  it("retains an unconfirmed founding claim while reset disables Cloud access", async () => {
+  /** Whether each of `issued` is still a live enrollment token. */
+  const live = async (...issued: string[]) => {
+    const { rows } = await harness.pool.query<{ token_hash: string }>("select token_hash from machine_enrollment_token where expires_at > now()");
+    const hashes = new Set(rows.map((row) => row.token_hash));
+    return issued.map((token) => hashes.has(hashEnrollmentToken(token)));
+  };
+
+  it("resets a first server that never published, ending its claim and keeping every other token", async () => {
     const fake = fakeSession(harness.database);
-    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
-    expect(await fake.coordinator.tryRevokePairing(organizationId)).toBe(true);
     const attempt = await pendingFounder(fake);
-    for (const failed of [false, true]) {
-      fake.connection.error = failed ? new Error("Candidate unreachable") : null;
-      expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ failure: { _tag: "Conflict" } });
-    }
+    const joiner = await issueToken(undefined, "joiner");
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    expect((await harness.pool.query("select * from organization_pairing")).rowCount).toBe(0);
+    expect(await live(attempt.token, tokens[1] ?? "", joiner)).toEqual([false, true, true]);
     expect(fake.observations()).toBe(0);
-    expect((await harness.pool.query("select founder_claim_machine_id from organization_pairing")).rows).toEqual([{ founder_claim_machine_id: attempt.machineId }]);
-    expect((await harness.pool.query("select * from machine_enrollment_token")).rowCount).toBe(0);
+    expect(await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) }))
+      .toMatchObject({ success: { kind: "initialize" } });
+  });
+
+  it("leaves the reset claim's Machine unable to enroll, publish or complete", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) })).toMatchObject({ failure: { _tag: "Unauthorized" } });
+    expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ failure: { _tag: "Unauthorized" } });
+    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "Unauthorized" } });
+    expect(fake.registerCalls()).toBe(0);
+  });
+
+  it("clears a founding claim an earlier reset left waiting on an unconfirmable removal", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.disable();
+    expect((await harness.pool.query("select removal_endpoints from organization_pairing")).rows)
+      .toEqual([{ removal_endpoints: [{ machineId: attempt.machineId, status: "unknown" }] }]);
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    expect((await harness.pool.query("select * from organization_pairing")).rowCount).toBe(0);
+    expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) }))
+      .toMatchObject({ success: { kind: "initialize" } });
+  });
+
+  it("cancels the reset founder's open attempt", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    const founding = await waitingAttempt(attempt.token, "publishing", "founder");
+    await harness.pool.query("update server_enrollment set inngest_run_id = null where id = $1", [founding.id]);
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    expect((await harness.pool.query("select state from server_enrollment where id = $1", [founding.id])).rows)
+      .toEqual([{ state: "cancelled" }]);
+  });
+
+  it("refuses a reset, writing nothing, while a reserved Join may hold the pairing", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await harness.pool.query(
+      "insert into enrollment_allocation (organization_id, cluster_key, assignments) values ($1, $2, $3)",
+      [organizationId, hashEnrollmentToken(attempt.pairingCredential), JSON.stringify([{ machine: { id: "a".repeat(32) } }])],
+    );
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({
+      failure: { _tag: "Conflict", message: "An earlier server may still hold Cloud's pairing. Use Forget Servers." },
+    });
+    expect((await harness.pool.query("select removal_started_at from organization_pairing")).rows).toEqual([{ removal_started_at: null }]);
+    expect(await live(attempt.token, tokens[1] ?? "")).toEqual([true, true]);
+  });
+
+  it("keeps other tokens when a published first server can't be reached to confirm the reset", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.error = new Error("Candidate unreachable");
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({
+      failure: { _tag: "Conflict", message: "Cloud access is disabled, but Cloud couldn't reach the first server to confirm. Try again, or use Forget Servers." },
+    });
+    expect(await live(attempt.token, tokens[1] ?? "")).toEqual([false, true]);
     expect(await fake.coordinator.connections()).toEqual({ kind: "missing" });
-    expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) }))
-      .toMatchObject({ failure: { _tag: "Unauthorized" } });
-    expect(await fake.coordinator.publish({ ...attempt, capability }))
-      .toMatchObject({ failure: { _tag: "Unauthorized" } });
-    const removal = (await harness.pool.query("select removal_started_at, removal_endpoints from organization_pairing")).rows[0];
-    expect(removal.removal_started_at).toBeInstanceOf(Date);
-    expect(removal.removal_endpoints).toEqual([
-      { machineId: attempt.machineId, status: "unknown" },
-    ]);
+    const [removal] = (await harness.pool.query("select removal_endpoints from organization_pairing")).rows;
+    expect(removal.removal_endpoints).toMatchObject([{ machineId: attempt.machineId, status: "pending" }]);
   });
 
   it.each(["join", "completion"])("removal cancels an in-progress %s connection and retains its protected credential", async (phase) => {
