@@ -594,7 +594,7 @@ it.live("signing out of the browser the agent was connected from disconnects it,
     expect((yield* authJson(shop, "/api/auth/sign-out", { method: "POST", headers: { cookie: shop.cookie, origin } })).status).toBe(200);
     expect((yield* raw(shop, here.access_token)).status).toBe(401);
     expect(yield* refresh(shop, hereClient, here.refresh_token ?? expect.fail("connect issued no refresh token")))
-      .toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
+      .toMatchObject(STOPPED);
 
     expect((yield* raw(shop, there.access_token)).status).toBe(200);
     yield* refreshedAccess(shop, otherClient, there.refresh_token ?? expect.fail("connect issued no refresh token"));
@@ -611,7 +611,7 @@ it.live("signing out after the agent has refreshed still disconnects it", () =>
     expect(yield* sessionsOf(shop)).toEqual([]);
     expect((yield* raw(shop, renewed.access_token)).status).toBe(401);
     expect(yield* refresh(shop, clientId, renewed.refresh_token ?? expect.fail("refresh issued no refresh token")))
-      .toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
+      .toMatchObject(STOPPED);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("signing out of a browser leaves an agent reconnected from another after a disconnect", () =>
@@ -631,6 +631,8 @@ it.live("signing out of a browser leaves an agent reconnected from another after
 
 const signOut = (shop: Shop) => authJson(shop, "/api/auth/sign-out", { method: "POST", headers: { cookie: shop.cookie, origin } });
 const REVOKED = { status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } };
+/** A refresh token a sign-out deleted, which the provider no longer finds. */
+const STOPPED = { status: 400, body: { error: "invalid_grant" } };
 
 it.live("signing out disconnects the agent even when it holds no refresh token", () =>
   Effect.gen(function* () {
@@ -668,7 +670,7 @@ it.live("signing out of another browser disconnects an agent whose own browser's
 
     expect((yield* signOut(later)).status).toBe(200);
     expect((yield* raw(shop, issued.access_token)).status).toBe(401);
-    expect(yield* refresh(shop, clientId, issued.refresh_token ?? expect.fail("connect issued no refresh token"))).toEqual(REVOKED);
+    expect(yield* refresh(shop, clientId, issued.refresh_token ?? expect.fail("connect issued no refresh token"))).toMatchObject(STOPPED);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a code the agent hasn't redeemed mints nothing once its browser signs out", () =>
@@ -754,6 +756,42 @@ it.live("connecting again leaves an agent main had signed out stopped, though th
     expect(yield* refresh(shop, clientId, old.refresh_token ?? expect.fail("connect issued no refresh token"))).toEqual(REVOKED);
   }).pipe(Effect.scoped), 30_000);
 
+it.live("signing out one of two browsers that allowed the same client stops the agent it connected and leaves the other's", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const here = yield* connectTokens(shop, clientId);
+    const elsewhere = { ...shop, cookie: yield* signIn(shop) };
+    const there = yield* connectTokens(elsewhere, clientId);
+
+    expect((yield* signOut(elsewhere)).status).toBe(200);
+    expect((yield* raw(shop, there.access_token)).status).toBe(401);
+    expect(yield* refresh(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"))).toMatchObject(STOPPED);
+    expect((yield* raw(shop, here.access_token)).status).toBe(200);
+    const renewed = yield* refreshedAccess(shop, clientId, here.refresh_token ?? expect.fail("connect issued no refresh token"));
+    expect((yield* raw(shop, renewed.access_token)).status).toBe(200);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("the backfill leaves an agent main had signed out stopped, though another browser allowed the same client", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const here = yield* connectTokens(shop, clientId);
+    const elsewhere = { ...shop, cookie: yield* signIn(shop, "other-browser") };
+    const there = yield* connectTokens(elsewhere, clientId);
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.delete(oauthConsentSession);
+      yield* drizzle.delete(session).where(and(eq(session.userId, shop.boId), eq(session.userAgent, "other-browser")));
+      yield* drizzle.execute(sql.raw(BACKFILL));
+    }));
+
+    expect((yield* raw(shop, there.access_token)).status).toBe(401);
+    const renewed = yield* refresh(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"));
+    if (renewed.status === 200) expect((yield* raw(shop, Schema.decodeUnknownSync(Issued)(renewed.body).access_token)).status).toBe(401);
+    expect((yield* raw(shop, here.access_token)).status).toBe(200);
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("two browsers that allowed one agent, signed out at once from the account page, both disconnect it", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
@@ -765,7 +803,7 @@ it.live("two browsers that allowed one agent, signed out at once from the accoun
 
     yield* Effect.all(browsers.map((browser) => shop.provided(revokeAccountSession({ userId: shop.boId }, browser.id))), { concurrency: "unbounded" });
     expect((yield* raw(shop, there.access_token)).status).toBe(401);
-    expect(yield* refresh(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"))).toEqual(REVOKED);
+    expect(yield* refresh(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"))).toMatchObject(STOPPED);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("connecting again after signing out makes a new grant, and the old credentials stay stopped", () =>
@@ -780,7 +818,7 @@ it.live("connecting again after signing out makes a new grant, and the old crede
     const renewed = yield* connectTokens(later, clientId);
     expect((yield* raw(shop, renewed.access_token)).status).toBe(200);
     expect((yield* raw(shop, old.access_token)).status).toBe(401);
-    expect(yield* refresh(shop, clientId, old.refresh_token ?? expect.fail("connect issued no refresh token"))).toEqual(REVOKED);
+    expect(yield* refresh(shop, clientId, old.refresh_token ?? expect.fail("connect issued no refresh token"))).toMatchObject(STOPPED);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a grant with no browser recorded acts while its token's session does, as before the record", () =>
@@ -821,7 +859,7 @@ it.live("signing a browser out from the account page disconnects the agents conn
     expect(yield* sessionsOf(shop)).toEqual([]);
     expect((yield* raw(shop, issued.access_token)).status).toBe(401);
     expect(yield* refresh(shop, clientId, issued.refresh_token ?? expect.fail("connect issued no refresh token")))
-      .toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
+      .toMatchObject(STOPPED);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("disabling the agent's client turns its token away", () =>

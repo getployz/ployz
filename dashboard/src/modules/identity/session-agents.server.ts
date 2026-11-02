@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, gt, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
-import { oauthConsent, oauthConsentSession } from "#/modules/identity/oauth-tables";
+import { oauthAccessToken, oauthConsent, oauthConsentSession, oauthRefreshToken } from "#/modules/identity/oauth-tables";
 import { session } from "#/modules/identity/tables";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
@@ -94,9 +94,11 @@ export const grantActs = Effect.fn("Identity.grantActs")(function* (consentId: s
 /**
  * A member signing browser `sessionId` out: marks it signed out on every grant it allowed, and marks every other browser
  * of theirs whose sign-in has already run out, so an agent whose browser lapsed ends at their next sign-out anywhere.
+ * It deletes the refresh tokens those browsers' agents hold too, so each agent stops by its own browser even when
+ * another browser allowed the same grant (`oauthCaller` refuses their access tokens by the browser they name).
  * Call it before the session row goes, so a failed mark leaves the browser signed in rather than its agents connected,
- * and again once it's gone, for a link /connect wrote in between. It only ever marks; a grant stops acting once all its browsers are
- * marked (`oauthCaller`), so concurrent sign-outs can't each leave the grant to the other.
+ * and again once it's gone, for a link /connect wrote in between. It only ever marks and deletes, so concurrent
+ * sign-outs can't each leave a grant to the other.
  */
 export const signOutSessionAgents = Effect.fn("Identity.signOutSessionAgents")(function* (userId: string, sessionId: string) {
   const { drizzle } = yield* Database;
@@ -109,4 +111,11 @@ export const signOutSessionAgents = Effect.fn("Identity.signOutSessionAgents")(f
       inArray(oauthConsentSession.consentId, consents),
       or(eq(oauthConsentSession.sessionId, sessionId), notInArray(oauthConsentSession.sessionId, signedIn)),
     ));
+  // A refresh token whose browser better-auth already cleared names none; its browser's sign-in had run out.
+  const stopped = drizzle.select({ id: oauthRefreshToken.id }).from(oauthRefreshToken).where(and(
+    eq(oauthRefreshToken.userId, userId),
+    or(eq(oauthRefreshToken.sessionId, sessionId), isNull(oauthRefreshToken.sessionId), notInArray(oauthRefreshToken.sessionId, signedIn)),
+  ));
+  yield* drizzle.delete(oauthAccessToken).where(inArray(oauthAccessToken.refreshId, stopped));
+  yield* drizzle.delete(oauthRefreshToken).where(inArray(oauthRefreshToken.id, stopped));
 });
