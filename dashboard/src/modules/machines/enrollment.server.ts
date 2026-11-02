@@ -841,7 +841,8 @@ const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(f
 
 /**
  * How long a founder publication's turn lasts if it never finishes: past its connect, reads and close, which Cloud bounds
- * well inside the CLI's 15s, so a turn lapses only for a publication that died.
+ * well inside the CLI's 15s, so a turn lapses only for a publication that died or stalled. The save's fence keeps a
+ * stalled one from saving after another took over.
  */
 const PUBLICATION_TURN_MS = 30_000;
 
@@ -928,10 +929,10 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         const turn = crypto.randomUUID();
         const [taken] = yield* drizzle.update(schemaOrganizationPairing).set({
           founderPublication: turn,
-          founderPublicationUntil: sql`now() + ${PUBLICATION_TURN_MS} * interval '1 millisecond'`,
+          founderPublicationUntil: sql`clock_timestamp() + ${PUBLICATION_TURN_MS} * interval '1 millisecond'`,
         }).where(and(
           eq(schemaOrganizationPairing.organizationId, token.organizationId),
-          or(isNull(schemaOrganizationPairing.founderPublication), lt(schemaOrganizationPairing.founderPublicationUntil, sql`now()`)),
+          or(isNull(schemaOrganizationPairing.founderPublication), lt(schemaOrganizationPairing.founderPublicationUntil, sql`clock_timestamp()`)),
         )).returning({ organizationId: schemaOrganizationPairing.organizationId });
         if (!taken) return yield* publicationBusy();
         return { iv, founding, encryptedPairingSecret: pairing.encryptedPairingSecret, turn };
@@ -973,8 +974,8 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       }
       return null;
     }));
-    const refused = yield* Effect.gen(function* () {
-      const verify = yield* publish();
+    // A turn is ended however the publication that took it ends, a cancelled request included.
+    const refused = yield* Effect.acquireUseRelease(publish(), (verify) => Effect.gen(function* () {
       if (verify === null) return false;
       const saving = { iv: verify.iv, turn: verify.turn };
       // Shared negotiation confirms the intended Machine; no row lock spans the network call. Cloud times the connect
@@ -1011,10 +1012,9 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         // Once a founder's reads may have activated its credential, a cancelled request still saves it; the connect, reads
         // and close keep their own deadlines.
         (verifying) => verify.founding ? Effect.uninterruptible(verifying) : verifying,
-        Effect.ensuring(verify.turn === undefined ? Effect.void
-          : endPublicationTurn(token.organizationId, verify.turn).pipe(Effect.ignoreCause({ log: true, message: "Founder publication turn not ended" }))),
       );
-    });
+    }), (verify) => verify?.turn === undefined ? Effect.void
+      : endPublicationTurn(token.organizationId, verify.turn).pipe(Effect.ignoreCause({ log: true, message: "Founder publication turn not ended" })));
     if (refused) return yield* notFresh();
     yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(
       Effect.catch((error) => Effect.logWarning("Push target request failed; the 5-minute sweep sets it.", error)),
