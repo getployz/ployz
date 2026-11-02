@@ -251,6 +251,16 @@ server, or run `ployz server add root@HOST --reset` to add it over SSH. The rese
 container Ployz runs on that server and can delete its mirrors, so don't use it while a mirror
 there may be the last copy of a volume.
 
+## The server's Cluster is connected to another Organization
+
+You'll see `This Server's Cluster is already connected to another Organization in Ployz Cloud.`
+
+Ployz Cloud connects a Cluster to one Organization: the first one that added it. The server you're
+adding belongs to a Cluster another Organization already added, so this Organization can't manage
+it. Add a server that isn't in that Cluster, or manage it from the Organization that added it. To
+move the Cluster to this Organization, or if you don't recognize the other one, contact Ployz
+support.
+
 ## The server doesn't finish joining
 
 You'll see `the joined Server did not become ready`, or `the first Server did not become ready` on
@@ -488,8 +498,13 @@ No other server can join until the first one finishes.
    old Machine has been stopped or erased.** and click **Reset enrollment**. Tokens you made for
    other servers keep working. If the reset says to use Forget Servers, go to **Organization** and,
    under **Danger**, click **Forget servers**, or run
-   `ployz server forget --confirm <your organization's slug>` where you're signed in.
+   `ployz server forget --confirm <your organization's slug>` where you're signed in. Forget
+   deletes every enrollment token of your organization, so make a new one for each server, with
+   `ployz server add --command` or **Add servers**.
 3. Add a server again.
+
+If your first server did finish joining, there's no founding to reset, and the CLI says so. To
+start over, stop or erase your servers, then forget them as in step 2.
 
 ## Can't reach your servers right now
 
@@ -527,6 +542,8 @@ joins.
 5. If the servers run Ployz 0.2 or 0.3.0-beta.6 and earlier, Cloud can't reach them through the relay.
    Upgrade one over SSH, then the rest from Cloud, as in
    [Servers on 0.2 or 0.3.0-beta.6 and earlier](../servers/manage-servers.md#servers-on-02-or-030-beta6-and-earlier).
+   A server on 0.3.2 or earlier is used only through a newer one; while that one is down, upgrade
+   it as in [Servers on 0.3.2 and earlier](../servers/manage-servers.md#servers-on-032-and-earlier).
 
 ## The CLI says a server runs 0.2 or 0.3.0-beta.6 and earlier
 

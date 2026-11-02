@@ -120,6 +120,18 @@ describe("readClusterSealing", () => {
     expect([opened, await reseals()]).toEqual([1, 1]);
   });
 
+  it("to seal, records no key a lone Server holds that another Organization's Cluster recorded, so nothing is sealed to it", async () => {
+    await pair();
+    const other = "00000000-0000-4000-8000-0000000089cc";
+    await harness.pool.query("insert into organization (id, name, slug) values ($1, 'Owner', 'sealing-frame-owner')", [other]);
+    await harness.pool.query("insert into sealing_key_owner (public_key, organization_id) values ($1, $2)", [publicKey, other]);
+    cluster = frameOf({ m1: held(publicKey) });
+    const before = await reseals();
+    expect(await readToSeal()).toEqual({ state: "no_server" });
+    expect(await read()).toEqual({ state: "no_server" });
+    expect(await reseals()).toBe(before);
+  });
+
   it("to seal, answers without waiting for Inngest to take the reseal request", async () => {
     await pair();
     cluster = frameOf({ m1: held(publicKey) });

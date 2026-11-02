@@ -604,6 +604,19 @@ sudo ployzd install --version stable --software-only
 The same boundary holds the other way: a CLI on 0.2 or 0.3.0-beta.6 and earlier can't reach a server
 on a later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
 
+### Servers on 0.3.2 and earlier
+
+Cloud and the CLI use a server only once it shows it belongs to your Organization's cluster, which
+servers before 0.3.3 can't. They're reached through a server on a newer release instead, so while
+that one is down, the **Servers** page reads **Upgrade your server over SSH**, and the CLI says:
+
+```text
+Machine 0123… runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST
+```
+
+The server keeps running your apps, so don't forget it. Upgrade it over SSH, as for a server on 0.2 above, or wait for
+the newer server to come back and upgrade it from the **Servers** page.
+
 ## Remove a server
 
 > [!WARNING]
@@ -906,6 +919,8 @@ If you deleted all your servers at your provider, forget them:
    servers**.
 
 Ployz refuses while any server answers. Your projects, settings and deployment history stay, but
-volume data on the forgotten servers can't be recovered. When you add a server again, Ployz deploys
+volume data on the forgotten servers can't be recovered. Forgetting also deletes your organization's
+enrollment tokens, so a `ployz server add` line you printed earlier stops working: make a new one
+for each server you add. When you add a server again, Ployz deploys
 your environments to it. If your organization has a [recovery code](recovery-code.md), that
 server shows **Needs recovery** until you give it the code with `ployz recover`.

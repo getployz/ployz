@@ -254,6 +254,10 @@ export const CLUSTER_UNREACHABLE_ERROR =
 export const OLDER_SERVERS_ERROR =
   "A Server runs an older Ployz that Ployz Cloud can't reach through the relay.";
 
+/** Cloud reached a Server whose Ployz predates the Sealing Key, so it can't show its Cluster: only its upgrade lets Cloud use it. */
+export const PREDATES_SEALING_ERROR =
+  "A Server runs a Ployz older than 0.3.3, which can't show Ployz Cloud that it belongs to your cluster.";
+
 /** Pairing is present but Cloud cannot dial an entry Machine. Clearing rows
  * prevents prior observations from being rendered as current membership. */
 export function unreachableRuntimeSnapshot(error: string): RuntimeSnapshot {

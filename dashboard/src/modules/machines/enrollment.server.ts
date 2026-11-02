@@ -1177,7 +1177,7 @@ export const completeMachineEnrollment = Effect.fn(
 
 /**
  * Keeps the first Sealing public key a Machine of this pairing generation reports. A later different key is an
- * error to surface, never a replacement.
+ * error to surface, never a replacement. A key another Organization records refuses the completion.
  */
 const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
   organizationId: string, clusterKey: string, machineId: MachineId, sealing: EnrollmentCallbackSealing | undefined,
@@ -1190,7 +1190,12 @@ const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
       Effect.catch((error) => Effect.logWarning("Sealing Key backfill request failed; enrollment continues.", error)),
     );
   }
-  yield* recordSealingPublicKey(organizationId, clusterKey, sealing.publicKey).pipe(Effect.annotateLogs(annotations));
+  yield* recordSealingPublicKey(organizationId, clusterKey, sealing.publicKey).pipe(
+    Effect.annotateLogs(annotations),
+    Effect.catchTag("SealingKeyHeldElsewhere", () => Effect.fail(new Conflict({
+      userFacing: true, message: "This Server's Cluster is already connected to another Organization in Ployz Cloud.",
+    }))),
+  );
 });
 
 const reportAttemptCompleted = Effect.fn("MachineEnrollment.reportAttemptCompleted")(
@@ -1225,17 +1230,24 @@ const commitFounder = Effect.fn("MachineEnrollment.commitFounder")(function* (
     .where(eq(schemaOrganizationPairing.organizationId, organizationId));
 });
 
+/** A reset gives up only a founding that never finished; one that finished says how to start over instead. */
+const foundingFinished = () => new Conflict({
+  message: "Your Organization's first server already finished joining, so there's no founding to reset. "
+    + "To start over, stop or delete your servers, then forget them under Danger on the Organization page, or run ployz server forget.",
+  userFacing: true,
+});
+
 const resetPendingEnrollment = Effect.fn("MachineEnrollment.resetPendingState")(
   function* (organizationId: string) {
     const [pairing] = yield* loadPairingRow(organizationId);
     if (pairing?.founderMachineId !== null && pairing?.founderMachineId !== undefined) {
-      return yield* new Conflict({ message: "A completed enrollment cannot be reset as a pending founder." });
+      return yield* foundingFinished();
     }
     const revoked = yield* revokeOrganizationPairing(organizationId, { releaseClaim: true });
     if (revoked.confirmed) return { reset: true as const };
     const refused = "refused" in revoked ? revoked.refused : null;
     if (refused === "kept") {
-      return yield* new Conflict({ message: "A completed enrollment cannot be reset as a pending founder." });
+      return yield* foundingFinished();
     }
     return yield* new Conflict({
       message: refused === "unconfirmable"

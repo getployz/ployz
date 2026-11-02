@@ -195,10 +195,12 @@ pub(crate) enum Answers {
     Confirmation,
 }
 
-/// A channel to Machine `id` that confirms, holding `sealing`, and tells it as `answers` says.
+/// A channel to Machine `id` that confirms, holding `sealing`, and tells it as `answers` says;
+/// its Machine record names `daemon_version` when given.
 pub(crate) async fn sealed_channel(
     id: ployz_core::MachineId,
     sealing: Option<ployz_core::Sealing>,
+    daemon_version: Option<&'static str>,
     answers: Answers,
 ) -> Channel {
     use ployz_core::{RpcRequestBody, RpcResponse};
@@ -225,7 +227,14 @@ pub(crate) async fn sealed_channel(
             RpcResponse::from(ployz_core::MachineDetails {
                 id,
                 phase: ployz_core::LocalMachinePhase::Participating,
-                machine: None,
+                machine: daemon_version.map(|version| ployz_core::Machine {
+                    id,
+                    runtime: ployz_core::MachineRuntime {
+                        daemon_version: version.into(),
+                        ..Default::default()
+                    },
+                    ..crate::global_fixtures::machine('a', "machine-1")
+                }),
                 public_key: ployz_core::WireGuardPublicKey([0; 32]),
                 advertised_endpoints: Vec::new(),
                 store_version: Default::default(),

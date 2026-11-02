@@ -65,7 +65,10 @@ export const handleSealingBackfillReport = Effect.fn("SealingBackfill.handleRepo
   const stop = (awaitsOperator = false): SealingBackfillNext => ({ next: "stop", result: report.result, awaitsOperator });
   switch (report.result) {
     case "distributed": {
-      yield* recordSealingPublicKey(organizationId, clusterKey, report.public_key);
+      const recorded = yield* recordSealingPublicKey(organizationId, clusterKey, report.public_key).pipe(
+        Effect.as(true), Effect.catchTag("SealingKeyHeldElsewhere", () => Effect.succeed(false)),
+      );
+      if (!recorded) return stop();
       for (const machine of report.machines) {
         if (machine.result === "failed" || machine.result === "conflict" || machine.result === "unknown") {
           yield* Effect.logWarning("A Server did not take its Cluster's Sealing Key.").pipe(Effect.annotateLogs({ machine }));

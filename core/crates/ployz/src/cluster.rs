@@ -117,11 +117,11 @@ impl Client {
         confirmed: Option<ployz_core::Sealing>,
     ) -> Result<crate::connect::ClusterCheck, ConnectError> {
         // A confirmation that carried the held key answers without Inspect.
-        let (sealing, machine_id) =
+        let (sealing, machine_id, predates) =
             if let (Some(held @ ployz_core::Sealing::Held { .. }), Some(id)) =
                 (confirmed, self.entry)
             {
-                (Some(held), id)
+                (Some(held), id, None)
             } else {
                 let inspect = async {
                     let payload = op::Inspect::into_request(ployz_core::InspectRequest::default())
@@ -131,7 +131,8 @@ impl Client {
                 let details = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, inspect)
                     .await
                     .map_err(|_| ConnectError::EntryNotReady)??;
-                (details.sealing, self.entry.unwrap_or(details.id))
+                let predates = crate::connect::predates_sealing(&details);
+                (details.sealing, self.entry.unwrap_or(details.id), predates)
             };
         match sealing {
             Some(
@@ -147,9 +148,16 @@ impl Client {
             Some(ployz_core::Sealing::NeedsAccess) | None if expect.allow_unverified => {
                 Ok(crate::connect::ClusterCheck::default())
             }
-            Some(ployz_core::Sealing::NeedsAccess) | None => {
+            Some(ployz_core::Sealing::NeedsAccess) => {
                 Err(ConnectError::ClusterUnverified { machine_id })
             }
+            None => Err(match predates {
+                Some(version) => ConnectError::PredatesSealing {
+                    machine_id,
+                    version,
+                },
+                None => ConnectError::ClusterUnverified { machine_id },
+            }),
         }
     }
 

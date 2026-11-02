@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionList } from "./account-sections";
+import { ConnectedAgentList, SessionList } from "./account-sections";
 
 type Sessions = Parameters<typeof SessionList>[0]["sessions"];
 
@@ -52,5 +52,29 @@ describe("SessionList", () => {
     const [, , older] = screen.getAllByRole("button");
     if (older) fireEvent.click(older);
     expect(onSignOut).toHaveBeenCalledExactlyOnceWith("older");
+  });
+});
+
+describe("ConnectedAgentList", () => {
+  afterEach(() => {
+    cleanup();
+    document.body.replaceChildren();
+  });
+
+  const agent = (id: string, name: string | null, organization: string) =>
+    ({ id, name, organization, allowedAt: "2026-10-19T10:00:00Z" });
+
+  it("names each Disconnect after its agent, then its Organization, and disconnects that one", () => {
+    const onDisconnect = vi.fn();
+    render(<ConnectedAgentList onDisconnect={onDisconnect} agents={[
+      agent("shop", "Claude", "Shop"),
+      agent("lab", "Claude", "Lab"),
+      agent("unnamed", null, "Shop"),
+    ]} />);
+
+    expect(screen.getAllByRole("button").map((button) => button.getAttribute("aria-label")))
+      .toEqual(["Disconnect Claude, Shop", "Disconnect Claude, Lab", "Disconnect Unnamed agent"]);
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect Claude, Lab" }));
+    expect(onDisconnect).toHaveBeenCalledExactlyOnceWith("lab");
   });
 });

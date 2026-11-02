@@ -377,7 +377,7 @@ pub(in crate::handlers) fn confirm(yes: bool, question: &str) -> Result<(), Erro
         "This removes Ployz-managed containers and resets this machine's cluster membership.",
     );
     crate::ui::note(
-        "Volume data will not be erased, but will lose access through the current cluster.",
+        "Its writer copies of Volumes stay on its disk, read-only, but its mirrors can be deleted, so don't reset it while a mirror there may be a Volume's last copy.",
     );
     crate::ui::confirm(
         question,
