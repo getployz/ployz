@@ -440,7 +440,10 @@ No other server can join until the first one finishes.
    `ployz server add --command` for a new one; it picks up where the server left off.
 2. If that server is gone, or you want to start over, make sure it's stopped or erased at your
    provider. Then go to **Organization**, click **Reset founding attempt**, tick **I confirm the
-   old Machine has been stopped or erased.** and click **Reset enrollment**.
+   old Machine has been stopped or erased.** and click **Reset enrollment**. Tokens you made for
+   other servers keep working. If the reset says to use Forget Servers, go to **Organization** and,
+   under **Danger**, click **Forget servers**, or run
+   `ployz server forget --confirm <your organization's slug>` where you're signed in.
 3. Add a server again.
 
 ## Can't reach your servers right now

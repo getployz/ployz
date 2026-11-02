@@ -9,7 +9,7 @@ import {
   clusterSealingKey, clusterSealingKeyGenerator, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt,
   organizationMachine, serverAccess,
 } from "#/modules/machines/tables";
-import { cancelOpenServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
+import { cancelOpenServerEnrollments, cancelServerEnrollments, openFounderAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -58,7 +58,8 @@ const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
  * `waiting_server` rows. Fleet Token revoke and probe selection skip it too.
  * Revoke locks its token, then that token's `waiting_server` rows, and probe selection locks only `waiting_server` rows. A
  * check-in holds at most one `waiting_server` row, after its token, and stamps a probe handout on that same row. A cancel
- * event's outbox row stays locked until commit, so no path inserts one before it holds that attempt.
+ * event's outbox row stays locked until commit, so no path inserts one before it holds that attempt. A reset that ends a
+ * founding claim expires the claim's tokens after its founder attempt's cancel event; that row is new, so nothing waits on it.
  */
 export const lockOrganizationEnrollment = Effect.fn("PairingRemoval.lockOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
@@ -99,9 +100,17 @@ export const isDeadFoundingClaim = Effect.fn("PairingRemoval.isDeadFoundingClaim
   return pairing.founderMachineId === null && pairing.removalStartedAt === null && !(yield* foundingClaimLive(pairing));
 });
 
+/**
+ * How a removal treats an unfounded pairing's founding claim. `deadClaimOnly` (Enroll) removes the pairing only once no
+ * token can finish the claim, keeping the Organization's tokens. `releaseClaim` (Reset, whose user confirmed the claiming
+ * Machine is stopped or erased) ends the claim itself first, by expiring its tokens and cancelling the founder's attempt,
+ * then removes the pairing the same way. It refuses, writing nothing, when another Machine may hold the pairing unconfirmably.
+ */
+type DisableOptions = { readonly deadClaimOnly?: boolean; readonly releaseClaim?: boolean };
+
 /** Move usable credentials out of ordinary lookup before doing any remote work. */
 export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
-  function* (organizationId: string, options: { readonly deadClaimOnly?: boolean } = {}) {
+  function* (organizationId: string, options: DisableOptions = {}) {
     const database = yield* Database;
     const disabled = yield* database.transaction(Effect.gen(function* () {
       yield* lockOrganizationEnrollment(organizationId);
@@ -109,13 +118,30 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
       const [pairing] = yield* drizzle.select().from(organizationPairing)
         .where(eq(organizationPairing.organizationId, organizationId)).for("update");
       if (!pairing) return null;
-      const deadClaim = options.deadClaimOnly === true && pairing.removalStartedAt === null;
-      if (deadClaim && (pairing.founderMachineId !== null || (yield* foundingClaimLive(pairing)))) return "kept" as const;
+      const release = options.releaseClaim === true;
+      const waivesClaim = options.deadClaimOnly === true || release;
+      const deadClaim = waivesClaim && pairing.removalStartedAt === null;
+      const kept = release
+        ? pairing.founderMachineId !== null
+        : deadClaim && (pairing.founderMachineId !== null || (yield* foundingClaimLive(pairing)));
+      if (kept) return "kept" as const;
       const secret = yield* decrypt(pairing.encryptedPairingSecret);
       const generation = createHash("sha256").update(secret).digest("hex");
       let attempt: RemovalAttempt;
       if (pairing.removalStartedAt !== null && pairing.removalEndpoints !== null) {
-        attempt = { ...pairing, removalStartedAt: pairing.removalStartedAt, removalEndpoints: yield* decodeEndpoints(pairing.removalEndpoints) };
+        const resumed = yield* decodeEndpoints(pairing.removalEndpoints);
+        // An unpublished claim left no capability to clear, so once its tokens are expired it is waived as a fresh release waives it.
+        const removalEndpoints = release
+          ? resumed.filter((endpoint) => !(endpoint.machineId === pairing.founderClaimMachineId && endpoint.status === "unknown"))
+          : resumed;
+        if (release) {
+          yield* endFoundingClaim(pairing);
+          if (removalEndpoints.length !== resumed.length) {
+            yield* drizzle.update(organizationPairing).set({ removalEndpoints })
+              .where(eq(organizationPairing.organizationId, organizationId));
+          }
+        }
+        attempt = { ...pairing, removalStartedAt: pairing.removalStartedAt, removalEndpoints };
       } else {
         const candidates = yield* drizzle.select().from(organizationMachine)
           .where(eq(organizationMachine.organizationId, organizationId));
@@ -136,6 +162,8 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
             removalEndpoints.push({ machineId: yield* Schema.decodeUnknownEffect(rustMachineIdSchema)(machineId), status: "unknown" });
           }
         }
+        if (release && removalEndpoints.some((endpoint) => endpoint.status === "unknown")) return "unconfirmable" as const;
+        if (release) yield* endFoundingClaim(pairing);
         const removalStartedAt = new Date();
         yield* drizzle.update(organizationPairing).set({ removalStartedAt, removalEndpoints })
           .where(eq(organizationPairing.organizationId, organizationId));
@@ -147,10 +175,10 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
       }
       // A dead claim's own tokens are spent or expired, so other tokens and open attempts stay for the next first server.
       // A full removal clears them even when it resumes a removal a dead-claim release started.
-      if (options.deadClaimOnly !== true) yield* deleteEnrollmentTokens(organizationId);
+      if (!waivesClaim) yield* deleteEnrollmentTokens(organizationId);
       return { attempt, generation };
     }));
-    if (disabled === "kept") return disabled;
+    if (disabled === "kept" || disabled === "unconfirmable") return disabled;
     if (disabled !== null) {
       const runtime = yield* OrganizationRuntime;
       yield* runtime.cancel(organizationId, disabled.generation);
@@ -158,6 +186,23 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
     return disabled?.attempt ?? null;
   },
 );
+
+/**
+ * Ends an unfounded pairing's founding claim: cancels the founder's open attempt, then expires every founding token its
+ * Machine claimed, so it can neither publish nor complete. Held under the enrollment lock and the pairing row.
+ */
+const endFoundingClaim = Effect.fn("PairingRemoval.endFoundingClaim")(function* (pairing: Pairing) {
+  const founding = yield* openFounderAttempt(pairing.organizationId);
+  if (founding !== undefined) yield* cancelServerEnrollments(pairing.organizationId, [founding.id]);
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: new Date() }).where(and(
+    eq(machineEnrollmentToken.organizationId, pairing.organizationId),
+    eq(machineEnrollmentToken.claimedMachineId, pairing.founderClaimMachineId),
+    sql`${machineEnrollmentToken.enrollmentRole} is distinct from 'joiner'`,
+    isNull(machineEnrollmentToken.joinedMachineId),
+    gt(machineEnrollmentToken.expiresAt, sql`now()`),
+  ));
+});
 
 /** The witnessed pairing, locked for this transaction; null when it's gone, or no longer `generation`. */
 const lockWitnessedPairing = Effect.fn("PairingRemoval.lockWitnessed")(function* (organizationId: string, generation: string) {
@@ -349,9 +394,9 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
 
 /** Endpoint failures are unconfirmed outcomes, never evidence that old access was revoked. */
 export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
-  function* (organizationId: string, options: { readonly deadClaimOnly?: boolean } = {}) {
+  function* (organizationId: string, options: DisableOptions = {}) {
     const attempt = yield* disableOrganizationPairing(organizationId, options);
-    if (attempt === "kept") return { confirmed: false, endpoints: [] };
+    if (attempt === "kept" || attempt === "unconfirmable") return { confirmed: false, endpoints: [], refused: attempt };
     const database = yield* Database;
     if (attempt === null) {
       const candidates = yield* database.drizzle.select({ machineId: organizationMachine.machineId })

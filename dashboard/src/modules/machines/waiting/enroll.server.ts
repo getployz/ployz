@@ -8,7 +8,7 @@ import { insertEnrollmentToken, readJoinStatus } from "#/modules/machines/enroll
 import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPairing, shareOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
-import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
+import { cancelServerEnrollments, openFounderAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { machineNameFromHostname } from "#/modules/machines/waiting/names";
 import {
   COMMITTED_STAGES,
@@ -192,15 +192,6 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
     .where(and(eq(waitingServer.organizationId, organizationId), inArray(waitingServer.id, [...ids])))
     .orderBy(waitingServer.id);
   return lock ? yield* select.for("update", { of: waitingServer }) : yield* select;
-});
-
-const openFounderAttempt = Effect.fn("ServerEnrollment.openFounder")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const [founding] = yield* drizzle
-    .select({ id: serverEnrollment.id })
-    .from(serverEnrollment)
-    .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.role, "founder"), isNull(serverEnrollment.endedAt)));
-  return founding;
 });
 
 const WAITING_SERVER_ID = /^[0-9a-f-]{36}$/u;
