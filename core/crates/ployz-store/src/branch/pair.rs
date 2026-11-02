@@ -1218,7 +1218,7 @@ pub(crate) fn seal_inherited_below(
         let sealed = storage::attempt(tx, |tx| {
             let branch =
                 EnvironmentId::try_from(branch.clone()).map_err(|_| error::corrupt("Branch"))?;
-            if crate::removal::mark::naming(tx, &branch)?.is_some() {
+            if super::follow::stopped(tx, &branch)? {
                 return Ok(());
             }
             // Locked only to write: a Branch holds the value until its Parent deploys.
@@ -1237,9 +1237,11 @@ pub(crate) fn seal_inherited_below(
 }
 
 /// The Parent of `branch` when it holds variable `key` of `lineage` plain, at one of
-/// `fingerprints`, as it last shared it with that Parent: compared as Sync compares
-/// it, by key and fingerprint, since each side's copy of a Service has its own
-/// variable IDs.
+/// `fingerprints`, as it last shared it with that Parent and as it came from above:
+/// it was made with it, or it arrived from that Parent. Compared as Sync compares it,
+/// by key and fingerprint, since each side's copy of a Service has its own variable
+/// IDs. A value the Branch set itself and shared up holds the same base, but came
+/// from neither.
 fn inherited(
     tx: &mut dyn Tx,
     branch: &mut Environment,
@@ -1262,7 +1264,25 @@ fn inherited(
     let mut base = base_of(tx, (&branch.summary.id, &parent))?;
     let shared = variable(&mut base, lineage, key)
         .is_some_and(|shared| shared.value_fingerprint == fingerprint);
-    Ok(shared.then_some(parent))
+    if !shared {
+        return Ok(None);
+    }
+    let made = made_with(tx, &branch.summary.id)?.is_some_and(|mut made| {
+        variable(&mut made, lineage, key).is_some_and(|made| made.value_fingerprint == fingerprint)
+    });
+    let row = RowId::of(lineage, At::Variable(key.to_owned()));
+    let arrived = arrivals(tx, &branch.summary.id, &parent)?
+        .get(&row)
+        .is_some_and(|cell| plain_fingerprint(cell) == Some(fingerprint.as_str()));
+    Ok((made || arrived).then_some(parent))
+}
+
+/// The fingerprint of a plain variable's cell.
+fn plain_fingerprint(cell: &Cell) -> Option<&str> {
+    let Cell::Value(Value::Object(fields)) = cell else {
+        return None;
+    };
+    fields.get("fingerprint")?.as_str()
 }
 
 /// [`seal_inherited_below`] in one Branch, which the caller locked.

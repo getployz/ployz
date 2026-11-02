@@ -64,13 +64,7 @@ pub(crate) fn follow(
     };
     for row in &branches {
         let branch = row.parse::<EnvironmentId>(0, "Branch")?;
-        let shut_down = crate::removal::latest(tx, &branch)?.is_some_and(|removal| {
-            !matches!(
-                removal.status,
-                crate::DeploymentStatus::Failed | crate::DeploymentStatus::Cancelled
-            )
-        });
-        if shut_down || crate::removal::mark::naming(tx, &branch)?.is_some() {
+        if stopped(tx, &branch)? {
             continue;
         }
         let who = Actor::system(row.parse(1, "Branch")?);
@@ -135,6 +129,17 @@ pub(crate) fn follow(
     Ok(())
 }
 
+/// Whether `branch` was shut down, or is being removed: nothing follows into it.
+pub(super) fn stopped(tx: &mut dyn Tx, branch: &EnvironmentId) -> Result<bool, RpcError> {
+    let shut_down = crate::removal::latest(tx, branch)?.is_some_and(|removal| {
+        !matches!(
+            removal.status,
+            crate::DeploymentStatus::Failed | crate::DeploymentStatus::Cancelled
+        )
+    });
+    Ok(shut_down || crate::removal::mark::naming(tx, branch)?.is_some())
+}
+
 /// Stage in `branch` what `parent` deployed to `lineages` and hasn't delivered yet.
 /// Answers each variable `parent` sealed that the Branch's own change holds back.
 fn into(
@@ -145,6 +150,7 @@ fn into(
     lineages: &BTreeSet<String>,
 ) -> Result<Vec<RowId>, RpcError> {
     let mut branch = scope::lock_id(tx, who, branch)?;
+    let before = Cells::of(&branch.working, "");
     let follow = Move::follow(tx, parent, &branch)?;
     let checked = follow.check(tx, &branch, Guard::Deploy)?;
     let delivered = arrivals(tx, &branch.summary.id, &parent.summary.id)?;
@@ -210,11 +216,12 @@ fn into(
             )?;
         }
     }
-    // A seal the Branch's own change holds back, as a hint or with none at all.
+    // A seal the Branch's own change holds back, as a hint or with none at all. Read
+    // against its Working State before this Follow, so a seal that landed isn't one.
     let (from, base, now) = (
         Cells::of(&follow.from, ""),
         Cells::of(&follow.base, ""),
-        Cells::of(&branch.working, ""),
+        before,
     );
     Ok(from
         .rows()

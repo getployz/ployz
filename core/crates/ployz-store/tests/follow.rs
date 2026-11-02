@@ -3824,3 +3824,116 @@ fn discarding_a_seal_that_reached_a_branch_of_a_branch_leaves_it_not_set() {
     let shown = every_read(&store, &who, "qa-two", "qa");
     assert!(!shown.contains("plain-private"), "{shown}");
 }
+
+/// A seal the Branch between takes reaches the Branch below at its own deploy, one
+/// level per deploy as ever: nothing seals it before (#3760).
+#[test]
+fn a_seal_a_branch_takes_reaches_the_branch_below_only_at_its_deploy() {
+    let (store, who) = shop();
+    sealed_past_a_change(&store, &who, |_, _| {});
+
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+}
+
+/// A value a Branch below set itself and synced into its Parent is its own, though
+/// it matches the sealed one and the base they share: the seal leaves it (#3760).
+#[test]
+fn a_seal_past_a_change_leaves_a_value_the_branch_below_set_and_synced_up() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    deploy(&store, &who, "qa", 3);
+    branch(&store, &who, 11, "qa", "qa-two");
+    set(
+        &store,
+        &who,
+        "qa-two",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    sync_token(&store, &who, "qa-two", "qa");
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit-two"))],
+    );
+    seal_token(&store, &who, 5);
+
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+}
+
+/// A shut-down Branch below keeps its Working State as Follow leaves it (#3760).
+#[test]
+fn a_seal_past_a_change_leaves_a_shut_down_branch_below() {
+    let (store, who) = shop();
+    sealed_past_a_change(&store, &who, |store, who| {
+        store
+            .write_trusted(
+                who,
+                &ployz_store::Admit::ShutDown(ployz_store::ShutDown {
+                    id: ployz_store::DeploymentId::parse(uuid(50)).unwrap(),
+                    environment: at("qa-two"),
+                    version: None,
+                    accept_volume_loss: Vec::new(),
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+        unset(store, who, "qa", "web.env.TOKEN");
+    });
+
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+}
+
+/// Sync `web.env.TOKEN` from `from` into `into`.
+fn sync_token(store: &ConfigStore, who: &Actor, from: &str, into: &str) {
+    let view: SyncView = store
+        .read(
+            who,
+            &SyncQuery {
+                from: at(from),
+                into: Some(at(into)),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            who,
+            &SyncChanges {
+                from: at(from),
+                into: Some(at(into)),
+                close_after: false,
+                version: view.version,
+                picks: Some(vec!["web.env.TOKEN".into()]),
+                skip: Vec::new(),
+                values: BTreeMap::new(),
+                id: None,
+            },
+        )
+        .unwrap();
+}
