@@ -771,6 +771,16 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   },
 );
 
+/** The Organization's Cluster lists this Machine under the key it registered with, running its daemon: it joined. */
+const joinedOrganizationCluster = (snapshot: EnrollmentSnapshot, machineId: MachineId, claimedPublicKey: string) =>
+  snapshot.machines.some((machine) => machine.id === machineId && machine.runtime.daemon_version !== ""
+    && Buffer.from(machine.public_key).toString("base64") === claimedPublicKey);
+
+/** A joiner the Organization's Cluster doesn't list as joined yet, or can't be asked about; the CLI retries a 503. */
+const notJoinedYet = () => new Unavailable({
+  message: "Cloud doesn't see this Server joined to the Organization's Servers yet. Retrying.", userFacing: true,
+});
+
 /** `machineId` holds the Founding Claim and no founder is committed yet. */
 const isFounding = (pairing: PairingRow, machineId: MachineId) =>
   pairing.founderMachineId === null && pairing.founderClaimMachineId === machineId;
@@ -958,8 +968,8 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           machineName: token.claimedName ?? saved.machineName, updatedAt: new Date(),
         }).where(scope);
       } else {
-        // A founder's Cluster is checked fresh before Cloud holds a connection into it.
-        if (founding && verified === undefined) return yield* verification(undefined);
+        // Before Cloud holds a connection into it, a founder's Cluster is checked fresh, and a joiner is checked joined.
+        if (verified === undefined) return yield* verification(undefined);
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
           clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
@@ -985,6 +995,12 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           connections: [{ machine_id: input.machineId, management: input.capability }],
         }, { closeWithin: clusterRead }).pipe(Effect.timeout(SERVER_REACH_TIMEOUT_MS), Effect.mapError(unlessAnswered));
         if (!verify.founding) {
+          // Cloud dials an Organization through any Server it holds a connection for, so the Organization's own Cluster
+          // must have seen this one join before Cloud keeps its connection.
+          const observed = yield* observeClusterEnrollment(token.organizationId);
+          if (observed.kind === "no_connection") return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
+          if (observed.kind === "unreachable") return yield* notJoinedYet();
+          if (!joinedOrganizationCluster(observed.snapshot, input.machineId, token.claimedPublicKey)) return yield* notJoinedYet();
           yield* publish(saving);
           return false;
         }
