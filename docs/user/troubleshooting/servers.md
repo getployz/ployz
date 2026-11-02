@@ -491,8 +491,8 @@ No other server can join until the first one finishes.
    `ployz server forget --confirm <your organization's slug>` where you're signed in.
 3. Add a server again.
 
-If your first server did finish joining, there's no founding to reset, and `ployz cloud reset`
-says so. To start over, stop or erase your servers, then forget them as in step 2.
+If your first server did finish joining, there's no founding to reset, and the CLI says so. To
+start over, stop or erase your servers, then forget them as in step 2.
 
 ## Can't reach your servers right now
 
