@@ -1,3 +1,4 @@
+import type { MachineId } from "@ployz/sdk";
 import { readFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
@@ -5,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import {
   readSealingRecovery,
   recordFirstRecoveryBackup,
+  recordReportedSealingPublicKey,
   recordSealingPublicKey,
   recoveryDigest,
   rotateRecoveryBackup,
@@ -62,6 +64,38 @@ describe("the Organization's Sealing Key", () => {
       truncate table organization, operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
     `);
+  });
+
+  describe("a pairing's first key, from its founder only", () => {
+    const founder = "1".repeat(32) as MachineId;
+    const joiner = "2".repeat(32) as MachineId;
+    const recorded = async () => (await harness.pool.query("select public_key from cluster_sealing_key")).rows;
+
+    it("records nothing another Server reports first, then the founder's key", async () => {
+      await pair();
+      await run(recordReportedSealingPublicKey(organizationId, currentCluster, sealingKey("B"), joiner));
+      expect(await recorded()).toEqual([]);
+      expect((await harness.pool.query("select 1 from sealing_key_owner")).rows).toEqual([]);
+
+      await run(recordReportedSealingPublicKey(organizationId, currentCluster, sealingKey("A"), founder));
+      expect(await recorded()).toEqual([{ public_key: sealingKey("A") }]);
+    });
+
+    it("checks another Server's report against the founder's once it is recorded", async () => {
+      await pair();
+      await run(recordReportedSealingPublicKey(organizationId, currentCluster, sealingKey("A"), founder));
+      await run(recordReportedSealingPublicKey(organizationId, currentCluster, sealingKey("A"), joiner));
+      expect(await recorded()).toEqual([{ public_key: sealingKey("A") }]);
+    });
+
+    it("records nothing for a pairing that isn't current or has no founder yet", async () => {
+      await run(recordReportedSealingPublicKey(organizationId, currentCluster, sealingKey("A"), founder));
+      await pair();
+      await run(recordReportedSealingPublicKey(organizationId, clusterA, sealingKey("A"), founder));
+      await harness.pool.query("update organization_pairing set founder_public_key = 'founder-key', founder_machine_id = null");
+      await run(recordReportedSealingPublicKey(organizationId, currentCluster, sealingKey("A"), founder));
+      expect(await recorded()).toEqual([]);
+    });
   });
 
   describe("recorded for one Organization only", () => {

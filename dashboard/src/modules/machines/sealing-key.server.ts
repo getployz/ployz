@@ -5,7 +5,7 @@ import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createClusterResealRequestedEvent } from "#/modules/inngest/events";
-import { currentGeneration } from "#/modules/machines/connections.server";
+import { currentFounder, currentGeneration } from "#/modules/machines/connections.server";
 import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
 import type { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
 import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey, sealingKeyOwner } from "#/modules/machines/tables";
@@ -59,6 +59,24 @@ export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(fu
     );
   }
   yield* recordOrganizationSealingKey(organizationId, recorded ?? publicKey);
+});
+
+/**
+ * {@link recordSealingPublicKey} for a key `reporter` reported. A pairing's first key comes only from its founder: another
+ * Server's report records nothing until the founder's does, and a founder that never reports leaves the pairing keyless.
+ */
+export const recordReportedSealingPublicKey = Effect.fn("SealingKey.recordReported")(function* (
+  organizationId: string, clusterKey: string, publicKey: SealingPublicKey, reporter: MachineId,
+  delivery: "await" | "detach" = "await",
+) {
+  if ((yield* readSealingPublicKey(organizationId, clusterKey)) === undefined) {
+    const pairing = yield* currentFounder(organizationId);
+    if (pairing?.generation !== clusterKey || pairing.founder !== reporter) {
+      return yield* Effect.logWarning("A Server other than its Cluster's first reported the Sealing Key; Cloud waits for the first Server's report.")
+        .pipe(Effect.annotateLogs({ organizationId, reporter, founder: pairing?.founder ?? null }));
+    }
+  }
+  yield* recordSealingPublicKey(organizationId, clusterKey, publicKey, delivery);
 });
 
 export const recoveryDigest = (backup: string) => createHash("sha256").update(Buffer.from(backup, "base64")).digest("hex");

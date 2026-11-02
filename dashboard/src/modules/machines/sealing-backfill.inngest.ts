@@ -26,16 +26,16 @@ export async function executeEnsureClusterSealingKey(
   const target = await step.run("load-cluster", () => runEffect(loadSealingBackfillTarget(organizationId)));
   if (target === null) return { organizationId, skipped: true };
   const report = await step.run("backfill", () =>
-    runEffect(backfillClusterSealingKey(organizationId, { expected: target.expected, generator: target.generator })));
+    runEffect(backfillClusterSealingKey(organizationId, { expected: target.expected, generator: target.generator }, target)));
   if (report === null) return { organizationId, skipped: true };
-  const next = await step.run("handle-report", () => runEffect(handleSealingBackfillReport(organizationId, target.clusterKey, report)));
+  const next = await step.run("handle-report", () => runEffect(handleSealingBackfillReport(organizationId, target, report)));
   if (next.next === "stop") return { organizationId, result: next.result, awaitsOperator: next.awaitsOperator };
 
   const rerun = await step.run("backfill-with-generator", () =>
-    runEffect(backfillClusterSealingKey(organizationId, { expected: target.expected, generator: next.generator })));
+    runEffect(backfillClusterSealingKey(organizationId, { expected: target.expected, generator: next.generator }, target)));
   if (rerun === null) return { organizationId, skipped: true };
   const after = await step.run("handle-rerun-report", () =>
-    runEffect(handleSealingBackfillReport(organizationId, target.clusterKey, rerun)));
+    runEffect(handleSealingBackfillReport(organizationId, target, rerun)));
   return { organizationId, result: rerun.result, awaitsOperator: after.next === "stop" && after.awaitsOperator };
 }
 

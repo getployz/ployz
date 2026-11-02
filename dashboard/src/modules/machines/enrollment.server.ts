@@ -36,7 +36,7 @@ import {
   type ReadMachineEnrollmentInput,
   type ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
-import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-compat.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
@@ -1190,7 +1190,7 @@ const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
       Effect.catch((error) => Effect.logWarning("Sealing Key backfill request failed; enrollment continues.", error)),
     );
   }
-  yield* recordSealingPublicKey(organizationId, clusterKey, sealing.publicKey).pipe(
+  yield* recordReportedSealingPublicKey(organizationId, clusterKey, sealing.publicKey, machineId).pipe(
     Effect.annotateLogs(annotations),
     Effect.catchTag("SealingKeyHeldElsewhere", () => Effect.fail(new Conflict({
       userFacing: true, message: "This Server's Cluster is already connected to another Organization in Ployz Cloud.",
