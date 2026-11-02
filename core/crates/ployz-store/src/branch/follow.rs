@@ -217,8 +217,9 @@ fn into(
         }
     }
     // A seal the Branch's own change, a plain value or a deletion, holds back, as a
-    // hint or with none at all; never one it marks Never sync. Read against its Working State before this Follow, so
-    // a seal that landed isn't one, nor one the Branch holds a secret of.
+    // hint or with none at all; never one it marks Never sync. Read against its
+    // Working State before this Follow, so a seal that landed isn't one, nor one the
+    // Branch holds a secret of.
     let (from, base, now) = (
         Cells::of(&follow.from, ""),
         Cells::of(&follow.base, ""),
