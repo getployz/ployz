@@ -106,8 +106,8 @@ service still gets the real value when it deploys.
   after it was created, and in a branch made from a branch, even one whose parent took the
   value by a follow or a sync. This holds whether or not the branch deployed the earlier
   value, and after it takes the seal. Discarding that change brings the variable back **Not set**, never with the
-  earlier value. The branch's History shows the versions it saved before the seal with that
-  value as **Sealed** too. Undo or Roll back to one never brings that value back: the
+  earlier value. The branch's History shows every version that holds that earlier value as
+  **Sealed** too. Undo or Roll back to one never brings that value back: the
   variable comes back **Not set**, or keeps the value the branch holds now.
   A value the branch set itself before the seal, saved or deployed, wasn't
   sealed, so it still shows until the branch takes the seal. When a branch changed or deleted
