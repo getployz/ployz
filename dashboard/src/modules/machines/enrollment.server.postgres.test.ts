@@ -1060,6 +1060,20 @@ describe("organization enrollment coordinator", () => {
         const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
         expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([keyed(0xab, 0x02)]);
       });
+      await vi.waitFor(async () => {
+        expect((await harness.pool.query("select founder_publication from organization_pairing")).rows).toEqual([{ founder_publication: null }]);
+      });
+    });
+
+    it("keeps the credential a refresh's first read activated when a later read fails", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x01) })).toMatchObject({ success: { machineId: attempt.machineId } });
+      fake.connection.beforeObserve = () => new Promise(() => {});
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) })).toMatchObject({ failure: { _tag: "Unavailable" } });
+      expect(fake.cluster.accepted).toBe(keyed(0xab, 0x02));
+      const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
+      expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([keyed(0xab, 0x02)]);
     });
 
     it("takes the turn of a publication that never finished once it lapses", async () => {

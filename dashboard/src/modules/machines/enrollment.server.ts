@@ -988,8 +988,15 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           yield* publish(saving);
           return false;
         }
-        const cluster = yield* readCluster(session).pipe(withClusterBudget(FRESHNESS_CLUSTER_MS));
         const connected = verify.iv !== undefined;
+        // The first read may have activated this credential before a later one failed: a refresh keeps the one that works,
+        // as main saved a refresh once negotiated. A first publication saves nothing whose Cluster it didn't see.
+        const cluster = yield* readCluster(session).pipe(
+          withClusterBudget(FRESHNESS_CLUSTER_MS),
+          Effect.onError(() => connected
+            ? publish(saving).pipe(Effect.ignoreCause({ log: true, message: "Founder's credential not saved after a failed read" }))
+            : Effect.void),
+        );
         if (isFreshCluster(cluster, input.machineId, connected)) {
           yield* publish(saving);
           return false;
