@@ -1225,17 +1225,24 @@ const commitFounder = Effect.fn("MachineEnrollment.commitFounder")(function* (
     .where(eq(schemaOrganizationPairing.organizationId, organizationId));
 });
 
+/** A reset gives up only a founding that never finished; one that finished says how to start over instead. */
+const foundingFinished = () => new Conflict({
+  message: "Your Organization's first server already finished joining, so there's no founding to reset. "
+    + "To start over, stop or delete your servers, then forget them under Danger on the Organization page, or run ployz server forget.",
+  userFacing: true,
+});
+
 const resetPendingEnrollment = Effect.fn("MachineEnrollment.resetPendingState")(
   function* (organizationId: string) {
     const [pairing] = yield* loadPairingRow(organizationId);
     if (pairing?.founderMachineId !== null && pairing?.founderMachineId !== undefined) {
-      return yield* new Conflict({ message: "A completed enrollment cannot be reset as a pending founder." });
+      return yield* foundingFinished();
     }
     const revoked = yield* revokeOrganizationPairing(organizationId, { releaseClaim: true });
     if (revoked.confirmed) return { reset: true as const };
     const refused = "refused" in revoked ? revoked.refused : null;
     if (refused === "kept") {
-      return yield* new Conflict({ message: "A completed enrollment cannot be reset as a pending founder." });
+      return yield* foundingFinished();
     }
     return yield* new Conflict({
       message: refused === "unconfirmable"

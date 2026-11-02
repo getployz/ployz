@@ -493,6 +493,9 @@ No other server can join until the first one finishes.
    `ployz server add --command` or **Add servers**.
 3. Add a server again.
 
+If your first server did finish joining, there's no founding to reset, and the CLI says so. To
+start over, stop or erase your servers, then forget them as in step 2.
+
 ## Can't reach your servers right now
 
 The **Servers** page shows **Can't reach your servers right now**, with what your servers last
