@@ -35,7 +35,9 @@ const setup = Effect.fn(function* (onSet: OnSet = async () => {}, close: () => P
       const machine = connection && "machine_id" in connection ? connection.machine_id ?? "" : "";
       expected.set(machine, options.expect?.sealingPublicKey ?? null);
       if (machine === OFFLINE) throw new Error("Endpoint unavailable");
+      // A `foreign` Machine holds another Cluster's key; every other one holds none yet.
       if (foreign.includes(machine) && options.expect) throw { code: "unauthenticated", message: `Machine ${machine} belongs to another Cluster`, details: null };
+      if (options.expect && options.expect.allowUnverified !== true) throw { code: "unauthenticated", message: `Machine ${machine} can't show which Cluster it belongs to`, details: null };
       return asTestDouble<Client>()({
         setPushTarget: async (target: string | null) => {
           dialed.push({ machine, url: target });
@@ -139,4 +141,12 @@ it.live("each Machine is dialed expecting its own pairing's recorded key, and on
   expect(expected.get(OLD)).toBeNull();
   expect(outcomes).toEqual(expect.arrayContaining([{ machineId: CURRENT, delivery: "unreachable" }]));
   expect((yield* confirmed()).find((row) => row.machineId === CURRENT)?.pushTarget).toBeNull();
+}));
+
+it.live("a Machine that holds no key yet is still pointed here once its pairing records one", () => Effect.gen(function* () {
+  const { expected, confirmed, sweep, recordKey } = yield* setup();
+  yield* recordKey();
+  yield* sweep();
+  expect(expected.get(CURRENT)).toBe(SEALING_KEY);
+  expect((yield* confirmed()).find((row) => row.machineId === CURRENT)?.pushTarget).toBe(url(CURRENT));
 }));

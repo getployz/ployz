@@ -391,7 +391,7 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
       error._tag === "PloyzProviderError" && error.operation === "connect"
         && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause))
         ? Effect.succeed("confirmed" as const)
-        : Effect.logWarning("Server didn't confirm its removal yet.", { machineId, error }).pipe(Effect.as("silent" as const)),
+        : Effect.logInfo("Server didn't confirm its removal yet.", { machineId, error }).pipe(Effect.as("silent" as const)),
     ));
   },
 );

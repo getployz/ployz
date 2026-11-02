@@ -1563,7 +1563,7 @@ it.live(
 );
 
 it.live(
-  "Server access hands out a stored holder only while its Server still answers for the pairing's Cluster",
+  "Server access withholds a stored holder from a Server that answers for another Cluster, and keeps it for one that holds no key or doesn't answer",
   () =>
     Effect.gen(function* () {
       const fake = fakeServers();
@@ -1577,7 +1577,8 @@ it.live(
         const movingServer = { online: true, slots: new Map<string, string>(), holds: pairingKey };
         fake.servers.set(moving, movingServer);
         yield* enroll(alice.organization.id, own, false);
-        fake.servers.set(own, { online: true, slots: new Map(), holds: pairingKey });
+        const ownServer = { online: true, slots: new Map<string, string>(), holds: pairingKey as string | undefined };
+        fake.servers.set(own, ownServer);
         yield* (yield* Database).drizzle.insert(clusterSealingKey).values({
           organizationId: alice.organization.id, clusterKey: createHash("sha256").update(pairingSecret).digest("hex"), publicKey: pairingKey,
         });
@@ -1597,6 +1598,10 @@ it.live(
         assert.deepStrictEqual(moved.connections, [{ machine_id: own, management: held(own) }]);
         assert.deepStrictEqual(moved.refused?.map((refused: { machine_id: string }) => refused.machine_id), [moving]);
 
+        // One that holds no key yet, as a joiner waiting for it does, keeps its holder.
+        ownServer.holds = undefined;
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.connections, [{ machine_id: own, management: held(own) }]);
+
         // One that doesn't answer Cloud keeps its holder, as before Cloud checked one.
         movingServer.online = false;
         const silent = (yield* cli("POST", "server-access", alice)).json;
@@ -1609,7 +1614,7 @@ it.live(
 );
 
 it.live(
-  "a revoked holder's Clear skips a Server that now answers for another Cluster, and lands once it answers for the pairing's again",
+  "a revoked holder's Clear reaches its Server whichever Cluster it answers for, since it hands out nothing",
   () =>
     Effect.gen(function* () {
       const fake = fakeServers();
@@ -1635,13 +1640,11 @@ it.live(
           .where(eq(serverAccess.organizationId, alice.organization.id));
 
         server.holds = `${"X".repeat(43)}=`;
-        assert.deepStrictEqual(yield* retireServerAccess(), { confirmed: [other], unconfirmed: [machine] });
-        assert.strictEqual(server.slots.size, 1);
-        assert.strictEqual(joiner.slots.size, 0);
-
-        server.holds = pairingKey;
-        assert.deepStrictEqual(yield* retireServerAccess(), { confirmed: [machine], unconfirmed: [] });
+        const swept = yield* retireServerAccess();
+        assert.deepStrictEqual([...swept.confirmed].sort(), [machine, other].sort());
+        assert.deepStrictEqual(swept.unconfirmed, []);
         assert.strictEqual(server.slots.size, 0);
+        assert.strictEqual(joiner.slots.size, 0);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
