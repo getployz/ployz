@@ -183,10 +183,12 @@ pub(crate) async fn confirming_channel() -> Channel {
     memory_channel(service, false).await.0
 }
 
-/// A channel to Machine `id` that confirms and answers Inspect holding `sealing`.
+/// A channel to Machine `id` that confirms and answers Inspect holding `sealing`, or
+/// never answers Inspect when `answers_inspect` is false.
 pub(crate) async fn sealed_channel(
     id: ployz_core::MachineId,
     sealing: Option<ployz_core::Sealing>,
+    answers_inspect: bool,
 ) -> Channel {
     use ployz_core::{RpcRequestBody, RpcResponse};
     let rpc = tower::service_fn(move |request: Request<OpaquePayload>| async move {
@@ -199,6 +201,9 @@ pub(crate) async fn sealed_channel(
                 capabilities: Default::default(),
             })
         } else if let RpcRequestBody::Inspect(_) = body {
+            if !answers_inspect {
+                std::future::pending::<()>().await;
+            }
             RpcResponse::from(ployz_core::MachineDetails {
                 id,
                 phase: ployz_core::LocalMachinePhase::Participating,

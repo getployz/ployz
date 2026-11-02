@@ -108,14 +108,21 @@ impl Client {
     }
 
     /// Whether the confirmed entry holds `expect`'s Sealing Key. Inspect is a read every
-    /// supported daemon answers; one that predates the field reports no key.
+    /// supported daemon answers; one that predates the field reports no key. Like the
+    /// confirmation, one try within [`CONNECT_CONFIRM_TIMEOUT`], else
+    /// [`ConnectError::EntryNotReady`].
     pub(crate) async fn check_cluster(
         &mut self,
         expect: &crate::connect::ClusterExpectation,
     ) -> Result<crate::connect::ClusterCheck, ConnectError> {
-        let details = self
-            .call::<op::Inspect>(ployz_core::InspectRequest::default(), None)
-            .await?;
+        let inspect = async {
+            let payload =
+                op::Inspect::into_request(ployz_core::InspectRequest::default()).encode()?;
+            self.call_once::<op::Inspect>(payload, None).await
+        };
+        let details = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, inspect)
+            .await
+            .map_err(|_| ConnectError::EntryNotReady)??;
         let machine_id = self.entry.unwrap_or(details.id);
         match details.sealing {
             Some(
