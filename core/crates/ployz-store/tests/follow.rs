@@ -3163,9 +3163,26 @@ fn a_seal_leaves_a_branchs_own_value_in_what_the_branches_below_share() {
     three_down(&store, &who);
     deploy(&store, &who, "qa", 3);
     deploy(&store, &who, "qa-two", 4);
-    let held = |marker: &str| backend::tables_holding(&url, marker);
+    // Rows holding `marker` in what any Branch was made with, shares and holds as
+    // arrived.
+    let held = |marker: &str| -> Vec<i64> {
+        [
+            ("config_environment_branch", "made_with"),
+            ("config_sync_base", "base"),
+            ("config_sync_arrival", "value"),
+            ("config_sync_arrival", "prior"),
+        ]
+        .iter()
+        .map(|(table, column)| {
+            backend::count(
+                &url,
+                &format!("SELECT COUNT(*) FROM {table} WHERE {column} LIKE '%{marker}%'"),
+            )
+        })
+        .collect()
+    };
     let (edit, edit_two) = (held("plain-edit\""), held("plain-edit-two"));
-    assert!(edit.contains(&"config_sync_arrival".to_owned()), "{edit:?}");
+    assert!(edit[2] > 0, "{edit:?}");
     seal_token(&store, &who, 5);
 
     assert_eq!(held("plain-edit\""), edit);
@@ -3507,4 +3524,92 @@ fn a_branch_of_a_branch_never_shows_a_template_a_rename_rewrote_once_sealed() {
     assert_eq!(token_row(&review), (json!({ "secret": true }), Value::Null));
     let shown = serde_json::to_string(&review).unwrap();
     assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// Removing the Service after sealing its variable keeps the seal for the Branches
+/// below that share the value.
+#[test]
+fn a_branch_of_a_branch_never_shows_a_sealed_value_once_its_service_is_removed_above() {
+    let (store, who) = shop();
+    followed_then_branched(&store, &who);
+    seal_token(&store, &who, 6);
+    remove_services(&store, &who, &["web"]);
+
+    let review = diff(&store, &who, "qa-two");
+    assert_eq!(
+        token_row(&review),
+        (json!({ "secret": true }), json!("plain-edit"))
+    );
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// A value production never held, though a Sync base production shares holds it,
+/// stays in what a Branch below was made with and shares with its Parent.
+#[test]
+fn a_seal_leaves_a_value_only_a_sync_base_of_the_sealer_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("public-local"))],
+    );
+    branch(&store, &who, 11, "qa", "qa-two");
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    let version = store
+        .read(
+            &who,
+            &SyncQuery {
+                from: at("production"),
+                into: Some(at("qa-two")),
+            },
+        )
+        .unwrap()
+        .version;
+    store
+        .write(
+            &who,
+            &SyncChanges {
+                from: at("production"),
+                into: Some(at("qa-two")),
+                close_after: false,
+                version,
+                picks: Some(vec![row("variables.PLAIN").into()]),
+                skip: Vec::new(),
+                values: BTreeMap::new(),
+                id: None,
+            },
+        )
+        .unwrap();
+    let (qa, two) = (uuid(10), uuid(11));
+    let held = || {
+        backend::count(
+            &url,
+            &format!(
+                "SELECT COUNT(*) FROM config_environment_branch \
+                 WHERE environment_id = '{two}' AND made_with LIKE '%public-local%'"
+            ),
+        ) + backend::count(
+            &url,
+            &format!(
+                "SELECT COUNT(*) FROM config_sync_base WHERE environment_id = '{qa}' \
+                 AND other_id = '{two}' AND base LIKE '%public-local%'"
+            ),
+        )
+    };
+    assert_eq!(held(), 2);
+    seal_token(&store, &who, 3);
+
+    assert_eq!(held(), 2);
 }

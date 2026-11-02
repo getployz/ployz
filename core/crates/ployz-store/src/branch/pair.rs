@@ -971,8 +971,8 @@ pub(crate) fn empty_in_bases(
 }
 
 /// Each fingerprint `environment` held for `rows`: in what its Working State held
-/// before the write, its saves, and what it was made with or shares, which keep a
-/// value's fingerprint once emptied.
+/// before the write, its saves, and what it was made with or shares with its
+/// Parent and Branches, which keep a value's fingerprint once emptied.
 fn held(
     tx: &mut dyn Tx,
     environment: &str,
@@ -1006,6 +1006,10 @@ fn held(
     if let Some(before) = before {
         review::sealed::hold(&mut held, before, rows);
     }
+    // Only what it held itself: its saves, what it and its Branches were made
+    // with, and what it shares with its Parent or a Branch, which starts as what
+    // the Branch was made with and moves only by what lands. A Sync base with any
+    // other Environment can start as that one's value.
     for (sql, what) in [
         (
             "SELECT intent FROM config_saved WHERE environment_id = ?1",
@@ -1017,7 +1021,10 @@ fn held(
             "Branch",
         ),
         (
-            "SELECT base FROM config_sync_base WHERE environment_id = ?1 OR other_id = ?1",
+            "SELECT b.base FROM config_sync_base b JOIN config_environment_branch e \
+             ON (e.environment_id = b.environment_id AND e.parent_id = b.other_id) \
+             OR (e.environment_id = b.other_id AND e.parent_id = b.environment_id) \
+             WHERE b.environment_id = ?1 OR b.other_id = ?1",
             "Sync base",
         ),
     ] {

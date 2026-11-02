@@ -472,28 +472,47 @@ impl Chain {
                 .intent(0, "Working State")?;
             self.working.insert(environment.to_owned(), working);
         }
-        let Some(service) = self
+        let service = self
             .working
             .get(environment)
-            .and_then(|working| working.services.iter().find(|s| s.lineage_id == lineage))
-        else {
-            return Ok(Now::Gone);
-        };
-        let variable = service.variables.iter().find(|v| v.key == key);
-        let held =
-            variable.map(|variable| (sealed(&variable.value), variable.value_fingerprint.clone()));
-        let service = service.id.clone();
-        Ok(match held {
-            Some((true, _)) => Now::Sealed,
-            Some((false, fingerprint)) => Now::Plain { fingerprint },
-            None if ledger(tx, &mut self.ledgers, environment)?
-                .keys
-                .contains(&(service, key.to_owned())) =>
+            .and_then(|working| working.services.iter().find(|s| s.lineage_id == lineage));
+        if let Some(variable) = service.and_then(|s| s.variables.iter().find(|v| v.key == key)) {
+            return Ok(if sealed(&variable.value) {
+                Now::Sealed
+            } else {
+                Now::Plain {
+                    fingerprint: variable.value_fingerprint.clone(),
+                }
+            });
+        }
+        // Deleted, with its Service or alone: by each node of the lineage it had.
+        let mut nodes: BTreeSet<String> = service.map(|s| s.id.clone()).into_iter().collect();
+        for row in tx.query(
+            "SELECT node FROM config_node_introduction \
+             WHERE environment_id = ?1 AND node_type = ?2",
+            &[
+                environment.into(),
+                crate::storage::name_of(EnvironmentNodeType::Service)
+                    .as_str()
+                    .into(),
+            ],
+        )? {
+            let introduced: SavedServiceIntent = row.json(0, "Node Introduction")?;
+            if introduced.lineage_id == lineage {
+                nodes.insert(introduced.id);
+            }
+        }
+        let ever = ledger(tx, &mut self.ledgers, environment)?;
+        Ok(
+            if nodes
+                .into_iter()
+                .any(|node| ever.keys.contains(&(node, key.to_owned())))
             {
                 Now::Sealed
-            }
-            None => Now::Gone,
-        })
+            } else {
+                Now::Gone
+            },
+        )
     }
 
     /// `environment`'s Parent and the base the two last shared, read once.
