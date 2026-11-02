@@ -840,7 +840,9 @@ describe("organization enrollment coordinator", () => {
     expect(fake.observations()).toBe(2);
     expect(await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(0) })).toMatchObject({ success: { kind: "initialize", resumed: true } });
     expect(await fake.coordinator.tryRevokePairing(organizationId)).toBe(false);
-    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({
+      failure: { _tag: "Conflict", userFacing: true, message: expect.stringContaining("already finished joining") },
+    });
   });
 
   it("refreshes credentials after a lost acknowledgement", async () => {
