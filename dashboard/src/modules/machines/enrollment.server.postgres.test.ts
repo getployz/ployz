@@ -989,6 +989,20 @@ describe("organization enrollment coordinator", () => {
       },
     );
 
+    it("keeps the claim when a token that only resumed it is refused", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      const token = await issueToken();
+      const resumed = await fake.coordinator.enroll({ token, identity: identity(0) });
+      if (Result.isFailure(resumed) || resumed.success.kind !== "initialize") throw new Error("No resumed claim");
+      fake.cluster.managementClients = ["cloud", "laptop"];
+      expect(await fake.coordinator.publish({ ...attempt, token, pairingCredential: resumed.success.pairing.secret, capability }))
+        .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+      expect(await founderRow()).toHaveLength(1);
+      expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) }))
+        .toMatchObject({ success: { kind: "initialize", resumed: true } });
+    });
+
     it("refuses a Server that answers as another Machine", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);

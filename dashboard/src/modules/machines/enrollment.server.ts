@@ -818,7 +818,7 @@ const isFreshCluster = (
  * connection, which resetting the attempt revokes instead.
  */
 const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(function* (
-  organizationId: string, machineId: MachineId, encryptedPairingSecret: EncryptedSecretValue,
+  organizationId: string, machineId: MachineId, encryptedPairingSecret: EncryptedSecretValue, token: string,
 ) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
@@ -826,7 +826,9 @@ const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(f
     const { drizzle } = yield* Database;
     const [pairing] = yield* drizzle.select(organizationPairingProjection).from(schemaOrganizationPairing)
       .where(eq(schemaOrganizationPairing.organizationId, organizationId)).for("update");
+    // Only the token that acquired the claim lets go of it: another token can resume the same identity.
     if (!pairing || pairing.removalStartedAt !== null || !isFounding(pairing, machineId)
+      || pairing.founderClaimTokenHash !== hashEnrollmentToken(token)
       || !isDeepStrictEqual(pairing.encryptedPairingSecret, encryptedPairingSecret)) return "moved" as const;
     const [held] = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
       .where(eq(organizationMachine.organizationId, organizationId)).limit(1);
@@ -889,13 +891,11 @@ export const releaseFoundingClaim = Effect.fn("MachineEnrollment.releaseFounding
   function* (input: { token: string; machineId: MachineId; pairingCredential: string }) {
     const token = yield* requireUnspentClaim(input.token, input.machineId);
     const [pairing] = yield* loadPairingRow(token.organizationId);
-    // Only the token that acquired the claim lets go of it: another token can resume the same identity.
     if (!pairing || !isFounding(pairing, input.machineId) || pairing.founderPublicKey !== token.claimedPublicKey
-      || pairing.founderClaimTokenHash !== hashEnrollmentToken(input.token)
       || !credentialsMatch(yield* decryptPairingSecret(pairing.encryptedPairingSecret), input.pairingCredential)) {
       return yield* new Conflict({ message: "This Server holds no founding attempt to let go of." });
     }
-    const released = yield* releaseRefusedClaim(token.organizationId, input.machineId, pairing.encryptedPairingSecret);
+    const released = yield* releaseRefusedClaim(token.organizationId, input.machineId, pairing.encryptedPairingSecret, input.token);
     if (released !== "released") {
       return yield* new Conflict({ message: "The founding attempt has moved on; reset it in Ployz Cloud." });
     }
@@ -1030,7 +1030,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           yield* publish(saving).pipe(Effect.ignoreCause({ log: true, message: "Refused founder's working credential not saved" }));
           return true;
         }
-        const release = yield* releaseRefusedClaim(token.organizationId, input.machineId, verify.encryptedPairingSecret);
+        const release = yield* releaseRefusedClaim(token.organizationId, input.machineId, verify.encryptedPairingSecret, input.token);
         // A racing publication saved Cloud's connection since: the slots Cloud fills through it are Cloud's.
         if (release === "connected" && isFreshCluster(cluster, input.machineId, true)) {
           yield* publish(saving);
