@@ -3961,3 +3961,33 @@ fn a_seal_past_a_change_leaves_a_row_the_branch_below_marks_never_sync() {
         json!("plain-private")
     );
 }
+
+/// A Branch that marks the variable Never sync never takes the seal, so neither does
+/// a Branch below it, nor below the Branch between when that one marks it (#3760).
+#[test]
+fn a_seal_past_a_change_stops_at_a_never_sync_mark_on_the_way() {
+    for marker in ["qa", "qa-two"] {
+        let (store, who) = shop();
+        sealed_past_a_change(&store, &who, |store, who| {
+            branch(store, who, 12, "qa-two", "qa-three");
+            store
+                .write(
+                    who,
+                    &NeverSync {
+                        environment: at(marker),
+                        rows: vec![row("variables.TOKEN").into()],
+                        off: false,
+                    },
+                )
+                .unwrap();
+            set(store, who, "qa", &[("web.env.TOKEN", json!("plain-edit"))]);
+        });
+
+        let below = if marker == "qa" { "qa-two" } else { "qa-three" };
+        assert_eq!(
+            web(&store, &who, below)["env"]["TOKEN"],
+            json!("plain-private"),
+            "{marker}"
+        );
+    }
+}

@@ -1201,23 +1201,33 @@ pub(crate) fn seal_inherited_below(
     who: &Actor,
     parent: &EnvironmentId,
     receiver: &EnvironmentId,
-    row: &RowId,
+    sealed_row: &RowId,
 ) -> Result<(), RpcError> {
-    let At::Variable(key) = row.at() else {
+    let At::Variable(key) = sealed_row.at() else {
         return Ok(());
     };
-    let rows = BTreeSet::from([(row.lineage().to_owned(), key.clone())]);
+    let rows = BTreeSet::from([(sealed_row.lineage().to_owned(), key.clone())]);
     let Some(fingerprints) = held(tx, parent.as_str(), &rows, None, Took::Sealer)?
         .into_values()
         .next()
     else {
         return Ok(());
     };
-    let (lineage, key) = (row.lineage(), key.as_str());
+    let (lineage, key) = (sealed_row.lineage(), key.as_str());
+    let at = RowId::of(lineage, At::Variable(key.to_owned()));
+    // A Branch that marks the row Never sync never takes the seal by Follow, so
+    // neither does any Branch below it.
+    let mut fenced = BTreeSet::new();
     for branch in below(tx, receiver.as_str())? {
+        let branch = EnvironmentId::try_from(branch).map_err(|_| error::corrupt("Branch"))?;
         let sealed = storage::attempt(tx, |tx| {
-            let branch =
-                EnvironmentId::try_from(branch.clone()).map_err(|_| error::corrupt("Branch"))?;
+            let parent = row(tx, &branch)?.map(|row| row.parent);
+            if parent.is_some_and(|parent| fenced.contains(&parent))
+                || marked(tx, &branch)?.contains(&at)
+            {
+                fenced.insert(branch.clone());
+                return Ok(());
+            }
             if super::follow::stopped(tx, &branch)? {
                 return Ok(());
             }
@@ -1230,7 +1240,9 @@ pub(crate) fn seal_inherited_below(
             seal_inherited(tx, &mut branch, lineage, key, &fingerprints)
         });
         if let Err(error) = sealed {
-            tracing::warn!(%branch, ?error, "couldn't seal a value a Branch inherited");
+            // Unread, it may mark the row: what's below it waits as well.
+            fenced.insert(branch.clone());
+            tracing::warn!(branch = %branch.as_str(), ?error, "couldn't seal a value a Branch inherited");
         }
     }
     Ok(())
