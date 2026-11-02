@@ -1547,6 +1547,26 @@ describe("organization enrollment coordinator", () => {
     expect(errors.count()).toBe(1);
   });
 
+  it("refuses a Server whose Cluster's Sealing Key another Organization recorded, and records nothing", async () => {
+    const other = "00000000-0000-4000-8000-0000000089aa";
+    await harness.pool.query("insert into organization (id,name,slug) values ($1,'Owner','sealing-owner')", [other]);
+    await harness.pool.query("insert into sealing_key_owner (public_key, organization_id) values ($1,$2)", [held("A").publicKey, other]);
+    const fake = fakeSession(harness.database);
+    fake.cluster.joins = true;
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    using errors = logged("ERROR", "another Organization's Cluster recorded");
+    expect(await fake.coordinator.completeFounding({ ...founder, sealing: held("A") })).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await sealingKeys()).toEqual([]);
+    expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
+    expect(errors.count()).toBe(1);
+    expect((await harness.pool.query("select organization_id from sealing_key_owner")).rows).toEqual([{ organization_id: other }]);
+
+    // A Server of its own Cluster still completes.
+    expect(await fake.coordinator.completeFounding({ ...founder, sealing: held("B") })).toMatchObject({ success: { machineId: founder.machineId } });
+    expect(await sealingKeys()).toEqual([{ cluster_key: hashEnrollmentToken(founder.pairingCredential), public_key: held("B").publicKey }]);
+  });
+
   it("records no Sealing Key for a Server that joined without one, and warns", async () => {
     const fake = fakeSession(harness.database);
     const founder = await pendingFounder(fake);

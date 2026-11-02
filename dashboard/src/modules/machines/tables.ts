@@ -507,6 +507,23 @@ export const clusterSealingKey = pgTable(
   ],
 );
 
+/**
+ * The one Organization a Sealing public key is recorded for. The first to record it keeps it; that Organization's later
+ * pairings of the same Cluster record it again, and another Organization's report of it is refused.
+ */
+export const sealingKeyOwner = pgTable(
+  "sealing_key_owner",
+  {
+    publicKey: text("public_key").primaryKey(),
+    organizationId: uuid("organization_id").notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    createdAt,
+  },
+  (table) => [
+    check("sealing_key_owner_public_key_check", sql`${table.publicKey} ~ '^[A-Za-z0-9+/]{43}=$'`),
+  ],
+);
+
 export const clusterSealingKeyGenerator = pgTable(
   "cluster_sealing_key_generator",
   {

@@ -37,6 +37,9 @@ export const readClusterSealingToSeal = Effect.fn("ClusterSealing.readToSeal")(f
   // A pairing replaced during the read must not take the old Cluster's key.
   if (held.size !== 1 || publicKey === undefined || (yield* currentGeneration(organizationId)) !== generation) return recorded;
   // The reseal request is queued durably, so a seal never waits on Inngest to take it.
-  yield* recordSealingPublicKey(organizationId, generation, publicKey, "detach");
+  // A key another Organization recorded stays unrecorded here, so nothing is sealed to it.
+  yield* recordSealingPublicKey(organizationId, generation, publicKey, "detach").pipe(
+    Effect.catchTag("SealingKeyHeldElsewhere", () => Effect.void),
+  );
   return yield* readClusterSealing(organizationId);
 });

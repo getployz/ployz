@@ -8,6 +8,7 @@ import {
   recordSealingPublicKey,
   recoveryDigest,
   rotateRecoveryBackup,
+  SealingKeyHeldElsewhere,
 } from "#/modules/machines/sealing-key.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
@@ -61,6 +62,85 @@ describe("the Organization's Sealing Key", () => {
       truncate table organization, operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
     `);
+  });
+
+  describe("recorded for one Organization only", () => {
+    const other = "00000000-0000-4000-8000-000000000d02";
+    const clusterKeys = async () => (await harness.pool.query(
+      "select organization_id, cluster_key from cluster_sealing_key order by organization_id, cluster_key",
+    )).rows;
+    const owner = async () => (await harness.pool.query("select organization_id from sealing_key_owner")).rows;
+    beforeEach(async () => {
+      await harness.pool.query("insert into organization (id, name, slug) values ($1, 'Other', 'other')", [other]);
+    });
+
+    it("records the same key again for a later pairing of the same Organization", async () => {
+      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
+      await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("A")));
+
+      expect(await clusterKeys()).toEqual([
+        { organization_id: organizationId, cluster_key: clusterA }, { organization_id: organizationId, cluster_key: clusterB },
+      ]);
+      expect(await owner()).toEqual([{ organization_id: organizationId }]);
+    });
+
+    it("refuses another Organization's report of it and records nothing for that Organization", async () => {
+      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
+      const refused = await failure(recordSealingPublicKey(other, clusterB, sealingKey("A")));
+
+      expect(refused).toBeInstanceOf(SealingKeyHeldElsewhere);
+      expect(await clusterKeys()).toEqual([{ organization_id: organizationId, cluster_key: clusterA }]);
+      expect(await owner()).toEqual([{ organization_id: organizationId }]);
+      expect((await harness.pool.query("select 1 from organization_sealing_key where organization_id = $1", [other])).rows).toEqual([]);
+    });
+
+    it("keeps recording a key for an Organization that recorded it before another owned it", async () => {
+      await harness.pool.query("insert into sealing_key_owner (public_key, organization_id) values ($1, $2)", [sealingKey("A"), organizationId]);
+      await harness.pool.query(
+        "insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1, $2, $3)", [other, clusterA, sealingKey("A")],
+      );
+      await run(recordSealingPublicKey(other, clusterA, sealingKey("A")));
+      await run(recordSealingPublicKey(other, clusterB, sealingKey("A")));
+
+      expect(await clusterKeys()).toEqual([{ organization_id: other, cluster_key: clusterA }, { organization_id: other, cluster_key: clusterB }]);
+      expect(await owner()).toEqual([{ organization_id: organizationId }]);
+    });
+
+    it("lets an Organization that kept its key after forgetting its Servers record it again", async () => {
+      await harness.pool.query("insert into sealing_key_owner (public_key, organization_id) values ($1, $2)", [sealingKey("A"), other]);
+      await store(sealingKey("A"), backup(2));
+      await run(recordSealingPublicKey(organizationId, clusterB, sealingKey("A")));
+
+      expect(await clusterKeys()).toEqual([{ organization_id: organizationId, cluster_key: clusterB }]);
+    });
+
+    it("takes no key a pairing that already records another doesn't record", async () => {
+      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
+      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("B")));
+
+      expect((await harness.pool.query("select public_key from sealing_key_owner")).rows).toEqual([{ public_key: sealingKey("A") }]);
+    });
+
+    it("takes no key a pairing records at once with another", async () => {
+      await Promise.allSettled([
+        run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A"))),
+        run(recordSealingPublicKey(organizationId, clusterA, sealingKey("B"))),
+      ]);
+
+      const recorded = (await harness.pool.query("select public_key from cluster_sealing_key")).rows;
+      expect((await harness.pool.query("select public_key from sealing_key_owner")).rows).toEqual(recorded);
+    });
+
+    it("gives a key two Organizations report at once to exactly one of them", async () => {
+      const results = await Promise.allSettled([
+        run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A"))),
+        run(recordSealingPublicKey(other, clusterB, sealingKey("A"))),
+      ]);
+
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      const [kept] = await owner();
+      expect((await clusterKeys()).map((row) => row.organization_id)).toEqual([kept?.organization_id]);
+    });
   });
 
   describe("recorded from a Cluster's report", () => {
