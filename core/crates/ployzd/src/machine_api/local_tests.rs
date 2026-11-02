@@ -801,6 +801,7 @@ async fn fake_docker_service(
                 advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                     "192.0.2.1:51820".parse().unwrap(),
                 )],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -2928,6 +2929,7 @@ mod read_routes {
                     advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                         "192.0.2.1:51820".parse().unwrap(),
                     )],
+                    grant: None,
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),

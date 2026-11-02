@@ -443,6 +443,42 @@ where
     ))
 }
 
+/// A rerun resumes a founding this claim made. The founding a daemon from before 0.3.15
+/// never recorded resumes as it did then, and Cloud checks its Cluster before using it.
+fn resumes_founding(founding: ployz_core::Founding, claim: ployz_core::FoundingClaim) -> bool {
+    match founding {
+        ployz_core::Founding::Claim { claim: founded } => founded == claim,
+        ployz_core::Founding::Unrecorded => true,
+        ployz_core::Founding::Joined | ployz_core::Founding::Standalone => false,
+    }
+}
+
+/// Refuse to found on this Server, first letting go of the Founding Claim so the Organization
+/// can start with another Server.
+async fn refuse_founding(
+    cloud_url: &str,
+    token: &CloudEnrollToken,
+    machine_id: ployz_core::MachineId,
+    pairing: &CloudPairing,
+    found: &str,
+) -> Error {
+    let released = cloud_enroll::release(
+        &cloud_enroll::callback_url(cloud_url),
+        token,
+        machine_id,
+        &pairing.secret,
+    )
+    .await;
+    let next = if released {
+        "Ployz Cloud let go of this founding attempt"
+    } else {
+        "In Ployz Cloud, reset the founding attempt"
+    };
+    Error::conflict(format!(
+        "{found}. An Organization's first Server starts a new Cluster. {next}, then add a Server that isn't in a Cluster with a new token."
+    ))
+}
+
 enum FounderLocalState {
     Initialize,
     Resume { machine: Box<Machine> },
@@ -477,21 +513,35 @@ where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
+    let claim = pairing.secret.founding_claim();
     let state = match (mode, details.phase) {
-        (InitializeMode::Resume, LocalMachinePhase::Participating) => FounderLocalState::Resume {
-            machine: Box::new(details.machine.ok_or_else(|| {
-                Error::conflict(
-                    "the matching founding Server has no participating identity".to_owned(),
+        (InitializeMode::Resume, LocalMachinePhase::Participating) => {
+            if !resumes_founding(details.founding, claim) {
+                return Err(refuse_founding(
+                    cloud_url,
+                    token,
+                    details.id,
+                    &pairing,
+                    "this Server is already in a Cluster this enrollment didn't found",
                 )
-            })?),
-        },
+                .await);
+            }
+            FounderLocalState::Resume {
+                machine: Box::new(details.machine.ok_or_else(|| {
+                    Error::conflict(
+                        "the matching founding Server has no participating identity".to_owned(),
+                    )
+                })?),
+            }
+        }
         (InitializeMode::Resume, LocalMachinePhase::Uninitialized)
         | (InitializeMode::New, LocalMachinePhase::Uninitialized) => FounderLocalState::Initialize,
         (InitializeMode::New, phase) => {
-            return Err(Error::conflict(format!(
+            let found = format!(
                 "a new founding claim requires an uninitialized Server, but its local phase is {}",
                 phase.as_str().escape_debug()
-            )));
+            );
+            return Err(refuse_founding(cloud_url, token, details.id, &pairing, &found).await);
         }
         (InitializeMode::Resume, phase) => {
             return Err(Error::conflict(format!(
@@ -543,6 +593,7 @@ where
                     cluster_network,
                     public_ip: machine_token.public_ip,
                     advertised_endpoints: machine_token.advertised_endpoints,
+                    grant: Some(ployz_core::FoundingGrant::Claim { claim }),
                 },
                 wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
                 pinned,
@@ -1163,6 +1214,7 @@ mod tests {
             upgrade: None,
             token: None,
             sealing: None,
+            founding: Default::default(),
         };
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ployz.sock");
@@ -1236,6 +1288,7 @@ mod tests {
                 upgrade: None,
                 token: None,
                 sealing: None,
+                founding: Default::default(),
             };
             unix_daemon(path, move |body| {
                 let details = details.clone();
@@ -1352,6 +1405,7 @@ mod tests {
             upgrade: None,
             token: None,
             sealing: None,
+            founding: Default::default(),
         };
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ployz.sock");
@@ -1533,6 +1587,7 @@ mod tests {
                 upgrade: None,
                 token: None,
                 sealing: None,
+                founding: Default::default(),
             };
             let observed = details.clone();
             let reached = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -1672,6 +1727,7 @@ mod tests {
             upgrade: None,
             token: None,
             sealing: None,
+            founding: Default::default(),
         };
         assert_eq!(
             already_assigned(&details(LocalMachinePhase::Participating), &listed),
@@ -1724,6 +1780,7 @@ mod tests {
             upgrade: None,
             token: None,
             sealing: None,
+            founding: Default::default(),
         };
         for phase in [LocalMachinePhase::Joining, LocalMachinePhase::Participating] {
             assert_eq!(

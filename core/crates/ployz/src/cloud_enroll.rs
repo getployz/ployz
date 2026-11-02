@@ -145,6 +145,13 @@ impl PairingCredential {
     }
 }
 
+impl PairingCredential {
+    /// The Founding Claim this pairing names, which a founding daemon keeps in place of the bearer.
+    pub(crate) fn founding_claim(&self) -> ployz_core::FoundingClaim {
+        ployz_core::FoundingClaim::of_pairing(&self.0)
+    }
+}
+
 impl std::fmt::Debug for PairingCredential {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("PairingCredential(..)")
@@ -606,6 +613,29 @@ pub(crate) async fn publish(
     post_callback(command, url, token, &body, "candidate publication")
         .await
         .map(|_| ())
+}
+
+/// Ask Cloud to let go of a Founding Claim this Server refused to found under. Best-effort and
+/// sent once: a Cloud from before 0.3.15 refuses the stage, and the refusal tells the user how
+/// to reset the attempt instead.
+pub(crate) async fn release(
+    url: &str,
+    token: &CloudEnrollToken,
+    machine_id: MachineId,
+    pairing_credential: &PairingCredential,
+) -> bool {
+    let body = EnrollCallback {
+        stage: Some("release"),
+        capability: None,
+        machine_id,
+        pairing_credential,
+        sealing: None,
+        recovery_backup: None,
+    };
+    let Ok(http) = http_client() else {
+        return false;
+    };
+    post_json(&http, url, token, &body).await.is_ok()
 }
 
 async fn post_callback(

@@ -388,6 +388,7 @@ impl Cluster {
                     cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
                     public_ip: None,
                     advertised_endpoints: vec![self.endpoint(0)?],
+                    grant: None,
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),

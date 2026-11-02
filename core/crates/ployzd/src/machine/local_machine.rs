@@ -527,6 +527,7 @@ impl LocalMachine {
             store_version,
             rtts,
             management_clients: record.management_clients().cloned().collect(),
+            founding: record.founding(),
             telemetry,
             storage,
             upgrade,
@@ -1348,6 +1349,7 @@ mod tests {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: Some(public_ip),
                     advertised_endpoints: vec![stale],
+                    grant: None,
                 },
                 wireguard_mtu: None,
                 pinned: ployz_core::PinnedAddresses {

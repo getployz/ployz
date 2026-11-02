@@ -61,6 +61,10 @@ pub struct FoundingCluster {
     /// The Organization's Sealing Key this founder recovers rather than generates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<RecoverySeed>,
+    /// What its founding client said granted this founding, kept so Cloud enrollment resumes
+    /// only the Cluster its claim founded. Absent when that client, or the daemon, predates 0.3.15.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<ployz_core::FoundingGrant>,
 }
 
 /// Whether a participating Machine founded the Cluster or joined known peers.
@@ -80,6 +84,21 @@ pub enum ParticipationOrigin {
 }
 
 impl ParticipationOrigin {
+    fn founding(&self) -> ployz_core::Founding {
+        match self {
+            Self::Founder { cluster } => match cluster.grant {
+                None | Some(ployz_core::FoundingGrant::Unrecognized) => {
+                    ployz_core::Founding::Unrecorded
+                }
+                Some(ployz_core::FoundingGrant::Standalone) => ployz_core::Founding::Standalone,
+                Some(ployz_core::FoundingGrant::Claim { claim }) => {
+                    ployz_core::Founding::Claim { claim }
+                }
+            },
+            Self::Join { .. } => ployz_core::Founding::Joined,
+        }
+    }
+
     fn cluster_network(&self) -> Option<Ipv4Net> {
         match self {
             Self::Founder { cluster } => Some(cluster.network),
@@ -522,6 +541,17 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn body(&self) -> &LocalMachineBody {
         &self.body
+    }
+
+    /// How this Machine came to its Cluster; only a Participating Machine has an answer.
+    #[must_use]
+    pub fn founding(&self) -> ployz_core::Founding {
+        match &self.body {
+            LocalMachineBody::Participating { origin, .. } => origin.founding(),
+            LocalMachineBody::Uninitialized { .. }
+            | LocalMachineBody::Joining { .. }
+            | LocalMachineBody::Resetting { .. } => ployz_core::Founding::Unrecorded,
+        }
     }
 
     /// Private material corresponding to the local advertised public key.

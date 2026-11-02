@@ -989,6 +989,20 @@ describe("organization enrollment coordinator", () => {
       },
     );
 
+    it("keeps the claim when a token that only resumed it is refused", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      const token = await issueToken();
+      const resumed = await fake.coordinator.enroll({ token, identity: identity(0) });
+      if (Result.isFailure(resumed) || resumed.success.kind !== "initialize") throw new Error("No resumed claim");
+      fake.cluster.managementClients = ["cloud", "laptop"];
+      expect(await fake.coordinator.publish({ ...attempt, token, pairingCredential: resumed.success.pairing.secret, capability }))
+        .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
+      expect(await founderRow()).toHaveLength(1);
+      expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) }))
+        .toMatchObject({ success: { kind: "initialize", resumed: true } });
+    });
+
     it("refuses a Server that answers as another Machine", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);
@@ -1140,6 +1154,53 @@ describe("organization enrollment coordinator", () => {
       fake.cluster.managementClients = ["cloud", "laptop"];
       release();
       expect(await late).toMatchObject({ success: { machineId: attempt.machineId } });
+    });
+
+    it("lets a refusing founder let go of its claim", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      expect(await fake.coordinator.completeFounding({ ...attempt, stage: "release" }))
+        .toMatchObject({ success: { machineId: attempt.machineId, released: true } });
+      await expectReleased(fake, attempt);
+    });
+
+    it("keeps a claim Cloud already holds a connection for", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      expect(await fake.coordinator.completeFounding({ ...attempt, stage: "release" })).toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(await dialRows()).toHaveLength(1);
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+    });
+
+    it("keeps a claim whose pairing the release doesn't name", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      expect(await fake.coordinator.completeFounding({ ...attempt, pairingCredential: "ppair_fake", stage: "release" }))
+        .toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
+    });
+
+    it("keeps a claim for a release under a token that only resumed it", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      const token = await issueToken();
+      const resumed = await fake.coordinator.enroll({ token, identity: identity(0) });
+      if (Result.isFailure(resumed) || resumed.success.kind !== "initialize") throw new Error("No resumed claim");
+      expect(await fake.coordinator.completeFounding({ ...attempt, token, pairingCredential: resumed.success.pairing.secret, stage: "release" }))
+        .toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(await founderRow()).toHaveLength(1);
+      expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) }))
+        .toMatchObject({ success: { kind: "initialize", resumed: true } });
+    });
+
+    it("keeps a committed founder", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      await fake.coordinator.completeFounding(attempt);
+      expect(await fake.coordinator.completeFounding({ ...attempt, stage: "release" })).toMatchObject({ failure: { _tag: "Unauthorized" } });
+      expect(await founderRow()).toEqual([{ founder_machine_id: attempt.machineId }]);
     });
 
     it("founds a Cluster whose only Machine is the founder, holding only Cloud's management client", async () => {

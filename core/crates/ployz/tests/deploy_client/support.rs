@@ -1002,6 +1002,7 @@ impl FakeMachine for DeployService {
             upgrade: None,
             token: None,
             sealing: None,
+            founding: Default::default(),
         }))
     }
     async fn enroll(

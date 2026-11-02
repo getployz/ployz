@@ -39,6 +39,9 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
                         cluster_network: "10.210.0.0/16".parse().unwrap(),
                         public_ip: None,
                         advertised_endpoints: founder.advertised_endpoints,
+                        grant: Some(ployz_core::FoundingGrant::Claim {
+                            claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+                        }),
                     },
                     wireguard_mtu: None,
                     pinned: Default::default(),

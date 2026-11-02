@@ -605,6 +605,7 @@ fn enrolled(data_dir: &Path) -> LocalMachineStore {
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),

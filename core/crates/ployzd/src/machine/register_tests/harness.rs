@@ -38,6 +38,7 @@ pub(super) fn open_store(prefix: &str) -> (std::path::PathBuf, RecordOwner, Mach
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),

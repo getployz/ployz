@@ -95,6 +95,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: Some("203.0.113.1".parse().unwrap()),
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: Some(1400),
             pinned: Default::default(),
@@ -124,6 +125,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -185,6 +187,7 @@ async fn participating(dir: &TestDir) -> LocalMachine {
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -360,6 +363,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -408,6 +412,7 @@ fn machine_update_is_atomic_and_durable() {
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -808,6 +813,7 @@ fn legal_bodies_round_trip() {
                         cluster: ployzd::machine::FoundingCluster {
                             network: "10.210.0.0/16".parse().unwrap(),
                             recovery: None,
+                            grant: None,
                         },
                     },
                 },
@@ -1198,4 +1204,62 @@ fn local_record_without_management_clients_fails_to_load() {
         serde_json::json!({ "state": "active", "accepted": vec![1_u8; 32] }),
     );
     assert!(serde_json::from_value::<LocalMachineRecord>(earlier).is_err());
+}
+
+#[test]
+fn a_founding_keeps_what_granted_it_across_reopens() {
+    let claim = ployz_core::FoundingClaim::of_pairing("ppair_fake");
+    for (grant, expected) in [
+        (
+            Some(ployz_core::FoundingGrant::Claim { claim }),
+            ployz_core::Founding::Claim { claim },
+        ),
+        (
+            Some(ployz_core::FoundingGrant::Standalone),
+            ployz_core::Founding::Standalone,
+        ),
+        // A client from before 0.3.15 doesn't say what granted its founding.
+        (None, ployz_core::Founding::Unrecorded),
+    ] {
+        let dir = TestDir::new("ployzd-founding-grant");
+        let mut store = LocalMachineStore::open(&dir.0).unwrap();
+        store
+            .enroll(EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("first").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                    grant,
+                },
+                wireguard_mtu: None,
+                pinned: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(store.record().founding(), expected);
+        drop(store);
+        assert_eq!(
+            LocalMachineStore::open(&dir.0).unwrap().record().founding(),
+            expected
+        );
+
+        // A record founded before the daemon kept its grant.
+        let path = dir.0.join("machine.json");
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let kept = persisted
+            .pointer_mut("/body/cluster")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .remove("grant");
+        assert_eq!(kept.is_some(), grant.is_some());
+        fs::write(&path, persisted.to_string()).unwrap();
+        assert_eq!(
+            LocalMachineStore::open(&dir.0).unwrap().record().founding(),
+            ployz_core::Founding::Unrecorded
+        );
+    }
 }
