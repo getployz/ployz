@@ -567,7 +567,7 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Config(error) => config_code(error),
         ConnectError::Connection(_) | ConnectError::Value(_) => RpcErrorCode::InvalidArgument,
         ConnectError::Codec(error) => codec_code(error),
-        // Every connection failed: the last one says why.
+        // Every connection failed: `last` says why, a Server that needs an upgrade first.
         ConnectError::AllFailed {
             last: Some(last), ..
         } => connect_code(last),

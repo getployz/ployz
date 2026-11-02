@@ -1262,14 +1262,15 @@ pub enum ConnectError {
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
-        /// The Server the last connection tried enters, by name or else Machine ID.
+        /// The Server `last`'s connection enters, by name or else Machine ID.
         server: Option<String>,
-        /// The last connection tried went through Ployz Cloud's relay.
+        /// `last`'s connection went through Ployz Cloud's relay.
         relayed: bool,
         /// [`Retry::AfterRestart`] when any connection may still come up.
         retry: Retry,
         /// A daemon answered at least one connection, even if `last` did not reach one.
         reached: bool,
+        /// The last connection's failure, or the last one that needs an upgrade when one does.
         #[source]
         last: Option<Box<ConnectError>>,
     },
