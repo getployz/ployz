@@ -728,6 +728,10 @@ it.live("the backfill keeps a grant whose browser is signed in, and leaves one m
 
     const signedOut = yield* connectTokens(shop, yield* registerAgent(shop));
     yield* asBeforeMigration(shop, true);
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.delete(session).where(eq(session.userId, shop.boId));
+    }));
     expect((yield* raw(shop, signedOut.access_token)).status).toBe(401);
     expect((yield* raw(shop, kept.access_token)).status).toBe(401);
   }).pipe(Effect.scoped), 30_000);
@@ -744,6 +748,35 @@ it.live("two browsers that allowed one agent, signed out at once from the accoun
     yield* Effect.all(browsers.map((browser) => shop.provided(revokeAccountSession({ userId: shop.boId }, browser.id))), { concurrency: "unbounded" });
     expect((yield* raw(shop, there.access_token)).status).toBe(401);
     expect(yield* refresh(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"))).toEqual(REVOKED);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("connecting again after signing out makes a new grant, and the old credentials stay stopped", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const old = yield* connectTokens(shop, clientId);
+    expect((yield* signOut(shop)).status).toBe(200);
+    yield* aMinuteLater(shop);
+
+    const later = { ...shop, cookie: yield* signIn(shop) };
+    const renewed = yield* connectTokens(later, clientId);
+    expect((yield* raw(shop, renewed.access_token)).status).toBe(200);
+    expect((yield* raw(shop, old.access_token)).status).toBe(401);
+    expect(yield* refresh(shop, clientId, old.refresh_token ?? expect.fail("connect issued no refresh token"))).toEqual(REVOKED);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a grant with no browser recorded acts while its token's session does, as before the record", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const issued = yield* connectTokens(shop, yield* registerAgent(shop));
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.delete(oauthConsentSession);
+    }));
+    expect((yield* raw(shop, issued.access_token)).status).toBe(200);
+
+    yield* lapseSessions(shop);
+    expect((yield* raw(shop, issued.access_token)).status).toBe(401);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("signing a browser out from the account page disconnects the agents connected from it", () =>

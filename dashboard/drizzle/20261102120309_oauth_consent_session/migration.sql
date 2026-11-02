@@ -9,7 +9,7 @@ CREATE TABLE "oauth_consent_session" (
 CREATE INDEX "oauth_consent_session_session_id_idx" ON "oauth_consent_session" ("session_id");--> statement-breakpoint
 ALTER TABLE "oauth_consent_session" ADD CONSTRAINT "oauth_consent_session_consent_id_oauth_consent_id_fkey" FOREIGN KEY ("consent_id") REFERENCES "oauth_consent"("id") ON DELETE CASCADE;--> statement-breakpoint
 -- A grant made before this table acted only while the browser session its tokens name was live. Link each consent to the
--- live sessions its standing refresh tokens name; one with none had already stopped acting, and stays stopped.
+-- live sessions its standing refresh tokens name. One left without a link keeps that old rule (oauthCaller).
 INSERT INTO "oauth_consent_session" ("consent_id", "session_id")
 SELECT DISTINCT "oauth_consent"."id", "session"."id"
 FROM "oauth_refresh_token"

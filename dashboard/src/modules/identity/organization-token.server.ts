@@ -190,6 +190,7 @@ export const revokeCredential = Effect.fn("OrganizationToken.revoke")(function* 
     if (ending === undefined) return false;
     yield* signOutSessionAgents(caller.userId, ending.id);
     yield* drizzle.delete(session).where(eq(session.id, ending.id));
+    yield* signOutSessionAgents(caller.userId, ending.id);
     return true;
   }));
   if (device) return { id, kind: "device" as const };

@@ -53,7 +53,7 @@ import {
 } from "#/modules/organization/organization-state.server";
 import { Actor, type SessionActor } from "#/modules/identity/actor";
 import { bindDeviceOrganization } from "#/modules/identity/device-organization.server";
-import { grantSignedIn, signOutSessionAgents } from "#/modules/identity/session-agents.server";
+import { grantActs, signOutSessionAgents } from "#/modules/identity/session-agents.server";
 import { bindClaimSignInOrganization, claimSecretHashOf } from "#/modules/identity/claim-sign-in.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
@@ -221,6 +221,8 @@ const claimSignInContext = {
 const DEVICE_TOKEN_PATH = "/device/token";
 /** The routes a member signs a browser out through, which disconnect even a session that has already lapsed. */
 const SIGN_OUT_PATHS: ReadonlySet<string> = new Set(["/sign-out", "/revoke-session", "/revoke-sessions", "/revoke-other-sessions", "/oauth2/end-session"]);
+const signsOut = (ending: { readonly expiresAt: Date }, context: { readonly path?: string } | null | undefined) =>
+  ending.expiresAt > new Date() || SIGN_OUT_PATHS.has(context?.path ?? "");
 const decodeDeviceToken = Schema.decodeUnknownOption(Schema.Struct({ device_code: Schema.String }));
 const decodeDeviceApproval = Schema.decodeUnknownOption(
   Schema.Struct({ userCode: Schema.String, organizationId: Schema.String }),
@@ -427,12 +429,14 @@ const makeAuth = Effect.gen(function* () {
             )),
         },
         // A session ended while live, or by a sign-out route even once lapsed, signs its browser out. A lapsed session
-        // better-auth clears as it reads it doesn't. Before the row goes, so a failed mark leaves the session standing.
+        // better-auth clears as it reads it doesn't. Marked before the row goes, so a failed mark leaves the session
+        // standing, and again after, for a link /connect wrote in between.
         delete: {
           before: async (ending, context) => {
-            if (ending.expiresAt > new Date() || SIGN_OUT_PATHS.has(context?.path ?? "")) {
-              await runHook(signOutSessionAgents(ending.userId, ending.id));
-            }
+            if (signsOut(ending, context)) await runHook(signOutSessionAgents(ending.userId, ending.id));
+          },
+          after: async (ended, context) => {
+            if (signsOut(ended, context)) await runHook(signOutSessionAgents(ended.userId, ended.id));
           },
         },
         update: {
@@ -463,7 +467,7 @@ const makeAuth = Effect.gen(function* () {
         runHook(bindDeviceOrganization(userId, userCode, organizationId))),
       claimSignInContext,
       ...(polarPlugin === null ? [] : [polarPlugin]),
-      ...(hosted ? hostedMcpPlugins(config.app.url, (consentId) => runHook(grantSignedIn(consentId))) : []),
+      ...(hosted ? hostedMcpPlugins(config.app.url, (consentId) => runHook(grantActs(consentId))) : []),
       tanstackStartCookies(),
     ],
   });
