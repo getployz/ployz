@@ -256,6 +256,9 @@ If the wait printed `The Server's daemon is running but still joining`, or the e
 daemon `stayed joining`, the server started but couldn't catch up with your other servers. Start
 at step 2.
 
+If it says `Cloud candidate publication failed`, the server started, but Ployz Cloud didn't see
+your other servers list it as joined before the wait ran out. Start at step 1.
+
 1. Run the same command again. A first start can take several minutes.
 2. Make sure your servers reach each other on UDP 51820, in both directions, in the server's own
    firewall and in any firewall your provider runs in front of them.
