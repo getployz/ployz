@@ -109,6 +109,7 @@ struct JoinInner {
     joined: AtomicBool,
     /// How this daemon reports its Machine came to its Cluster.
     founding: Mutex<ployz_core::Founding>,
+    resetting: AtomicBool,
     enrolled: Mutex<Option<(EnrollRequest, WireGuardPublicKey)>>,
     join_request: Mutex<Option<MemberEnroll>>,
     join_attempts: AtomicUsize,
@@ -154,6 +155,7 @@ impl JoinDaemon {
                 daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
                 joined: AtomicBool::new(false),
                 founding: Mutex::new(ployz_core::Founding::Unrecorded),
+                resetting: AtomicBool::new(false),
                 enrolled: Mutex::new(None),
                 join_request: Mutex::new(None),
                 join_attempts: AtomicUsize::new(0),
@@ -264,6 +266,12 @@ impl JoinDaemon {
     /// Report `founding` for the Machine, as a daemon that kept it does.
     pub fn founded(self, founding: ployz_core::Founding) -> Self {
         *self.inner.founding.lock().unwrap() = founding;
+        self
+    }
+
+    /// A Server still resetting, which Cloud enrolls as the identity it is about to drop.
+    pub fn resetting(self) -> Self {
+        self.inner.resetting.store(true, Ordering::SeqCst);
         self
     }
 
@@ -608,6 +616,8 @@ impl FakeMachine for JoinDaemon {
                 .unwrap_or(self.inner.registration.assigned_machine.id),
             phase: if joined {
                 LocalMachinePhase::Participating
+            } else if self.inner.resetting.load(Ordering::SeqCst) {
+                LocalMachinePhase::Resetting
             } else {
                 LocalMachinePhase::Uninitialized
             },

@@ -30,14 +30,15 @@ pub struct IncomingChange {
     pub from: EnvironmentName,
 }
 
-/// Parent `parent` deployed the nodes of `lineages`: stage each change it made to them
-/// in each of its Branches, and take back each node it removed that a Follow brought
-/// there untouched. Changes a Branch refuses (one of its rules, say) stay
+/// Parent `parent` deployed the nodes of `lineages`, shipping its Saved revision
+/// `shipped`: stage each change it made to them in each of its Branches, and take
+/// back each node it removed that a Follow brought there untouched. Changes a Branch refuses (one of its rules, say) stay
 /// hints there, and never fail the Parent's Deployment. The caller holds the
 /// Project's lock.
 pub(crate) fn follow(
     tx: &mut dyn Tx,
     parent: &EnvironmentId,
+    shipped: &SavedEnvironmentIntent,
     lineages: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
     let branches = tx.query(
@@ -50,13 +51,17 @@ pub(crate) fn follow(
         return Ok(());
     }
     let parent = scope::load_by_id(tx, parent)?;
-    // The nodes of `lineages` the Parent removed.
+    // What both the Parent's Applied State and the revision it ships lack, it removed:
+    // a forgotten Cluster empties Applied State alone, and a rollback ships a revision
+    // older than the latest Saved State.
+    let suffix_of_parent = suffix(tx, &parent)?;
     let applied = deployment::applied_state(tx, &parent.summary.id, &parent.working)?;
-    let applied = Cells::of(&applied, &suffix(tx, &parent)?);
-    let gone: Vec<&String> = lineages
-        .iter()
-        .filter(|lineage| *applied.at(&RowId::node(lineage)) == Cell::Absent)
-        .collect();
+    let applied = Cells::of(&applied, &suffix_of_parent);
+    let shipped = Cells::of(shipped, &suffix_of_parent);
+    let removed = |lineage: &str| {
+        let node = RowId::node(lineage);
+        *applied.at(&node) == Cell::Absent && *shipped.at(&node) == Cell::Absent
+    };
     for row in &branches {
         let branch = row.parse::<EnvironmentId>(0, "Branch")?;
         let shut_down = crate::removal::latest(tx, &branch)?.is_some_and(|removal| {
@@ -73,18 +78,37 @@ pub(crate) fn follow(
             Err(error) if crate::automation::skippable(&error) => {}
             done => done?,
         }
-        // After the rest lands, so a node the Parent unmounted in the same deploy is
-        // no longer mounted in the Branch either. One the Branch's rules refuse, or
-        // another node still references, as a Volume a Service still being withdrawn
-        // mounts, is tried again while others go; what stays refused, the Branch keeps.
-        let mut left = gone.clone();
+        // Take back what this Deployment removed, and each new node an earlier Follow
+        // brought that the Parent has removed since: the runner confirms removals in
+        // batches, each its own Follow, so a node kept for a referrer that a later
+        // batch removed is tried again then (#3733). After the rest lands, so a node
+        // the Parent unmounted in the same deploy is no longer mounted in the Branch
+        // either. One the Branch's rules refuse, or another node still references, as
+        // a Volume a Service still being withdrawn mounts, is tried again while others
+        // go; what stays refused, the Branch keeps.
+        let mut left: BTreeSet<String> = lineages
+            .iter()
+            .filter(|lineage| removed(lineage))
+            .cloned()
+            .collect();
+        for arrived in arrived(tx, &branch, Which::From(&parent.summary.id))? {
+            let lineage = arrived.row.lineage();
+            if arrived.row == RowId::node(lineage)
+                && matches!(arrived.how, How::Follow)
+                && matches!(arrived.arrival, Arrival::Pending { .. })
+                && removed(lineage)
+            {
+                left.insert(lineage.to_owned());
+            }
+        }
+        let mut left: Vec<String> = left.into_iter().collect();
         loop {
             let tried = left.len();
             let mut refused = Vec::new();
             for lineage in left {
                 let withdrawn = crate::storage::attempt(tx, |tx| {
                     let mut branch = scope::lock_id(tx, &who, &branch)?;
-                    withdraw(tx, &mut branch, &parent.summary.id, lineage)
+                    withdraw(tx, &mut branch, &parent.summary.id, &lineage)
                 });
                 match withdrawn {
                     Ok(false) => refused.push(lineage),

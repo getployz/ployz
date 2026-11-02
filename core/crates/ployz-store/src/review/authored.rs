@@ -2386,6 +2386,9 @@ pub(super) fn prepare_discard(
             json!({}),
         ));
     }
+    // A plain value sealed since comes back Not set, never as it was.
+    let mut since = super::sealed::SealedSince::new(&environment.summary.id, &environment.working);
+    since.unset(tx, &mut baseline)?;
     if let Some(path) = path {
         if let (Some(Target::Domains), Some(service)) = (path.target(), path.service()) {
             return Err(crate::settings::domains_are_read_only(path, service));
@@ -2399,12 +2402,7 @@ pub(super) fn prepare_discard(
             && !has_node(&baseline, &node)
         {
             let mut introduced = super::introductions(tx, environment)?;
-            super::sealed::unset_introduced(
-                tx,
-                &environment.summary.id,
-                &mut introduced,
-                &environment.working,
-            )?;
+            since.unset(tx, &mut introduced)?;
             copy_node(&mut baseline, &introduced, &node);
         }
         let plan = if let Some(plan) =

@@ -2389,7 +2389,7 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
             };
         }
         crate::branch::deployed(tx, &stored.summary.environment_id, &saved, &deployed)?;
-        crate::branch::follow(tx, &stored.summary.environment_id, &deployed)?;
+        crate::branch::follow(tx, &stored.summary.environment_id, &saved, &deployed)?;
     }
     Ok(())
 }

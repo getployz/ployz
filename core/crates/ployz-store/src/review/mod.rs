@@ -288,16 +288,9 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let id = &environment.summary.id;
     let saved = latest_saved(tx, id)?;
     let head = crate::deployment::head(tx, environment)?;
-    let mut introductions = introductions(tx, environment)?;
-    sealed::hide_introduced(tx, id, &mut introductions, &environment.working)?;
+    let before = Before::of(tx, environment, saved.as_ref(), &head)?;
     let deployed = approval::deployed(&head);
-    let mut view = compare(
-        environment,
-        saved.as_ref(),
-        &head,
-        &deployed,
-        &introductions,
-    )?;
+    let mut view = compare(environment, saved.as_ref(), &head, &deployed, &before)?;
     let cluster_domains = if crate::domain::has_generated(&deployed) {
         crate::deployment::cluster_domains(tx, id, &head)?
     } else {
@@ -312,10 +305,9 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .collect::<Vec<_>>(),
     );
     view.broken = crate::rules::broken_in(tx, environment, names)?;
-    let baseline = saved.as_ref().map_or_else(
-        || crate::scope::empty(environment.summary.name.as_str()),
-        |saved| saved.intent.clone(),
-    );
+    let baseline = before
+        .saved
+        .unwrap_or_else(|| crate::scope::empty(environment.summary.name.as_str()));
     let draft = saved_comparison(environment, &baseline)?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
@@ -349,6 +341,43 @@ fn by_name(changes: &mut [NodeChange]) {
     });
 }
 
+/// What a review shows as the before side: Node Introductions, Applied State, the
+/// submitted revision and Saved State, with each plain value sealed since shown
+/// sealed. Only shown: tokens, effects and planning read Head and Saved State as
+/// they are.
+struct Before {
+    introductions: SavedEnvironmentIntent,
+    applied: SavedEnvironmentIntent,
+    /// None when nothing submitted differs from Applied State.
+    submitted: Option<SavedEnvironmentIntent>,
+    saved: Option<SavedEnvironmentIntent>,
+}
+
+impl Before {
+    fn of(
+        tx: &mut dyn Tx,
+        environment: &Environment,
+        saved: Option<&Saved>,
+        head: &Head,
+    ) -> Result<Self, RpcError> {
+        let mut since = sealed::SealedSince::new(&environment.summary.id, &environment.working);
+        let mut introductions = introductions(tx, environment)?;
+        since.hide(tx, &mut introductions)?;
+        let mut hidden = |intent: &SavedEnvironmentIntent| {
+            let mut intent = intent.clone();
+            since.hide(tx, &mut intent).map(|()| intent)
+        };
+        Ok(Self {
+            introductions,
+            applied: hidden(&head.applied)?,
+            submitted: (head.intent != head.applied)
+                .then(|| hidden(&head.intent))
+                .transpose()?,
+            saved: saved.map(|saved| hidden(&saved.intent)).transpose()?,
+        })
+    }
+}
+
 fn saved_comparison(
     environment: &Environment,
     baseline: &SavedEnvironmentIntent,
@@ -361,16 +390,19 @@ fn compare(
     saved: Option<&Saved>,
     head: &Head,
     deployed: &SavedEnvironmentIntent,
-    introductions: &SavedEnvironmentIntent,
+    before: &Before,
 ) -> Result<DiffView, RpcError> {
     let id = &environment.summary.id;
     let project = |token: &str, intent: &SavedEnvironmentIntent| projection(id, token, intent);
     let changes = project_environment_changes(ChangeSetInput {
         working: project("working", &environment.working),
-        applied: project("applied", &head.applied),
-        saved: saved.as_ref().map(|saved| project("saved", &saved.intent)),
-        submitted: (head.intent != head.applied).then(|| project(&head.token, &head.intent)),
-        node_introductions: project("introductions", introductions),
+        applied: project("applied", &before.applied),
+        saved: before.saved.as_ref().map(|saved| project("saved", saved)),
+        submitted: before
+            .submitted
+            .as_ref()
+            .map(|submitted| project(&head.token, submitted)),
+        node_introductions: project("introductions", &before.introductions),
     })
     .map_err(|_| error::corrupt("Environment document"))?;
     let intents = [&environment.working, &head.intent];

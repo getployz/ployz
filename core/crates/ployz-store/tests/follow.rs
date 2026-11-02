@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 mod backend;
-use backend::deploy;
+use backend::{deploy, deploy_in_batches};
 
 fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
@@ -2060,6 +2060,426 @@ fn a_branch_of_a_branch_deleting_a_value_its_parent_added_plain_after_a_seal_sti
     );
 }
 
+/// production holds `web.env.TOKEN` plain and deployed, and `qa`, made from it,
+/// deployed it too.
+fn deployed_qa(store: &ConfigStore, who: &Actor) {
+    set(
+        store,
+        who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(store, who, "production", 2);
+    branch(store, who, 10, "production", "qa");
+    deploy(store, who, "qa", 20);
+}
+
+/// A Branch that deployed a value and then changed it in place before its Parent
+/// sealed it reviews from sealed, never from the value it runs.
+#[test]
+fn a_deployed_branchs_in_place_edit_made_before_its_parent_sealed_never_shows_the_plain_value() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    let review = diff(&store, &who, "qa");
+    assert_eq!(
+        token_row(&review),
+        (json!({ "secret": true }), json!("plain-edit"))
+    );
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// Discarding that edit brings the variable back Not set.
+#[test]
+fn discarding_a_deployed_branchs_edit_its_parent_sealed_since_brings_it_back_not_set() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    discard(&store, &who, "qa", "web.env.TOKEN");
+
+    let values = web(&store, &who, "qa");
+    assert_eq!(values["env"]["TOKEN"], json!({ "secret": false }));
+    let shown = serde_json::to_string(&diff(&store, &who, "qa")).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// A deployed Branch that took its Parent's seal after deleting the variable
+/// reviews from sealed, and a discard keeps it Not set.
+#[test]
+fn a_deployed_branch_that_took_its_parents_seal_never_shows_or_discards_back_the_plain_value() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    seal_token(&store, &who, 3);
+    let version = diff(&store, &who, "qa").version;
+    store
+        .write(
+            &who,
+            &take("production", "qa", &["variables.TOKEN"], version),
+        )
+        .unwrap();
+
+    let review = diff(&store, &who, "qa");
+    assert_eq!(token_row(&review).0, json!({ "secret": true }));
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+    discard(&store, &who, "qa", "web.env.TOKEN");
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+}
+
+/// An undeployed Branch that took its Parent's seal after deleting the variable
+/// discards it back Not set, never as the plain value it was made with.
+#[test]
+fn a_branch_that_took_its_parents_seal_discards_it_back_not_set() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    seal_token(&store, &who, 3);
+    let version = diff(&store, &who, "qa").version;
+    store
+        .write(
+            &who,
+            &take("production", "qa", &["variables.TOKEN"], version),
+        )
+        .unwrap();
+
+    discard(&store, &who, "qa", "web.env.TOKEN");
+
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+}
+
+/// A deployed Branch of a Branch that changed a value in place before the root
+/// sealed it reviews from sealed.
+#[test]
+fn a_deployed_branch_of_a_branch_changing_a_value_before_the_root_sealed_it_never_shows_it() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    branch(&store, &who, 11, "qa", "qa-two");
+    deploy(&store, &who, "qa-two", 21);
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "qa-two",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    let review = diff(&store, &who, "qa-two");
+    assert_eq!(
+        token_row(&review),
+        (json!({ "secret": true }), json!("plain-edit"))
+    );
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// The Environment that seals a value it runs plain reviews that change from
+/// sealed before the seal deploys.
+#[test]
+fn sealing_a_deployed_value_never_shows_it_before_the_seal_deploys() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    let sealed = token(&store, &who, "production", 1);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!({ "secret": sealed }))],
+    );
+
+    let review = diff(&store, &who, "production");
+    assert_eq!(token_row(&review).0, json!({ "secret": true }));
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// A sealed value with a value is never overwritten by a discard, with the plain
+/// value it replaced or with Not set.
+#[test]
+fn discarding_a_seal_before_it_deploys_never_brings_the_plain_value_back() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    let sealed = token(&store, &who, "production", 1);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!({ "secret": sealed }))],
+    );
+
+    let discarded = store.write(
+        &who,
+        &Discard {
+            environment: at("production"),
+            target: Some(ployz_store::DiscardTarget::Head),
+            path: Some(SettingPath::parse("web.env.TOKEN").unwrap()),
+            version: None,
+        },
+    );
+
+    assert_eq!(discarded.unwrap_err().code, RpcErrorCode::Conflict);
+    assert_eq!(
+        web(&store, &who, "production")["env"]["TOKEN"],
+        json!({ "secret": true })
+    );
+}
+
+/// A value a deployed Branch set and deployed itself before any seal was never
+/// sealed: its review still shows it, and a discard brings it back.
+#[test]
+fn a_deployed_branchs_own_deployed_value_still_shows_after_its_parent_seals() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    set(&store, &who, "qa", &[("web.env.TOKEN", json!("plain-own"))]);
+    deploy(&store, &who, "qa", 22);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    assert_eq!(
+        token_row(&diff(&store, &who, "qa")),
+        (json!("plain-own"), json!("plain-edit"))
+    );
+    discard(&store, &who, "qa", "web.env.TOKEN");
+    assert_eq!(web(&store, &who, "qa")["env"]["TOKEN"], json!("plain-own"));
+}
+
+/// A value a deployed Branch set and saved itself before any seal was never sealed
+/// either: its review still shows it.
+#[test]
+fn a_deployed_branchs_own_saved_value_still_shows_after_its_parent_seals() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    set(&store, &who, "qa", &[("web.env.TOKEN", json!("plain-own"))]);
+    let publish = Publish {
+        id: None,
+        environment: at("qa"),
+        version: Some(diff(&store, &who, "qa").version),
+        message: None,
+        accept_volume_loss: Vec::new(),
+    };
+    store
+        .write_trusted(&who, &publish, &Trusted::default())
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    let review = diff(&store, &who, "qa");
+    let draft = review
+        .draft_changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|setting| setting.path == "web.env.TOKEN")
+        .unwrap();
+    assert_eq!(
+        (draft.before.clone(), draft.after.clone()),
+        (json!("plain-own"), json!("plain-edit"))
+    );
+}
+
+/// Discarding back to Saved State a deployed Branch's edit of a value its Parent
+/// sealed since brings it back Not set.
+#[test]
+fn discarding_to_saved_a_value_its_parent_sealed_since_brings_it_back_not_set() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: at("qa"),
+                target: Some(ployz_store::DiscardTarget::Saved),
+                path: Some(SettingPath::parse("web.env.TOKEN").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+}
+
+/// A deployed Branch's in-place edit of a value nothing sealed still shows the
+/// value it replaced.
+#[test]
+fn a_deployed_branchs_in_place_edit_of_a_plain_value_shows_the_value_it_replaced() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+
+    assert_eq!(
+        token_row(&diff(&store, &who, "qa")),
+        (json!("plain-private"), json!("plain-edit"))
+    );
+}
+
+/// The mask is only shown: what a deploy plans and ships, and the versions a deploy
+/// expects, are byte for byte what they were before it. The snapshot was recorded
+/// without the mask.
+#[test]
+fn hiding_a_sealed_value_changes_no_plan_version_or_effect() {
+    let (store, who) = shop();
+    deployed_qa(&store, &who);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_token(&store, &who, 3);
+
+    let review = diff(&store, &who, "qa");
+    let plan = store
+        .read(
+            &who,
+            &ployz_store::PlanQuery {
+                environment: at("qa"),
+                services: Vec::new(),
+            },
+        )
+        .unwrap();
+    let shipped = deploy(&store, &who, "qa", 23);
+    let snapshot = json!({
+        "review": {
+            "version": review.version,
+            "total_count": review.total_count,
+            "draft_count": review.draft_count,
+            "effects": review.effects,
+        },
+        "plan": {
+            "version": plan.version,
+            "namespace": plan.namespace,
+            "unresolved": plan.unresolved,
+        },
+        "shipped": shipped,
+    });
+    let mut text = serde_json::to_string_pretty(&normalized(&snapshot)).unwrap();
+    text.push('\n');
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/snapshots/sealed_mask_plan.json");
+    if std::env::var_os("PLOYZ_BLESS").is_some() {
+        std::fs::write(&path, &text).unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap_or_default(),
+        text,
+        "rerun with PLOYZ_BLESS=1 and review {}",
+        path.display()
+    );
+}
+
+/// `value` with each ID a run mints by chance named by its first place in it.
+fn normalized(value: &Value) -> Value {
+    fn walk(value: &Value, seen: &mut Vec<String>) -> Value {
+        match value {
+            Value::String(text) => {
+                let mut out = String::new();
+                let mut rest = text.as_str();
+                while let Some(at) = minted(rest) {
+                    out.push_str(&rest[..at]);
+                    let id = &rest[at..at + 36];
+                    let n = seen.iter().position(|was| was == id).unwrap_or_else(|| {
+                        seen.push(id.to_owned());
+                        seen.len() - 1
+                    });
+                    out.push_str(&format!("<id-{n}>"));
+                    rest = &rest[at + 36..];
+                }
+                out.push_str(rest);
+                Value::String(out)
+            }
+            Value::Array(items) => {
+                Value::Array(items.iter().map(|item| walk(item, seen)).collect())
+            }
+            Value::Object(fields) => Value::Object(
+                fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), walk(value, seen)))
+                    .collect(),
+            ),
+            other @ (Value::Null | Value::Bool(_) | Value::Number(_)) => other.clone(),
+        }
+    }
+    // A UUID the test didn't fix.
+    fn minted(text: &str) -> Option<usize> {
+        let bytes = text.as_bytes();
+        (0..bytes.len().saturating_sub(35)).find(|&at| {
+            text.get(at..at + 36).is_some_and(|id| {
+                id.char_indices().all(|(i, c)| match i {
+                    8 | 13 | 18 | 23 => c == '-',
+                    _ => c.is_ascii_hexdigit(),
+                }) && !id.starts_with("00000000-0000-4000-8000-")
+            })
+        })
+    }
+    walk(value, &mut Vec::new())
+}
+
 /// Discarding a Branch's change to a variable it sealed since it was made never
 /// overwrites the sealed value, with the earlier plain one or with Not set.
 #[test]
@@ -2271,4 +2691,327 @@ fn seal_token(store: &ConfigStore, who: &Actor, n: u8) {
         &[("web.env.TOKEN", json!({ "secret": sealed }))],
     );
     deploy(store, who, "production", n);
+}
+
+/// production adds Service `name` as lineage `n`, `FOO=1`.
+fn add_service(store: &ConfigStore, who: &Actor, n: u8, name: &str) {
+    store
+        .write(
+            who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                environment: at("production"),
+                name: ServiceName::parse(name).unwrap(),
+                image: Some("nginx:1.29-alpine".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        store,
+        who,
+        "production",
+        &[(&format!("{name}.env.FOO"), json!("1"))],
+    );
+}
+
+/// production adds `alpha` as lineage `n` and `beta` as `n + 1`, which references it.
+fn add_pair(store: &ConfigStore, who: &Actor, n: u8, (alpha, beta): (&str, &str)) {
+    add_service(store, who, n, alpha);
+    add_service(store, who, n + 1, beta);
+    set(
+        store,
+        who,
+        "production",
+        &[(
+            &format!("{beta}.env.A"),
+            json!(format!("${{{{ {alpha}.FOO }}}}")),
+        )],
+    );
+}
+
+fn remove_services(store: &ConfigStore, who: &Actor, names: &[&str]) {
+    for name in names {
+        store
+            .write(
+                who,
+                &ployz_store::RemoveService {
+                    environment: at("production"),
+                    service: ServiceName::parse(*name).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+}
+
+/// Whether `environment`'s Working State holds Service `name`.
+fn holds(store: &ConfigStore, who: &Actor, environment: &str, name: &str) -> bool {
+    services(store, who, environment).contains(&name.to_owned())
+}
+
+/// #3733: the runner confirms a removal before the one referencing it, so the first
+/// Follow keeps the referenced node; the next one, for the referrer, takes it too.
+#[test]
+fn a_node_confirmed_before_its_referrer_still_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    add_pair(&store, &who, 20, ("alpha", "beta"));
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "alpha"));
+    remove_services(&store, &who, &["alpha", "beta"]);
+    deploy_in_batches(&store, &who, "production", 3, &[&["alpha"], &["beta"]]);
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+    assert!(!holds(&store, &who, "fix-web", "beta"));
+}
+
+/// #3733 as the soak found it: a node the Branch references stays beside them.
+#[test]
+fn a_node_confirmed_before_its_referrer_follows_out_beside_one_the_branch_references() {
+    let (store, who) = shop();
+    add_service(&store, &who, 22, "refd");
+    add_pair(&store, &who, 20, ("alpha", "beta"));
+    deploy(&store, &who, "production", 2);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.REF", json!("${{ refd.FOO }}"))],
+    );
+    remove_services(&store, &who, &["alpha", "beta", "refd"]);
+    deploy_in_batches(
+        &store,
+        &who,
+        "production",
+        3,
+        &[&["refd"], &["alpha"], &["beta"]],
+    );
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+    assert!(!holds(&store, &who, "fix-web", "beta"));
+    assert!(holds(&store, &who, "fix-web", "refd"));
+}
+
+/// Round g of the soak: three pairs and a referenced node, each confirmed alone.
+#[test]
+fn pairs_confirmed_one_by_one_all_follow_out_of_the_branch() {
+    let (store, who) = shop();
+    add_service(&store, &who, 30, "refd");
+    for (n, pair) in [
+        (20, ("alpha1", "beta1")),
+        (22, ("alpha2", "beta2")),
+        (24, ("alpha3", "beta3")),
+    ] {
+        add_pair(&store, &who, n, pair);
+    }
+    deploy(&store, &who, "production", 2);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.REF", json!("${{ refd.FOO }}"))],
+    );
+    let all = [
+        "refd", "alpha1", "alpha2", "beta1", "alpha3", "beta3", "beta2",
+    ];
+    remove_services(&store, &who, &all);
+    let batches: Vec<&[&str]> = all.iter().map(std::slice::from_ref).collect();
+    deploy_in_batches(&store, &who, "production", 3, &batches);
+
+    for name in &all[1..] {
+        assert!(!holds(&store, &who, "fix-web", name), "{name}");
+    }
+    assert!(holds(&store, &who, "fix-web", "refd"));
+}
+
+/// A node the Branch kept while it referenced it goes at the Parent's next deploy
+/// once nothing references it.
+#[test]
+fn a_kept_node_the_branch_stops_referencing_follows_out_at_the_next_deploy() {
+    let (store, who) = shop();
+    add_service(&store, &who, 20, "alpha");
+    deploy(&store, &who, "production", 2);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.REF", json!("${{ alpha.FOO }}"))],
+    );
+    remove_services(&store, &who, &["alpha"]);
+    deploy(&store, &who, "production", 3);
+    assert!(holds(&store, &who, "fix-web", "alpha"));
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("fix-web"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.REF").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    set(&store, &who, "production", &[("db.env.OTHER", json!("1"))]);
+    deploy(&store, &who, "production", 4);
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+}
+
+/// The referrer confirmed first: the referenced node goes in the next Follow.
+#[test]
+fn a_referrer_confirmed_first_takes_what_it_references_out_too() {
+    let (store, who) = shop();
+    add_pair(&store, &who, 20, ("alpha", "beta"));
+    deploy(&store, &who, "production", 2);
+    remove_services(&store, &who, &["alpha", "beta"]);
+    deploy_in_batches(&store, &who, "production", 3, &[&["beta"], &["alpha"]]);
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+    assert!(!holds(&store, &who, "fix-web", "beta"));
+}
+
+/// What the Branch made its own stays, however the runner confirms the removals.
+#[test]
+fn a_node_the_branch_made_its_own_stays_across_confirmed_batches() {
+    type Own = fn(&ConfigStore, &Actor);
+    let changed: Own = |store, who| set(store, who, "fix-web", &[("alpha.env.MINE", json!("1"))]);
+    let saved: Own = |store, who| {
+        let publish = Publish {
+            id: None,
+            environment: at("fix-web"),
+            version: Some(diff(store, who, "fix-web").version),
+            message: None,
+            accept_volume_loss: Vec::new(),
+        };
+        store
+            .write_trusted(who, &publish, &Trusted::default())
+            .unwrap();
+    };
+    let deployed: Own = |store, who| {
+        deploy(store, who, "fix-web", 10);
+    };
+    let referenced: Own = |store, who| {
+        set(
+            store,
+            who,
+            "fix-web",
+            &[("web.env.REF", json!("${{ alpha.FOO }}"))],
+        )
+    };
+    for (case, own) in [
+        ("changed", changed),
+        ("saved", saved),
+        ("deployed", deployed),
+        ("referenced", referenced),
+    ] {
+        let (store, who) = shop();
+        add_pair(&store, &who, 20, ("alpha", "beta"));
+        deploy(&store, &who, "production", 2);
+        own(&store, &who);
+        remove_services(&store, &who, &["alpha", "beta"]);
+        deploy_in_batches(&store, &who, "production", 3, &[&["alpha"], &["beta"]]);
+        assert!(holds(&store, &who, "fix-web", "alpha"), "{case}");
+    }
+}
+
+/// A Branch being shut down gets nothing taken back: Follow skips it.
+#[test]
+fn a_branch_being_shut_down_keeps_what_followed() {
+    let (store, who) = shop();
+    add_pair(&store, &who, 20, ("alpha", "beta"));
+    deploy(&store, &who, "production", 2);
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::ShutDown(ployz_store::ShutDown {
+                id: ployz_store::DeploymentId::parse(uuid(50)).unwrap(),
+                environment: at("fix-web"),
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    remove_services(&store, &who, &["alpha", "beta"]);
+    deploy_in_batches(&store, &who, "production", 3, &[&["alpha"], &["beta"]]);
+
+    assert!(holds(&store, &who, "fix-web", "alpha"));
+    assert!(holds(&store, &who, "fix-web", "beta"));
+}
+
+/// A forgotten Cluster empties Applied State without the Parent removing anything:
+/// what followed stays while the next deploy has yet to confirm it again.
+#[test]
+fn a_node_the_parent_still_holds_stays_after_its_cluster_is_forgotten() {
+    let (store, who) = shop();
+    add_service(&store, &who, 20, "alpha");
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "alpha"));
+    store
+        .system(
+            &who.organization,
+            &ployz_store::SystemEvent::ClusterForgotten,
+            &Trusted::default(),
+        )
+        .unwrap();
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    let admitted = backend::admit(&store, &who, "production", 3);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&admitted, &runner).unwrap();
+    // The runner confirms web first: alpha is still on its way.
+    backend::confirm(&store, &admitted, &claimed, &[&["web"], &["alpha"]], 1);
+    assert!(holds(&store, &who, "fix-web", "alpha"));
+}
+
+/// Admit Deployment `n` of production, shipping again Deployment 1, from before any
+/// node a test adds.
+fn roll_back(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::DeploymentId {
+    let id = |n: u8| {
+        ployz_store::DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}"))
+            .unwrap()
+    };
+    store
+        .write_trusted(
+            who,
+            &ployz_store::Admit::Retry(ployz_store::Retry {
+                id: id(n),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    id(n)
+}
+
+/// Redeploying an older revision removes what came after it, though the latest Saved
+/// State still holds it: the removal follows as one saved does.
+#[test]
+fn a_node_a_rollback_removes_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    add_service(&store, &who, 20, "alpha");
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "alpha"));
+    let rollback = roll_back(&store, &who, 3);
+    backend::run(&store, &rollback);
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+}
+
+/// A rollback confirming a removal before the one referencing it takes both out too.
+#[test]
+fn a_node_a_rollback_confirms_before_its_referrer_follows_out_of_the_branch() {
+    let (store, who) = shop();
+    add_pair(&store, &who, 20, ("alpha", "beta"));
+    deploy(&store, &who, "production", 2);
+    assert!(staged(&store, &who, "fix-web", "alpha"));
+    let rollback = roll_back(&store, &who, 3);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&rollback, &runner).unwrap();
+    backend::finish_confirming(&store, &rollback, claimed, &[&["alpha"], &["beta"]]);
+
+    assert!(!holds(&store, &who, "fix-web", "alpha"));
+    assert!(!holds(&store, &who, "fix-web", "beta"));
 }
