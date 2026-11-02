@@ -43,7 +43,8 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 /// evidence (`VolumeObservation`) Cloud admits a Deploy that removes deployed
 /// Volumes with. Servers that don't answer are named, never assumed empty, and when
 /// the check fails its `failure` says whether no Server was reached or which one
-/// answered with an error, and why.
+/// answered with an error, and why. With `expect`, only a Server whose Cluster holds
+/// that Sealing public key answers, as `connect`'s `expect` does.
 ///
 /// # Errors
 /// Returns `invalid_argument` for malformed input.
@@ -81,7 +82,7 @@ pub async fn observe_copies(
 /// Which Services run on `connections`' Servers, by Namespace
 /// (`RunningObservation`): the evidence Cloud admits a full Deploy that prunes with,
 /// naming each Service it removes. Servers that don't answer are named, and when the
-/// check fails its `failure` says why.
+/// check fails its `failure` says why. `expect` is as `observeVolumes`'.
 ///
 /// # Errors
 /// Returns `invalid_argument` for malformed input.
@@ -206,7 +207,9 @@ impl ConfigStore {
     /// `sources.upload`, the directory Cloud extracted its upload to (without it, they
     /// reuse a usable image or need a new upload); `sources.failure` says why Cloud
     /// could not read them, and is recorded as the reason nothing ran. Only Cloud's
-    /// worker calls this. It takes as long as its builds and Deploy do.
+    /// worker calls this. It takes as long as its builds and Deploy do. With `expect`,
+    /// it runs only through a Server whose Cluster holds that Sealing public key, as
+    /// `connect`'s `expect` does.
     ///
     /// # Errors
     /// Returns `conflict` when this runner has nothing to run, or a storage error.
