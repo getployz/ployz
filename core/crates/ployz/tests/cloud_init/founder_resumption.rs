@@ -605,7 +605,7 @@ async fn new_claim_on_a_participating_server_lets_go_of_the_claim() {
     );
     assert!(
         stderr.contains(
-            "To add this Server instead, make a new token with `ployz server add --command --reset` and run the line it prints on this Server"
+            "then add a Server that isn't in a Cluster with a new token, or add this Server: make a new token with `ployz server add --command --reset` and run the line it prints on this Server. The reset takes it out of its Cluster"
         ),
         "{stderr}"
     );

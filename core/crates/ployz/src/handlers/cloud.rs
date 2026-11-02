@@ -475,13 +475,13 @@ async fn refuse_founding(
     } else {
         "In Ployz Cloud, reset the founding attempt"
     };
-    let instead = if resettable {
-        " To add this Server instead, make a new token with `ployz server add --command --reset` and run the line it prints on this Server; the reset removes every container Ployz runs on it."
+    let or_this = if resettable {
+        ", or add this Server: make a new token with `ployz server add --command --reset` and run the line it prints on this Server. The reset takes it out of its Cluster and removes every container Ployz runs on it"
     } else {
         ""
     };
     Error::conflict(format!(
-        "{found}. An Organization's first Server starts a new Cluster. {next}, then add a Server that isn't in a Cluster with a new token.{instead}"
+        "{found}. An Organization's first Server starts a new Cluster. {next}, then add a Server that isn't in a Cluster with a new token{or_this}."
     ))
 }
 
