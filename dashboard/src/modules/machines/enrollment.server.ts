@@ -802,6 +802,7 @@ const readCluster = Effect.fn("MachineEnrollment.readCluster")(function* (sessio
 const isFreshCluster = (
   { details, snapshot }: Effect.Success<ReturnType<typeof readCluster>>, machineId: MachineId, connected: boolean,
 ) => {
+  // A Server's own operator can approve a `device-` slot too; on a Server that is its Cluster's only Machine, that's theirs to do.
   const cloudFilled = (label: string) => label === "cloud" || (connected && (label.startsWith("cli-") || label.startsWith("device-")));
   return details.id === machineId
     && details.management_clients.every(cloudFilled)
@@ -948,7 +949,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         }
         // The reads activated this credential and retired the saved one: Cloud keeps the one that works, for reset to revoke.
         if (connected) {
-          yield* publish({ iv: verify.iv });
+          yield* publish({ iv: verify.iv }).pipe(Effect.ignoreCause({ log: true, message: "Refused founder's working credential not saved" }));
           return true;
         }
         const release = yield* releaseRefusedClaim(token.organizationId, input.machineId, verify.encryptedPairingSecret);
@@ -957,13 +958,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           yield* publish({ iv: verify.iv });
           return false;
         }
-        if (release === "released") {
-          // Cloud drops the slot it never saved; the Server's other clients aren't Cloud's to touch.
-          yield* clusterRead(session.clearManagementClient("cloud")).pipe(
-            withClusterBudget(FRESHNESS_CLUSTER_MS),
-            Effect.ignoreCause({ log: true, message: "Refused founder kept Cloud's slot" }),
-          );
-        }
+        // A released attempt leaves the `cloud` slot as the CLI set it: Cloud never saved its key, and the CLI may use it.
         return true;
       })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
       if (refused) return yield* notFresh();

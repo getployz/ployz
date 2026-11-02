@@ -215,12 +215,13 @@ You'll see `This Server is already in a Cluster with other Servers, or something
 Cloud manages it.`
 
 An organization's first server starts a new Cluster, so it can't be a server that already has other
-servers, or that something other than Ployz Cloud manages. The server stays in its Cluster, and
-running the command on it again gets the same answer.
+servers, or that something other than Ployz Cloud manages. The server stays in its Cluster. Don't run
+another token on it.
 
 Run `ployz server add --command` for a new token, and add a server that isn't in a Cluster. If that
-says `This Organization's Servers can't be reached`, follow
-[My first server never finished joining](#my-first-server-never-finished-joining).
+says `This Organization's Servers can't be reached`, go to **Organization**, click **Reset founding
+attempt**, tick the confirmation and click **Reset enrollment**. The refused server can keep running:
+the reset revokes Ployz Cloud's access to it.
 
 ## The server doesn't finish joining
 

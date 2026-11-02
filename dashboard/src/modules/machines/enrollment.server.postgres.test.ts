@@ -955,7 +955,6 @@ describe("organization enrollment coordinator", () => {
     async function expectReleased(fake: ReturnType<typeof fakeSession>, attempt: Awaited<ReturnType<typeof pendingFounder>>) {
       expect(await dialRows()).toEqual([]);
       expect(await founderRow()).toEqual([]);
-      expect(fake.cluster.managementClients).not.toContain("cloud");
       expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) })).toMatchObject({ failure: { _tag: "Unauthorized" } });
       expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) }))
         .toMatchObject({ success: { kind: "initialize", resumed: false } });
@@ -965,7 +964,6 @@ describe("organization enrollment coordinator", () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);
       fake.cluster.snapshot = { ...snapshot, machines: [await otherMachine(attempt)] };
-      fake.cluster.revocable = true;
       expect(await fake.coordinator.publish({ ...attempt, capability }))
         .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
       await expectReleased(fake, attempt);
@@ -976,10 +974,9 @@ describe("organization enrollment coordinator", () => {
         const fake = fakeSession(harness.database);
         const attempt = await pendingFounder(fake);
         fake.cluster.managementClients = ["cloud", label];
-        fake.cluster.revocable = true;
         expect(await fake.coordinator.publish({ ...attempt, capability }))
           .toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_NOT_FRESH } });
-        expect(fake.cluster.managementClients).toEqual([label]);
+        expect(fake.cluster.managementClients).toEqual(["cloud", label]);
         await expectReleased(fake, attempt);
       },
     );
