@@ -57,12 +57,13 @@ const boundGrant = (ctx: OAuthClaimExtensionInput["ctx"]) =>
 // A request mints only under the grant the hook bound to its credential. A request the hook bound nothing for mints
 // nothing: for the code and refresh grants that means no credential row stood, which the provider refuses first anyway,
 // and this Cloud issues no other token with a user and Organization behind it.
-const grantClaims = async ({ ctx, user, client, referenceId }: OAuthClaimExtensionInput) => {
+// A grant every browser of which was signed out mints nothing either, so the agent hears it was revoked when it refreshes.
+const grantClaims = (signedIn: GrantSignedIn) => async ({ ctx, user, client, referenceId }: OAuthClaimExtensionInput) => {
   if (user === undefined || user === null || referenceId === undefined) return {};
   const bound = boundGrant(ctx);
   if (Option.isNone(bound)) throw revoked();
   const consent = await currentConsent(ctx.context.adapter, { clientId: client.clientId, userId: user.id, referenceId });
-  if (consent === null || consent.id !== bound.value) throw revoked();
+  if (consent === null || consent.id !== bound.value || !(await signedIn(consent.id))) throw revoked();
   return { org: referenceId, grant: consent.id };
 };
 
@@ -182,7 +183,10 @@ const bindCredentialsToGrant = (resource: string): BetterAuthPlugin => ({
   },
 });
 
-export const hostedMcpPlugins = (appUrl: URL) => {
+/** Whether a browser that allowed consent `consentId` is still signed in. */
+export type GrantSignedIn = (consentId: string) => Promise<boolean>;
+
+export const hostedMcpPlugins = (appUrl: URL, signedIn: GrantSignedIn) => {
   const { issuer, resource } = mcpEndpoints(appUrl);
   return [
     jwt({ jwt: { issuer }, disableSettingJwtHeader: true }),
@@ -199,7 +203,7 @@ export const hostedMcpPlugins = (appUrl: URL) => {
         shouldRedirect: (context) => chosenOrganization(context) === undefined,
         consentReferenceId: chosenOrganization,
       },
-      extensions: [{ claims: { accessToken: grantClaims } }],
+      extensions: [{ claims: { accessToken: grantClaims(signedIn) } }],
     }),
     cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),
     bindCredentialsToGrant(resource),

@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { it } from "@effect/vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { and, asc, eq, sql, type Table } from "drizzle-orm";
@@ -14,7 +15,7 @@ import { operationApprovals } from "#/modules/approvals/tables";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
-import { oauthClient, oauthConsent, oauthRefreshToken } from "#/modules/identity/oauth-tables";
+import { oauthClient, oauthConsent, oauthConsentSession, oauthRefreshToken } from "#/modules/identity/oauth-tables";
 import { member, session, verification } from "#/modules/identity/tables";
 import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
 import { removeMembership } from "#/modules/organization/membership.server";
@@ -705,6 +706,44 @@ it.live("revoking a CLI-marked session that allowed an agent disconnects it", ()
 
     yield* shop.provided(revokeCredential(bo, device?.id ?? expect.fail("no CLI session")));
     expect((yield* raw(shop, issued.access_token)).status).toBe(401);
+  }).pipe(Effect.scoped), 30_000);
+
+/** The migration's backfill, run again over grants that stand as one made before it left them. */
+const BACKFILL = readFileSync(new URL("../../../drizzle/20261102120309_oauth_consent_session/migration.sql", import.meta.url), "utf8")
+  .split("--> statement-breakpoint").at(-1) ?? expect.fail("the migration has no backfill");
+/** Drop every link and run the backfill again; `signedOut` first clears the tokens' session, as main's sign-out left them. */
+const asBeforeMigration = (shop: Shop, signedOut: boolean) => shop.provided(Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.delete(oauthConsentSession);
+  if (signedOut) yield* drizzle.update(oauthRefreshToken).set({ sessionId: null });
+  yield* drizzle.execute(sql.raw(BACKFILL));
+}));
+
+it.live("the backfill keeps a grant whose browser is signed in, and leaves one main had already signed out stopped", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const kept = yield* connectTokens(shop, yield* registerAgent(shop));
+    yield* asBeforeMigration(shop, false);
+    expect((yield* raw(shop, kept.access_token)).status).toBe(200);
+
+    const signedOut = yield* connectTokens(shop, yield* registerAgent(shop));
+    yield* asBeforeMigration(shop, true);
+    expect((yield* raw(shop, signedOut.access_token)).status).toBe(401);
+    expect((yield* raw(shop, kept.access_token)).status).toBe(401);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("two browsers that allowed one agent, signed out at once from the account page, both disconnect it", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    yield* connectTokens(shop, clientId);
+    const there = yield* connectTokens({ ...shop, cookie: yield* signIn(shop) }, clientId);
+    const browsers = yield* sessionsOf(shop);
+    expect(browsers).toHaveLength(2);
+
+    yield* Effect.all(browsers.map((browser) => shop.provided(revokeAccountSession({ userId: shop.boId }, browser.id))), { concurrency: "unbounded" });
+    expect((yield* raw(shop, there.access_token)).status).toBe(401);
+    expect(yield* refresh(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"))).toEqual(REVOKED);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("signing a browser out from the account page disconnects the agents connected from it", () =>

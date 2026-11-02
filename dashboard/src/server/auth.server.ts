@@ -53,7 +53,7 @@ import {
 } from "#/modules/organization/organization-state.server";
 import { Actor, type SessionActor } from "#/modules/identity/actor";
 import { bindDeviceOrganization } from "#/modules/identity/device-organization.server";
-import { disconnectSignedOutAgents } from "#/modules/identity/session-agents.server";
+import { grantSignedIn, signOutSessionAgents } from "#/modules/identity/session-agents.server";
 import { bindClaimSignInOrganization, claimSecretHashOf } from "#/modules/identity/claim-sign-in.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
@@ -427,12 +427,13 @@ const makeAuth = Effect.gen(function* () {
             )),
         },
         // A session ended while live, or by a sign-out route even once lapsed, signs its browser out. A lapsed session
-        // better-auth clears as it reads it doesn't. After, not before: revoking every session runs all the befores first.
+        // better-auth clears as it reads it doesn't. Before the row goes, so a failed mark leaves the session standing.
         delete: {
-          after: (ended, context) =>
-            ended.expiresAt > new Date() || SIGN_OUT_PATHS.has(context?.path ?? "")
-              ? runHook(disconnectSignedOutAgents(ended.userId))
-              : Promise.resolve(),
+          before: async (ending, context) => {
+            if (ending.expiresAt > new Date() || SIGN_OUT_PATHS.has(context?.path ?? "")) {
+              await runHook(signOutSessionAgents(ending.userId, ending.id));
+            }
+          },
         },
         update: {
           async before(sessionRecord) {
@@ -462,7 +463,7 @@ const makeAuth = Effect.gen(function* () {
         runHook(bindDeviceOrganization(userId, userCode, organizationId))),
       claimSignInContext,
       ...(polarPlugin === null ? [] : [polarPlugin]),
-      ...(hosted ? hostedMcpPlugins(config.app.url) : []),
+      ...(hosted ? hostedMcpPlugins(config.app.url, (consentId) => runHook(grantSignedIn(consentId))) : []),
       tanstackStartCookies(),
     ],
   });

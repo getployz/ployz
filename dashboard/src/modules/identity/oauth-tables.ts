@@ -185,9 +185,9 @@ export const oauthConsent = pgTable(
 );
 
 /**
- * Ployz's own record, not better-auth's: the browser sessions a member allowed each consent from on /connect. Signing
- * one of them out deletes the consent. It names the session without referencing it, so better-auth clearing a lapsed
- * session leaves the link for an explicit sign-out to act on.
+ * Ployz's own record, not better-auth's: each browser session a member allowed a consent from on /connect, and when that
+ * browser was signed out. A grant acts only while one of its browsers hasn't been. It names the session without
+ * referencing it, so better-auth clearing a lapsed session leaves the link standing.
  */
 export const oauthConsentSession = pgTable(
   "oauth_consent_session",
@@ -195,6 +195,7 @@ export const oauthConsentSession = pgTable(
     consentId: uuid("consent_id").notNull().references(() => oauthConsent.id, { onDelete: "cascade" }),
     sessionId: uuid("session_id").notNull(),
     createdAt,
+    signedOutAt: timestamp("signed_out_at", { mode: "date", withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.consentId, table.sessionId] }),

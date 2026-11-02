@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "d10cf1ca-7ef6-43e2-a843-32a90be96519",
+  "id": "ced482b8-bb36-44f0-843e-a22b2454d0e4",
   "prevIds": [
     "6ff8c9a0-38aa-4de5-ac9b-e1cfd2ebe50b"
   ],
@@ -2620,6 +2620,19 @@
       "generated": null,
       "identity": null,
       "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "oauth_consent_session"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "signed_out_at",
       "entityType": "columns",
       "schema": "public",
       "table": "oauth_consent_session"

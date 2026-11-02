@@ -112,9 +112,10 @@ export const connectAgent = Effect.fn("Connect.decide")(function* (
     { oauthQuery, accept: input.accept },
     { userId: signedIn.user.id, sessionId: signedIn.session.id, organizationId: membership.organizationId },
   );
-  const clientId = new URLSearchParams(oauthQuery).get("client_id");
-  if (input.accept && clientId !== null) {
-    yield* linkConsentSession({ clientId, userId: signedIn.user.id, organizationId: membership.organizationId }, signedIn.session.id);
-  }
+  if (!input.accept) return decided;
+  const clientId = new URLSearchParams(oauthQuery).get("client_id") ?? "";
+  const linked = yield* linkConsentSession({ clientId, userId: signedIn.user.id, organizationId: membership.organizationId }, signedIn.session.id);
+  // The consent went before its browser was recorded, so the code would carry a grant that can never act.
+  if (!linked) return yield* new Unauthorized();
   return decided;
 });
