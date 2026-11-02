@@ -1190,12 +1190,12 @@ fn empty_below(
 
 /// A variable `parent` sealed and deployed stays a hint in `receiver`, whose own change
 /// to it wins, so Follow never carries the seal further down (#3760). Seal it in each
-/// Branch below that still holds the value it was made with: a plain value whose
-/// fingerprint `parent` held, which it shares unchanged with its own Parent. That
-/// Branch then holds it Not set, staged, as does that base, so what `receiver` deploys
-/// later lands there as it would have. A Branch that changed the variable keeps its
-/// value. Each Branch is its own attempt, so one that can't take the seal keeps its
-/// value and never fails the deploy.
+/// Branch below that still holds a value it was made with or took from its Parent: a
+/// plain value whose fingerprint `parent` held, which it shares unchanged with its own
+/// Parent. That Branch then holds it Not set, staged, as does that base, so what
+/// `receiver` deploys later lands there as it would have. A Branch that changed the
+/// variable keeps its value. Each Branch is its own attempt, so one that can't take the
+/// seal keeps its value and never fails the deploy.
 pub(crate) fn seal_inherited_below(
     tx: &mut dyn Tx,
     who: &Actor,
