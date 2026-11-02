@@ -3144,8 +3144,8 @@ fn three_down(store: &ConfigStore, who: &Actor) {
     );
 }
 
-/// A seal empties the value in what every Branch below shares, was made with and
-/// holds as arrived, however far down, not only in its own Branches' (#3739).
+/// A seal empties the value in what every Branch below shares and was made with,
+/// however far down, not only in its own Branches' (#3739).
 #[test]
 fn a_seal_empties_the_value_in_what_every_branch_below_shares() {
     let dir = tempfile::tempdir().unwrap();
@@ -3682,4 +3682,22 @@ fn saving_a_seal_again_empties_what_a_branch_that_took_it_left_below() {
     );
     deploy(&store, &who, "production", 6);
     assert_eq!(holding_of(&url, 12, "plain-private"), 0);
+}
+
+/// Nor one whose Parent took the value by Follow and changed it itself since: what
+/// the two share is still the value production sealed.
+#[test]
+fn a_branch_of_a_branch_whose_parent_changed_a_followed_value_never_shows_it_once_sealed() {
+    let (store, who) = shop();
+    followed_then_branched(&store, &who);
+    set(&store, &who, "qa", &[("web.env.TOKEN", json!("plain-qa"))]);
+    seal_token(&store, &who, 6);
+
+    let review = diff(&store, &who, "qa-two");
+    assert_eq!(
+        token_row(&review),
+        (json!({ "secret": true }), json!("plain-edit"))
+    );
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
 }

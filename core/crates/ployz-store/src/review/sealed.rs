@@ -302,13 +302,6 @@ struct Chain {
     working: BTreeMap<String, SavedEnvironmentIntent>,
 }
 
-/// How an Environment holds a row now, for [`Chain::shared_sealed`].
-enum Now {
-    Sealed,
-    Plain { fingerprint: String },
-    Gone,
-}
-
 /// A variable as a Node Introduction holds it.
 #[derive(Clone)]
 struct Introduced {
@@ -441,26 +434,25 @@ impl Chain {
             }
             let key = shared.key.clone();
             let parent = parent.clone();
-            match self.now(tx, &parent, lineage, &key)? {
-                Now::Sealed => return Ok(true),
-                // Added again plain since: only the very variable was sealed.
-                Now::Plain { fingerprint: held } if held != fingerprint => return Ok(false),
-                Now::Plain { .. } | Now::Gone => {}
+            // One that holds it plain now, the same or its own since, may still
+            // share it with one above that sealed it.
+            if self.sealed_now(tx, &parent, lineage, &key)? {
+                return Ok(true);
             }
             keys = vec![key];
             at = parent;
         }
     }
 
-    /// How `environment` holds the row `lineage`, `key` now: sealed in its Working
-    /// State, or deleted after it sealed it, counts as sealed.
-    fn now(
+    /// Whether `environment` holds the row `lineage`, `key` sealed now: sealed in
+    /// its Working State, or deleted after it sealed it.
+    fn sealed_now(
         &mut self,
         tx: &mut dyn Tx,
         environment: &str,
         lineage: &str,
         key: &str,
-    ) -> Result<Now, RpcError> {
+    ) -> Result<bool, RpcError> {
         if !self.working.contains_key(environment) {
             let working = tx
                 .query(
@@ -477,13 +469,7 @@ impl Chain {
             .get(environment)
             .and_then(|working| working.services.iter().find(|s| s.lineage_id == lineage));
         if let Some(variable) = service.and_then(|s| s.variables.iter().find(|v| v.key == key)) {
-            return Ok(if sealed(&variable.value) {
-                Now::Sealed
-            } else {
-                Now::Plain {
-                    fingerprint: variable.value_fingerprint.clone(),
-                }
-            });
+            return Ok(sealed(&variable.value));
         }
         // Deleted, with its Service or alone: by each node of the lineage it had.
         let mut nodes: BTreeSet<String> = service.map(|s| s.id.clone()).into_iter().collect();
@@ -503,16 +489,9 @@ impl Chain {
             }
         }
         let ever = ledger(tx, &mut self.ledgers, environment)?;
-        Ok(
-            if nodes
-                .into_iter()
-                .any(|node| ever.keys.contains(&(node, key.to_owned())))
-            {
-                Now::Sealed
-            } else {
-                Now::Gone
-            },
-        )
+        Ok(nodes
+            .into_iter()
+            .any(|node| ever.keys.contains(&(node, key.to_owned()))))
     }
 
     /// `environment`'s Parent and the base the two last shared, read once.
