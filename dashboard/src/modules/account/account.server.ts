@@ -3,7 +3,7 @@ import { and, desc, eq, gt, isNull, notLike, or } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { CLI_USER_AGENT_PREFIX } from "#/modules/identity/organization-token.server";
-import { lockAgentGrants, signOutSessionAgents } from "#/modules/identity/session-agents.server";
+import { signOutSessionAgents, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
 import { account, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 
@@ -43,10 +43,8 @@ export const listLinkedAccounts = Effect.fn("Account.listLinked")(function* (act
  * session is skipped: `ployz logout` also retires its Server access, which deleting the row alone would not.
  */
 export const revokeAccountSession = Effect.fn("Account.revokeSession")(function* (actor: Actor, sessionId: string) {
-  const database = yield* Database;
-  yield* database.transaction(Effect.gen(function* () {
+  yield* transactionWithAgentGrants(actor.userId, Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* lockAgentGrants(actor.userId);
     const [ending] = yield* drizzle
       .select({ id: session.id })
       .from(session)

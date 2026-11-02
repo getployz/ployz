@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
-import { lockAgentGrants, signOutSessionAgents } from "#/modules/identity/session-agents.server";
+import { signOutSessionAgents, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
 import { organizationToken, session, user } from "#/modules/identity/tables";
 import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset } from "#/modules/identity/token-grant";
 import { Database } from "#/server/database.server";
@@ -176,9 +176,8 @@ export const revokeCredential = Effect.fn("OrganizationToken.revoke")(function* 
     .where(and(eq(organizationToken.id, id), tokensReachableBy(caller)))
     .returning({ id: organizationToken.id });
   if (token.length > 0) return { id, kind: "token" as const };
-  const device = yield* database.transaction(Effect.gen(function* () {
+  const device = yield* transactionWithAgentGrants(caller.userId, Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* lockAgentGrants(caller.userId);
     const [ending] = yield* drizzle
       .select({ id: session.id })
       .from(session)

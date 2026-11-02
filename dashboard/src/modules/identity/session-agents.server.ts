@@ -6,23 +6,31 @@ import { session } from "#/modules/identity/tables";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
-/**
- * Takes, in the current transaction, the lock that orders a member's Allows against their sign-outs, so a grant is never
- * forgotten, reused or linked against a stale read of its browsers. A transaction takes it before any row lock.
- */
-export const lockAgentGrants = Effect.fn("Identity.lockAgentGrants")(function* (userId: string) {
+// Holding a member's grants pins a connection while its work takes more, so this bounds how many hold or wait at once.
+const grantHolders = Semaphore.makeUnsafe(4);
+
+/** Takes the lock that orders a member's Allows against their sign-outs, held until the current transaction ends. */
+const lockAgentGrants = Effect.fn("Identity.lockAgentGrants")(function* (userId: string) {
   const { drizzle } = yield* Database;
   yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`agent-grants:${userId}`}))`);
   return true;
 });
 
-const grantHolders = Semaphore.makeUnsafe(4);
-
-/** Runs `body`, whose queries each commit on their own, while member `userId`'s grants are locked. */
+/**
+ * Runs `body`, whose queries each commit on their own, while member `userId`'s grants are locked, so a grant is never
+ * forgotten, reused or linked against a stale read of its browsers.
+ */
 export const withAgentGrants = <A, E, R>(userId: string, body: Effect.Effect<A, E, R>) =>
   whileLocked(grantHolders, lockAgentGrants(userId), body).pipe(
     Effect.flatMap(Option.match({ onNone: () => Effect.die("a blocking lock answered that it is taken"), onSome: Effect.succeed })),
   );
+
+/** Runs `body` in a transaction that first locks member `userId`'s grants, before it takes any row lock. */
+export const transactionWithAgentGrants = <A, E, R>(userId: string, body: Effect.Effect<A, E, R>) =>
+  grantHolders.withPermits(1)(Effect.gen(function* () {
+    const database = yield* Database;
+    return yield* database.transaction(Effect.andThen(lockAgentGrants(userId), body));
+  }));
 
 /**
  * Records that `sessionId` allowed the consent standing for this client, user and Organization on /connect. /connect
