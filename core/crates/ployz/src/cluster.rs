@@ -71,6 +71,8 @@ pub struct Client {
     /// The Machine `channel` was last confirmed to reach. Unlike `entry`, a failed redial
     /// keeps it, so a later one can tell the endpoint now reaches another Machine.
     confirmed: Option<MachineId>,
+    /// What the dial confirmed about the entry's Cluster, when it expected one.
+    pub(crate) cluster: Option<crate::connect::ClusterCheck>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -95,6 +97,50 @@ impl Client {
             connector,
             entry: None,
             confirmed: None,
+            cluster: None,
+        }
+    }
+
+    /// What the dial confirmed about the entry's Cluster; None when it expected none.
+    #[must_use]
+    pub fn cluster(&self) -> Option<&crate::connect::ClusterCheck> {
+        self.cluster.as_ref()
+    }
+
+    /// Whether the confirmed entry holds `expect`'s Sealing Key. Inspect is a read every
+    /// supported daemon answers; one that predates the field reports no key. Like the
+    /// confirmation, one try within [`CONNECT_CONFIRM_TIMEOUT`], else
+    /// [`ConnectError::EntryNotReady`].
+    pub(crate) async fn check_cluster(
+        &mut self,
+        expect: &crate::connect::ClusterExpectation,
+    ) -> Result<crate::connect::ClusterCheck, ConnectError> {
+        let inspect = async {
+            let payload =
+                op::Inspect::into_request(ployz_core::InspectRequest::default()).encode()?;
+            self.call_once::<op::Inspect>(payload, None).await
+        };
+        let details = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, inspect)
+            .await
+            .map_err(|_| ConnectError::EntryNotReady)??;
+        let machine_id = self.entry.unwrap_or(details.id);
+        match details.sealing {
+            Some(
+                ployz_core::Sealing::Held { public_key }
+                | ployz_core::Sealing::AwaitsRecovery { public_key },
+            ) if public_key == expect.sealing_public_key => Ok(crate::connect::ClusterCheck {
+                verified: true,
+                foreign: Vec::new(),
+            }),
+            Some(ployz_core::Sealing::Held { .. } | ployz_core::Sealing::AwaitsRecovery { .. }) => {
+                Err(ConnectError::ClusterMismatch { machine_id })
+            }
+            Some(ployz_core::Sealing::NeedsAccess) | None if expect.allow_unverified => {
+                Ok(crate::connect::ClusterCheck::default())
+            }
+            Some(ployz_core::Sealing::NeedsAccess) | None => {
+                Err(ConnectError::ClusterUnverified { machine_id })
+            }
         }
     }
 

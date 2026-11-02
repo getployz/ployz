@@ -43,7 +43,8 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 /// evidence (`VolumeObservation`) Cloud admits a Deploy that removes deployed
 /// Volumes with. Servers that don't answer are named, never assumed empty, and when
 /// the check fails its `failure` says whether no Server was reached or which one
-/// answered with an error, and why.
+/// answered with an error, and why. With `expect`, only a Server whose Cluster holds
+/// that Sealing public key answers, as `connect`'s `expect` does.
 ///
 /// # Errors
 /// Returns `invalid_argument` for malformed input.
@@ -51,14 +52,16 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 pub async fn observe_volumes(
     #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
     sought: Vec<String>,
+    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let connections = crate::parse_connections(connections)?;
+    let expect = crate::parse_expect(expect)?;
     let sought = sought
         .into_iter()
         .map(ployz_core::DockerVolumeName::parse)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|_| invalid_argument("invalid Docker Volume name"))?;
-    to_json(ployz::sdk::observe_volumes(connections, sought).await)
+    to_json(ployz::sdk::observe_volumes_expecting(connections, sought, expect).await)
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role
@@ -79,16 +82,18 @@ pub async fn observe_copies(
 /// Which Services run on `connections`' Servers, by Namespace
 /// (`RunningObservation`): the evidence Cloud admits a full Deploy that prunes with,
 /// naming each Service it removes. Servers that don't answer are named, and when the
-/// check fails its `failure` says why.
+/// check fails its `failure` says why. `expect` is as `observeVolumes`'.
 ///
 /// # Errors
 /// Returns `invalid_argument` for malformed input.
 #[napi(ts_return_type = "Promise<RunningObservation>")]
 pub async fn observe_running(
     #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let connections = crate::parse_connections(connections)?;
-    to_json(ployz::sdk::observe_running(connections).await)
+    let expect = crate::parse_expect(expect)?;
+    to_json(ployz::sdk::observe_running_expecting(connections, expect).await)
 }
 
 #[napi]
@@ -202,7 +207,9 @@ impl ConfigStore {
     /// `sources.upload`, the directory Cloud extracted its upload to (without it, they
     /// reuse a usable image or need a new upload); `sources.failure` says why Cloud
     /// could not read them, and is recorded as the reason nothing ran. Only Cloud's
-    /// worker calls this. It takes as long as its builds and Deploy do.
+    /// worker calls this. It takes as long as its builds and Deploy do. With `expect`,
+    /// it runs only through a Server whose Cluster holds that Sealing public key, as
+    /// `connect`'s `expect` does.
     ///
     /// # Errors
     /// Returns `conflict` when this runner has nothing to run, or a storage error.
@@ -217,6 +224,8 @@ impl ConfigStore {
             ts_arg_type = "{ checkouts?: Record<string, string>; upload?: string; failure?: string }"
         )]
         sources: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         #[derive(Default, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -229,6 +238,7 @@ impl ConfigStore {
         let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
         let connections = crate::parse_connections(connections)?;
+        let expect = crate::parse_expect(expect)?;
         let sources: Sources = sources
             .map(|sources| decode(sources, "Expected checkouts, upload and failure"))
             .transpose()?
@@ -250,12 +260,13 @@ impl ConfigStore {
         self.run(move |store| store.read(&who, &ployz_store::DeploymentQuery { id: owned }))
             .await?;
         to_json(
-            ployz::sdk::run_deployment(
+            ployz::sdk::run_deployment_expecting(
                 ployz_core::Operator::Cloud,
                 Arc::clone(&self.store),
                 deployment,
                 runner,
                 connections,
+                expect,
                 checkouts,
             )
             .await,

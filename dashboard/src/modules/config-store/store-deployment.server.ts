@@ -5,7 +5,7 @@ import type { InngestClient } from "#/modules/inngest/client";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { callStore, cancelStoreGithubBuilds, connectionsOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
+import { callStore, cancelStoreGithubBuilds, deployDialOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { extractUpload, releaseUploads, uploadOwner } from "#/modules/config-store/upload.server";
@@ -89,7 +89,7 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
   runner: string,
 ) {
   const store = yield* cloudStore;
-  const connections = yield* connectionsOf(data.organizationId);
+  const { connections, expect } = yield* deployDialOf(data.organizationId);
   return yield* Effect.gen(function* () {
     const sources = yield* Effect.all({
       checkouts: checkoutSources(store, data.organizationId, data.deploymentId),
@@ -99,7 +99,7 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
       ),
     }).pipe(Effect.catchTag("SourceUnreadable", (error) => Effect.succeed({ failure: error.message })));
     return yield* storeTry(async () => ({
-      ran: await store.runDeployment(data.organizationId, data.deploymentId, runner, connections, sources),
+      ran: await store.runDeployment(data.organizationId, data.deploymentId, runner, connections, sources, expect),
     }));
   }).pipe(
     Effect.scoped,

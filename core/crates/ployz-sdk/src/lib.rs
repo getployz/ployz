@@ -25,6 +25,16 @@ pub struct PendingConnection {
     sampled: bool,
     diagnose: bool,
     correlation: Option<String>,
+    expect: Option<ployz::connect::ClusterExpectation>,
+}
+
+/// The Cluster a connect must reach, as JavaScript names it.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClusterExpectationInput {
+    sealing_public_key: ployz_core::SealingPublicKey,
+    #[serde(default)]
+    allow_unverified: bool,
 }
 
 static DIAL_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -49,8 +59,12 @@ pub fn start_connections(
     #[napi(ts_arg_type = "readonly Connection[]")] connections: serde_json::Value,
     sample_dial_timing: Option<bool>,
     dial_correlation: Option<String>,
+    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<
+        serde_json::Value,
+    >,
 ) -> Result<PendingConnection> {
     let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty"));
     }
@@ -75,6 +89,7 @@ pub fn start_connections(
                     .bytes()
                     .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         }),
+        expect,
     })
 }
 
@@ -88,6 +103,23 @@ fn classify_failure(error: &sdk::CallError, timed_out: bool, cancelled: bool) ->
     } else {
         DialOutcome::Refused
     }
+}
+
+/// The Cluster a dial expects its entry in, as JavaScript names it; None or null expects none.
+pub(crate) fn parse_expect(
+    expect: Option<serde_json::Value>,
+) -> Result<Option<ployz::connect::ClusterExpectation>> {
+    expect
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            from_js::<ClusterExpectationInput>(value)
+                .map(|input| ployz::connect::ClusterExpectation {
+                    sealing_public_key: input.sealing_public_key,
+                    allow_unverified: input.allow_unverified,
+                })
+                .map_err(|_| invalid_argument("expect must name a base64 Sealing public key"))
+        })
+        .transpose()
 }
 
 /// Connection descriptors from JavaScript. A unix socket is refused unless this addon
@@ -152,7 +184,7 @@ impl PendingConnection {
                 unanswered: true,
                 target_unreached: false,
             }),
-            result = ployz::connect::diagnostics::scope(std::sync::Arc::clone(&timings), sdk::connect_answered(connections, connector)) => result,
+            result = ployz::connect::diagnostics::scope(std::sync::Arc::clone(&timings), sdk::connect_expecting(connections, connector, self.expect)) => result,
         };
         let total_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let outcome = match &result {
@@ -357,6 +389,12 @@ impl Client {
             .transpose()
             .map_err(invalid_argument)?;
         self.inner.set_push_target(url).await.map_err(rpc_to_napi)
+    }
+
+    /// What the dial confirmed about the entry's Cluster: null when the connect expected none.
+    #[napi(ts_return_type = "{ verified: boolean; foreign: string[] } | null")]
+    pub fn cluster(&self) -> Result<serde_json::Value> {
+        to_json(&self.inner.cluster())
     }
 
     /// Inspect identity and Management Client labels on this session.

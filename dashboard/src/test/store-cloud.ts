@@ -23,7 +23,7 @@ import { fakeGithubApi } from "#/test/fake-github";
 import { machineId } from "#/test/ids";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { postgresTestDatabase } from "#/test/postgres";
-import { organizationMachine } from "#/modules/machines/tables";
+import { clusterSealingKey, organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { SecretEncryption, SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 
@@ -135,6 +135,14 @@ export const enrollStoreServer = Effect.fn(function* (
   yield* drizzle.insert(organizationMachine).values({
     organizationId: id, machineId: server, clusterKey: createHash("sha256").update(secret).digest("hex"),
     encryptedCapability: encryption.encrypt(`ployz1:cloud:${server}`), isDialEntry: true,
+  });
+});
+
+/** Record `publicKey` as the Sealing Key of `enrollStoreServer`'s pairing, as its Cluster's first report does. */
+export const recordStoreSealingKey = Effect.fn(function* (id: string, publicKey: string, secret = "ppair_fixture_store") {
+  const { drizzle } = yield* Database;
+  yield* drizzle.insert(clusterSealingKey).values({
+    organizationId: id, clusterKey: createHash("sha256").update(secret).digest("hex"), publicKey,
   });
 });
 

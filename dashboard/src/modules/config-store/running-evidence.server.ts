@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { observeRunning, type RunningObservation } from "@ployz/sdk";
 import { Context, Effect, Option, Schema } from "effect";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreCall } from "./store.contract";
 
@@ -34,6 +34,6 @@ export const gatherRunning = Effect.fn("ConfigStore.gatherRunning")(function* (o
   const connections = Option.getOrUndefined(loaded);
   if (connections?.kind !== "ready" || connections.connections.length === 0) return undefined;
   const { observe } = yield* RunningObserver;
-  const observed = yield* storeTry(() => observe(connections.connections)).pipe(Effect.option);
+  const observed = yield* storeTry(() => observe(connections.connections, clusterExpectation(connections))).pipe(Effect.option);
   return Option.getOrUndefined(observed) satisfies RunningObservation | undefined;
 });

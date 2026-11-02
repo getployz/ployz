@@ -785,6 +785,8 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             cause: Vec::new(),
         },
         error @ (ConnectError::IdentityMismatch { .. }
+        | ConnectError::ClusterMismatch { .. }
+        | ConnectError::ClusterUnverified { .. }
         | ConnectError::ClientRefused
         | ConnectError::TunnelNeedsFull) => RpcError {
             code: RpcErrorCode::Unauthenticated,
@@ -869,6 +871,37 @@ fn entry_stagger(transport: &Transport) -> Duration {
     }
 }
 
+/// The Cluster a dial must reach, told by the Sealing public key its Machines hold.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClusterExpectation {
+    pub sealing_public_key: ployz_core::SealingPublicKey,
+    /// Accept an entry that holds no Sealing Key, which can't show its Cluster either way.
+    pub allow_unverified: bool,
+}
+
+/// What a dial with a [`ClusterExpectation`] confirmed about the entry's Cluster.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub struct ClusterCheck {
+    /// The entry holds the expected Sealing Key; false for an accepted entry holding none.
+    pub verified: bool,
+    /// Machines this dial reached and left because they hold another Cluster's key.
+    pub foreign: Vec<MachineId>,
+}
+
+/// [`connect_selected_with`], keeping only an entry in `expect`'s Cluster.
+///
+/// # Errors
+///
+/// As [`connect_selected_with`]; a candidate in another Cluster fails as
+/// [`ConnectError::ClusterMismatch`] and the race moves on.
+pub async fn connect_selected_expecting(
+    selected: SelectedConnections,
+    connector: Arc<dyn Connector>,
+    expect: ClusterExpectation,
+) -> Result<Client, ConnectError> {
+    connect_selected(selected, connector, true, Some(&expect)).await
+}
+
 /// Walk every connection and keep the first whose daemon answers. Each connection
 /// starts when the one before it fails or stays silent for its [`entry_stagger`].
 ///
@@ -884,7 +917,7 @@ pub async fn connect_selected_with(
     selected: SelectedConnections,
     connector: Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
-    connect_selected(selected, connector, true).await
+    connect_selected(selected, connector, true, None).await
 }
 
 /// [`connect_selected_with`] without the race: each connection starts only once the one
@@ -898,13 +931,14 @@ pub(crate) async fn connect_selected_in_order(
     selected: SelectedConnections,
     connector: Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
-    connect_selected(selected, connector, false).await
+    connect_selected(selected, connector, false, None).await
 }
 
 async fn connect_selected(
     selected: SelectedConnections,
     connector: Arc<dyn Connector>,
     race: bool,
+    expect: Option<&ClusterExpectation>,
 ) -> Result<Client, ConnectError> {
     let mut failures = BTreeMap::new();
     {
@@ -919,7 +953,7 @@ async fn connect_selected(
                 let beside = !dialing.is_empty();
                 stagger.reset(Instant::now() + entry_stagger(connection.transport()));
                 dialing.push(async move {
-                    let outcome = connect_one(connection, source, connector, beside).await;
+                    let outcome = connect_one(connection, source, connector, beside, expect).await;
                     (index, connection, outcome)
                 });
             }
@@ -930,7 +964,21 @@ async fn connect_selected(
             tokio::select! {
                 Some((index, connection, outcome)) = dialing.next() => {
                     let error = match outcome {
-                        Ok(client) => return Ok(client),
+                        Ok(mut client) => {
+                            if let Some(check) = client.cluster.as_mut() {
+                                check.foreign = failures
+                                    .values()
+                                    .filter_map(|(_, error)| {
+                                        if let ConnectError::ClusterMismatch { machine_id } = error {
+                                            Some(*machine_id)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                            }
+                            return Ok(client);
+                        }
                         Err(error) => error,
                     };
                     failures.insert(index, (connection, error));
@@ -983,6 +1031,7 @@ pub(crate) async fn connect_one(
     source: &ConnectionSource,
     connector: &Arc<dyn Connector>,
     beside: bool,
+    expect: Option<&ClusterExpectation>,
 ) -> Result<Client, ConnectError> {
     let channel = if beside {
         connector.connect_beside(connection)
@@ -1000,6 +1049,9 @@ pub(crate) async fn connect_one(
     let confirmed = client.confirm_entry().await;
     stage.finish(&confirmed);
     confirmed.map_err(|error| naming_local_refusal(connection, error))?;
+    if let Some(expect) = expect {
+        client.cluster = Some(client.check_cluster(expect).await?);
+    }
     Ok(client)
 }
 
@@ -1116,6 +1168,12 @@ pub enum ConnectError {
         expected: MachineId,
         actual: MachineId,
     },
+    /// The entry holds another Cluster's Sealing Key than the one this dial expects.
+    #[error("Machine {machine_id} belongs to another Cluster")]
+    ClusterMismatch { machine_id: MachineId },
+    /// The entry holds no Sealing Key to tell its Cluster by, and this dial needs one.
+    #[error("Machine {machine_id} can't show which Cluster it belongs to")]
+    ClusterUnverified { machine_id: MachineId },
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
     #[error(transparent)]
@@ -1292,6 +1350,8 @@ impl ConnectError {
             | Self::SshProbe { .. }
             | Self::Remote(_)
             | Self::IdentityMismatch { .. }
+            | Self::ClusterMismatch { .. }
+            | Self::ClusterUnverified { .. }
             | Self::ClientRefused
             | Self::OlderMachine
             | Self::ClientCleared
@@ -1367,6 +1427,8 @@ impl ConnectError {
             Self::Rpc(error) => error.local || error.budget_expired,
             Self::AllFailed { reached, .. } => !reached,
             Self::IdentityMismatch { .. }
+            | Self::ClusterMismatch { .. }
+            | Self::ClusterUnverified { .. }
             | Self::MissingMachineDetails
             | Self::ClientRefused
             | Self::OlderMachine

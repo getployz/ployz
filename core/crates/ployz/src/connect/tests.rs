@@ -1946,3 +1946,204 @@ async fn a_forward_ends_when_its_stdout_closes_though_ssh_lives_on() {
         .unwrap();
     assert_eq!(read, b"response");
 }
+
+/// Dials each entry to its own Machine, holding the Sealing Key its script names.
+struct ClusterConnector {
+    entries: Vec<(Connection, MachineId, Option<ployz_core::Sealing>)>,
+    /// Entries whose daemon confirms but never answers Inspect.
+    silent: Vec<usize>,
+}
+
+impl ClusterConnector {
+    fn selected(&self) -> SelectedConnections {
+        SelectedConnections {
+            source: ConnectionSource::Cloud,
+            connections: self
+                .entries
+                .iter()
+                .map(|(entry, _, _)| entry.clone())
+                .collect(),
+        }
+    }
+
+    async fn dial(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        let (index, (_, id, sealing)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .find(|(_, (entry, _, _))| entry == connection)
+            .unwrap();
+        let answers_inspect = !self.silent.contains(&index);
+        Ok(test_support::sealed_channel(*id, *sealing, answers_inspect).await)
+    }
+}
+
+#[tonic::async_trait]
+impl Connector for ClusterConnector {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection).await
+    }
+
+    async fn connect_beside(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection).await
+    }
+
+    async fn dial_proxy(
+        &self,
+        _: &Connection,
+        _: &str,
+        _: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        unreachable!("connect opens no proxy")
+    }
+}
+
+fn held(byte: u8) -> Option<ployz_core::Sealing> {
+    Some(ployz_core::Sealing::Held {
+        public_key: ployz_core::SealingPublicKey::from_bytes([byte; 32]),
+    })
+}
+
+fn expecting(byte: u8, allow_unverified: bool) -> ClusterExpectation {
+    ClusterExpectation {
+        sealing_public_key: ployz_core::SealingPublicKey::from_bytes([byte; 32]),
+        allow_unverified,
+    }
+}
+
+fn cluster_entries(
+    sealings: Vec<Option<ployz_core::Sealing>>,
+) -> (Arc<ClusterConnector>, Vec<MachineId>) {
+    cluster_entries_silent(sealings, Vec::new())
+}
+
+fn cluster_entries_silent(
+    sealings: Vec<Option<ployz_core::Sealing>>,
+    silent: Vec<usize>,
+) -> (Arc<ClusterConnector>, Vec<MachineId>) {
+    let ids: Vec<MachineId> = sealings.iter().map(|_| MachineId::random()).collect();
+    let entries = sealings
+        .into_iter()
+        .zip(&ids)
+        .enumerate()
+        .map(|(index, (sealing, id))| {
+            (
+                Connection::unix(format!("/scripted/cluster-{index}.sock")).unwrap(),
+                *id,
+                sealing,
+            )
+        })
+        .collect();
+    (Arc::new(ClusterConnector { entries, silent }), ids)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dial_leaves_an_entry_of_another_cluster_for_one_of_its_own() {
+    let (connector, ids) = cluster_entries(vec![held(9), held(7)]);
+    let client =
+        connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
+            .await
+            .unwrap();
+    let own = connector.entries.get(1).map(|(entry, _, _)| entry);
+    assert_eq!(Some(client.connection()), own);
+    assert_eq!(
+        client.cluster(),
+        Some(&ClusterCheck {
+            verified: true,
+            foreign: ids.first().copied().into_iter().collect()
+        })
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dial_reaching_only_another_cluster_fails() {
+    let (connector, ids) = cluster_entries(vec![held(9)]);
+    let refused =
+        connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
+            .await;
+    let Err(ConnectError::AllFailed {
+        last: Some(last), ..
+    }) = refused
+    else {
+        panic!("a foreign Cluster must not be connected");
+    };
+    assert!(
+        matches!(*last, ConnectError::ClusterMismatch { machine_id } if Some(&machine_id) == ids.first())
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_entry_holding_no_key_is_left_unless_the_dial_allows_it() {
+    for sealing in [Some(ployz_core::Sealing::NeedsAccess), None] {
+        let (connector, _) = cluster_entries(vec![sealing]);
+        let refused = connect_selected_expecting(
+            connector.selected(),
+            connector.clone(),
+            expecting(7, false),
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(ConnectError::AllFailed { last: Some(ref last), .. })
+            if matches!(**last, ConnectError::ClusterUnverified { .. }))
+        );
+        let client =
+            connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, true))
+                .await
+                .unwrap();
+        assert_eq!(
+            client.cluster(),
+            Some(&ClusterCheck {
+                verified: false,
+                foreign: Vec::new()
+            })
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cluster_that_lost_its_key_is_still_told_by_it() {
+    let awaiting = Some(ployz_core::Sealing::AwaitsRecovery {
+        public_key: ployz_core::SealingPublicKey::from_bytes([7; 32]),
+    });
+    let (connector, _) = cluster_entries(vec![awaiting]);
+    let client =
+        connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
+            .await
+            .unwrap();
+    assert!(client.cluster().is_some_and(|check| check.verified));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dial_expecting_nothing_checks_nothing() {
+    let (connector, _) = cluster_entries(vec![held(9)]);
+    let client = connect_selected_with(connector.selected(), connector.clone())
+        .await
+        .unwrap();
+    assert_eq!(client.cluster(), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_entry_that_never_answers_the_cluster_check_fails_the_dial() {
+    let (connector, _) = cluster_entries_silent(vec![held(7)], vec![0]);
+    let refused =
+        connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
+            .await;
+    let Err(ConnectError::AllFailed {
+        last: Some(last), ..
+    }) = refused
+    else {
+        panic!("an entry that never answers must not be connected");
+    };
+    assert!(matches!(*last, ConnectError::EntryNotReady));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_entry_that_never_answers_the_cluster_check_is_left_for_one_that_does() {
+    let (connector, _) = cluster_entries_silent(vec![held(7), held(7)], vec![0]);
+    let client =
+        connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
+            .await
+            .unwrap();
+    let answering = connector.entries.get(1).map(|(entry, _, _)| entry);
+    assert_eq!(Some(client.connection()), answering);
+}

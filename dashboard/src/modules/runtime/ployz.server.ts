@@ -79,6 +79,8 @@ export interface PloyzSession {
   readonly logHistory: (options: LogHistoryOptions) => Effect.Effect<LogHistoryPage, PloyzSdkError>;
   readonly metricHistory: (input: MetricHistoryInput) => Effect.Effect<MetricHistory, PloyzSdkError>;
   readonly inspect: () => Effect.Effect<MachineDetails, PloyzSdkError>;
+  /** What the connect confirmed about the entry's Cluster: null when it expected none. */
+  readonly cluster: () => SessionCluster;
   /** Resolves to the secret `ployz1:` Management Capability for `label`. */
   readonly setManagementClient: (label: string) => Effect.Effect<string, PloyzSdkError>;
   readonly clearManagementClient: (label: string) => Effect.Effect<void, PloyzSdkError>;
@@ -162,6 +164,8 @@ export interface PloyzSession {
 }
 
 export type ServiceCopies = Awaited<ReturnType<Client["observeService"]>>;
+/** What a connect that expected a Cluster confirmed about it: null when it expected none. */
+export type SessionCluster = ReturnType<Client["cluster"]>;
 
 type SharedConnectOptions = Omit<
   Extract<ConnectOptions, { readonly connections: readonly Connection[] }>,
@@ -304,6 +308,7 @@ function wrapClient(client: Client): PloyzSession {
     logHistory: (options) => sdkPromise("log history", (signal) => client.runtime.logHistory({ ...options, signal })),
     metricHistory: (input) => sdkPromise("metric history", () => client.runtime.metricHistory(input)),
     inspect: () => sdkPromise("inspect", () => client.inspect()),
+    cluster: () => client.cluster(),
     setManagementClient: (label) => sdkPromise("set Management Client", () => client.setManagementClient(label)),
     clearManagementClient: (label) => sdkPromise("clear Management Client", () => client.clearManagementClient(label)),
     setPushTarget: (url) => sdkPromise("set push target", () => client.setPushTarget(url)),

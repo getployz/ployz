@@ -60,6 +60,7 @@ describe("protected pairing removal", () => {
         if (endpoint.replaced) throw Object.assign(new Error("key replaced"), { code: "unauthenticated", details: null });
         if (!endpoint.paired) throw Object.assign(new Error("management client cleared"), { code: "unauthenticated", details: { management_client: "cleared" } });
         return asTestDouble<Client>()({
+          cluster: () => null,
           inspect: async () => ({ management_clients: ["cloud", ...endpoint.devices] }),
           clearManagementClient: async (label: string) => {
             cleared.push(label);
@@ -153,6 +154,26 @@ describe("protected pairing removal", () => {
       const next = await runtime.runPromise(loadOrganizationConnections(organizationId));
       expect(next).toMatchObject({ kind: "ready", connections: [{ management: "ployz1:next-generation" }] });
       expect((await harness.pool.query("select is_dial_entry from organization_machine")).rows).toEqual([{ is_dial_entry: true }]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("asks a new pairing's entries for its own Sealing Key, never an earlier pairing's", async () => {
+    const fake = fixture();
+    const runtime = fake.makeRuntime();
+    try {
+      const earlier = hashEnrollmentToken(pairing);
+      const earlierKey = `${"E".repeat(43)}=`;
+      await harness.pool.query("insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1,$2,$3)", [organizationId, earlier, earlierKey]);
+      await harness.pool.query("insert into organization_sealing_key (organization_id, public_key) values ($1,$2)", [organizationId, earlierKey]);
+      expect(await runtime.runPromise(loadOrganizationConnections(organizationId))).toMatchObject({ kind: "ready", sealingPublicKey: earlierKey });
+      await runtime.runPromise(revokeOrganizationPairing(organizationId));
+      await seedPairing("ppair_new_generation", "ployz1:next-generation");
+      // An Organization-wide key names the earlier pairing's Cluster: a Server still in it must not pass for this one.
+      expect(await runtime.runPromise(loadOrganizationConnections(organizationId))).toMatchObject({ kind: "ready", sealingPublicKey: null });
+      const nextKey = `${"N".repeat(43)}=`;
+      await harness.pool.query("insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1,$2,$3)",
+        [organizationId, hashEnrollmentToken("ppair_new_generation"), nextKey]);
+      expect(await runtime.runPromise(loadOrganizationConnections(organizationId))).toMatchObject({ kind: "ready", sealingPublicKey: nextKey });
     } finally { await runtime.dispose(); }
   });
 

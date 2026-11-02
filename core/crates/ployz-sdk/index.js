@@ -244,7 +244,7 @@ async function connect(options) {
   }
   signal?.throwIfAborted();
   let attempt;
-  try { attempt = native.startConnections(options.connections, options.sampleDialTiming, options.dialCorrelation); } catch (error) { throwRpcError(error); }
+  try { attempt = native.startConnections(options.connections, options.sampleDialTiming, options.dialCorrelation, options.expect ?? null); } catch (error) { throwRpcError(error); }
   let client;
   let timer;
   let stopped = false;

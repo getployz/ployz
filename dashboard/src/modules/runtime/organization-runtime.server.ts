@@ -120,7 +120,14 @@ export class OrganizationRuntime extends Context.Service<
 type LoadConnections = (
   organizationId: string,
 ) => Effect.Effect<
-  { readonly kind: "missing" } | { readonly kind: "ready"; readonly generation: string; readonly connections: readonly Connection[] },
+  | { readonly kind: "missing" }
+  | {
+    readonly kind: "ready";
+    readonly generation: string;
+    readonly connections: readonly Connection[];
+    /** The Sealing public key Cloud recorded for this pairing, which every entry must hold; absent while it has none. */
+    readonly sealingPublicKey?: string | null;
+  },
   Error
 >;
 
@@ -334,7 +341,11 @@ export function makeOrganizationRuntimeLayer(
               return { status: "unreachable" as const, error: null };
             }
             // A close spends the caller's Cluster budget; a long-lived session, opened with none, waits for its close.
-            return yield* ployz.connect({ connections }, { closeWithin: clusterRead }).pipe(
+            // Each entry must hold the pairing's Sealing Key, so a Server that moved to another Cluster is never used. A
+            // pairing without a recorded key can't be told apart, and connects as before.
+            const sealingPublicKey = access.sealingPublicKey ?? null;
+            const options = sealingPublicKey === null ? { connections } : { connections, expect: { sealingPublicKey } };
+            return yield* ployz.connect(options, { closeWithin: clusterRead }).pipe(
               Effect.timeoutOrElse({
                 duration: ORGANIZATION_CONNECT_TIMEOUT,
                 orElse: () => Effect.fail(new PloyzProviderError({
@@ -345,6 +356,12 @@ export function makeOrganizationRuntimeLayer(
               clusterRead,
               // Forked outside the session scope so the check can close that scope.
               Effect.tap(() => Effect.forkIn(watchPairing(organizationId, session, cursor), parent)),
+              Effect.tap((connected) => {
+                const foreign = sealingPublicKey === null ? [] : connected.cluster()?.foreign ?? [];
+                return foreign.length === 0 ? Effect.void
+                  : Effect.logError("A Server Cloud holds a connection for runs in another Cluster; Cloud didn't use it.")
+                    .pipe(Effect.annotateLogs({ organizationId, machineIds: foreign }));
+              }),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
                 connected: recordingFrames(connected, (frame) => record(organizationId, access.generation, frame)),

@@ -143,6 +143,31 @@ pub async fn run_deployment(
     connections: Vec<Connection>,
     checkouts: Checkouts,
 ) -> Result<DeploymentSummary, RpcError> {
+    run_deployment_expecting(
+        operator,
+        store,
+        deployment,
+        runner,
+        connections,
+        None,
+        checkouts,
+    )
+    .await
+}
+
+/// [`run_deployment`] through an entry of `expect`'s Cluster only, when given.
+///
+/// # Errors
+/// As [`run_deployment`].
+pub async fn run_deployment_expecting(
+    operator: Operator,
+    store: Arc<ConfigStore>,
+    deployment: DeploymentId,
+    runner: RunnerId,
+    connections: Vec<Connection>,
+    expect: Option<crate::connect::ClusterExpectation>,
+    checkouts: Checkouts,
+) -> Result<DeploymentSummary, RpcError> {
     let run = Run {
         store,
         deployment,
@@ -171,6 +196,7 @@ pub async fn run_deployment(
         .connecting(super::dial(
             connections,
             Arc::new(SystemConnector::default()),
+            expect,
         ))
         .await
     {
@@ -206,6 +232,18 @@ pub async fn observe_volumes(
     connections: Vec<Connection>,
     sought: Vec<ployz_core::DockerVolumeName>,
 ) -> Result<ployz_store::VolumeObservation, RpcError> {
+    observe_volumes_expecting(connections, sought, None).await
+}
+
+/// [`observe_volumes`] through an entry of `expect`'s Cluster only, when given.
+///
+/// # Errors
+/// As [`observe_volumes`].
+pub async fn observe_volumes_expecting(
+    connections: Vec<Connection>,
+    sought: Vec<ployz_core::DockerVolumeName>,
+    expect: Option<crate::connect::ClusterExpectation>,
+) -> Result<ployz_store::VolumeObservation, RpcError> {
     if connections.is_empty() {
         return Err(super::invalid_argument(
             "connections must not be empty".into(),
@@ -216,7 +254,8 @@ pub async fn observe_volumes(
         .filter_map(Connection::machine_id)
         .copied()
         .collect();
-    let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
+    let session = match super::dial(connections, Arc::new(SystemConnector::default()), expect).await
+    {
         Ok(session) => session,
         Err(error) => {
             let failure = if error.unreached() {
@@ -253,6 +292,17 @@ pub async fn observe_volumes(
 pub async fn observe_running(
     connections: Vec<Connection>,
 ) -> Result<ployz_store::RunningObservation, RpcError> {
+    observe_running_expecting(connections, None).await
+}
+
+/// [`observe_running`] through an entry of `expect`'s Cluster only, when given.
+///
+/// # Errors
+/// As [`observe_running`].
+pub async fn observe_running_expecting(
+    connections: Vec<Connection>,
+    expect: Option<crate::connect::ClusterExpectation>,
+) -> Result<ployz_store::RunningObservation, RpcError> {
     if connections.is_empty() {
         return Err(super::invalid_argument(
             "connections must not be empty".into(),
@@ -269,7 +319,8 @@ pub async fn observe_running(
         failure: Some(failure),
         dropped: Vec::new(),
     };
-    let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
+    let session = match super::dial(connections, Arc::new(SystemConnector::default()), expect).await
+    {
         Ok(session) => session,
         Err(error) => {
             let failure = if error.unreached() {
