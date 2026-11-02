@@ -63,11 +63,17 @@ export const getLinkedAccountsCollection = scoped((scope) =>
 export const getConnectedAgentsCollection = scoped((scope) =>
   createApiCollection({ queryClient: scope.queryClient, getKey: (row: ConnectedAgentRow) => row.id, ...connectedAgentsRead(scope) }));
 
-/** Ends a browser session: the row leaves at once, and the refetch after brings it back if the server refused. */
+/**
+ * Ends a browser session: the row leaves at once, and the refetch after brings it back if the server refused. The
+ * agents it disconnected leave the Connected agents list on that refetch too.
+ */
 export function revokeAccountSession(scope: CollectionScope, sessionId: string) {
   const sessions = getAccountSessionsCollection(scope);
   sessions.utils.writeDelete(sessionId);
-  return revokeAccountSessionServerFn({ data: { sessionId } }).finally(() => void sessions.utils.refetch());
+  return revokeAccountSessionServerFn({ data: { sessionId } }).finally(() => {
+    void sessions.utils.refetch();
+    void getConnectedAgentsCollection(scope).utils.refetch();
+  });
 }
 
 /** Disconnects an agent: the row leaves at once, and the refetch after brings it back if the server refused. */
