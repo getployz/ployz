@@ -272,7 +272,8 @@ is disabled.
 <!-- screenshot: the Delete organization dialog with the slug typed -->
 
 If a server is offline, the organization stays, disabled, until that server is back. Then click
-**Try again**.
+**Try again**. A server that now belongs to another cluster counts as offline here, since Ployz Cloud
+won't change it. Stop its daemon or reset it with `ployz server rm` over SSH, then click **Try again**.
 
 The dashboard then opens another of your organizations. With none left, it offers **Create an
 organization**.

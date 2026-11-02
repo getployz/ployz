@@ -146,8 +146,8 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     if (stored != null) {
       const management = yield* decryptPairingSecret(stored);
       if (expect === null) return { machine_id: machineId, management, refused: null };
-      // A stored holder is checked with one dial that refuses only a Server holding another Cluster's key. Whatever
-      // that Server answers instead is refused here too; one that doesn't answer keeps its holder, as before.
+      // A stored holder is checked with one dial whose expectation refuses only a Server holding another Cluster's key.
+      // Any refusal the Server answers withholds the holder; a Server that doesn't answer keeps it, as before.
       const checking = (yield* Ployz).connect({ connections: [cloud], timeoutMs: SERVER_TIMEOUT_MS, expect: { ...expect, allowUnverified: true } }, { closeWithin: clusterRead });
       const checked = yield* answered(Effect.scoped(checking).pipe(Effect.timeout(SERVER_TIMEOUT_MS), withClusterBudget(SESSION_CLOSE_CLUSTER_MS)));
       return { machine_id: machineId, management: checked.refused === null ? management : null, refused: checked.refused };

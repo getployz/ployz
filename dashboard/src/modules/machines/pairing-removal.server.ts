@@ -371,7 +371,9 @@ const ManagementClientCleared = Schema.Struct({
  * Clear one Machine's device holders (`cli-*`), its push target, then its `cloud` Management Client. Only a successful Clear or an
  * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders. A Machine that
  * authenticates but never confirms still holds the pairing, and Cloud records that it answered. One that now answers for
- * another Cluster than the pairing's, `expect`, stays silent, as one that doesn't answer does.
+ * another Cluster than the pairing's, `expect`, stays silent, as one that doesn't answer does: the removal clears every
+ * device holder it lists, and another Cluster's are not this pairing's to clear. A revocation's Clear names one holder
+ * of Cloud's own, so it expects nothing.
  */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
   function* (machineId: MachineId, management: string, expect: { readonly sealingPublicKey: string; readonly allowUnverified: boolean } | null) {
