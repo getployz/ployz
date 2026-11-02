@@ -3356,10 +3356,9 @@ fn keep_bases(url: &str) {
 }
 
 /// Bases written before a seal emptied values below the Branches that share them
-/// still hold the plain value, until production saves the sealed variable again:
-/// no read shows it meanwhile, and that Save empties it.
+/// still hold the plain value: no read shows it.
 #[test]
-fn no_read_shows_a_value_an_unsaved_base_below_still_holds_and_saving_the_seal_empties_it() {
+fn no_read_shows_a_value_a_base_below_still_holds_from_before_the_seal_emptied_it() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
@@ -3382,6 +3381,77 @@ fn no_read_shows_a_value_an_unsaved_base_below_still_holds_and_saving_the_seal_e
         token_row(&diff(&store, &who, "qa-two")),
         (json!({ "secret": true }), json!("plain-edit"))
     );
+}
+
+/// `qa-two`'s Sync base with `qa` and what it was made with, counted where they
+/// hold `marker`.
+fn below_holding(url: &str, marker: &str) -> i64 {
+    let branch = uuid(11);
+    backend::count(
+        url,
+        &format!(
+            "SELECT COUNT(*) FROM config_sync_base \
+             WHERE (environment_id = '{branch}' OR other_id = '{branch}') \
+             AND base LIKE '%{marker}%'"
+        ),
+    ) + backend::count(
+        url,
+        &format!(
+            "SELECT COUNT(*) FROM config_environment_branch \
+             WHERE environment_id = '{branch}' AND made_with LIKE '%{marker}%'"
+        ),
+    )
+}
+
+/// production's seal empties the value in what a Branch of a Branch shares and was
+/// made with, though the Branch between changed it and so never took the seal
+/// (#3739, as reported).
+#[test]
+fn a_seal_empties_the_value_in_what_a_branch_of_a_branch_shares() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    deploy(&store, &who, "qa", 3);
+    branch(&store, &who, 11, "qa", "qa-two");
+    deploy(&store, &who, "qa-two", 4);
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    set(
+        &store,
+        &who,
+        "qa-two",
+        &[("web.env.TOKEN", json!("plain-edit-two"))],
+    );
+    assert_eq!(below_holding(&url, "plain-private"), 2);
+    seal_token(&store, &who, 5);
+
+    assert_eq!(below_holding(&url, "plain-private"), 0);
+}
+
+/// Saving the sealed variable again in production empties what a seal made before
+/// left plain below its Branches.
+#[test]
+fn saving_a_seal_again_empties_the_value_a_base_below_kept_from_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    followed_then_branched(&store, &who);
+    keep_bases(&url);
+    seal_token(&store, &who, 6);
+    restore_bases(&url);
+    assert_eq!(below_holding(&url, "plain-private"), 2);
 
     let sealed = token(&store, &who, "production", 2);
     set(
@@ -3391,10 +3461,50 @@ fn no_read_shows_a_value_an_unsaved_base_below_still_holds_and_saving_the_seal_e
         &[("web.env.TOKEN", json!({ "secret": sealed }))],
     );
     deploy(&store, &who, "production", 7);
-    let holding = backend::tables_holding(&url, "plain-private");
-    assert!(
-        !holding.contains(&"config_sync_base".to_owned())
-            && !holding.contains(&"config_environment_branch".to_owned()),
-        "{holding:?}"
+    assert_eq!(below_holding(&url, "plain-private"), 0);
+}
+
+/// A Branch of a Branch whose Parent took by Follow a template production rewrote
+/// with a rename reviews its delete from production's seal (#3727, case 2).
+#[test]
+fn a_branch_of_a_branch_never_shows_a_template_a_rename_rewrote_once_sealed() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private-${{ PLAIN }}"))],
     );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Rename {
+                    path: SettingPath::parse("web.env.PLAIN").unwrap(),
+                    to: "PLAIN_TWO".to_owned(),
+                    update_references: true,
+                }],
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "production", 3);
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!("plain-private-${{ PLAIN_TWO }}")
+    );
+    deploy(&store, &who, "qa", 4);
+    branch(&store, &who, 11, "qa", "qa-two");
+    deploy(&store, &who, "qa-two", 5);
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    unset(&store, &who, "qa-two", "web.env.TOKEN");
+    seal_token(&store, &who, 6);
+
+    let review = diff(&store, &who, "qa-two");
+    assert_eq!(token_row(&review), (json!({ "secret": true }), Value::Null));
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private"), "{shown}");
 }
