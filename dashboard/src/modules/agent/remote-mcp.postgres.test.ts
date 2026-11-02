@@ -598,6 +598,35 @@ it.live("signing out of the browser the agent was connected from disconnects it,
     yield* refreshedAccess(shop, otherClient, there.refresh_token ?? expect.fail("connect issued no refresh token"));
   }).pipe(Effect.scoped), 30_000);
 
+it.live("signing out after the agent has refreshed still disconnects it", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const issued = yield* connectTokens(shop, clientId);
+    const renewed = yield* refreshedAccess(shop, clientId, issued.refresh_token ?? expect.fail("connect issued no refresh token"));
+
+    expect((yield* authJson(shop, "/api/auth/revoke-sessions", { method: "POST", headers: { cookie: shop.cookie, origin } })).status).toBe(200);
+    expect(yield* sessionsOf(shop)).toEqual([]);
+    expect((yield* raw(shop, renewed.access_token)).status).toBe(401);
+    expect(yield* refresh(shop, clientId, renewed.refresh_token ?? expect.fail("refresh issued no refresh token")))
+      .toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("signing out of a browser leaves an agent reconnected from another after a disconnect", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    yield* connectTokens(shop, clientId);
+    expect((yield* disconnect(shop)).status).toBe(200);
+    yield* aMinuteLater(shop);
+    const elsewhere = { ...shop, cookie: yield* signIn(shop) };
+    const there = yield* connectTokens(elsewhere, clientId);
+
+    expect((yield* authJson(shop, "/api/auth/sign-out", { method: "POST", headers: { cookie: shop.cookie, origin } })).status).toBe(200);
+    expect((yield* raw(shop, there.access_token)).status).toBe(200);
+    yield* refreshedAccess(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"));
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("signing a browser out from the account page disconnects the agents connected from it", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, exists, gt } from "drizzle-orm";
+import { and, eq, exists, gt, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { oauthConsent, oauthRefreshToken } from "#/modules/identity/oauth-tables";
 import { session } from "#/modules/identity/tables";
@@ -23,6 +23,9 @@ export const disconnectSessionAgents = Effect.fn("Identity.disconnectSessionAgen
         eq(oauthRefreshToken.clientId, oauthConsent.clientId),
         eq(oauthRefreshToken.userId, oauthConsent.userId),
         eq(oauthRefreshToken.referenceId, oauthConsent.referenceId),
+        // A rotated token, or one from a consent since revoked, belongs to no grant standing now.
+        isNull(oauthRefreshToken.revoked),
+        sql`date_trunc('second', ${oauthRefreshToken.createdAt}) >= ${oauthConsent.createdAt}`,
       )),
   ));
 });
