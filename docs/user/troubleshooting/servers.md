@@ -231,6 +231,12 @@ attempt**, tick the confirmation and click **Reset enrollment**. The confirmatio
 erase the old Machine, but this server can keep running in its Cluster: the reset revokes Ployz
 Cloud's own access to it.
 
+When the message is `a new founding claim requires an uninitialized Server`, you can add this
+server itself instead: run `ployz server add --command --reset` for a new token, and run the line
+it prints on the server. The reset removes every container Ployz runs on that server, so its apps
+go down, and it can delete its mirrors, so don't use it while a mirror there may be the last copy
+of a volume.
+
 ## A forgotten server is refused when you add it again
 
 You'll see `Server web-2 already participates, but Cloud doesn't list it as joined`.
