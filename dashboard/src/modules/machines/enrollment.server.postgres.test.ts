@@ -1032,6 +1032,17 @@ describe("organization enrollment coordinator", () => {
       const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
       expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([fake.cluster.accepted]);
       expect(fake.cluster.accepted).toBe(keyed(0xab, 0x02));
+      expect((await harness.pool.query("select founder_publication from organization_pairing")).rows).toEqual([{ founder_publication: null }]);
+    });
+
+    it("takes the turn of a publication that never finished once it lapses", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await harness.pool.query("update organization_pairing set founder_publication=gen_random_uuid(), founder_publication_until=now()+interval '1 minute'");
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ failure: { _tag: "Unavailable" } });
+      await harness.pool.query("update organization_pairing set founder_publication_until=now()-interval '1 second'");
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect((await harness.pool.query("select founder_publication from organization_pairing")).rows).toEqual([{ founder_publication: null }]);
     });
 
     it("lets another Organization's founder publish while one Organization's founder verifies", async () => {

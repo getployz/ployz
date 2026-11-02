@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
-import { Cause, Effect, Option, Schema, Semaphore } from "effect";
+import { Cause, Effect, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
   organizationMachine,
@@ -51,7 +51,6 @@ import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollmen
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { whileLocked } from "#/server/advisory-lock.server";
 import { Conflict, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
 import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { managementIdentity as managementIdentityOf } from "#/modules/machines/management-identity";
@@ -369,6 +368,7 @@ const organizationPairingProjection = {
   founderMachineId: schemaOrganizationPairing.founderMachineId,
   removalStartedAt: schemaOrganizationPairing.removalStartedAt,
   createdAt: schemaOrganizationPairing.createdAt,
+  founderPublication: schemaOrganizationPairing.founderPublication,
 };
 
 const loadPairingRow = Effect.fn("MachineEnrollment.loadPairing")(
@@ -840,21 +840,21 @@ const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(f
 });
 
 /**
- * Founder publications verifying at once on this process. Each pins a pooled connection for its lock, so two, beside
- * sync's two and staging's one, leave the pool's 10 five. None waits for a slot: `founderAdmission` hands out only free
- * ones, so `whileLocked` never queues on `founderPublications`.
+ * How long a founder publication's turn lasts if it never finishes: past its connect, reads and close, which Cloud bounds
+ * well inside the CLI's 15s, so a turn lapses only for a publication that died.
  */
-const founderAdmission = Semaphore.makeUnsafe(2);
-const founderPublications = Semaphore.makeUnsafe(2);
+const PUBLICATION_TURN_MS = 30_000;
 
-/** Whether this Machine's publication lock was free, now held: false while another of its publications verifies. */
-const publicationLock = Effect.fn("MachineEnrollment.publicationLock")(function* (organizationId: string, machineId: MachineId) {
-  const [row] = yield* (yield* Database).drizzle.execute<{ held: boolean }>(
-    sql`select pg_try_advisory_xact_lock(hashtext(${`founder-publication:${organizationId}:${machineId}`})) as held`, "objects");
-  return row?.held === true;
+/** Ends founder publication `turn` if it is still the pairing's; a later turn or a released pairing stays as it is. */
+const endPublicationTurn = (organizationId: string, turn: string) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(schemaOrganizationPairing).set({ founderPublication: null, founderPublicationUntil: null }).where(and(
+    eq(schemaOrganizationPairing.organizationId, organizationId),
+    eq(schemaOrganizationPairing.founderPublication, turn),
+  ));
 });
 
-/** A founder publication that found its Machine's lock or every slot taken; the CLI retries a 503. */
+/** A founder publication that found another's turn running; the CLI retries a 503. */
 const publicationBusy = () => new Unavailable({ message: "Another enrollment step is verifying this Server. Retrying.", userFacing: true });
 
 /** `machineId` enrolled in this attempt under the WireGuard key that claimed the token. */
@@ -888,8 +888,11 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
     const managementIdentity = managementIdentityOf(input.capability);
-    /** `verified` once the Machine answered on this capability: the saved capability it replaces, if any. */
-    const publish = (verified?: { readonly iv: string | undefined }) => database.transaction(Effect.gen(function* () {
+    /**
+     * `verified` once the Machine answered on this capability: the saved capability it replaces, if any, and the founder
+     * publication turn it verified in.
+     */
+    const publish = (verified?: { readonly iv: string | undefined; readonly turn: string | undefined }) => database.transaction(Effect.gen(function* () {
       const expectedIv = verified?.iv;
       const { drizzle } = yield* Database;
       const [pairing] = yield* drizzle.select(organizationPairingProjection)
@@ -904,6 +907,13 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         return yield* new Conflict({ message: "The founding attempt is no longer current." });
       }
       yield* requireEnrollmentMachine(token.organizationId, pairing, secret, input.machineId, token.claimedPublicKey);
+      if (verified?.turn !== undefined) {
+        // A turn that lapsed may have been taken since: whatever this one verified is no longer the newest.
+        if (pairing.founderPublication !== verified.turn) {
+          return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
+        }
+        yield* endPublicationTurn(token.organizationId, verified.turn);
+      }
       yield* renewJoinSlot(input.token);
       const scope = and(
         eq(organizationMachine.organizationId, token.organizationId),
@@ -911,6 +921,21 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       );
       const clusterKey = hashEnrollmentToken(secret);
       const founding = isFounding(pairing, input.machineId);
+      // A founder's freshness reads activate its credential before Cloud saves it, so its publications take turns, none
+      // waiting: the last to activate a credential is the last to save one.
+      const verification = (iv: string | undefined) => Effect.gen(function* () {
+        if (!founding) return { iv, founding, encryptedPairingSecret: pairing.encryptedPairingSecret, turn: undefined };
+        const turn = crypto.randomUUID();
+        const [taken] = yield* drizzle.update(schemaOrganizationPairing).set({
+          founderPublication: turn,
+          founderPublicationUntil: sql`now() + ${PUBLICATION_TURN_MS} * interval '1 millisecond'`,
+        }).where(and(
+          eq(schemaOrganizationPairing.organizationId, token.organizationId),
+          or(isNull(schemaOrganizationPairing.founderPublication), lt(schemaOrganizationPairing.founderPublicationUntil, sql`now()`)),
+        )).returning({ organizationId: schemaOrganizationPairing.organizationId });
+        if (!taken) return yield* publicationBusy();
+        return { iv, founding, encryptedPairingSecret: pairing.encryptedPairingSecret, turn };
+      });
       const [saved] = yield* drizzle.select().from(organizationMachine).where(scope);
       if (expectedIv !== undefined && (saved?.clusterKey !== clusterKey || saved.encryptedCapability.iv !== expectedIv)) {
         return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
@@ -922,7 +947,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         if (managementIdentityOf(previous) !== managementIdentity) {
           return yield* new Conflict({ message: "The Machine's management identity changed. Remove the Server and enroll it again.", userFacing: true });
         }
-        if (verified === undefined) return { iv: saved.encryptedCapability.iv, founding, encryptedPairingSecret: pairing.encryptedPairingSecret };
+        if (verified === undefined) return yield* verification(saved.encryptedCapability.iv);
         // Verified while no connection was saved: a racing publication saved this one since, unverified against it.
         if (verified.iv === undefined) {
           return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
@@ -933,7 +958,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         }).where(scope);
       } else {
         // A founder's Cluster is checked fresh before Cloud holds a connection into it.
-        if (founding && verified === undefined) return { iv: undefined, founding, encryptedPairingSecret: pairing.encryptedPairingSecret };
+        if (founding && verified === undefined) return yield* verification(undefined);
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
           clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
@@ -948,9 +973,10 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       }
       return null;
     }));
-    const verifyAndSave = Effect.gen(function* () {
+    const refused = yield* Effect.gen(function* () {
       const verify = yield* publish();
       if (verify === null) return false;
+      const saving = { iv: verify.iv, turn: verify.turn };
       // Shared negotiation confirms the intended Machine; no row lock spans the network call. Cloud times the connect
       // itself, since the SDK's own deadline fails like any cancellation.
       return yield* Effect.scoped(Effect.gen(function* () {
@@ -958,41 +984,34 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           connections: [{ machine_id: input.machineId, management: input.capability }],
         }, { closeWithin: clusterRead }).pipe(Effect.timeout(SERVER_REACH_TIMEOUT_MS), Effect.mapError(unlessAnswered));
         if (!verify.founding) {
-          yield* publish({ iv: verify.iv });
+          yield* publish(saving);
           return false;
         }
         const cluster = yield* readCluster(session).pipe(withClusterBudget(FRESHNESS_CLUSTER_MS));
         const connected = verify.iv !== undefined;
         if (isFreshCluster(cluster, input.machineId, connected)) {
-          yield* publish({ iv: verify.iv });
+          yield* publish(saving);
           return false;
         }
         // The reads activated this credential and retired the saved one: Cloud keeps the one that works, for reset to revoke.
         if (connected) {
-          yield* publish({ iv: verify.iv }).pipe(Effect.ignoreCause({ log: true, message: "Refused founder's working credential not saved" }));
+          yield* publish(saving).pipe(Effect.ignoreCause({ log: true, message: "Refused founder's working credential not saved" }));
           return true;
         }
         const release = yield* releaseRefusedClaim(token.organizationId, input.machineId, verify.encryptedPairingSecret);
         // A racing publication saved Cloud's connection since: the slots Cloud fills through it are Cloud's.
         if (release === "connected" && isFreshCluster(cluster, input.machineId, true)) {
-          yield* publish({ iv: verify.iv });
+          yield* publish(saving);
           return false;
         }
         // A released attempt leaves the `cloud` slot as the CLI set it: Cloud never saved its key, and the CLI may use it.
         return true;
-      })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
+      })).pipe(
+        withClusterBudget(SESSION_CLOSE_CLUSTER_MS),
+        Effect.ensuring(verify.turn === undefined ? Effect.void
+          : endPublicationTurn(token.organizationId, verify.turn).pipe(Effect.ignoreCause({ log: true, message: "Founder publication turn not ended" }))),
+      );
     });
-    // A founder's freshness reads activate its credential before Cloud saves it, so its publications take turns, none
-    // waiting: the last to activate a credential is the last to save one.
-    const [pairing] = yield* loadPairingRow(token.organizationId);
-    const refused = pairing !== undefined && isFounding(pairing, input.machineId)
-      ? yield* founderAdmission.withPermitsIfAvailable(1)(
-        whileLocked(founderPublications, publicationLock(token.organizationId, input.machineId), verifyAndSave),
-      ).pipe(Effect.flatMap((held) => Option.match(Option.flatten(held), {
-        onNone: () => Effect.fail(publicationBusy()),
-        onSome: Effect.succeed,
-      })))
-      : yield* verifyAndSave;
     if (refused) return yield* notFresh();
     yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(
       Effect.catch((error) => Effect.logWarning("Push target request failed; the 5-minute sweep sets it.", error)),
