@@ -58,7 +58,8 @@ const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
  * `waiting_server` rows. Fleet Token revoke and probe selection skip it too.
  * Revoke locks its token, then that token's `waiting_server` rows, and probe selection locks only `waiting_server` rows. A
  * check-in holds at most one `waiting_server` row, after its token, and stamps a probe handout on that same row. A cancel
- * event's outbox row stays locked until commit, so no path inserts one before it holds that attempt.
+ * event's outbox row stays locked until commit, so no path inserts one before it holds that attempt. A reset that ends a
+ * founding claim expires the claim's tokens after its founder attempt's cancel event; that row is new, so nothing waits on it.
  */
 export const lockOrganizationEnrollment = Effect.fn("PairingRemoval.lockOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;

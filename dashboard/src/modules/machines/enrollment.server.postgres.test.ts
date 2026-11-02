@@ -1371,19 +1371,30 @@ describe("organization enrollment coordinator", () => {
       .toMatchObject({ success: { kind: "initialize" } });
   });
 
-  it("cancels the reset founder's open attempt", async () => {
+  it.each([false, true])("cancels the reset founder's open attempt (run bound: %s)", async (bound) => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);
     const founding = await waitingAttempt(attempt.token, "publishing", "founder");
-    await harness.pool.query("update server_enrollment set inngest_run_id = null where id = $1", [founding.id]);
+    if (!bound) await harness.pool.query("update server_enrollment set inngest_run_id = null where id = $1", [founding.id]);
     expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
     expect((await harness.pool.query("select state from server_enrollment where id = $1", [founding.id])).rows)
-      .toEqual([{ state: "cancelled" }]);
+      .toEqual([{ state: bound ? "running" : "cancelled" }]);
+    expect((await harness.pool.query(
+      "select name from operation_outbox where name = 'server/enrollment.cancel' and data::text like '%' || $1 || '%'", [founding.id],
+    )).rowCount).toBe(1);
+  });
+
+  it("resets an Organization with no founding claim", async () => {
+    const fake = fakeSession(harness.database);
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    expect(await live(...tokens)).toEqual([true, true]);
   });
 
   it("refuses a reset, writing nothing, while a reserved Join may hold the pairing", async () => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);
+    const founding = await waitingAttempt(attempt.token, "publishing", "founder");
+    await harness.pool.query("update server_enrollment set inngest_run_id = null where id = $1", [founding.id]);
     await harness.pool.query(
       "insert into enrollment_allocation (organization_id, cluster_key, assignments) values ($1, $2, $3)",
       [organizationId, hashEnrollmentToken(attempt.pairingCredential), JSON.stringify([{ machine: { id: "a".repeat(32) } }])],
@@ -1393,6 +1404,8 @@ describe("organization enrollment coordinator", () => {
     });
     expect((await harness.pool.query("select removal_started_at from organization_pairing")).rows).toEqual([{ removal_started_at: null }]);
     expect(await live(attempt.token, tokens[1] ?? "")).toEqual([true, true]);
+    expect((await harness.pool.query("select state from server_enrollment where id = $1", [founding.id])).rows)
+      .toEqual([{ state: "running" }]);
   });
 
   it("keeps other tokens when a published first server can't be reached to confirm the reset", async () => {
