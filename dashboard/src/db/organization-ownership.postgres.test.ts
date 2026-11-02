@@ -38,6 +38,7 @@ const notOrganizationOwned = {
   oauth_client_resource: "Which resources an agent app may ask for; it belongs to the app, not an Organization.",
   oauth_client_assertion: "Client assertions already spent, kept to refuse a replay; it belongs to no Organization.",
   oauth_consent: "An agent's grant names its Organization in reference_id but is read only when a token is minted or used; no view reads it, so it needs no change log.",
+  oauth_consent_session: "Which browsers allowed an agent's grant, read only when a token is minted or used and when a browser signs out; no view reads it, so it needs no change log.",
   oauth_refresh_token: "An agent's refresh token, read only by the token endpoint; no view reads it, so it needs no change log.",
   oauth_access_token: "An agent's access token, read only by the token endpoint; no view reads it, so it needs no change log.",
   rate_limit: "Request counts per caller and path for auth rate limiting; it belongs to no Organization.",
