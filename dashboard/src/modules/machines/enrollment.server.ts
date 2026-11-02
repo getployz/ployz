@@ -788,25 +788,29 @@ const freshnessRead = <A>(read: Effect.Effect<A, PloyzSdkError>) => clusterRead(
   error instanceof ClusterOutOfTime ? cantReachServer(error)
     : error._tag === "PloyzProviderError" ? unlessAnswered(error) : error));
 
-/**
- * Whether a founder's Cluster is new: the Server is its only Machine, and only Cloud manages it. Once Cloud holds a
- * connection to the Server, the `cli-` and `device-` slots Cloud fills through it count as Cloud's too. Like any
- * operational RPC, the reads activate the session's credential.
- */
-const isFreshCluster = Effect.fn("MachineEnrollment.isFreshCluster")(function* (
-  session: PloyzSession, machineId: MachineId, connected: boolean,
-) {
+/** What a founder's Server reports about its Cluster. Like any operational RPC, the reads activate the session's credential. */
+const readCluster = Effect.fn("MachineEnrollment.readCluster")(function* (session: PloyzSession) {
   const details = yield* freshnessRead(session.inspect());
   const snapshot = yield* freshnessRead(session.observeEnrollment());
+  return { details, snapshot };
+});
+
+/**
+ * Whether a founder's Cluster is new: the Server is its only Machine, and only Cloud manages it. Once Cloud holds a
+ * connection to the Server, the `cli-` and `device-` slots Cloud fills through it count as Cloud's too.
+ */
+const isFreshCluster = (
+  { details, snapshot }: Effect.Success<ReturnType<typeof readCluster>>, machineId: MachineId, connected: boolean,
+) => {
   const cloudFilled = (label: string) => label === "cloud" || (connected && (label.startsWith("cli-") || label.startsWith("device-")));
   return details.id === machineId
     && details.management_clients.every(cloudFilled)
     && snapshot.machines.every((machine) => machine.id === machineId);
-});
+};
 
 /**
  * Lets go of a founding attempt refused before Cloud held any connection into its Server: the Organization starts over
- * with another Server, and the claimant's tokens stop working. False when the attempt moved on, or Cloud holds a
+ * with another Server, and the claimant's tokens stop working. Kept when the attempt moved on, or when Cloud holds a
  * connection, which resetting the attempt revokes instead.
  */
 const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(function* (
@@ -819,17 +823,17 @@ const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(f
     const [pairing] = yield* drizzle.select(organizationPairingProjection).from(schemaOrganizationPairing)
       .where(eq(schemaOrganizationPairing.organizationId, organizationId)).for("update");
     if (!pairing || pairing.removalStartedAt !== null || !isFounding(pairing, machineId)
-      || !isDeepStrictEqual(pairing.encryptedPairingSecret, encryptedPairingSecret)) return false;
+      || !isDeepStrictEqual(pairing.encryptedPairingSecret, encryptedPairingSecret)) return "moved" as const;
     const [held] = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
       .where(eq(organizationMachine.organizationId, organizationId)).limit(1);
-    if (held) return false;
+    if (held) return "connected" as const;
     yield* drizzle.delete(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organizationId));
     yield* drizzle.update(schemaMachineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: new Date() }).where(and(
       eq(schemaMachineEnrollmentToken.organizationId, organizationId),
       eq(schemaMachineEnrollmentToken.claimedMachineId, machineId),
       isNull(schemaMachineEnrollmentToken.joinedMachineId),
     ));
-    return true;
+    return "released" as const;
   }));
 });
 
@@ -899,6 +903,10 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           return yield* new Conflict({ message: "The Machine's management identity changed. Remove the Server and enroll it again.", userFacing: true });
         }
         if (verified === undefined) return { iv: saved.encryptedCapability.iv, founding, encryptedPairingSecret: pairing.encryptedPairingSecret };
+        // Verified while no connection was saved: a racing publication saved this one since, unverified against it.
+        if (verified.iv === undefined) {
+          return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
+        }
         yield* drizzle.update(organizationMachine).set({
           encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
           machineName: token.claimedName ?? saved.machineName, updatedAt: new Date(),
@@ -928,15 +936,28 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         const session = yield* (yield* Ployz).connect({
           connections: [{ machine_id: input.machineId, management: input.capability }],
         }, { closeWithin: clusterRead }).pipe(Effect.timeout(SERVER_REACH_TIMEOUT_MS), Effect.mapError(unlessAnswered));
+        if (!verify.founding) {
+          yield* publish({ iv: verify.iv });
+          return false;
+        }
+        const cluster = yield* readCluster(session).pipe(withClusterBudget(FRESHNESS_CLUSTER_MS));
         const connected = verify.iv !== undefined;
-        if (!verify.founding || (yield* isFreshCluster(session, input.machineId, connected).pipe(withClusterBudget(FRESHNESS_CLUSTER_MS)))) {
+        if (isFreshCluster(cluster, input.machineId, connected)) {
           yield* publish({ iv: verify.iv });
           return false;
         }
         // The reads activated this credential and retired the saved one: Cloud keeps the one that works, for reset to revoke.
         if (connected) {
           yield* publish({ iv: verify.iv });
-        } else if (yield* releaseRefusedClaim(token.organizationId, input.machineId, verify.encryptedPairingSecret)) {
+          return true;
+        }
+        const release = yield* releaseRefusedClaim(token.organizationId, input.machineId, verify.encryptedPairingSecret);
+        // A racing publication saved Cloud's connection since: the slots Cloud fills through it are Cloud's.
+        if (release === "connected" && isFreshCluster(cluster, input.machineId, true)) {
+          yield* publish({ iv: verify.iv });
+          return false;
+        }
+        if (release === "released") {
           // Cloud drops the slot it never saved; the Server's other clients aren't Cloud's to touch.
           yield* clusterRead(session.clearManagementClient("cloud")).pipe(
             withClusterBudget(FRESHNESS_CLUSTER_MS),
@@ -1003,7 +1024,7 @@ export const completeMachineEnrollment = Effect.fn(
       }
       if (opened.status !== "connected") return yield* cantReachServer(opened);
       if (isFounding(row, machineId)
-        && !(yield* isFreshCluster(opened.connected, machineId, true).pipe(withClusterBudget(FRESHNESS_CLUSTER_MS)))) {
+        && !isFreshCluster(yield* readCluster(opened.connected).pipe(withClusterBudget(FRESHNESS_CLUSTER_MS)), machineId, true)) {
         // A racing completion may have committed this founder since `row` was read; its Cluster may grow from then on.
         // Otherwise Cloud keeps its connection, for resetting the attempt to revoke.
         const [current] = yield* loadPairingRow(token.organizationId);

@@ -1006,6 +1006,45 @@ describe("organization enrollment coordinator", () => {
       expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
     });
 
+    /** Holds the next connection until the returned release, and resolves `held` once it waits. */
+    function holdNextConnection(fake: ReturnType<typeof fakeSession>) {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const state = { held: false };
+      fake.connection.beforeConnect = async () => {
+        if (state.held) return;
+        state.held = true;
+        await gate;
+      };
+      return { release, waiting: () => vi.waitFor(() => expect(state.held).toBe(true)) };
+    }
+
+    it("keeps a racing publication's connection over a first publication verified before it was saved", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      const hold = holdNextConnection(fake);
+      const delayed = fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x01) });
+      await hold.waiting();
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xab, 0x02) })).toMatchObject({ success: { machineId: attempt.machineId } });
+      hold.release();
+      expect(await delayed).toMatchObject({ failure: { _tag: "Conflict" } });
+      const saved = (await harness.pool.query("select encrypted_capability from organization_machine")).rows;
+      expect(saved.map((row) => enrollmentSettings.encryption.decrypt(row.encrypted_capability))).toEqual([keyed(0xab, 0x02)]);
+    });
+
+    it("accepts a duplicate first publication once its racing twin saved the connection and Cloud filled a slot", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      const hold = holdNextConnection(fake);
+      const delayed = fake.coordinator.publish({ ...attempt, capability });
+      await hold.waiting();
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
+      fake.cluster.managementClients = ["cloud", "cli-signed-in"];
+      hold.release();
+      expect(await delayed).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect(await dialRows()).toEqual([{ machine_id: attempt.machineId }]);
+    });
+
     it("counts the slots Cloud fills through its connection as Cloud's", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);
@@ -1039,7 +1078,7 @@ describe("organization enrollment coordinator", () => {
       const late = fake.coordinator.completeFounding(attempt);
       await vi.waitFor(() => expect(holding).toBe(false));
       expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
-      fake.cluster.managementClients = ["cloud", "cli-user"];
+      fake.cluster.managementClients = ["cloud", "laptop"];
       release();
       expect(await late).toMatchObject({ success: { machineId: attempt.machineId } });
     });
