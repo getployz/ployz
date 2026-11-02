@@ -167,6 +167,11 @@ jobs:
         options: --health-cmd pg_isready --health-interval 2s --health-retries 15 --shm-size=256m
     steps:
       - uses: actions/checkout@v4
+      - name: Disk at start
+        run: |
+          df -h / /mnt || true
+          # Sample free space on / every 2s to report the low point at the end.
+          (while sleep 2; do df --output=avail -B1M / | tail -1; done > "$RUNNER_TEMP/disk-avail") &
       - uses: ./.github/actions/setup-rust
         with:
           # Both halves of a group build the same crates, so they share one cache manifest.
@@ -180,6 +185,10 @@ jobs:
           tool: cargo-nextest@0.9.143
       - name: Build the group's tests
         run: cargo build ${{ matrix.packages }} --all-targets --all-features --profile test --locked --timings
+      - name: Disk after build
+        run: |
+          df -h / /mnt || true
+          sudo du -sh target "$RUNNER_TEMP" ~/.cargo ~/.rustup /var/lib/docker /tmp 2>/dev/null || true
       - name: Write a hostile ambient Ployz context
         run: |
           cat > "$RUNNER_TEMP/hostile-ployz-config.yaml" <<'EOF'
@@ -240,6 +249,12 @@ jobs:
           path: core/target/cargo-timings/*.html
           retention-days: 7
           if-no-files-found: ignore
+      - name: Disk at end
+        if: always()
+        run: |
+          df -h / /mnt || true
+          sudo du -sh target "$RUNNER_TEMP" /var/lib/docker /tmp 2>/dev/null || true
+          echo "lowest free on / (MiB): $(sort -n "$RUNNER_TEMP/disk-avail" | head -1)"
 
   uptime:
     defaults:
