@@ -1,10 +1,11 @@
 import type { BackfillSealingKeyRequest, Client, ConnectOptions } from "@ployz/sdk";
-import { Layer, ManagedRuntime } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { backfillClusterSealingKey } from "#/modules/machines/sealing-backfill.server";
+import { deployDialOf } from "#/modules/config-store/config-store.server";
+import { backfillClusterSealingKey, SealingBackfillUnreachable } from "#/modules/machines/sealing-backfill.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -48,7 +49,7 @@ describe("a session's Cluster", () => {
       connect: async (options) => {
         dialed.push(options);
         const entry = options.connections.find((connection) => "management" in connection
-          && (options.expect === undefined || holds[connection.management] === options.expect.sealingPublicKey));
+          && (options.expect == null || holds[connection.management] === options.expect.sealingPublicKey));
         if (entry === undefined || !("management" in entry)) throw new Error("No entry in the expected Cluster");
         return asTestDouble<Client>()({
           close: async () => {},
@@ -83,8 +84,22 @@ describe("a session's Cluster", () => {
     await saveRow(moved, true);
     const { asked, runtime } = fixture({ [moved.management]: otherClusterKey });
     try {
-      await expect(runtime.runPromise(backfillClusterSealingKey(organizationId, request))).rejects.toThrow();
+      const failed = await runtime.runPromise(backfillClusterSealingKey(organizationId, request).pipe(Effect.flip));
+      expect(failed).toBeInstanceOf(SealingBackfillUnreachable);
       expect(asked).toEqual([]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("dials a Deploy's Servers expecting the pairing's Sealing Key, and expects nothing before one is known", async () => {
+    await saveRow(moved, true);
+    await saveRow(founder, false);
+    const { runtime } = fixture({});
+    try {
+      const dial = await runtime.runPromise(deployDialOf(organizationId));
+      expect(dial.connections.map((connection) => connection.machine_id)).toEqual([moved.machineId, founder.machineId]);
+      expect(dial.expect).toEqual({ sealingPublicKey: pairingKey });
+      await harness.pool.query("delete from cluster_sealing_key");
+      expect((await runtime.runPromise(deployDialOf(organizationId))).expect).toBeNull();
     } finally { await runtime.dispose(); }
   });
 });

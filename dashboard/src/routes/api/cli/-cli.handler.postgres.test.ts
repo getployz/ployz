@@ -16,7 +16,7 @@ import { member, organizationToken, session } from "#/modules/identity/tables";
 import { asTestDouble } from "#/lib/test-double";
 import type { JsonObject } from "#/db/tables";
 import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
-import { enrollmentAllocation, machineRemoveAttempt, organizationMachine, organizationSealingKey, serverAccess } from "#/modules/machines/tables";
+import { clusterSealingKey, enrollmentAllocation, machineRemoveAttempt, organizationMachine, organizationSealingKey, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz, RpcError } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -87,6 +87,8 @@ function fakeServers() {
   const servers = new Map<string, {
     online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string>; closeHangs?: boolean;
     dialError?: Error;
+    /** The Sealing Key its Cluster holds: a dial expecting another fails, as the SDK fails it. */
+    holds?: string;
     /** The next Set waits for this before it reaches the Server, as one held up on the wire would. */
     holdSet?: Promise<void>;
     /** The next Set stages its key, as a daemon does, then holds its reply until this settles. */
@@ -109,6 +111,9 @@ function fakeServers() {
       if (server?.online === "hangs") return new Promise<never>(() => undefined);
       if (server === undefined || !server.online) {
         throw new RpcError({ code: "internal", message: "All 1 connections failed", details: null, unanswered: true });
+      }
+      if (options.expect != null && server.holds !== options.expect.sealingPublicKey) {
+        throw new RpcError({ code: "internal", message: "All 1 connections failed", details: null });
       }
       dials += 1;
       return asTestDouble<Client>()({
@@ -1522,6 +1527,34 @@ it.live(
         assert.deepStrictEqual(access.connections, []);
         assert.deepStrictEqual(access.refused, [{ machine_id: refusing, message: "Cluster store is not available" }]);
         assert.deepStrictEqual([...(access.unreachable ?? [])].sort(), [dropping, offline]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "Server access gives no holder on a Server that now answers for another Cluster, once the pairing's Sealing Key is known",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const moved = ids.machineId("00000000000000000000000000001270");
+        const own = ids.machineId("00000000000000000000000000001271");
+        const pairingKey = `${"P".repeat(43)}=`;
+        yield* enroll(alice.organization.id, moved, true);
+        fake.servers.set(moved, { online: true, slots: new Map(), holds: `${"X".repeat(43)}=` });
+        yield* enroll(alice.organization.id, own, false);
+        fake.servers.set(own, { online: true, slots: new Map(), holds: pairingKey });
+        yield* (yield* Database).drizzle.insert(clusterSealingKey).values({
+          organizationId: alice.organization.id, clusterKey: createHash("sha256").update(pairingSecret).digest("hex"), publicKey: pairingKey,
+        });
+
+        const access = (yield* cli("POST", "server-access", alice)).json;
+        assert.deepStrictEqual(access.connections?.map((connection: { machine_id: string }) => connection.machine_id), [own]);
+        assert.deepStrictEqual(access.refused?.map((refused: { machine_id: string }) => refused.machine_id), [moved]);
+        assert.strictEqual(fake.servers.get(moved)?.slots.size, 0);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

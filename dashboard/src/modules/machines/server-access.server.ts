@@ -6,7 +6,7 @@ import type { MachineId } from "#/db/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
-import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { dialCorrelation, dialTimingFields, nativeDialTimingFields, sampleDialTiming, shouldLogDialTiming, type DialTimingInput } from "#/modules/machines/server-access-diagnostics";
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
@@ -136,6 +136,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     isNull(serverAccess.revokedAt),
   ))).map((row) => [row.machineId, row.encryptedCapability]));
   const label = serverAccessLabel(caller.credential.id);
+  const expect = clusterExpectation(loaded);
   // Every Server at once, so the Cluster time is one dial and Set plus one close (12 s) inside the CLI's 15 s request.
   // One waiting for another's Set waits until its own deadline at most.
   const results = yield* Effect.forEach(loaded.connections, (cloud) => Effect.gen(function* () {
@@ -166,9 +167,10 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
         else runLog(logNativeDialTiming(timing, cloudDialOutcome));
       };
       const dialStarted = performance.now();
+      // A Server that now answers for another Cluster is refused, never handed a Management Client.
       const dialed = yield* answered(ployz.connect({
         connections: [cloud], timeoutMs: SERVER_TIMEOUT_MS, sampleDialTiming: sampled, dialCorrelation: correlation,
-        onDialTiming,
+        onDialTiming, expect,
       }, { closeWithin: clusterRead })
         .pipe(Effect.timeout(SERVER_TIMEOUT_MS)));
       const dialMs = performance.now() - dialStarted;

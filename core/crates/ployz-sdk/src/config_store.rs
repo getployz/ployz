@@ -51,14 +51,16 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 pub async fn observe_volumes(
     #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
     sought: Vec<String>,
+    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let connections = crate::parse_connections(connections)?;
+    let expect = crate::parse_expect(expect)?;
     let sought = sought
         .into_iter()
         .map(ployz_core::DockerVolumeName::parse)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|_| invalid_argument("invalid Docker Volume name"))?;
-    to_json(ployz::sdk::observe_volumes(connections, sought).await)
+    to_json(ployz::sdk::observe_volumes_expecting(connections, sought, expect).await)
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role
@@ -86,9 +88,11 @@ pub async fn observe_copies(
 #[napi(ts_return_type = "Promise<RunningObservation>")]
 pub async fn observe_running(
     #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let connections = crate::parse_connections(connections)?;
-    to_json(ployz::sdk::observe_running(connections).await)
+    let expect = crate::parse_expect(expect)?;
+    to_json(ployz::sdk::observe_running_expecting(connections, expect).await)
 }
 
 #[napi]
@@ -217,6 +221,8 @@ impl ConfigStore {
             ts_arg_type = "{ checkouts?: Record<string, string>; upload?: string; failure?: string }"
         )]
         sources: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         #[derive(Default, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -229,6 +235,7 @@ impl ConfigStore {
         let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
         let connections = crate::parse_connections(connections)?;
+        let expect = crate::parse_expect(expect)?;
         let sources: Sources = sources
             .map(|sources| decode(sources, "Expected checkouts, upload and failure"))
             .transpose()?
@@ -250,12 +257,13 @@ impl ConfigStore {
         self.run(move |store| store.read(&who, &ployz_store::DeploymentQuery { id: owned }))
             .await?;
         to_json(
-            ployz::sdk::run_deployment(
+            ployz::sdk::run_deployment_expecting(
                 ployz_core::Operator::Cloud,
                 Arc::clone(&self.store),
                 deployment,
                 runner,
                 connections,
+                expect,
                 checkouts,
             )
             .await,

@@ -68,7 +68,7 @@ it.live("a push asks the paired Servers about exactly the consented Volumes and 
     yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
     const volume = "shop-production_vol-00000000-0000-4000-8000-000000000005";
     const held: VolumeObservation = { sought: [volume], held: [{ machine_id: machineId("0"), name: volume }], unanswered: [] };
-    const observe = vi.fn(async (_connections: Connection[], _sought: string[]) => held);
+    const observe = vi.fn(async (_connections: Connection[], _sought: string[], _expect?: { readonly sealingPublicKey: string } | null) => held);
     const store = yield* provided(cloudStore);
     const read = vi.spyOn(store, "read").mockResolvedValue({ view: "consented", volumes: [volume] });
     const system = vi.spyOn(store, "system").mockResolvedValue(asTestDouble<ConfigWritten>()({ written: "nothing" }));
@@ -80,7 +80,7 @@ it.live("a push asks the paired Servers about exactly the consented Volumes and 
 
     yield* told(push);
     expect(read).toHaveBeenCalledExactlyOnceWith(ORGANIZATION, { query: "consented" });
-    expect(observe).toHaveBeenCalledExactlyOnceWith([{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }], [volume]);
+    expect(observe).toHaveBeenCalledExactlyOnceWith([{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }], [volume], null);
     expect(system).toHaveBeenCalledExactlyOnceWith(ORGANIZATION, push, expect.objectContaining({ volumes: held }));
 
     yield* told({ event: "sweep", now: 0 });

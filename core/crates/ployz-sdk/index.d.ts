@@ -88,9 +88,9 @@ export type ConnectOptions = {
   /**
    * Keep only an entry whose Cluster holds this Sealing public key (base64). An entry in another
    * Cluster is left and the dial tries the next connection. One holding no key is left too, unless
-   * `allowUnverified`. Absent: any entry, as before.
+   * `allowUnverified`. Absent or null: any entry, as before.
    */
-  readonly expect?: { readonly sealingPublicKey: string; readonly allowUnverified?: boolean };
+  readonly expect?: { readonly sealingPublicKey: string; readonly allowUnverified?: boolean } | null;
 };
 
 /** Native stages observed before a pending management dial settled. No identity or address is retained. */

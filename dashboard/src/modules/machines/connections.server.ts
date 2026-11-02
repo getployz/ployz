@@ -82,6 +82,10 @@ export const listOrganizationServers = Effect.fn("MachineConnections.listServers
  * Protected candidates are scoped to the current pairing and never browser projections. Each carries its Server's
  * name where Cloud holds one, so a failed connection names the Server.
  */
+/** What a dial of `loaded`'s Servers expects of their Cluster: its recorded Sealing Key, else nothing, as before one is. */
+export const clusterExpectation = (loaded: { readonly sealingPublicKey: string | null }) =>
+  loaded.sealingPublicKey === null ? null : { sealingPublicKey: loaded.sealingPublicKey };
+
 export const loadOrganizationConnections = Effect.fn("MachineConnections.load")(
   function* (organizationId: string) {
     const { drizzle } = yield* Database;

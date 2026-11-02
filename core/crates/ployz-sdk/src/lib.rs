@@ -64,17 +64,7 @@ pub fn start_connections(
     >,
 ) -> Result<PendingConnection> {
     let connections = parse_connections(connections)?;
-    let expect = expect
-        .filter(|value| !value.is_null())
-        .map(|value| {
-            from_js::<ClusterExpectationInput>(value)
-                .map(|input| ployz::connect::ClusterExpectation {
-                    sealing_public_key: input.sealing_public_key,
-                    allow_unverified: input.allow_unverified,
-                })
-                .map_err(|_| invalid_argument("expect must name a base64 Sealing public key"))
-        })
-        .transpose()?;
+    let expect = parse_expect(expect)?;
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty"));
     }
@@ -113,6 +103,23 @@ fn classify_failure(error: &sdk::CallError, timed_out: bool, cancelled: bool) ->
     } else {
         DialOutcome::Refused
     }
+}
+
+/// The Cluster a dial expects its entry in, as JavaScript names it; None or null expects none.
+pub(crate) fn parse_expect(
+    expect: Option<serde_json::Value>,
+) -> Result<Option<ployz::connect::ClusterExpectation>> {
+    expect
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            from_js::<ClusterExpectationInput>(value)
+                .map(|input| ployz::connect::ClusterExpectation {
+                    sealing_public_key: input.sealing_public_key,
+                    allow_unverified: input.allow_unverified,
+                })
+                .map_err(|_| invalid_argument("expect must name a base64 Sealing public key"))
+        })
+        .transpose()
 }
 
 /// Connection descriptors from JavaScript. A unix socket is refused unless this addon

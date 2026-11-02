@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { observeVolumes, type VolumeObservation } from "@ployz/sdk";
 import { Context, Effect, Option, Schema } from "effect";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 
@@ -57,7 +57,7 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
   const connections = Option.getOrUndefined(loaded);
   if (connections?.kind !== "ready") return undefined;
   const { observe } = yield* VolumeObserver;
-  const observed = yield* storeTry(() => observe(connections.connections, sought)).pipe(Effect.option);
+  const observed = yield* storeTry(() => observe(connections.connections, sought, clusterExpectation(connections))).pipe(Effect.option);
   return Option.getOrUndefined(observed) satisfies VolumeObservation | undefined;
 });
 
@@ -83,7 +83,7 @@ export const gatherUnanswered = Effect.fn("ConfigStore.gatherUnanswered")(functi
   if (connections?.kind !== "ready") return undefined;
   if (connections.connections.length === 0) return [];
   const { observe } = yield* VolumeObserver;
-  const observed = yield* storeTry(() => observe(connections.connections, [])).pipe(Effect.option);
+  const observed = yield* storeTry(() => observe(connections.connections, [], clusterExpectation(connections))).pipe(Effect.option);
   return Option.match(observed, {
     onNone: () => connections.connections.flatMap((connection) => connection.machine_id ?? []),
     onSome: (observation) => observation.unanswered,
@@ -105,7 +105,7 @@ export const systemVolumeEvidence = Effect.fn("ConfigStore.systemVolumeEvidence"
   const connections = Option.getOrUndefined(loaded);
   if (connections?.kind !== "ready") return undefined;
   const { observe } = yield* VolumeObserver;
-  const observed = yield* storeTry(() => observe(connections.connections, sought)).pipe(Effect.option);
+  const observed = yield* storeTry(() => observe(connections.connections, sought, clusterExpectation(connections))).pipe(Effect.option);
   return Option.getOrUndefined(observed) satisfies VolumeObservation | undefined;
 });
 

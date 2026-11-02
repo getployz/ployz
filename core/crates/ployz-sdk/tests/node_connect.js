@@ -29,14 +29,16 @@ let connecting = arriveAtOnce;
 let diagnostic = null;
 let cancelReasons = [];
 let nativeCorrelation;
+let nativeExpect;
 const native = new Module(addon);
 native.loaded = true;
 native.exports = {
   Client: NativeClient,
   ConfigStore: class {},
   SealedNames: class {},
-  startConnections: (_connections, _sampled, correlation) => {
+  startConnections: (_connections, _sampled, correlation, expect) => {
     nativeCorrelation = correlation;
+    nativeExpect = expect;
     return { cancel: (timedOut) => cancelReasons.push(timedOut), wait: () => connecting(), dialTimings: () => diagnostic };
   },
 };
@@ -52,6 +54,31 @@ test("a cancelled native dial says no Server answered", async () => {
     withRpcError(pending.wait()),
     error => error instanceof RpcError && error.code === "unavailable" && error.unanswered === true,
   );
+});
+
+test("a dial expecting a Cluster refuses a malformed Sealing Key before dialing", () => {
+  const binding = require(path.join(pkg, "ployz-sdk.node"));
+  const { RpcError, rpc } = require(path.join(pkg, "wrap.js"));
+  const start = rpc(binding.startConnections);
+  assert.throws(
+    () => start([{ tcp: "127.0.0.1:1" }], null, null, { sealingPublicKey: "not-a-key" }),
+    error => error instanceof RpcError && error.code === "invalid_argument",
+  );
+  assert.throws(
+    () => start([{ tcp: "127.0.0.1:1" }], null, null, { sealingPublicKey: `${"A".repeat(43)}=`, extra: true }),
+    error => error instanceof RpcError && error.code === "invalid_argument",
+  );
+});
+
+test("the Cluster a dial expects reaches native unchanged, and none is null", async () => {
+  const expect = { sealingPublicKey: `${"A".repeat(43)}=` };
+  for (const [options, reached] of [[{ expect }, expect], [{}, null]]) {
+    const client = await sdk.connect({ connections: [{ tcp: "127.0.0.1:1" }], ...options });
+    assert.deepEqual(nativeExpect, reached);
+    const closing = client.close();
+    session.finishClose();
+    await closing;
+  }
 });
 
 const abortListeners = signal => getEventListeners(signal, "abort").length;

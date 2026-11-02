@@ -6,7 +6,7 @@ import type { JsonObject } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { gatherRunning, RunningObserver } from "#/modules/config-store/running-evidence.server";
 import { machineId } from "#/test/ids";
-import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, recordStoreSealingKey, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000e801";
 const staging = { project: "shop", environment: "staging" };
@@ -18,14 +18,15 @@ it.live("only a full Deploy that prunes, or a retry, asks the Servers what runs,
     const services = yield* storeTestCloud();
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
     yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
-    const observe = vi.fn(async (_connections: Connection[]) => seen);
+    const observe = vi.fn(async (_connections: Connection[], _expect?: { readonly sealingPublicKey: string } | null) => seen);
     const gathered = (command: JsonObject) => provided(
       gatherRunning(ORGANIZATION, { operation: "write", command: raw(command) }).pipe(Effect.provideService(RunningObserver, { observe })),
     );
     const deploy = { command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000e802", environment: staging, version: null, accept_volume_loss: [] };
 
     expect(yield* gathered({ ...deploy, services: [] })).toEqual(seen);
-    expect(observe).toHaveBeenCalledExactlyOnceWith([{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }]);
+    const servers = [{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }];
+    expect(observe).toHaveBeenCalledExactlyOnceWith(servers, null);
     expect(yield* gathered(deploy)).toEqual(seen);
     expect(yield* gathered({ ...deploy, services: [], prune: true })).toEqual(seen);
     expect(yield* gathered({ command: "admit", admit: "retry", id: deploy.id, deployment: deploy.id, rolls_back: null, version: null, accept_volume_loss: [] })).toEqual(seen);
@@ -35,12 +36,18 @@ it.live("only a full Deploy that prunes, or a retry, asks the Servers what runs,
     expect(yield* gathered({ ...deploy, services: ["web"] })).toBeUndefined();
     expect(yield* gathered({ command: "publish", environment: staging, version: null, accept_volume_loss: [] })).toBeUndefined();
     expect(observe).toHaveBeenCalledTimes(4);
+
+    // Once the pairing's Sealing Key is known, only a Server in its Cluster answers.
+    const pairingKey = `${"P".repeat(43)}=`;
+    yield* provided(recordStoreSealingKey(ORGANIZATION, pairingKey));
+    expect(yield* gathered(deploy)).toEqual(seen);
+    expect(observe).toHaveBeenLastCalledWith(servers, { sealingPublicKey: pairingKey });
   }));
 
 it.live("without Servers to ask, a pruning Deploy carries no evidence, so the Store can't read a prune as removing nothing", () =>
   Effect.gen(function* () {
     const services = yield* storeTestCloud();
-    const observe = vi.fn(async (_connections: Connection[]) => seen);
+    const observe = vi.fn(async (_connections: Connection[], _expect?: { readonly sealingPublicKey: string } | null) => seen);
     const command = raw({ command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000e803", environment: staging, services: [], version: null, accept_volume_loss: [] });
     const gathered = yield* gatherRunning(ORGANIZATION, { operation: "write", command }).pipe(
       Effect.provideService(RunningObserver, { observe }),
