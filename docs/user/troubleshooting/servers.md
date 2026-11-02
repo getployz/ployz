@@ -488,7 +488,9 @@ No other server can join until the first one finishes.
    old Machine has been stopped or erased.** and click **Reset enrollment**. Tokens you made for
    other servers keep working. If the reset says to use Forget Servers, go to **Organization** and,
    under **Danger**, click **Forget servers**, or run
-   `ployz server forget --confirm <your organization's slug>` where you're signed in.
+   `ployz server forget --confirm <your organization's slug>` where you're signed in. Forget
+   deletes every enrollment token of your organization, so make a new one for each server, with
+   `ployz server add --command` or **Add servers**.
 3. Add a server again.
 
 ## Can't reach your servers right now
