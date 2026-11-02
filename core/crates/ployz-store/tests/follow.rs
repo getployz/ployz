@@ -3154,10 +3154,11 @@ fn a_seal_empties_the_value_in_what_every_branch_below_shares() {
     three_down(&store, &who);
     seal_token(&store, &who, 3);
 
-    // `qa-three`'s Working State still holds the value it took from `qa-two`.
+    // `qa-three` never changed the value it took from `qa-two`, so the seal past
+    // `qa`'s change empties its Working State too (#3760).
     assert_eq!(
         backend::tables_holding(&url, "plain-private"),
-        ["config_environment", "config_node_introduction"]
+        ["config_node_introduction"]
     );
 }
 
@@ -3700,4 +3701,293 @@ fn a_branch_of_a_branch_whose_parent_changed_a_followed_value_never_shows_it_onc
     );
     let shown = serde_json::to_string(&review).unwrap();
     assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// production's `TOKEN=plain-private`, deployed down `qa` and `qa-two`; `qa` then
+/// changes it with `change`, staged only, before production seals it (#3760).
+fn sealed_past_a_change(store: &ConfigStore, who: &Actor, change: impl Fn(&ConfigStore, &Actor)) {
+    set(
+        store,
+        who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(store, who, "production", 2);
+    branch(store, who, 10, "production", "qa");
+    deploy(store, who, "qa", 3);
+    branch(store, who, 11, "qa", "qa-two");
+    deploy(store, who, "qa-two", 4);
+    change(store, who);
+    seal_token(store, who, 5);
+}
+
+/// The seal stops as a hint in a Branch that deleted the value, yet reaches the
+/// Branch below, which never touched it: it holds the variable Not set, staged, and
+/// deploys without it (#3760).
+#[test]
+fn a_seal_reaches_a_branch_of_a_branch_whose_parent_deleted_the_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    sealed_past_a_change(&store, &who, |store, who| {
+        unset(store, who, "qa", "web.env.TOKEN");
+    });
+
+    assert_eq!(hints(&store, &who, "qa").len(), 1);
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    let shown = every_read(&store, &who, "qa-two", "qa");
+    assert!(!shown.contains("plain-private"), "{shown}");
+    assert_eq!(deployed_env(&store, &who, "qa-two", 6).get("TOKEN"), None);
+    // Its History keeps what it saved before the seal, as a Branch's does (#3756).
+    let holding = backend::tables_holding(&url, "plain-private");
+    assert!(
+        !holding.contains(&"config_environment".to_owned()),
+        "{holding:?}"
+    );
+
+    // What `qa` deploys since lands below as it would have.
+    deploy(&store, &who, "qa", 7);
+    assert_eq!(web(&store, &who, "qa-two")["env"].get("TOKEN"), None);
+    assert!(hints(&store, &who, "qa-two").is_empty());
+}
+
+/// As a deletion, a value the Branch between set itself: the Branch below takes the
+/// seal, then that value once the Branch between deploys it (#3760).
+#[test]
+fn a_seal_reaches_a_branch_of_a_branch_whose_parent_set_its_own_value() {
+    let (store, who) = shop();
+    sealed_past_a_change(&store, &who, |store, who| {
+        set(store, who, "qa", &[("web.env.TOKEN", json!("plain-edit"))]);
+    });
+
+    // The Branch between keeps its own change; only a hint names the seal.
+    assert_eq!(web(&store, &who, "qa")["env"]["TOKEN"], json!("plain-edit"));
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    let shown = every_read(&store, &who, "qa-two", "qa");
+    assert!(!shown.contains("plain-private"), "{shown}");
+
+    deploy(&store, &who, "qa", 6);
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-edit")
+    );
+    assert!(hints(&store, &who, "qa-two").is_empty());
+}
+
+/// A Branch below that changed the variable itself keeps its own value: the seal
+/// never overwrites it, staged or deployed (#3760).
+#[test]
+fn a_seal_past_a_change_leaves_a_value_the_branch_below_set_itself() {
+    for deployed in [false, true] {
+        let (store, who) = shop();
+        sealed_past_a_change(&store, &who, |store, who| {
+            set(
+                store,
+                who,
+                "qa-two",
+                &[("web.env.TOKEN", json!("plain-edit-two"))],
+            );
+            if deployed {
+                deploy(store, who, "qa-two", 9);
+            }
+            unset(store, who, "qa", "web.env.TOKEN");
+        });
+
+        assert_eq!(
+            web(&store, &who, "qa-two")["env"]["TOKEN"],
+            json!("plain-edit-two"),
+            "{deployed}"
+        );
+    }
+}
+
+/// Discarding the seal that reached a Branch of a Branch leaves it Not set, never
+/// the plain value it held before (#3760).
+#[test]
+fn discarding_a_seal_that_reached_a_branch_of_a_branch_leaves_it_not_set() {
+    let (store, who) = shop();
+    sealed_past_a_change(&store, &who, |store, who| {
+        unset(store, who, "qa", "web.env.TOKEN");
+    });
+    discard(&store, &who, "qa-two", "web.env.TOKEN");
+
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    let shown = every_read(&store, &who, "qa-two", "qa");
+    assert!(!shown.contains("plain-private"), "{shown}");
+}
+
+/// A seal the Branch between takes reaches the Branch below at its own deploy, one
+/// level per deploy as ever: nothing seals it before (#3760).
+#[test]
+fn a_seal_a_branch_takes_reaches_the_branch_below_only_at_its_deploy() {
+    let (store, who) = shop();
+    sealed_past_a_change(&store, &who, |_, _| {});
+
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+}
+
+/// A value a Branch below set itself and synced into its Parent is its own, though
+/// it matches the sealed one and the base they share: the seal leaves it (#3760).
+#[test]
+fn a_seal_past_a_change_leaves_a_value_the_branch_below_set_and_synced_up() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit"))],
+    );
+    deploy(&store, &who, "qa", 3);
+    branch(&store, &who, 11, "qa", "qa-two");
+    set(
+        &store,
+        &who,
+        "qa-two",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    sync_token(&store, &who, "qa-two", "qa");
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.TOKEN", json!("plain-edit-two"))],
+    );
+    seal_token(&store, &who, 5);
+
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+}
+
+/// A shut-down Branch below keeps its Working State as Follow leaves it (#3760).
+#[test]
+fn a_seal_past_a_change_leaves_a_shut_down_branch_below() {
+    let (store, who) = shop();
+    sealed_past_a_change(&store, &who, |store, who| {
+        store
+            .write_trusted(
+                who,
+                &ployz_store::Admit::ShutDown(ployz_store::ShutDown {
+                    id: ployz_store::DeploymentId::parse(uuid(50)).unwrap(),
+                    environment: at("qa-two"),
+                    version: None,
+                    accept_volume_loss: Vec::new(),
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+        unset(store, who, "qa", "web.env.TOKEN");
+    });
+
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+}
+
+/// Sync `web.env.TOKEN` from `from` into `into`.
+fn sync_token(store: &ConfigStore, who: &Actor, from: &str, into: &str) {
+    let view: SyncView = store
+        .read(
+            who,
+            &SyncQuery {
+                from: at(from),
+                into: Some(at(into)),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            who,
+            &SyncChanges {
+                from: at(from),
+                into: Some(at(into)),
+                close_after: false,
+                version: view.version,
+                picks: Some(vec!["web.env.TOKEN".into()]),
+                skip: Vec::new(),
+                values: BTreeMap::new(),
+                id: None,
+            },
+        )
+        .unwrap();
+}
+
+/// A Branch below that marks the variable Never sync keeps it, as Follow does (#3760).
+#[test]
+fn a_seal_past_a_change_leaves_a_row_the_branch_below_marks_never_sync() {
+    let (store, who) = shop();
+    sealed_past_a_change(&store, &who, |store, who| {
+        store
+            .write(
+                who,
+                &NeverSync {
+                    environment: at("qa-two"),
+                    rows: vec![row("variables.TOKEN").into()],
+                    off: false,
+                },
+            )
+            .unwrap();
+        unset(store, who, "qa", "web.env.TOKEN");
+    });
+
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+}
+
+/// A Branch that marks the variable Never sync never takes the seal, so neither does
+/// a Branch below it, nor below the Branch between when that one marks it (#3760).
+#[test]
+fn a_seal_past_a_change_stops_at_a_never_sync_mark_on_the_way() {
+    for marker in ["qa", "qa-two"] {
+        let (store, who) = shop();
+        sealed_past_a_change(&store, &who, |store, who| {
+            branch(store, who, 12, "qa-two", "qa-three");
+            store
+                .write(
+                    who,
+                    &NeverSync {
+                        environment: at(marker),
+                        rows: vec![row("variables.TOKEN").into()],
+                        off: false,
+                    },
+                )
+                .unwrap();
+            set(store, who, "qa", &[("web.env.TOKEN", json!("plain-edit"))]);
+        });
+
+        let below = if marker == "qa" { "qa-two" } else { "qa-three" };
+        assert_eq!(
+            web(&store, &who, below)["env"]["TOKEN"],
+            json!("plain-private"),
+            "{marker}"
+        );
+    }
 }

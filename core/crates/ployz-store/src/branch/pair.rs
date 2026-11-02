@@ -1188,6 +1188,164 @@ fn empty_below(
     Ok(())
 }
 
+/// A variable `parent` sealed and deployed stays a hint in `receiver`, whose own change
+/// to it wins, so Follow never carries the seal further down (#3760). Seal it in each
+/// Branch below that still holds a value it was made with or took from its Parent: a
+/// plain value whose fingerprint `parent` held, which it shares unchanged with its own
+/// Parent. That Branch then holds it Not set, staged, as does that base, so what
+/// `receiver` deploys later lands there as it would have. A Branch that changed the
+/// variable keeps its value. Each Branch is its own attempt, so one that can't take the
+/// seal keeps its value and never fails the deploy.
+pub(crate) fn seal_inherited_below(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    parent: &EnvironmentId,
+    receiver: &EnvironmentId,
+    sealed_row: &RowId,
+) -> Result<(), RpcError> {
+    let At::Variable(key) = sealed_row.at() else {
+        return Ok(());
+    };
+    let rows = BTreeSet::from([(sealed_row.lineage().to_owned(), key.clone())]);
+    let Some(fingerprints) = held(tx, parent.as_str(), &rows, None, Took::Sealer)?
+        .into_values()
+        .next()
+    else {
+        return Ok(());
+    };
+    let (lineage, key) = (sealed_row.lineage(), key.as_str());
+    let at = RowId::of(lineage, At::Variable(key.to_owned()));
+    // A Branch that marks the row Never sync never takes the seal by Follow, so
+    // neither does any Branch below it.
+    let mut fenced = BTreeSet::new();
+    for branch in below(tx, receiver.as_str())? {
+        let branch = EnvironmentId::try_from(branch).map_err(|_| error::corrupt("Branch"))?;
+        let sealed = storage::attempt(tx, |tx| {
+            let parent = row(tx, &branch)?.map(|row| row.parent);
+            if parent.is_some_and(|parent| fenced.contains(&parent))
+                || marked(tx, &branch)?.contains(&at)
+            {
+                fenced.insert(branch.clone());
+                return Ok(());
+            }
+            if super::follow::stopped(tx, &branch)? {
+                return Ok(());
+            }
+            // Locked only to write: a Branch holds the value until its Parent deploys.
+            let mut unlocked = scope::load_by_id(tx, &branch)?;
+            if inherited(tx, &mut unlocked, lineage, key, &fingerprints)?.is_none() {
+                return Ok(());
+            }
+            let mut branch = scope::lock_id(tx, who, &branch)?;
+            seal_inherited(tx, &mut branch, lineage, key, &fingerprints)
+        });
+        if let Err(error) = sealed {
+            // Unread, it may mark the row: what's below it waits as well.
+            fenced.insert(branch.clone());
+            tracing::warn!(branch = %branch.as_str(), ?error, "couldn't seal a value a Branch inherited");
+        }
+    }
+    Ok(())
+}
+
+/// The Parent of `branch` when it holds variable `key` of `lineage` plain, at one of
+/// `fingerprints`, as it last shared it with that Parent and as it came from above:
+/// it was made with it, or it arrived from that Parent. Compared as Sync compares it,
+/// by key and fingerprint, since each side's copy of a Service has its own variable
+/// IDs. A value the Branch set itself and shared up holds the same base, but came
+/// from neither. None for a row it marks Never sync.
+fn inherited(
+    tx: &mut dyn Tx,
+    branch: &mut Environment,
+    lineage: &str,
+    key: &str,
+    fingerprints: &BTreeSet<String>,
+) -> Result<Option<EnvironmentId>, RpcError> {
+    let Some(parent) = row(tx, &branch.summary.id)?.map(|row| row.parent) else {
+        return Ok(None);
+    };
+    // A row it marks Never sync takes nothing from above, as Follow leaves it.
+    let at = RowId::of(lineage, At::Variable(key.to_owned()));
+    if marked(tx, &branch.summary.id)?.contains(&at) {
+        return Ok(None);
+    }
+    let Some(fingerprint) = variable(&mut branch.working, lineage, key)
+        .filter(|variable| {
+            !review::sealed::sealed(&variable.value)
+                && fingerprints.contains(&variable.value_fingerprint)
+        })
+        .map(|variable| variable.value_fingerprint.clone())
+    else {
+        return Ok(None);
+    };
+    let mut base = base_of(tx, (&branch.summary.id, &parent))?;
+    let shared = variable(&mut base, lineage, key)
+        .is_some_and(|shared| shared.value_fingerprint == fingerprint);
+    if !shared {
+        return Ok(None);
+    }
+    let made = made_with(tx, &branch.summary.id)?.is_some_and(|mut made| {
+        variable(&mut made, lineage, key).is_some_and(|made| made.value_fingerprint == fingerprint)
+    });
+    let arrived = arrivals(tx, &branch.summary.id, &parent)?
+        .get(&at)
+        .is_some_and(|cell| plain_fingerprint(cell) == Some(fingerprint.as_str()));
+    Ok((made || arrived).then_some(parent))
+}
+
+/// The fingerprint of a plain variable's cell.
+fn plain_fingerprint(cell: &Cell) -> Option<&str> {
+    let Cell::Value(Value::Object(fields)) = cell else {
+        return None;
+    };
+    fields.get("fingerprint")?.as_str()
+}
+
+/// [`seal_inherited_below`] in one Branch, which the caller locked.
+fn seal_inherited(
+    tx: &mut dyn Tx,
+    branch: &mut Environment,
+    lineage: &str,
+    key: &str,
+    fingerprints: &BTreeSet<String>,
+) -> Result<(), RpcError> {
+    let Some(parent) = inherited(tx, branch, lineage, key, fingerprints)? else {
+        return Ok(());
+    };
+    if let Some(variable) = variable(&mut branch.working, lineage, key) {
+        seal_without_value(variable);
+    }
+    scope::persist_working(tx, branch)?;
+    // After the write, which empties the value in this base by fingerprint.
+    let mut base = base_of(tx, (&branch.summary.id, &parent))?;
+    if let Some(variable) = variable(&mut base, lineage, key) {
+        seal_without_value(variable);
+    }
+    share(tx, (&branch.summary.id, &parent), &base)
+}
+
+/// The variable `key` of the Service of `lineage` in `intent`.
+fn variable<'intent>(
+    intent: &'intent mut SavedEnvironmentIntent,
+    lineage: &str,
+    key: &str,
+) -> Option<&'intent mut SavedVariableIntent> {
+    intent
+        .services
+        .iter_mut()
+        .find(|service| service.lineage_id == lineage)?
+        .variables
+        .iter_mut()
+        .find(|variable| variable.key == key)
+}
+
+/// `variable` sealed without a value: Not set.
+fn seal_without_value(variable: &mut SavedVariableIntent) {
+    variable.value = SavedVariableValue::SecretWithoutValue;
+    variable.value_fingerprint = String::new();
+    variable.generated = None;
+}
+
 /// Record `arrived` in `receiver`, replacing what arrived at that row from that side
 /// before. A row still pending under the same owner keeps the base's cell from
 /// before its first arrival, and one its proposal still owns keeps the receiver's own
