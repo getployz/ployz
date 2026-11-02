@@ -18,6 +18,7 @@ import { oauthClient, oauthConsent, oauthRefreshToken } from "#/modules/identity
 import { member, session, verification } from "#/modules/identity/tables";
 import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
 import { removeMembership } from "#/modules/organization/membership.server";
+import { CLI_USER_AGENT_PREFIX, revokeCredential } from "#/modules/identity/organization-token.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
@@ -531,11 +532,11 @@ const refreshedAccess = Effect.fn(function* (shop: Shop, clientId: string, refre
   return Schema.decodeUnknownSync(Issued)(renewed.body);
 });
 
-const signIn = (shop: Shop) =>
+const signIn = (shop: Shop, userAgent = "test-browser") =>
   Effect.promise(async () => {
     const response = await shop.run(serveAuth(new Request(`${origin}/api/auth/sign-in/email`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "user-agent": userAgent },
       body: JSON.stringify({ email: "bo@example.test", password: "correct-horse-battery-staple" }),
     })));
     return response.headers.get("set-cookie")?.split(";", 1)[0] ?? expect.fail("no session cookie for bo");
@@ -625,6 +626,85 @@ it.live("signing out of a browser leaves an agent reconnected from another after
     expect((yield* authJson(shop, "/api/auth/sign-out", { method: "POST", headers: { cookie: shop.cookie, origin } })).status).toBe(200);
     expect((yield* raw(shop, there.access_token)).status).toBe(200);
     yield* refreshedAccess(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"));
+  }).pipe(Effect.scoped), 30_000);
+
+const signOut = (shop: Shop) => authJson(shop, "/api/auth/sign-out", { method: "POST", headers: { cookie: shop.cookie, origin } });
+const REVOKED = { status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } };
+
+it.live("signing out disconnects the agent even when it holds no refresh token", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const issued = yield* connectTokens(shop, yield* registerAgent(shop));
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.delete(oauthRefreshToken);
+    }));
+
+    expect((yield* signOut(shop)).status).toBe(200);
+    expect((yield* raw(shop, issued.access_token)).status).toBe(401);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("signing out with a session that has lapsed still disconnects the agents allowed from it", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const issued = yield* connectTokens(shop, yield* registerAgent(shop));
+    yield* lapseSessions(shop);
+
+    expect((yield* signOut(shop)).status).toBe(200);
+    expect(yield* sessionsOf(shop)).toEqual([]);
+    expect((yield* raw(shop, issued.access_token)).status).toBe(401);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("signing out of another browser disconnects an agent whose own browser's sign-in ran out", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const issued = yield* connectTokens(shop, clientId);
+    yield* lapseSessions(shop);
+    yield* authJson(shop, "/api/auth/get-session", { method: "GET", headers: { cookie: shop.cookie } });
+    const later = { ...shop, cookie: yield* signIn(shop) };
+    expect((yield* raw(shop, issued.access_token)).status).toBe(200);
+
+    expect((yield* signOut(later)).status).toBe(200);
+    expect((yield* raw(shop, issued.access_token)).status).toBe(401);
+    expect(yield* refresh(shop, clientId, issued.refresh_token ?? expect.fail("connect issued no refresh token"))).toEqual(REVOKED);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a code the agent hasn't redeemed mints nothing once its browser signs out", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const pending = yield* issueCode(shop, yield* registerAgent(shop));
+
+    expect((yield* signOut(shop)).status).toBe(200);
+    expect((yield* redeem(shop, pending)).status).toBe(400);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("an agent allowed again from a second browser stays connected when the first signs out", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    yield* connectTokens(shop, clientId);
+    const elsewhere = { ...shop, cookie: yield* signIn(shop) };
+    const there = yield* connectTokens(elsewhere, clientId);
+
+    expect((yield* signOut(shop)).status).toBe(200);
+    expect((yield* raw(shop, there.access_token)).status).toBe(200);
+    yield* refreshedAccess(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"));
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("revoking a CLI-marked session that allowed an agent disconnects it", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const cli = { ...shop, cookie: yield* signIn(shop, `${CLI_USER_AGENT_PREFIX}test`) };
+    const issued = yield* connectTokens(cli, yield* registerAgent(cli));
+    const [device] = yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.select({ id: session.id }).from(session).where(sql`${session.userAgent} like ${`${CLI_USER_AGENT_PREFIX}%`}`);
+    }));
+    const bo: Caller = { ...shop.ada, userId: shop.boId, credential: { kind: "session", id: "session-bo" } };
+
+    yield* shop.provided(revokeCredential(bo, device?.id ?? expect.fail("no CLI session")));
+    expect((yield* raw(shop, issued.access_token)).status).toBe(401);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("signing a browser out from the account page disconnects the agents connected from it", () =>

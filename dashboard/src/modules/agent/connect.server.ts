@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq, isNull, lt, ne, or } from "drizzle-orm";
 import { Effect } from "effect";
 import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
+import { linkConsentSession } from "#/modules/identity/session-agents.server";
 import { member } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type RemoteMcpAuth } from "#/server/auth.server";
@@ -78,7 +79,8 @@ const signedOAuthQuery = (pageQuery: string) => {
 
 /**
  * The member's answer on /connect. The grant is bound to the Organization they picked, which must be one they belong
- * to; their session's active Organization is left alone. Allow first deletes their consents there that predate this
+ * to; their session's active Organization is left alone, and recorded as one the grant was allowed from, so signing it
+ * out disconnects the agent. Allow first deletes their consents there that predate this
  * membership, which can never authorize a call again, so better-auth writes a fresh grant instead of keeping a dead one.
  */
 export const connectAgent = Effect.fn("Connect.decide")(function* (
@@ -104,9 +106,15 @@ export const connectAgent = Effect.fn("Connect.decide")(function* (
       lt(oauthConsent.createdAt, joinedSecond),
     ));
   }
-  return yield* mcp.consent(
+  const oauthQuery = signedOAuthQuery(input.oauthQuery);
+  const decided = yield* mcp.consent(
     headers,
-    { oauthQuery: signedOAuthQuery(input.oauthQuery), accept: input.accept },
+    { oauthQuery, accept: input.accept },
     { userId: signedIn.user.id, sessionId: signedIn.session.id, organizationId: membership.organizationId },
   );
+  const clientId = new URLSearchParams(oauthQuery).get("client_id");
+  if (input.accept && clientId !== null) {
+    yield* linkConsentSession({ clientId, userId: signedIn.user.id, organizationId: membership.organizationId }, signedIn.session.id);
+  }
+  return decided;
 });

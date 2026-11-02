@@ -3,7 +3,7 @@ import { and, desc, eq, gt, isNull, notLike, or } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { CLI_USER_AGENT_PREFIX } from "#/modules/identity/organization-token.server";
-import { disconnectSessionAgents } from "#/modules/identity/session-agents.server";
+import { disconnectSignedOutAgents } from "#/modules/identity/session-agents.server";
 import { account, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 
@@ -46,18 +46,15 @@ export const revokeAccountSession = Effect.fn("Account.revokeSession")(function*
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const [ending] = yield* drizzle
-      .select({ id: session.id })
-      .from(session)
+    const ended = yield* drizzle
+      .delete(session)
       .where(and(
         eq(session.id, sessionId),
         eq(session.userId, actor.userId),
         // SQL's NOT LIKE is never true for NULL, so a session with no user agent is allowed outright.
         or(isNull(session.userAgent), notLike(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`)),
       ))
-      .for("update");
-    if (ending === undefined) return;
-    yield* disconnectSessionAgents(ending.id);
-    yield* drizzle.delete(session).where(eq(session.id, ending.id));
+      .returning({ id: session.id });
+    if (ended.length > 0) yield* disconnectSignedOutAgents(actor.userId);
   }));
 });

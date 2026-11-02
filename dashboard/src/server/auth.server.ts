@@ -53,7 +53,7 @@ import {
 } from "#/modules/organization/organization-state.server";
 import { Actor, type SessionActor } from "#/modules/identity/actor";
 import { bindDeviceOrganization } from "#/modules/identity/device-organization.server";
-import { disconnectSessionAgents } from "#/modules/identity/session-agents.server";
+import { disconnectSignedOutAgents } from "#/modules/identity/session-agents.server";
 import { bindClaimSignInOrganization, claimSecretHashOf } from "#/modules/identity/claim-sign-in.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
@@ -219,6 +219,8 @@ const claimSignInContext = {
 } satisfies BetterAuthPlugin;
 
 const DEVICE_TOKEN_PATH = "/device/token";
+/** The routes a member signs a browser out through, which disconnect even a session that has already lapsed. */
+const SIGN_OUT_PATHS: ReadonlySet<string> = new Set(["/sign-out", "/revoke-session", "/revoke-sessions", "/revoke-other-sessions", "/oauth2/end-session"]);
 const decodeDeviceToken = Schema.decodeUnknownOption(Schema.Struct({ device_code: Schema.String }));
 const decodeDeviceApproval = Schema.decodeUnknownOption(
   Schema.Struct({ userCode: Schema.String, organizationId: Schema.String }),
@@ -424,9 +426,13 @@ const makeAuth = Effect.gen(function* () {
                 : null,
             )),
         },
-        // Sign-out and revoking a session end it here; a lapsed one better-auth clears disconnects nothing.
+        // A session ended while live, or by a sign-out route even once lapsed, signs its browser out. A lapsed session
+        // better-auth clears as it reads it doesn't. After, not before: revoking every session runs all the befores first.
         delete: {
-          before: (ended) => runHook(disconnectSessionAgents(ended.id)),
+          after: (ended, context) =>
+            ended.expiresAt > new Date() || SIGN_OUT_PATHS.has(context?.path ?? "")
+              ? runHook(disconnectSignedOutAgents(ended.userId))
+              : Promise.resolve(),
         },
         update: {
           async before(sessionRecord) {

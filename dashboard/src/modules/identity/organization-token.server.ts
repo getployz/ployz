@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { disconnectSignedOutAgents } from "#/modules/identity/session-agents.server";
 import { organizationToken, session, user } from "#/modules/identity/tables";
 import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset } from "#/modules/identity/token-grant";
 import { Database } from "#/server/database.server";
@@ -183,6 +184,9 @@ export const revokeCredential = Effect.fn("OrganizationToken.revoke")(function* 
       like(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`),
     ))
     .returning({ id: session.id });
-  if (device.length > 0) return { id, kind: "device" as const };
+  if (device.length > 0) {
+    yield* disconnectSignedOutAgents(caller.userId);
+    return { id, kind: "device" as const };
+  }
   return yield* new NotFound({ message: "No such token or signed-in device." });
 });
