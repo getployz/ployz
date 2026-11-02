@@ -167,9 +167,13 @@ jobs:
         options: --health-cmd pg_isready --health-interval 2s --health-retries 15 --shm-size=256m
     steps:
       - uses: actions/checkout@v4
-      - name: Disk at start
+      # Some hosted runners start with too little free disk for the build, kache and the Postgres suites (#3758).
+      # Delete preinstalled toolchains nothing here uses, in the background while the cache restores.
+      - name: Free disk space
         run: |
-          df -h / /mnt || true
+          df -h / /tmp
+          (start=$SECONDS; sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+           echo "freed in $((SECONDS - start))s" > "$RUNNER_TEMP/disk-freed") &
           # Sample free space on / every 2s to report the low point at the end.
           (while sleep 2; do df --output=avail -B1M / | tail -1; done > "$RUNNER_TEMP/disk-avail") &
       - uses: ./.github/actions/setup-rust
@@ -187,8 +191,7 @@ jobs:
         run: cargo build ${{ matrix.packages }} --all-targets --all-features --profile test --locked --timings
       - name: Disk after build
         run: |
-          df -h / /mnt || true
-          sudo du -sh target "$RUNNER_TEMP" ~/.cargo ~/.rustup /var/lib/docker /tmp 2>/dev/null || true
+          cat "$RUNNER_TEMP/disk-freed" 2>/dev/null || echo "still freeing"; df -h / /tmp
       - name: Write a hostile ambient Ployz context
         run: |
           cat > "$RUNNER_TEMP/hostile-ployz-config.yaml" <<'EOF'
@@ -252,9 +255,7 @@ jobs:
       - name: Disk at end
         if: always()
         run: |
-          df -h / /mnt || true
-          sudo du -sh target "$RUNNER_TEMP" /var/lib/docker /tmp 2>/dev/null || true
-          echo "lowest free on / (MiB): $(sort -n "$RUNNER_TEMP/disk-avail" | head -1)"
+          df -h / /tmp; echo "lowest free on / (MiB): $(sort -n "$RUNNER_TEMP/disk-avail" | head -1)"
 
   uptime:
     defaults:
