@@ -6,7 +6,7 @@ import type { MachineId } from "#/db/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
-import { clusterExpectation, decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, decryptPairingSecret, loadOrganizationConnections, releasingExpectation } from "#/modules/machines/connections.server";
 import { dialCorrelation, dialTimingFields, nativeDialTimingFields, sampleDialTiming, shouldLogDialTiming, type DialTimingInput } from "#/modules/machines/server-access-diagnostics";
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
@@ -143,7 +143,15 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");
     const stored = held.get(machineId);
-    if (stored != null) return { machine_id: machineId, management: yield* decryptPairingSecret(stored), refused: null };
+    if (stored != null) {
+      const management = yield* decryptPairingSecret(stored);
+      if (expect === null) return { machine_id: machineId, management, refused: null };
+      // A stored holder goes out only while its Server still answers for the recorded Cluster: one that refuses that
+      // dial is refused here too, and one that doesn't answer keeps it, as when Cloud held none to check.
+      const checked = yield* answered(Effect.scoped((yield* Ployz).connect({ connections: [cloud], timeoutMs: SERVER_TIMEOUT_MS, expect }, { closeWithin: clusterRead }))
+        .pipe(Effect.timeout(SERVER_TIMEOUT_MS), withClusterBudget(SESSION_CLOSE_CLUSTER_MS)));
+      return { machine_id: machineId, management: checked.refused === null ? management : null, refused: checked.refused };
+    }
     const holder = and(
       eq(serverAccess.organizationId, caller.organization.id),
       eq(serverAccess.credentialId, caller.credential.id),
@@ -336,6 +344,7 @@ export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (
     organizationId: serverAccess.organizationId,
     machineId: serverAccess.machineId,
     credentialId: serverAccess.credentialId,
+    clusterKey: organizationMachine.clusterKey,
     cloud: organizationMachine.encryptedCapability,
   }).from(serverAccess)
     .innerJoin(organizationMachine, and(
@@ -356,11 +365,14 @@ export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (
     if (leased.length === 0) return { machineId: row.machineId, confirmed: false };
     const cleared = yield* Effect.scoped(Effect.gen(function* () {
       const management = yield* decryptPairingSecret(row.cloud);
+      // One that now answers for another Cluster than its pairing's stays unconfirmed; the next sweep retries.
+      const expect = yield* releasingExpectation(row.organizationId, row.clusterKey);
       const ployz = yield* Ployz;
-      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS }, { closeWithin: clusterRead });
+      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS, expect }, { closeWithin: clusterRead });
       // Clearing an absent or already-cleared slot succeeds, so a retry after a lost reply confirms.
       yield* client.clearManagementClient(serverAccessLabel(row.credentialId));
-    })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2), withClusterBudget(SESSION_CLOSE_CLUSTER_MS), Effect.as(true), Effect.orElseSucceed(() => false));
+    })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2), withClusterBudget(SESSION_CLOSE_CLUSTER_MS), Effect.as(true), Effect.catch((error) =>
+      Effect.logWarning("Server access Clear not confirmed; the next sweep retries.", { machineId: row.machineId, error }).pipe(Effect.as(false))));
     if (cleared) yield* drizzle.delete(serverAccess).where(and(holder, eq(serverAccess.claim, token), isNotNull(serverAccess.revokedAt)));
     yield* drizzle.update(serverAccess).set({ claim: null }).where(and(holder, eq(serverAccess.claim, token)));
     return { machineId: row.machineId, confirmed: cleared };

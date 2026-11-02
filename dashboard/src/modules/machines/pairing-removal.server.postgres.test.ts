@@ -42,7 +42,7 @@ describe("protected pairing removal", () => {
 
   function fixture() {
     // The authenticated endpoint distinguishes a cleared Management Client from a replaced client key.
-    const endpoint = { paired: true, online: true, loseAck: false, replaced: false, closeHangs: false, devices: new Set<string>() };
+    const endpoint = { paired: true, online: true, loseAck: false, replaced: false, closeHangs: false, devices: new Set<string>(), holds: null as string | null };
     const cleared: string[] = [];
     const calls: string[] = [];
     const dialed: ConnectOptions[] = [];
@@ -57,6 +57,10 @@ describe("protected pairing removal", () => {
           throw new Error("Endpoint unavailable");
         }
         if (!endpoint.online) throw new Error("Endpoint unavailable");
+        // A Server whose `holds` is unset holds whatever key its dial expects.
+        if (options.expect != null && endpoint.holds !== null && endpoint.holds !== options.expect.sealingPublicKey) {
+          throw Object.assign(new Error(`Machine ${machineId} belongs to another Cluster`), { code: "unauthenticated", details: null });
+        }
         if (endpoint.replaced) throw Object.assign(new Error("key replaced"), { code: "unauthenticated", details: null });
         if (!endpoint.paired) throw Object.assign(new Error("management client cleared"), { code: "unauthenticated", details: { management_client: "cleared" } });
         return asTestDouble<Client>()({
@@ -174,6 +178,25 @@ describe("protected pairing removal", () => {
       await harness.pool.query("insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1,$2,$3)",
         [organizationId, hashEnrollmentToken("ppair_new_generation"), nextKey]);
       expect(await runtime.runPromise(loadOrganizationConnections(organizationId))).toMatchObject({ kind: "ready", sealingPublicKey: nextKey });
+    } finally { await runtime.dispose(); }
+  });
+
+  it("clears nothing on a Server that now answers for another Cluster than the pairing's, and leaves it unconfirmed", async () => {
+    const fake = fixture();
+    const runtime = fake.makeRuntime();
+    try {
+      const key = `${"K".repeat(43)}=`;
+      await harness.pool.query("insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1,$2,$3)", [organizationId, hashEnrollmentToken(pairing), key]);
+      fake.endpoint.holds = `${"X".repeat(43)}=`;
+      fake.endpoint.devices.add("cli-device");
+      expect(await runtime.runPromise(revokeOrganizationPairing(organizationId))).toEqual({
+        confirmed: false, endpoints: [{ machineId, status: "unconfirmed" }],
+      });
+      expect(fake.dialed.map((options) => options.expect)).toEqual([{ sealingPublicKey: key, allowUnverified: true }]);
+      expect(fake.cleared).toEqual([]);
+      fake.endpoint.holds = key;
+      expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
+      expect(fake.cleared).toEqual(["cli-device", "cloud"]);
     } finally { await runtime.dispose(); }
   });
 
