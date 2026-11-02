@@ -107,7 +107,11 @@ service still gets the real value when it deploys.
   value by a follow or a sync. This holds whether or not the branch deployed the earlier
   value, and after it takes the seal. Discarding that change brings the variable back **Not set**, never with the
   earlier value. A value the branch set itself before the seal, saved or deployed, wasn't
-  sealed, so it still shows until the branch takes the seal. Until a seal deploys, the review
+  sealed, so it still shows until the branch takes the seal. When a branch changed or deleted
+  the variable before the seal, it keeps its own change and shows the seal as a hint. Each
+  branch below it that still holds the earlier value, and never changed it, gets the variable
+  **Not set** as a change to deploy when the seal deploys, and deploys without it; a value it
+  set itself stays. Until a seal deploys, the review
   of the environment that sealed it shows the earlier value as **Sealed** too. A service made
   separate before Ployz 0.3.12 still shows that earlier value there, and a discard brings it
   back. If the branch

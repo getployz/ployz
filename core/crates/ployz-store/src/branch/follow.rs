@@ -74,9 +74,17 @@ pub(crate) fn follow(
             continue;
         }
         let who = Actor::system(row.parse(1, "Branch")?);
-        match into(tx, &who, &parent, &branch, lineages) {
-            Err(error) if crate::automation::skippable(&error) => {}
+        let sealed = match into(tx, &who, &parent, &branch, lineages) {
+            Err(error) if crate::automation::skippable(&error) => Vec::new(),
             done => done?,
+        };
+        for row in &sealed {
+            let below = crate::storage::attempt(tx, |tx| {
+                seal_inherited_below(tx, &who, &parent.summary.id, &branch, row)
+            });
+            if let Err(error) = below {
+                tracing::warn!(?error, "couldn't seal a value below a Branch");
+            }
         }
         // Take back what this Deployment removed, and each new node an earlier Follow
         // brought that the Parent has removed since: the runner confirms removals in
@@ -128,13 +136,14 @@ pub(crate) fn follow(
 }
 
 /// Stage in `branch` what `parent` deployed to `lineages` and hasn't delivered yet.
+/// Answers each variable `parent` sealed that the Branch's own change holds back.
 fn into(
     tx: &mut dyn Tx,
     who: &Actor,
     parent: &Environment,
     branch: &EnvironmentId,
     lineages: &BTreeSet<String>,
-) -> Result<(), RpcError> {
+) -> Result<Vec<RowId>, RpcError> {
     let mut branch = scope::lock_id(tx, who, branch)?;
     let follow = Move::follow(tx, parent, &branch)?;
     let checked = follow.check(tx, &branch, Guard::Deploy)?;
@@ -201,7 +210,25 @@ fn into(
             )?;
         }
     }
-    Ok(())
+    // A seal the Branch's own change holds back, as a hint or with none at all.
+    let (from, base, now) = (
+        Cells::of(&follow.from, ""),
+        Cells::of(&follow.base, ""),
+        Cells::of(&branch.working, ""),
+    );
+    Ok(from
+        .rows()
+        .filter(|row| {
+            let (from, base, now) = (from.at(row), base.at(row), now.at(row));
+            matches!(row.at(), At::Variable(_))
+                && lineages.contains(row.lineage())
+                && from.is_secret()
+                && from != base
+                && now != base
+                && now != from
+        })
+        .cloned()
+        .collect())
 }
 
 /// The rows of `follow` into `branch` delivered at the value they carry now, yet not
