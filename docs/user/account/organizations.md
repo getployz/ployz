@@ -273,8 +273,9 @@ is disabled.
 
 If a server is offline, the organization stays, disabled, until that server is back. Then click
 **Try again**. A server that now belongs to another cluster keeps the organization waiting the same way,
-since Ployz Cloud won't change it. Stop its Ployz daemon, then
-[forget your servers](../servers/manage-servers.md#forget-servers-you-deleted) and click **Try again**.
+since Ployz Cloud won't change it. Stop Ployz on that server, over SSH, with
+`sudo systemctl stop ployz.socket ployz`. Then [forget your servers](../servers/manage-servers.md#forget-servers-you-deleted)
+and click **Try again**.
 
 The dashboard then opens another of your organizations. With none left, it offers **Create an
 organization**.
