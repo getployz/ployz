@@ -1952,6 +1952,8 @@ struct ClusterConnector {
     entries: Vec<(Connection, MachineId, Option<ployz_core::Sealing>)>,
     /// Entries whose daemon confirms but never answers Inspect.
     silent: Vec<usize>,
+    /// Entries whose Machine record names their daemon's release.
+    versions: Vec<(usize, &'static str)>,
 }
 
 impl ClusterConnector {
@@ -1974,7 +1976,11 @@ impl ClusterConnector {
             .find(|(_, (entry, _, _))| entry == connection)
             .unwrap();
         let answers_inspect = !self.silent.contains(&index);
-        Ok(test_support::sealed_channel(*id, *sealing, answers_inspect).await)
+        let version = self
+            .versions
+            .iter()
+            .find_map(|(entry, version)| (*entry == index).then_some(*version));
+        Ok(test_support::sealed_channel(*id, *sealing, version, answers_inspect).await)
     }
 }
 
@@ -2034,7 +2040,14 @@ fn cluster_entries_silent(
             )
         })
         .collect();
-    (Arc::new(ClusterConnector { entries, silent }), ids)
+    (
+        Arc::new(ClusterConnector {
+            entries,
+            silent,
+            versions: Vec::new(),
+        }),
+        ids,
+    )
 }
 
 #[tokio::test(start_paused = true)]
@@ -2070,6 +2083,92 @@ async fn a_dial_reaching_only_another_cluster_fails() {
     assert!(
         matches!(*last, ConnectError::ClusterMismatch { machine_id } if Some(&machine_id) == ids.first())
     );
+}
+
+/// `sealings` with each entry's daemon release in its Machine record, as `versions` names it.
+fn cluster_entries_versioned(
+    sealings: Vec<Option<ployz_core::Sealing>>,
+    silent: Vec<usize>,
+    versions: Vec<(usize, &'static str)>,
+) -> Arc<ClusterConnector> {
+    let (connector, _) = cluster_entries_silent(sealings, silent);
+    let ClusterConnector {
+        entries, silent, ..
+    } = Arc::into_inner(connector).unwrap();
+    Arc::new(ClusterConnector {
+        entries,
+        silent,
+        versions,
+    })
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_entry_whose_daemon_predates_the_sealing_key_says_to_upgrade_it() {
+    let connector = cluster_entries_versioned(vec![None], Vec::new(), vec![(0, "0.3.2")]);
+    let error =
+        connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
+            .await
+            .err()
+            .expect("an entry that can't show its Cluster is left");
+    let ConnectError::AllFailed {
+        last: Some(ref last),
+        ..
+    } = error
+    else {
+        panic!("{error}");
+    };
+    assert!(
+        matches!(**last, ConnectError::PredatesSealing { ref version, .. } if version.to_string() == "0.3.2"),
+        "{last}"
+    );
+    let text = crate::ui::chain_text(&error);
+    assert!(
+        text.contains("runs Ployz 0.3.2") && text.contains("Upgrade it to 0.3.3 or later"),
+        "{text}"
+    );
+    // Allowed, it is still used as before.
+    connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, true))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_entry_holding_no_key_on_a_current_daemon_is_not_told_to_upgrade() {
+    for versions in [vec![(0, "0.3.15")], vec![(0, "fixture")], Vec::new()] {
+        let connector = cluster_entries_versioned(vec![None], Vec::new(), versions);
+        let refused = connect_selected_expecting(
+            connector.selected(),
+            connector.clone(),
+            expecting(7, false),
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(ConnectError::AllFailed { last: Some(ref last), .. })
+            if matches!(**last, ConnectError::ClusterUnverified { .. }))
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_that_needs_an_upgrade_outlasts_a_failure_tried_after_it() {
+    // The old Server refuses first; the one after it confirms and never answers Inspect.
+    let connector = cluster_entries_versioned(vec![None, held(7)], vec![1], vec![(0, "0.3.2")]);
+    let error =
+        connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
+            .await
+            .err()
+            .expect("neither entry can be used");
+    let ConnectError::AllFailed {
+        last: Some(ref last),
+        reached,
+        ..
+    } = error
+    else {
+        panic!("{error}");
+    };
+    assert!(reached);
+    assert!(last.needs_upgrade(), "{last}");
+    assert!(crate::ui::chain_text(&error).contains("runs Ployz 0.3.2"));
 }
 
 #[tokio::test(start_paused = true)]

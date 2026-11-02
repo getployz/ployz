@@ -138,9 +138,16 @@ impl Client {
             Some(ployz_core::Sealing::NeedsAccess) | None if expect.allow_unverified => {
                 Ok(crate::connect::ClusterCheck::default())
             }
-            Some(ployz_core::Sealing::NeedsAccess) | None => {
+            Some(ployz_core::Sealing::NeedsAccess) => {
                 Err(ConnectError::ClusterUnverified { machine_id })
             }
+            None => Err(match crate::connect::predates_sealing(&details) {
+                Some(version) => ConnectError::PredatesSealing {
+                    machine_id,
+                    version,
+                },
+                None => ConnectError::ClusterUnverified { machine_id },
+            }),
         }
     }
 

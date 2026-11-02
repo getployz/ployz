@@ -272,6 +272,14 @@ export function speaksOlderProtocol(error: PloyzSdkError) {
   return Schema.is(OlderProtocol)("cause" in error ? error.cause : undefined);
 }
 
+// The refusal's text, even when several connections fail: its connect error has no details.
+const PredatesSealing = Schema.Struct({ message: Schema.String.check(Schema.isIncludes("which can't show which Cluster it belongs to. Upgrade it")) });
+
+/** Whether a connect failed on a Server too old to show which Cluster it is in, which only its upgrade lets Cloud use. */
+export function predatesSealing(error: PloyzSdkError) {
+  return Schema.is(PredatesSealing)("cause" in error ? error.cause : undefined);
+}
+
 /** The message of the runtime's RPC error a failure carries; undefined for any other failure. */
 export function rpcErrorMessage(error: PloyzSdkError) {
   const rpc = Schema.decodeUnknownOption(Schema.Struct({ message: Schema.String }))("cause" in error ? error.cause : undefined);

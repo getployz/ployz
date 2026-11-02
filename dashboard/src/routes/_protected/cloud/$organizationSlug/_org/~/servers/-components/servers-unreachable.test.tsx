@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import * as runtime from "#/providers/runtime-provider";
+import type { OlderServers } from "#/modules/machines/use-servers";
 import { SSH_UPGRADE, ServersUnreachable } from "./servers-unreachable";
 
 afterEach(() => {
@@ -11,7 +12,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderAs(role: "admin" | "member" | "support", older = false) {
+function renderAs(role: "admin" | "member" | "support", older: OlderServers | null = null) {
   vi.spyOn(runtime, "useClusterReleased").mockReturnValue(() => {});
   const queryClient = new QueryClient();
   queryClient.setQueryData(organizationMembersQueryOptions("ada").queryKey, {
@@ -37,9 +38,12 @@ it("lets support forget the servers, as Cloud does", () => {
   expect(renderAs("support")?.hasAttribute("disabled")).toBe(false);
 });
 
-it("points a Server on an older Ployz to its upgrade over SSH, not to Forget", () => {
-  expect(renderAs("admin", true)).toBeNull();
+it.each([
+  ["relay", /runs an older Ployz that Ployz Cloud can’t reach through the relay/],
+  ["sealing", /runs a Ployz older than 0\.3\.3/],
+] as const)("points a Server on an older Ployz (%s) to its upgrade over SSH, not to Forget", (older, why) => {
+  expect(renderAs("admin", older)).toBeNull();
   expect(screen.getByText("Upgrade your server over SSH")).toBeTruthy();
-  expect(screen.getByText(/runs an older Ployz/)).toBeTruthy();
+  expect(screen.getByText(why)).toBeTruthy();
   expect(screen.getByText((_, element) => element?.tagName === "CODE" && element.textContent === SSH_UPGRADE)).toBeTruthy();
 });

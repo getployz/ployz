@@ -542,6 +542,8 @@ joins.
 5. If the servers run Ployz 0.2 or 0.3.0-beta.6 and earlier, Cloud can't reach them through the relay.
    Upgrade one over SSH, then the rest from Cloud, as in
    [Servers on 0.2 or 0.3.0-beta.6 and earlier](../servers/manage-servers.md#servers-on-02-or-030-beta6-and-earlier).
+   A server on 0.3.2 or earlier is used only through a newer one; while that one is down, upgrade
+   it as in [Servers on 0.3.2 and earlier](../servers/manage-servers.md#servers-on-032-and-earlier).
 
 ## The CLI says a server runs 0.2 or 0.3.0-beta.6 and earlier
 
