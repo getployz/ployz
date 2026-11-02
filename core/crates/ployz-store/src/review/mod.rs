@@ -921,6 +921,13 @@ pub(crate) fn publish(
             changed.as_deref().into(),
         ],
     )?;
+    // Saving a sealed value again clears what an earlier seal left plain below.
+    crate::branch::empty_sealed_below(
+        tx,
+        environment.as_str(),
+        &sealed::sealed_again(latest.map(|latest| &latest.intent), &intent),
+        None,
+    )?;
     scrub_sealed(tx, environment)?;
     Ok((revision, true))
 }

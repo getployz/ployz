@@ -1953,6 +1953,63 @@ fn an_own_copy_of_an_own_copy_that_deleted_a_value_before_the_root_sealed_it_nev
     );
 }
 
+/// An Own Copy of a node its owner took a new value for by Follow follows the
+/// owner's shared value to the root's seal (#3727, case 1 for an Own Copy).
+#[test]
+fn an_own_copy_of_a_value_its_owner_took_by_follow_never_shows_it_once_sealed() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("plain-one"))],
+    );
+    deploy(&store, &who, "production", 1, true);
+    store
+        .write(&who, &branch("fix-web", "production", &["web", "db"]))
+        .unwrap();
+    deploy(&store, &who, "fix-web", 2, true);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.TOKEN", json!("plain-private"))],
+    );
+    deploy(&store, &who, "production", 3, true);
+    assert_eq!(
+        values(&store, &who, "fix-web", "db")["env"]["TOKEN"],
+        json!("plain-private")
+    );
+    deploy(&store, &who, "fix-web", 4, true);
+    let mut create = branch("fix-db", "fix-web", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    deploy(&store, &who, "fix-db", 5, true);
+    store
+        .write(
+            &who,
+            &CopyNode {
+                environment: at("fix-db"),
+                node: ServiceName::parse("db").unwrap(),
+                expect: None,
+            },
+        )
+        .unwrap();
+    unset(&store, &who, "fix-web", "db.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "fix-db",
+        &[("db.env.TOKEN", json!("plain-edit"))],
+    );
+    seal_db_token(&store, &who, 6);
+
+    assert_eq!(
+        review_row(&store, &who, "fix-db", "db.env.TOKEN"),
+        (json!({ "secret": true }), json!("plain-edit"))
+    );
+}
+
 /// An owner's own in-place change isn't what the root sealed: an Own Copy of it
 /// that deletes it still shows it.
 #[test]

@@ -36,6 +36,21 @@ pub fn execute(url: &str, sql: &str) {
     }
 }
 
+/// The number `sql`, a `SELECT COUNT(*)`, reads from the database at `url`.
+pub fn count(url: &str, sql: &str) -> i64 {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row(sql, [], |row| row.get(0))
+            .unwrap(),
+        None => postgres::Client::connect(url, postgres::NoTls)
+            .unwrap()
+            .query_one(sql, &[])
+            .unwrap()
+            .get(0),
+    }
+}
+
 /// 48 bytes of ciphertext the browser could have sealed: `n` repeated.
 pub fn ciphertext(n: u8) -> String {
     use base64::Engine as _;

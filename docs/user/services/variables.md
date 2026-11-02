@@ -95,14 +95,17 @@ service still gets the real value when it deploys.
   **Sealed** on both sides of that change.
   What a branch made before the seal compares its changes with keeps only a fingerprint of the
   earlier plain value, so syncs and follows treat that value as unchanged without keeping it.
+  This holds for a branch made from a branch too, however far down. A seal made before Ployz
+  0.3.15 may have left the earlier value there for a branch of a branch, though nothing shows
+  it: saving the sealed variable again in the environment that sealed it clears it.
   The branch's record of how each service was first created still holds the earlier value
   until you delete the branch. Once the seal reaches the branch, its `ployz diff` and the
   agent's review show that earlier value as **Sealed**, even after the branch deletes the
   variable or adds it again plain. They also show it as **Sealed** when the branch deleted,
   renamed or changed the variable before the seal, including in a service it made separate
-  after it was created, and in a branch made from a branch that still had the value it was
-  created with. This holds whether or not the branch deployed the earlier value, and after it
-  takes the seal. Discarding that change brings the variable back **Not set**, never with the
+  after it was created, and in a branch made from a branch, even one whose parent took the
+  value by a follow or a sync. This holds whether or not the branch deployed the earlier
+  value, and after it takes the seal. Discarding that change brings the variable back **Not set**, never with the
   earlier value. A value the branch set itself before the seal, saved or deployed, wasn't
   sealed, so it still shows until the branch takes the seal. Until a seal deploys, the review
   of the environment that sealed it shows the earlier value as **Sealed** too. A service made
