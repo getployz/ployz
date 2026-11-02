@@ -337,10 +337,11 @@ fn snapshot(
         })?
         .intent(0, "Saved State")?;
     scrub.apply(revision, &mut intent);
-    // A value an Environment above sealed since comes back Not set, as a discard
-    // brings it back (#3756).
+    // A value an Environment above sealed since reads Sealed, as History shows it
+    // (#3756). Its fingerprint stays, so Undo still sees each change to it, and
+    // `keep_sealed` brings it back Not set, never plain.
     review::sealed::SealedSince::above(&environment.summary.id, &environment.working)
-        .unset(tx, &mut intent)?;
+        .hide(tx, &mut intent)?;
     Ok(intent)
 }
 

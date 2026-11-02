@@ -805,8 +805,15 @@ pub(crate) fn record(
 /// Record each variable every saved version holds sealed: seals saved before every
 /// Save recorded them, which the ledger alone now answers for (#3752).
 pub(crate) fn record_saved(tx: &mut dyn Tx) -> Result<(), RpcError> {
-    for row in tx.query("SELECT environment_id, intent FROM config_saved", &[])? {
-        record(tx, row.text(0)?, &row.intent(1, "Saved State")?)?;
+    // One Environment's saves at a time, so a Store of many holds only one in memory.
+    for environment in tx.query("SELECT id FROM config_environment", &[])? {
+        let environment = environment.text(0)?;
+        for row in tx.query(
+            "SELECT intent FROM config_saved WHERE environment_id = ?1",
+            &[environment.into()],
+        )? {
+            record(tx, environment, &row.intent(0, "Saved State")?)?;
+        }
     }
     Ok(())
 }

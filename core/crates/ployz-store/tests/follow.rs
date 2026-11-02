@@ -4103,3 +4103,66 @@ fn a_branchs_history_still_shows_a_value_it_set_itself() {
 
     assert!(history_of(&store, &who, "qa").contains("plain-edit"));
 }
+
+/// Undoing one change between two values an Environment above sealed since still
+/// finds that change, and brings back no plain value (#3756).
+#[test]
+fn undoing_a_change_between_two_values_sealed_above_finds_it() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-first"))],
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    deploy(&store, &who, "qa", 3);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-second"))],
+    );
+    deploy(&store, &who, "production", 4);
+    deploy(&store, &who, "qa", 5);
+    assert!(history_of(&store, &who, "qa").contains("plain-second"));
+    edit_qa(&store, &who);
+    seal_token(&store, &who, 6);
+    let history = history_of(&store, &who, "qa");
+    assert!(
+        !history.contains("plain-first") && !history.contains("plain-second"),
+        "{history}"
+    );
+    let revision = store
+        .read(
+            &who,
+            &ployz_store::HistoryQuery {
+                environment: at("qa"),
+                limit: None,
+            },
+        )
+        .unwrap()
+        .revisions
+        .iter()
+        .map(|revision| revision.revision)
+        .max()
+        .unwrap();
+
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: at("qa"),
+                revision,
+                action: ployz_store::HistoryAction::Undo,
+                change: Some("web.env.TOKEN".into()),
+            },
+        )
+        .unwrap();
+    let shown = serde_json::to_string(&preview).unwrap();
+    assert!(
+        !shown.contains("plain-first") && !shown.contains("plain-second"),
+        "{shown}"
+    );
+}

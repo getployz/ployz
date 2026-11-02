@@ -1160,6 +1160,8 @@ pub(crate) fn scrub_sealed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Resu
         let earlier = Revision(row.number(0, "revision")?);
         let mut saved = row.intent(1, "Saved State")?;
         if scrub.apply(earlier, &mut saved) {
+            // A scrub matched by key seals a variable under its own ID: record it too.
+            sealed::record(tx, environment.as_str(), &saved)?;
             tx.execute(
                 "UPDATE config_saved SET intent = ?3 WHERE environment_id = ?1 AND revision = ?2",
                 &[
