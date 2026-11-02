@@ -55,6 +55,7 @@ async fn listing(machines: Vec<MachineObservation>) -> Fleet {
                             protocol_major: ployz_core::PROTOCOL_MAJOR,
                             daemon_version: "fixture".into(),
                             capabilities: Default::default(),
+                            sealing: None,
                         })
                     }
                     RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {

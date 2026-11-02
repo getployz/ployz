@@ -168,6 +168,7 @@ pub(crate) async fn confirming_channel() -> Channel {
             protocol_major: ployz_core::PROTOCOL_MAJOR,
             daemon_version: "fixture".into(),
             capabilities: Default::default(),
+            sealing: None,
         });
         Ok::<_, Status>(Response::new(response.encode().unwrap()))
     });
@@ -183,13 +184,24 @@ pub(crate) async fn confirming_channel() -> Channel {
     memory_channel(service, false).await.0
 }
 
-/// A channel to Machine `id` that confirms and answers Inspect holding `sealing`, or
-/// never answers Inspect when `answers_inspect` is false.
+/// How a scripted daemon tells a dial its Sealing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Answers {
+    /// Only through Inspect, as a daemon older than the confirmation's Sealing.
+    Inspect,
+    /// It confirms but never answers Inspect.
+    Nothing,
+    /// In its confirmation; it panics on Inspect.
+    Confirmation,
+}
+
+/// A channel to Machine `id` that confirms, holding `sealing`, and tells it as `answers` says;
+/// its Machine record names `daemon_version` when given.
 pub(crate) async fn sealed_channel(
     id: ployz_core::MachineId,
     sealing: Option<ployz_core::Sealing>,
     daemon_version: Option<&'static str>,
-    answers_inspect: bool,
+    answers: Answers,
 ) -> Channel {
     use ployz_core::{RpcRequestBody, RpcResponse};
     let rpc = tower::service_fn(move |request: Request<OpaquePayload>| async move {
@@ -200,10 +212,17 @@ pub(crate) async fn sealed_channel(
                 protocol_major: ployz_core::PROTOCOL_MAJOR,
                 daemon_version: "fixture".into(),
                 capabilities: Default::default(),
+                sealing: (answers == Answers::Confirmation)
+                    .then_some(sealing)
+                    .flatten(),
             })
         } else if let RpcRequestBody::Inspect(_) = body {
-            if !answers_inspect {
-                std::future::pending::<()>().await;
+            match answers {
+                Answers::Inspect => {}
+                Answers::Nothing => std::future::pending::<()>().await,
+                Answers::Confirmation => {
+                    panic!("a confirmation carrying the Sealing needs no Inspect")
+                }
             }
             RpcResponse::from(ployz_core::MachineDetails {
                 id,
@@ -337,6 +356,7 @@ where
         protocol_major: ployz_core::PROTOCOL_MAJOR,
         daemon_version: "fixture".into(),
         capabilities: Default::default(),
+        sealing: None,
     };
     unix_daemon_describing(path, contract, rpc)
 }

@@ -28,6 +28,7 @@ fn runtime_watch_capability_is_always_advertised_and_not_inferred_from_daemon_ve
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "9.9.9".into(),
         capabilities: BTreeSet::new(),
+        sealing: None,
     };
     assert!(!old_daemon.supports(RUNTIME_WATCH_CAPABILITY));
 
@@ -38,6 +39,7 @@ fn runtime_watch_capability_is_always_advertised_and_not_inferred_from_daemon_ve
         capabilities: BTreeSet::from([
             ployz_core::CapabilityName::parse(RUNTIME_WATCH_CAPABILITY).unwrap()
         ]),
+        sealing: None,
     };
     assert!(new_daemon.supports(RUNTIME_WATCH_CAPABILITY));
 }

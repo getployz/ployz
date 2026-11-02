@@ -22,6 +22,7 @@ fn storage_service(advertised: bool) -> DiscoveryService {
         } else {
             Default::default()
         },
+        sealing: None,
     })
 }
 

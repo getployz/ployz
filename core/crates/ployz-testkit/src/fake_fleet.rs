@@ -744,6 +744,7 @@ impl Fleet {
                         .into_iter()
                         .flat_map(CapabilityAdvertisement::capabilities)
                         .collect::<BTreeSet<_>>(),
+                        sealing: None,
                     }
                     .into(),
                 )

@@ -84,6 +84,7 @@ async fn destination_and_holder(
                 protocol_major: PROTOCOL_MAJOR,
                 daemon_version: "fixture".into(),
                 capabilities: Default::default(),
+                sealing: None,
             }),
             RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
                 enrollment: None,
@@ -338,6 +339,7 @@ async fn live_and_second(
                     protocol_major: PROTOCOL_MAJOR,
                     daemon_version: "fixture".into(),
                     capabilities: Default::default(),
+                    sealing: None,
                 }),
                 RpcRequestBody::ListMachines(_) => {
                     let mut second = MachineObservation::new(holder('2'), pair.membership);

@@ -166,5 +166,6 @@ fn description() -> ployz_core::ContractDescription {
         daemon_version: "test".into(),
         capabilities: [ployz_core::CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY).unwrap()]
             .into(),
+        sealing: None,
     }
 }

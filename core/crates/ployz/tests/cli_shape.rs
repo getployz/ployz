@@ -1930,6 +1930,7 @@ fn fake_daemon(socket: &std::path::Path, discovery: Discovery) {
                     .into_iter()
                     .map(|name| name.parse().unwrap())
                     .collect(),
+                sealing: None,
             };
             Ok(Response::new(
                 RpcResponse::from(description).encode().unwrap(),
