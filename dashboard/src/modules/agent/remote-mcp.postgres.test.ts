@@ -1290,8 +1290,7 @@ it.live("a sign-out of the browser that is allowing an agent waits for the Allow
     }));
     yield* Effect.promise(() => vi.waitFor(async () => {
       expect((await Effect.runPromise(waitingOnGrants))[0]?.waiting).toBe(1);
-    }, { timeout: 10_000 }));
-    yield* hold.release;
+    }, { timeout: 10_000 })).pipe(Effect.ensuring(hold.release));
 
     const decided = yield* Fiber.join(allowing);
     expect((yield* Fiber.join(signingOut)).status).toBe(200);
