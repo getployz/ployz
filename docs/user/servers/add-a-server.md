@@ -377,11 +377,13 @@ images from ghcr.io.
   version tag.
 - **A server that never joined doesn't hold up the next one.** If a token was used but its server
   never joined, `ployz server ls` lists it as down with no version. The next `ployz server add`
-  doesn't wait on it: it warns `Server web-3 shows no sign it ever joined` and prints
-  `ployz server forget <its ID> --confirm dead` to take it out. With `--json`, the result lists
-  each such server under `unarrived`, with its `id`, `name` and that command as `next`. You get
-  the warning, the command and the list even when the add then fails for another reason, such as
-  a down server.
+  doesn't wait on it: it warns `Server web-3 may still be joining` and points you to
+  `ployz server ls`. A server whose add is still running looks the same, so check first: if it's
+  still down with no version after a few minutes, take it out with the
+  `ployz server forget <its ID> --confirm dead` the warning names. With `--json`, the result
+  lists each such server under `unarrived`, with its `id`, `name` and that command as `next`; run
+  it only on the same condition. You get the warning, the command and the list even when the add
+  then fails for another reason, such as a down server.
 - **A failed add can be retried with other options.** If `ployz server add` fails after Cloud took
   the server, for example while downloading or installing the daemon, run it again on the same
   host, with the same token while it lasts or a new one. It may change options such as

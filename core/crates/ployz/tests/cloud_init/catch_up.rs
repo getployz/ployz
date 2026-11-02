@@ -144,14 +144,7 @@ async fn machine_add_plans_catch_up_past_an_unarrived_registration() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
     assert!(entry.ensure_attempts() > 0);
-    assert!(
-        stderr.contains("Server claim-only shows no sign it ever joined"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!("server forget {} --confirm dead", "c".repeat(32))),
-        "{stderr}"
-    );
+    assert_unarrived_on_stderr(&stderr);
     target.join_request();
 
     let (output, _, target) = machine_add_with(
@@ -208,18 +201,44 @@ fn assert_unarrived_in_failure(output: &Output, json: bool) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(3), "{stderr}");
     assert!(stderr.contains("remains a Cluster member"), "{stderr}");
-    assert!(
-        stderr.contains("Server claim-only shows no sign it ever joined"),
-        "{stderr}"
-    );
     if json {
-        assert_unarrived_in_result(output);
-    } else {
         assert!(
-            stderr.contains(&format!("server forget {} --confirm dead", "c".repeat(32))),
+            stderr.contains("Server claim-only may still be joining"),
             "{stderr}"
         );
+        assert_unarrived_in_result(output);
+    } else {
+        assert_unarrived_on_stderr(&stderr);
     }
+}
+
+/// An Unarrived Server may be one still joining, so the forget command comes only with
+/// its condition, never as the next step.
+fn assert_unarrived_on_stderr(stderr: &str) {
+    assert!(
+        stderr.contains("Server claim-only may still be joining"),
+        "{stderr}"
+    );
+    let forget = stderr
+        .lines()
+        .find(|line| line.contains("keeps showing it down with no version, remove it with `"))
+        .unwrap_or_else(|| panic!("{stderr}"));
+    assert!(
+        forget.contains(&format!("server forget {} --confirm dead", "c".repeat(32))),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.starts_with("inspect: ") && line.contains(" server ls")),
+        "{stderr}"
+    );
+    assert!(
+        !stderr
+            .lines()
+            .any(|line| line.starts_with("next: ") && line.contains("server forget")),
+        "{stderr}"
+    );
 }
 
 /// A `--json` join names each Unarrived Server and the command that forgets it.
