@@ -1,9 +1,9 @@
 import "@tanstack/react-start/server-only";
-import { and, arrayContains, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, arrayContains, eq, isNull, or, sql } from "drizzle-orm";
 import { Cause, Context, Effect, Exit, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
-import { member, organizationToken, session } from "#/modules/identity/tables";
+import { member, organizationToken } from "#/modules/identity/tables";
 import type { Caller, TokenKind } from "#/modules/identity/actor";
 import { tokenRuns } from "#/modules/identity/claim-required.server";
 import { hashOrganizationTokenSecret, ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
@@ -145,7 +145,6 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string,
 
 const GrantClaims = Schema.Struct({
   sub: Uuid,
-  sid: Uuid,
   org: Uuid,
   grant: Uuid,
   azp: Schema.optionalKey(Schema.String),
@@ -158,12 +157,14 @@ export const grantClaimsOf = Schema.decodeUnknownOption(GrantClaims);
 
 /**
  * A remote agent's verified access token, acting through the consent it was issued under. The consent names the
- * Organization; the grant ends when the consent is revoked or loses the `ployz` scope, the client is disabled, the signing-in session ends, or
- * the user leaves the Organization, which deletes the consent as disconnecting does. Rejoining doesn't revive it: the membership must
- * predate the consent's first Allow, which better-auth stamps in whole seconds and keeps when a later Allow updates the row.
+ * Organization; the grant ends when the consent is revoked or loses the `ployz` scope, the client is disabled, or the user leaves the
+ * Organization, which deletes the consent as disconnecting does. Signing out of the browser it was made in deletes the consent too
+ * (`disconnectSessionAgents`), but the token's session is never checked here: a session that lapses ends nothing. Rejoining doesn't
+ * revive it: the membership must predate the consent's first Allow, which better-auth stamps in whole seconds and keeps when a later
+ * Allow updates the row.
  */
 export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: GrantClaims) {
-  const { sub, sid, org, grant, azp, client_id } = claims;
+  const { sub, org, grant, azp, client_id } = claims;
   const clientId = azp ?? client_id;
   if (clientId === undefined) return yield* new Unauthorized();
   const database = yield* Database;
@@ -173,7 +174,6 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
     .innerJoin(oauthClient, eq(oauthClient.clientId, oauthConsent.clientId))
     .innerJoin(organization, eq(organization.id, org))
     .innerJoin(member, and(eq(member.organizationId, org), eq(member.userId, sub)))
-    .innerJoin(session, and(eq(session.id, sid), eq(session.userId, sub)))
     .where(and(
       eq(oauthConsent.id, grant),
       eq(oauthConsent.userId, sub),
@@ -181,7 +181,6 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
       eq(oauthConsent.referenceId, org),
       arrayContains(oauthConsent.scopes, ["ployz"]),
       or(isNull(oauthClient.disabled), eq(oauthClient.disabled, false)),
-      gt(session.expiresAt, new Date()),
       sql`date_trunc('second', ${member.createdAt}) <= ${oauthConsent.createdAt}`,
     ))
     .limit(1);

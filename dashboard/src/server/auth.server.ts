@@ -53,6 +53,7 @@ import {
 } from "#/modules/organization/organization-state.server";
 import { Actor, type SessionActor } from "#/modules/identity/actor";
 import { bindDeviceOrganization } from "#/modules/identity/device-organization.server";
+import { disconnectSessionAgents } from "#/modules/identity/session-agents.server";
 import { bindClaimSignInOrganization, claimSecretHashOf } from "#/modules/identity/claim-sign-in.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
@@ -422,6 +423,10 @@ const makeAuth = Effect.gen(function* () {
                 ? Option.getOrNull(Option.map(decodeDeviceToken(context.body), (body) => body.device_code))
                 : null,
             )),
+        },
+        // Sign-out and revoking a session end it here; a lapsed one better-auth clears disconnects nothing.
+        delete: {
+          before: (ended) => runHook(disconnectSessionAgents(ended.id)),
         },
         update: {
           async before(sessionRecord) {

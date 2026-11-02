@@ -106,7 +106,7 @@ const ClientScopes = Schema.Struct({ scopes: Schema.NullOr(Schema.Array(Schema.S
 /**
  * The MCP spec keeps `offline_access` out of the resource's challenge and metadata and leaves refresh tokens to the
  * authorization server, so a client that requests exactly the challenged scope (Glama does) never asks for one. A
- * connection lasts until it's disconnected or its sign-in ends, so every client allowed `offline_access` is asked for
+ * connection lasts until it's disconnected or the browser it was made in signs out, so every client allowed `offline_access` is asked for
  * it and gets a refresh token rather than an hour of access.
  *
  * Only the client's own authorize request is widened. Consent and sign-in re-run authorize with the query `/connect`

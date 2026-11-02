@@ -3,6 +3,7 @@ import { and, desc, eq, gt, isNull, notLike, or } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { CLI_USER_AGENT_PREFIX } from "#/modules/identity/organization-token.server";
+import { disconnectSessionAgents } from "#/modules/identity/session-agents.server";
 import { account, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 
@@ -38,17 +39,25 @@ export const listLinkedAccounts = Effect.fn("Account.listLinked")(function* (act
 });
 
 /**
- * Ends one browser session of the user. A CLI session is skipped: `ployz logout` also retires its Server access,
- * which deleting the row alone would not.
+ * Ends one browser session of the user, disconnecting the agents connected from it as signing out there would. A CLI
+ * session is skipped: `ployz logout` also retires its Server access, which deleting the row alone would not.
  */
 export const revokeAccountSession = Effect.fn("Account.revokeSession")(function* (actor: Actor, sessionId: string) {
-  const { drizzle } = yield* Database;
-  yield* drizzle
-    .delete(session)
-    .where(and(
-      eq(session.id, sessionId),
-      eq(session.userId, actor.userId),
-      // SQL's NOT LIKE is never true for NULL, so a session with no user agent is allowed outright.
-      or(isNull(session.userAgent), notLike(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`)),
-    ));
+  const database = yield* Database;
+  yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [ending] = yield* drizzle
+      .select({ id: session.id })
+      .from(session)
+      .where(and(
+        eq(session.id, sessionId),
+        eq(session.userId, actor.userId),
+        // SQL's NOT LIKE is never true for NULL, so a session with no user agent is allowed outright.
+        or(isNull(session.userAgent), notLike(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`)),
+      ))
+      .for("update");
+    if (ending === undefined) return;
+    yield* disconnectSessionAgents(ending.id);
+    yield* drizzle.delete(session).where(eq(session.id, ending.id));
+  }));
 });

@@ -65,6 +65,9 @@ organization's slug, with or without a terminal and in `--json`.
 
 ## Disconnect
 
-Log out of Ployz Cloud in the browser you connected from, and every agent you connected there
-stops working. Leaving the organization does the same for that organization. The next time the
-agent needs Ployz, it asks you to connect again.
+Log out of Ployz Cloud in the browser you connected from, or sign that browser out under
+**Account**, and every agent you connected there stops working. Leaving the organization does the
+same for that organization. The next time the agent needs Ployz, it asks you to connect again.
+
+A connection doesn't end when your browser's sign-in runs out on its own. An agent keeps working
+without you opening the dashboard, as long as it uses Ployz at least once every 30 days.

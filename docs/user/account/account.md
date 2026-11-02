@@ -22,7 +22,7 @@ Every place you're signed in, most recently active first: each browser, and each
 `ployz login`. The browser you're using says **This device**.
 
 To sign a browser out, click **Sign out** on its row. It's signed out at once, and the row
-goes away.
+goes away. Any agent you [connected](connect-an-agent.md) from that browser is disconnected too.
 
 A CLI session shows **CLI** and has no button. To sign a computer's CLI out, run `ployz logout`
 on it (see [CLI and coding agents](../cli/overview.md)).
