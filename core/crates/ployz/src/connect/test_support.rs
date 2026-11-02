@@ -183,6 +183,55 @@ pub(crate) async fn confirming_channel() -> Channel {
     memory_channel(service, false).await.0
 }
 
+/// A channel to Machine `id` that confirms and answers Inspect holding `sealing`.
+pub(crate) async fn sealed_channel(
+    id: ployz_core::MachineId,
+    sealing: Option<ployz_core::Sealing>,
+) -> Channel {
+    use ployz_core::{RpcRequestBody, RpcResponse};
+    let rpc = tower::service_fn(move |request: Request<OpaquePayload>| async move {
+        let body = request.into_inner().decode_request().unwrap().body;
+        let response = if let RpcRequestBody::DescribeContract(_) = body {
+            RpcResponse::from(ployz_core::ContractDescription {
+                machine_id: id,
+                protocol_major: ployz_core::PROTOCOL_MAJOR,
+                daemon_version: "fixture".into(),
+                capabilities: Default::default(),
+            })
+        } else if let RpcRequestBody::Inspect(_) = body {
+            RpcResponse::from(ployz_core::MachineDetails {
+                id,
+                phase: ployz_core::LocalMachinePhase::Participating,
+                machine: None,
+                public_key: ployz_core::WireGuardPublicKey([0; 32]),
+                advertised_endpoints: Vec::new(),
+                store_version: Default::default(),
+                rtts: Vec::new(),
+                management_clients: Vec::new(),
+                founding: Default::default(),
+                telemetry: None,
+                storage: None,
+                upgrade: None,
+                sealing,
+                token: None,
+            })
+        } else {
+            panic!("a Cluster check asks only for confirmation and Inspect")
+        };
+        Ok::<_, Status>(Response::new(response.encode().unwrap()))
+    });
+    let service = tower::service_fn(
+        move |request: http::Request<tonic::body::Body>| async move {
+            Ok::<_, Infallible>(
+                tonic::server::Grpc::new(ProstCodec::default())
+                    .unary(rpc, request)
+                    .await,
+            )
+        },
+    );
+    memory_channel(service, false).await.0
+}
+
 async fn memory_channel<S>(
     service: S,
     severable: bool,

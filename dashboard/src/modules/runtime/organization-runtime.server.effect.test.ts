@@ -82,6 +82,50 @@ it.effect("passes ordered candidates to one SDK connection and finalizes the ses
   }),
 );
 
+it.effect("asks every entry to hold the pairing's Sealing Key, and still connects through one that does", () =>
+  Effect.gen(function* () {
+    const expected: unknown[] = [];
+    const ployz = makePloyzLayer({
+      connect: async (options) => {
+        expected.push(options.expect);
+        return asTestDouble<Client>()({
+          close: async () => {},
+          cluster: () => ({ verified: true, foreign: ["moved"] }),
+        });
+      },
+    });
+    const runtime = makeOrganizationRuntimeLayer(() =>
+      Effect.succeed({ kind: "ready", generation: "grant-1", connections, sealingPublicKey: "pairing-key" }),
+      noPairingChanges,
+    ).pipe(Layer.provide(ployz));
+    yield* Effect.scoped(Effect.gen(function* () {
+      const session = yield* (yield* OrganizationRuntime).open("org-1");
+      assert.strictEqual(session.status, "connected");
+    })).pipe(Effect.provide(runtime));
+    assert.deepStrictEqual(expected, [{ sealingPublicKey: "pairing-key" }]);
+  }),
+);
+
+it.effect("connects as before while the pairing has no recorded Sealing Key", () =>
+  Effect.gen(function* () {
+    const expected: unknown[] = [];
+    const ployz = makePloyzLayer({
+      connect: async (options) => {
+        expected.push(options.expect);
+        return asTestDouble<Client>()({ close: async () => {} });
+      },
+    });
+    const runtime = makeOrganizationRuntimeLayer(() =>
+      Effect.succeed({ kind: "ready", generation: "grant-1", connections, sealingPublicKey: null }),
+      noPairingChanges,
+    ).pipe(Layer.provide(ployz));
+    yield* Effect.scoped(Effect.gen(function* () {
+      assert.strictEqual((yield* (yield* OrganizationRuntime).open("org-1")).status, "connected");
+    })).pipe(Effect.provide(runtime));
+    assert.deepStrictEqual(expected, [undefined]);
+  }),
+);
+
 it.effect("keeps missing pairing distinct from empty candidates without dialing", () =>
   Effect.gen(function* () {
     let dialed = 0;

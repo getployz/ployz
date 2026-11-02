@@ -6,6 +6,7 @@ import { Data, Effect } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
+import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
@@ -96,6 +97,8 @@ export const loadOrganizationConnections = Effect.fn("MachineConnections.load")(
         ? { management, machine_id: candidate.machineId }
         : { management, machine_id: candidate.machineId, name: candidate.machineName };
     }));
-    return { kind: "ready" as const, generation, connections };
+    // The current pairing's own key only: an Organization key from an earlier pairing names another Cluster.
+    const sealingPublicKey = (yield* readSealingPublicKey(organizationId, generation)) ?? null;
+    return { kind: "ready" as const, generation, connections, sealingPublicKey };
   },
 );

@@ -171,6 +171,7 @@ pub async fn run_deployment(
         .connecting(super::dial(
             connections,
             Arc::new(SystemConnector::default()),
+            None,
         ))
         .await
     {
@@ -216,7 +217,7 @@ pub async fn observe_volumes(
         .filter_map(Connection::machine_id)
         .copied()
         .collect();
-    let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
+    let session = match super::dial(connections, Arc::new(SystemConnector::default()), None).await {
         Ok(session) => session,
         Err(error) => {
             let failure = if error.unreached() {
@@ -269,7 +270,7 @@ pub async fn observe_running(
         failure: Some(failure),
         dropped: Vec::new(),
     };
-    let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
+    let session = match super::dial(connections, Arc::new(SystemConnector::default()), None).await {
         Ok(session) => session,
         Err(error) => {
             let failure = if error.unreached() {

@@ -326,25 +326,41 @@ pub async fn connect_answered(
     connections: Vec<Connection>,
     connector: Arc<dyn Connector>,
 ) -> Result<Session, CallError> {
+    connect_expecting(connections, connector, None).await
+}
+
+/// [`connect_answered`], keeping only an entry in `expect`'s Cluster when it names one.
+///
+/// # Errors
+/// As [`connect_connections`]; when every entry belongs to another Cluster, the last one's
+/// [`ConnectError::ClusterMismatch`](crate::connect::ConnectError::ClusterMismatch).
+pub async fn connect_expecting(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+    expect: Option<crate::connect::ClusterExpectation>,
+) -> Result<Session, CallError> {
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty".into()).into());
     }
-    Ok(dial(connections, connector).await?)
+    Ok(dial(connections, connector, expect).await?)
 }
 
 /// [`connect_connections`] to nonempty `connections`, keeping the connection error.
 async fn dial(
     connections: Vec<Connection>,
     connector: Arc<dyn Connector>,
+    expect: Option<crate::connect::ClusterExpectation>,
 ) -> Result<Session, ConnectError> {
-    let client = connect_selected_with(
-        SelectedConnections {
-            source: ConnectionSource::Direct,
-            connections,
-        },
-        connector,
-    )
-    .await?;
+    let selected = SelectedConnections {
+        source: ConnectionSource::Direct,
+        connections,
+    };
+    let client = match expect {
+        Some(expect) => {
+            crate::connect::connect_selected_expecting(selected, connector, expect).await?
+        }
+        None => connect_selected_with(selected, connector).await?,
+    };
     Ok(Session {
         inner: Arc::new(SessionInner {
             client: std::sync::Mutex::new(Some(client)),
@@ -354,6 +370,12 @@ async fn dial(
 }
 
 impl Session {
+    /// What the dial confirmed about the entry's Cluster; None when it expected none.
+    #[must_use]
+    pub fn cluster(&self) -> Option<crate::connect::ClusterCheck> {
+        self.inner.client.lock().ok()?.as_ref()?.cluster().cloned()
+    }
+
     fn client(&self) -> Result<Client, RpcError> {
         self.inner
             .client
