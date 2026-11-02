@@ -53,7 +53,7 @@ const lockCredential = (credentialId: string, mode: "exclusive" | "shared") => E
  */
 const CLAIM_LEASE_MS = SERVER_TIMEOUT_MS * 3;
 /**
- * How long a stored holder's check waits for its Server. One that answers does so in well under a second; one that
+ * How long a stored holder's check waits for its Server. One that answers does so in under a second; one that
  * doesn't keeps its holder anyway, so a stopped Server costs every call this, not the full dial timeout.
  */
 const STORED_CHECK_TIMEOUT_MS = 2_000;

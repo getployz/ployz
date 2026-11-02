@@ -1574,7 +1574,7 @@ it.live(
         const own = ids.machineId("00000000000000000000000000001273");
         const pairingKey = `${"P".repeat(43)}=`;
         yield* enroll(alice.organization.id, moving, true);
-        const movingServer = { online: true, slots: new Map<string, string>(), holds: pairingKey };
+        const movingServer = { online: true as boolean | "hangs", slots: new Map<string, string>(), holds: pairingKey };
         fake.servers.set(moving, movingServer);
         yield* enroll(alice.organization.id, own, false);
         const ownServer = { online: true, slots: new Map<string, string>(), holds: pairingKey as string | undefined };
@@ -1608,6 +1608,13 @@ it.live(
         assert.deepStrictEqual(silent.connections?.map((connection: { machine_id: string }) => connection.machine_id).sort(), [moving, own].sort());
         assert.deepStrictEqual(silent.refused, []);
         assert.strictEqual(fake.sets(), 2);
+
+        // One that hangs costs the call the check's short bound, not a full dial's, and keeps its holder too.
+        movingServer.online = "hangs";
+        const started = Date.now();
+        const hung = (yield* cli("POST", "server-access", alice)).json;
+        assert.isBelow(Date.now() - started, 5_000);
+        assert.deepStrictEqual(hung.connections?.map((connection: { machine_id: string }) => connection.machine_id).sort(), [moving, own].sort());
       }).pipe(Effect.provide(layer));
     }),
   60_000,
