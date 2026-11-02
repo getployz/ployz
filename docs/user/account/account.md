@@ -28,6 +28,14 @@ are disconnected too.
 A CLI session shows **CLI** and has no button. To sign a computer's CLI out, run `ployz logout`
 on it (see [CLI and coding agents](../cli/overview.md)).
 
+## Connected agents
+
+The agents you [connected](connect-an-agent.md) to Ployz Cloud that can still use it, newest first,
+each with the organization you picked and when you allowed it. The section shows once you've
+connected one.
+
+To disconnect an agent, click **Disconnect** on its row. It stops at once, and the row goes away.
+
 ## Notifications
 
 Which emails you get. See [Notifications](notifications.md).

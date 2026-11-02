@@ -80,15 +80,18 @@ export const forgetSignedOutGrant = Effect.fn("Identity.forgetSignedOutGrant")(f
 });
 
 /**
- * Whether consent `consentId` may mint tokens: a browser that allowed it hasn't been signed out, or it has no browser
+ * A grant may mint tokens and appear as connected: a browser that allowed it hasn't been signed out, or it has no browser
  * recorded, in which case `oauthCaller` holds its tokens to their own session as every grant once was.
  */
+export const grantStands = sql`(not exists (select from ${oauthConsentSession} where ${oauthConsentSession.consentId} = ${oauthConsent.id})
+  or exists (select from ${oauthConsentSession} where ${oauthConsentSession.consentId} = ${oauthConsent.id} and ${oauthConsentSession.signedOutAt} is null))`;
+
+/** Whether consent `consentId` may mint tokens, per `grantStands`. */
 export const grantActs = Effect.fn("Identity.grantActs")(function* (consentId: string) {
   const { drizzle } = yield* Database;
-  const links = yield* drizzle.select({ signedOutAt: oauthConsentSession.signedOutAt })
-    .from(oauthConsentSession)
-    .where(eq(oauthConsentSession.consentId, consentId));
-  return links.length === 0 || links.some((link) => link.signedOutAt === null);
+  const [standing] = yield* drizzle.select({ id: oauthConsent.id }).from(oauthConsent)
+    .where(and(eq(oauthConsent.id, consentId), grantStands)).limit(1);
+  return standing !== undefined;
 });
 
 /**

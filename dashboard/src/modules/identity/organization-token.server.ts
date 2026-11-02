@@ -176,23 +176,17 @@ export const revokeCredential = Effect.fn("OrganizationToken.revoke")(function* 
     .where(and(eq(organizationToken.id, id), tokensReachableBy(caller)))
     .returning({ id: organizationToken.id });
   if (token.length > 0) return { id, kind: "token" as const };
-  const device = yield* transactionWithAgentGrants(caller.userId, Effect.gen(function* () {
+  const cliDevice = and(eq(session.id, id), eq(session.userId, caller.userId), like(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`));
+  // Checked before the lock too, so an unknown id waits on no member's grants.
+  const [known] = yield* database.drizzle.select({ id: session.id }).from(session).where(cliDevice).limit(1);
+  const device = known !== undefined && (yield* transactionWithAgentGrants(caller.userId, Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const [ending] = yield* drizzle
-      .select({ id: session.id })
-      .from(session)
-      .where(and(
-        eq(session.id, id),
-        eq(session.userId, caller.userId),
-        like(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`),
-      ))
-      .for("update");
+    const [ending] = yield* drizzle.select({ id: session.id }).from(session).where(cliDevice).for("update");
     if (ending === undefined) return false;
     yield* signOutSessionAgents(caller.userId, ending.id);
     yield* drizzle.delete(session).where(eq(session.id, ending.id));
-    yield* signOutSessionAgents(caller.userId, ending.id);
     return true;
-  }));
+  })));
   if (device) return { id, kind: "device" as const };
   return yield* new NotFound({ message: "No such token or signed-in device." });
 });

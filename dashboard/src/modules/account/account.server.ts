@@ -1,10 +1,12 @@
 import "@tanstack/react-start/server-only";
-import { and, desc, eq, gt, isNull, notLike, or } from "drizzle-orm";
+import { and, arrayContains, desc, eq, gt, isNull, notLike, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
+import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
 import { CLI_USER_AGENT_PREFIX } from "#/modules/identity/organization-token.server";
-import { signOutSessionAgents, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
-import { account, session } from "#/modules/identity/tables";
+import { grantStands, signOutSessionAgents, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
+import { account, member, session } from "#/modules/identity/tables";
+import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 
 /** better-auth stores an IPv6 address as its /64 written out in full. A mapped IPv4 keeps its dotted form. */
@@ -58,6 +60,34 @@ export const revokeAccountSession = Effect.fn("Account.revokeSession")(function*
     if (ending === undefined) return;
     yield* signOutSessionAgents(actor.userId, ending.id);
     yield* drizzle.delete(session).where(eq(session.id, ending.id));
-    yield* signOutSessionAgents(actor.userId, ending.id);
   }));
+});
+
+/**
+ * The agents the user allowed on /connect that can still act, newest first: the grant keeps the `ployz` scope, its app
+ * isn't disabled, the membership predates it, and a browser that allowed it is still signed in, as `oauthCaller` checks.
+ */
+export const listConnectedAgents = Effect.fn("Account.listConnectedAgents")(function* (actor: Actor) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle
+    .select({ id: oauthConsent.id, name: oauthClient.name, organization: organization.name, allowedAt: oauthConsent.createdAt })
+    .from(oauthConsent)
+    .innerJoin(oauthClient, eq(oauthClient.clientId, oauthConsent.clientId))
+    .innerJoin(organization, eq(sql`${organization.id}::text`, oauthConsent.referenceId))
+    .innerJoin(member, and(eq(member.organizationId, organization.id), eq(member.userId, actor.userId)))
+    .where(and(
+      eq(oauthConsent.userId, actor.userId),
+      arrayContains(oauthConsent.scopes, ["ployz"]),
+      or(isNull(oauthClient.disabled), eq(oauthClient.disabled, false)),
+      sql`date_trunc('second', ${member.createdAt}) <= ${oauthConsent.createdAt}`,
+      grantStands,
+    ))
+    .orderBy(desc(oauthConsent.createdAt));
+  return rows.map((row) => ({ ...row, name: row.name ?? null, allowedAt: row.allowedAt.toISOString() }));
+});
+
+/** Disconnects one of the user's agents by deleting its grant, as leaving the Organization does. Its tokens stop at once. */
+export const disconnectAgent = Effect.fn("Account.disconnectAgent")(function* (actor: Actor, consentId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.delete(oauthConsent).where(and(eq(oauthConsent.id, consentId), eq(oauthConsent.userId, actor.userId)));
 });
