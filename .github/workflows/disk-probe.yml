@@ -1,0 +1,20 @@
+# Temporary: samples the hosted runner fleets' stock free disk for #3766. Removed before merge.
+name: Disk probe
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - run: |
+          df -h / /tmp
+          before=$(df --output=avail -B1M / | tail -1) start=$SECONDS
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          echo "freed $(($(df --output=avail -B1M / | tail -1) - before)) MiB in $((SECONDS - start))s"
+          df -h / /tmp
