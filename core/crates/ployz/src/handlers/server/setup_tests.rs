@@ -91,6 +91,7 @@ fn founder_request(machine: &Machine) -> EnrollRequest {
             cluster_network: "10.210.0.0/16".parse().unwrap(),
             public_ip: None,
             advertised_endpoints: Vec::new(),
+            grant: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),
@@ -255,6 +256,7 @@ async fn restarting_cluster_store(
                     upgrade: None,
                     token: None,
                     sealing: None,
+                    founding: Default::default(),
                 }),
                 RpcRequestBody::ListMachines(_) => {
                     if calls.fetch_add(1, Ordering::SeqCst) < refusals {
@@ -336,6 +338,7 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
                         upgrade: None,
                         token: None,
                         sealing: None,
+                        founding: Default::default(),
                     }),
                     // The first answer comes from the daemon still opening its store.
                     RpcRequestBody::ListMachines(_)

@@ -193,6 +193,11 @@ export const enrollmentCallbackBodySchema = Schema.Union([
     stage: Schema.Literal("publish"),
     capability: NonEmptyString.check(Schema.isMaxLength(MANAGEMENT_CAPABILITY_LENGTH)),
   }),
+  /** A founder that refused to found lets go of its Founding Claim, so the Organization can start with another Server. */
+  Schema.Struct({
+    ...enrollmentCallbackIdentity,
+    stage: Schema.Literal("release"),
+  }),
 ]);
 
 export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;

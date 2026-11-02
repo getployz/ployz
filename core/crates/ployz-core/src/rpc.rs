@@ -286,6 +286,10 @@ pub enum EnrollAs {
         public_ip: Option<IpAddr>,
         #[serde(default)]
         advertised_endpoints: Vec<AdvertisedEndpoint>,
+        /// What grants this founding. A client from before 0.3.15 doesn't say, and a daemon
+        /// from before 0.3.15 ignores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grant: Option<crate::FoundingGrant>,
     },
     /// Joins with the registration a Cluster member issued.
     Member { registration: Registered },
@@ -2415,6 +2419,7 @@ mod set_management_client_wire {
                 initial_policy: Default::default(),
                 public_ip: None,
                 advertised_endpoints: machine().advertised_endpoints,
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),

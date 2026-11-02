@@ -296,6 +296,7 @@ async fn publisher_republishes_when_pool_committable_bytes_change() {
                 advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                     "192.0.2.1:51820".parse().unwrap(),
                 )],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -357,6 +358,7 @@ async fn publisher_publishes_the_founders_sealing_public_key() {
                 advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                     "192.0.2.1:51820".parse().unwrap(),
                 )],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -407,6 +409,7 @@ async fn a_founder_awaiting_recovery_names_its_key_before_the_network_and_holds_
                     advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                         "192.0.2.1:51820".parse().unwrap(),
                     )],
+                    grant: None,
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),

@@ -89,6 +89,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                     cluster_network,
                     public_ip: token.public_ip,
                     advertised_endpoints: token.advertised_endpoints,
+                    grant: Some(ployz_core::FoundingGrant::Standalone),
                 },
                 wireguard_mtu,
                 pinned,

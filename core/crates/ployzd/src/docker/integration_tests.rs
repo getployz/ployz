@@ -1009,6 +1009,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),

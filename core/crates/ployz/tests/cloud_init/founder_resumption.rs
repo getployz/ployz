@@ -106,6 +106,9 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: None,
                     advertised_endpoints: founder.advertised_endpoints,
+                    grant: Some(ployz_core::FoundingGrant::Claim {
+                        claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+                    }),
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),
@@ -132,6 +135,16 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
     );
     assert_eq!(daemon.reset_count(), 1);
     assert_eq!(daemon.initialize_requests().len(), 2);
+    assert_eq!(
+        daemon
+            .initialize_requests()
+            .last()
+            .and_then(|founded| founded.grant),
+        Some(ployz_core::FoundingGrant::Claim {
+            claim: ployz_core::FoundingClaim::of_pairing(PAIRING)
+        }),
+        "the founding daemon keeps the claim it founded under"
+    );
     assert_eq!(
         enroll.callbacks(),
         [json!({
@@ -174,6 +187,9 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: None,
                     advertised_endpoints: founder.advertised_endpoints,
+                    grant: Some(ployz_core::FoundingGrant::Claim {
+                        claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+                    }),
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),
@@ -246,6 +262,9 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: founder.public_ip,
                     advertised_endpoints: founder.advertised_endpoints,
+                    grant: Some(ployz_core::FoundingGrant::Claim {
+                        claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+                    }),
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),
@@ -479,4 +498,110 @@ async fn publication_failure_does_not_complete_and_resumes_the_same_founder() {
     assert_eq!(enroll.publications().len(), 2);
     assert_eq!(enroll.publications().first(), enroll.publications().get(1));
     assert_eq!(enroll.callbacks().len(), 1);
+}
+
+/// A participating Server, answering as the founder Cloud resumes, whose daemon reports `founding`.
+async fn participating_founder(
+    resumed: bool,
+    founding: ployz_core::Founding,
+) -> (EnrollListen, JoinDaemon, std::process::Output) {
+    let mut founder = founder_machine();
+    let policy = ployz_core::InitialMachinePolicy {
+        accepts_ingress: false,
+        ..Default::default()
+    };
+    founder.labels = policy.labels;
+    founder.accepts_builds = policy.accepts_builds;
+    founder.accepts_services = policy.accepts_services;
+    founder.accepts_ingress = policy.accepts_ingress;
+    let enroll = EnrollListen::start(json!({
+        "kind": "initialize",
+        "resumed": resumed,
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+    }))
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder,
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+        sealing_key: None,
+        devices: Vec::new(),
+    })
+    .participating()
+    .founded(founding);
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let output = init_cloud(
+        &format!("ssh://root@{machine_addr}"),
+        &enroll.url,
+        "founder",
+        false,
+        true,
+    )
+    .await;
+    (enroll, daemon, output)
+}
+
+fn release_callback() -> serde_json::Value {
+    json!({
+        "stage": "release",
+        "machineId": founder_machine().id.as_str(),
+        "pairingCredential": PAIRING,
+    })
+}
+
+#[tokio::test]
+async fn resumed_founder_refuses_a_cluster_its_claim_did_not_found() {
+    for founding in [
+        ployz_core::Founding::Standalone,
+        ployz_core::Founding::Joined,
+        ployz_core::Founding::Claim {
+            claim: ployz_core::FoundingClaim::of_pairing("another-pairing"),
+        },
+    ] {
+        let (enroll, daemon, output) = participating_founder(true, founding).await;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{founding:?} resumed: {stderr}");
+        assert!(stderr.contains("didn't found"), "{founding:?}: {stderr}");
+        assert!(
+            stderr.contains("let go of this founding attempt"),
+            "{founding:?}: {stderr}"
+        );
+        assert!(daemon.initialize_requests().is_empty(), "{founding:?}");
+        assert_eq!(enroll.callbacks(), [release_callback()], "{founding:?}");
+    }
+}
+
+#[tokio::test]
+async fn resumed_founder_resumes_a_founding_its_daemon_never_recorded() {
+    let (enroll, _daemon, output) =
+        participating_founder(true, ployz_core::Founding::Unrecorded).await;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !enroll.callbacks().contains(&release_callback()),
+        "a resumed founder keeps its claim"
+    );
+}
+
+#[tokio::test]
+async fn new_claim_on_a_participating_server_lets_go_of_the_claim() {
+    let (enroll, daemon, output) = participating_founder(
+        false,
+        ployz_core::Founding::Claim {
+            claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+        },
+    )
+    .await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("let go of this founding attempt"),
+        "{stderr}"
+    );
+    assert!(daemon.initialize_requests().is_empty());
+    assert_eq!(enroll.callbacks(), [release_callback()]);
 }

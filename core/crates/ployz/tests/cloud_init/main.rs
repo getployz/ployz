@@ -747,6 +747,9 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: None,
                     advertised_endpoints: founder.advertised_endpoints,
+                    grant: Some(ployz_core::FoundingGrant::Claim {
+                        claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+                    }),
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),
@@ -804,6 +807,9 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: None,
                     advertised_endpoints: founder.advertised_endpoints.clone(),
+                    grant: Some(ployz_core::FoundingGrant::Claim {
+                        claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+                    }),
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),
@@ -863,6 +869,9 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: None,
                     advertised_endpoints: founder.advertised_endpoints,
+                    grant: Some(ployz_core::FoundingGrant::Claim {
+                        claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+                    }),
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),
@@ -931,6 +940,9 @@ async fn reset_enroll_posts_the_rotated_public_key() {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: None,
                     advertised_endpoints: local.assigned_machine.advertised_endpoints,
+                    grant: Some(ployz_core::FoundingGrant::Claim {
+                        claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+                    }),
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),
@@ -1000,6 +1012,9 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: None,
                     advertised_endpoints: local.assigned_machine.advertised_endpoints,
+                    grant: Some(ployz_core::FoundingGrant::Claim {
+                        claim: ployz_core::FoundingClaim::of_pairing(PAIRING),
+                    }),
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),

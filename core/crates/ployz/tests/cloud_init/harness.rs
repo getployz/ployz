@@ -86,6 +86,7 @@ pub struct FounderEnroll {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     pub wireguard_mtu: Option<u32>,
     pub pinned: ployz_core::PinnedAddresses,
+    pub grant: Option<ployz_core::FoundingGrant>,
 }
 
 /// The Member half of an Enroll the fake daemon applied.
@@ -106,6 +107,8 @@ struct JoinInner {
     public_key: Mutex<WireGuardPublicKey>,
     daemon_version: Mutex<String>,
     joined: AtomicBool,
+    /// How this daemon reports its Machine came to its Cluster.
+    founding: Mutex<ployz_core::Founding>,
     enrolled: Mutex<Option<(EnrollRequest, WireGuardPublicKey)>>,
     join_request: Mutex<Option<MemberEnroll>>,
     join_attempts: AtomicUsize,
@@ -150,6 +153,7 @@ impl JoinDaemon {
                 registration,
                 daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
                 joined: AtomicBool::new(false),
+                founding: Mutex::new(ployz_core::Founding::Unrecorded),
                 enrolled: Mutex::new(None),
                 join_request: Mutex::new(None),
                 join_attempts: AtomicUsize::new(0),
@@ -254,6 +258,12 @@ impl JoinDaemon {
     /// A Server that already participates as its assigned Machine, as a forgotten one does.
     pub fn participating(self) -> Self {
         self.inner.joined.store(true, Ordering::SeqCst);
+        self
+    }
+
+    /// Report `founding` for the Machine, as a daemon that kept it does.
+    pub fn founded(self, founding: ployz_core::Founding) -> Self {
+        *self.inner.founding.lock().unwrap() = founding;
         self
     }
 
@@ -645,6 +655,7 @@ impl FakeMachine for JoinDaemon {
                 disk_available_bytes: None,
             }),
             sealing: None,
+            founding: *self.inner.founding.lock().unwrap(),
         })
     }
 
@@ -976,6 +987,7 @@ impl FakeMachine for JoinDaemon {
         }
         self.inner.resets.fetch_add(1, Ordering::SeqCst);
         self.inner.joined.store(false, Ordering::SeqCst);
+        *self.inner.founding.lock().unwrap() = ployz_core::Founding::Unrecorded;
         *self.inner.enrolled.lock().unwrap() = None;
         *self.inner.public_key.lock().unwrap() = RESET_PUBLIC_KEY;
         self.inner.cloud_managed.store(false, Ordering::SeqCst);
@@ -1104,6 +1116,7 @@ impl JoinDaemon {
         }
         let machine = match enroll.role.clone() {
             EnrollAs::Member { registration } => {
+                *self.inner.founding.lock().unwrap() = ployz_core::Founding::Joined;
                 if registration.assigned_machine.public_key != self.public_key() {
                     return rpc_ok(RpcError {
                         code: RpcErrorCode::InvalidArgument,
@@ -1125,7 +1138,15 @@ impl JoinDaemon {
                 initial_policy,
                 public_ip,
                 advertised_endpoints,
+                grant,
             } => {
+                *self.inner.founding.lock().unwrap() = match grant {
+                    None => ployz_core::Founding::Unrecorded,
+                    Some(ployz_core::FoundingGrant::Standalone) => ployz_core::Founding::Standalone,
+                    Some(ployz_core::FoundingGrant::Claim { claim }) => {
+                        ployz_core::Founding::Claim { claim }
+                    }
+                };
                 let mut machine = self.inner.current_machine.lock().unwrap().clone();
                 machine.name = name.clone();
                 machine.labels = initial_policy.labels.clone();
@@ -1144,6 +1165,7 @@ impl JoinDaemon {
                         advertised_endpoints,
                         wireguard_mtu: enroll.wireguard_mtu,
                         pinned: enroll.pinned,
+                        grant,
                     });
                 self.record("initialize");
                 machine

@@ -737,6 +737,7 @@ impl FakeMachine for DiscoveryService {
                 upgrade: None,
                 token: None,
                 sealing: None,
+                founding: Default::default(),
             })
             .encode()
             .unwrap(),

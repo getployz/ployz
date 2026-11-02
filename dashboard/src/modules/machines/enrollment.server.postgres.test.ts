@@ -1142,6 +1142,40 @@ describe("organization enrollment coordinator", () => {
       expect(await late).toMatchObject({ success: { machineId: attempt.machineId } });
     });
 
+    it("lets a refusing founder let go of its claim", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      expect(await fake.coordinator.completeFounding({ ...attempt, stage: "release" }))
+        .toMatchObject({ success: { machineId: attempt.machineId, released: true } });
+      await expectReleased(fake, attempt);
+    });
+
+    it("keeps a claim Cloud already holds a connection for", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      expect(await fake.coordinator.completeFounding({ ...attempt, stage: "release" })).toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(await dialRows()).toHaveLength(1);
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+    });
+
+    it("keeps a claim whose pairing the release doesn't name", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      expect(await fake.coordinator.completeFounding({ ...attempt, pairingCredential: "ppair_fake", stage: "release" }))
+        .toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
+    });
+
+    it("keeps a committed founder", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...attempt, capability });
+      await fake.coordinator.completeFounding(attempt);
+      expect(await fake.coordinator.completeFounding({ ...attempt, stage: "release" })).toMatchObject({ failure: { _tag: "Unauthorized" } });
+      expect(await founderRow()).toEqual([{ founder_machine_id: attempt.machineId }]);
+    });
+
     it("founds a Cluster whose only Machine is the founder, holding only Cloud's management client", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);

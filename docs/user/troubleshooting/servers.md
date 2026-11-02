@@ -212,7 +212,10 @@ its apps go down; volume data stays on the disk.
 ## The first server is already in a Cluster
 
 You'll see `This Server is already in a Cluster with other Servers, or something other than Ployz
-Cloud manages it.`
+Cloud manages it.` From Ployz 0.3.15, `ployz server add` may stop earlier on the server with
+`this Server is already in a Cluster this enrollment didn't found`, or with `a new founding claim
+requires an uninitialized Server`. When it also says `Ployz Cloud let go of this founding attempt`,
+the token is used up and nothing else is left to reset.
 
 An organization's first server starts a new Cluster, so it can't be a server that already has other
 servers, or that something other than Ployz Cloud manages. The server stays in its Cluster. Don't run

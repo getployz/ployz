@@ -57,6 +57,7 @@ impl Fixture {
                     advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                         "127.0.0.1:7569".parse().unwrap(),
                     )],
+                    grant: None,
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),

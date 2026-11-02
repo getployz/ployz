@@ -365,6 +365,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(address)],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),

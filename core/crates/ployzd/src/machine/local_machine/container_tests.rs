@@ -23,6 +23,7 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -144,6 +145,7 @@ async fn cancelled_create_finishes_before_reset_cleanup() {
                     advertised_endpoints: vec![AdvertisedEndpoint(
                         "192.0.2.1:51820".parse().unwrap(),
                     )],
+                    grant: None,
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),
@@ -332,6 +334,7 @@ async fn removal_warning_restarts_and_keeps_recovery_available_without_container
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -695,6 +698,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
                 advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                     "192.0.2.1:51820".parse().unwrap(),
                 )],
+                grant: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -782,6 +786,7 @@ mod settled {
                     advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                         "192.0.2.1:51820".parse().unwrap(),
                     )],
+                    grant: None,
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),
@@ -1318,6 +1323,7 @@ mod stopped_on_request {
                         advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                             "192.0.2.1:51820".parse().unwrap(),
                         )],
+                        grant: None,
                     },
                     wireguard_mtu: None,
                     pinned: Default::default(),

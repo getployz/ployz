@@ -355,12 +355,14 @@ impl LocalMachineStore {
                 initial_policy,
                 public_ip,
                 advertised_endpoints,
+                grant,
             } => {
                 let (body, sealing_key) = self.founder(
                     name,
                     FoundingCluster {
                         network: cluster_network,
                         recovery,
+                        grant,
                     },
                     initial_policy,
                     public_ip,
@@ -1021,6 +1023,7 @@ mod rediscover_tests {
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: Some(ip(OLD_IP)),
                     advertised_endpoints: endpoints(&["10.0.0.4", OLD_IP]),
+                    grant: None,
                 },
                 wireguard_mtu: None,
                 pinned,
@@ -1232,6 +1235,7 @@ mod device_slot_tests {
                     advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                         "198.51.100.7:51820".parse().unwrap(),
                     )],
+                    grant: None,
                 },
                 wireguard_mtu: None,
                 pinned: Default::default(),

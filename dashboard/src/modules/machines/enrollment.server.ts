@@ -879,6 +879,26 @@ const requireEnrollmentMachine = Effect.fn("MachineEnrollment.requireMachine")(f
   }
 });
 
+/**
+ * Lets go of a Founding Claim its Server refused to found under, as a refused first publication does. Only the claimant
+ * of an uncommitted founding that Cloud holds no connection for can let go of it.
+ */
+export const releaseFoundingClaim = Effect.fn("MachineEnrollment.releaseFoundingClaim")(
+  function* (input: { token: string; machineId: MachineId; pairingCredential: string }) {
+    const token = yield* requireUnspentClaim(input.token, input.machineId);
+    const [pairing] = yield* loadPairingRow(token.organizationId);
+    if (!pairing || !isFounding(pairing, input.machineId) || pairing.founderPublicKey !== token.claimedPublicKey
+      || !credentialsMatch(yield* decryptPairingSecret(pairing.encryptedPairingSecret), input.pairingCredential)) {
+      return yield* new Conflict({ message: "This Server holds no founding attempt to let go of." });
+    }
+    const released = yield* releaseRefusedClaim(token.organizationId, input.machineId, pairing.encryptedPairingSecret);
+    if (released !== "released") {
+      return yield* new Conflict({ message: "The founding attempt has moved on; reset it in Ployz Cloud." });
+    }
+    return { machineId: input.machineId, released: true as const };
+  },
+);
+
 /** Publish under the current claim; verify rotated credentials before replacing them. */
 export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCandidate")(
   function* (input: { token: string; machineId: MachineId; pairingCredential: string; capability: string }) {
@@ -1034,7 +1054,9 @@ export const completeMachineEnrollment = Effect.fn(
   "MachineEnrollment.completeMachineEnrollment",
 )(
   function* (input: EnrollmentCallback & { token: string }) {
-    if ("stage" in input) return yield* publishMachineEnrollment(input);
+    if ("stage" in input) {
+      return input.stage === "release" ? yield* releaseFoundingClaim(input) : yield* publishMachineEnrollment(input);
+    }
     const { recoveryBackup } = input;
     if (recoveryBackup !== undefined && (input.sealing?.kind !== "held" || input.sealing.publicKey !== recoveryBackup.publicKey)) {
       return yield* new Validation({ message: "The recovery backup is not of the Sealing Key this Server holds." });

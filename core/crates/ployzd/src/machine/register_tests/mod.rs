@@ -622,6 +622,7 @@ fn enroll_refuses_a_second_founding_and_keeps_the_sealing_key() {
             advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                 "192.0.2.1:51820".parse().unwrap(),
             )],
+            grant: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),
