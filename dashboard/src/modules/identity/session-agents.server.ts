@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, exists, gt, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
 import { oauthConsent, oauthConsentSession } from "#/modules/identity/oauth-tables";
 import { session } from "#/modules/identity/tables";
@@ -60,22 +60,21 @@ export const linkConsentSession = Effect.fn("Identity.linkConsentSession")(funct
 });
 
 /**
- * A disconnected grant: one whose every recorded browser was signed out. Allow deletes it first, so better-auth writes a
- * new grant rather than reviving the old one, and the credentials signing out stopped stay stopped.
+ * A grant no signed-in browser stands behind: every recorded browser was signed out, or none is recorded, as for one
+ * signed out before browsers were. Allow deletes it first, so better-auth writes a new grant rather than reviving the
+ * old one, and the credentials signing out stopped stay stopped. An unrecorded grant still acting on its token's
+ * session gets a new one too, and the agent holding the old one connects again.
  */
 export const forgetSignedOutGrant = Effect.fn("Identity.forgetSignedOutGrant")(function* (
   grant: { readonly clientId: string; readonly userId: string; readonly organizationId: string },
 ) {
   const { drizzle } = yield* Database;
-  const browsers = drizzle.select({ sessionId: oauthConsentSession.sessionId }).from(oauthConsentSession)
-    .where(eq(oauthConsentSession.consentId, oauthConsent.id));
   const signedIn = drizzle.select({ sessionId: oauthConsentSession.sessionId }).from(oauthConsentSession)
     .where(and(eq(oauthConsentSession.consentId, oauthConsent.id), isNull(oauthConsentSession.signedOutAt)));
   yield* drizzle.delete(oauthConsent).where(and(
     eq(oauthConsent.clientId, grant.clientId),
     eq(oauthConsent.userId, grant.userId),
     eq(oauthConsent.referenceId, grant.organizationId),
-    exists(browsers),
     notExists(signedIn),
   ));
 });

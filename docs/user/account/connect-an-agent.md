@@ -66,8 +66,8 @@ organization's slug, with or without a terminal and in `--json`.
 ## Disconnect
 
 Any active sign-out or session revoke disconnects your agents that no remaining signed-in browser
-connected. That's logging out of Ployz Cloud, or clicking **Sign out** on a browser under
-**Account**. So signing out of the browser you connected from disconnects its agents, unless you
+connected. That includes logging out of Ployz Cloud, clicking **Sign out** on a browser under
+**Account**, and signing a computer's CLI out with `ployz logout` or from **Account**. So signing out of the browser you connected from disconnects its agents, unless you
 also allowed them from a browser that is still signed in. Leaving the organization disconnects your
 agents in it. The next time the agent needs Ployz, it asks you to connect again.
 

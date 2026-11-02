@@ -736,6 +736,24 @@ it.live("the backfill keeps a grant whose browser is signed in, and leaves one m
     expect((yield* raw(shop, kept.access_token)).status).toBe(401);
   }).pipe(Effect.scoped), 30_000);
 
+it.live("connecting again leaves an agent main had signed out stopped, though the backfill recorded no browser for it", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const old = yield* connectTokens(shop, clientId);
+    yield* asBeforeMigration(shop, true);
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.delete(session).where(eq(session.userId, shop.boId));
+    }));
+    yield* aMinuteLater(shop);
+
+    const renewed = yield* connectTokens({ ...shop, cookie: yield* signIn(shop) }, clientId);
+    expect((yield* raw(shop, renewed.access_token)).status).toBe(200);
+    expect((yield* raw(shop, old.access_token)).status).toBe(401);
+    expect(yield* refresh(shop, clientId, old.refresh_token ?? expect.fail("connect issued no refresh token"))).toEqual(REVOKED);
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("two browsers that allowed one agent, signed out at once from the account page, both disconnect it", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
