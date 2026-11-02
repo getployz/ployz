@@ -220,8 +220,9 @@ another token on it.
 
 Run `ployz server add --command` for a new token, and add a server that isn't in a Cluster. If that
 says `This Organization's Servers can't be reached`, go to **Organization**, click **Reset founding
-attempt**, tick the confirmation and click **Reset enrollment**. The refused server can keep running:
-the reset revokes Ployz Cloud's access to it.
+attempt**, tick the confirmation and click **Reset enrollment**. The confirmation asks you to stop or
+erase the old Machine, but this server can keep running in its Cluster: the reset revokes Ployz
+Cloud's own access to it.
 
 ## The server doesn't finish joining
 
