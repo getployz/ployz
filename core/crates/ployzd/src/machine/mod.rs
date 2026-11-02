@@ -87,7 +87,9 @@ impl ParticipationOrigin {
     fn founding(&self) -> ployz_core::Founding {
         match self {
             Self::Founder { cluster } => match cluster.grant {
-                None => ployz_core::Founding::Unrecorded,
+                None | Some(ployz_core::FoundingGrant::Unrecognized) => {
+                    ployz_core::Founding::Unrecorded
+                }
                 Some(ployz_core::FoundingGrant::Standalone) => ployz_core::Founding::Standalone,
                 Some(ployz_core::FoundingGrant::Claim { claim }) => {
                     ployz_core::Founding::Claim { claim }

@@ -67,6 +67,9 @@ pub enum FoundingGrant {
     Standalone,
     /// Founded under this Cloud Founding Claim.
     Claim { claim: FoundingClaim },
+    /// A grant a later version wrote, read back by this one.
+    #[serde(other)]
+    Unrecognized,
 }
 
 /// How a Machine came to its Cluster, as far as its local record says.
@@ -106,5 +109,11 @@ mod tests {
     fn a_founding_this_build_does_not_know_reads_as_unrecorded() {
         let parsed: Founding = serde_json::from_str(r#"{"kind":"later"}"#).expect("parses");
         assert_eq!(parsed, Founding::Unrecorded);
+    }
+
+    #[test]
+    fn a_grant_this_build_does_not_know_still_reads() {
+        let parsed: FoundingGrant = serde_json::from_str(r#"{"kind":"later"}"#).expect("parses");
+        assert_eq!(parsed, FoundingGrant::Unrecognized);
     }
 }

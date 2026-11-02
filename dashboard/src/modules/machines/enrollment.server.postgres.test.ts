@@ -1167,6 +1167,19 @@ describe("organization enrollment coordinator", () => {
       expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
     });
 
+    it("keeps a claim for a release under a token that only resumed it", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      const token = await issueToken();
+      const resumed = await fake.coordinator.enroll({ token, identity: identity(0) });
+      if (Result.isFailure(resumed) || resumed.success.kind !== "initialize") throw new Error("No resumed claim");
+      expect(await fake.coordinator.completeFounding({ ...attempt, token, pairingCredential: resumed.success.pairing.secret, stage: "release" }))
+        .toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(await founderRow()).toHaveLength(1);
+      expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) }))
+        .toMatchObject({ success: { kind: "initialize", resumed: true } });
+    });
+
     it("keeps a committed founder", async () => {
       const fake = fakeSession(harness.database);
       const attempt = await pendingFounder(fake);

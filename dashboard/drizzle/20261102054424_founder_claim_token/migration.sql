@@ -1,0 +1,1 @@
+ALTER TABLE "organization_pairing" ADD COLUMN "founder_claim_token_hash" text;

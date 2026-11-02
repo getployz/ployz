@@ -19,6 +19,8 @@ export const organizationPairing = pgTable(
     removalAnsweredAt: timestamp("removal_answered_at", { mode: "date", withTimezone: true }),
     founderPublicKey: text("founder_public_key"),
     founderClaimMachineId: text("founder_claim_machine_id").notNull().$type<MachineId>(),
+    /** The hash of the token that acquired the Founding Claim; null for a claim from before Cloud kept it. */
+    founderClaimTokenHash: text("founder_claim_token_hash"),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),
     /** The founder publication verifying its Server now, and when its turn lapses if it never finishes. */
     founderPublication: uuid("founder_publication"),

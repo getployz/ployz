@@ -1141,7 +1141,9 @@ impl JoinDaemon {
                 grant,
             } => {
                 *self.inner.founding.lock().unwrap() = match grant {
-                    None => ployz_core::Founding::Unrecorded,
+                    None | Some(ployz_core::FoundingGrant::Unrecognized) => {
+                        ployz_core::Founding::Unrecorded
+                    }
                     Some(ployz_core::FoundingGrant::Standalone) => ployz_core::Founding::Standalone,
                     Some(ployz_core::FoundingGrant::Claim { claim }) => {
                         ployz_core::Founding::Claim { claim }

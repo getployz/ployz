@@ -369,6 +369,7 @@ const organizationPairingProjection = {
   removalStartedAt: schemaOrganizationPairing.removalStartedAt,
   createdAt: schemaOrganizationPairing.createdAt,
   founderPublication: schemaOrganizationPairing.founderPublication,
+  founderClaimTokenHash: schemaOrganizationPairing.founderClaimTokenHash,
 };
 
 const loadPairingRow = Effect.fn("MachineEnrollment.loadPairing")(
@@ -617,6 +618,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
             encryptedPairingSecret: encryption.encrypt(secret),
             founderPublicKey: input.publicKey,
             founderClaimMachineId: input.machineId,
+            founderClaimTokenHash: hashEnrollmentToken(input.token),
           })
           .onConflictDoNothing()
           .returning({
@@ -887,7 +889,9 @@ export const releaseFoundingClaim = Effect.fn("MachineEnrollment.releaseFounding
   function* (input: { token: string; machineId: MachineId; pairingCredential: string }) {
     const token = yield* requireUnspentClaim(input.token, input.machineId);
     const [pairing] = yield* loadPairingRow(token.organizationId);
+    // Only the token that acquired the claim lets go of it: another token can resume the same identity.
     if (!pairing || !isFounding(pairing, input.machineId) || pairing.founderPublicKey !== token.claimedPublicKey
+      || pairing.founderClaimTokenHash !== hashEnrollmentToken(input.token)
       || !credentialsMatch(yield* decryptPairingSecret(pairing.encryptedPairingSecret), input.pairingCredential)) {
       return yield* new Conflict({ message: "This Server holds no founding attempt to let go of." });
     }
