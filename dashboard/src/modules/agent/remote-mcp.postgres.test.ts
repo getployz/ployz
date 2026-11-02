@@ -779,6 +779,19 @@ it.live("a grant with no browser recorded acts while its token's session does, a
     expect((yield* raw(shop, issued.access_token)).status).toBe(401);
   }).pipe(Effect.scoped), 30_000);
 
+it.live("a second browser allowing the agent while the first signs out leaves it connected through the second", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    yield* connectTokens(shop, clientId);
+    const elsewhere = { ...shop, cookie: yield* signIn(shop) };
+
+    const [signedOut, there] = yield* Effect.all([signOut(shop), connectTokens(elsewhere, clientId)], { concurrency: "unbounded" });
+    expect(signedOut.status).toBe(200);
+    expect((yield* raw(shop, there.access_token)).status).toBe(200);
+    yield* refreshedAccess(shop, clientId, there.refresh_token ?? expect.fail("connect issued no refresh token"));
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("signing a browser out from the account page disconnects the agents connected from it", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();

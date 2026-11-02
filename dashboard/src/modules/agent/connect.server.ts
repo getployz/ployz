@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq, isNull, lt, ne, or } from "drizzle-orm";
 import { Effect } from "effect";
 import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
-import { forgetSignedOutGrant, linkConsentSession } from "#/modules/identity/session-agents.server";
+import { forgetSignedOutGrant, linkConsentSession, withAgentGrants } from "#/modules/identity/session-agents.server";
 import { member } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type RemoteMcpAuth } from "#/server/auth.server";
@@ -109,15 +109,18 @@ export const connectAgent = Effect.fn("Connect.decide")(function* (
   }
   const oauthQuery = signedOAuthQuery(input.oauthQuery);
   const grant = { clientId: new URLSearchParams(oauthQuery).get("client_id") ?? "", userId: signedIn.user.id, organizationId: membership.organizationId };
-  if (input.accept) yield* forgetSignedOutGrant(grant);
-  const decided = yield* mcp.consent(
+  const decide = mcp.consent(
     headers,
     { oauthQuery, accept: input.accept },
     { userId: signedIn.user.id, sessionId: signedIn.session.id, organizationId: membership.organizationId },
   );
-  if (!input.accept) return decided;
-  const linked = yield* linkConsentSession(grant, signedIn.session.id);
-  // The consent went, or this browser was signed out, before it was recorded, so the code carries a grant that can't act.
-  if (!linked) return yield* new Unauthorized();
-  return decided;
+  if (!input.accept) return yield* decide;
+  return yield* withAgentGrants(signedIn.user.id, Effect.gen(function* () {
+    yield* forgetSignedOutGrant(grant);
+    const decided = yield* decide;
+    const linked = yield* linkConsentSession(grant, signedIn.session.id);
+    // The consent went, or this browser was signed out, before it was recorded, so the code carries a grant that can't act.
+    if (!linked) return yield* new Unauthorized();
+    return decided;
+  }));
 });

@@ -1,9 +1,28 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, exists, gt, inArray, isNull, notExists, notInArray, or } from "drizzle-orm";
-import { Effect } from "effect";
+import { and, eq, exists, gt, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
+import { Effect, Option, Semaphore } from "effect";
 import { oauthConsent, oauthConsentSession } from "#/modules/identity/oauth-tables";
 import { session } from "#/modules/identity/tables";
+import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
+
+/**
+ * Takes, in the current transaction, the lock that orders a member's Allows against their sign-outs, so a grant is never
+ * forgotten, reused or linked against a stale read of its browsers. A transaction takes it before any row lock.
+ */
+export const lockAgentGrants = Effect.fn("Identity.lockAgentGrants")(function* (userId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`agent-grants:${userId}`}))`);
+  return true;
+});
+
+const grantHolders = Semaphore.makeUnsafe(4);
+
+/** Runs `body`, whose queries each commit on their own, while member `userId`'s grants are locked. */
+export const withAgentGrants = <A, E, R>(userId: string, body: Effect.Effect<A, E, R>) =>
+  whileLocked(grantHolders, lockAgentGrants(userId), body).pipe(
+    Effect.flatMap(Option.match({ onNone: () => Effect.die("a blocking lock answered that it is taken"), onSome: Effect.succeed })),
+  );
 
 /**
  * Records that `sessionId` allowed the consent standing for this client, user and Organization on /connect. /connect

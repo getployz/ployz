@@ -3,7 +3,7 @@ import { and, desc, eq, gt, isNull, notLike, or } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { CLI_USER_AGENT_PREFIX } from "#/modules/identity/organization-token.server";
-import { signOutSessionAgents } from "#/modules/identity/session-agents.server";
+import { lockAgentGrants, signOutSessionAgents } from "#/modules/identity/session-agents.server";
 import { account, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 
@@ -46,6 +46,7 @@ export const revokeAccountSession = Effect.fn("Account.revokeSession")(function*
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    yield* lockAgentGrants(actor.userId);
     const [ending] = yield* drizzle
       .select({ id: session.id })
       .from(session)

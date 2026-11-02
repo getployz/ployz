@@ -53,7 +53,7 @@ import {
 } from "#/modules/organization/organization-state.server";
 import { Actor, type SessionActor } from "#/modules/identity/actor";
 import { bindDeviceOrganization } from "#/modules/identity/device-organization.server";
-import { grantActs, signOutSessionAgents } from "#/modules/identity/session-agents.server";
+import { grantActs, signOutSessionAgents, withAgentGrants } from "#/modules/identity/session-agents.server";
 import { bindClaimSignInOrganization, claimSecretHashOf } from "#/modules/identity/claim-sign-in.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
@@ -433,10 +433,10 @@ const makeAuth = Effect.gen(function* () {
         // standing, and again after, for a link /connect wrote in between.
         delete: {
           before: async (ending, context) => {
-            if (signsOut(ending, context)) await runHook(signOutSessionAgents(ending.userId, ending.id));
+            if (signsOut(ending, context)) await runHook(withAgentGrants(ending.userId, signOutSessionAgents(ending.userId, ending.id)));
           },
           after: async (ended, context) => {
-            if (signsOut(ended, context)) await runHook(signOutSessionAgents(ended.userId, ended.id));
+            if (signsOut(ended, context)) await runHook(withAgentGrants(ended.userId, signOutSessionAgents(ended.userId, ended.id)));
           },
         },
         update: {
