@@ -60,6 +60,7 @@ export const revokeAccountSession = Effect.fn("Account.revokeSession")(function*
     if (ending === undefined) return;
     yield* signOutSessionAgents(actor.userId, ending.id);
     yield* drizzle.delete(session).where(eq(session.id, ending.id));
+    yield* signOutSessionAgents(actor.userId, ending.id);
   }));
 });
 

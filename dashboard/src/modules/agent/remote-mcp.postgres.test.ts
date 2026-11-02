@@ -5,7 +5,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { and, asc, desc, eq, sql, type Table } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
-import { Effect, Exit, Fiber, Layer, Option, Schema } from "effect";
+import { Effect, Fiber, Layer, Option, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
 import { disconnectAgent, listConnectedAgents, revokeAccountSession } from "#/modules/account/account.server";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
@@ -1270,17 +1270,31 @@ it.live("disconnecting another member's agent does nothing", () =>
     expect((yield* raw(shop, issued.access_token)).status).toBe(200);
   }).pipe(Effect.scoped), 30_000);
 
-it.live("allowing an agent while the same browser signs out leaves it disconnected", () =>
+it.live("a sign-out of the browser that is allowing an agent waits for the Allow, then disconnects it", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
     const clientId = yield* registerAgent(shop);
+    const { toConnect, verifier } = yield* authorize(shop, clientId);
+    const hold = yield* holdRead(oauthConsent);
+    const allowing = yield* Effect.forkScoped(shop.provided(connectAgent(new Headers({ cookie: shop.cookie }), {
+      organizationId: ORGANIZATION, accept: true, oauthQuery: toConnect.search.slice(1),
+    })));
+    yield* hold.reached;
+    const signingOut = yield* Effect.forkScoped(signOut(shop));
+    const waitingOnGrants = shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.execute<{ waiting: number }>(
+        sql`select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted`, "objects");
+    }));
+    yield* Effect.promise(() => vi.waitFor(async () => {
+      expect((await Effect.runPromise(waitingOnGrants))[0]?.waiting).toBe(1);
+    }, { timeout: 10_000 }));
+    yield* hold.release;
 
-    const [signedOut, allowed] = yield* Effect.all([signOut(shop), Effect.exit(issueCode(shop, clientId))], { concurrency: "unbounded" });
-    expect(signedOut.status).toBe(200);
-    if (Exit.isFailure(allowed)) return;
-    const redeemed = yield* redeem(shop, allowed.value);
-    if (redeemed.status !== 200) return;
-    expect((yield* raw(shop, Schema.decodeUnknownSync(Issued)(redeemed.body).access_token)).status).toBe(401);
+    const decided = yield* Fiber.join(allowing);
+    expect((yield* Fiber.join(signingOut)).status).toBe(200);
+    const code = new URL(decided.url).searchParams.get("code") ?? expect.fail(`consent answered ${decided.url}`);
+    expect((yield* redeem(shop, { clientId, code, verifier })).status).toBe(400);
   }).pipe(Effect.scoped), 30_000);
 
 for (const path of ["/revoke-session", "/revoke-other-sessions"] as const) {

@@ -100,7 +100,8 @@ export const grantActs = Effect.fn("Identity.grantActs")(function* (consentId: s
  * It deletes the refresh tokens those browsers' agents hold too, so each agent stops by its own browser even when
  * another browser allowed the same grant (`oauthCaller` refuses their access tokens by the browser they name).
  * Call it before the session row goes, so a failed mark leaves the browser signed in rather than its agents connected,
- * and again once it's gone, for a link /connect wrote in between. It only ever marks and deletes, so concurrent
+ * and again once it's gone, for a link /connect or a refresh token a rotation wrote in between: refreshes take no lock,
+ * so even inside one locked transaction the second pass is needed. It only ever marks and deletes, so concurrent
  * sign-outs can't each leave a grant to the other.
  */
 export const signOutSessionAgents = Effect.fn("Identity.signOutSessionAgents")(function* (userId: string, sessionId: string) {
