@@ -1228,7 +1228,7 @@ const commitFounder = Effect.fn("MachineEnrollment.commitFounder")(function* (
 /** A reset gives up only a founding that never finished; one that finished says how to start over instead. */
 const foundingFinished = () => new Conflict({
   message: "Your Organization's first server already finished joining, so there's no founding to reset. "
-    + "To start over, forget your servers under Danger on the Organization page, or run ployz server forget.",
+    + "To start over, stop or delete your servers, then forget them under Danger on the Organization page, or run ployz server forget.",
   userFacing: true,
 });
 

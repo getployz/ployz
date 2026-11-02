@@ -1031,7 +1031,7 @@ $ ployz cloud reset -y
 
 stderr:
 ```
-error: The request conflicts with the current state.
+error: Your Organization's first server already finished joining, so there's no founding to reset. To start over, stop or delete your servers, then forget them under Danger on the Organization page, or run ployz server forget.
 ```
 
 ### cloud reset -y --json
@@ -1043,6 +1043,6 @@ $ ployz cloud reset -y --json
 
 stdout:
 ```
-{"error":{"cause":[],"code":"conflict","details":null,"message":"The request conflicts with the current state."}}
+{"error":{"cause":[],"code":"conflict","details":null,"message":"Your Organization's first server already finished joining, so there's no founding to reset. To start over, stop or delete your servers, then forget them under Danger on the Organization page, or run ployz server forget."}}
 ```
 
