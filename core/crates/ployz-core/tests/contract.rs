@@ -642,6 +642,7 @@ fn per_machine_capability_fixture_is_stable_and_additive() {
             CapabilityName::parse("ployz.containers.inspect.v1").unwrap(),
             CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY).unwrap(),
         ]),
+        sealing: None,
     };
 
     assert!(description.supports(DESCRIBE_CONTRACT_CAPABILITY));
@@ -665,7 +666,21 @@ fn per_machine_capability_fixture_is_stable_and_additive() {
     }))
     .unwrap();
     assert!(with_future_field.supports("vendor.future.contract.v1"));
+    assert_eq!(with_future_field.sealing, None);
     assert!(CapabilityName::parse("future_contract").is_err());
+
+    let sealed = ContractDescription {
+        sealing: Some(ployz_core::Sealing::Held {
+            public_key: ployz_core::SealingPublicKey::from_bytes([7; 32]),
+        }),
+        ..description
+    };
+    let encoded = serde_json::to_value(&sealed).unwrap();
+    assert!(encoded.get("sealing").is_some());
+    assert_eq!(
+        serde_json::from_value::<ContractDescription>(encoded).unwrap(),
+        sealed
+    );
 }
 
 #[test]

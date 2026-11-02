@@ -1048,9 +1048,9 @@ pub(crate) async fn connect_one(
     let mut stage = diagnostics::StageGuard::begin(diagnostics::Stage::EntryDescribeContract);
     let confirmed = client.confirm_entry().await;
     stage.finish(&confirmed);
-    confirmed.map_err(|error| naming_local_refusal(connection, error))?;
+    let sealing = confirmed.map_err(|error| naming_local_refusal(connection, error))?;
     if let Some(expect) = expect {
-        client.cluster = Some(client.check_cluster(expect).await?);
+        client.cluster = Some(client.check_cluster(expect, sealing).await?);
     }
     Ok(client)
 }

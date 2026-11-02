@@ -268,7 +268,8 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::DescribeContract>(request)?;
-        let machine_id = self.local_record().id();
+        let record = self.local_record();
+        let machine_id = record.id();
         let mut capabilities: BTreeSet<_> =
             CapabilityAdvertisement::Always.capabilities().collect();
         if self.local.containers().is_some() {
@@ -282,6 +283,7 @@ impl MachineRpc for MachineService {
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
             capabilities,
+            sealing: self.local.held_sealing(record.phase()),
         })
     }
 

@@ -583,6 +583,7 @@ async fn volume_listing_retains_successes_and_target_failures() {
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
         capabilities: Default::default(),
+        sealing: None,
     }))
     .await;
     let client = connect_selected_with(
@@ -1214,6 +1215,7 @@ async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
         capabilities: Default::default(),
+        sealing: None,
     }))
     .await;
     let client = connect_selected_with(
@@ -1374,6 +1376,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         capabilities: BTreeSet::from([
             CapabilityName::parse("ployz.rpc.describe-contract.v1").unwrap()
         ]),
+        sealing: None,
     };
     let service = DiscoveryService::new(description.clone());
     let tcp_server = tokio::spawn(

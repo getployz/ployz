@@ -67,6 +67,7 @@ async fn cluster(
                     .then(|| CapabilityName::parse(SET_DEVICE_CAPABILITY).unwrap())
                     .into_iter()
                     .collect(),
+                sealing: None,
             }),
             RpcRequestBody::SetDevice(_) if daemon == Some(Daemon::Unreachable) => {
                 return Err(Status::unavailable("machine-2 is down"));

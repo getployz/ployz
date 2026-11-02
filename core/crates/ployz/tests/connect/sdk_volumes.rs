@@ -399,6 +399,7 @@ fn advertised_description() -> ployz_core::ContractDescription {
                 .expect("catalogued capability names are valid"),
         ]
         .into(),
+        sealing: None,
     }
 }
 

@@ -520,6 +520,7 @@ fn watch_description() -> ContractDescription {
                 .expect("catalogued capability names are valid"),
         ]
         .into(),
+        sealing: None,
     }
 }
 

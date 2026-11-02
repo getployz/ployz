@@ -1707,6 +1707,12 @@ pub struct ContractDescription {
     pub daemon_version: String,
     #[serde(default)]
     pub capabilities: BTreeSet<CapabilityName>,
+    /// The Sealing Key the Machine holds, as Inspect's `sealing` says, so a caller can tell
+    /// its Cluster without another call. Absent says nothing: the Machine holds none, isn't
+    /// in a Cluster, or predates the field; Inspect still answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub sealing: Option<crate::Sealing>,
 }
 
 impl ContractDescription {

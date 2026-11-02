@@ -542,6 +542,7 @@ mod tests {
                 .iter()
                 .map(|capability| CapabilityName::parse(*capability).unwrap())
                 .collect(),
+            sealing: None,
         };
         let machine_id = contract.machine_id;
         let requests = Arc::new(AtomicUsize::new(0));

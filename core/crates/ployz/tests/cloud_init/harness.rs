@@ -558,6 +558,7 @@ impl FakeMachine for JoinDaemon {
                         .expect("catalogued capability names are valid")
                 })
                 .collect(),
+            sealing: None,
         })
     }
 

@@ -77,6 +77,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                     protocol_major: ployz_core::PROTOCOL_MAJOR,
                                     daemon_version: "fixture".into(),
                                     capabilities: Default::default(),
+                                    sealing: None,
                                 })
                                 .encode()
                                 .unwrap(),

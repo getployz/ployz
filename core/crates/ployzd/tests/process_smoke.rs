@@ -52,6 +52,8 @@ fn version_notify_socket_modes_and_signal() {
     let first = describe(&socket);
     assert_eq!(first.daemon_version, env!("CARGO_PKG_VERSION"));
     assert!(first.supports(DESCRIBE_CONTRACT_CAPABILITY));
+    // A Machine in no Cluster holds no Sealing Key to tell.
+    assert_eq!(first.sealing, None);
     assert_eq!(describe(&socket).machine_id, first.machine_id);
     let stderr = terminate(&mut daemon.0);
     assert!(

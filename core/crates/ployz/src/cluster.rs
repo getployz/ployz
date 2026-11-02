@@ -114,17 +114,26 @@ impl Client {
     pub(crate) async fn check_cluster(
         &mut self,
         expect: &crate::connect::ClusterExpectation,
+        confirmed: Option<ployz_core::Sealing>,
     ) -> Result<crate::connect::ClusterCheck, ConnectError> {
-        let inspect = async {
-            let payload =
-                op::Inspect::into_request(ployz_core::InspectRequest::default()).encode()?;
-            self.call_once::<op::Inspect>(payload, None).await
-        };
-        let details = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, inspect)
-            .await
-            .map_err(|_| ConnectError::EntryNotReady)??;
-        let machine_id = self.entry.unwrap_or(details.id);
-        match details.sealing {
+        // A confirmation that carried the held key answers without Inspect.
+        let (sealing, machine_id) =
+            if let (Some(held @ ployz_core::Sealing::Held { .. }), Some(id)) =
+                (confirmed, self.entry)
+            {
+                (Some(held), id)
+            } else {
+                let inspect = async {
+                    let payload = op::Inspect::into_request(ployz_core::InspectRequest::default())
+                        .encode()?;
+                    self.call_once::<op::Inspect>(payload, None).await
+                };
+                let details = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, inspect)
+                    .await
+                    .map_err(|_| ConnectError::EntryNotReady)??;
+                (details.sealing, self.entry.unwrap_or(details.id))
+            };
+        match sealing {
             Some(
                 ployz_core::Sealing::Held { public_key }
                 | ployz_core::Sealing::AwaitsRecovery { public_key },
@@ -231,17 +240,28 @@ impl Client {
     /// # Errors
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`]
-    /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`].
-    pub(crate) async fn confirm_entry(&mut self) -> Result<(), ConnectError> {
-        self.entry = self.confirmed_entry().await?;
+    /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`]. Resolves to the
+    /// Sealing Key the confirmation said the entry holds, None when it said nothing.
+    pub(crate) async fn confirm_entry(
+        &mut self,
+    ) -> Result<Option<ployz_core::Sealing>, ConnectError> {
+        let (entry, sealing) = self.confirmation().await?;
+        self.entry = entry;
         self.confirmed = self.entry.or(self.confirmed);
-        Ok(())
+        Ok(sealing)
     }
 
     /// The Machine this channel's daemon describes itself as, checked against the
     /// connection. None when neither the connection nor a Machine this client confirmed
     /// names one and the daemon doesn't say.
     async fn confirmed_entry(&self) -> Result<Option<MachineId>, ConnectError> {
+        Ok(self.confirmation().await?.0)
+    }
+
+    /// [`Self::confirmed_entry`], with the Sealing Key the daemon said it holds.
+    async fn confirmation(
+        &self,
+    ) -> Result<(Option<MachineId>, Option<ployz_core::Sealing>), ConnectError> {
         let confirm = async {
             let payload =
                 op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
@@ -263,12 +283,12 @@ impl Client {
                             },
                         ));
                     }
-                    Ok(Some(description.machine_id))
+                    Ok((Some(description.machine_id), description.sealing))
                 }
                 Err(ConnectError::Remote(_))
                     if self.connection.machine_id().is_none() && self.confirmed.is_none() =>
                 {
-                    Ok(None)
+                    Ok((None, None))
                 }
                 Err(error) => Err(error),
             }

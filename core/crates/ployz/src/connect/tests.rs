@@ -1952,6 +1952,8 @@ struct ClusterConnector {
     entries: Vec<(Connection, MachineId, Option<ployz_core::Sealing>)>,
     /// Entries whose daemon confirms but never answers Inspect.
     silent: Vec<usize>,
+    /// Whether every daemon tells its Sealing in its confirmation.
+    confirms: bool,
 }
 
 impl ClusterConnector {
@@ -1973,8 +1975,14 @@ impl ClusterConnector {
             .enumerate()
             .find(|(_, (entry, _, _))| entry == connection)
             .unwrap();
-        let answers_inspect = !self.silent.contains(&index);
-        Ok(test_support::sealed_channel(*id, *sealing, answers_inspect).await)
+        let answers = if self.silent.contains(&index) {
+            test_support::Answers::Nothing
+        } else if self.confirms {
+            test_support::Answers::Confirmation
+        } else {
+            test_support::Answers::Inspect
+        };
+        Ok(test_support::sealed_channel(*id, *sealing, answers).await)
     }
 }
 
@@ -2017,6 +2025,20 @@ fn cluster_entries(
     cluster_entries_silent(sealings, Vec::new())
 }
 
+fn cluster_entries_confirming(
+    sealings: Vec<Option<ployz_core::Sealing>>,
+) -> (Arc<ClusterConnector>, Vec<MachineId>) {
+    let (connector, ids) = cluster_entries(sealings);
+    let connector = Arc::into_inner(connector).unwrap();
+    (
+        Arc::new(ClusterConnector {
+            confirms: true,
+            ..connector
+        }),
+        ids,
+    )
+}
+
 fn cluster_entries_silent(
     sealings: Vec<Option<ployz_core::Sealing>>,
     silent: Vec<usize>,
@@ -2034,7 +2056,14 @@ fn cluster_entries_silent(
             )
         })
         .collect();
-    (Arc::new(ClusterConnector { entries, silent }), ids)
+    (
+        Arc::new(ClusterConnector {
+            entries,
+            silent,
+            confirms: false,
+        }),
+        ids,
+    )
 }
 
 #[tokio::test(start_paused = true)]
@@ -2146,4 +2175,39 @@ async fn an_entry_that_never_answers_the_cluster_check_is_left_for_one_that_does
             .unwrap();
     let answering = connector.entries.get(1).map(|(entry, _, _)| entry);
     assert_eq!(Some(client.connection()), answering);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_confirmation_telling_its_key_settles_the_check_without_inspect() {
+    let (connector, ids) = cluster_entries_confirming(vec![held(9), held(7)]);
+    let client =
+        connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
+            .await
+            .unwrap();
+    let own = connector.entries.get(1).map(|(entry, _, _)| entry);
+    assert_eq!(Some(client.connection()), own);
+    assert_eq!(
+        client.cluster(),
+        Some(&ClusterCheck {
+            verified: true,
+            foreign: ids.first().copied().into_iter().collect()
+        })
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_confirmation_telling_another_key_fails_without_inspect() {
+    let (connector, ids) = cluster_entries_confirming(vec![held(9)]);
+    let refused =
+        connect_selected_expecting(connector.selected(), connector.clone(), expecting(7, false))
+            .await;
+    let Err(ConnectError::AllFailed {
+        last: Some(last), ..
+    }) = refused
+    else {
+        panic!("a foreign Cluster must not be connected");
+    };
+    assert!(
+        matches!(*last, ConnectError::ClusterMismatch { machine_id } if Some(&machine_id) == ids.first())
+    );
 }

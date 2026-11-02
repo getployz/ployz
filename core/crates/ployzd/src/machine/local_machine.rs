@@ -536,6 +536,19 @@ impl LocalMachine {
         })
     }
 
+    /// The Sealing Key this Machine holds as a member of its Cluster, read from its data dir
+    /// alone: what a confirmation can carry without a replicated read.
+    pub(crate) fn held_sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
+        if !matches!(
+            phase,
+            LocalMachinePhase::Joining | LocalMachinePhase::Participating
+        ) {
+            return None;
+        }
+        SealingKey::observe(self.owner.data_dir())
+            .filter(|sealing| matches!(sealing, ployz_core::Sealing::Held { .. }))
+    }
+
     async fn sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
         if !matches!(
             phase,

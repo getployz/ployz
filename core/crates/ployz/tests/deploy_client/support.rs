@@ -885,6 +885,7 @@ impl FakeMachine for DeployService {
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: "test".into(),
             capabilities,
+            sealing: None,
         }))
     }
 

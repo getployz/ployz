@@ -60,6 +60,7 @@ async fn enrolling_machine(
                         protocol_major: ployz_core::PROTOCOL_MAJOR,
                         daemon_version: "fixture".into(),
                         capabilities: Default::default(),
+                        sealing: None,
                     })
                     .encode()
                     .unwrap(),
@@ -240,6 +241,7 @@ async fn restarting_cluster_store(
                         protocol_major: ployz_core::PROTOCOL_MAJOR,
                         daemon_version: "fixture".into(),
                         capabilities: Default::default(),
+                        sealing: None,
                     })
                 }
                 RpcRequestBody::Inspect(_) => RpcResponse::from(ployz_core::MachineDetails {

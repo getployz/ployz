@@ -465,6 +465,7 @@ pub(super) fn advertised_description() -> ContractDescription {
         capabilities: [CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY)
             .expect("catalogued capability names are valid")]
         .into(),
+        sealing: None,
     }
 }
 fn spec(name: &str) -> RequestedServiceSpec {

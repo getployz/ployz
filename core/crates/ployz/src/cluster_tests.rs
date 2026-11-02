@@ -215,6 +215,7 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                             protocol_major: ployz_core::PROTOCOL_MAJOR,
                             daemon_version: "fixture".into(),
                             capabilities: Default::default(),
+                            sealing: None,
                         })
                     }
                     RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
@@ -578,6 +579,7 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
             protocol_major: ployz_core::PROTOCOL_MAJOR,
             daemon_version: "test".into(),
             capabilities: Default::default(),
+            sealing: None,
         });
         Ok(tonic::Response::new(described.encode().unwrap()))
     })
@@ -645,6 +647,7 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
             protocol_major: ployz_core::PROTOCOL_MAJOR,
             daemon_version: "test".into(),
             capabilities: Default::default(),
+            sealing: None,
         });
         Ok(tonic::Response::new(described.encode().unwrap()))
     })

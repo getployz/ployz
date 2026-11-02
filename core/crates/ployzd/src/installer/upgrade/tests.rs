@@ -654,6 +654,7 @@ impl tonic::server::UnaryService<OpaquePayload> for Contract {
                 protocol_major: PROTOCOL_MAJOR,
                 daemon_version: self.0.clone(),
                 capabilities: BTreeSet::new(),
+                sealing: None,
             })
             .encode()
             .unwrap(),
