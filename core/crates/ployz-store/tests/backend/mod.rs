@@ -219,18 +219,81 @@ pub fn finish(
     id: &ployz_store::DeploymentId,
     claimed: ployz_store::Claimed,
 ) -> serde_json::Value {
+    finish_confirming(store, id, claimed, &[])
+}
+
+/// Deploy `environment` as `n`, the runner confirming the Services of each of
+/// `batches` mid-run, in order, as it does when they finish at different times.
+pub fn deploy_in_batches(
+    store: &ConfigStore,
+    who: &ployz_store::Actor,
+    environment: &str,
+    n: u8,
+    batches: &[&[&str]],
+) -> serde_json::Value {
+    let id = admit(store, who, environment, n);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id, &runner).unwrap();
+    finish_confirming(store, &id, claimed, batches)
+}
+
+/// [`finish`], confirming the Services of each of `batches` before the outcome.
+pub fn finish_confirming(
+    store: &ConfigStore,
+    id: &ployz_store::DeploymentId,
+    claimed: ployz_store::Claimed,
+    batches: &[&[&str]],
+) -> serde_json::Value {
+    let completed = confirm(store, id, &claimed, batches, batches.len());
+    let outcome: ployz_core::DeployOutcome<ployz_core::ExecutionError> =
+        serde_json::from_value(serde_json::json!({
+            "type": "success",
+            "completed": (0..completed).map(operation).collect::<Vec<_>>()
+        }))
+        .unwrap();
+    store
+        .record(
+            id,
+            &ployz_store::RunnerId::parse("runner").unwrap(),
+            ployz_store::RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    claimed.input
+}
+
+fn operation(index: usize) -> serde_json::Value {
+    serde_json::json!({"type": "remove_container", "machine_id": "a".repeat(32),
+                       "container_id": format!("{index:064x}")})
+}
+
+/// Prepares the claimed Deployment with an operation per Service and confirms the
+/// first `confirmed` of `batches`, leaving the run going. Returns the operation count.
+pub fn confirm(
+    store: &ConfigStore,
+    id: &ployz_store::DeploymentId,
+    claimed: &ployz_store::Claimed,
+    batches: &[&[&str]],
+    confirmed: usize,
+) -> usize {
     use serde_json::json;
     let runner = ployz_store::RunnerId::parse("runner").unwrap();
-    let names: Vec<String> = claimed
+    let mut names: Vec<String> = claimed
         .intent
         .target
         .iter()
         .map(|service| service.name.to_string())
         .collect();
-    let operation = |index: usize| {
-        json!({"type": "remove_container", "machine_id": "a".repeat(32),
-               "container_id": format!("{index:064x}")})
-    };
+    // A Service a batch confirms, removals among them, has its own operation, so it
+    // waits for its batch.
+    for name in batches.iter().flat_map(|batch| batch.iter()) {
+        if !names.iter().any(|known| known == name) {
+            names.push((*name).to_owned());
+        }
+    }
     let preview: ployz_core::DeployPreview = serde_json::from_value(json!({
         "namespace": claimed.intent.namespace,
         "operations": names.iter().enumerate().map(|(index, name)| json!({
@@ -243,24 +306,16 @@ pub fn finish(
     store
         .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
         .unwrap();
-    let outcome: ployz_core::DeployOutcome<ployz_core::ExecutionError> =
-        serde_json::from_value(json!({
-            "type": "success",
-            "completed": (0..names.len()).map(operation).collect::<Vec<_>>()
-        }))
-        .unwrap();
-    store
-        .record(
-            id,
-            &runner,
-            ployz_store::RunEvidence::Executed {
-                progress: Vec::new(),
-                outcome: Box::new(outcome),
-                removed: Vec::new(),
-            },
-        )
-        .unwrap();
-    claimed.input
+    for batch in batches.iter().take(confirmed) {
+        let services = batch
+            .iter()
+            .map(|name| ployz_core::ServiceName::parse(*name).unwrap())
+            .collect();
+        store
+            .record(id, &runner, ployz_store::RunEvidence::Confirmed(services))
+            .unwrap();
+    }
+    names.len()
 }
 
 /// The tables of the database at `url` with a row whose text holds `marker`.
