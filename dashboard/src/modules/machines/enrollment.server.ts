@@ -1177,7 +1177,7 @@ export const completeMachineEnrollment = Effect.fn(
 
 /**
  * Keeps the first Sealing public key a Machine of this pairing generation reports. A later different key is an
- * error to surface, never a replacement.
+ * error to surface, never a replacement. A key another Organization records refuses the completion.
  */
 const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
   organizationId: string, clusterKey: string, machineId: MachineId, sealing: EnrollmentCallbackSealing | undefined,

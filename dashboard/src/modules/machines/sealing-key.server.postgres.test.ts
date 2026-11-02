@@ -121,6 +121,16 @@ describe("the Organization's Sealing Key", () => {
       expect((await harness.pool.query("select public_key from sealing_key_owner")).rows).toEqual([{ public_key: sealingKey("A") }]);
     });
 
+    it("takes no key a pairing records at once with another", async () => {
+      await Promise.allSettled([
+        run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A"))),
+        run(recordSealingPublicKey(organizationId, clusterA, sealingKey("B"))),
+      ]);
+
+      const recorded = (await harness.pool.query("select public_key from cluster_sealing_key")).rows;
+      expect((await harness.pool.query("select public_key from sealing_key_owner")).rows).toEqual(recorded);
+    });
+
     it("gives a key two Organizations report at once to exactly one of them", async () => {
       const results = await Promise.allSettled([
         run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A"))),

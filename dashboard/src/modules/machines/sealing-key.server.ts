@@ -37,21 +37,20 @@ export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(fu
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const [kept] = yield* drizzle.select({ publicKey: clusterSealingKey.publicKey }).from(clusterSealingKey)
-      .where(and(eq(clusterSealingKey.organizationId, organizationId), eq(clusterSealingKey.clusterKey, clusterKey)));
-    if (kept !== undefined) return;
+    // A pairing keeps its first key: a racing record waits on this row, and one that finds a key already here records nothing.
+    const inserted = yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey }).onConflictDoNothing()
+      .returning({ clusterKey: clusterSealingKey.clusterKey });
+    if (inserted.length === 0) return;
     // Returns the key's owner, taking it when it has none; a racing first record waits on this row.
     const [owner] = yield* drizzle.insert(sealingKeyOwner).values({ publicKey, organizationId })
       .onConflictDoUpdate({ target: sealingKeyOwner.publicKey, set: { organizationId: sql`${sealingKeyOwner.organizationId}` } })
       .returning({ organizationId: sealingKeyOwner.organizationId });
-    if (owner?.organizationId !== organizationId && !(yield* recordsKey(organizationId, publicKey))) {
+    if (owner?.organizationId !== organizationId && !(yield* recordsKey(organizationId, publicKey, clusterKey))) {
       yield* Effect.logError("A Server reported a Sealing Key another Organization's Cluster recorded; Cloud didn't record it.")
         .pipe(Effect.annotateLogs({ organizationId, recordedBy: owner?.organizationId }));
       return yield* new SealingKeyHeldElsewhere({ organizationId });
     }
-    const inserted = yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey }).onConflictDoNothing()
-      .returning({ clusterKey: clusterSealingKey.clusterKey });
-    if (inserted.length > 0) yield* enqueueEvent(createClusterResealRequestedEvent({ organizationId, clusterKey }), delivery);
+    yield* enqueueEvent(createClusterResealRequestedEvent({ organizationId, clusterKey }), delivery);
   }));
   const recorded = yield* readSealingPublicKey(organizationId, clusterKey);
   if (recorded !== undefined && recorded !== publicKey) {
@@ -66,11 +65,16 @@ export const recoveryDigest = (backup: string) => createHash("sha256").update(Bu
 
 const organizationKeyOf = (organizationId: string) => eq(organizationSealingKey.organizationId, organizationId);
 
-/** Whether the Organization already records the key, for a pairing or as its own. */
-const recordsKey = Effect.fn("SealingKey.recordsKey")(function* (organizationId: string, publicKey: SealingPublicKey) {
+/** Whether the Organization already records the key, for a pairing other than `clusterKey` or as its own. */
+const recordsKey = Effect.fn("SealingKey.recordsKey")(function* (
+  organizationId: string, publicKey: SealingPublicKey, clusterKey: string,
+) {
   const { drizzle } = yield* Database;
   const [cluster] = yield* drizzle.select({ organizationId: clusterSealingKey.organizationId }).from(clusterSealingKey)
-    .where(and(eq(clusterSealingKey.organizationId, organizationId), eq(clusterSealingKey.publicKey, publicKey))).limit(1);
+    .where(and(
+      eq(clusterSealingKey.organizationId, organizationId), eq(clusterSealingKey.publicKey, publicKey),
+      ne(clusterSealingKey.clusterKey, clusterKey),
+    )).limit(1);
   if (cluster !== undefined) return true;
   const [kept] = yield* drizzle.select({ organizationId: organizationSealingKey.organizationId }).from(organizationSealingKey)
     .where(and(organizationKeyOf(organizationId), eq(organizationSealingKey.publicKey, publicKey)));
