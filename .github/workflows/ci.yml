@@ -168,13 +168,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Some hosted runners start with too little free disk for the build, kache and the Postgres suites (#3758).
-      # Delete preinstalled toolchains nothing here uses, in the background while the cache restores.
+      # Delete preinstalled toolchains nothing here uses, in the background while the cache restores:
+      # ghcup, dotnet and CodeQL free 11 GB in seconds, then android 11 GB more in one or two minutes.
       - name: Free disk space
         run: |
           df -h / /tmp
           avail() { df --output=avail -B1M / | tail -1; }
           (before=$(avail) start=$SECONDS
-           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+           sudo rm -rf /usr/local/.ghcup /usr/share/dotnet /opt/hostedtoolcache/CodeQL /usr/local/lib/android
            echo "freed $(($(avail) - before)) MiB in $((SECONDS - start))s" > "$RUNNER_TEMP/disk-freed") &
           # Sample free space on / every 2s to report the low point at the end.
           (while sleep 2; do df --output=avail -B1M / | tail -1; done > "$RUNNER_TEMP/disk-avail") &
