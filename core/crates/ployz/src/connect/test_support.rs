@@ -184,8 +184,6 @@ pub(crate) async fn confirming_channel() -> Channel {
     memory_channel(service, false).await.0
 }
 
-/// A channel to Machine `id` that confirms and answers Inspect holding `sealing`, or
-/// never answers Inspect when `answers_inspect` is false.
 /// How a scripted daemon tells a dial its Sealing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Answers {
@@ -193,10 +191,11 @@ pub(crate) enum Answers {
     Inspect,
     /// It confirms but never answers Inspect.
     Nothing,
-    /// In its confirmation; it refuses Inspect.
+    /// In its confirmation; it panics on Inspect.
     Confirmation,
 }
 
+/// A channel to Machine `id` that confirms, holding `sealing`, and tells it as `answers` says.
 pub(crate) async fn sealed_channel(
     id: ployz_core::MachineId,
     sealing: Option<ployz_core::Sealing>,

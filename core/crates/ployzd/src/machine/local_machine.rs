@@ -1331,6 +1331,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_confirmation_tells_only_a_sealing_key_a_member_holds() {
+        use ployz_core::LocalMachinePhase;
+        let (dir, owner) = owner();
+        let machine = super::LocalMachine::new(owner);
+        assert_eq!(machine.held_sealing(LocalMachinePhase::Participating), None);
+
+        let key = crate::sealing_key::SealingKey::generate();
+        crate::sealing_key::SealingKey::set(dir.path(), Some(&key)).unwrap();
+        let held = Some(ployz_core::Sealing::Held {
+            public_key: key.public_key(),
+        });
+        assert_eq!(machine.held_sealing(LocalMachinePhase::Participating), held);
+        assert_eq!(machine.held_sealing(LocalMachinePhase::Joining), held);
+        assert_eq!(machine.held_sealing(LocalMachinePhase::Uninitialized), None);
+    }
+
+    #[tokio::test]
     async fn inspect_answers_when_upgrade_evidence_cannot_be_read() {
         let (dir, owner) = owner();
         std::fs::write(dir.path().join("upgrade-attempt.json"), b"not json").unwrap();
