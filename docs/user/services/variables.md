@@ -104,7 +104,8 @@ service still gets the real value when it deploys.
   variable or adds it again plain. They also show it as **Sealed** when the branch deleted,
   renamed or changed the variable before the seal, including in a service it made separate
   after it was created, and in a branch made from a branch, even one whose parent took the
-  value by a follow or a sync. This holds whether or not the branch deployed the earlier
+  value by a follow or a sync, for a value that branch was created with (see the limit below).
+  This holds whether or not the branch deployed the earlier
   value, and after it takes the seal. Discarding that change brings the variable back **Not set**, never with the
   earlier value. The branch's History shows every version that holds that earlier value as
   **Sealed** too. Undo or Roll back to one never brings that value back: the
@@ -120,6 +121,18 @@ service still gets the real value when it deploys.
   back. If the branch
   adds it again plain after taking the seal, its History keeps no copy of the earlier value
   either.
+- One case isn't covered yet. In a branch made from a branch, a value that branch took by a
+  follow after it was created (its parent deployed a new value, and the branch took it) still
+  shows plain after an environment above seals it. It shows in that branch's History, and in a
+  `ployz diff` hint that its parent deployed it, with a `ployz env sync --take` command. Running
+  that command stages the plain value in the branch, and its next deploy ships it. Values the
+  branch was created with are covered as described above. Until this is fixed:
+  - Don't run that `--take` command for a variable sealed above.
+  - Deploy the branch between, so it no longer runs the earlier value. The hint then names
+    the value that branch deploys instead.
+  - To remove the earlier value from the branch's History, give the variable a sealed value
+    in that branch too, and save. History then shows its earlier versions as **Sealed**, as for
+    any variable you seal.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
   a plain value is refused, so a secret never turns into plain text by mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that
