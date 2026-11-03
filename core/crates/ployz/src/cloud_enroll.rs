@@ -705,7 +705,7 @@ const SENT_MIN: usize = 16;
 /// A piece of a sent string this long in a refusal means the refusal echoes it.
 const ECHO_FRAGMENT: usize = 12;
 
-/// A word this long in only base64 or hex letters is an encoded value, never Cloud's prose.
+/// A run this long of only base64 or hex letters is an encoded value, never Cloud's prose.
 const ENCODED_MIN: usize = 24;
 
 /// The strings a callback sends: its bearer, its Pairing Credential, and every long
@@ -762,15 +762,12 @@ fn invisible(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
 }
 
-/// Whether `said` holds a piece of a sent string, or a long word that could encode one.
+/// Whether `said` holds a piece of a sent string, or a long run of base64 or hex letters
+/// anywhere, after punctuation too, that could encode one.
 fn echoes(said: &str, sent: &[String]) -> bool {
-    let encoded = said.split_whitespace().any(|word| {
-        let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-        word.len() >= ENCODED_MIN
-            && word
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-'))
-    });
+    let encoded = said
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-')))
+        .any(|run| run.len() >= ENCODED_MIN);
     encoded
         || sent.iter().any(|sent| {
             if sent.len() <= ECHO_FRAGMENT {
@@ -2024,6 +2021,11 @@ mod tests {
             token.as_str().to_owned(),
             half(token.as_str()),
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token.as_str()),
+            format!("secret:{}", hex::encode(capability.client_secret())),
+            format!(
+                r#"{{"secret":"{}"}}"#,
+                hex::encode(capability.client_secret())
+            ),
             "\u{202e}".to_owned(),
         ] {
             let (listener, url) = listen().await;
