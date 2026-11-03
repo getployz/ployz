@@ -241,12 +241,19 @@ of a volume.
 ## A server belongs to another Cluster
 
 If add says `Server MY-SERVER belongs to another Cluster`, the server is already in another
-Cluster, so this add stops before changing it. Remove it from that Cluster first, then add it here
-with a new token: signed in, run `ployz server add --command` and run the line it prints on the
-server. The token you used is tied to the server as it was, so rerunning the same line is refused.
+Cluster, so this add stops before changing it. [Remove it](../servers/manage-servers.md#remove-a-server)
+from that Cluster first, then add it here with a new token: signed in, run `ployz server add --command`
+and run the line it prints on the server. The token you used is tied to the server as it was, so
+rerunning the same line is refused.
 
-The server may stay listed as down in the Organization you tried to add it to. Remove it there with
-`ployz server forget MY-SERVER --confirm dead`.
+If you can't manage that Cluster, signed in here run `ployz server add --command --reset` and run
+the line it prints on the server. The reset takes the server out of the other Cluster and removes
+every container Ployz runs on it, and it can delete its mirrors, so don't use it while a mirror
+there may be the last copy of a volume.
+
+The server may stay listed as down in the Organization you tried to add it to. `ployz server ls`
+shows its id; forget it by that id, `ployz server forget <id> --confirm dead`, since a server you
+add again can share its name.
 
 ## A forgotten server is refused when you add it again
 
