@@ -38,6 +38,7 @@ export function ServersUnreachable({ organizationSlug, older = null, awaitingKey
           <EmptyDescription>
             A server answers but doesn’t hold your cluster’s key yet, so Ployz Cloud can’t tell it belongs to your cluster.
             Ployz Cloud uses it once a server that holds the key is back online. Keep it running.
+            If this stays while a server that holds the key is online, check the server’s daemon logs.
           </EmptyDescription>
         </EmptyHeader>
       </Empty>

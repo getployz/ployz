@@ -563,7 +563,8 @@ joins.
    used once a server that holds your cluster's key is back online.
 6. If the page reads **Waiting for a server that holds your cluster's key**, a server answers but
    doesn't hold your cluster's key yet. It's used once a key holder is back online. Keep it running,
-   and don't forget it.
+   and don't forget it. If the page stays this way while a server that holds the key is online,
+   check the daemon logs on the server that answers: `journalctl -u ployz -n 200`.
 
 ## The CLI says a server runs 0.2 or 0.3.0-beta.6 and earlier
 
