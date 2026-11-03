@@ -48,15 +48,33 @@ function withWriteCommitted<T extends object, C extends ApiCollection<T>>(input:
   });
 }
 
-/** A failed first load ends its sync run, and later reads of the same Query never reach it: reload once one succeeds. */
-function reloadAfterFailedFirstLoad<T extends object, C extends Pick<Collection<T>, "status" | "health" | "reload">>(
+/**
+ * A failed first load ends its sync run, and later reads of the same Query never reach it: reload once one succeeds.
+ * The Query cache is watched only while the collection is in `error`.
+ */
+function reloadAfterFailedFirstLoad<T extends object, C extends Pick<Collection<T>, "status" | "health" | "reload" | "on">>(
   input: ApiCollectionInput<T>, collection: C,
 ) {
   const queryHash = hashKey(input.queryKey);
-  input.queryClient.getQueryCache().subscribe((event) => {
+  let watching: (() => void) | undefined;
+  const watch = () => input.queryClient.getQueryCache().subscribe((event) => {
     if (event.type !== "updated" || event.action.type !== "success" || event.query.queryHash !== queryHash) return;
-    if (collection.status === "error" && !collection.health.reloading) void collection.reload().catch(() => {});
+    if (!collection.health.reloading) void collection.reload().catch(() => {});
   });
+  const arm = () => collection.on("status:change", ({ status }) => {
+    if (status === "error") watching ??= watch();
+    else {
+      watching?.();
+      watching = undefined;
+    }
+    // Cleanup drops the collection's listeners right after this event, and a later start may fail again.
+    if (status === "cleaned-up") queueMicrotask(rearm);
+  });
+  let disarm = arm();
+  const rearm = () => {
+    disarm();
+    disarm = arm();
+  };
   return collection;
 }
 

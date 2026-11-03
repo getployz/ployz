@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { focusManager, onlineManager, QueryClient } from "@tanstack/react-query";
 import { createApiCollection, createChangeCollection, preloadCollection, reconcileCollection } from "./query-collection";
 import type { CollectionRead } from "./read.contract";
+import { getDbClient } from "./scope";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -104,6 +105,48 @@ it.each(["api", "change"] as const)("leaves a failed first load when a later rea
   await collection.cleanup();
   client.unmount();
   client.clear();
+});
+
+function countCacheListeners(client: QueryClient) {
+  const cache = client.getQueryCache();
+  const subscribe = cache.subscribe.bind(cache);
+  const live = { count: 0 };
+  vi.spyOn(cache, "subscribe").mockImplementation((listener) => {
+    live.count += 1;
+    const unsubscribe = subscribe(listener);
+    return () => { live.count -= 1; unsubscribe(); };
+  });
+  return live;
+}
+
+it("watches the Query cache only while a first load has failed, and again after a restart", async () => {
+  const client = new QueryClient();
+  const listeners = countCacheListeners(client);
+  const read = vi.fn<() => Promise<{ id: string }[]>>().mockResolvedValue([{ id: "one" }]);
+  const collection = createApiCollection({ queryClient: client, queryKey: ["watch"], queryFn: read, getKey: (row: { id: string }) => row.id });
+  const failThenRecover = async () => {
+    read.mockRejectedValueOnce(new Error("first"));
+    await expect(preloadCollection(collection)).rejects.toThrow("first");
+    expect(listeners.count).toBe(healthy + 1);
+    const active = collection.subscribeChanges(() => {});
+    await client.refetchQueries({ queryKey: ["watch"] });
+    await vi.waitFor(() => expect(collection.status).toBe("ready"));
+    expect(listeners.count).toBe(healthy);
+    active.unsubscribe();
+  };
+  await preloadCollection(collection);
+  const healthy = listeners.count;
+  await collection.cleanup();
+  await failThenRecover();
+  await collection.cleanup();
+  await failThenRecover();
+  await collection.cleanup();
+  read.mockRejectedValueOnce(new Error("again"));
+  await expect(preloadCollection(collection)).rejects.toThrow("again");
+  await getDbClient(client).cleanup();
+  client.clear();
+  expect(listeners.count).toBe(0);
+  vi.restoreAllMocks();
 });
 
 it("releases preload-only and reconciliation observers while keeping mounted consumers active", async () => {
