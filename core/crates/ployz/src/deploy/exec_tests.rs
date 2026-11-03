@@ -1941,6 +1941,10 @@ async fn a_lost_answer_outlasts_a_resend_that_never_reached_the_server() {
     .await
     .unwrap_err();
     assert!(error.reply_lost(), "{error:?}");
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (RpcErrorCode::Unavailable, "connection lost")
+    );
 }
 
 #[test]

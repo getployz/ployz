@@ -688,7 +688,8 @@ where
         };
         // An ended client's refusal of its entry never reached the Machine and says nothing
         // of it: it ends the wait in its own words, still saying what earlier sends may have
-        // done. Other unreached failures, as a refused dial, keep waiting as before.
+        // done. Other unreached failures, as a refused dial, go through the bookkeeping below
+        // as before.
         if error.never_reached() && error.code == RpcErrorCode::Unauthenticated {
             return Err(still_lost(error, lost.as_ref().or(silent.as_ref())));
         }
