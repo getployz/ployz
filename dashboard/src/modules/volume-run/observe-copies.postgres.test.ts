@@ -38,7 +38,9 @@ it.live("the Volume-copy sweep and an agent's copies ask a Server of the pairing
     const servers = [{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }];
     const asked = Effect.gen(function* () {
       expect(yield* observeOrganization(ORGANIZATION)).toStrictEqual({ copies: [], unanswered: [] });
-      expect(yield* callCloud(owner, { ask: { query: "copies", namespace: "shop-prod", volume: null } })).toMatchObject({ ok: true });
+      const answer = yield* callCloud(owner, { ask: { query: "copies", namespace: "shop-prod", volume: null } });
+      expect(answer).toMatchObject({ ok: true });
+      expect(JSON.stringify(answer)).not.toMatch(new RegExp(`foreign|${machineId("9")}`));
     });
 
     // No Sealing Key recorded yet: any of the pairing's Servers, as before.

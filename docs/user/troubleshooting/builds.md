@@ -180,6 +180,14 @@ You'll see `GitHub didn't answer while reading the source. Deploy again.` or
 the Ployz GitHub App can still see the repository: **Create → GitHub repository → Add from
 GitHub**.
 
+## A GitHub build says a server belongs to another cluster
+
+You'll see `Machine … belongs to another Cluster` when a build on GitHub Actions finishes. The server
+that started the build now answers for another cluster, so Ployz Cloud can't confirm the build and
+fails it. Check which cluster that server is in. If it moved, remove it
+there and [add it back](../servers/add-a-server.md), or let another server start GitHub builds. Then
+deploy again.
+
 ## The build queue is full
 
 You'll see `Build queue is full; execution was not attempted`. Deploy again once the server has
