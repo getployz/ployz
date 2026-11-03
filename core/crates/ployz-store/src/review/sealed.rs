@@ -316,41 +316,6 @@ impl AncestorSeals {
         self.0
             .sealed_by_ancestor(tx, branch, lineage, key, fingerprint)
     }
-
-    /// Read at once, for each Environment above `branch`, what it held of each of
-    /// `rows` (lineage, key) it holds sealed now, so [`Self::sealed`] reads no more.
-    pub(crate) fn read(
-        &mut self,
-        tx: &mut dyn Tx,
-        branch: &str,
-        rows: &BTreeSet<(String, String)>,
-    ) -> Result<(), RpcError> {
-        let chain = &mut self.0;
-        let mut at = branch.to_owned();
-        while let Some((parent, _)) = chain.shared_above(tx, &at)? {
-            let parent = parent.clone();
-            let mut sealed = BTreeSet::new();
-            for (lineage, key) in rows {
-                let row = (parent.clone(), lineage.clone(), key.clone());
-                if !chain.held.contains_key(&row) && chain.sealed_now(tx, &parent, lineage, key)? {
-                    sealed.insert((lineage.clone(), key.clone()));
-                }
-            }
-            if !sealed.is_empty() {
-                let mut held = crate::branch::held_by_ancestor(tx, &parent, &sealed)?;
-                for (lineage, key) in sealed {
-                    let fingerprints = held
-                        .remove(&(lineage.clone(), key.clone()))
-                        .unwrap_or_default();
-                    chain
-                        .held
-                        .insert((parent.clone(), lineage, key), fingerprints);
-                }
-            }
-            at = parent;
-        }
-        Ok(())
-    }
 }
 
 /// Each variable a Branch was made with, or copied from a node's owner since, that
@@ -396,7 +361,7 @@ struct Chain {
     /// By Environment, its Node Introductions' Service nodes, with each lineage.
     nodes: BTreeMap<String, Vec<(String, String)>>,
     /// By Environment, lineage and key, the fingerprints it held plain before it
-    /// sealed that row, or still runs.
+    /// sealed that row.
     held: BTreeMap<(String, String, String), BTreeSet<String>>,
 }
 
@@ -543,9 +508,8 @@ impl Chain {
     }
 
     /// Whether an Environment above `environment`, by its Parents, holds the row
-    /// `lineage`, `key` sealed now, and held it plain at `fingerprint` before or still
-    /// runs that: the value is that secret's text, however it reached `environment`
-    /// (#3794). Unlike [`Self::shared_sealed`], it needs no Sync base to still hold
+    /// `lineage`, `key` sealed now, and held it plain at `fingerprint` before: the
+    /// value is that secret's text, however it reached `environment` (#3794). Unlike [`Self::shared_sealed`], it needs no Sync base to still hold
     /// the fingerprint, which a seal reaching a Branch below empties. It matches by
     /// that lineage and key alone: a value the row held under another key, or plain
     /// again after a delete, is not matched, and text one above shares with another
@@ -567,12 +531,7 @@ impl Chain {
             if self.sealed_now(tx, &parent, lineage, key)? {
                 let row = (parent.clone(), lineage.to_owned(), key.to_owned());
                 if !self.held.contains_key(&row) {
-                    let rows = BTreeSet::from([(lineage.to_owned(), key.to_owned())]);
-                    let held = crate::branch::held_by_ancestor(tx, &parent, &rows)?
-                        .into_values()
-                        .next()
-                        .unwrap_or_default();
-                    self.held.insert(row.clone(), held);
+                    self.read_held(tx, &parent, lineage, key)?;
                 }
                 if self
                     .held
@@ -585,6 +544,46 @@ impl Chain {
             at = parent;
         }
         Ok(false)
+    }
+
+    /// Read what `environment` held of the row `lineage`, `key` before sealing it,
+    /// with every other row its Working State holds sealed, in one read: a review
+    /// asks about each in turn. `environment`'s Working State is loaded.
+    fn read_held(
+        &mut self,
+        tx: &mut dyn Tx,
+        environment: &str,
+        lineage: &str,
+        key: &str,
+    ) -> Result<(), RpcError> {
+        let mut rows: BTreeSet<(String, String)> = self
+            .working
+            .get(environment)
+            .into_iter()
+            .flat_map(|working| &working.services)
+            .flat_map(|service| {
+                service
+                    .variables
+                    .iter()
+                    .filter(|variable| sealed(&variable.value))
+                    .map(|variable| (service.lineage_id.clone(), variable.key.clone()))
+            })
+            .filter(|(lineage, key)| {
+                !self
+                    .held
+                    .contains_key(&(environment.to_owned(), lineage.clone(), key.clone()))
+            })
+            .collect();
+        rows.insert((lineage.to_owned(), key.to_owned()));
+        let mut held = crate::branch::held_by_sealer(tx, environment, &rows)?;
+        for (lineage, key) in rows {
+            let fingerprints = held
+                .remove(&(lineage.clone(), key.clone()))
+                .unwrap_or_default();
+            self.held
+                .insert((environment.to_owned(), lineage, key), fingerprints);
+        }
+        Ok(())
     }
 
     /// Whether `environment` holds the row `lineage`, `key` sealed now: sealed in

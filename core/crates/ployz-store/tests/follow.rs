@@ -4465,8 +4465,8 @@ fn a_value_the_branch_between_deploys_itself_is_still_hinted_below() {
 }
 
 /// An older value the Branch between still runs, once its base moved on staged, is
-/// read as Sealed below once an Environment above seals the row: the one between
-/// held it, by its Applied State (#3794).
+/// read as Sealed below once an Environment above seals the row and the Branch below
+/// moves off it: what the two share still holds it (#3794).
 #[test]
 fn an_older_value_the_branch_between_still_runs_reads_sealed_below() {
     let (store, who) = shop();
@@ -4499,9 +4499,10 @@ fn an_older_value_the_branch_between_still_runs_reads_sealed_below() {
     assert!(!shown.contains("plain-older-0317"), "{shown}");
 }
 
-/// A value a Branch of a Branch sets itself reads as Sealed in its History when it
-/// is text an Environment above held before sealing that row, even by another
-/// Branch of its own: the mask matches the text, not where it came from (#3794).
+/// A value a Branch of a Branch sets itself reads as Sealed in its History, and a
+/// discard brings it back Not set, when it is text an Environment above held before
+/// sealing that row, even by another Branch of its own: the mask matches the text,
+/// not where it came from (#3800).
 #[test]
 fn a_value_an_environment_above_held_reads_sealed_even_set_below_by_hand() {
     let (store, who) = shop();
@@ -4520,7 +4521,15 @@ fn a_value_an_environment_above_held_reads_sealed_even_set_below_by_hand() {
     set(&store, &who, "qa-two", &token("plain-sibling-0317"));
     deploy(&store, &who, "qa-two", 7);
     assert!(history_of(&store, &who, "qa-two").contains("plain-sibling-0317"));
+    // Discarding a change from it brings the variable back Not set, not as it was.
+    set(&store, &who, "qa-two", &token("plain-later-0317"));
+    discard(&store, &who, "qa-two", "web.env.TOKEN");
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
     // Once it moves off it, History reads the value it held as Sealed.
+    unset(&store, &who, "qa-two", "web.env.TOKEN");
     set(&store, &who, "qa-two", &token("plain-later-0317"));
     deploy(&store, &who, "qa-two", 8);
     let history = history_of(&store, &who, "qa-two");

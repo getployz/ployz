@@ -1018,19 +1018,16 @@ enum Took {
     Sealer,
     /// A Branch below it: each row it holds sealed now.
     Seal,
-    /// An Environment above a Branch, as the sealer, and what it runs too: a value
-    /// it still ran plain before sealing it (#3794).
-    Ancestor,
 }
 
 /// Each fingerprint `environment` held plain for each of `rows` before it sealed
-/// it, as [`Took::Ancestor`] reads them: none for a row it holds plain now.
-pub(crate) fn held_by_ancestor(
+/// it, as the seal's walk reads them: none for a row it holds plain now.
+pub(crate) fn held_by_sealer(
     tx: &mut dyn Tx,
     environment: &str,
     rows: &BTreeSet<(String, String)>,
 ) -> Result<review::sealed::Held, RpcError> {
-    held(tx, environment, rows, None, Took::Ancestor)
+    held(tx, environment, rows, None, Took::Sealer)
 }
 
 /// Each fingerprint `environment` held for `rows`: in what its Working State held
@@ -1064,9 +1061,7 @@ fn held(
                 .flat_map(|service| &service.variables)
                 .filter(|variable| variable.key == *key);
             match took {
-                Took::Sealer | Took::Ancestor => {
-                    !now.any(|variable| !review::sealed::sealed(&variable.value))
-                }
+                Took::Sealer => !now.any(|variable| !review::sealed::sealed(&variable.value)),
                 Took::Seal => now.any(|variable| review::sealed::sealed(&variable.value)),
             }
         })
@@ -1098,12 +1093,6 @@ fn held(
         for row in tx.query(sql, &[environment.into()])? {
             review::sealed::hold(&mut held, &row.intent(0, what)?, rows);
         }
-    }
-    if matches!(took, Took::Ancestor) {
-        let id = EnvironmentId::try_from(environment.to_owned())
-            .map_err(|_| error::corrupt("Environment"))?;
-        let applied = crate::deployment::applied_state(tx, &id, &working)?;
-        review::sealed::hold(&mut held, &applied, rows);
     }
     Ok(held)
 }
