@@ -2,6 +2,7 @@ import { Effect, Option, Result, Schema } from "effect";
 import { asRecord } from "#/lib/json";
 import {
   encodePublicBoundaryError,
+  encodePublicError,
   statusForPublicError,
   Unauthorized,
   Validation,
@@ -31,9 +32,22 @@ function response(body: EnrollmentResponseBody, status: number) {
   });
 }
 
-// The answer names no internal failure, so the log has to.
 function errorResponse(cause: unknown) {
-  const publicError = encodePublicBoundaryError(cause);
+  const publicError = encodePublicError(cause);
+  return response(
+    { error: publicError.message },
+    statusForPublicError(publicError),
+  );
+}
+
+/** A failure of the enrollment step itself. The answer names no internal failure, so the log does, with its route. */
+function failureResponse(cause: unknown, route: "join" | "completion" | "setup report") {
+  const publicError = encodePublicBoundaryError(cause, {
+    report: (kind, logged) => {
+      const log = kind === "interruption" ? Effect.logDebug : Effect.logError;
+      Effect.runFork(log(`Enrollment ${route} ${kind}.`, logged));
+    },
+  });
   return response(
     { error: publicError.message },
     statusForPublicError(publicError),
@@ -107,7 +121,7 @@ export function handleMachineEnrollmentJoin<R>(
     const enrolled = enrollOperation
       ? yield* Effect.result(enrollOperation(input))
       : yield* Effect.result(enrollMachine(input));
-    if (Result.isFailure(enrolled)) return errorResponse(enrolled.failure);
+    if (Result.isFailure(enrolled)) return failureResponse(enrolled.failure, "join");
     return response(enrolled.success, 200);
   });
 }
@@ -169,7 +183,7 @@ export function handleMachineEnrollmentCallback<R>(
     const stored = completeOperation
       ? yield* Effect.result(completeOperation(input))
       : yield* Effect.result(completeMachineEnrollment(input));
-    if (Result.isFailure(stored)) return errorResponse(stored.failure);
+    if (Result.isFailure(stored)) return failureResponse(stored.failure, "completion");
     return response(stored.success, 200);
   });
 }
@@ -211,7 +225,7 @@ export function handleMachineSetupReport<R>(
     const recorded = recordOperation
       ? yield* Effect.result(recordOperation(input))
       : yield* Effect.result(recordMachineSetupReport(input));
-    if (Result.isFailure(recorded)) return errorResponse(recorded.failure);
+    if (Result.isFailure(recorded)) return failureResponse(recorded.failure, "setup report");
     return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
   });
 }

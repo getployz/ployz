@@ -447,14 +447,16 @@ describe("machine enrollment routes", () => {
     class ProviderFailure extends Data.TaggedError("ProviderFailure")<{ readonly operation: string }> {}
     // Effect's default logger writes every level through `console.log`.
     const logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    mocks.enroll.mockReturnValue(Effect.fail(new ProviderFailure({ operation: "register" })));
+    mocks.enroll.mockReturnValue(Effect.fail(new ProviderFailure({ operation: `register ${token}` })));
 
     try {
       const response = await join(identity);
 
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ error: "The request could not be completed." });
-      await vi.waitFor(() => expect(inspect(logged.mock.calls, { depth: null })).toMatch(/ERROR[\s\S]*ProviderFailure/u));
+      await vi.waitFor(() => expect(inspect(logged.mock.calls, { depth: null }))
+        .toMatch(/ERROR[\s\S]*Enrollment join defect\.[\s\S]*ProviderFailure/u));
+      expect(inspect(logged.mock.calls, { depth: null })).not.toContain(token);
     } finally {
       logged.mockRestore();
     }
