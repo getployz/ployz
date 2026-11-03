@@ -1,7 +1,8 @@
+import { inspect } from "node:util";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { JsonValue } from "#/db/schema";
 import { NotFound, Validation, Unauthorized } from "#/server/public-error";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import {
   handleMachineEnrollmentCallback,
   handleMachineEnrollmentJoin,
@@ -440,6 +441,20 @@ describe("machine enrollment routes", () => {
     expect(callbackResponse.status).toBe(422);
     expect(joinBody).not.toContain(token);
     expect(callbackBody).not.toContain(token);
+  });
+
+  it("logs a failure it answers only as internal", async () => {
+    class ProviderFailure extends Data.TaggedError("ProviderFailure")<{ readonly operation: string }> {}
+    // Effect's default logger writes every level through `console.log`.
+    const logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    mocks.enroll.mockReturnValue(Effect.fail(new ProviderFailure({ operation: "register" })));
+
+    const response = await join(identity);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "The request could not be completed." });
+    await vi.waitFor(() => expect(inspect(logged.mock.calls, { depth: null })).toMatch(/ERROR[\s\S]*ProviderFailure/u));
+    logged.mockRestore();
   });
 });
 

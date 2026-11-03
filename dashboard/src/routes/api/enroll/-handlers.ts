@@ -1,7 +1,7 @@
 import { Effect, Option, Result, Schema } from "effect";
 import { asRecord } from "#/lib/json";
 import {
-  encodePublicError,
+  encodePublicBoundaryError,
   statusForPublicError,
   Unauthorized,
   Validation,
@@ -31,8 +31,9 @@ function response(body: EnrollmentResponseBody, status: number) {
   });
 }
 
+// The answer names no internal failure, so the log has to.
 function errorResponse(cause: unknown) {
-  const publicError = encodePublicError(cause);
+  const publicError = encodePublicBoundaryError(cause);
   return response(
     { error: publicError.message },
     statusForPublicError(publicError),
