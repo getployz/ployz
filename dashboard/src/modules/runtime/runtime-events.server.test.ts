@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
-import { CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR, PREDATES_SEALING_ERROR } from "#/modules/runtime/runtime.collection";
+import { AWAITS_KEY_ERROR, CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR, PREDATES_SEALING_ERROR } from "#/modules/runtime/runtime.collection";
 import { createRuntimeEventsResponse } from "#/modules/runtime/runtime-events.server";
 import {
   runtimeWatchCertificateFixture,
@@ -277,6 +277,23 @@ describe("createRuntimeEventsResponse", () => {
     const statusText = new TextDecoder().decode((await reader?.read())?.value);
 
     expect(statusText).toContain(`"error":${JSON.stringify(PREDATES_SEALING_ERROR)}`);
+  });
+
+  it("says a Server that answers without the cluster's key waits for a key holder", async () => {
+    const response = createRuntimeEventsResponse({
+      request: new Request("http://localhost/api/runtime/events"),
+      status: "unreachable",
+      error: new PloyzProviderError({
+        operation: "connect",
+        cause: { code: "internal", message: "Server machine-3's daemon answered, but the connection was refused: Machine 0123 can't show which Cluster it belongs to", details: null },
+      }),
+    });
+    const reader = response.body?.getReader();
+
+    await reader?.read();
+    const statusText = new TextDecoder().decode((await reader?.read())?.value);
+
+    expect(statusText).toContain(`"error":${JSON.stringify(AWAITS_KEY_ERROR)}`);
   });
 
   it("falls back to the cluster unreachable copy when the provider error has no message", async () => {

@@ -606,16 +606,51 @@ on a later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh
 
 ### Servers on 0.3.2 and earlier
 
-Cloud and the CLI use a server only once it shows it belongs to your Organization's cluster, which
-servers before 0.3.3 can't. They're reached through a server on a newer release instead, so while
-that one is down, the **Servers** page reads **Upgrade your server over SSH**, and the CLI says:
+Servers before 0.3.3 can't show that they belong to your Organization's cluster, so Cloud and the
+CLI use them only through a server on a newer release. While every newer server is down, the
+**Servers** page reads **Upgrade your server over SSH**, and the CLI says:
 
 ```text
 Machine 0123… runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST
 ```
 
-The server keeps running your apps, so don't forget it. Upgrade it over SSH, as for a server on 0.2 above, or wait for
-the newer server to come back and upgrade it from the **Servers** page.
+The server keeps running your apps, so don't forget it. Upgrade it over SSH, as for a server on 0.2
+above, or wait for a newer server to come back and upgrade it from the **Servers** page.
+
+After the upgrade, the server still needs your cluster's key, which only a server that holds it can
+share. A server without your cluster's key is used once a key holder is back online. Until then the
+**Servers** page reads **Waiting for a server that holds your cluster's key** or **Can't reach your
+servers right now**. Either way, keep the server running and don't forget it.
+
+A server on 0.3.2 or earlier can't finish joining a cluster that already has a key. It joins the
+mesh, then `ployz server add` stops with:
+
+```text
+error: Cloud enrollment completion failed; rerun the same ployz server add command without --reset (keep all other options).
+  cause: enroll HTTP 503: enrollment completion rejected
+```
+
+Rerunning alone fails the same way. Ployz Cloud's own answer says
+`This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key.`, with
+the steps below. The CLI doesn't show that sentence yet.
+
+`ployz server add` puts the server's daemon on the release of the `ployz` that runs it, so update
+`ployz` wherever this add runs:
+
+- On the server: `curl -fsSL https://ployz.sh | sudo sh`.
+- On your computer too, if you ran `ployz server add` there, over SSH:
+  `curl -fsSL https://ployz.sh | sh`.
+
+Then rerun `ployz server add`:
+
+- From the line `ployz server add --command` printed, rerun only its part after `&&`, in a shell
+  where `PLOYZ_ENROLL_TOKEN` is still set. The part before it pins the old release
+  (`sh -s -- 0.3.2`).
+- Over SSH, rerun without `--no-install`, and without any `--version` or `PLOYZ_DAEMON_VERSION`
+  that names 0.3.2 or earlier. Only the install puts the new daemon on the server.
+
+A server that holds your cluster's key must be online for that join. Upgrading the server over SSH
+alone isn't enough here: the rerun with the old `ployz` puts the old daemon back.
 
 ## Remove a server
 

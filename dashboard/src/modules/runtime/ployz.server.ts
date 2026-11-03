@@ -280,6 +280,13 @@ export function predatesSealing(error: PloyzSdkError) {
   return Schema.is(PredatesSealing)("cause" in error ? error.cause : undefined);
 }
 
+const LacksClusterKey = Schema.Struct({ message: Schema.String.check(Schema.isIncludes("can't show which Cluster it belongs to")) });
+
+/** Whether a connect failed on a Server that answers but holds no Sealing Key yet, so can't show which Cluster it is in. */
+export function lacksClusterKey(error: PloyzSdkError) {
+  return Schema.is(LacksClusterKey)("cause" in error ? error.cause : undefined);
+}
+
 /** The message of the runtime's RPC error a failure carries; undefined for any other failure. */
 export function rpcErrorMessage(error: PloyzSdkError) {
   const rpc = Schema.decodeUnknownOption(Schema.Struct({ message: Schema.String }))("cause" in error ? error.cause : undefined);
