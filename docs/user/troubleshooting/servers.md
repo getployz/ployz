@@ -257,9 +257,9 @@ You'll see `This Server's Cluster is already connected to another Organization i
 
 Ployz Cloud connects a Cluster to one Organization: the first one that added it. The server you're
 adding belongs to a Cluster another Organization already added, so this Organization can't manage
-it. Add a server that isn't in that Cluster, or manage it from the Organization that added it. To
-move the Cluster to this Organization, or if you don't recognize the other one, contact Ployz
-support.
+it. On your first server, add one that isn't in that Cluster instead, or manage it from the
+Organization that added it. On ployz.dev, to move the Cluster to this Organization, or if you don't
+recognize the other one, contact Ployz support. On a self-hosted Ployz Cloud, ask whoever runs it.
 
 ## The server doesn't finish joining
 

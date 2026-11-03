@@ -1557,7 +1557,11 @@ describe("organization enrollment coordinator", () => {
     await fake.coordinator.publish({ ...founder, capability });
     using errors = logged("ERROR", "another Organization's Cluster recorded");
     expect(await fake.coordinator.completeFounding({ ...founder, sealing: held("A") })).toMatchObject({
-      failure: { _tag: "Conflict", message: "This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it." },
+      failure: {
+        _tag: "Conflict",
+        userFacing: true,
+        message: "This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.",
+      },
     });
     expect(await sealingKeys()).toEqual([]);
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
