@@ -50,10 +50,10 @@ const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Chec
 const FAILED = "Ployz Cloud couldn't save this change, so it was undone. Try again.";
 const RENAMING = "A rename is still saving, so this change wasn't made. Try again once it lands.";
 
-/** Writes whose control shows a refusal itself, beside the field, so a toast would only say it twice. */
-/** A write to the Config Store: a Promise of what it wrote, by a name the data-boundaries guard can find where UI waits on one. */
+/** A write to the Config Store: a Promise of what it wrote. */
 export interface Write<T = unknown> extends Promise<T> {}
 
+/** Writes whose control shows a refusal itself, beside the field, so a toast would only say it twice. */
 const shownInline = new WeakSet<Promise<unknown>>();
 
 /** Leaves `write`'s refusal to the control that made it; being signed out still toasts, with its Sign in. */

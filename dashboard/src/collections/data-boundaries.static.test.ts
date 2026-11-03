@@ -8,6 +8,7 @@ import {
   isCallExpression,
   isIdentifier,
   isImportDeclaration,
+  isInterfaceDeclaration,
   isMethodDeclaration,
   isNamedImports,
   isObjectLiteralExpression,
@@ -216,10 +217,12 @@ describe("data boundaries", () => {
           violations.push(`${relative(SRC, source.fileName)}:${line} ${message}`);
         };
         const { checker } = project;
-        /** A Config Store write: a `Write`, which the checker names where a bare Promise would not. */
-        const named = (type: Type | undefined) => type !== undefined && /^Write\b/.test(checker.typeToString(type));
+        const writeSource = project.program.getSourceFile(join(SRC, "modules/config-store/store-write.ts"));
+        const writeDeclaration = writeSource?.statements.find((statement) => isInterfaceDeclaration(statement) && statement.name.text === "Write");
+        const writeSymbol = writeDeclaration && isInterfaceDeclaration(writeDeclaration) ? checker.getSymbolAtLocation(writeDeclaration.name) : undefined;
+        if (!writeSymbol) throw new Error("store-write.ts declares no Write");
+        const named = (type: Type | undefined) => type?.getSymbol()?.id === writeSymbol.id;
         const isWrite = (node: Node) => named(checker.getTypeAtLocation(node));
-        /** A function that makes a Config Store write, such as the writer's `commit` handed to a helper. */
         const makesWrite = (node: Node) => {
           const type = checker.getTypeAtLocation(node);
           return type !== undefined && checker.getSignaturesOfType(type, SignatureKind.Call).some((signature) => named(checker.getReturnTypeOfSignature(signature)));
@@ -287,7 +290,6 @@ describe("data boundaries", () => {
             if (isUi && isAwaitExpression(node)) {
               const awaited = node.expression;
               const awaitedName = calleeName(awaited);
-              // Awaiting a helper handed a writer function waits on its writes too.
               const handsOnWrites = isCallExpression(awaited) && awaited.arguments.some(makesWrite);
               if (isWrite(awaited) || handsOnWrites || (awaitedName && (/ServerFn$/.test(awaitedName) || serverCalls.has(awaitedName)))) {
                 awaitingUi.add(relative(SRC, source.fileName));
