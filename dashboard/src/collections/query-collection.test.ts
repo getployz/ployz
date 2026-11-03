@@ -127,6 +127,82 @@ it.each(["api", "change"] as const)("recovers through another caller's refetch w
   client.clear();
 });
 
+function failingFirstLoad(kind: "api" | "change", name: string) {
+  const client = new QueryClient();
+  client.mount();
+  const read = vi.fn<() => Promise<{ id: string }[]>>().mockRejectedValueOnce(new Error("first")).mockResolvedValue([{ id: "one" }]);
+  const input = { queryClient: client, queryKey: [name, kind], getKey: (row: { id: string }) => row.id };
+  const collection = kind === "api"
+    ? createApiCollection({ ...input, queryFn: read, refetchInterval: 15_000 })
+    : createChangeCollection({ ...input, read: async () => ({ full: true as const, rows: await read(), cursor: "1" }) });
+  const end = async () => {
+    await getDbClient(client).cleanup();
+    client.unmount();
+    client.clear();
+  };
+  return { client, collection, read, queryKey: input.queryKey, end };
+}
+
+it.each(["api", "change"] as const)("recovery waits for a read started right after the one it saw succeed (%s)", async (kind) => {
+  vi.useFakeTimers();
+  const { client, collection, read, end } = failingFirstLoad(kind, "later-read");
+  const active = collection.subscribeChanges(() => {});
+  await vi.advanceTimersByTimeAsync(10);
+  expect(collection.status).toBe("error");
+  let resolve!: (rows: { id: string }[]) => void;
+  read.mockResolvedValueOnce([{ id: "one" }]).mockImplementationOnce(() => new Promise((settle) => { resolve = settle; }));
+  let slow: Promise<unknown> | undefined;
+  const stop = client.getQueryCache().subscribe((event) => {
+    if (event.type !== "updated" || event.action.type !== "success") return;
+    stop();
+    queueMicrotask(() => { slow = collection.utils.refetch(); });
+  });
+  await collection.utils.refetch();
+  // Past recovery's first wait, so it sees the slow read still running.
+  await vi.advanceTimersByTimeAsync(20);
+  resolve([{ id: "one" }]);
+  await expect(slow).resolves.toBeDefined();
+  await vi.advanceTimersByTimeAsync(10);
+  expect(collection.status).toBe("ready");
+  active.unsubscribe();
+  await end();
+});
+
+it.each(["api", "change"] as const)("a cleanup while recovery waits ends it without a read (%s)", async (kind) => {
+  vi.useFakeTimers();
+  const { client, collection, read, queryKey, end } = failingFirstLoad(kind, "cleanup-recovery");
+  await expect(preloadCollection(collection)).rejects.toThrow("first");
+  await client.refetchQueries({ queryKey });
+  await collection.cleanup();
+  const reads = read.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(10);
+  expect(collection.status).toBe("cleaned-up");
+  expect(read).toHaveBeenCalledTimes(reads);
+  await end();
+});
+
+it.each(["api", "change"] as const)("a retry holds its Collection while another read settles (%s)", async (kind) => {
+  vi.useFakeTimers();
+  const { collection, read, end } = failingFirstLoad(kind, "held-recovery");
+  await expect(preloadCollection(collection)).rejects.toThrow("first");
+  const statuses: string[] = [];
+  collection.on("status:change", ({ status }) => { statuses.push(status); });
+  let resolve!: (rows: { id: string }[]) => void;
+  read.mockImplementationOnce(() => new Promise((settle) => { resolve = settle; }));
+  const refetch = collection.utils.refetch();
+  const retry = preloadCollection(collection);
+  // Past the Collection's 5 minute GC time.
+  await vi.advanceTimersByTimeAsync(300_100);
+  resolve([{ id: "one" }]);
+  await refetch;
+  await vi.advanceTimersByTimeAsync(10);
+  await expect(retry).resolves.toBeUndefined();
+  expect(statuses).not.toContain("cleaned-up");
+  expect(collection.status).toBe("ready");
+  expect(read).toHaveBeenCalledTimes(3);
+  await end();
+});
+
 function countCacheListeners(client: QueryClient) {
   const cache = client.getQueryCache();
   const subscribe = cache.subscribe.bind(cache);

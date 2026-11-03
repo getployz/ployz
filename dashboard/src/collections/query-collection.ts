@@ -1,5 +1,5 @@
 import { queryCollectionOptions, type QueryCollectionConfig, type QueryCollectionUtils } from "@tanstack/query-db-collection";
-import { BasicIndex, collectionOptions, type Collection } from "@tanstack/react-db";
+import { BasicIndex, collectionOptions, type Collection, type CollectionStatus } from "@tanstack/react-db";
 import { hashKey, type QueryClient } from "@tanstack/react-query";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
@@ -51,24 +51,34 @@ function withWriteCommitted<T extends object, C extends ApiCollection<T>>(input:
 /**
  * A failed first load ends its sync run, and later reads of the same Query never reach it. The Collection reloads
  * after its Query next succeeds, or when `recover()` is called. A reload starts a new run, which cancels every read of
- * the old run still settling, so it waits until none is. The Query cache is watched only while the Collection is in
- * `error`.
+ * the old run still settling, so it waits until none is, holding the Collection meanwhile. A cleanup or another run
+ * during the wait ends the recovery. The Query cache is watched only while the Collection is in `error`.
  */
-function withRecovery<T extends object, C extends Pick<Collection<T>, "status" | "preload" | "reload" | "on">>(
+function withRecovery<T extends object, C extends Pick<Collection<T>, "status" | "reload" | "on" | "subscribeChanges">>(
   input: ApiCollectionInput<T>, collection: C,
 ) {
   const queryHash = hashKey(input.queryKey);
   const fetching = () => input.queryClient.getQueryCache().get(queryHash)?.state.fetchStatus === "fetching";
-  const settled = async () => {
-    do {
-      await input.queryClient.getQueryCache().get(queryHash)?.promise?.catch(() => {});
-      // A read's callers settle in the microtasks after it.
-      await new Promise((resolve) => setTimeout(resolve));
-    } while (fetching());
-  };
   const recover = async () => {
-    await settled();
-    await (collection.status === "error" ? collection.reload() : collection.preload());
+    let ended = false;
+    const stop = collection.on("status:change", () => {
+      ended = true;
+    });
+    let hold: { unsubscribe: () => void } | undefined;
+    try {
+      do {
+        // Subscribing to a failed Collection reads its ended run, so it holds only onto a read already running.
+        if (!hold && fetching()) hold = collection.subscribeChanges(() => {});
+        await input.queryClient.getQueryCache().get(queryHash)?.promise?.catch(() => {});
+        // A refetch's caller settles in the microtasks after its read, and a reload before then cancels it.
+        await new Promise((resolve) => setTimeout(resolve));
+      } while (fetching());
+    } finally {
+      stop();
+      // Released before the reload: its run would stop watching its own read when the last subscriber leaves.
+      hold?.unsubscribe();
+    }
+    if (!ended && collection.status === "error") await collection.reload();
   };
   let watching: (() => void) | undefined;
   const watch = () => input.queryClient.getQueryCache().subscribe((event) => {
@@ -136,10 +146,16 @@ type ApiCollectionReadiness = Pick<Collection<object>, "status" | "preload"> & {
   utils: Pick<QueryCollectionUtils, "refetch">;
 };
 
+const runningStatuses: readonly CollectionStatus[] = ["loading", "error"];
+
 /** Hold an observer only until readiness; a failed first read rejects and recovers on the next call. */
 export async function preloadCollection(collection: ApiCollectionReadiness) {
-  // Subscribing to a failed Collection starts a read of its ended run, so recovery runs without one.
-  if (collection.status === "error") return collection.recover();
+  if (collection.status === "error") {
+    await collection.recover();
+    // A run another caller started during recovery owns readiness, and a cleaned-up Collection stays cleaned up.
+    if (runningStatuses.includes(collection.status)) await collection.preload();
+    return;
+  }
   const subscription = collection.subscribeChanges(() => {});
   try {
     await collection.preload();
