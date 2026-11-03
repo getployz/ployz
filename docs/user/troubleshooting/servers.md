@@ -253,7 +253,7 @@ there may be the last copy of a volume.
 
 ## The server's Cluster is connected to another Organization
 
-You'll see `This Server's Cluster is already connected to another Organization in Ployz Cloud.`
+You'll see `This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.`
 
 Ployz Cloud connects a Cluster to one Organization: the first one that added it. The server you're
 adding belongs to a Cluster another Organization already added, so this Organization can't manage
