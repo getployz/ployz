@@ -942,7 +942,7 @@ pub struct ClusterCheck {
 }
 
 /// The Cluster a client's dial expected, kept so every redial checks it again, with what
-/// the dial confirmed.
+/// the first dial confirmed.
 #[derive(Clone, Debug)]
 pub(crate) struct ExpectedCluster {
     pub(crate) expect: ClusterExpectation,

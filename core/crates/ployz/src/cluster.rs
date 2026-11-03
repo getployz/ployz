@@ -71,9 +71,12 @@ pub struct Client {
     /// The Machine `channel` was last confirmed to reach. Unlike `entry`, a failed redial
     /// keeps it, so a later one can tell the endpoint now reaches another Machine.
     confirmed: Option<MachineId>,
-    /// The Cluster the dial expected and what it confirmed about it; None when it expected
-    /// none. Boxed so a client stays small beside the enums that carry it.
+    /// The Cluster the dial expected and what the first dial confirmed about it; None when
+    /// it expected none. Boxed so a client stays small beside the enums that carry it.
     pub(crate) cluster: Option<Box<crate::connect::ExpectedCluster>>,
+    /// The entry a redial found in another Cluster, shared by every clone: the client ends
+    /// then, so none of them sends or dials again.
+    refused: Arc<std::sync::OnceLock<MachineId>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -99,10 +102,12 @@ impl Client {
             entry: None,
             confirmed: None,
             cluster: None,
+            refused: Arc::default(),
         }
     }
 
-    /// What the dial confirmed about the entry's Cluster; None when it expected none.
+    /// What the first dial confirmed about the entry's Cluster; None when it expected none.
+    /// A redial checks the Cluster again but leaves this as the first dial found it.
     #[must_use]
     pub fn cluster(&self) -> Option<&crate::connect::ClusterCheck> {
         self.cluster.as_ref().map(|cluster| &cluster.check)
@@ -201,6 +206,7 @@ impl Client {
     /// Dial the connection again and confirm its entry on the new channel. Returns the
     /// channel unshared, with the entry it confirmed.
     async fn dial_confirmed(&self) -> Result<(Channel, Option<MachineId>), ConnectError> {
+        self.ended()?;
         let candidate = Self {
             channel: Arc::new(std::sync::RwLock::new(
                 self.connector.connect(&self.connection).await?,
@@ -209,6 +215,14 @@ impl Client {
         };
         let entry = candidate.confirmed_entry().await?;
         Ok((candidate.channel(), entry))
+    }
+
+    /// Fails once a redial found the entry in another Cluster.
+    fn ended(&self) -> Result<(), ConnectError> {
+        match self.refused.get() {
+            Some(&machine_id) => Err(ConnectError::ClusterMismatch { machine_id }),
+            None => Ok(()),
+        }
     }
 
     /// Replace the channel every clone shares.
@@ -252,8 +266,15 @@ impl Client {
                 | ployz_core::Sealing::AwaitsRecovery { .. }),
             ),
         ) = (&self.cluster, entry, sealing)
+            && let Err(error) = cluster.expect.check(machine_id, Some(key), None)
         {
-            cluster.expect.check(machine_id, Some(key), None)?;
+            if self.refused.set(machine_id).is_ok() {
+                tracing::warn!(
+                    %machine_id,
+                    "the entry now belongs to another Cluster; the session ends"
+                );
+            }
+            return Err(error);
         }
         Ok(entry)
     }
@@ -606,7 +627,7 @@ impl Client {
     ) -> Result<ployz_core::RpcResponse, ConnectError> {
         let payload = request.encode().map_err(ConnectError::Codec)?;
         apply_timeout(timeout, async {
-            let mut grpc = self.grpc();
+            let mut grpc = self.grpc()?;
             grpc.ready().await?;
             Ok(grpc
                 .unary(
@@ -632,14 +653,20 @@ impl Client {
 
     /// Specs carry Config bytes as JSON number arrays, so a 1 MB Config alone nears
     /// tonic's 4 MiB default, and stored log lines reach 8 MiB.
-    fn grpc(&self) -> tonic::client::Grpc<Channel> {
-        tonic::client::Grpc::new(self.channel())
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
+    /// Fails once the client has ended, as [`Self::machine_rpc`] does.
+    fn grpc(&self) -> Result<tonic::client::Grpc<Channel>, ConnectError> {
+        self.ended()?;
+        Ok(tonic::client::Grpc::new(self.channel())
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
     }
 
-    fn machine_rpc(&self) -> MachineRpcClient<Channel> {
-        MachineRpcClient::new(self.channel())
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
+    /// Fails once the client has ended, with the status [`rpc_error`] gives its refusal.
+    fn machine_rpc(&self) -> Result<MachineRpcClient<Channel>, TransportError> {
+        self.ended().map_err(|error| {
+            TransportError::from(tonic::Status::unauthenticated(error.to_string()))
+        })?;
+        Ok(MachineRpcClient::new(self.channel())
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
     }
 
     pub(crate) async fn build_stream(
@@ -649,7 +676,7 @@ impl Client {
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
         // Submission is one-shot. A lost response must never replay a Build.
         Ok(self
-            .machine_rpc()
+            .machine_rpc()?
             .build(target_request(input, Some(target)))
             .await
             .map_err(|status| TransportError::from(status).name_refusal(op::Build::PATH, target))?
@@ -661,7 +688,7 @@ impl Client {
         target: &MachineTarget,
         input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc();
+        let mut rpc = self.machine_rpc()?;
         Ok(rpc
             .exec(target_request(input, Some(target)))
             .await
@@ -674,7 +701,7 @@ impl Client {
         target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc();
+        let mut rpc = self.machine_rpc()?;
         Ok(rpc
             .tail_logs(target_request(request, Some(target)))
             .await
@@ -689,7 +716,7 @@ impl Client {
         target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc();
+        let mut rpc = self.machine_rpc()?;
         Ok(rpc
             .log_history(target_request(request, Some(target)))
             .await
@@ -704,7 +731,7 @@ impl Client {
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self
-            .machine_rpc()
+            .machine_rpc()?
             .accept_compressed(CompressionEncoding::Gzip);
         Ok(rpc
             .runtime_watch(tonic::Request::new(request))
@@ -742,7 +769,7 @@ impl Client {
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        let mut grpc = self.grpc();
+        let mut grpc = self.grpc()?;
         grpc.ready().await?;
         let response = grpc
             .unary(
@@ -1238,6 +1265,7 @@ impl Client {
         network: &str,
         address: &str,
     ) -> Result<BoxProxyStream, ConnectError> {
+        self.ended()?;
         self.connector
             .dial_proxy(&self.connection, network, address)
             .await

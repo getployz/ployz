@@ -337,7 +337,7 @@ async fn an_entry_that_never_answers_again_fails_the_create_once_the_restart_wai
             Reply::Error(crate::connect::closed_session_error()),
         ),
     ]);
-    client.redial = Some(Err(unavailable("entry Machine reconnect failed")));
+    client.redial = Some(Err(RedialFailure::Failed));
     let started = tokio::time::Instant::now();
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -348,6 +348,36 @@ async fn an_entry_that_never_answers_again_fails_the_create_once_the_restart_wai
     );
     assert!(started.elapsed() >= RESTART_WAIT, "{:?}", started.elapsed());
     assert!(*client.redials.lock().unwrap() > 1);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_entry_that_refuses_the_redial_fails_the_create_with_its_refusal_at_once() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
+    let refusal = crate::connect::rpc_error(crate::connect::ConnectError::ClusterMismatch {
+        machine_id: machine,
+    });
+    let mut client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Error(crate::connect::closed_session_error()),
+        ),
+        Step(
+            Call::DiscardSlot(machine, ContainerKind::ServiceContainer),
+            Reply::Error(crate::connect::closed_session_error()),
+        ),
+    ]);
+    client.redial = Some(Err(RedialFailure::Refused(refusal.clone())));
+    let started = tokio::time::Instant::now();
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        format!("{outcome:?}").contains(&refusal.message),
+        "{outcome:?}"
+    );
+    assert!(started.elapsed() < RESTART_POLL, "{:?}", started.elapsed());
     client.assert_done();
 }
 

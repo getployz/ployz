@@ -159,6 +159,16 @@ impl Unanswered {
     }
 }
 
+/// Why the entry Machine couldn't be dialed again.
+#[derive(Clone, Debug)]
+pub(crate) enum RedialFailure {
+    /// A later dial may still reach the entry.
+    Failed,
+    /// The entry answered as another Machine, or as one in another Cluster. No later dial
+    /// changes that, so a wait for the entry ends on it.
+    Refused(RpcError),
+}
+
 pub(crate) trait MachineOperations {
     async fn prepare_volumes(
         &self,
@@ -232,7 +242,7 @@ pub(crate) trait MachineOperations {
     async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     /// Dial the entry Machine again on the same connection, after the session a call
     /// went out on closed. None when this client can't.
-    async fn redial(&self) -> Option<Result<(), RpcError>> {
+    async fn redial(&self) -> Option<Result<(), RedialFailure>> {
         None
     }
 }
@@ -401,12 +411,18 @@ impl MachineOperations for Client {
         .await
     }
 
-    async fn redial(&self) -> Option<Result<(), RpcError>> {
-        Some(
-            self.redial_shared()
-                .await
-                .map_err(crate::connect::rpc_error),
-        )
+    async fn redial(&self) -> Option<Result<(), RedialFailure>> {
+        Some(self.redial_shared().await.map_err(|error| {
+            let refused = matches!(
+                error,
+                ConnectError::IdentityMismatch { .. } | ConnectError::ClusterMismatch { .. }
+            );
+            if refused {
+                RedialFailure::Refused(crate::connect::rpc_error(error))
+            } else {
+                RedialFailure::Failed
+            }
+        }))
     }
 
     async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
@@ -547,7 +563,7 @@ impl<'a, C: MachineOperations> RestartTolerant<'a, C> {
     }
 
     /// Dial the entry again, unless another call already has since `seen`.
-    async fn redial(&self, seen: u64) -> Option<Result<(), RpcError>> {
+    async fn redial(&self, seen: u64) -> Option<Result<(), RedialFailure>> {
         let mut sessions = self.sessions.lock().await;
         if *sessions != seen {
             return Some(Ok(()));
@@ -653,7 +669,7 @@ async fn wait_out_restart<T, Fut, Redial>(
 ) -> Result<T, RpcError>
 where
     Fut: Future<Output = Result<T, RpcError>>,
-    Redial: Future<Output = Option<Result<(), RpcError>>>,
+    Redial: Future<Output = Option<Result<(), RedialFailure>>>,
 {
     let deadline = Instant::now() + RESTART_WAIT;
     // What earlier attempts showed of the Machine. A real answer clears the other two, and
@@ -697,7 +713,7 @@ where
             && Instant::now() < deadline
             && !cancellation.is_cancelled()
             // Nothing sent on a closed session reaches a daemon again.
-            && (!closed || redialed(&mut redial, deadline, cancellation).await);
+            && (!closed || redialed(&mut redial, deadline, cancellation).await?);
         if !again {
             return Err(error);
         }
@@ -709,28 +725,30 @@ where
 }
 
 /// Dial the entry again until it answers, `deadline` passes or the Deploy is
-/// cancelled. False then, or when the client can't dial again.
+/// cancelled. False then, or when the client can't dial again; the refusal when the
+/// entry refuses the dial.
 async fn redialed<Redial>(
     redial: &mut impl FnMut() -> Redial,
     deadline: Instant,
     cancellation: &CancellationToken,
-) -> bool
+) -> Result<bool, RpcError>
 where
-    Redial: Future<Output = Option<Result<(), RpcError>>>,
+    Redial: Future<Output = Option<Result<(), RedialFailure>>>,
 {
     loop {
         let answer = tokio::select! {
-            () = cancellation.cancelled() => return false,
+            () = cancellation.cancelled() => return Ok(false),
             answer = tokio::time::timeout_at(deadline, redial()) => answer,
         };
         match answer {
-            Ok(Some(Ok(()))) => return true,
-            Ok(Some(Err(_))) => {}
-            Ok(None) | Err(_) => return false,
+            Ok(Some(Ok(()))) => return Ok(true),
+            Ok(Some(Err(RedialFailure::Refused(error)))) => return Err(error),
+            Ok(Some(Err(RedialFailure::Failed))) => {}
+            Ok(None) | Err(_) => return Ok(false),
         }
         tokio::select! {
-            () = cancellation.cancelled() => return false,
-            () = tokio::time::sleep_until(deadline) => return false,
+            () = cancellation.cancelled() => return Ok(false),
+            () = tokio::time::sleep_until(deadline) => return Ok(false),
             () = tokio::time::sleep(RESTART_POLL) => {}
         }
     }
