@@ -285,11 +285,12 @@ one variable, set that variable again.
   variable, such as `OTEL_EXPORTER_OTLP_ENDPOINT`, even to an empty value.
   `OTEL_NODE_RESOURCE_DETECTORS`, which the image sets, doesn't count. Without one, web starts no
   tracing and sends nothing.
-- **Config Store warnings.** When the Config Store hits a problem it works around, such as a
-  branch it couldn't update in time, `web` and `worker` write one JSON line for it to stderr,
-  shown in `docker compose logs`. A line names the environment or branch and the error, never a
-  variable's value. Set `PLOYZ_SDK_LOG` to change which lines appear, in `tracing` filter
-  syntax, for example `PLOYZ_SDK_LOG=ployz_store=info`.
+- **Config Store warnings.** When the Config Store or a deploy hits a problem it works around,
+  such as a branch it couldn't update in time, `web` and `worker` write one JSON line for it to
+  stderr, shown in `docker compose logs`. A line says what went wrong, which branch, volume or
+  machine it hit, and the error's first line. It never holds a variable's value: anything else
+  reads `[redacted]`. To see other lines, set `PLOYZ_SDK_LOG` in `.env` to a `tracing` filter,
+  for example `PLOYZ_SDK_LOG=ployz_store=info`.
 - **Back up one volume.** Everything Ployz Cloud stores, your organizations, projects and
   settings included, is in `ployz-cloud-self-host_postgres-data`.
 - **Restarting Postgres.** While it's down, pages say **This page couldn't load** and try again

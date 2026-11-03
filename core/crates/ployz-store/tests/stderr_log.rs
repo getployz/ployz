@@ -35,9 +35,10 @@ fn install_writes_each_store_warning_to_stderr_as_one_redacted_json_line() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     let stderr = String::from_utf8(out.stderr).unwrap();
+    // Every line stderr holds is one of the install's: libtest writes to stdout.
     let lines: Vec<serde_json::Value> = stderr
         .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("{stderr}")))
         .collect();
     let [line] = lines.as_slice() else {
         panic!("{stderr}")

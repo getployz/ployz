@@ -2,11 +2,14 @@
 //! subscriber of its own: Ployz Cloud runs the Store through `ployz-sdk`, and its
 //! container log keeps stderr (#3786).
 //!
-//! A line never carries a value. Only the fields [`TEXT`] names pass, and only as
-//! plain text or a number; [`FORMATTED`] names the one field whose formatted value
-//! passes. Every other field, and any value formatted with `?` or `%`, reads
-//! [`REDACTED`]. Each text keeps its first line only, at most [`LONGEST`] bytes, so
-//! a database error's `DETAIL` line, which can quote a row, never reaches it.
+//! A line carries no value it wasn't built to: its message only when it is one of
+//! [`MESSAGES`], fixed text, so none formatted from a value passes; the fields
+//! [`TEXT`] names, only as plain text or a number; and [`FORMATTED`]'s, row IDs.
+//! Everything else reads [`REDACTED`], and the line says where it was logged. Each
+//! text keeps its first line only, at most [`LONGEST`] bytes, so a database error's
+//! `DETAIL` line, which can quote a row, never reaches it. What a named field holds is
+//! the call site's to keep plain: each logs an error's message and code, never its
+//! details or causes.
 
 use std::io::Write;
 use std::sync::OnceLock;
@@ -21,8 +24,20 @@ use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 /// What filters the lines instead of [`DEFAULT`], in `EnvFilter` syntax.
 pub const FILTER: &str = "PLOYZ_SDK_LOG";
 
-/// Warnings and errors from the Store and what it runs on.
-const DEFAULT: &str = "ployz_store=warn,ployz_core=warn,ployz_sdk=warn";
+/// Warnings and errors from the Store, and from the Deploys Cloud runs through it.
+const DEFAULT: &str = "ployz_store=warn,ployz=warn,ployz_core=warn,ployz_sdk=warn";
+
+/// The messages a line keeps: each a warning's fixed text.
+const MESSAGES: &[&str] = &[
+    "couldn't seal values below a Branch",
+    "couldn't seal values a Branch inherited; it takes them at a later deploy",
+    "couldn't delete a removed Volume's data",
+    "couldn't record what the Deploy did to ingress",
+    "couldn't record a Deploy warning; retrying later",
+    "couldn't read the entry Machine's store; new gens follow the live answers only",
+    "the entry Machine's store didn't answer in time; new gens follow the live answers only",
+    "couldn't remove a failed start's Container",
+];
 
 /// Fields kept as the plain text or number they were logged with.
 const TEXT: &[&str] = &[
@@ -31,6 +46,7 @@ const TEXT: &[&str] = &[
     "docker_volume",
     "environment",
     "error",
+    "machine",
     "volume",
 ];
 
@@ -47,16 +63,19 @@ const LONGEST: usize = 512;
 pub fn install() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
-        let subscriber = tracing_subscriber::registry().with(lines(std::io::stderr, filter()));
+        let directives = std::env::var(FILTER).ok();
+        let subscriber =
+            tracing_subscriber::registry().with(lines(std::io::stderr, filter(directives)));
         // A host's own subscriber wins.
         let _ = tracing::subscriber::set_global_default(subscriber);
     });
 }
 
-/// [`FILTER`]'s directives when they parse, else [`DEFAULT`].
-fn filter() -> EnvFilter {
-    std::env::var(FILTER)
-        .ok()
+/// `directives`, from [`FILTER`], when they're set and parse, else [`DEFAULT`]: an
+/// empty one would let nothing through.
+fn filter(directives: Option<String>) -> EnvFilter {
+    directives
+        .filter(|directives| !directives.trim().is_empty())
         .and_then(|directives| EnvFilter::try_new(directives).ok())
         .unwrap_or_else(|| EnvFilter::new(DEFAULT))
 }
@@ -90,6 +109,7 @@ where
             "time_unix_ms": u64::try_from(at).unwrap_or(u64::MAX),
             "level": meta.level().as_str(),
             "target": meta.target(),
+            "at": format!("{}:{}", meta.file().unwrap_or_default(), meta.line().unwrap_or_default()),
             "message": fields.message.unwrap_or_default(),
             "fields": fields.kept,
         });
@@ -112,6 +132,11 @@ impl Fields {
         self.kept.insert(field.name().to_owned(), value);
     }
 
+    fn message(&mut self, message: String) {
+        let known = MESSAGES.contains(&message.as_str());
+        self.message = Some(if known { message } else { REDACTED.to_owned() });
+    }
+
     fn number(&mut self, field: &Field, value: Value) {
         let value = if TEXT.contains(&field.name()) {
             value
@@ -124,6 +149,9 @@ impl Fields {
 
 impl Visit for Fields {
     fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "message" {
+            return self.message(value.to_owned());
+        }
         let value = if TEXT.contains(&field.name()) {
             first_line(value)
         } else {
@@ -144,10 +172,11 @@ impl Visit for Fields {
         self.number(field, Value::from(value));
     }
 
-    /// `?` and `%` fields, an error's, and the message: tracing records them alike.
+    /// `?` and `%` fields, an error's, and a formatted message: tracing records them
+    /// alike.
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            self.message = Some(first_line(&format!("{value:?}")));
+            self.message(format!("{value:?}"));
         } else if FORMATTED.contains(&field.name()) {
             self.keep(field, Value::from(first_line(&format!("{value:?}"))));
         } else {
@@ -257,7 +286,7 @@ mod tests {
     #[test]
     fn only_the_fields_it_names_keep_their_text() {
         let line = one(|| {
-            tracing::warn!(target: "ployz_store", volume = "pg-data", value = "fake-value-3786", "x");
+            tracing::warn!(target: "ployz_store", volume = "pg-data", value = "fake-value-3786", "couldn't delete a removed Volume's data");
         });
         assert_eq!(
             line.get("fields"),
@@ -299,7 +328,8 @@ mod tests {
             line.pointer("/fields/error"),
             Some(&json!("duplicate key value violates unique constraint"))
         );
-        assert_eq!(line.get("message"), Some(&json!("first")));
+        // Not one of the known messages, so it never shows, on either line.
+        assert_eq!(line.get("message"), Some(&json!("[redacted]")));
         let long = "x".repeat(LONGEST + 10);
         let line = one(|| tracing::warn!(target: "ployz_store", error = long.as_str(), "x"));
         assert_eq!(
@@ -315,14 +345,67 @@ mod tests {
         let lines = logged(|| {
             tracing::info!(target: "ployz_store", "an info");
             tracing::warn!(target: "hyper", "another crate");
+            tracing::warn!(target: "ployz::sdk::store_runner", "deploy");
             tracing::warn!(target: "ployz_core::rpc", "core");
             tracing::error!(target: "ployz_sdk", "sdk");
+        });
+        let targets: Vec<&Value> = lines.iter().filter_map(|line| line.get("target")).collect();
+        assert_eq!(
+            targets,
+            [
+                &json!("ployz::sdk::store_runner"),
+                &json!("ployz_core::rpc"),
+                &json!("ployz_sdk"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unset_empty_or_unparsable_filter_falls_back_to_warnings() {
+        for directives in [None, Some(""), Some("  "), Some("ployz_store=nonsense")] {
+            let filter = filter(directives.map(str::to_owned));
+            assert_eq!(
+                filter.to_string(),
+                EnvFilter::new(DEFAULT).to_string(),
+                "{directives:?}"
+            );
+        }
+        assert_eq!(
+            filter(Some("ployz_store=debug".to_owned())).to_string(),
+            "ployz_store=debug"
+        );
+    }
+
+    #[test]
+    fn a_message_shows_only_when_it_is_a_known_text_and_the_line_says_where_it_was_logged() {
+        let lines = logged(|| {
+            tracing::warn!(target: "ployz_store", "couldn't delete a removed Volume's data");
+            tracing::warn!(target: "ployz_store", "failed: {}", "plain-secret-3786");
+            tracing::warn!(target: "ployz_store", message = ?"plain-secret-3786");
+            tracing::warn!(target: "ployz_store", message = "plain-secret-3786");
         });
         let messages: Vec<&Value> = lines
             .iter()
             .filter_map(|line| line.get("message"))
             .collect();
-        assert_eq!(messages, [&json!("core"), &json!("sdk")]);
+        assert_eq!(
+            messages,
+            [
+                &json!("couldn't delete a removed Volume's data"),
+                &json!("[redacted]"),
+                &json!("[redacted]"),
+                &json!("[redacted]"),
+            ]
+        );
+        let at = lines
+            .first()
+            .and_then(|line| line.get("at"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            at.starts_with("crates/ployz-store/src/stderr_log.rs:"),
+            "{at}"
+        );
     }
 
     /// A sealed value in any field of a warning never reaches the line, however it's

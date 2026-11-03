@@ -2369,7 +2369,8 @@ impl<'a> Rows<'a> {
                     Ok(Ok(containers)) => containers,
                     Ok(Err(error)) => {
                         tracing::warn!(
-                            error = %error.message,
+                            code = error.code.as_str(),
+                            error = error.message.as_str(),
                             "couldn't read the entry Machine's store; new gens follow the live answers only"
                         );
                         return Ok(Err(error));
@@ -3020,9 +3021,10 @@ async fn start<C: MachineOperations>(
         && let Err(error) = discard_attempt(client, machine_id, slot.clone()).await
     {
         tracing::warn!(
-            machine = %machine_id,
+            machine = machine_id.to_string().as_str(),
             ?slot,
-            error = %error.message,
+            code = error.code.as_str(),
+            error = error.message.as_str(),
             "couldn't remove a failed start's Container"
         );
     }
