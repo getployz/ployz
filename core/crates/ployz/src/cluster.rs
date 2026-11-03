@@ -86,8 +86,9 @@ pub struct Client {
 ///   which tonic's own Tcp/Unix reconnect may carry;
 /// - a send racing the refusal on another thread.
 ///
-/// Where the client sees such a result afterwards, it returns the refusal instead. A
-/// request the daemon received isn't undone.
+/// A dial, or a Watch or exec output read, that finishes afterwards returns the refusal
+/// instead; a unary call or a stream open already under way returns what the daemon
+/// answered. A request the daemon received isn't undone.
 #[derive(Clone, Default)]
 pub(crate) struct Refusal(Arc<std::sync::OnceLock<MachineId>>);
 

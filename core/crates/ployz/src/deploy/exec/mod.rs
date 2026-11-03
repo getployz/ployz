@@ -686,10 +686,10 @@ where
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
-        // A lasting failure that never reached the Machine, as an ended client's refusal of
-        // its entry, says nothing of it either: it ends the wait in its own words, still
-        // saying what earlier sends may have done.
-        if error.never_reached() && error.code.retry() == Retry::Never {
+        // An ended client's refusal of its entry never reached the Machine and says nothing
+        // of it: it ends the wait in its own words, still saying what earlier sends may have
+        // done. Other unreached failures, as a refused dial, keep waiting as before.
+        if error.never_reached() && error.code == RpcErrorCode::Unauthenticated {
             return Err(still_lost(error, lost.as_ref().or(silent.as_ref())));
         }
         let closed = crate::connect::on_closed_session(&error);
