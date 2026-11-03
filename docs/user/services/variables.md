@@ -176,7 +176,7 @@ holds it sealed, or deleted it after sealing it. A few cases fall outside that. 
 around it. The names and values below are placeholders.
 
 - **The variable was renamed in a branch between.** Production holds `TOKEN=plain-a`, `qa` and
-  its branch `qa-two` follow it, and `qa` renames `TOKEN` to `API_TOKEN` before production
+  its branch `qa-two`, made before the rename, follow it, and `qa` renames `TOKEN` to `API_TOKEN` before production
   seals `TOKEN`. `qa-two`'s History and hints still show `plain-a` under `API_TOKEN`.
   - Seal the renamed variable too: in `qa`, choose **Seal** on `API_TOKEN`, then deploy `qa`.
     If `qa-two` still holds `plain-a`, it then gets `API_TOKEN` **Not set**: choose
@@ -187,10 +187,11 @@ around it. The names and values below are placeholders.
   in branches below: in History and as a hint.
   - When you add a sealed variable back, tick **Sealed**. To change a sealed value, that's
     what you want anyway.
-  - If you already added it back plain, don't click **Use theirs** or run
-    `ployz env sync --take` for it below, and choose **Seal** on it in production. That
-    seals the new value. It hides the earlier one again only while no branch below has taken
-    the new plain value.
+  - If you already added it back plain, choose **Seal** on it in production before you deploy
+    production, and don't click **Use theirs** or run `ployz env sync --take` for it below.
+    That seals the new value, and can hide the earlier one again. In a branch that has taken
+    the new plain value already, by **Use theirs**, a sync, or a follow when production
+    deployed, the earlier one may still show.
 - **A branch below set the same text itself.** Ployz matches the text, not where it came from.
   If `qa-two` sets `TOKEN=plain-c` itself, or brings it from another environment by a sync,
   and an environment above held `plain-c` before it sealed `TOKEN`, then once `qa-two` moves off
