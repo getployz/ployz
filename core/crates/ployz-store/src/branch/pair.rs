@@ -1198,10 +1198,6 @@ fn empty_below(
     Ok(())
 }
 
-/// How long a seal's walk below waits for each Branch's lock (#3780). A Branch another
-/// write holds longer keeps its value, and takes the seal at a later deploy.
-const BELOW_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// Variables `parent` sealed and deployed stay hints in `receiver`, whose own change
 /// to each wins, so Follow never carries those seals further down (#3760). Seal each
 /// in every Branch below that still holds a value it was made with or took from its
@@ -1209,7 +1205,7 @@ const BELOW_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 /// with its own Parent. That Branch then holds it Not set, staged, as does that base,
 /// so what `receiver` deploys later lands there as it would have. A Branch that
 /// changed a variable keeps its value. Each Branch is one attempt, locked once for
-/// every row and waiting at most [`BELOW_LOCK_WAIT`], so one that can't take the
+/// every row and waiting at most [`super::follow::BRANCH_LOCK_WAIT`], so one that can't take the
 /// seals keeps its values and never fails the deploy.
 pub(crate) fn seal_inherited_below(
     tx: &mut dyn Tx,
@@ -1271,10 +1267,7 @@ pub(crate) fn seal_inherited_below(
             if due.is_empty() {
                 return Ok(());
             }
-            // Its savepoint rolled back drops the shorter wait too.
-            tx.wait_for_locks(Some(BELOW_LOCK_WAIT))?;
-            let mut branch = scope::lock_id(tx, who, &branch)?;
-            tx.wait_for_locks(None)?;
+            let mut branch = super::follow::lock_below(tx, who, &branch)?;
             for ((lineage, key), fingerprints) in due {
                 seal_inherited(tx, &mut branch, lineage, key, fingerprints)?;
             }
