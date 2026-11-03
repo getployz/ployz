@@ -74,6 +74,8 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error("{}", crate::cloud_login::answered("enroll", *.status, .body))]
     Status { status: u16, body: String },
+    #[error("{}", crate::cloud_login::answered("enroll", 409, .body))]
+    CodedConflict { body: String },
     #[error(
         "Cloud no longer takes this enrollment token: it is unknown, used or expired, or this Organization's Servers were forgotten; make a new one with ployz server add --command"
     )]
@@ -110,6 +112,7 @@ impl Error {
             }
             Self::Json(_)
             | Self::Status { .. }
+            | Self::CodedConflict { .. }
             | Self::TokenRefused
             | Self::RetrySameCommand { .. }
             | Self::CloudCantReach
@@ -520,7 +523,23 @@ pub(crate) async fn enroll(
             async |_| send(post(&http, url, token, identity).timeout(ENROLL_TIMEOUT)).await,
         )
         .await
-        .map_err(|error| retry_error(command, "enrollment", error))?;
+        .map_err(|error| {
+            let error = retry_error(command, "enrollment", error);
+            match error {
+                Error::CodedConflict { body } => {
+                    coded_refusal_status(&body, &[token.as_str().to_owned()], "enrollment")
+                }
+                error @ (Error::Timeout(_)
+                | Error::Connect(_)
+                | Error::Http(_)
+                | Error::Json(_)
+                | Error::Status { .. }
+                | Error::TokenRefused
+                | Error::FounderWait
+                | Error::RetrySameCommand { .. }
+                | Error::CloudCantReach) => error,
+            }
+        })?;
         match parse_enroll(&response)? {
             Response::Join(join) => return Ok(Outcome::Join(join)),
             Response::Initialize {
@@ -661,8 +680,19 @@ async fn post_callback(
         },
         async |_| {
             post_json(&http, url, token, body).await.map_err(|error| {
-                let Error::Status { status, body } = error else {
-                    return error;
+                let (status, body) = match error {
+                    Error::CodedConflict { body } => {
+                        return coded_refusal_status(&body, &sent, operation);
+                    }
+                    Error::Status { status, body } => (status, body),
+                    error @ (Error::Timeout(_)
+                    | Error::Connect(_)
+                    | Error::Http(_)
+                    | Error::Json(_)
+                    | Error::TokenRefused
+                    | Error::FounderWait
+                    | Error::RetrySameCommand { .. }
+                    | Error::CloudCantReach) => return error,
                 };
                 if crate::cloud_login::cloud_message(body.as_bytes())
                     .is_some_and(|message| message.starts_with(CLOUD_CANT_REACH))
@@ -687,6 +717,7 @@ async fn post_callback(
             last: Some(Error::CloudCantReach),
             ..
         } => Error::CloudCantReach,
+        crate::setup_retry::Error::Permanent(error @ Error::CodedConflict { .. }) => error,
         error @ (crate::setup_retry::Error::Permanent(_)
         | crate::setup_retry::Error::Exhausted { .. }) => Error::RetrySameCommand {
             command,
@@ -736,6 +767,44 @@ fn sent_strings(token: &CloudEnrollToken, body: &EnrollCallback<'_>) -> Vec<Stri
     sent.push(token.as_str().to_owned());
     sent.push(body.pairing_credential.0.clone());
     sent
+}
+
+fn coded_refusal_status(body: &str, sent: &[String], operation: &str) -> Error {
+    Error::CodedConflict {
+        body: coded_cloud_refusal(body, sent).map_or_else(
+            || format!("{operation} rejected"),
+            |said| serde_json::json!({ "error": said }).to_string(),
+        ),
+    }
+}
+
+fn coded_cloud_refusal(body: &str, sent: &[String]) -> Option<String> {
+    let serde_json::Value::Object(mut fields) = serde_json::from_str(body).ok()? else {
+        return None;
+    };
+    if fields.len() != 1 {
+        return None;
+    }
+    let serde_json::Value::String(message) = fields.remove("error")? else {
+        return None;
+    };
+    if message.chars().count() > CLOUD_REFUSAL_MAX || message.contains(char::REPLACEMENT_CHARACTER)
+    {
+        return None;
+    }
+    let said: String = message
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .filter(|c| !invisible(*c))
+        .collect();
+    let lower = said.to_ascii_lowercase();
+    if ["pmet_", "ppair_", "bearer"]
+        .iter()
+        .any(|prefix| lower.contains(prefix))
+    {
+        return None;
+    }
+    cloud_refusal(&serde_json::json!({"error": said}).to_string(), sent)
 }
 
 /// Cloud's refusal sentence, when `body` is exactly the `{"error": "..."}` its enroll
@@ -870,9 +939,19 @@ async fn post_json(
 async fn send(request: reqwest::RequestBuilder) -> Result<Vec<u8>, Error> {
     let sent = request.send().await.map_err(classify_http)?;
     let status = sent.status();
+    let coded_conflict = status == reqwest::StatusCode::CONFLICT
+        && sent
+            .headers()
+            .get("Ployz-Error-Code")
+            .is_some_and(|code| code == "CONFLICT");
     let bytes = sent.bytes().await.map_err(classify_http)?;
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(Error::TokenRefused);
+    }
+    if coded_conflict {
+        return Err(Error::CodedConflict {
+            body: String::from_utf8_lossy(&bytes).into_owned(),
+        });
     }
     if !status.is_success() {
         return Err(Error::Status {
@@ -978,6 +1057,244 @@ mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
+
+    #[tokio::test]
+    async fn public_conflict_messages_follow_clouds_enroll_contract() {
+        let said = "This Organization's Servers can't be reached. If they were deleted, run `ployz server forget` or use Forget Servers in the dashboard.";
+        let legacy = |message: &str| {
+            serde_json::json!({"error": message})
+                .to_string()
+                .into_bytes()
+        };
+        let cases = [
+            (409, Some("CONFLICT"), legacy(said), Some(said)),
+            (409, None, legacy(said), Some(said)),
+            (409, Some("UNAVAILABLE"), legacy(said), Some(said)),
+            (409, Some("conflict"), legacy(said), Some(said)),
+            (409, Some("CONFLICT, INTERNAL"), legacy(said), Some(said)),
+            (400, Some("CONFLICT"), legacy(said), Some(said)),
+            (409, Some("CONFLICT"), b"{FAKE malformed".to_vec(), None),
+            (
+                409,
+                Some("CONFLICT"),
+                br#"{"error":"FAKE reply","code":"CONFLICT","_tag":"PublicError"}"#.to_vec(),
+                None,
+            ),
+            (
+                409,
+                Some("CONFLICT"),
+                br#"{"error":"FAKE reply","details":"FAKE detail"}"#.to_vec(),
+                None,
+            ),
+            (409, Some("CONFLICT"), br#"{"error":12}"#.to_vec(), None),
+            (409, Some("CONFLICT"), legacy("pmet_FAKEtoken"), None),
+            (409, Some("CONFLICT"), legacy("ppair_FAKEpair"), None),
+            (409, Some("CONFLICT"), legacy("Bearer FAKEbearer"), None),
+            (
+                409,
+                Some("CONFLICT"),
+                legacy("FAKE MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="),
+                None,
+            ),
+            (
+                409,
+                Some("CONFLICT"),
+                legacy("Check\nMY-SERVER.\u{001b}\u{202e}"),
+                Some("Check MY-SERVER."),
+            ),
+            (409, Some("CONFLICT"), legacy(&"FAKE ".repeat(101)), None),
+            (
+                409,
+                Some("CONFLICT"),
+                b"{\"error\":\"FAKE \xff\"}".to_vec(),
+                None,
+            ),
+        ];
+        for path in 0..3 {
+            for (status, code, answer, expected) in &cases {
+                let (listener, url) = listen().await;
+                let response = http_response_with_code(*status, answer, *code);
+                let server = tokio::spawn(async move {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    read_http(&mut stream).await;
+                    tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+                        .await
+                        .unwrap();
+                });
+                let credential = PairingCredential::parse("ppair_FAKEpairing").unwrap();
+                let result = match path {
+                    0 => enroll(Command::ServerAdd, &url, &token(), &identity(), &|_| {})
+                        .await
+                        .map(drop),
+                    1 => {
+                        publish(
+                            Command::ServerAdd,
+                            &url,
+                            &token(),
+                            MachineId::random(),
+                            &credential,
+                            &ManagementCapability::new(
+                                ployz_core::ManagementIdentity::from_bytes([3; 32]),
+                                [4; 32],
+                            ),
+                        )
+                        .await
+                    }
+                    _ => callback(
+                        Command::ServerEnroll,
+                        &url,
+                        &token(),
+                        MachineId::random(),
+                        &credential,
+                        None,
+                        None,
+                    )
+                    .await
+                    .map(drop),
+                };
+                server.await.unwrap();
+                let error = result.unwrap_err();
+                if path == 0 && !(*status == 409 && *code == Some("CONFLICT")) {
+                    assert_eq!(
+                        error.to_string(),
+                        crate::cloud_login::answered(
+                            "enroll",
+                            *status,
+                            &String::from_utf8_lossy(answer)
+                        )
+                    );
+                    continue;
+                }
+                for printed in [crate::ui::chain_text(&error), format!("{error:?}")] {
+                    if let Some(expected) = expected {
+                        assert!(printed.contains(expected), "path={path}: {printed}");
+                    } else {
+                        assert!(!printed.contains("FAKE"), "path={path}: {printed}");
+                    }
+                    if *status == 409 && *code == Some("CONFLICT") {
+                        assert!(
+                            !printed.contains("without --reset")
+                                && !printed.contains("enroll again"),
+                            "{printed}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_user_facing_callback_conflict_has_no_retry_advice() {
+        let said = "This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.";
+        let (listener, url) = listen().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let answer = serde_json::json!({"error": said}).to_string();
+            tokio::io::AsyncWriteExt::write_all(
+                &mut stream,
+                &http_response_with_code(409, answer.as_bytes(), Some("CONFLICT")),
+            )
+            .await
+            .unwrap();
+        });
+        let credential = PairingCredential::parse("ppair_FAKEpairing").unwrap();
+        let error = callback(
+            Command::ServerAdd,
+            &url,
+            &token(),
+            MachineId::random(),
+            &credential,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        server.await.unwrap();
+        assert_eq!(crate::ui::chain_text(&error), said);
+        assert_eq!(
+            crate::failure::Failure::from(error).report().code,
+            ployz_core::rpc::RpcErrorCode::Conflict
+        );
+    }
+
+    #[test]
+    fn coded_refusals_accept_exactly_five_hundred_characters() {
+        let at_limit = format!("{}End.", "Word ".repeat(99));
+        let at_limit = format!("{at_limit} ");
+        assert_eq!(at_limit.chars().count(), CLOUD_REFUSAL_MAX);
+        let body = serde_json::json!({"error": at_limit}).to_string();
+        assert_eq!(
+            coded_cloud_refusal(&body, &[]),
+            Some(at_limit.trim().to_owned())
+        );
+        let body = serde_json::json!({"error": format!("{at_limit}x")}).to_string();
+        assert_eq!(coded_cloud_refusal(&body, &[]), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn uncoded_callback_refusals_keep_the_retry_advice() {
+        let upgrade = "This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key. Update ployz where you run ployz server add: curl -fsSL https://ployz.sh | sh (with sudo on the Server). Then rerun ployz server add while a server that holds your cluster's key is online.";
+        let ticker = tokio::spawn(async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        for (status, said) in [
+            (409, "The request conflicts with the current state."),
+            (503, upgrade),
+        ] {
+            let (listener, url) = listen().await;
+            let answer = serde_json::json!({"error": said}).to_string();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    read_http(&mut stream).await;
+                    let _ = tokio::io::AsyncWriteExt::write_all(
+                        &mut stream,
+                        &http_response(status, "Refused", answer.as_bytes()),
+                    )
+                    .await;
+                }
+            });
+            let credential = PairingCredential::parse("ppair_FAKEpairing").unwrap();
+            let error = callback(
+                Command::ServerAdd,
+                &url,
+                &token(),
+                MachineId::random(),
+                &credential,
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+            server.abort();
+            assert_eq!(
+                error.to_string(),
+                "Cloud enrollment completion failed; rerun the same ployz server add command without --reset (keep all other options)."
+            );
+            let Error::RetrySameCommand { cause, .. } = &error else {
+                panic!("{error:?}");
+            };
+            let last = match cause
+                .downcast_ref::<crate::setup_retry::Error<Error>>()
+                .unwrap()
+            {
+                crate::setup_retry::Error::Permanent(last) => last,
+                crate::setup_retry::Error::Exhausted {
+                    last: Some(last), ..
+                } => last,
+                error => panic!("{error:?}"),
+            };
+            assert_eq!(last.to_string(), said);
+            assert_eq!(
+                crate::failure::Failure::from(error).report().code,
+                ployz_core::rpc::RpcErrorCode::Unavailable
+            );
+        }
+        ticker.abort();
+    }
 
     #[test]
     fn an_enroll_error_prints_cloud_s_sentence_or_its_status_alone() {
@@ -1320,6 +1637,18 @@ mod tests {
             "registration": registration(),
         }))
         .unwrap()
+    }
+
+    fn http_response_with_code(status: u16, body: &[u8], code: Option<&str>) -> Vec<u8> {
+        let mut response = format!(
+            "HTTP/1.1 {status} Refused\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        if let Some(code) = code {
+            response.push_str(&format!("Ployz-Error-Code: {code}\r\n"));
+        }
+        response.push_str("\r\n");
+        [response.as_bytes(), body].concat()
     }
 
     fn http_response(status: u16, reason: &str, body: &[u8]) -> Vec<u8> {
@@ -1992,6 +2321,7 @@ mod tests {
             r#"{"error":{"code":"conflict","message":"FAKE said","details":{"cause":"FAKE cause"}}}"#
                 .to_owned(),
             r#"{"_tag":"PublicError","code":"CONFLICT","message":"FAKE said"}"#.to_owned(),
+            r#"{"_tag":"PublicError","code":"INTERNAL","error":"FAKE said"}"#.to_owned(),
             r#"["FAKE said"]"#.to_owned(),
             r#"{"error":"FAKE said\u001b[31m"}"#.to_owned(),
             r#"{"error":"FAKE said\nFAKE line"}"#.to_owned(),

@@ -1,4 +1,5 @@
 import { Effect, Option, Result, Schema } from "effect";
+import type { PublicError } from "#/lib/public-error";
 import { asRecord } from "#/lib/json";
 import {
   encodePublicBoundaryError,
@@ -25,18 +26,23 @@ type EnrollmentResponseBody =
   | { error: string }
   | { machineId: string; recoveryBackupDigest?: string | undefined };
 
-function response(body: EnrollmentResponseBody, status: number) {
-  return Response.json(body, {
-    status,
-    headers: { "cache-control": "no-store" },
-  });
+function response(body: EnrollmentResponseBody, status: number, code?: PublicError["code"]) {
+  const headers = new Headers({ "cache-control": "no-store" });
+  if (code) headers.set("Ployz-Error-Code", code);
+  return Response.json(body, { status, headers });
 }
+
+const isUserFacing = Schema.is(Schema.Struct({
+  userFacing: Schema.Literal(true),
+  message: Schema.String,
+}));
 
 function errorResponse(cause: unknown) {
   const publicError = encodePublicError(cause);
   return response(
     { error: publicError.message },
     statusForPublicError(publicError),
+    isUserFacing(cause) && publicError.code !== "INTERNAL" ? publicError.code : undefined,
   );
 }
 
@@ -51,6 +57,7 @@ function failureResponse(cause: unknown, route: "join" | "completion" | "setup r
   return response(
     { error: publicError.message },
     statusForPublicError(publicError),
+    isUserFacing(cause) && publicError.code !== "INTERNAL" ? publicError.code : undefined,
   );
 }
 

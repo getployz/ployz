@@ -1,7 +1,7 @@
 import { inspect } from "node:util";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { JsonValue } from "#/db/schema";
-import { NotFound, Validation, Unauthorized } from "#/server/public-error";
+import { Conflict, NotFound, Validation, Unauthorized } from "#/server/public-error";
 import { Data, Effect } from "effect";
 import {
   handleMachineEnrollmentCallback,
@@ -198,6 +198,10 @@ describe("machine enrollment routes", () => {
 
     expect(callbackResponse.status).toBe(401);
     expect(reportResponse.status).toBe(401);
+    for (const response of [callbackResponse, reportResponse]) {
+      expect(await response.text()).toBe(JSON.stringify({ error: "Authentication is required." }));
+      expect(response.headers.get("Ployz-Error-Code")).toBeNull();
+    }
     expect(mocks.completeFounding).not.toHaveBeenCalled();
     expect(record).not.toHaveBeenCalled();
   });
@@ -277,9 +281,10 @@ describe("machine enrollment routes", () => {
     ]) {
       const response = await join(body);
       expect(response.status).toBe(426);
-      await expect(response.json()).resolves.toEqual({
+      expect(await response.text()).toBe(JSON.stringify({
         error: "Unsupported enrollment protocol version; Cloud accepts version 1.",
-      });
+      }));
+      expect(response.headers.get("Ployz-Error-Code")).toBeNull();
     }
     expect(mocks.enroll).not.toHaveBeenCalled();
   });
@@ -443,6 +448,41 @@ describe("machine enrollment routes", () => {
     expect(callbackBody).not.toContain(token);
   });
 
+  it("preserves a user-facing conflict and adds its public code", async () => {
+    const message = "Bring existing Servers online before enrolling MY-SERVER.";
+    const failure = new Conflict({ message, userFacing: true });
+    mocks.enroll.mockReturnValue(Effect.fail(failure));
+    mocks.completeFounding.mockReturnValue(Effect.fail(failure));
+    for (const response of [
+      await join(identity),
+      await callback({ machineId, pairingCredential: "ppair_FAKEpair" }),
+    ]) {
+      expect(response.status).toBe(409);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.text()).toBe(JSON.stringify({ error: message }));
+      expect(response.headers.get("Ployz-Error-Code")).toBe("CONFLICT");
+    }
+  });
+
+  it("keeps generic conflicts uncoded with the existing body", async () => {
+    for (const message of [
+      "The enrollment attempt is no longer current.",
+      "The Machine connection changed during credential verification. Retry enrollment.",
+    ]) {
+      const failure = new Conflict({ message });
+      mocks.enroll.mockReturnValue(Effect.fail(failure));
+      mocks.completeFounding.mockReturnValue(Effect.fail(failure));
+      for (const response of [
+        await join(identity),
+        await callback({ machineId, pairingCredential: "ppair_FAKEpair" }),
+      ]) {
+        expect(response.status).toBe(409);
+        expect(await response.text()).toBe(JSON.stringify({ error: "The request conflicts with the current state." }));
+        expect(response.headers.get("Ployz-Error-Code")).toBeNull();
+      }
+    }
+  });
+
   it("logs a failure it answers only as internal", async () => {
     class ProviderFailure extends Data.TaggedError("ProviderFailure")<{ readonly operation: string }> {}
     // Effect's default logger writes every level through `console.log`.
@@ -453,7 +493,8 @@ describe("machine enrollment routes", () => {
       const response = await join(identity);
 
       expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({ error: "The request could not be completed." });
+      expect(await response.text()).toBe(JSON.stringify({ error: "The request could not be completed." }));
+      expect(response.headers.get("Ployz-Error-Code")).toBeNull();
       await vi.waitFor(() => expect(inspect(logged.mock.calls, { depth: null }))
         .toMatch(/ERROR[\s\S]*Enrollment join defect\.[\s\S]*ProviderFailure/u));
       expect(inspect(logged.mock.calls, { depth: null })).not.toContain(token);

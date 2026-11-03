@@ -273,14 +273,15 @@ there may be the last copy of a volume.
 Adding your organization's first server, `ployz server add` can stop with:
 
 ```text
-error: Cloud enrollment completion failed; rerun the same ployz server add command without --reset (keep all other options).
-  cause: This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.
+error: This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.
 ```
 
 If `ployz server add` was going to show you a recovery code, the first line is
 `Recovery code not saved. Run ployz recovery rotate now to make one.` instead, with the same cause.
-`ployz server enroll --status` shows `Failed ·` and the same text, with
-`run ployz server enroll again, or use Enroll in Servers > Waiting to join` as its retry advice.
+`ployz server enroll --status` shows `Failed ·` and the same text without retry advice.
+With an older Ployz Cloud, the CLI still wraps this sentence in
+`Cloud enrollment completion failed; rerun the same ployz server add command without --reset (keep all other options).`
+and `--status` still advises running `ployz server enroll` again.
 **Servers > Waiting to join** shows **Failed at Going live** over that text.
 
 An older `ployz` doesn't show Ployz Cloud's sentence. Its cause reads
