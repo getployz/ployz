@@ -130,7 +130,11 @@ service still gets the real value when it deploys.
   Undo or Roll back to it, brings the variable back **Not set**. Some cases aren't covered
   yet ([#3800](https://github.com/getployz/ployz/issues/3800)): a value held under a name
   the branch above renamed, and one from before the environment above deleted the sealed
-  variable and added it again plain.
+  variable and added it again plain. One more case shows only in History. A branch's
+  parent deleted the variable before the seal, and then takes the seal from its own
+  parent. A value the branch took from that parent by a follow then shows plain again in
+  the branch's History, though `ployz diff` and **Details** never offer it. The branch's
+  next deploy clears it.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
   a plain value is refused, so a secret never turns into plain text by mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that

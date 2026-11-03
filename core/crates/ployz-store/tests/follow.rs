@@ -4578,3 +4578,53 @@ fn what_the_branch_between_runs_after_taking_a_seal_staged_is_never_hinted_below
         json!("plain-own-0317")
     );
 }
+
+/// Known, #3800: once the Branch between took the seal by a hint, after deleting the
+/// variable, nothing it or one above still shares holds the value a Branch below
+/// took by Follow. So that Branch's History shows it again, though its diff never
+/// offers it, until it deploys next, which clears it.
+#[test]
+fn a_followed_value_shows_in_history_again_once_the_branch_between_takes_the_seal_until_the_next_deploy()
+ {
+    let (store, who) = shop();
+    let token = |value: &str| [("web.env.TOKEN", json!(value))];
+    set(
+        &store,
+        &who,
+        "production",
+        &token("plain-private-0317-first"),
+    );
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    deploy(&store, &who, "qa", 3);
+    branch(&store, &who, 11, "qa", "qa-two");
+    deploy(&store, &who, "qa-two", 4);
+    set(
+        &store,
+        &who,
+        "production",
+        &token("plain-private-0317-second"),
+    );
+    deploy(&store, &who, "production", 5);
+    deploy(&store, &who, "qa", 6);
+    deploy(&store, &who, "qa-two", 7);
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    seal_token(&store, &who, 8);
+    assert!(!history_of(&store, &who, "qa-two").contains("plain-private-0317"));
+
+    let version = diff(&store, &who, "qa").version;
+    store
+        .write(
+            &who,
+            &take("production", "qa", &["variables.TOKEN"], version),
+        )
+        .unwrap();
+    assert!(history_of(&store, &who, "qa-two").contains("plain-private-0317-second"));
+    deploy(&store, &who, "qa", 9);
+    let shown = serde_json::to_string(&diff(&store, &who, "qa-two")).unwrap();
+    assert!(!shown.contains("plain-private-0317"), "{shown}");
+    assert!(history_of(&store, &who, "qa-two").contains("plain-private-0317-second"));
+    deploy(&store, &who, "qa-two", 10);
+    let history = history_of(&store, &who, "qa-two");
+    assert!(!history.contains("plain-private-0317"), "{history}");
+}
