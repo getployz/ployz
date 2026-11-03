@@ -303,8 +303,10 @@ fn sealed_above(
 pub(crate) struct AncestorSeals(Chain);
 
 impl AncestorSeals {
-    /// Whether the plain value at `fingerprint` of row `lineage`, `key` in `branch`
-    /// is one an Environment above it held before sealing it.
+    /// Whether the plain value at `fingerprint` of row `lineage`, `key`, which
+    /// `branch`'s Parent runs, is one an Environment above `branch` held before
+    /// sealing it. A Parent that holds the row sealed now runs only text from before
+    /// it took the seal.
     pub(crate) fn sealed(
         &mut self,
         tx: &mut dyn Tx,
@@ -313,8 +315,14 @@ impl AncestorSeals {
         key: &str,
         fingerprint: &str,
     ) -> Result<bool, RpcError> {
-        self.0
-            .sealed_by_ancestor(tx, branch, lineage, key, fingerprint)
+        let chain = &mut self.0;
+        if let Some((parent, _)) = chain.shared_above(tx, branch)? {
+            let parent = parent.clone();
+            if chain.sealed_now(tx, &parent, lineage, key)? {
+                return Ok(true);
+            }
+        }
+        chain.sealed_by_ancestor(tx, branch, lineage, key, fingerprint)
     }
 }
 

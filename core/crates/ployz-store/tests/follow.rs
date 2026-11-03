@@ -4513,6 +4513,8 @@ fn a_value_an_environment_above_held_reads_sealed_even_set_below_by_hand() {
     deploy(&store, &who, "qa", 3);
     branch(&store, &who, 11, "qa", "qa-two");
     deploy(&store, &who, "qa-two", 4);
+    // qa keeps its own change, so only `sibling` takes the next value.
+    set(&store, &who, "qa", &token("plain-qa-0317"));
     set(&store, &who, "production", &token("plain-sibling-0317"));
     deploy(&store, &who, "production", 5);
     branch(&store, &who, 12, "production", "sibling");
@@ -4534,4 +4536,45 @@ fn a_value_an_environment_above_held_reads_sealed_even_set_below_by_hand() {
     deploy(&store, &who, "qa-two", 8);
     let history = history_of(&store, &who, "qa-two");
     assert!(!history.contains("plain-sibling-0317"), "{history}");
+}
+
+/// What the Branch between still runs, after it took a seal from above staged, is
+/// never hinted below: it holds the row sealed now, so any plain text it runs is
+/// from before the seal (#3794).
+#[test]
+fn what_the_branch_between_runs_after_taking_a_seal_staged_is_never_hinted_below() {
+    let (store, who) = shop();
+    let token = |value: &str| [("web.env.TOKEN", json!(value))];
+    set(&store, &who, "production", &token("plain-made-0317"));
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    deploy(&store, &who, "qa", 3);
+    branch(&store, &who, 11, "qa", "qa-two");
+    deploy(&store, &who, "qa-two", 4);
+    set(&store, &who, "qa-two", &token("plain-own-0317"));
+    deploy(&store, &who, "qa-two", 5);
+    // qa runs the next value; qa-two keeps its own, so it arrives there as a hint.
+    set(&store, &who, "production", &token("plain-run-0317"));
+    deploy(&store, &who, "production", 6);
+    deploy(&store, &who, "qa", 7);
+    // qa takes the one after staged, and still runs the one before.
+    set(&store, &who, "production", &token("plain-staged-0317"));
+    deploy(&store, &who, "production", 8);
+    seal_token(&store, &who, 9);
+
+    assert!(hints(&store, &who, "qa-two").is_empty());
+    let review = diff(&store, &who, "qa-two");
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-run-0317"), "{shown}");
+    let refused = store
+        .write(
+            &who,
+            &take("qa", "qa-two", &["variables.TOKEN"], review.version),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::NotFound);
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-own-0317")
+    );
 }

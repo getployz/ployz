@@ -121,8 +121,9 @@ service still gets the real value when it deploys.
   back. If the branch
   adds it again plain after taking the seal, its History keeps no copy of the earlier value
   either.
-- A branch's **Details** and `ployz diff` don't offer back a value an environment above
-  held under that variable's name before sealing it. You see no "*parent* has since set
+- A branch's **Details** and `ployz diff` don't offer back a plain value its parent still
+  runs once the parent holds the variable sealed, or the value an environment above held
+  under that variable's name when it sealed it. You see no "*parent* has since set
   *value*" with **Use theirs**, and no `ployz env sync --take` hint for it. Ployz matches
   the value's text. So when a branch below sets that same text itself, its History shows
   that text as **Sealed** once the branch moves off it, and discarding a change from it, or
