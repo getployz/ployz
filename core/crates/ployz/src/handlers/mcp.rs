@@ -344,6 +344,7 @@ fn may_have_landed(error: &LoginError) -> bool {
         | LoginError::Ended
         | LoginError::AwaitingApproval { .. }
         | LoginError::TokenRefused
+        | LoginError::AgentTokenRefused
         | LoginError::TokenMalformed
         | LoginError::NotMember(_)
         | LoginError::TokenBound

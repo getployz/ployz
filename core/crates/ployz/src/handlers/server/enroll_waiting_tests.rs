@@ -174,6 +174,7 @@ async fn enroll_waiting_plan_route_has_no_trailing_slash_and_start_refusal_survi
     let credential = Credential::Token {
         cloud,
         token: crate::cloud_login::Secret::new("ployz_secret".into()),
+        from: crate::cloud_account::TokenFrom::Env,
     };
     let _: Plan = cloud_account::refusable(
         &credential,

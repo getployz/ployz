@@ -473,6 +473,7 @@ mod tests {
             credential: Credential::Token {
                 cloud,
                 token: crate::cloud_login::Secret::new("ployz_secret".to_owned()),
+                from: crate::cloud_account::TokenFrom::Env,
             },
             organization: Organization {
                 id: "o1".to_owned(),

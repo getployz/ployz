@@ -343,6 +343,7 @@ impl Setup {
         let mut response = send(None)
             .await
             .map_err(|error| cloud_login::unreachable(&self.cloud, error))?;
+        let mut refused = LoginError::TokenRefused;
         if matches!(
             response.status(),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
@@ -350,6 +351,7 @@ impl Setup {
             .await
             .filter(|credential| credential.cloud() == self.cloud)
         {
+            refused = credential.token_refused();
             response = send(Some(&credential))
                 .await
                 .map_err(|error| cloud_login::unreachable(&self.cloud, error))?;
@@ -376,7 +378,7 @@ impl Setup {
                 StatusCode::NOT_FOUND => PublishError::Unsupported {
                     cloud: self.cloud.clone(),
                 },
-                StatusCode::UNAUTHORIZED => LoginError::TokenRefused.into(),
+                StatusCode::UNAUTHORIZED => refused.into(),
                 status => LoginError::Status {
                     status: status.as_u16(),
                     body: String::from_utf8_lossy(&bytes).into_owned(),

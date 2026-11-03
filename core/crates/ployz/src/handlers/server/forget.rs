@@ -276,6 +276,7 @@ mod tests {
         let credential = Credential::Token {
             cloud,
             token: crate::cloud_login::Secret::new("ployz_secret".to_owned()),
+            from: crate::cloud_account::TokenFrom::Env,
         };
         (credential, forgot)
     }
