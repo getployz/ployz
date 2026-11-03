@@ -245,7 +245,9 @@ fn into(
 }
 
 /// The rows of `follow` into `branch` delivered at the value they carry now, yet not
-/// staged: its hints.
+/// staged: its hints. Never a plain value an Environment above sealed since: a
+/// Branch never gets a secret from above, so neither a hint nor a take offers it
+/// back (#3794).
 fn hinted<'rows>(
     tx: &mut dyn Tx,
     branch: &EnvironmentId,
@@ -253,13 +255,23 @@ fn hinted<'rows>(
     rows: &'rows [PlannedRow],
 ) -> Result<Vec<&'rows PlannedRow>, RpcError> {
     let delivered = arrivals(tx, branch, parent)?;
-    Ok(rows
-        .iter()
-        .filter(|row| {
-            matches!(row.verdict, Verdict::Moves { .. })
-                && delivered.get(&row.id) == Some(&row.from)
-        })
-        .collect())
+    let mut sealed = review::sealed::AncestorSeals::default();
+    let mut hinted = Vec::new();
+    for row in rows {
+        if !matches!(row.verdict, Verdict::Moves { .. })
+            || delivered.get(&row.id) != Some(&row.from)
+        {
+            continue;
+        }
+        if let (At::Variable(key), Some(fingerprint)) =
+            (row.id.at(), super::pair::plain_fingerprint(&row.from))
+            && sealed.sealed(tx, branch.as_str(), row.id.lineage(), key, fingerprint)?
+        {
+            continue;
+        }
+        hinted.push(row);
+    }
+    Ok(hinted)
 }
 
 /// What `branch`'s Parent deployed that followed into it but isn't staged there.

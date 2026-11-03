@@ -4295,3 +4295,160 @@ fn a_branch_below_another_write_holds_costs_one_short_wait() {
         vec![json!({ "secret": false }); keys.len()]
     );
 }
+
+/// production's TOKEN "plain-private-0317-first", deployed down `qa` and `qa-two`;
+/// production then deploys "plain-private-0317-second", which both take by Follow
+/// and deploy. `qa` changes it, staged, and production seals it, so the seal's walk
+/// leaves `qa-two` Not set (#3794).
+fn followed_then_sealed(store: &ConfigStore, who: &Actor) {
+    let token = |value: &str| [("web.env.TOKEN", json!(value))];
+    set(store, who, "production", &token("plain-private-0317-first"));
+    deploy(store, who, "production", 2);
+    branch(store, who, 10, "production", "qa");
+    deploy(store, who, "qa", 3);
+    branch(store, who, 11, "qa", "qa-two");
+    deploy(store, who, "qa-two", 4);
+    set(
+        store,
+        who,
+        "production",
+        &token("plain-private-0317-second"),
+    );
+    deploy(store, who, "production", 5);
+    deploy(store, who, "qa", 6);
+    deploy(store, who, "qa-two", 7);
+    assert_eq!(
+        web(store, who, "qa-two")["env"]["TOKEN"],
+        json!("plain-private-0317-second")
+    );
+    set(store, who, "qa", &token("plain-edit-0317"));
+    seal_token(store, who, 8);
+    assert_eq!(
+        web(store, who, "qa-two")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+}
+
+/// A Branch of a Branch reads a value it took by Follow and an Environment above
+/// sealed since as Sealed in History, and Undo brings it back Not set (#3794).
+#[test]
+fn a_followed_value_sealed_above_reads_sealed_in_a_branch_of_a_branchs_history() {
+    let (store, who) = shop();
+    followed_then_sealed(&store, &who);
+
+    let history = history_of(&store, &who, "qa-two");
+    assert!(!history.contains("plain-private-0317"), "{history}");
+    let revisions = store
+        .read(
+            &who,
+            &ployz_store::HistoryQuery {
+                environment: at("qa-two"),
+                limit: None,
+            },
+        )
+        .unwrap()
+        .revisions;
+    // The version that took the followed value, from the first.
+    let took = revisions
+        .iter()
+        .map(|revision| revision.revision)
+        .max()
+        .unwrap();
+    let undo = ployz_store::HistoryPreviewQuery {
+        environment: at("qa-two"),
+        revision: took,
+        action: ployz_store::HistoryAction::Undo,
+        change: None,
+    };
+    let preview = store.read(&who, &undo).unwrap();
+    let shown = serde_json::to_string(&preview).unwrap();
+    assert!(!shown.contains("plain-private-0317"), "{shown}");
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: at("qa-two"),
+                revision: took,
+                action: undo.action,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+}
+
+/// Nor does its diff hint the value back, and taking that row is refused as a hint
+/// it doesn't have: its next deploy ships no plain value (#3794).
+#[test]
+fn a_followed_value_sealed_above_is_never_hinted_or_taken_back() {
+    let (store, who) = shop();
+    followed_then_sealed(&store, &who);
+
+    let review = diff(&store, &who, "qa-two");
+    assert!(hints(&store, &who, "qa-two").is_empty());
+    let shown = serde_json::to_string(&review).unwrap();
+    assert!(!shown.contains("plain-private-0317"), "{shown}");
+    let refused = store
+        .write(
+            &who,
+            &take("qa", "qa-two", &["variables.TOKEN"], review.version),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::NotFound);
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
+    let shipped = deploy(&store, &who, "qa-two", 9);
+    assert!(
+        !shipped.to_string().contains("plain-private-0317"),
+        "{shipped}"
+    );
+}
+
+/// What the Branch between deploys of its own still reaches the Branch below as a
+/// hint, once that one holds a value it set itself, and both stay readable (#3794).
+#[test]
+fn a_value_the_branch_between_deploys_itself_is_still_hinted_below() {
+    let (store, who) = shop();
+    followed_then_sealed(&store, &who);
+    unset(&store, &who, "qa-two", "web.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "qa-two",
+        &[("web.env.TOKEN", json!("plain-own-0317"))],
+    );
+    deploy(&store, &who, "qa-two", 9);
+    deploy(&store, &who, "qa", 10);
+
+    assert!(history_of(&store, &who, "qa").contains("plain-edit-0317"));
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-own-0317")
+    );
+    assert_eq!(hints(&store, &who, "qa-two").len(), 1);
+    let review = diff(&store, &who, "qa-two");
+    assert!(
+        serde_json::to_string(&review)
+            .unwrap()
+            .contains("plain-edit-0317")
+    );
+    store
+        .write(
+            &who,
+            &take("qa", "qa-two", &["variables.TOKEN"], review.version),
+        )
+        .unwrap();
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-edit-0317")
+    );
+    deploy(&store, &who, "qa-two", 11);
+    assert!(history_of(&store, &who, "qa-two").contains("plain-own-0317"));
+}

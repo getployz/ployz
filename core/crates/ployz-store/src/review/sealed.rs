@@ -277,13 +277,45 @@ fn sealed_above(
     // One that reached it since, by Follow or Sync, is in what it shares above.
     let mut keys = vec![was.key.clone()];
     keys.extend(made.map(|made| made.key));
-    chain.shared_sealed(
+    if chain.shared_sealed(
         tx,
         environment.as_str(),
         lineage,
         keys,
         &was.value_fingerprint,
+    )? {
+        return Ok(true);
+    }
+    // Or its text is what one above held before sealing it, once a seal reaching it
+    // has emptied what it shares (#3794).
+    chain.sealed_by_ancestor(
+        tx,
+        environment.as_str(),
+        lineage,
+        &was.key,
+        &was.value_fingerprint,
     )
+}
+
+/// Which values an Environment above a Branch sealed since, by their text: what a
+/// Follow hint must never offer back (#3794). Reads each Environment once.
+#[derive(Default)]
+pub(crate) struct AncestorSeals(Chain);
+
+impl AncestorSeals {
+    /// Whether the plain value at `fingerprint` of row `lineage`, `key` in `branch`
+    /// is one an Environment above it held before sealing it.
+    pub(crate) fn sealed(
+        &mut self,
+        tx: &mut dyn Tx,
+        branch: &str,
+        lineage: &str,
+        key: &str,
+        fingerprint: &str,
+    ) -> Result<bool, RpcError> {
+        self.0
+            .sealed_by_ancestor(tx, branch, lineage, key, fingerprint)
+    }
 }
 
 /// Each variable a Branch was made with, or copied from a node's owner since, that
@@ -326,6 +358,9 @@ struct Chain {
     shared: BTreeMap<String, Option<(String, SavedEnvironmentIntent)>>,
     /// By Environment, its Working State.
     working: BTreeMap<String, SavedEnvironmentIntent>,
+    /// By Environment, lineage and key, the fingerprints it held plain before it
+    /// sealed that row.
+    held: BTreeMap<(String, String, String), BTreeSet<String>>,
 }
 
 /// A variable as a Node Introduction holds it.
@@ -468,6 +503,44 @@ impl Chain {
             keys = vec![key];
             at = parent;
         }
+    }
+
+    /// Whether an Environment above `environment`, by its Parents, holds the row
+    /// `lineage`, `key` sealed now and held it plain at `fingerprint` before: the
+    /// value is that secret's text, however it reached `environment` (#3794). Unlike
+    /// [`Self::shared_sealed`], it needs no Sync base to still hold the fingerprint,
+    /// which a seal reaching a Branch below empties.
+    fn sealed_by_ancestor(
+        &mut self,
+        tx: &mut dyn Tx,
+        environment: &str,
+        lineage: &str,
+        key: &str,
+        fingerprint: &str,
+    ) -> Result<bool, RpcError> {
+        if fingerprint.is_empty() {
+            return Ok(false);
+        }
+        let mut at = environment.to_owned();
+        while let Some((parent, _)) = self.shared_above(tx, &at)? {
+            let parent = parent.clone();
+            if self.sealed_now(tx, &parent, lineage, key)? {
+                let row = (parent.clone(), lineage.to_owned(), key.to_owned());
+                if !self.held.contains_key(&row) {
+                    let held = crate::branch::held_by_sealer(tx, &parent, lineage, key)?;
+                    self.held.insert(row.clone(), held);
+                }
+                if self
+                    .held
+                    .get(&row)
+                    .is_some_and(|held| held.contains(fingerprint))
+                {
+                    return Ok(true);
+                }
+            }
+            at = parent;
+        }
+        Ok(false)
     }
 
     /// Whether `environment` holds the row `lineage`, `key` sealed now: sealed in
