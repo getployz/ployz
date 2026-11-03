@@ -381,6 +381,61 @@ async fn an_entry_that_refuses_the_redial_fails_the_create_with_its_refusal_at_o
     client.assert_done();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_refused_redial_after_a_lost_reply_still_says_the_create_may_have_happened() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
+    let lost = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "connection lost".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
+    .reply_lost_from(&machine);
+    let refusal = crate::connect::rpc_error(crate::connect::ConnectError::ClusterMismatch {
+        machine_id: machine,
+    });
+    let mut client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Error(lost),
+        ),
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Error(crate::connect::closed_session_error()),
+        ),
+        Step(
+            Call::DiscardSlot(machine, ContainerKind::ServiceContainer),
+            Reply::Error(crate::connect::closed_session_error()),
+        ),
+    ]);
+    client.redial = Some(Err(RedialFailure::Refused(refusal.clone())));
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    let DeployOutcome::Failed {
+        failed:
+            FailedOperation::Operation {
+                error: ExecutionError::Machine { error, .. },
+                ..
+            },
+        ..
+    } = &outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(
+        (&error.code, &error.message),
+        (&refusal.code, &refusal.message)
+    );
+    assert!(error.reply_lost(), "{error:?}");
+    assert_eq!(
+        error.details.get("machine_id"),
+        Some(&serde_json::json!(machine.to_string()))
+    );
+    client.assert_done();
+}
+
 fn resent(machine: MachineId, id: &ContainerId) -> [Step; 2] {
     [
         failed_unavailable(

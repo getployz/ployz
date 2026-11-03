@@ -17,6 +17,8 @@ pub(crate) mod cleanup;
 mod convergence;
 mod exec;
 pub(crate) use exec::MachineOperations;
+#[cfg(test)]
+pub(crate) use exec::RedialFailure;
 pub(crate) mod pipeline;
 mod planning;
 mod progress;

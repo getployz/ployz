@@ -49,8 +49,47 @@ where
     F: Fn(Request<OpaquePayload>) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<Response<OpaquePayload>, Status>> + Send + 'static,
 {
+    connected_client(unary_service(rpc), false).await
+}
+
+/// A channel to [`rpc_client`]'s daemon that takes one call at a time and connects only
+/// once `connect` is notified. A call sent first holds its one place, so the next call
+/// waits to be ready until then.
+pub(crate) fn waiting_channel<F, Fut>(rpc: F, connect: Arc<tokio::sync::Notify>) -> Channel
+where
+    F: Fn(Request<OpaquePayload>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<OpaquePayload>, Status>> + Send + 'static,
+{
+    let (client_io, _server) = serve_memory(unary_service(rpc), false);
+    let client_io = Arc::new(Mutex::new(Some(client_io)));
+    tonic::transport::Endpoint::from_static("http://memory.invalid")
+        .buffer_size(1)
+        .connect_with_connector_lazy(tower::service_fn(move |_| {
+            let client_io = client_io.lock().unwrap().take().unwrap();
+            let connect = connect.clone();
+            async move {
+                connect.notified().await;
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client_io))
+            }
+        }))
+}
+
+fn unary_service<F, Fut>(
+    rpc: F,
+) -> impl tower::Service<
+    http::Request<tonic::body::Body>,
+    Response = http::Response<tonic::body::Body>,
+    Error = Infallible,
+    Future: Send,
+> + Clone
++ Send
++ 'static
+where
+    F: Fn(Request<OpaquePayload>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<OpaquePayload>, Status>> + Send + 'static,
+{
     let rpc = tower::service_fn(rpc);
-    let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
+    tower::service_fn(move |request: http::Request<tonic::body::Body>| {
         let rpc = rpc.clone();
         async move {
             Ok::<_, Infallible>(
@@ -59,8 +98,7 @@ where
                     .await,
             )
         }
-    });
-    connected_client(service, false).await
+    })
 }
 
 pub(crate) async fn rpc_stream_client<F, Fut, S>(
@@ -281,6 +319,37 @@ where
         + 'static,
     S::Future: Send,
 {
+    let (client_io, server) = serve_memory(service, severable);
+    let client_io = Arc::new(Mutex::new(Some(client_io)));
+    let channel = Channel::from_static("http://memory.invalid")
+        .connect_with_connector(tower::service_fn(move |_| {
+            std::future::ready(Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(
+                client_io.lock().unwrap().take().unwrap(),
+            )))
+        }))
+        .await
+        .unwrap();
+    (channel, server)
+}
+
+/// Serve `service` on one in-memory connection, returning the client's end.
+fn serve_memory<S>(
+    service: S,
+    severable: bool,
+) -> (
+    tokio::io::DuplexStream,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+)
+where
+    S: tower::Service<
+            http::Request<tonic::body::Body>,
+            Response = http::Response<tonic::body::Body>,
+            Error = Infallible,
+        > + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+{
     // Both peers run inside Tokio; clock advancement cannot outrun socket I/O.
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let (server_io, link) = if severable {
@@ -304,16 +373,7 @@ where
             None => serve.await,
         }
     });
-    let client_io = Arc::new(Mutex::new(Some(client_io)));
-    let channel = Channel::from_static("http://memory.invalid")
-        .connect_with_connector(tower::service_fn(move |_| {
-            std::future::ready(Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(
-                client_io.lock().unwrap().take().unwrap(),
-            )))
-        }))
-        .await
-        .unwrap();
-    (channel, server)
+    (client_io, server)
 }
 
 async fn connected_client<S>(

@@ -713,7 +713,10 @@ where
             && Instant::now() < deadline
             && !cancellation.is_cancelled()
             // Nothing sent on a closed session reaches a daemon again.
-            && (!closed || redialed(&mut redial, deadline, cancellation).await?);
+            && (!closed
+                || redialed(&mut redial, deadline, cancellation)
+                    .await
+                    .map_err(|refusal| still_lost(refusal, lost.as_ref()))?);
         if !again {
             return Err(error);
         }
@@ -721,6 +724,15 @@ where
             () = cancellation.cancelled() => return Err(error),
             () = tokio::time::sleep(RESTART_POLL) => {}
         }
+    }
+}
+
+/// `refusal`, still saying the Machine may have done the send whose reply was `lost`.
+fn still_lost(refusal: RpcError, lost: Option<&RpcError>) -> RpcError {
+    let machine = lost.and_then(|lost| lost.details.get("machine_id")?.as_str()?.parse().ok());
+    match machine {
+        Some(machine) => refusal.reply_lost_from(&machine),
+        None => refusal,
     }
 }
 
