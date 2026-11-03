@@ -784,9 +784,17 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             details: json!({ "management_protocol": "older" }),
             cause: Vec::new(),
         },
-        error @ (ConnectError::IdentityMismatch { .. }
-        | ConnectError::ClusterMismatch { .. }
-        | ConnectError::ClusterUnverified { .. }
+        // A refused entry: the call never went out, whatever answered the dial.
+        error @ (ConnectError::IdentityMismatch { .. } | ConnectError::ClusterMismatch { .. }) => {
+            RpcError {
+                code: RpcErrorCode::Unauthenticated,
+                message: error.to_string(),
+                details: Value::Null,
+                cause: Vec::new(),
+            }
+            .unreached()
+        }
+        error @ (ConnectError::ClusterUnverified { .. }
         | ConnectError::PredatesSealing { .. }
         | ConnectError::ClientRefused
         | ConnectError::TunnelNeedsFull) => RpcError {
@@ -1655,6 +1663,15 @@ impl TransportError {
     /// A status tonic or the daemon made, such as a decode failure, is not one.
     pub(crate) fn connection_lost(&self) -> bool {
         self.unanswered || self.session_closed || self.routed_unanswered || self.routed_unreached
+    }
+
+    /// `error`, which ended the client before the stream opened, as [`rpc_error`] gives it.
+    pub(crate) fn client_ended(error: ConnectError) -> Self {
+        let status = tonic::Status::unauthenticated(error.to_string());
+        Self {
+            details: rpc_error(error).details,
+            ..Self::from(status)
+        }
     }
 
     pub(crate) fn budget_expired(message: &str) -> Self {

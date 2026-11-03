@@ -79,9 +79,15 @@ pub struct Client {
 }
 
 /// The entry a redial found in another Cluster, shared by every clone of a client and
-/// the streams it opened. The client ends then: no clone sends or dials again, and a call
-/// still waiting to send fails instead. A request the daemon already received isn't
-/// undone, and its reply may still arrive.
+/// the streams it opened. The client ends then: no new call, stream or dial starts on any
+/// clone. Work already started may still complete:
+/// - a dial or tunnel in progress;
+/// - a request already handed to the channel, including one waiting for its connection,
+///   which tonic's own Tcp/Unix reconnect may carry;
+/// - a send racing the refusal on another thread.
+///
+/// Where the client sees such a result afterwards, it returns the refusal instead. A
+/// request the daemon received isn't undone.
 #[derive(Clone, Default)]
 pub(crate) struct Refusal(Arc<std::sync::OnceLock<MachineId>>);
 
@@ -691,18 +697,20 @@ impl Client {
     /// channel stays ready, so the stream opens with no wait after the check.
     async fn machine_rpc(&self) -> Result<MachineRpcClient<Channel>, TransportError> {
         let channel = self.ready_channel().await.map_err(|error| {
-            // Worded as the generated client words a channel that isn't ready.
-            TransportError::from(if let ConnectError::Dial(error) = &error {
-                tonic::Status::unknown(format!("Service was not ready: {error}"))
+            if let ConnectError::Dial(error) = error {
+                // Worded as the generated client words a channel that isn't ready.
+                TransportError::from(tonic::Status::unknown(format!(
+                    "Service was not ready: {error}"
+                )))
             } else {
-                tonic::Status::unauthenticated(error.to_string())
-            })
+                TransportError::client_ended(error)
+            }
         })?;
         Ok(MachineRpcClient::new(channel)
             .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
     }
 
-    /// `input` until the client ends, so a stream it opened sends nothing after that.
+    /// `input` until the client ends, so a stream it opened takes no more input after that.
     fn until_ended(
         &self,
         input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
@@ -1608,8 +1616,9 @@ impl Client {
 /// keeps its own words.
 pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
-        // Only a failure a retry may fix is marked unreached: a refused key or another
-        // lasting failure is what the user acts on, so it keeps its own words.
+        // Only a failure a retry may fix is marked unreached here: a refused key or another
+        // lasting failure is what the user acts on, so it keeps its own words. A refused
+        // entry comes marked by `rpc_error`, and keeps its words too.
         let (lost, unreached) = (
             error.unreplied(),
             error.unreached() && error.retry() != ployz_core::Retry::Never,
@@ -1623,7 +1632,13 @@ pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcErr
             error
         };
     }
-    unanswered_by(machine_id, rpc_error(error))
+    // Named in the details too, as a lost reply is, so a refusal after it can still say
+    // which Machine may have done the call.
+    let mut silent = unanswered_by(machine_id, rpc_error(error));
+    if let serde_json::Value::Object(details) = &mut silent.details {
+        details.insert("machine_id".into(), machine_id.to_string().into());
+    }
+    silent
 }
 
 /// `error`, from a call `machine` left unanswered, naming it in the deepest line.

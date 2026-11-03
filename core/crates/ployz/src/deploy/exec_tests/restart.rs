@@ -381,38 +381,49 @@ async fn an_entry_that_refuses_the_redial_fails_the_create_with_its_refusal_at_o
     client.assert_done();
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_refused_redial_after_a_lost_reply_still_says_the_create_may_have_happened() {
-    let machine = machine('1');
+/// How a refusal reaches a create that waits out a restart.
+#[derive(Clone, Copy, Debug)]
+enum Refused {
+    /// The create meets a closed session, and the redial is refused.
+    OnRedial,
+    /// The client already ended, so the create itself fails with the refusal.
+    AtTheGate,
+}
+
+/// The error of a create on `machine` whose first send failed with `earlier`, and whose
+/// next one met `refusal` as `refused` says.
+async fn refused_after(
+    machine: MachineId,
+    earlier: RpcError,
+    refusal: &RpcError,
+    refused: Refused,
+) -> RpcError {
     let plan = vec![run(&machine, spec(Some(0), None, None), false)];
-    let lost = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "connection lost".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
-    .reply_lost_from(&machine);
-    let refusal = crate::connect::rpc_error(crate::connect::ConnectError::ClusterMismatch {
-        machine_id: machine,
-    });
+    let next = match refused {
+        Refused::OnRedial => crate::connect::closed_session_error(),
+        Refused::AtTheGate => refusal.clone(),
+    };
     let mut client = Scripted::new(vec![
         Step(
             Call::Run(machine, ContainerKind::ServiceContainer),
-            Reply::Error(lost),
+            Reply::Error(earlier),
         ),
         Step(
             Call::Run(machine, ContainerKind::ServiceContainer),
-            Reply::Error(crate::connect::closed_session_error()),
+            Reply::Error(next.clone()),
         ),
         Step(
             Call::DiscardSlot(machine, ContainerKind::ServiceContainer),
-            Reply::Error(crate::connect::closed_session_error()),
+            Reply::Error(next),
         ),
     ]);
-    client.redial = Some(Err(RedialFailure::Refused(refusal.clone())));
+    if let Refused::OnRedial = refused {
+        client.redial = Some(Err(RedialFailure::Refused(refusal.clone())));
+    }
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
+    client.assert_done();
     let DeployOutcome::Failed {
         failed:
             FailedOperation::Operation {
@@ -420,20 +431,72 @@ async fn a_refused_redial_after_a_lost_reply_still_says_the_create_may_have_happ
                 ..
             },
         ..
-    } = &outcome
+    } = outcome
     else {
         panic!("{outcome:?}");
     };
-    assert_eq!(
-        (&error.code, &error.message),
-        (&refusal.code, &refusal.message)
+    error
+}
+
+/// The refusals an ended client or its redial gives.
+fn refusals(entry: MachineId) -> [RpcError; 2] {
+    [
+        crate::connect::ConnectError::ClusterMismatch { machine_id: entry },
+        crate::connect::ConnectError::IdentityMismatch {
+            expected: entry,
+            actual: machine('2'),
+        },
+    ]
+    .map(crate::connect::rpc_error)
+}
+
+/// Whether `error` is `refusal`, still saying the create may have happened on `machine`.
+fn still_may_have_happened(error: &RpcError, refusal: &RpcError, machine: MachineId) -> bool {
+    (&error.code, &error.message) == (&refusal.code, &refusal.message)
+        && error.reply_lost()
+        && error.details.get("machine_id") == Some(&serde_json::json!(machine.to_string()))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refusal_after_a_lost_reply_still_says_the_create_may_have_happened() {
+    let machine = machine('1');
+    let lost = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "connection lost".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
+    .reply_lost_from(&machine);
+    for refusal in refusals(machine) {
+        for refused in [Refused::OnRedial, Refused::AtTheGate] {
+            let error = refused_after(machine, lost.clone(), &refusal, refused).await;
+            assert!(
+                still_may_have_happened(&error, &refusal, machine),
+                "{refused:?}: {error:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refusal_after_a_silence_still_says_the_create_may_have_happened() {
+    let machine = machine('1');
+    let silent = crate::cluster::answered_by(
+        &machine,
+        crate::connect::ConnectError::Rpc(crate::connect::TransportError::budget_expired(
+            "target Machine RPC timed out",
+        )),
     );
-    assert!(error.reply_lost(), "{error:?}");
-    assert_eq!(
-        error.details.get("machine_id"),
-        Some(&serde_json::json!(machine.to_string()))
-    );
-    client.assert_done();
+    assert!(silent.target_unanswered(), "{silent:?}");
+    for refusal in refusals(machine) {
+        for refused in [Refused::OnRedial, Refused::AtTheGate] {
+            let error = refused_after(machine, silent.clone(), &refusal, refused).await;
+            assert!(
+                still_may_have_happened(&error, &refusal, machine),
+                "{refused:?}: {error:?}"
+            );
+        }
+    }
 }
 
 fn resent(machine: MachineId, id: &ContainerId) -> [Step; 2] {

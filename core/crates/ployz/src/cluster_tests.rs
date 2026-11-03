@@ -41,6 +41,7 @@ fn an_unanswered_call_names_the_machine_in_its_deepest_line() {
     );
     assert!(error.cause.is_empty(), "{:?}", error.cause);
     assert!(error.target_unanswered());
+    assert_eq!(error.details.get("machine_id"), Some(&json!(machine)));
     let row = ployz_store::Failure::of(
         &crate::deploy::ExecutionError::Machine {
             action: ployz_core::MachineAction::CreateContainer,

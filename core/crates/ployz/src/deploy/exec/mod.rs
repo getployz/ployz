@@ -686,6 +686,12 @@ where
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
+        // A lasting failure that never reached the Machine, as an ended client's refusal of
+        // its entry, says nothing of it either: it ends the wait in its own words, still
+        // saying what earlier sends may have done.
+        if error.never_reached() && error.code.retry() == Retry::Never {
+            return Err(still_lost(error, lost.as_ref().or(silent.as_ref())));
+        }
         let closed = crate::connect::on_closed_session(&error);
         // A send that never reached the Machine, or met a closed session, says nothing of
         // it, so it is never kept.
@@ -716,7 +722,7 @@ where
             && (!closed
                 || redialed(&mut redial, deadline, cancellation)
                     .await
-                    .map_err(|refusal| still_lost(refusal, lost.as_ref()))?);
+                    .map_err(|refusal| still_lost(refusal, lost.as_ref().or(silent.as_ref())))?);
         if !again {
             return Err(error);
         }
@@ -727,9 +733,11 @@ where
     }
 }
 
-/// `refusal`, still saying the Machine may have done the send whose reply was `lost`.
-fn still_lost(refusal: RpcError, lost: Option<&RpcError>) -> RpcError {
-    let machine = lost.and_then(|lost| lost.details.get("machine_id")?.as_str()?.parse().ok());
+/// `refusal`, still saying the Machine may have done the `earlier` send whose reply was
+/// lost, or that it left unanswered.
+fn still_lost(refusal: RpcError, earlier: Option<&RpcError>) -> RpcError {
+    let machine =
+        earlier.and_then(|earlier| earlier.details.get("machine_id")?.as_str()?.parse().ok());
     match machine {
         Some(machine) => refusal.reply_lost_from(&machine),
         None => refusal,
