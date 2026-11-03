@@ -1349,14 +1349,26 @@ pub(super) async fn let_requests_act(long: Duration) {
 pub(super) async fn receive_ready(test: &TestDir) -> String {
     let ready = test.0.join("props/receive-ready");
     eventually("the receive's dataset", || ready.exists()).await;
-    fs::read_to_string(ready).unwrap().trim().to_owned()
+    pid_in(&ready)
 }
 
 /// Waits for the fake receive to start, and answers its pid.
 async fn receive_pid(test: &TestDir) -> String {
     let pid = test.0.join("props/receive-pid");
     eventually("the receive's start", || pid.exists()).await;
-    fs::read_to_string(pid).unwrap().trim().to_owned()
+    pid_in(&pid)
+}
+
+/// The pid the fake receive wrote to `file`, which it writes in one rename. An empty
+/// one would name `/proc/` itself, which always exists.
+fn pid_in(file: &Path) -> String {
+    let pid = fs::read_to_string(file).unwrap().trim().to_owned();
+    assert!(
+        pid.parse::<u32>().is_ok(),
+        "{} holds no pid: {pid:?}",
+        file.display()
+    );
+    pid
 }
 
 #[tokio::test]
