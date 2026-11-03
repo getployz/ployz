@@ -954,7 +954,7 @@ describe("organization enrollment coordinator", () => {
     expect(completed.failure).toMatchObject({ _tag: "Unavailable", userFacing: true });
     expect(completed.failure.message.startsWith(opening)).toBe(true);
     expect(completed.failure.message).toContain("Update ployz where you run ployz server add: curl -fsSL https://ployz.sh | sh (with sudo on the Server).");
-    expect(completed.failure.message).toContain("rerun the same ployz server add while a server that holds your cluster's key is online");
+    expect(completed.failure.message).toContain("rerun ployz server add while a server that holds your cluster's key is online");
     expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
   });
 

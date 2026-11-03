@@ -79,7 +79,7 @@ const predatesSealingRefusal = (error: PloyzProviderError) => {
   return new Unavailable({
     message: `This Server runs ${release === undefined ? "a Ployz older than 0.3.3" : `Ployz ${release}`}, which can't finish joining `
       + "a cluster that has a Sealing Key. Update ployz where you run ployz server add: "
-      + "curl -fsSL https://ployz.sh | sh (with sudo on the Server). Then rerun the same ployz server add while a server "
+      + "curl -fsSL https://ployz.sh | sh (with sudo on the Server). Then rerun ployz server add while a server "
       + "that holds your cluster's key is online.",
     userFacing: true,
     cause: error,
