@@ -13,7 +13,6 @@ export function orgStoreSeed<Row>(rows: Row[]): ChangeSnapshot<Row> {
 
 type Subscribable = { subscribeChanges: (callback: () => void) => { unsubscribe: () => void } };
 
-/** Holds an observer on every Org Store table, as a mounted dashboard does. */
 export function subscribeOrgStoreTables(organizationSlug: string, scope: CollectionScope) {
   return Object.values(orgStoreTables).map((get) => {
     const collection: Subscribable = get(organizationSlug, scope);

@@ -65,10 +65,6 @@ export function getGithubReposCollection(scope: GithubCollectionScope) {
   return collection;
 }
 
-/**
- * Start a picker's reads together (repositories, access) when it opens or is about to;
- * failures surface through the picker's live queries.
- */
 export function preloadGithubRepos(scope: GithubCollectionScope) {
   void preloadCollection(getGithubReposCollection(scope)).catch(() => {});
   void scope.queryClient.prefetchQuery(githubRepoAccessQueryOptions(scope.organizationSlug));

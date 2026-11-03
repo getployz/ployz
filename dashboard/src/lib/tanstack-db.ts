@@ -32,8 +32,7 @@ export function parseLiveQueryRow<S extends Schema.ConstraintDecoder<object>>(
 
 // TanStack types live-query rows with the four virtual props ($hasPendingWrites,
 // $origin, $key, $collectionId), but app-facing collection types use the plain
-// row shape. This boundary re-types the collection in one place; the virtual
-// props are additive metadata, so reading rows through the plain type is safe.
+// row shape.
 export function plainRowCollection<
   Row extends VirtualRowProps,
   Utils extends UtilsRecord,
