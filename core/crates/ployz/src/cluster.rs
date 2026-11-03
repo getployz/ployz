@@ -242,12 +242,18 @@ impl Client {
     /// confirmed names one and the daemon doesn't say.
     async fn confirmed_entry(&self) -> Result<Option<MachineId>, ConnectError> {
         let (entry, sealing) = self.confirmation().await?;
-        // Only a held key tells the Cluster without Inspect; a confirmation without one
-        // leaves the redial to the Machine ID, as before.
-        if let (Some(cluster), Some(machine_id), Some(held @ ployz_core::Sealing::Held { .. })) =
-            (&self.cluster, entry, sealing)
+        // Only a key tells the Cluster without Inspect; a confirmation without one leaves the
+        // redial to the Machine ID, as before.
+        if let (
+            Some(cluster),
+            Some(machine_id),
+            Some(
+                key @ (ployz_core::Sealing::Held { .. }
+                | ployz_core::Sealing::AwaitsRecovery { .. }),
+            ),
+        ) = (&self.cluster, entry, sealing)
         {
-            cluster.expect.check(machine_id, Some(held), None)?;
+            cluster.expect.check(machine_id, Some(key), None)?;
         }
         Ok(entry)
     }
