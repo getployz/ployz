@@ -253,13 +253,29 @@ there may be the last copy of a volume.
 
 ## The server's Cluster is connected to another Organization
 
-You'll see `This Server's Cluster is already connected to another Organization in Ployz Cloud.`
+Adding your organization's first server, `ployz server add` can stop with:
+
+```text
+error: Cloud enrollment completion failed; rerun the same ployz server add command without --reset (keep all other options).
+  cause: enroll HTTP 409: enrollment completion rejected
+```
+
+If `ployz server add` was going to show you a recovery code, the first line is
+`Recovery code not saved. Run ployz recovery rotate now to make one.` instead, with the same cause.
+`ployz server enroll --status` shows `Failed ·` and the same text, with
+`run ployz server enroll again, or use Enroll in Servers > Waiting to join` as its retry advice.
+**Servers > Waiting to join** shows **Failed at Going live** over that text.
+
+The CLI prints this for other refusals too, so rerun the command once. If it fails the same way again, the
+server's Cluster may be connected to another Organization. Ployz Cloud's own answer then says
+`This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.`
+The CLI doesn't show that sentence yet.
 
 Ployz Cloud connects a Cluster to one Organization: the first one that added it. The server you're
 adding belongs to a Cluster another Organization already added, so this Organization can't manage
-it. Add a server that isn't in that Cluster, or manage it from the Organization that added it. To
-move the Cluster to this Organization, or if you don't recognize the other one, contact Ployz
-support.
+it. Add a server that isn't in that Cluster instead, or manage it from the Organization that added
+it. On ployz.dev, to move the Cluster to this Organization, or if you don't recognize the other one,
+contact Ployz support. On a self-hosted Ployz Cloud, ask whoever runs it.
 
 ## The server doesn't finish joining
 
