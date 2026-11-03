@@ -98,7 +98,7 @@ export const clusterExpectation = (loaded: { readonly sealingPublicKey: string |
 /** Logs the Servers a dial left because they run in another Cluster, so it used another of the Organization's. */
 export const logForeignServers = (organizationId: string, machineIds: readonly string[]) => machineIds.length === 0 ? Effect.void
   : Effect.logError("A Server Cloud holds a connection for runs in another Cluster; Cloud didn't use it.")
-    .pipe(Effect.annotateLogs({ organizationId, machineIds }));
+    .pipe(Effect.annotateLogs({ organizationId, machineIds: [...new Set(machineIds)] }));
 
 /**
  * What a dial that hands one of pairing `clusterKey`'s Servers no access, as a Clear or a push target, expects of its
