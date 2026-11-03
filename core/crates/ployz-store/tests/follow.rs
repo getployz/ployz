@@ -4629,8 +4629,9 @@ fn a_followed_value_shows_in_history_again_once_the_branch_between_takes_the_sea
     assert!(!history.contains("plain-private-0317"), "{history}");
 }
 
-/// A Parent that took a seal still hints below a plain value it adds again after
-/// deleting the sealed one: only text from before the seal is held back (#3794).
+/// A Parent that took a seal and deployed it still hints below a plain value it adds
+/// again after deleting the sealed one: only text from before the seal is held back,
+/// and a row it holds plain now is not sealed now (#3794).
 #[test]
 fn a_value_the_parent_adds_again_plain_after_its_seal_is_still_hinted_below() {
     let (store, who) = shop();
@@ -4644,6 +4645,12 @@ fn a_value_the_parent_adds_again_plain_after_its_seal_is_still_hinted_below() {
     set(&store, &who, "qa-two", &token("plain-own-0317"));
     deploy(&store, &who, "qa-two", 5);
     seal_token(&store, &who, 6);
+    // qa has no change of its own, so it takes the seal staged and deploys it: it
+    // holds the row sealed, and its seal ledger has it.
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!({ "secret": false })
+    );
     deploy(&store, &who, "qa", 7);
     unset(&store, &who, "qa", "web.env.TOKEN");
     deploy(&store, &who, "qa", 8);
