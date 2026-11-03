@@ -195,6 +195,24 @@ describe("the Organization's Sealing Key", () => {
 
         expect(await owner()).toEqual([{ organization_id: organizationId }]);
       });
+
+      it("gives it to the earlier recorder, not the lower Organization", async () => {
+        await harness.pool.query(
+          "insert into cluster_sealing_key (organization_id, cluster_key, public_key, created_at) values ($1, $2, $3, now() - interval '1 day')",
+          [other, clusterB, sealingKey("A")],
+        );
+        await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
+
+        expect(await owner()).toEqual([{ organization_id: other }]);
+      });
+    });
+
+    it("refuses a key another Organization kept after forgetting its Servers, though nothing gave it an owner", async () => {
+      await store(sealingKey("A"), backup(2));
+      expect(await failure(recordSealingPublicKey(other, clusterB, sealingKey("A")))).toBeInstanceOf(SealingKeyHeldElsewhere);
+      await run(recordSealingPublicKey(organizationId, clusterA, sealingKey("A")));
+
+      expect(await owner()).toEqual([{ organization_id: organizationId }]);
     });
 
     it("gives a key two Organizations report at once to exactly one of them", async () => {
