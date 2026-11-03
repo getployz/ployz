@@ -1,13 +1,14 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { API } from "typescript/unstable/sync";
+import { API, SignatureKind, type Type } from "typescript/unstable/sync";
 import type { Node, SourceFile } from "typescript/unstable/ast";
 import {
   isAwaitExpression,
   isCallExpression,
   isIdentifier,
   isImportDeclaration,
+  isInterfaceDeclaration,
   isMethodDeclaration,
   isNamedImports,
   isObjectLiteralExpression,
@@ -131,12 +132,10 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "deleting an Environment or Project is destructive: it reads what goes before the user confirms, then shows what the Store still has to take off",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions.tsx": "deploying starts runtime work and opens the admitted Deployment, and a Deploy or Save only that deletes Volume data asks the user first (Save only itself shows at once), and Discard all discards staged Volume placements only after the Store discard lands",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage.tsx": "retry starts runtime work and opens the new Deployment",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/StorePrPlanPanel.tsx": "a new Start from shows at once; the panel watches its answer only to move back over the canvas it was on when refused",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useConfigCreator.ts": "creates the canvas node at once, then opens its files once the Store can serve the new Config",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeSize.tsx": "a grow is a Volume Run on the Servers, not a Store write; the row shows the Run's progress once Cloud admits it, and its refusal if it doesn't",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreConfigDrawer.tsx": "saves optimistically and retains submitted file drafts through queued refreshes until their own save succeeds",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "hands a new Project's Service save to service-create-command, whose next page can't show it before the Store has it",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useDeleteService.ts": "a Database Preset's removal shows at once; its Volume's data goes only once the Store accepts the Service's removal",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/branch-close.tsx": "closing a Branch is destructive: its removal may ask before deleting Volume data",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/SyncDialog.tsx": "the page opens the receiver once it holds the synced changes, and a stale review keeps the dialog open with the fresh rows",
@@ -217,13 +216,17 @@ describe("data boundaries", () => {
           const line = source.text.slice(0, node.pos).split("\n").length;
           violations.push(`${relative(SRC, source.fileName)}:${line} ${message}`);
         };
-        /** `x.isPersisted`, or `isPersisted` destructured from a write. */
-        const isPersistedRef = (node: Node) => (isPropertyAccessExpression(node) && node.name.text === "isPersisted")
-          || (isIdentifier(node) && node.text === "isPersisted");
-        /** `x.isPersisted.promise`, directly or under `.catch(...)` and the like. */
-        const persistenceChain = (node: Node): boolean => isPropertyAccessExpression(node)
-          ? (node.name.text === "promise" && isPersistedRef(node.expression)) || persistenceChain(node.expression)
-          : isCallExpression(node) && persistenceChain(node.expression);
+        const { checker } = project;
+        const writeSource = project.program.getSourceFile(join(SRC, "modules/config-store/store-write.ts"));
+        const writeDeclaration = writeSource?.statements.find((statement) => isInterfaceDeclaration(statement) && statement.name.text === "Write");
+        const writeSymbol = writeDeclaration && isInterfaceDeclaration(writeDeclaration) ? checker.getSymbolAtLocation(writeDeclaration.name) : undefined;
+        if (!writeSymbol) throw new Error("store-write.ts declares no Write");
+        const named = (type: Type | undefined) => type?.getSymbol()?.id === writeSymbol.id;
+        const isWrite = (node: Node) => named(checker.getTypeAtLocation(node));
+        const makesWrite = (node: Node) => {
+          const type = checker.getTypeAtLocation(node);
+          return type !== undefined && checker.getSignaturesOfType(type, SignatureKind.Call).some((signature) => named(checker.getReturnTypeOfSignature(signature)));
+        };
         const calleeName = (node: Node) => {
           if (!isCallExpression(node)) return null;
           if (isIdentifier(node.expression)) return node.expression.text;
@@ -287,19 +290,14 @@ describe("data boundaries", () => {
             if (isUi && isAwaitExpression(node)) {
               const awaited = node.expression;
               const awaitedName = calleeName(awaited);
-              const persistence = isPropertyAccessExpression(awaited) && awaited.name.text === "promise" && isPersistedRef(awaited.expression);
-              if (persistence || (awaitedName && (/ServerFn$/.test(awaitedName) || serverCalls.has(awaitedName)))) {
+              const handsOnWrites = isCallExpression(awaited) && awaited.arguments.some(makesWrite);
+              if (isWrite(awaited) || handsOnWrites || (awaitedName && (/ServerFn$/.test(awaitedName) || serverCalls.has(awaitedName)))) {
                 awaitingUi.add(relative(SRC, source.fileName));
               }
             }
-            // A save's promise handed on (to a helper that awaits it) waits for it too; `.catch` only rolls back.
-            if (isUi && isPropertyAccessExpression(node) && node.name.text === "promise" && isPersistedRef(node.expression)
-              && !(isPropertyAccessExpression(node.parent) && node.parent.name.text === "catch")) {
-              awaitingUi.add(relative(SRC, source.fileName));
-            }
             // Chaining .then or .finally on a save waits for it just as `await` does.
             if (isUi && isCallExpression(node) && isPropertyAccessExpression(node.expression)
-              && ["then", "finally"].includes(node.expression.name.text) && persistenceChain(node.expression.expression)) {
+              && ["then", "finally"].includes(node.expression.name.text) && isWrite(node.expression.expression)) {
               awaitingUi.add(relative(SRC, source.fileName));
             }
             const name = calleeName(node);

@@ -123,7 +123,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         // A Setup Command runs in an Own Copy, and only while the Branch copies data.
         setup: branchSetupCommands(plan, setupCommands).map((setup) => ({ service: setup.lineageId, command: setup.command })),
         fix,
-      }).isPersisted.promise;
+      });
       // The writer toasts a refused Deploy; the Branch is made either way.
       if (deployNow) writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: branch, services: [], version: null, accept_volume_loss: [] });
       await navigate(getDashboardDestination({

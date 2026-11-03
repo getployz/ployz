@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { SettingsRow } from "#/components/settings/settings-section";
-import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import type { Write } from "#/modules/config-store/store-write";
 
 /**
  * An optional command: an input with a placeholder, blank while unset. Enter or leaving the field saves it (blank
@@ -16,7 +16,7 @@ export function ServiceCommandField({ label, description, placeholder, value: st
   baselineValue?: string;
   isChanged: boolean;
   validate: (raw: string) => string | null;
-  onCommit: (value: string | null) => PersistableTransaction;
+  onCommit: (value: string | null) => Write;
 }) {
   const [value, hold] = useCommitHold(stored);
   // The draft follows `value` until edited.

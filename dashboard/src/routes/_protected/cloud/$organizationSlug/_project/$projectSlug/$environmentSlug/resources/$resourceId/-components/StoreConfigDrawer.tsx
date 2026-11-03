@@ -134,7 +134,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
     setPendingSaves((current) => new Set(current).add(submitted));
     setFailedSaves((current) => new Set([...current].filter((file) => !submitted.has(file))));
     setSaveError(null);
-    writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).isPersisted.promise.then(() => {
+    writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).then(() => {
       setDrafts((current) => new Map([...current].filter(([file, value]) => submitted.get(file) !== value)));
     }).catch((error) => {
       setFailedSaves((current) => new Set([...current, ...[...submitted.keys()].filter((file) => submittedFiles.current.get(file) === submitted)]));
@@ -158,7 +158,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
     if (!stored.includes(file)) return;
     const write = writer.commit({ command: "remove_config_file", environment: state.environment, config: state.config.name, file }, SHOWN_REFUSALS);
     holdRemoved(new Set([...removed, file]), write);
-    write.isPersisted.promise.catch((error) => {
+    write.catch((error) => {
       if (submittedFiles.current.get(file) !== submitted) return;
       setDrafts((current) => new Map([...submitted, ...current]));
       setSaveError(error instanceof StoreRefused ? error.message : "Couldn't remove the file.");

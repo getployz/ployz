@@ -23,8 +23,7 @@ import { scalarSetting, serviceSetting, settingChange, settingError, type Servic
 import { templateLabel } from "#/modules/config-store/database-presets";
 import { changedProps, deployedVcpuLimit, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
-import type { Persistable } from "#/collections/query-collection";
-import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStoreWriter, type Write } from "#/modules/config-store/store-write";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { SettingsAddButton, SettingsDanger, SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
@@ -73,9 +72,9 @@ export type StoreService = {
   /** Setting `name`'s Store path: `SERVICE.name`. */
   path: (name: string) => string;
   /** Edits it at once, saved in the background. */
-  edit: (change: Change) => Persistable;
+  edit: (change: Change) => Write;
   /** Sets Setting `name`, or unsets it (null). */
-  set: (name: string, value: JsonValue | null) => Persistable;
+  set: (name: string, value: JsonValue | null) => Write;
 };
 
 /** A Service's source as its Settings say, pending edits included; an upload only while it has none of its own. */
@@ -333,7 +332,7 @@ function useSettingEdit(state: StoreService, name: ServiceSettingName) {
   const edit = (raw: string) => {
     setRefusal(null);
     const transaction = state.edit(settingChange(state.path(name), setting, raw));
-    transaction.isPersisted.promise.catch((error: Error) => {
+    transaction.catch((error: Error) => {
       if (error instanceof StoreRefused && error.code === "conflict") setRefusal(error.message);
     });
     return transaction;
@@ -343,7 +342,7 @@ function useSettingEdit(state: StoreService, name: ServiceSettingName) {
 
 /** A number or text Setting's input, with its unit and what blank means. */
 function StoreSettingInput({ state, name, setting, row, onCommit }: {
-  state: StoreService; name: ServiceSettingName; setting: SettingSchema; row: SettingRow; onCommit: (raw: string) => Persistable;
+  state: StoreService; name: ServiceSettingName; setting: SettingSchema; row: SettingRow; onCommit: (raw: string) => Write;
 }) {
   return (
     <ServiceSettingInput

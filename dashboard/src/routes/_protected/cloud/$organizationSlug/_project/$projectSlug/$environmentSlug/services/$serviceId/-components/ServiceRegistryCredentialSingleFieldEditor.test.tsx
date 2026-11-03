@@ -7,7 +7,7 @@ import { ServiceRegistryCredentialSingleFieldEditor } from "./ServiceRegistryCre
 afterEach(cleanup);
 
 function setup() {
-  const onCommit = vi.fn(() => ({ isPersisted: { promise: Promise.resolve() } }));
+  const onCommit = vi.fn(() => Promise.resolve());
   const onClose = vi.fn();
   render(<ServiceRegistryCredentialSingleFieldEditor schema={trimmedString({ minLength: 1 })} secretLabel="Token" onCommit={onCommit} onClose={onClose} />);
   const field = screen.getByLabelText("Token");

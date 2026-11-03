@@ -225,7 +225,7 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
       <SettingsSection id="project" title="Project">
         <ProjectNameRow project={projectSlug} onRename={(name) => {
           // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
-          return writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
+          return writer.commit({ command: "rename_project", project: projectSlug, name }).then(() =>
             navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
         }} />
         <SettingsRow

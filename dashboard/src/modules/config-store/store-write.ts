@@ -3,7 +3,6 @@ import { Schema } from "effect";
 import type { Change, ConfigCommand, ConfigWritten, EnvironmentRef } from "@ployz/sdk";
 import { toast } from "sonner";
 import { isUnauthorized } from "#/lib/error-message";
-import { observeFailure, type Persistable } from "#/collections/query-collection";
 import { SealError } from "#/modules/sealing/seal-error";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -51,12 +50,21 @@ const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Chec
 const FAILED = "Ployz Cloud couldn't save this change, so it was undone. Try again.";
 const RENAMING = "A rename is still saving, so this change wasn't made. Try again once it lands.";
 
+/** A write to the Config Store: a Promise of what it wrote. */
+export interface Write<T = unknown> extends Promise<T> {}
+
 /** Writes whose control shows a refusal itself, beside the field, so a toast would only say it twice. */
 const shownInline = new WeakSet<Promise<unknown>>();
 
 /** Leaves `write`'s refusal to the control that made it; being signed out still toasts, with its Sign in. */
-export function showRefusalInline(write: Persistable) {
-  shownInline.add(write.isPersisted.promise);
+export function showRefusalInline(write: Write) {
+  shownInline.add(write);
+}
+
+/** Failures are toasted where they happen; observing them keeps fire-and-forget callers free of unhandled rejections. */
+function observed<T>(write: Promise<T>) {
+  write.catch(() => {});
+  return write;
 }
 
 /**
@@ -137,7 +145,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   }
 
   return {
-    edit({ environment, changes, prepare }: StoreEdit): Persistable {
+    edit({ environment, changes, prepare }: StoreEdit): Write<ConfigWritten> {
       const key = environmentKey(environment);
       const command: ConfigCommand = { command: "edit", environment, expect: null, changes };
       const promise = queued(key, command, async () => {
@@ -147,7 +155,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         return written;
       }, true);
       trackEdit(promise);
-      return observeFailure({ isPersisted: { promise } });
+      return observed(promise);
     },
     /**
      * Any other command: its marks show at once over the cached views (`store-pending.ts`), and it saves in the
@@ -157,7 +165,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
      * caller `handles`, rereads the views, and rejects with `StoreRefused`. With `prepare`, `command` is what shows and
      * `prepare`'s, made in its turn in the queue, is what's sent.
      */
-    commit(command: ConfigCommand, handles: readonly string[] = [], prepare?: () => Promise<ConfigCommand>): { isPersisted: { promise: Promise<ConfigWritten> } } {
+    commit(command: ConfigCommand, handles: readonly string[] = [], prepare?: () => Promise<ConfigCommand>): Write<ConfigWritten> {
       const environment = commandEnvironment(command);
       const key = environment ? environmentKey(environment) : "";
       // A command that edits Working State expects the newest revision, as an edit does, and is tracked like one; a
@@ -176,7 +184,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       const work = async () => { await Promise.all(preceding); return save(prepare ? await prepare() : command); };
       const promise = queued(key, command, work, expects, handles);
       if (edits) trackEdit(promise);
-      return observeFailure({ isPersisted: { promise } });
+      return observed(promise);
     },
   };
 });

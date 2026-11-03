@@ -1,5 +1,4 @@
 import { useReducer, useRef } from "react";
-import type { Persistable } from "#/collections/query-collection";
 import { Result } from "effect";
 import {
   Dialog,
@@ -8,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "#/components/ui/dialog";
+import type { Write } from "#/modules/config-store/store-write";
 import { sealedValueProblem } from "#/modules/variables/seal-value";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { VariableRecord } from "#/modules/variables/variables";
@@ -93,7 +93,7 @@ export function ServiceVariablesRawEditor({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Saves the editor's creates, updates and deletes: optimistic, rolled back and toasted on failure. */
-  onApply: (diff: RawEditorDiff) => Persistable;
+  onApply: (diff: RawEditorDiff) => Write;
   variables: VariableRecord[];
   valueTargets?: ReferenceTarget[];
   /** `useSealing`'s cached state: ready offers Sealed for new keys. Display only. */
@@ -227,7 +227,7 @@ export function ServiceVariablesRawEditor({
     }
 
     const typed = { mode: editor.mode, envText: editor.envText, jsonText: editor.jsonText, sealing: editor.sealing };
-    onApply(diff).isPersisted.promise.catch((error) => {
+    onApply(diff).catch((error) => {
       refusedRef.current = { ...typed, submitError: toErrorMessage(error, "The variables couldn’t be saved.") };
       onOpenChange(true);
     });

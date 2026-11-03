@@ -22,8 +22,8 @@ function setup() {
   let resolve!: () => void;
   let reject!: (error: Error) => void;
   const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
-  const edit = vi.fn(() => ({ isPersisted: { promise } }));
-  const commit = vi.fn(() => ({ isPersisted: { promise } }));
+  const edit = vi.fn(() => promise);
+  const commit = vi.fn(() => promise);
   vi.spyOn(writers, "useStoreWriter").mockReturnValue(asTestDouble<ReturnType<typeof writers.useStoreWriter>>()({ edit, commit }));
   return { edit, commit, resolve, reject };
 }

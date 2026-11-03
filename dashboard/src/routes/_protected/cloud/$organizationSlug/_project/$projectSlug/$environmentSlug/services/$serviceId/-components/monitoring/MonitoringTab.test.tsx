@@ -75,7 +75,7 @@ async function open({ shown = uptime(), change, checker = true, read = metrics()
   queryClient.setQueryData(["metrics", "env", "api", range.from, range.to], read, { updatedAt: receivedAt });
   queryClient.setQueryData(storeDeploymentsOptions("acme", scope, store).queryKey,
     { pages: [{ view: "deployments", deployments: [], next_cursor: null }], pageParams: [null] } as never);
-  const set = vi.fn((_: JsonValue | null) => ({ isPersisted: { promise: Promise.resolve() } }));
+  const set = vi.fn((_: JsonValue | null) => Promise.resolve());
 
   const root = createRootRoute({ component: Outlet, loader: () => ({ timeZone: "UTC" }) });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet });

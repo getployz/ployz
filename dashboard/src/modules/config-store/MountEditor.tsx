@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
-import type { Persistable } from "#/collections/query-collection";
 import { Button } from "#/components/ui/button";
 import { SettingsFormField } from "#/components/settings/settings-list";
 import { FieldError } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
+import type { Write } from "#/modules/config-store/store-write";
 import { StoreRefused } from "./store.contract";
 import { mountPathError } from "./store-volumes";
 
@@ -16,7 +16,7 @@ export const mountFailure = (error: Error) => error instanceof StoreRefused ? er
 /** Persistence completes only this form; the writer still applies changes immediately. */
 export function MountEditor({ choices, initial, submit, onClose }: {
   choices: readonly MountChoice[]; initial: MountEditing;
-  submit: (counterpart: string, directory: string) => Persistable | null; onClose: () => void;
+  submit: (counterpart: string, directory: string) => Write | null; onClose: () => void;
 }) {
   const serviceId = useId();
   const directoryId = useId();
@@ -38,7 +38,7 @@ export function MountEditor({ choices, initial, submit, onClose }: {
       const transaction = submit(selected?.id ?? "", directory);
       if (!transaction) return onClose();
       setStatus({ kind: "saving" });
-      transaction.isPersisted.promise.then(() => {
+      transaction.then(() => {
         if (attempt.current === identity) onClose();
       }, (error: Error) => {
         if (attempt.current === identity) setStatus({ kind: "idle", error: mountFailure(error) });

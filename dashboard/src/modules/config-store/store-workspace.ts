@@ -1,6 +1,7 @@
 import type { ConfigCommand, ConfigWritten, EnvironmentListing, Removal } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { StoreRefused } from "./store.contract";
+import type { Write } from "./store-write";
 
 /** A Project's Environments in tree order: roots first, each Branch right under its Parent, siblings as listed. */
 export function storeEnvironmentTree(environments: readonly EnvironmentListing[]) {
@@ -73,7 +74,7 @@ function carried(byEnvironment: ByEnvironment): Record<string, string[]> {
   return Object.fromEntries(Object.entries(byEnvironment).map(([environment, volumes]) => [environment, [...volumes]]));
 }
 
-type Commit = (command: ConfigCommand, handles: readonly string[]) => Promise<ConfigWritten>;
+type Commit = (command: ConfigCommand, handles: readonly string[]) => Write<ConfigWritten>;
 
 const byText = (left: string, right: string) => left.localeCompare(right);
 

@@ -10,7 +10,7 @@ it("shows the committed command while the write runs, and the stored one again w
   const write = { promise: new Promise<void>((_resolve, reject) => { fail = reject; }) };
   const field = (value: string | null) => (
     <ServiceCommandField label="Start command" placeholder="npm start" value={value} isChanged={false} validate={() => null}
-      onCommit={() => ({ isPersisted: { promise: write.promise } })} />
+      onCommit={() => write.promise} />
   );
   const { rerender } = render(field("node server.js"));
   const input = screen.getByLabelText<HTMLInputElement>("Start command");

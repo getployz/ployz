@@ -1,9 +1,8 @@
 import { type ReactNode, useState } from "react";
-import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { type ConfirmStatus, ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { SuggestibleConfirmableInput } from "#/components/stageable/suggestible-confirmable-input";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
-import { showRefusalInline } from "#/modules/config-store/store-write";
+import { showRefusalInline, type Write } from "#/modules/config-store/store-write";
 
 type DraftState = {
   source: string;
@@ -56,7 +55,7 @@ export function ServiceSettingInput({
   disabled?: boolean;
   /** Return an error message to block the commit, or null to allow it. */
   validate?: (raw: string) => string | null;
-  onCommit: (raw: string) => PersistableTransaction;
+  onCommit: (raw: string) => Write;
 }) {
   const [value, hold, commit, dismiss] = useCommitHold(stored);
   const [draft, setDraft] = useState<DraftState>(() => freshDraft(value));

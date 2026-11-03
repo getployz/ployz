@@ -51,7 +51,7 @@ export function useStoreBranchClose(params: EnvironmentRouteParams, store: Envir
   const [loss, setLoss] = useState<DeletionCheck<Consent> | null>(null);
   const name = branch.environment.name;
   const commit = (command: Parameters<typeof writer.commit>[0], handles: readonly string[]) =>
-    writer.commit(command, handles).isPersisted.promise;
+    writer.commit(command, handles);
 
   async function shutDown({ accept, version }: Acceptance): Promise<DeletionCheck<Consent> | null> {
     try {

@@ -111,7 +111,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
     let written;
     try {
       // Awaited: the page opens the receiver once it holds the changes, and a stale review stays open, refetched.
-      written = await writer.commit(entries.length ? command({}) : command(typed), ["conflict"], entries.length ? prepare : undefined).isPersisted.promise;
+      written = await writer.commit(entries.length ? command({}) : command(typed), ["conflict"], entries.length ? prepare : undefined);
     } catch (error) {
       // Asked for instead: the writer says Requested, and an owner or admin syncs it on approval.
       if (error instanceof Error && isRequested(error)) return onClose();

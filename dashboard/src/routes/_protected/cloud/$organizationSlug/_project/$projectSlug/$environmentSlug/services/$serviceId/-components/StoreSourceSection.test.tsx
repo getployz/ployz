@@ -30,7 +30,7 @@ it("shows the picked image as the dialog closes, and the stored one again when t
     source: "image" as const,
     path: (name: string) => `redis.${name}`,
     edit: vi.fn(),
-    set: vi.fn(() => ({ isPersisted: { promise: write } })),
+    set: vi.fn(() => write),
   });
 
   render(<StoreSourceSection state={state} />);

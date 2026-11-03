@@ -15,7 +15,7 @@ const choice = { id: "service-id", name: "web", refusal: null, directory: "/data
 it("keeps the pending selection and refused directory, allows retry and ignores cancelled completion", async () => {
   const first = deferred();
   const retry = deferred();
-  const submit = vi.fn().mockReturnValueOnce({ isPersisted: first }).mockReturnValueOnce({ isPersisted: retry });
+  const submit = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(retry.promise);
   const closed = vi.fn();
   const props = { initial: { counterpart: choice.id, directory: "/attempt", editing: false }, submit, onClose: closed };
   const view = render(<MountEditor {...props} choices={[choice]} />);

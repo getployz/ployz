@@ -1,7 +1,7 @@
 import { SchemaFieldInput } from "#/components/stageable/schema-field-input";
 import { Button } from "#/components/ui/button";
-import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import type { StringSchema } from "#/lib/schema";
+import type { Write } from "#/modules/config-store/store-write";
 
 type ServiceRegistryCredentialSingleFieldEditorProps = {
   schema: StringSchema;
@@ -11,7 +11,7 @@ type ServiceRegistryCredentialSingleFieldEditorProps = {
   isChanged?: boolean;
   multiline?: boolean;
   rows?: number;
-  onCommit: (secret: string) => PersistableTransaction;
+  onCommit: (secret: string) => Write;
   onClose: () => void;
 };
 

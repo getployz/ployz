@@ -1,10 +1,9 @@
 import { useState, type ReactNode } from "react";
-import type { Persistable } from "#/collections/query-collection";
 import type { BrokenReference, EnvironmentRef, EnvironmentView, ServiceListing } from "@ployz/sdk";
 import { brokenVariables } from "#/modules/config-store/store-broken";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter, variableReferrers } from "#/modules/config-store/store-variables";
-import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStoreWriter, type Write } from "#/modules/config-store/store-write";
 import { useSealing } from "#/modules/variables/sealing";
 import { Link } from "@tanstack/react-router";
 import { BracesIcon } from "lucide-react";
@@ -83,10 +82,10 @@ function ServiceVariablesView({
   managed: ReactNode;
   valueTargets: ReferenceTarget[];
   serviceNames: readonly string[];
-  onCreateVariable: (input: VariableAddInput) => Persistable;
-  onSealVariable: (variable: PlainVariableRecord) => Persistable;
+  onCreateVariable: (input: VariableAddInput) => Write;
+  onSealVariable: (variable: PlainVariableRecord) => Write;
   onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
-  onApplyRaw: (diff: RawEditorDiff) => Persistable;
+  onApplyRaw: (diff: RawEditorDiff) => Write;
   onNeverSync: (variable: VariableRecord, marked: boolean) => void;
   onRename: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
   referrersOf: (variable: VariableRecord) => readonly string[];

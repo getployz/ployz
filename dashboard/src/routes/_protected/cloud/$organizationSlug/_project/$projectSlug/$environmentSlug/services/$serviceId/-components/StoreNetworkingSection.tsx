@@ -225,7 +225,7 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
           onSubmit={({ hostname, targetPort }) => {
             const write = add(hostname, targetPort);
             if (!edited) showRefusalInline(write);
-            write.isPersisted.promise.catch((error: Error) => {
+            write.catch((error: Error) => {
               if (!edited && !isRequested(error)) {
                 setEditor({ kind: "add", draft: { hostname, targetPort }, refusal: failureReason(error) });
               }

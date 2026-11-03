@@ -81,7 +81,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     // A Store from before no_prune refuses a Deploy carrying it, so only a Deploy that keeps other services sends it.
     if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;
     try {
-      await writer.commit(command, ["confirmation_required"]).isPersisted.promise;
+      await writer.commit(command, ["confirmation_required"]);
       if (action === "deploy") onAdmitted(id);
       return { status: "done" };
     } catch (error) {
@@ -121,7 +121,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   }
 
   function discard(path: string | null, target: DiscardTarget = "head") {
-    return writer.commit({ command: "discard", environment, path, version, target }).isPersisted.promise;
+    return writer.commit({ command: "discard", environment, path, version, target });
   }
 
   /** Marks `row` Never sync here and discards `path`, all or none: what arrived goes, and nothing follows into it again. */

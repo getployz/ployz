@@ -74,8 +74,6 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   const offline = useServerList(organizationSlug).servers.filter((server) => server.status === "offline")
     .map((server) => ({ id: server.machine.id, name: server.name }));
   const inScope = target.environment === null ? environments : environments.filter((row) => row.name === target.environment);
-  const commit = (command: Parameters<typeof writer.commit>[0], handles: readonly string[]) =>
-    writer.commit(command, handles).isPersisted.promise;
 
   // The Store deleted the Environment this tab is removing.
   const gone = left !== null && target.environment !== null && inScope.length === 0;
@@ -108,7 +106,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   }
 
   async function confirm(consent: RemovalConsent) {
-    const answer = await removeTarget(commit, target, consent);
+    const answer = await removeTarget(writer.commit, target, consent);
     if ("ask" in answer) {
       // The Store found more to lose than the dialog showed, or Servers it couldn't check: shown again, to be typed for again.
       const { items } = await load();
