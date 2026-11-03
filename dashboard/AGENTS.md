@@ -20,7 +20,7 @@ To update intents, edit the block above after `pnpm dlx @tanstack/intent@latest 
 - shadcn changes go through the `shadcn` skill first. Use stock composition, variants and sizes. No custom text sizes, padding overrides, or colours.
 - An Inngest function that owns rows with active statuses persists its `runId` and marks the row terminal on `inngest/function.cancelled`. Build it with `attemptLifecycle` (`src/modules/inngest/attempt-lifecycle.ts`).
 - A new Environment Resource type starts in `environment-resource-types.ts`, then its config parser in `environment-resource-node.ts` and its lifecycle diff in `environment-change-set.ts`. Adapters use that parser rather than re-enumerating types. A change to a service's container template (e.g. mounts) is a service-owned diff row.
-- TanStack DB adds `$synced`, `$origin`, `$key` and `$collectionId` to every live-query row, `.select(...)` rows included. Parse whole rows with `parseLiveQueryRow(schema, row)` from `#/lib/tanstack-db`, and strip them with `withoutVirtualProps(row)` before `insert` or `writeUpsert`.
+- TanStack DB adds `$hasPendingWrites`, `$origin`, `$key` and `$collectionId` to every live-query row, `.select(...)` rows included. Parse whole rows with `parseLiveQueryRow(schema, row)` from `#/lib/tanstack-db`, and strip them with `withoutVirtualProps(row)` before `insert` or `writeUpsert`.
 
 # Effect
 

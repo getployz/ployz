@@ -222,7 +222,10 @@ describe("data boundaries", () => {
         const writeSymbol = writeDeclaration && isInterfaceDeclaration(writeDeclaration) ? checker.getSymbolAtLocation(writeDeclaration.name) : undefined;
         if (!writeSymbol) throw new Error("store-write.ts declares no Write");
         const named = (type: Type | undefined) => type?.getSymbol()?.id === writeSymbol.id;
-        const isWrite = (node: Node) => named(checker.getTypeAtLocation(node));
+        // `.catch(...)` on a save is a plain Promise that still waits for it, as in `write.catch(warn).then(close)`.
+        const uncaught = (node: Node): Node => isCallExpression(node) && isPropertyAccessExpression(node.expression)
+          && node.expression.name.text === "catch" ? uncaught(node.expression.expression) : node;
+        const isWrite = (node: Node) => named(checker.getTypeAtLocation(uncaught(node)));
         const makesWrite = (node: Node) => {
           const type = checker.getTypeAtLocation(node);
           return type !== undefined && checker.getSignaturesOfType(type, SignatureKind.Call).some((signature) => named(checker.getReturnTypeOfSignature(signature)));

@@ -40,7 +40,7 @@ function withWriteCommitted<T extends object, C extends ApiCollection<T>>(input:
       try {
         // A read started before the POST must not overwrite its committed response.
         await input.queryClient.cancelQueries({ queryKey: input.queryKey, exact: true });
-        collection.utils.writeUpsert(rows);
+        await collection.utils.writeUpsert(rows);
       } finally {
         subscription.unsubscribe();
       }
@@ -86,22 +86,16 @@ export function createChangeCollection<T extends object>(input: ApiCollectionInp
   return withWriteCommitted(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
 }
 
-type ApiCollectionReadiness = {
-  preload: () => Promise<void>;
+type ApiCollectionReadiness = Pick<Collection<object>, "status" | "preload" | "reload"> & {
   subscribeChanges: (callback: () => void) => { unsubscribe: () => void };
-  utils: Pick<QueryCollectionUtils, "refetch" | "isError" | "lastError" | "dataUpdatedAt">;
+  utils: Pick<QueryCollectionUtils, "refetch">;
 };
 
-/** Hold an observer only until readiness; failed first reads are not empty snapshots. */
+/** Hold an observer only until readiness; a failed first read rejects and reloads on the next call. */
 export async function preloadCollection(collection: ApiCollectionReadiness) {
-  const retryInitialFailure = collection.utils.isError && collection.utils.dataUpdatedAt === 0;
   const subscription = collection.subscribeChanges(() => {});
   try {
-    if (retryInitialFailure) await collection.utils.refetch({ throwOnError: true });
-    else await collection.preload();
-    if (collection.utils.isError && collection.utils.dataUpdatedAt === 0) {
-      throw collection.utils.lastError;
-    }
+    await (collection.status === "error" ? collection.reload() : collection.preload());
   } finally {
     subscription.unsubscribe();
   }

@@ -40,7 +40,7 @@ export function useSupportAccess(organizationSlug: string) {
   return {
     row,
     change: (change: SupportAccessChange) => {
-      set(change).isPersisted.promise.catch(() => toast.error("Could not change support access"));
+      set(change).when("settled").catch(() => toast.error("Could not change support access"));
     },
   };
 }

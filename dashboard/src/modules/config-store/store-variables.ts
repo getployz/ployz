@@ -46,7 +46,7 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
 const SEALING = { secret: { sealing: true } };
 
 /** A change, or a Sealed value of variable `key` that `useSealing`'s `prepare` turns into one in the edit's turn. */
-type Write = Change | { readonly key: string; readonly sealed: string };
+type VariableWrite = Change | { readonly key: string; readonly sealed: string };
 
 const UNPLACED = "Set this value after merging.";
 
@@ -79,7 +79,7 @@ export function storeVariableWriter(
   const edit = (...changes: Change[]) => writer.edit({ environment, changes });
   const secret = (key: string, value: SecretValue | typeof SEALING.secret): Change => ({ op: "set", path: path(key), value: { secret: value } });
   /** One edit; its Sealed values show as `SEALING` and are prepared together, all or none. */
-  const write = (writes: readonly Write[]) => {
+  const write = (writes: readonly VariableWrite[]) => {
     const sealed = writes.flatMap((one) => "op" in one ? [] : [{ key: one.key, value: one.sealed, target: sealing.target }]);
     if (sealed.length === 0) return edit(...writes.flatMap((one) => "op" in one ? [one] : []));
     return writer.edit({
@@ -138,7 +138,7 @@ export function storeVariableWriter(
     },
     /** The raw editor's changes: sets, the new ones it marks Sealed sealed, and removals in one edit. */
     replace: (sets: readonly { key: string; value: string; sealed?: boolean }[], removed: readonly string[]) => write([
-      ...sets.map(({ key, value, sealed }): Write => sealed ? { key, sealed: value } : { op: "set", path: path(key), value }),
+      ...sets.map(({ key, value, sealed }): VariableWrite => sealed ? { key, sealed: value } : { op: "set", path: path(key), value }),
       ...removed.map((key): Change => ({ op: "unset", path: path(key) })),
     ]),
   };

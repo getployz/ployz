@@ -19,7 +19,7 @@ import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, Command
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { githubBranchesQueryOptions, githubKeys, githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
-import { getGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
+import { getGithubReposCollection, preloadGithubRepos } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { githubConnectHref } from "#/modules/github/github-connect";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -274,18 +274,24 @@ export function GitRepoSelectorFooter({ organizationSlug }: { organizationSlug: 
   );
 }
 
-function GitRepoSelectorResults({
+function GitRepoSelectorResults(props: GitRepoSelectorProps) {
+  const { queryClient, sessionId } = useCollectionScope();
+  const githubRepos = getGithubReposCollection({ queryClient, sessionId, organizationSlug: props.organizationSlug });
+  const { isReady, isLoadingError, isSyncError } = useLiveQuery(githubRepos);
+  if (isLoadingError) return <GithubRepositoryRefreshNotice initial />;
+  // A live query started on a failed first load stays failed after the read recovers, so the list starts on ready rows.
+  if (!isReady) return <SelectorLoading />;
+  return <GitRepoList {...props} githubRepos={githubRepos} stale={isSyncError} />;
+}
+
+function GitRepoList({
   organizationSlug,
   query,
   disabled = false,
   onSelectRepo,
-}: GitRepoSelectorProps) {
-  const { queryClient, sessionId } = useCollectionScope();
-  const scope = { queryClient, sessionId, organizationSlug };
-  const githubRepos = getGithubReposCollection(scope);
-  // Query errors must repaint even when the collection retains identical rows.
-  const { isError, dataUpdatedAt } = useGithubReposReadState(scope);
-  const { isReady: reposReady } = useLiveQuery(githubRepos);
+  githubRepos,
+  stale,
+}: GitRepoSelectorProps & { githubRepos: ReturnType<typeof getGithubReposCollection>; stale: boolean }) {
   const { data: accessState } = useSuspenseQuery(
     githubRepoAccessQueryOptions(organizationSlug)
   );
@@ -323,8 +329,7 @@ function GitRepoSelectorResults({
     filteredRepoCount: repos.length,
   });
 
-  if (isError && dataUpdatedAt === 0) return <GithubRepositoryRefreshNotice initial />;
-  if (!reposReady || isLoading) return <SelectorLoading />;
+  if (isLoading) return <SelectorLoading />;
 
   if (selectorState === "no-installations") {
     return null;
@@ -332,7 +337,7 @@ function GitRepoSelectorResults({
 
   return (
     <>
-      {isError && <GithubRepositoryRefreshNotice />}
+      {stale && <GithubRepositoryRefreshNotice />}
       <CommandSeparator />
 
       {selectorState === "empty" ? (

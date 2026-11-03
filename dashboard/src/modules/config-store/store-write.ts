@@ -50,7 +50,7 @@ const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Chec
 const FAILED = "Ployz Cloud couldn't save this change, so it was undone. Try again.";
 const RENAMING = "A rename is still saving, so this change wasn't made. Try again once it lands.";
 
-/** A write to the Config Store: a Promise of what it wrote. */
+/** A write to the Config Store: a Promise of what it wrote. Keep it an interface: data-boundaries.static.test.ts finds awaited writes by its symbol. */
 export interface Write<T = unknown> extends Promise<T> {}
 
 /** Writes whose control shows a refusal itself, beside the field, so a toast would only say it twice. */

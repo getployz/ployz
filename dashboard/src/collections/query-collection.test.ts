@@ -31,7 +31,7 @@ it("refreshes active snapshots, retains failed reads, and stops unused scopes", 
   read.mockRejectedValueOnce(new Error("unavailable"));
   await vi.advanceTimersByTimeAsync(15_000);
   expect(collection.get("b")?.name).toBe("after");
-  expect(collection.utils.isError).toBe(true);
+  expect(collection.health.hasErrors).toBe(true);
   focusManager.setFocused(false);
   const hiddenReads = read.mock.calls.length;
   rows = [{ id: "c", name: "focused" }];
@@ -132,7 +132,7 @@ it.each([false, true])("applies committed rows without an observer and cancels o
   read.mockRejectedValue(new Error("GET unavailable"));
   await reconcileCollection(collection);
   expect(collection.get("row")).toMatchObject(committed);
-  expect(collection.utils.isError).toBe(true);
+  expect(collection.health.hasErrors).toBe(true);
   expect(collection.subscriberCount).toBe(0);
   await collection.cleanup();
   client.clear();

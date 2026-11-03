@@ -146,7 +146,7 @@ export function usePlaceNewNode(organizationSlug: string) {
       x: Math.round(input.x), y: Math.round(input.y) } })], collection),
   });
   return (input: Omit<UpdateCanvasPositionInput, "organizationSlug">) => {
-    place(input).isPersisted.promise.catch((error: Error) =>
+    place(input).when("settled").catch((error: Error) =>
       toast.error(toErrorMessage(error, "The new node's place couldn't be saved.")));
   };
 }
