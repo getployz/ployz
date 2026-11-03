@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
-import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import type { SetupCommand } from "#/modules/config-store/branch-picks";
+import type { Write } from "#/modules/config-store/store-write";
 
 /** Commands and the service each runs in. `typed` marks a keystroke, so a saved-at-once owner can wait for blur. */
 export function SetupCommandsField({ id, commands, services, onChange, onBlur }: {
@@ -64,7 +64,7 @@ export function SetupCommandsField({ id, commands, services, onChange, onBlur }:
  * only whole commands save, and only when they changed. The saved list then shows until its write settles; blank rows
  * wait below it until typed.
  */
-export function useSavedSetupCommands(saved: SetupCommand[], save: (whole: SetupCommand[]) => PersistableTransaction) {
+export function useSavedSetupCommands(saved: SetupCommand[], save: (whole: SetupCommand[]) => Write) {
   const [shown, hold] = useCommitHold(saved);
   const [draft, setDraft] = useState<SetupCommand[] | null>(null);
   const [blanks, setBlanks] = useState<SetupCommand[]>([]);

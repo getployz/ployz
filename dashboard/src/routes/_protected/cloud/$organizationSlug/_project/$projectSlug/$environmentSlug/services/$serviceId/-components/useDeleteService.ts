@@ -43,7 +43,7 @@ export function useRemoveStoreService(environment: EnvironmentRef, service: Serv
     close();
     if (own.length === 0) return;
     // A refused Service removal has toasted and rolled back; its Volumes stay.
-    if (!await removed.isPersisted.promise.then(() => true, () => false)) return;
+    if (!await removed.then(() => true, () => false)) return;
     for (const volume of own) writer.commit({ command: "remove_volume", environment, volume: volume.name });
   }
 

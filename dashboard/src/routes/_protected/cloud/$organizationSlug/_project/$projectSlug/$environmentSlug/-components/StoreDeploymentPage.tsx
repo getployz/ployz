@@ -237,7 +237,7 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
       await writer.commit({
         command: "admit", admit: "retry", id, deployment: deployment.id, rolls_back: [...rollsBack],
         version: acceptance.version, accept_volume_loss: [...acceptance.accept],
-      }, ["confirmation_required"]).isPersisted.promise;
+      }, ["confirmation_required"]);
       void navigate(deploymentDestination(params, id, { job: search.job, origin: search.origin }));
       return null;
     } catch (error) {

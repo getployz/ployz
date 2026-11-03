@@ -6,10 +6,10 @@ import {
   registryCredentialSecretSchema,
   registryProvider,
 } from "#/modules/config-store/registry-credentials";
+import type { Write } from "#/modules/config-store/store-write";
 import { ServiceRegistryCredentialForm } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialForm";
 import { ServiceRegistryCredentialSingleFieldEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialSingleFieldEditor";
 import { PencilIcon } from "lucide-react";
-import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 
 /**
  * A private image's pull credentials: a summary once configured, else a prompt to add them, and the provider's form.
@@ -35,7 +35,7 @@ export function RegistryCredentialsField({
   changed: boolean;
   baselineLabel?: string;
   baselineValue?: string;
-  onSet: (value: { username: string | null; secret: string }) => PersistableTransaction;
+  onSet: (value: { username: string | null; secret: string }) => Write;
   onClear: () => void;
   /** Turns the stored credentials back on, when there are some to restore. */
   onRestore?: () => void;

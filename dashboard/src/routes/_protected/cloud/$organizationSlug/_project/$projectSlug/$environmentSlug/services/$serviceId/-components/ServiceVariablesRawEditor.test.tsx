@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { storeVariableWriter } from "#/modules/config-store/store-variables";
 import type { StoreEdit, useStoreWriter } from "#/modules/config-store/store-write";
+import type { Write } from "#/modules/config-store/store-write";
 import type { SealItem, Sealing } from "#/modules/variables/sealing";
 import type { VariableRecord } from "#/modules/variables/variables";
 import { ServiceVariablesRawEditor } from "./ServiceVariablesRawEditor";
@@ -22,7 +23,7 @@ afterEach(() => {
 it("copies the active format's current draft after editing JSON", async () => {
   const writeText = vi.fn(async () => undefined);
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-  render(<Harness onApply={() => ({ isPersisted: { promise: Promise.resolve() } })} />);
+  render(<Harness onApply={() => Promise.resolve()} />);
   fireEvent.change(screen.getByLabelText("Service variables in ENV format"), { target: { value: "A=old" } });
   fireEvent.click(screen.getByRole("button", { name: "Copy ENV" }));
   await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("A=old"));
@@ -33,7 +34,7 @@ it("copies the active format's current draft after editing JSON", async () => {
   await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(current));
 });
 
-function Harness({ onApply }: { onApply: () => { isPersisted: { promise: Promise<unknown> } } }) {
+function Harness({ onApply }: { onApply: () => Write }) {
   const [open, setOpen] = useState(true);
   return <ServiceVariablesRawEditor open={open} onOpenChange={setOpen} variables={[]} onApply={onApply} />;
 }
@@ -41,7 +42,7 @@ function Harness({ onApply }: { onApply: () => { isPersisted: { promise: Promise
 it("a refused save reopens the editor on what was typed, with the Store's reason", async () => {
   const refused = Promise.reject(new Error("web has no variable named MISSING"));
   refused.catch(() => undefined);
-  render(<Harness onApply={() => ({ isPersisted: { promise: refused } })} />);
+  render(<Harness onApply={() => refused} />);
   fireEvent.change(screen.getByLabelText("Service variables in ENV format"), { target: { value: "A=${{ web.MISSING }}" } });
   fireEvent.click(screen.getByRole("button", { name: "Update variables" }));
   await waitFor(() => expect(screen.getByText("web has no variable named MISSING")).toBeTruthy());
@@ -60,7 +61,7 @@ function StoreHarness({ sealing, edits, prepare, variables = [SECRET, LOG_LEVEL]
 }) {
   const [open, setOpen] = useState(true);
   const store = asTestDouble<ReturnType<typeof useStoreWriter>>()({
-    edit: (edit: StoreEdit) => { edits.push(edit); return { isPersisted: { promise: Promise.resolve() } }; },
+    edit: (edit: StoreEdit) => { edits.push(edit); return Promise.resolve(); },
   });
   const writer = storeVariableWriter(store, { project: "shop", environment: "production" }, "web", variables, new Map(),
     { prepare, target: { environment: "0e7c2f3a-5b1d-4c8e-9f60-1a2b3c4d5e6f", service: "7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6" } });
@@ -164,7 +165,7 @@ it("a refused save reopens with the keys it ticked Sealed", async () => {
   refused.catch(() => undefined);
   function Refusing() {
     const [open, setOpen] = useState(true);
-    return <ServiceVariablesRawEditor open={open} onOpenChange={setOpen} variables={[]} sealing="ready" onApply={() => ({ isPersisted: { promise: refused } })} />;
+    return <ServiceVariablesRawEditor open={open} onOpenChange={setOpen} variables={[]} sealing="ready" onApply={() => refused} />;
   }
   render(<Refusing />);
   fireEvent.change(env(), { target: { value: "TOKEN=tok_live_123456" } });

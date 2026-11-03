@@ -56,8 +56,7 @@ function usePlanWrite(organizationSlug: string, project: string, saved: PrPlan) 
     });
   }
   function approve(open: OpenPullRequest & { head: string }) {
-    return writer.commit({ command: "approve_pull_request", repository_id: saved.repository_id, number: open.number, head: open.head })
-      .isPersisted.promise;
+    return writer.commit({ command: "approve_pull_request", repository_id: saved.repository_id, number: open.number, head: open.head });
   }
   return { plan: { ...saved, ...pending }, set, approve };
 }
@@ -95,7 +94,7 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
                 if (!next || next === plan.start_from) return;
                 const from = params.environmentSlug;
                 // Refused and rolled back: back over the canvas it was on.
-                void set({ start_from: next }).isPersisted.promise.catch(() => over(from));
+                void set({ start_from: next }).catch(() => over(from));
                 over(next);
               }}>
                 <SelectTrigger aria-label="Start from" className="w-full" aria-invalid={!plan.start_from || undefined}>

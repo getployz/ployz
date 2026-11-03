@@ -88,8 +88,8 @@ it("shows an edit at once, saves edits in order against the newest revision, and
 
   test.store.current = view(3, 3);
   first.resolve(edited(3));
-  await one.isPersisted.promise;
-  await two.isPersisted.promise;
+  await one;
+  await two;
   // It expects the revision its own first save produced.
   expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { expect: 3 } } });
   expect(test.replicas()).toBe(5);
@@ -107,7 +107,7 @@ it("undoes an edit the Store refuses as a conflict and shows what changed elsewh
   // The CLI moved Working State before this tab heard about it.
   test.store.current = view(3, 7);
   refused.resolve({ ok: false, refusal: { code: "conflict", message: "Working State moved", details: { revision: 3 } } });
-  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "conflict", details: { revision: 3 } });
+  await expect(edit).rejects.toMatchObject({ code: "conflict", details: { revision: 3 } });
   await waitFor(() => expect(test.replicas()).toBe(7));
   expect(error).toHaveBeenCalledWith("Changed elsewhere, so this edit was undone. You're seeing the latest now.");
 });
@@ -119,7 +119,7 @@ it("words a refused rename as the Store does: a referenced variable isn't a stal
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message, details: { variables: ["web.UPSTREAM"] } } });
   let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
   act(() => { edit = test.edit({ environment: ref, changes: [{ op: "rename", path: "web.env.API_URL", to: "PUBLIC_API_URL" }] }); });
-  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "conflict" });
+  await expect(edit).rejects.toMatchObject({ code: "conflict" });
   expect(error).toHaveBeenCalledWith(message);
 });
 
@@ -129,7 +129,7 @@ it("says a signed-out edit wasn't saved and offers to sign in", async () => {
   test.write.mockImplementationOnce(() => Promise.reject({ _tag: "PublicError", code: "UNAUTHORIZED", message: "Authentication is required." }));
   let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
   act(() => { edit = test.edit({ environment: ref, changes: replicas(3) }); });
-  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  await expect(edit).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   expect(error).toHaveBeenCalledWith("You're signed out. Nothing was saved.", expect.objectContaining({ action: expect.objectContaining({ label: "Sign in" }) }));
   await waitFor(() => expect(test.replicas()).toBe(1));
 });
@@ -138,7 +138,7 @@ it("says a write that failed in Cloud was undone, even when the failure carries 
   const test = setup(view(2, 1));
   const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
   test.write.mockImplementationOnce(() => Promise.reject({ error: "boom" }));
-  const order = test.writer.commit({ command: "set_build_order", build_order: "servers-only" }).isPersisted.promise;
+  const order = test.writer.commit({ command: "set_build_order", build_order: "servers-only" });
   await expect(order).rejects.toEqual({ error: "boom" });
   expect(error).toHaveBeenCalledWith("Ployz Cloud couldn't save this change, so it was undone. Try again.");
 });
@@ -148,7 +148,7 @@ it("says a write was undone when Cloud fails with its own unavailable error", as
   const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
   const unavailable = { _tag: "PublicError", code: "UNAVAILABLE", message: "Ployz Cloud had a problem. Try again." };
   test.write.mockImplementationOnce(() => Promise.reject(unavailable));
-  const order = test.writer.commit({ command: "set_build_order", build_order: "servers-only" }).isPersisted.promise;
+  const order = test.writer.commit({ command: "set_build_order", build_order: "servers-only" });
   await expect(order).rejects.toEqual(unavailable);
   expect(error).toHaveBeenCalledWith("Ployz Cloud couldn't save this change, so it was undone. Try again.");
 });
@@ -166,7 +166,7 @@ it("seals a variable at once, and a refused seal leaves it as it was", async () 
   act(() => { edit = test.edit({ environment: ref, changes: seal }); });
   await waitFor(() => expect(test.value("web.env.TOKEN")).toEqual({ secret: true }));
   refused.resolve({ ok: false, refusal: { code: "invalid_argument", message: "Could not seal", details: null } });
-  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "invalid_argument" });
+  await expect(edit).rejects.toMatchObject({ code: "invalid_argument" });
   await waitFor(() => expect(test.value("web.env.TOKEN")).toBe("abc"));
 });
 
@@ -180,7 +180,7 @@ it("drops an echoed value the Store refuses, back to the value it holds", async 
   act(() => { edit = test.edit({ environment: ref, changes: replicas(9) }); });
   await waitFor(() => expect(test.replicas()).toBe(9));
   refused.resolve({ ok: false, refusal: { code: "invalid_argument", message: "replicas must be at most 8", details: null } });
-  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "invalid_argument" });
+  await expect(edit).rejects.toMatchObject({ code: "invalid_argument" });
   await waitFor(() => expect(test.replicas()).toBe(1));
 });
 
@@ -209,7 +209,7 @@ it("shows a prepared edit at once, prepares it in its turn and sends only what i
   await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
   expect(test.write).toHaveBeenCalledTimes(1);
   sealed.resolve(sealedSeal);
-  await Promise.all([one.isPersisted.promise, seal.isPersisted.promise, copied.isPersisted.promise]);
+  await Promise.all([one, seal, copied]);
 
   expect(test.write.mock.calls.map((call) => call[0]?.data.command)).toMatchObject([
     { command: "edit", expect: 2 }, { command: "edit", expect: 3, changes: sealedSeal }, { command: "copy_node", expect: 4 },
@@ -229,7 +229,7 @@ it("sends nothing when a prepared edit fails, undoes it and says why", async () 
   await waitFor(() => expect(test.value("web.env.TOKEN")).toEqual({ secret: true }));
   refused.reject(new SealError("Add a server to set sealed values."));
 
-  await expect(seal.isPersisted.promise).rejects.toBeInstanceOf(SealError);
+  await expect(seal).rejects.toBeInstanceOf(SealError);
   await waitFor(() => expect(test.value("web.env.TOKEN")).toBe("abc"));
   expect(test.write).not.toHaveBeenCalled();
   expect(error).toHaveBeenCalledWith("Add a server to set sealed values.");
@@ -241,7 +241,7 @@ it("keeps only the shown command in the mutation, and sends the prepared one", a
   const shown: ConfigCommand = { command: "sync", from: ref, into: null, version: "1", picks: null };
   const committed = test.writer.commit(shown, [], async () => ({ ...shown, values: { "row:at": "tok_live_123456" } }));
 
-  await committed.isPersisted.promise;
+  await committed;
   expect(test.write.mock.calls[0]?.[0]).toMatchObject({ data: { command: { command: "sync", values: { "row:at": "tok_live_123456" } } } });
   expect(JSON.stringify(test.scope.queryClient.getMutationCache().getAll().map((mutation) => mutation.state.variables))).not.toContain("tok_live");
 });
@@ -260,13 +260,13 @@ it("runs a Sync after pending edits in every Environment", async () => {
   vi.useFakeTimers();
   const edit = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => edit.promise).mockResolvedValueOnce({ ok: true, value: { written: "synced" } as never });
-  act(() => { void test.edit({ environment: { project: "shop", environment: "staging" }, changes: replicas(3) }).isPersisted.promise.catch(() => {}); });
+  act(() => { void test.edit({ environment: { project: "shop", environment: "staging" }, changes: replicas(3) }).catch(() => {}); });
   const synced = test.writer.commit({ command: "sync", from: ref, into: null, version: "1", picks: null });
   await vi.advanceTimersByTimeAsync(10);
   expect(test.write).toHaveBeenCalledTimes(1);
   vi.useRealTimers();
   edit.resolve(edited(3));
-  await synced.isPersisted.promise;
+  await synced;
   expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "sync" } } });
 });
 
@@ -277,15 +277,14 @@ it("runs a Sync after a pending Batch that edits, as after an edit", async () =>
   test.write.mockImplementationOnce(() => batch.promise).mockResolvedValueOnce({ ok: true, value: { written: "synced" } as never });
   const staging = { project: "shop", environment: "staging" };
   act(() => {
-    void test.writer.commit({ command: "batch", environment: staging, commands: [{ command: "edit", environment: staging, expect: null, changes: replicas(3) }] })
-      .isPersisted.promise.catch(() => {});
+    void test.writer.commit({ command: "batch", environment: staging, commands: [{ command: "edit", environment: staging, expect: null, changes: replicas(3) }] }).catch(() => {});
   });
   const synced = test.writer.commit({ command: "sync", from: ref, into: null, version: "1", picks: null });
   await vi.advanceTimersByTimeAsync(10);
   expect(test.write).toHaveBeenCalledTimes(1);
   vi.useRealTimers();
   batch.resolve({ ok: true, value: { written: "batch", results: [] } as never });
-  await synced.isPersisted.promise;
+  await synced;
   expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "sync" } } });
 });
 
@@ -299,7 +298,7 @@ it("runs a copied node after the edits made before it, not the ones queued behin
   const copied = test.writer.commit({ command: "copy_node", environment: ref, node: "web", expect: null });
   const two = test.edit({ environment: ref, changes: replicas(4) });
   first.resolve(edited(3));
-  await Promise.all([one.isPersisted.promise, copied.isPersisted.promise, two.isPersisted.promise]);
+  await Promise.all([one, copied, two]);
   expect(test.write.mock.calls.map((call) => call[0]?.data.command)).toMatchObject([
     { command: "edit", expect: 2 }, { command: "copy_node", expect: 3 }, { command: "edit", expect: 4 },
   ]);
@@ -325,7 +324,7 @@ it("rereads a view the write's answer says the Store was too busy to read, keepi
   const busy = { ok: false, refusal: { code: "unavailable", message: "The Store is busy", details: null } };
   test.write.mockResolvedValueOnce({ ...edited(3), answers: [{ query: environmentSettingsQuery(ref), result: busy }] } as never);
   const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
-  const persisted = test.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise;
+  const persisted = test.edit({ environment: ref, changes: replicas(3) });
   await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
   expect(test.scope.queryClient.getQueryData(key)).toEqual({ ok: true, value: { view: "environment", ...view(2, 1) } });
   reread.resolve({ ok: true, value: { view: "environment", ...view(3, 3) } });
@@ -340,7 +339,7 @@ it("reports a rename pending in its Environment until the Store answers, and non
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={test.scope.queryClient}>{children}</QueryClientProvider>;
   const here = renderHook(() => useStoreRenamePending("acme", ref), { wrapper });
   const elsewhere = renderHook(() => useStoreRenamePending("acme", { project: "shop", environment: "staging" }), { wrapper });
-  const persisted = test.writer.commit({ command: "rename_service", environment: ref, service: "web", name: "site" }).isPersisted.promise;
+  const persisted = test.writer.commit({ command: "rename_service", environment: ref, service: "web", name: "site" });
   await waitFor(() => expect(here.result.current).toBe(true));
   expect(elsewhere.result.current).toBe(false);
   answer.resolve(edited(3));
@@ -353,18 +352,18 @@ it("sends no edit while a rename in its Environment saves, as it could name the 
   const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
   const answer = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => answer.promise).mockResolvedValue(edited(4));
-  const renamed = test.writer.commit({ command: "rename_service", environment: ref, service: "web", name: "site" }).isPersisted.promise;
+  const renamed = test.writer.commit({ command: "rename_service", environment: ref, service: "web", name: "site" });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
 
-  await expect(test.writer.edit({ environment: ref, changes: [{ op: "unset", path: "web.mounts.data" }] }).isPersisted.promise)
+  await expect(test.writer.edit({ environment: ref, changes: [{ op: "unset", path: "web.mounts.data" }] }))
     .rejects.toMatchObject({ code: "renaming" });
   expect(error).toHaveBeenCalledOnce();
-  const discarded = test.writer.commit({ command: "discard", environment: ref, path: null, target: "saved", version: "4:2:1.0" }).isPersisted.promise;
+  const discarded = test.writer.commit({ command: "discard", environment: ref, path: null, target: "saved", version: "4:2:1.0" });
 
   answer.resolve(edited(3));
   await Promise.all([renamed, discarded]);
   expect(test.write.mock.calls.map(([{ data }]) => data.command.command)).toEqual(["rename_service", "discard"]);
-  await test.writer.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise;
+  await test.writer.edit({ environment: ref, changes: replicas(3) });
   expect(test.write).toHaveBeenCalledTimes(3);
 });
 
@@ -377,13 +376,13 @@ it("locks only the renamed Project's Environments and writes while a Project ren
   const blog = { project: "blog", environment: "production" };
   const renamed = renderHook(() => useStoreRenamePending("acme", ref), { wrapper });
   const other = renderHook(() => useStoreRenamePending("acme", blog), { wrapper });
-  const persisted = test.writer.commit({ command: "rename_project", project: "shop", name: "store" }).isPersisted.promise;
+  const persisted = test.writer.commit({ command: "rename_project", project: "shop", name: "store" });
   await waitFor(() => expect(renamed.result.current).toBe(true));
   expect(other.result.current).toBe(false);
 
-  await test.writer.edit({ environment: blog, changes: replicas(3) }).isPersisted.promise;
-  await expect(test.writer.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise).rejects.toMatchObject({ code: "renaming" });
-  await expect(test.writer.commit({ command: "create_environment", id: "env_2", project: "shop", name: "staging" }).isPersisted.promise)
+  await test.writer.edit({ environment: blog, changes: replicas(3) });
+  await expect(test.writer.edit({ environment: ref, changes: replicas(3) })).rejects.toMatchObject({ code: "renaming" });
+  await expect(test.writer.commit({ command: "create_environment", id: "env_2", project: "shop", name: "staging" }))
     .rejects.toMatchObject({ code: "renaming" });
 
   answer.resolve(edited(3));
@@ -401,7 +400,7 @@ it("lists a new Branch in its Project's Environments once the write persists, so
   renderHook(() => useStoreView("acme", environmentsQuery("shop")), { wrapper });
   test.write.mockImplementationOnce(async ({ data }) => ({ ok: true, value: { written: "branch" } as never,
     answers: data.shows.filter((query) => query.query === "environments").map((query) => ({ query, result: listing(["production", "feature"]) as never })) }));
-  await test.writer.commit({ command: "create_branch", id: "b", from: ref, name: "feature", copy: [], live: [], keep: false, setup: [], fix: null } as never).isPersisted.promise;
+  await test.writer.commit({ command: "create_branch", id: "b", from: ref, name: "feature", copy: [], live: [], keep: false, setup: [], fix: null } as never);
   expect(test.scope.queryClient.getQueryData(key)).toEqual(listing(["production", "feature"]));
 });
 
@@ -418,7 +417,7 @@ it("rereads the Project's Environments after a new Default Environment, which na
     (data.query.query === "environments" ? listing("staging") : { ok: true, value: { view: "environment", ...test.store.current } }) as never);
   // The Store answers only views of the command's Environment; the Project's list names none.
   test.write.mockImplementationOnce(async () => ({ ok: true, value: { written: "project" } as never, answers: [] }));
-  await test.writer.commit({ command: "set_default_environment", environment: { project: "shop", environment: "staging" } }).isPersisted.promise;
+  await test.writer.commit({ command: "set_default_environment", environment: { project: "shop", environment: "staging" } });
   expect(test.scope.queryClient.getQueryData(key)).toEqual(listing("staging"));
 });
 
@@ -427,7 +426,7 @@ it("keeps a newer view when a write's answer or a read lands older", async () =>
   const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
   const answer = deferred<unknown>();
   test.write.mockImplementationOnce(() => answer.promise as never);
-  const persisted = test.writer.commit({ command: "publish", environment: ref, version: null, accept_volume_loss: [] }).isPersisted.promise;
+  const persisted = test.writer.commit({ command: "publish", environment: ref, version: null, accept_volume_loss: [] });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
 
   // A change-stream read lands revision 5 while the write's answer, read at 4, is on its way.
@@ -492,7 +491,7 @@ it("words a command's conflict as the Store does: a taken domain isn't a stale r
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "Another Service already has this domain", details: {} } });
   const writer = renderHook(() => useStoreWriter("acme")).result.current;
   const added = writer.commit({ command: "add_domain", environment: ref, service: "web", hostname: "shop.acme.com", port: null });
-  await expect(added.isPersisted.promise).rejects.toMatchObject({ code: "conflict" });
+  await expect(added).rejects.toMatchObject({ code: "conflict" });
   expect(error).toHaveBeenCalledWith("Another Service already has this domain");
 });
 
@@ -504,10 +503,10 @@ it("leaves a Deploy's confirmation_required to a caller that handles it, and toa
   const writer = renderHook(() => useStoreWriter("acme")).result.current;
   const deploy = { command: "admit", admit: "deploy", id: "d", environment: ref, services: [], version: null, accept_volume_loss: [] } satisfies ConfigCommand;
   const admitted = writer.commit(deploy, ["confirmation_required"]);
-  await expect(admitted.isPersisted.promise).rejects.toMatchObject({ code: "confirmation_required", details });
+  await expect(admitted).rejects.toMatchObject({ code: "confirmation_required", details });
   expect(error).not.toHaveBeenCalled();
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "confirmation_required", message: "This Deploy permanently deletes the data of pg-data", details } });
-  await expect(writer.commit(deploy).isPersisted.promise).rejects.toMatchObject({ code: "confirmation_required" });
+  await expect(writer.commit(deploy)).rejects.toMatchObject({ code: "confirmation_required" });
   expect(error).toHaveBeenCalledWith("This Deploy permanently deletes the data of pg-data");
 });
 
@@ -517,13 +516,13 @@ it("leaves a refusal its control shows beside the field untoasted, still undoing
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "invalid", message: "Replicas must be at most 10", details: null } });
   let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
   act(() => { edit = test.edit({ environment: ref, changes: replicas(30) }); showRefusalInline(edit); });
-  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "invalid" });
+  await expect(edit).rejects.toMatchObject({ code: "invalid" });
   await waitFor(() => expect(test.replicas()).toBe(1));
   expect(error).not.toHaveBeenCalled();
 
   test.write.mockImplementationOnce(() => Promise.reject({ _tag: "PublicError", code: "UNAUTHORIZED", message: "Authentication is required." }));
   act(() => { edit = test.edit({ environment: ref, changes: replicas(3) }); showRefusalInline(edit); });
-  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  await expect(edit).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   expect(error).toHaveBeenCalledWith("You're signed out. Nothing was saved.", expect.anything());
 });
 
@@ -553,7 +552,7 @@ it.each(marked)("marks a $name until the Store answers it, and clears the mark w
 
   const answer = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => answer.promise);
-  const saved = test.writer.commit(command).isPersisted.promise;
+  const saved = test.writer.commit(command);
   await waitFor(() => expect(mark.result.current).toEqual(busy));
   answer.resolve(edited(3));
   await saved;
@@ -561,7 +560,7 @@ it.each(marked)("marks a $name until the Store answers it, and clears the mark w
 
   const refusal = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => refusal.promise);
-  const refused = test.writer.commit(command).isPersisted.promise;
+  const refused = test.writer.commit(command);
   await waitFor(() => expect(mark.result.current).toEqual(busy));
   refusal.resolve({ ok: false, refusal: { code: "invalid", message: "No", details: {} } });
   await expect(refused).rejects.toMatchObject({ code: "invalid" });

@@ -150,7 +150,7 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   };
   const save = (value: string) => {
     setEditing(false);
-    land(value).isPersisted.promise.then(() => setDraft(""), () => { setDraft(value); setEditing(true); });
+    land(value).then(() => setDraft(""), () => { setDraft(value); setEditing(true); });
   };
   return (
     <li className={cn("grid grid-cols-[6rem_minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-x-3 border-b px-4 py-2 last:border-b-0",

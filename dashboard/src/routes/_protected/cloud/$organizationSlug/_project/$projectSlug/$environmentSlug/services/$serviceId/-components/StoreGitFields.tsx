@@ -10,10 +10,10 @@ import { serviceSetting } from "#/modules/config-store/catalog";
 import { changedProps, settingText } from "#/modules/config-store/store-services";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { useCachedStoreView } from "#/modules/config-store/store-view.queries";
+import type { Write } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 
@@ -42,7 +42,7 @@ export function StoreBranchField({ organizationSlug, repository, gitRef, value, 
   organizationSlug: string; repository: string; gitRef: GitRef | undefined; value: string; change: ServiceSettingChange | undefined;
   /** Why the branch can't change here, when it can't. */
   locked?: string;
-  onSet: (branch: string) => PersistableTransaction;
+  onSet: (branch: string) => Write;
 }) {
   const setting = serviceSetting("branch");
   const [picking, setPicking] = useState(false);
@@ -80,7 +80,7 @@ export function StoreBranchField({ organizationSlug, repository, gitRef, value, 
 /** The Dockerfile a Git Service builds, suggesting the repository's Dockerfiles once the field is focused. */
 export function StoreDockerfileField({ organizationSlug, gitRef, branch, value, change, onCommit }: {
   organizationSlug: string; gitRef: GitRef | undefined; branch: string; value: string; change: ServiceSettingChange | undefined;
-  onCommit: (raw: string) => PersistableTransaction;
+  onCommit: (raw: string) => Write;
 }) {
   const setting = serviceSetting("dockerfilePath");
   const [search, setSearch] = useState(false);
@@ -106,7 +106,7 @@ export function StoreDockerfileField({ organizationSlug, gitRef, branch, value, 
 /** Who builds a Git Service first; part of its Deployment Policy, so it applies at once and Discard leaves it. */
 export function StorePreferredBuilderField({ organizationSlug, value, onSet }: {
   organizationSlug: string; value: string | null;
-  onSet: (builder: string | null) => PersistableTransaction;
+  onSet: (builder: string | null) => Write;
 }) {
   const setting = serviceSetting("preferredBuilder");
   const { machines, status } = useRuntimeLens(organizationSlug);

@@ -117,7 +117,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
     try {
       const written = await writer.commit({ command: "stage_history", environment: store, revision: preview.revision,
         action: preview.action, change: preview.change, version: preview.version, accept_overwrite: acceptOverwrite },
-      ["conflict", "confirmation_required"]).isPersisted.promise;
+      ["conflict", "confirmation_required"]);
       if (written.written === "history_staged") {
         const notSet = notSetToast(preview.action, written.not_set);
         if (notSet) toast(notSet.title, { description: notSet.description });

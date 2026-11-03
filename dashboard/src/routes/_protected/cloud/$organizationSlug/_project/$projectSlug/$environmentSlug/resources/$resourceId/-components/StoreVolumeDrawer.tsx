@@ -272,7 +272,7 @@ function StoreSharedWrites({ state }: { state: StoreVolume }) {
             setRefusal(null);
             const write = writer.commit({ command: "set_volume_shared_writes", environment: state.environment, volume: state.volume.name, shared_writes: sharedWrites });
             holdShared(sharedWrites, write);
-            write.isPersisted.promise.catch((error: Error) => { if (error instanceof StoreRefused) setRefusal(error.message); });
+            write.catch((error: Error) => { if (error instanceof StoreRefused) setRefusal(error.message); });
           }} />
       )}>
       {refusal ? <FieldError>{refusal}</FieldError> : null}

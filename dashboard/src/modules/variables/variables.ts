@@ -1,3 +1,5 @@
+import type { Write } from "#/modules/config-store/store-write";
+
 /** A variable's value as the panel shows it: plain text, or sealed (never read back). */
 export type VariableValue =
   | { type: "plain"; value: string }
@@ -24,9 +26,9 @@ export type PlainVariableRecord = Omit<VariableRecord, "value"> & { value: Extra
 
 /** Where the panel's writes go: each shows at once and persists in the background. */
 export type VariableWriter = {
-  insert(variable: VariableRecord): { isPersisted: { promise: Promise<unknown> } };
-  update(variableId: string, updater: (draft: VariableRecord) => void): { isPersisted: { promise: Promise<unknown> } };
-  delete(variableId: string): { isPersisted: { promise: Promise<unknown> } };
+  insert(variable: VariableRecord): Write;
+  update(variableId: string, updater: (draft: VariableRecord) => void): Write;
+  delete(variableId: string): Write;
 };
 
 /** A variable's name, as the Store takes it (the settings catalog's `env` keys). */

@@ -65,7 +65,7 @@ describe("ServiceSettingInput validation", () => {
 describe("ServiceSettingInput commit", () => {
   afterEach(cleanup);
   const replicas: SettingSchema = { title: "Replicas", description: "", type: "integer", minimum: 0, maximum: 50 };
-  const saved = () => ({ isPersisted: { promise: Promise.resolve() } });
+  const saved = () => Promise.resolve();
 
   it("stages the typed value when focus leaves the field, with no check to press", () => {
     const onCommit = vi.fn(saved);
@@ -123,7 +123,7 @@ describe("ServiceSettingInput commit", () => {
     let fail = (_error: Error) => {};
   const write = { promise: new Promise<void>((_resolve, reject) => { fail = reject; }) };
     const field = (value: string) => (
-      <ServiceSettingInput ariaLabel="Replicas" value={value} isChanged={false} onCommit={() => ({ isPersisted: { promise: write.promise } })} />
+      <ServiceSettingInput ariaLabel="Replicas" value={value} isChanged={false} onCommit={() => write.promise} />
     );
     const { rerender } = render(field("1"));
     const input = screen.getByLabelText<HTMLInputElement>("Replicas");
@@ -143,7 +143,7 @@ describe("ServiceSettingInput commit", () => {
   });
 
   it("sends a refused value again on Retry, and drops the refusal once the user types", async () => {
-    const onCommit = vi.fn(() => ({ isPersisted: { promise: Promise.reject(new Error("Replicas must be at most 50.")) } }));
+    const onCommit = vi.fn(() => Promise.reject(new Error("Replicas must be at most 50.")));
     render(<ServiceSettingInput ariaLabel="Replicas" value="1" isChanged={false} onCommit={onCommit} />);
     const input = screen.getByLabelText<HTMLInputElement>("Replicas");
     fireEvent.change(input, { target: { value: "60" } });
@@ -159,7 +159,7 @@ describe("ServiceSettingInput commit", () => {
 
   it("says Cloud had a problem, not that it couldn't be reached, when Cloud fails the save", async () => {
     const failed = { _tag: "PublicError", code: "UNAVAILABLE", message: "Ployz Cloud had a problem. Try again." };
-    render(<ServiceSettingInput ariaLabel="Replicas" value="1" isChanged={false} onCommit={() => ({ isPersisted: { promise: Promise.reject(failed) } })} />);
+    render(<ServiceSettingInput ariaLabel="Replicas" value="1" isChanged={false} onCommit={() => Promise.reject(failed)} />);
     const input = screen.getByLabelText("Replicas");
     fireEvent.change(input, { target: { value: "2" } });
     await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
@@ -171,7 +171,7 @@ describe("ServiceSettingInput commit", () => {
     let land!: () => void;
     const write = { promise: new Promise<void>((resolve) => { land = resolve; }) };
     const field = (value: string) => (
-      <ServiceSettingInput ariaLabel="Replicas" value={value} isChanged={false} onCommit={() => ({ isPersisted: { promise: write.promise } })} />
+      <ServiceSettingInput ariaLabel="Replicas" value={value} isChanged={false} onCommit={() => write.promise} />
     );
     const { rerender } = render(field("1"));
     const input = screen.getByLabelText<HTMLInputElement>("Replicas");

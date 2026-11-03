@@ -1,6 +1,6 @@
 import { useState } from "react";
-import type { PersistableTransaction } from "./collection-field-resources";
 import { toErrorMessage } from "#/lib/error-message";
+import type { Write } from "#/modules/config-store/store-write";
 
 /** Where a control's last write stands: running, refused with what it tried and why, or settled. */
 export type CommitState<T> = { phase: "idle" } | { phase: "saving"; to: T } | { phase: "failed"; to: T; reason: string };
@@ -20,11 +20,11 @@ export function failureReason<E>(error: E) {
 export function useCommitHold<T>(value: T) {
   const [state, setState] = useState<CommitState<T>>(IDLE);
 
-  function hold(to: T, write: PersistableTransaction) {
+  function hold(to: T, write: Write) {
     const saving = { phase: "saving", to } as const;
     setState(saving);
     const settle = (next: CommitState<T>) => setState((current) => (current === saving ? next : current));
-    write.isPersisted.promise.then(
+    write.then(
       () => settle(IDLE),
       (error) => settle({ phase: "failed", to, reason: failureReason(error) }),
     );

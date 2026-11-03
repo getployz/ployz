@@ -57,7 +57,7 @@ export function StoreVolumeMounts({ resourceId, organizationSlug, environment, s
     try {
       const { volume, service } = resolve(id);
       pending.current.add(id); setUnmount({ pending: new Set(pending.current), error: null });
-      writer.edit({ environment, changes: [mountChange(service.name, volume.name, null)] }).isPersisted.promise.then(() => {
+      writer.edit({ environment, changes: [mountChange(service.name, volume.name, null)] }).then(() => {
         pending.current.delete(id); setUnmount((current) => ({ ...current, pending: new Set(pending.current) }));
       }, (error: Error) => {
         pending.current.delete(id); setUnmount({ pending: new Set(pending.current), error: mountFailure(error) });

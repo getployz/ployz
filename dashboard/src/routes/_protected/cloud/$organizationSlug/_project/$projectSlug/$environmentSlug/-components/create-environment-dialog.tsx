@@ -45,7 +45,7 @@ export function CreateEnvironmentDialog({
       // The Store names it as typed, or says why not in the form.
       const id = crypto.randomUUID();
       await writer.commit({ command: "create_environment", id, project: input.projectSlug, name: input.name },
-        ["invalid_argument", "conflict"]).isPersisted.promise;
+        ["invalid_argument", "conflict"]);
       return input.name;
     },
     onSuccess: async (environmentSlug, input) => {

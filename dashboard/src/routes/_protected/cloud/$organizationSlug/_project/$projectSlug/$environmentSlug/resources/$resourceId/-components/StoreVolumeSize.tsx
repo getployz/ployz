@@ -5,11 +5,10 @@ import type { EnvironmentRef, VolumeListing } from "@ployz/sdk";
 import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { SettingsRow } from "#/components/settings/settings-section";
-import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { FieldError } from "#/components/ui/field";
 import { environmentKey, invalidateViews } from "#/modules/config-store/store-view.queries";
 import { gigabytes, volumeStorage } from "#/modules/config-store/store-volumes";
-import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStoreWriter, type Write } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { type Bytes, gb } from "#/modules/volume-run/resize";
 import { checkResize, growWords, type Holder, type ResizeVerdict } from "#/modules/volume-run/resize-check";
@@ -22,7 +21,6 @@ import { ServiceSettingInput } from "../../../services/$serviceId/-components/Se
 type Grow = Extract<ResizeVerdict, { kind: "grow" }>;
 type Asking = { grow: Grow; settle: (error?: Error) => void };
 
-const SETTLED: PersistableTransaction = { isPersisted: { promise: Promise.resolve() } };
 const active = (run: VolumeRunView) => ACTIVE_VOLUME_RUN_STATES.some((state) => state === run.state);
 
 export function StoreVolumeSize({ organizationSlug, environment, volume, recorded, holders, running }: {
@@ -58,14 +56,14 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
     return checkResize({ volume: volume.name, recorded, working, requested: typed.maximumBytes, holders });
   };
 
-  function commit(raw: string): PersistableTransaction {
+  function commit(raw: string): Write {
     setFailure(null);
     const next = verdict(raw);
     if (next?.kind === "restage") {
       return writer.commit({ command: "set_volume_storage", environment, volume: volume.name, storage: { kind: "provisioned", maximumBytes: recorded } });
     }
-    if (next?.kind !== "grow") return SETTLED;
-    return { isPersisted: { promise: new Promise<void>((resolve, reject) => setAsking({ grow: next, settle: (error) => (error ? reject(error) : resolve()) })) } };
+    if (next?.kind !== "grow") return Promise.resolve();
+    return new Promise<void>((resolve, reject) => setAsking({ grow: next, settle: (error) => (error ? reject(error) : resolve()) }));
   }
 
   async function grow(asked: Asking) {

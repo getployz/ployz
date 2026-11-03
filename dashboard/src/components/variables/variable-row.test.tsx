@@ -181,7 +181,7 @@ describe("VariableRow", () => {
   it("shows a saved value as the editor closes, and the stored one again when the write is refused", async () => {
     let fail = (_error: Error) => {};
     const write = new Promise<void>((_resolve, reject) => { fail = reject; });
-    const writer = asTestDouble<VariableWriter>()({ update: vi.fn(() => ({ isPersisted: { promise: write } })) });
+    const writer = asTestDouble<VariableWriter>()({ update: vi.fn(() => write) });
     render(<VariableRow variable={plainVariable()} collection={writer} onSealVariable={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Show API_KEY" }));
     fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
@@ -202,7 +202,7 @@ describe("VariableRow", () => {
   });
 
   it("says a secret is Not set, and Set value seals the one typed", async () => {
-    const onSealVariable = vi.fn(() => ({ isPersisted: { promise: Promise.resolve() } }));
+    const onSealVariable = vi.fn(() => Promise.resolve());
     render(<VariableRow variable={{ ...sealedVariable(), value: { type: "sealed", notSet: true } }} collection={collection}
       onSealVariable={onSealVariable} />);
     expect(screen.getByText("Not set")).toBeTruthy();
@@ -222,7 +222,7 @@ describe("VariableRow", () => {
     let fail = (_error: Error) => {};
     const write = new Promise<void>((_resolve, reject) => { fail = reject; });
     render(<VariableRow variable={{ ...sealedVariable(), value: { type: "sealed", notSet: true } }} collection={collection}
-      onSealVariable={() => ({ isPersisted: { promise: write } })} />);
+      onSealVariable={() => write} />);
     fireEvent.click(screen.getByRole("button", { name: "Set value" }));
     const input = screen.getByLabelText("Value of API_KEY");
     fireEvent.change(input, { target: { value: "prod-key" } });
@@ -340,7 +340,7 @@ describe("VariableRow", () => {
     ["Escape", (input: HTMLElement) => fireEvent.keyDown(input, { key: "Escape" })],
     ["Enter", (input: HTMLElement) => fireEvent.keyDown(input, { key: "Enter" })],
   ])("labels the edit input with its key, and %s returns focus to the row's menu", async (_key, close) => {
-    const writer = asTestDouble<VariableWriter>()({ update: vi.fn(() => ({ isPersisted: { promise: Promise.resolve() } })) });
+    const writer = asTestDouble<VariableWriter>()({ update: vi.fn(() => Promise.resolve()) });
     render(<VariableRow variable={plainVariable()} collection={writer} onSealVariable={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Edit"));

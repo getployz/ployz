@@ -1,5 +1,4 @@
 import { Schema } from "effect";
-import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import {
   appFormOptions,
@@ -8,6 +7,7 @@ import {
   validateOnChangeOrBlur,
 } from "#/form";
 import { asRecord, asString } from "#/lib/json";
+import type { Write } from "#/modules/config-store/store-write";
 import {
   strictParseOptions,
   type StringSchema,
@@ -47,7 +47,7 @@ type SchemaFieldInputProps = {
   rows?: number;
   /** When a draft stages: as focus leaves (the default), or only on Enter or its check. */
   commit?: "blur" | "check";
-  onCommit: (value: string) => PersistableTransaction;
+  onCommit: (value: string) => Write;
 };
 
 export function SchemaFieldInput({
@@ -84,7 +84,7 @@ export function SchemaFieldInput({
         value: submittedValue,
       });
       // Optimistic: a failed save rolls the value back and toasts; show the rolled-back value.
-      void onCommit(submittedValue).isPersisted.promise.catch(() => form.reset({ value }));
+      void onCommit(submittedValue).catch(() => form.reset({ value }));
     },
   });
 

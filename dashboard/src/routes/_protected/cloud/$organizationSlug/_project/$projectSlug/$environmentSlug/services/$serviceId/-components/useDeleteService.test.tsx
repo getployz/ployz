@@ -29,7 +29,7 @@ it.each([
     commands.push(command);
     const promise = command.command === "remove_service" && !accepted
       ? Promise.reject(new StoreRefused({ code: "invalid_argument", message: "no", details: null })) : Promise.resolve({});
-    return { isPersisted: { promise } };
+    return promise;
   });
   vi.spyOn(writes, "useStoreWriter").mockReturnValue({ commit } as never);
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient: new QueryClient(), sessionId: "s", userId: "u" });
@@ -48,7 +48,7 @@ it.each([
     render(<RouterProvider router={router} />);
     fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
     await vi.waitFor(() => expect(commands.map((command) => command.command)).toEqual(sent));
-    const serviceRemoved = commit.mock.results[0]?.value.isPersisted.promise;
+    const serviceRemoved = commit.mock.results[0]?.value;
     await serviceRemoved?.catch(() => {});
     expect(commands.slice(1)).toEqual(accepted ? [{ command: "remove_volume", environment, volume: "db-data" }] : []);
   } finally {

@@ -50,8 +50,7 @@ export function useCreateStoreService(organizationSlug: string) {
     const id = crypto.randomUUID();
     place({ environmentId: target.environmentId, resourceType: "service", resourceId: id, ...target.position });
     const name = newServiceName(source, services(target.store));
-    const { isPersisted } = writer.commit(createServiceCommand(id, target.store, name, source));
-    return { service: { id }, persisted: isPersisted.promise };
+    return { service: { id }, persisted: writer.commit(createServiceCommand(id, target.store, name, source)) };
   };
 }
 
@@ -67,8 +66,7 @@ export function useCreateStoreDatabase(organizationSlug: string) {
     const name = serviceName(preset.id, services(target.store));
     const command = databaseCommand(preset, { service, volume, environment: target.store, name,
       volumeName: uniqueName(`${name}-data`, volumeNames(target.store)) });
-    const { isPersisted } = writer.commit(command);
-    return { service: { id: service }, persisted: isPersisted.promise };
+    return { service: { id: service }, persisted: writer.commit(command) };
   };
 }
 

@@ -116,7 +116,7 @@ it("locks a Volume's mounts while a Service they name is renaming, so Unmount ne
   vi.spyOn(functions, "writeStoreServerFn").mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const writer = renderHook(() => useStoreWriter("acme"), { wrapper }).result.current;
-  const renamed = writer.commit({ command: "rename_service", environment, service: "web", name: "site" }).isPersisted.promise;
+  const renamed = writer.commit({ command: "rename_service", environment, service: "web", name: "site" });
   const actions = () => screen.getByRole("button", { name: "Actions for web mount", hidden: true });
   await waitFor(() => expect(actions().closest("[inert]")).not.toBeNull());
   await act(async () => { answer({ ok: true, value: { written: "batch", results: [] } }); await renamed; });

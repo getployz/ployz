@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
 import type { JsonValue, ServiceSettingChange } from "@ployz/sdk";
-import type { Persistable } from "#/collections/query-collection";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
@@ -14,6 +13,7 @@ import { serviceSetting, settingError } from "#/modules/config-store/catalog";
 import { healthcheckOf, healthcheckValue, type Healthcheck, type HealthcheckKind } from "#/modules/config-store/healthcheck";
 import { shownValue } from "#/modules/config-store/store-deployments";
 import { changedProps } from "#/modules/config-store/store-services";
+import type { Write } from "#/modules/config-store/store-write";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 
 const { path, command, timeoutSeconds } = serviceSetting("healthcheck").properties;
@@ -38,7 +38,7 @@ export type HealthcheckSetting = {
   value: JsonValue | undefined;
   change: ServiceSettingChange | undefined;
   /** Sets the Setting, or unsets it (null). */
-  set: (value: JsonValue | null) => Persistable;
+  set: (value: JsonValue | null) => Write;
 };
 
 type Props = HealthcheckSetting & {

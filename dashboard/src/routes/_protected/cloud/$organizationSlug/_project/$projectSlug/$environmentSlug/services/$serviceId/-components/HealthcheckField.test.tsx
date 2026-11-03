@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HealthcheckField, HealthcheckSettings } from "./HealthcheckField";
 
-const saved = { isPersisted: { promise: Promise.resolve() } };
+const saved = Promise.resolve();
 
 function field(value: JsonValue) {
   const set = vi.fn((_: JsonValue | null) => saved);

@@ -22,7 +22,7 @@ it("reopens a refused custom domain with the Store's reason under the field unti
   let refuse = (_error: Error) => {};
   const write = new Promise<never>((_resolve, reject) => { refuse = reject; });
   write.catch(() => {});
-  const commit = vi.fn(() => ({ isPersisted: { promise: write } }));
+  const commit = vi.fn(() => write);
   vi.spyOn(views, "useStoreView").mockReturnValue(asTestDouble<ReturnType<typeof views.useStoreView>>()({}));
   vi.spyOn(views, "requireView").mockReturnValue({ domains: [] });
   vi.spyOn(pending, "useStorePendingNodes").mockReturnValue(
@@ -64,7 +64,7 @@ it("refuses a custom domain another add is still saving, in any spelling the Sto
   const sent: ConfigCommand[] = [];
   const commit = vi.fn((command: ConfigCommand) => {
     sent.push(command);
-    return { isPersisted: { promise: new Promise<never>(() => {}) } };
+    return new Promise<never>(() => {});
   });
   vi.spyOn(views, "useStoreView").mockReturnValue(asTestDouble<ReturnType<typeof views.useStoreView>>()({}));
   vi.spyOn(views, "requireView").mockReturnValue({ domains: [] });

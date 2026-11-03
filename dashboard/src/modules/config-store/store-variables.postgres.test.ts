@@ -50,12 +50,12 @@ it.live("the Store takes a value the browser sealed as its exact ciphertext", ()
       // The Store writer's `edit`, sending what `prepare` makes as the dashboard's server function does.
       const sent: SecretValue[] = [];
       const writer = asTestDouble<ReturnType<typeof useStoreWriter>>()({
-        edit: ({ environment, changes, prepare: prepared }: StoreEdit) => ({ isPersisted: { promise: Effect.runPromise(Effect.gen(function* () {
+        edit: ({ environment, changes, prepare: prepared }: StoreEdit) => Effect.runPromise(Effect.gen(function* () {
           const ready = prepared ? yield* Effect.promise(prepared) : changes;
           for (const change of ready) if (change.op === "set" && change.path === "web.env.TOKEN") sent.push((change.value as { secret: SecretValue }).secret);
           const result = yield* write({ command: "edit", environment, expect: null, changes: ready }).pipe(Effect.provide(cloud));
           return result.ok ? result.value : assert.fail(JSON.stringify(result));
-        })) } }),
+        })),
       });
       const variables = storeVariableWriter(writer, production, "web", [], new Map(), { prepare, target });
       const working = Effect.map(
@@ -63,7 +63,7 @@ it.live("the Store takes a value the browser sealed as its exact ciphertext", ()
         (rows) => rows[0]?.working ?? assert.fail("no Working State"),
       );
 
-      yield* Effect.promise(() => variables.create("TOKEN", PLAINTEXT, true, false).isPersisted.promise);
+      yield* Effect.promise(() => variables.create("TOKEN", PLAINTEXT, true, false));
       const ciphertext = (sent[0] as { value: { sealed: string } }).value.sealed;
       const fingerprint = `c1:${createHash("sha256").update(Buffer.from(ciphertext, "base64")).digest("hex")}`;
       const sealed = yield* working;

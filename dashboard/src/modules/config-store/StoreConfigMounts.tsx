@@ -54,8 +54,7 @@ export function StoreConfigMounts({ resourceId, organizationSlug, environment, s
     try {
       const { config, service } = resolve(id);
       pending.current.add(id); setUnmount({ pending: new Set(pending.current), error: null });
-      writer.commit({ command: "detach_config", environment, service: service.name, config: config.name }, ["invalid", "conflict"])
-        .isPersisted.promise.then(() => {
+      writer.commit({ command: "detach_config", environment, service: service.name, config: config.name }, ["invalid", "conflict"]).then(() => {
           pending.current.delete(id); setUnmount((current) => ({ ...current, pending: new Set(pending.current) }));
         }, (error: Error) => {
           pending.current.delete(id); setUnmount({ pending: new Set(pending.current), error: mountFailure(error) });

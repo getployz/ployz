@@ -1,5 +1,4 @@
 import { useState, type ReactNode } from "react";
-import type { Persistable } from "#/collections/query-collection";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
@@ -20,6 +19,7 @@ import {
   VariableRow,
   type VariableMetadataPatch,
 } from "#/components/variables/variable-row";
+import type { Write } from "#/modules/config-store/store-write";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { VariableWriter } from "#/modules/variables/variables";
 import type { PlainVariableRecord } from "#/modules/variables/variables";
@@ -65,9 +65,9 @@ export function VariablesPanel({
   /** Singular noun for the count heading, e.g. "Variable" or "Service Variable". */
   countNoun: string;
   /** Saves in the background; a refusal reopens the form with what was typed. */
-  onCreateVariable: (input: VariableAddInput) => Persistable;
+  onCreateVariable: (input: VariableAddInput) => Write;
   /** Seals a plain variable's value, or sets a sealed one's, in the background. */
-  onSealVariable: (variable: PlainVariableRecord) => Persistable;
+  onSealVariable: (variable: PlainVariableRecord) => Write;
   /** When provided, each row's menu marks it Never sync, or syncs it again. */
   onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
   /** When provided, each row's menu renames it; with `updateReferences`, the variables using it switch too. */
@@ -118,7 +118,7 @@ export function VariablesPanel({
             variables={variables}
             onCreateVariable={(input) => {
               setDraft(undefined);
-              onCreateVariable(input).isPersisted.promise.catch(() => {
+              onCreateVariable(input).catch(() => {
                 setDraft(input);
                 setIsAdding(true);
               });

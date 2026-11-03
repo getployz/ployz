@@ -29,7 +29,7 @@ export function useConfigCreator(params: EnvironmentRouteParams, environmentId: 
   async function createConfig(name: string) {
     const id = crypto.randomUUID();
     place({ environmentId, resourceType: "config", resourceId: id, ...creatorPosition });
-    await writer.commit(createConfigCommand(id, store, name)).isPersisted.promise;
+    await writer.commit(createConfigCommand(id, store, name));
     await navigate({ to: ENVIRONMENT_RESOURCE_ROUTE_TO, params: { ...params, resourceId: id }, search: (prev) => prev });
   }
 
