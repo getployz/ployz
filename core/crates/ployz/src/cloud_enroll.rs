@@ -646,6 +646,7 @@ async fn post_callback(
     operation: &'static str,
 ) -> Result<Vec<u8>, Error> {
     let http = http_client()?;
+    let sent = sent_strings(token, body);
     crate::setup_retry::run(
         &mut (),
         &format!("Cloud {operation} at {}", diagnostic_origin(url)),
@@ -668,10 +669,14 @@ async fn post_callback(
                 {
                     return Error::CloudCantReach;
                 }
-                // Both stages carry credentials; a server may echo them in any encoding.
+                // Both stages carry credentials; a server may echo them in any encoding, so
+                // only Cloud's own sentence survives, and only when it holds none of them.
                 Error::Status {
                     status,
-                    body: format!("{operation} rejected"),
+                    body: cloud_refusal(&body, &sent).map_or_else(
+                        || format!("{operation} rejected"),
+                        |said| serde_json::json!({ "error": said }).to_string(),
+                    ),
                 }
             })
         },
@@ -689,6 +694,99 @@ async fn post_callback(
             cause: Box::new(error),
         },
     })
+}
+
+/// The longest refusal Cloud writes for a person; a longer one is not Cloud's.
+const CLOUD_REFUSAL_MAX: usize = 500;
+
+/// Strings this long are credentials or values the request sent, never Cloud's prose.
+const SENT_MIN: usize = 16;
+
+/// A piece of a sent string this long in a refusal means the refusal echoes it.
+const ECHO_FRAGMENT: usize = 12;
+
+/// The most data a refusal may hold and still read as Cloud's prose: the letters of its
+/// data-like runs (see [`data_letters`]). A version or an address fits; any dump of a
+/// credential, in hex, base64, or byte by byte, does not.
+const DATA_MAX: usize = 24;
+
+/// The strings a callback sends: its bearer, its Pairing Credential, and every long
+/// string in its body.
+fn sent_strings(token: &CloudEnrollToken, body: &EnrollCallback<'_>) -> Vec<String> {
+    fn leaves(value: serde_json::Value, into: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) => into.push(text),
+            serde_json::Value::Array(items) => {
+                items.into_iter().for_each(|item| leaves(item, into));
+            }
+            serde_json::Value::Object(fields) => {
+                fields
+                    .into_iter()
+                    .for_each(|(_, field)| leaves(field, into));
+            }
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            }
+        }
+    }
+    let mut sent = Vec::new();
+    if let Ok(body) = serde_json::to_value(body) {
+        leaves(body, &mut sent);
+    }
+    sent.retain(|text| text.len() >= SENT_MIN);
+    sent.push(token.as_str().to_owned());
+    sent.push(body.pairing_credential.0.clone());
+    sent
+}
+
+/// Cloud's refusal sentence, when `body` is exactly the `{"error": "..."}` its enroll
+/// routes answer with, short, free of control and direction characters, and holding no
+/// piece of anything `sent` nor anything that reads as an encoded value.
+fn cloud_refusal(body: &str, sent: &[String]) -> Option<String> {
+    let serde_json::Value::Object(fields) = serde_json::from_str(body).ok()? else {
+        return None;
+    };
+    let mut fields = fields.into_iter();
+    let (Some((name, serde_json::Value::String(said))), None) = (fields.next(), fields.next())
+    else {
+        return None;
+    };
+    let said = said.trim();
+    (name == "error"
+        && !said.is_empty()
+        && said.chars().count() <= CLOUD_REFUSAL_MAX
+        && !said.chars().any(|c| c.is_control() || invisible(c))
+        && !echoes(said, sent))
+    .then(|| said.to_owned())
+}
+
+/// Characters that reorder or hide text on a terminal.
+fn invisible(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
+/// Whether `said` is not prose Cloud wrote for a person: it holds a piece of a sent
+/// string, or more data than [`DATA_MAX`] allows, which any encoding of one would.
+fn echoes(said: &str, sent: &[String]) -> bool {
+    data_letters(said) > DATA_MAX
+        || sent.iter().any(|sent| {
+            if sent.len() <= ECHO_FRAGMENT {
+                return said.contains(sent.as_str());
+            }
+            sent.as_bytes()
+                .windows(ECHO_FRAGMENT)
+                .filter_map(|piece| std::str::from_utf8(piece).ok())
+                .any(|piece| said.contains(piece))
+        })
+}
+
+/// The letters of `said`'s data-like runs. A run is an unbroken stretch of base64 or hex
+/// letters, wherever it starts; it is data-like when it holds a digit or is longer than any
+/// word, as each run of a hex, base64 or byte-by-byte dump is.
+fn data_letters(said: &str) -> usize {
+    said.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-')))
+        .filter(|run| run.len() > DATA_MAX || run.chars().any(|c| c.is_ascii_digit()))
+        .map(str::len)
+        .sum()
 }
 
 fn retry_error(
@@ -1837,9 +1935,153 @@ mod tests {
         }
     }
 
+    /// What `ployz server add` prints when Cloud refuses its completion with `answer`.
+    async fn completion_refused_with(answer: Vec<u8>) -> String {
+        let (listener, url) = listen().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let response = http_response(409, "Conflict", &answer);
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+                .await
+                .unwrap();
+        });
+        let credential = PairingCredential::parse("pairing-secret").unwrap();
+        let error = callback(
+            Command::ServerAdd,
+            &url,
+            &token(),
+            MachineId::random(),
+            &credential,
+            Some(ployz_core::Sealing::NeedsAccess),
+            None,
+        )
+        .await
+        .unwrap_err();
+        server.await.unwrap();
+        crate::ui::chain_text(&error)
+    }
+
+    #[tokio::test]
+    async fn a_completion_refusal_shows_cloud_s_sentence() {
+        for said in [
+            "This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.",
+            "This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key. Update ployz where you run ployz server add: curl -fsSL https://ployz.sh | sh (with sudo on the Server). Then rerun ployz server add while a server that holds your cluster's key is online.",
+        ] {
+            let printed = completion_refused_with(
+                serde_json::json!({ "error": said })
+                    .to_string()
+                    .into_bytes(),
+            )
+            .await;
+            assert!(printed.contains(said), "{printed}");
+            assert!(!printed.contains("rejected"), "{printed}");
+            assert!(printed.contains("without --reset"), "{printed}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_completion_refusal_shows_nothing_else_from_the_answer() {
+        let long = "word ".repeat(120);
+        for answer in [
+            String::new(),
+            "FAKE garbage".to_owned(),
+            "<html>FAKE gateway</html>".to_owned(),
+            r#"{"error":""}"#.to_owned(),
+            r#"{"error":"FAKE said","details":"FAKE detail"}"#.to_owned(),
+            r#"{"error":{"code":"conflict","message":"FAKE said","details":{"cause":"FAKE cause"}}}"#
+                .to_owned(),
+            r#"{"_tag":"PublicError","code":"CONFLICT","message":"FAKE said"}"#.to_owned(),
+            r#"["FAKE said"]"#.to_owned(),
+            r#"{"error":"FAKE said\u001b[31m"}"#.to_owned(),
+            r#"{"error":"FAKE said\nFAKE line"}"#.to_owned(),
+            serde_json::json!({ "error": format!("FAKE {long}") }).to_string(),
+            r#"{"error":"Your token pmet_test was refused"}"#.to_owned(),
+            r#"{"error":"Your pairing pairing-secret was refused"}"#.to_owned(),
+        ] {
+            let printed = completion_refused_with(answer.clone().into_bytes()).await;
+            assert!(
+                printed.contains("HTTP 409: enrollment completion rejected"),
+                "{answer}: {printed}"
+            );
+            for leaked in ["FAKE", "pmet_test", "pairing-secret"] {
+                assert!(!printed.contains(leaked), "{answer}: {printed}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refusal_echoing_a_credential_in_part_or_encoded_is_not_shown() {
+        use base64::Engine as _;
+        let token = CloudEnrollToken::parse("pmet_FAKEtoken0123456789abcdefghij").unwrap();
+        let pairing = "FAKEpairing0123456789abcdefghijkl";
+        let capability =
+            ManagementCapability::new(ployz_core::ManagementIdentity::from_bytes([5; 32]), [6; 32]);
+        let secret = capability.to_secret_string();
+        let half = |text: &str| text[..text.len() / 2].to_owned();
+        for echoed in [
+            secret.clone(),
+            half(&secret),
+            hex::encode(capability.client_secret()),
+            base64::engine::general_purpose::STANDARD.encode(capability.client_secret()),
+            pairing.to_owned(),
+            half(pairing),
+            base64::engine::general_purpose::STANDARD.encode(pairing),
+            token.as_str().to_owned(),
+            half(token.as_str()),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token.as_str()),
+            format!("secret:{}", hex::encode(capability.client_secret())),
+            format!(
+                r#"{{"secret":"{}"}}"#,
+                hex::encode(capability.client_secret())
+            ),
+            format!(
+                "<Buffer {}>",
+                capability
+                    .client_secret()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            format!("{:?}", capability.client_secret()),
+            "\u{202e}".to_owned(),
+        ] {
+            let (listener, url) = listen().await;
+            let answer = serde_json::json!({ "error": format!("Refused: {echoed}.") }).to_string();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                let response = http_response(409, "Conflict", answer.as_bytes());
+                tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+                    .await
+                    .unwrap();
+            });
+            let error = publish(
+                Command::ServerAdd,
+                &url,
+                &token,
+                MachineId::random(),
+                &PairingCredential::parse(pairing).unwrap(),
+                &capability,
+            )
+            .await
+            .unwrap_err();
+            server.await.unwrap();
+            for printed in [crate::ui::chain_text(&error), format!("{error:?}")] {
+                assert!(!printed.contains(&echoed), "{echoed}: {printed}");
+                assert!(!printed.contains("Refused"), "{echoed}: {printed}");
+            }
+            assert!(
+                crate::ui::chain_text(&error).contains("HTTP 409: candidate publication rejected"),
+                "{echoed}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn callback_errors_redact_capability_and_pairing_credentials() {
-        for publishing in [true, false] {
+        for (publishing, as_cloud) in [(true, false), (true, true), (false, false), (false, true)] {
             let (listener, url) = listen().await;
             let capability = ManagementCapability::new(
                 ployz_core::ManagementIdentity::from_bytes([3; 32]),
@@ -1847,7 +2089,11 @@ mod tests {
             );
             let secret = capability.to_secret_string();
             let pairing = "pairing-secret";
-            let echoed = format!("{secret} {pairing}");
+            let mut echoed = format!("{secret} {pairing}");
+            if as_cloud {
+                // Cloud's own shape, so only the credentials in it keep it from printing.
+                echoed = serde_json::json!({ "error": echoed }).to_string();
+            }
             tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 read_http(&mut stream).await;
