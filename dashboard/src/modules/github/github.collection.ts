@@ -1,5 +1,5 @@
 import { githubRepoAccessQueryOptions } from "./github.queries";
-import { skipToken, useQuery, type QueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";
 import type { GithubRepositorySelection } from "#/modules/github/github";
 import { listGithubRepositoriesServerFn } from "#/modules/github/github.functions";
@@ -65,15 +65,6 @@ export function getGithubReposCollection(scope: GithubCollectionScope) {
   return collection;
 }
 
-/** Query state of the repository read; failed refreshes keep rows, so errors repaint from here. */
-export function useGithubReposReadState(scope: GithubCollectionScope) {
-  return useQuery({ queryKey: githubReposQueryKey(scope), queryFn: skipToken });
-}
-
-/**
- * Start a picker's reads together (repositories, access) when it opens or is about to;
- * failures surface through `useGithubReposReadState` and the picker's own queries.
- */
 export function preloadGithubRepos(scope: GithubCollectionScope) {
   void preloadCollection(getGithubReposCollection(scope)).catch(() => {});
   void scope.queryClient.prefetchQuery(githubRepoAccessQueryOptions(scope.organizationSlug));

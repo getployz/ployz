@@ -67,9 +67,9 @@ export const getConnectedAgentsCollection = scoped((scope) =>
  * Ends a browser session: the row leaves at once, and the refetch after brings it back if the server refused. The
  * agents it disconnected leave the Connected agents list on that refetch too.
  */
-export function revokeAccountSession(scope: CollectionScope, sessionId: string) {
+export async function revokeAccountSession(scope: CollectionScope, sessionId: string) {
   const sessions = getAccountSessionsCollection(scope);
-  sessions.utils.writeDelete(sessionId);
+  await sessions.utils.writeDelete(sessionId);
   return revokeAccountSessionServerFn({ data: { sessionId } }).finally(() => {
     void sessions.utils.refetch();
     void getConnectedAgentsCollection(scope).utils.refetch();
@@ -77,8 +77,8 @@ export function revokeAccountSession(scope: CollectionScope, sessionId: string) 
 }
 
 /** Disconnects an agent: the row leaves at once, and the refetch after brings it back if the server refused. */
-export function disconnectAgent(scope: CollectionScope, consentId: string) {
+export async function disconnectAgent(scope: CollectionScope, consentId: string) {
   const agents = getConnectedAgentsCollection(scope);
-  agents.utils.writeDelete(consentId);
+  await agents.utils.writeDelete(consentId);
   return disconnectAgentServerFn({ data: { consentId } }).finally(() => void agents.utils.refetch());
 }

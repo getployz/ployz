@@ -220,9 +220,11 @@ describe("data boundaries", () => {
         const writeSource = project.program.getSourceFile(join(SRC, "modules/config-store/store-write.ts"));
         const writeDeclaration = writeSource?.statements.find((statement) => isInterfaceDeclaration(statement) && statement.name.text === "Write");
         const writeSymbol = writeDeclaration && isInterfaceDeclaration(writeDeclaration) ? checker.getSymbolAtLocation(writeDeclaration.name) : undefined;
-        if (!writeSymbol) throw new Error("store-write.ts declares no Write");
+        if (!writeSymbol) throw new Error("store-write.ts must declare Write as an interface");
         const named = (type: Type | undefined) => type?.getSymbol()?.id === writeSymbol.id;
-        const isWrite = (node: Node) => named(checker.getTypeAtLocation(node));
+        const beforeCatch = (node: Node): Node => isCallExpression(node) && isPropertyAccessExpression(node.expression)
+          && node.expression.name.text === "catch" ? beforeCatch(node.expression.expression) : node;
+        const isWrite = (node: Node) => named(checker.getTypeAtLocation(beforeCatch(node)));
         const makesWrite = (node: Node) => {
           const type = checker.getTypeAtLocation(node);
           return type !== undefined && checker.getSignaturesOfType(type, SignatureKind.Call).some((signature) => named(checker.getReturnTypeOfSignature(signature)));

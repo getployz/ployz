@@ -1,6 +1,6 @@
 import { queryCollectionOptions, type QueryCollectionConfig, type QueryCollectionUtils } from "@tanstack/query-db-collection";
-import { BasicIndex, collectionOptions, type Collection } from "@tanstack/react-db";
-import type { QueryClient } from "@tanstack/react-query";
+import { BasicIndex, collectionOptions, type Collection, type CollectionStatus } from "@tanstack/react-db";
+import { hashKey, type QueryClient } from "@tanstack/react-query";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
 
@@ -40,12 +40,66 @@ function withWriteCommitted<T extends object, C extends ApiCollection<T>>(input:
       try {
         // A read started before the POST must not overwrite its committed response.
         await input.queryClient.cancelQueries({ queryKey: input.queryKey, exact: true });
-        collection.utils.writeUpsert(rows);
+        await collection.utils.writeUpsert(rows);
       } finally {
         subscription.unsubscribe();
       }
     },
   });
+}
+
+/**
+ * A failed first load ends its sync run, and later reads of the same Query never reach it. The Collection reloads
+ * after its Query next succeeds, or when `recover()` is called. A reload starts a new run, which cancels every read of
+ * the old run still settling, so it waits until none is, holding the Collection meanwhile. A cleanup or another run
+ * during the wait ends the recovery. The Query cache is watched only while the Collection is in `error`.
+ */
+function withRecovery<T extends object, C extends Pick<Collection<T>, "status" | "reload" | "on" | "subscribeChanges">>(
+  input: ApiCollectionInput<T>, collection: C,
+) {
+  const queryHash = hashKey(input.queryKey);
+  const fetching = () => input.queryClient.getQueryCache().get(queryHash)?.state.fetchStatus === "fetching";
+  const recover = async () => {
+    let ended = false;
+    const stop = collection.on("status:change", () => {
+      ended = true;
+    });
+    let hold: { unsubscribe: () => void } | undefined;
+    try {
+      do {
+        // Subscribing to a failed Collection reads its ended run, so it holds only onto a read already running.
+        if (!hold && fetching()) hold = collection.subscribeChanges(() => {});
+        await input.queryClient.getQueryCache().get(queryHash)?.promise?.catch(() => {});
+        // A refetch's caller settles in the microtasks after its read, and a reload before then cancels it.
+        await new Promise((resolve) => setTimeout(resolve));
+      } while (fetching());
+    } finally {
+      stop();
+      // Released before the reload: its run would stop watching its own read when the last subscriber leaves.
+      hold?.unsubscribe();
+    }
+    if (!ended && collection.status === "error") await collection.reload();
+  };
+  let watching: (() => void) | undefined;
+  const watch = () => input.queryClient.getQueryCache().subscribe((event) => {
+    if (event.type !== "updated" || event.action.type !== "success" || event.query.queryHash !== queryHash) return;
+    if (collection.status === "error") void recover().catch(() => {});
+  });
+  const arm = () => collection.on("status:change", ({ status }) => {
+    if (status === "error") watching ??= watch();
+    else {
+      watching?.();
+      watching = undefined;
+    }
+    // Cleanup drops the collection's listeners right after this event, and a later start may fail again.
+    if (status === "cleaned-up") queueMicrotask(rearm);
+  });
+  let disarm = arm();
+  const rearm = () => {
+    disarm();
+    disarm = arm();
+  };
+  return Object.assign(collection, { recover });
 }
 
 /** Each owner supplies its request-local QueryClient and authenticated scope. A Remote Read that polls sets `refetchInterval`. */
@@ -54,7 +108,7 @@ export function createApiCollection<T extends object>(input: ApiCollectionInput<
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
 }) {
   const options = queryCollectionOptions({ ...baseOptions(input), refetchInterval: input.refetchInterval, queryFn: input.queryFn });
-  return withWriteCommitted(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
+  return withWriteCommitted(input, withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
 }
 
 /** Rows and their change cursor live in one Query entry, so a cancelled or reverted read reverts both. */
@@ -83,25 +137,28 @@ export function createChangeCollection<T extends object>(input: ApiCollectionInp
     queryFn,
     select: (snapshot: ChangeSnapshot<T>) => snapshot.rows,
   });
-  return withWriteCommitted(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
+  return withWriteCommitted(input, withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
 }
 
-type ApiCollectionReadiness = {
-  preload: () => Promise<void>;
+type ApiCollectionReadiness = Pick<Collection<object>, "status" | "preload"> & {
+  recover: () => Promise<void>;
   subscribeChanges: (callback: () => void) => { unsubscribe: () => void };
-  utils: Pick<QueryCollectionUtils, "refetch" | "isError" | "lastError" | "dataUpdatedAt">;
+  utils: Pick<QueryCollectionUtils, "refetch">;
 };
 
-/** Hold an observer only until readiness; failed first reads are not empty snapshots. */
+const runningStatuses: readonly CollectionStatus[] = ["loading", "error"];
+
+/** Hold an observer only until readiness; a failed first read rejects and recovers on the next call. */
 export async function preloadCollection(collection: ApiCollectionReadiness) {
-  const retryInitialFailure = collection.utils.isError && collection.utils.dataUpdatedAt === 0;
+  if (collection.status === "error") {
+    await collection.recover();
+    // A run another caller started during recovery owns readiness, and a cleaned-up Collection stays cleaned up.
+    if (runningStatuses.includes(collection.status)) await collection.preload();
+    return;
+  }
   const subscription = collection.subscribeChanges(() => {});
   try {
-    if (retryInitialFailure) await collection.utils.refetch({ throwOnError: true });
-    else await collection.preload();
-    if (collection.utils.isError && collection.utils.dataUpdatedAt === 0) {
-      throw collection.utils.lastError;
-    }
+    await collection.preload();
   } finally {
     subscription.unsubscribe();
   }

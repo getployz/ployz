@@ -8,7 +8,7 @@ describe("parseLiveQueryRow", () => {
     const schema = Schema.Struct({ id: Schema.String });
     const liveRow: VirtualRowProps & { id: string } = {
       id: "row-1",
-      $synced: true,
+      $hasPendingWrites: false,
       $origin: "remote",
       $key: "row-1",
       $collectionId: "rows",
@@ -25,7 +25,7 @@ describe("parseLiveQueryRow", () => {
     } = {
       id: "row-1",
       unexpected: true,
-      $synced: true,
+      $hasPendingWrites: false,
       $origin: "remote",
       $key: "row-1",
       $collectionId: "rows",

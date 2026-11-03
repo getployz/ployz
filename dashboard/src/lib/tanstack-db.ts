@@ -14,8 +14,8 @@ type PlainLiveQueryRow<Row extends VirtualRowProps> = Row extends VirtualRowProp
 export function withoutVirtualProps<Row extends VirtualRowProps>(
   row: Row,
 ): PlainLiveQueryRow<Row> {
-  const { $synced, $origin, $key, $collectionId, ...record } = row;
-  void $synced;
+  const { $hasPendingWrites, $origin, $key, $collectionId, ...record } = row;
+  void $hasPendingWrites;
   void $origin;
   void $key;
   void $collectionId;
@@ -30,10 +30,9 @@ export function parseLiveQueryRow<S extends Schema.ConstraintDecoder<object>>(
   return decodeStrict(schema, withoutVirtualProps(row));
 }
 
-// TanStack types live-query rows with the four virtual props ($synced,
+// TanStack types live-query rows with the four virtual props ($hasPendingWrites,
 // $origin, $key, $collectionId), but app-facing collection types use the plain
-// row shape. This boundary re-types the collection in one place; the virtual
-// props are additive metadata, so reading rows through the plain type is safe.
+// row shape.
 export function plainRowCollection<
   Row extends VirtualRowProps,
   Utils extends UtilsRecord,

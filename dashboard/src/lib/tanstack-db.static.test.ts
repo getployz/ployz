@@ -7,7 +7,7 @@ import {
 } from "typescript/unstable/ast/is";
 
 const virtualPropertyNames = [
-  "$synced",
+  "$hasPendingWrites",
   "$origin",
   "$key",
   "$collectionId",

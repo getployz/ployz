@@ -78,7 +78,7 @@ export function useServerUpgradeSettings(organizationSlug: string) {
       .then((row) => collection.writeCommitted(row)),
   });
   const save = (change: Change, failure: string) => {
-    set(change).isPersisted.promise.catch(() => toast.error(failure));
+    set(change).when("settled").catch(() => toast.error(failure));
   };
   return {
     ...settings,

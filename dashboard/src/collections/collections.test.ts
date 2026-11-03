@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { changeNameSources } from "#/collections/change-sources";
 import * as collections from "#/collections/collections";
 import { orgStoreTables, getCanvasPositionsCollection } from "#/collections/collections";
-import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
+import { orgStoreSeed, orgStoreTableNames, subscribeOrgStoreTables } from "#/test/org-store-tables";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -36,7 +36,7 @@ describe("API node collections", () => {
     scope.queryClient.getQueryCache().subscribe((event) => {
       if (event.type === "updated" && event.action.type === "fetch") reads += 1;
     });
-    const active = Object.values(orgStoreTables).map((get) => get("acme", scope).subscribeChanges(() => {}));
+    const active = subscribeOrgStoreTables("acme", scope);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(reads).toBe(0);
     for (const subscription of active) subscription.unsubscribe();

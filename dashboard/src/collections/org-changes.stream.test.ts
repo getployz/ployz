@@ -6,7 +6,7 @@ import { applyOrganizationChanges, watchOrganizationChanges } from "#/collection
 import { getDbClient } from "#/collections/scope";
 import { organizationKeys } from "#/modules/organization/organization-state.queries";
 import { environmentSettingsQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
-import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
+import { orgStoreSeed, orgStoreTableNames, subscribeOrgStoreTables } from "#/test/org-store-tables";
 
 class FakeEventSource extends EventTarget {
   static latest: FakeEventSource | undefined;
@@ -100,7 +100,7 @@ it("refetches only the named collections and re-reads a renamed organization's s
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([]));
   queryClient.setQueryData(organizationKeys.state("acme"), { name: "Acme" });
-  const active = Object.values(orgStoreTables).map((get) => get("acme", scope).subscribeChanges(() => {}));
+  const active = subscribeOrgStoreTables("acme", scope);
   const fetched: unknown[] = [];
   queryClient.getQueryCache().subscribe((event) => {
     if (event.type === "updated" && event.action.type === "fetch") fetched.push(event.query.queryKey.at(-1));

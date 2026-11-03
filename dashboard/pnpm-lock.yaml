@@ -133,11 +133,11 @@ importers:
         specifier: ^1.1.0
         version: 1.1.0(preact@10.29.8)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(solid-js@1.9.15)
       '@tanstack/query-db-collection':
-        specifier: ^1.2.15
-        version: 1.2.15(@tanstack/query-core@5.104.0)(typescript@7.0.1-rc)
+        specifier: ^1.5.0
+        version: 1.5.1(@tanstack/db@1.0.0-rc.1(typescript@7.0.1-rc))(@tanstack/query-core@5.104.0)(typescript@7.0.1-rc)
       '@tanstack/react-db':
-        specifier: ^0.4.1
-        version: 0.4.1(react@19.2.5)(typescript@7.0.1-rc)
+        specifier: 1.0.0-rc.1
+        version: 1.0.0-rc.1(react@19.2.5)(typescript@7.0.1-rc)
       '@tanstack/react-form':
         specifier: 2.0.0-alpha.0
         version: 2.0.0-alpha.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -151,8 +151,8 @@ importers:
         specifier: ^1.167.3
         version: 1.167.3(@tanstack/query-core@5.104.0)(@tanstack/react-query@5.104.0(react@19.2.5))(@tanstack/react-router@1.170.41(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(@tanstack/router-core@1.171.34)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@tanstack/react-router-with-db':
-        specifier: ^0.1.0
-        version: 0.1.0(@tanstack/react-db@0.4.1(react@19.2.5)(typescript@7.0.1-rc))(@tanstack/react-router@1.170.41(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(@tanstack/router-core@1.171.34)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: 1.0.0-rc.1
+        version: 1.0.0-rc.1(@tanstack/react-db@1.0.0-rc.1(react@19.2.5)(typescript@7.0.1-rc))(@tanstack/react-router@1.170.41(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(@tanstack/router-core@1.171.34)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@tanstack/react-start':
         specifier: ^1.168.60
         version: 1.168.60(crossws@0.4.7(srvx@0.11.18))(esbuild@0.28.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(rolldown@1.2.9)(vite@8.2.2(@types/node@26.0.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))(webpack@5.105.0(esbuild@0.28.0))
@@ -3251,13 +3251,13 @@ packages:
       vue:
         optional: true
 
-  '@tanstack/db-ivm@0.1.22':
-    resolution: {integrity: sha512-vpNIY6QnvFiVGPwdMVnh1OAZyFLioFkM5gQAqefghvgDhCMmWUPjYka2gw6w+2TBy742zsGPtLnpxBzUKXo9Jw==}
+  '@tanstack/db-ivm@1.0.0-rc.1':
+    resolution: {integrity: sha512-Se2n19f/Ydl+j9/CFCybvQJuRYGPGv2ERm+x0uD8VjnSoRjvez74YS9P0ywyAbVNSAU3k+hwZF3AWXh23gltOA==}
     peerDependencies:
       typescript: '>=4.7'
 
-  '@tanstack/db@0.9.2':
-    resolution: {integrity: sha512-jeyKbppXwjPNHe0GEVIvsvtirDCxjbPR2xphQaNjgteR15Y+Qnm+6IQNcd3zJ+98uJZ3ot9nagV3UNI+ckVRhQ==}
+  '@tanstack/db@1.0.0-rc.1':
+    resolution: {integrity: sha512-Kwk4bMDr2XkYCkIyA8h2rEbqACspvLhiGFeciz1FHWFrR4Oqa8IrJjUAJgpKEtBXdLbYinxDcFv0rxvbTtz/MQ==}
     peerDependencies:
       typescript: '>=4.7'
 
@@ -3387,19 +3387,20 @@ packages:
   '@tanstack/query-core@5.104.0':
     resolution: {integrity: sha512-JrC2r/JQlXt7khBSdUpsgxNvybzOg+aITa+ARRMlP2AFo93Y8vIqz077rp+e61mJetSZ0T6AJbwW1JHer1vrPQ==}
 
-  '@tanstack/query-db-collection@1.2.15':
-    resolution: {integrity: sha512-02d2haENejJObceIFuxCBY/YbyH1t5+Bw6VEl1vev8pX6CkXnkF1cAwxKPTQgHyj34dfWJ5RLo9bB3BgwuQz5Q==}
+  '@tanstack/query-db-collection@1.5.1':
+    resolution: {integrity: sha512-KPEQHvbBm4BHpsKSoWAndCu/Xy21JyiYx/OISFj+TtPoN5o7ettoYaC8URDmqU5m1zGvji/nZv7SdVPipVcFRw==}
     peerDependencies:
-      '@tanstack/query-core': ^5.0.0
+      '@tanstack/db': ^1.0.0-rc.0
+      '@tanstack/query-core': ^5.90.15
       typescript: '>=4.7'
 
   '@tanstack/query-devtools@5.104.0':
     resolution: {integrity: sha512-snKyFLVFC5LuNoyUTpyqCD2Z8cRlCWrAeO3xub0nGi81IMz8YAUWq2Z+XdpGSGT7bCxqVdOHUjyiA3CtDuBjfQ==}
 
-  '@tanstack/react-db@0.4.1':
-    resolution: {integrity: sha512-mA/a3TAufm0/AZUHmfyKKYfJnEH0XEzJ1Cymt5ZOLqR90MzzDK9KyaDh/JScYHYEipoRkKeRcmedAnHksP6yrg==}
+  '@tanstack/react-db@1.0.0-rc.1':
+    resolution: {integrity: sha512-eCwKDW4IwhU1ycxFaquXAZxbzF6/XLZuXQbqt819j52tmaE4/zxxnx9WUsUosQ32P3RFEwds0OC2NCrny8pTFw==}
     peerDependencies:
-      react: '>=16.8.0'
+      react: '>=18.0.0'
 
   '@tanstack/react-devtools@0.10.2':
     resolution: {integrity: sha512-1BmZyxOrI5SqmRJ5MgkYZNNdnlLsJxQRI2YgorrAvcF2MxK6x5RcuStvD8+YlXoMw3JtNukPxoITirKAnKYDQA==}
@@ -3456,10 +3457,10 @@ packages:
       react: '>=18.0.0 || >=19.0.0'
       react-dom: '>=18.0.0 || >=19.0.0'
 
-  '@tanstack/react-router-with-db@0.1.0':
-    resolution: {integrity: sha512-yZdsrkW3//J1TZ7m/K8tr8B5K8lQU/2zazhlJ9ywVL+wW9+nsFkhRaeqwGK/LagRMP6rKpQx4jy5QSY4mcFh+g==}
+  '@tanstack/react-router-with-db@1.0.0-rc.1':
+    resolution: {integrity: sha512-Z3P9EbK5VfT8XLYWZlV2OXXoNQy8jZQaei8Q/ViIjCRahMdGUJMrzqz5n7jQz0lbL7f7AVCaWmvAtbkARktrjg==}
     peerDependencies:
-      '@tanstack/react-db': '>=0.2.1'
+      '@tanstack/react-db': '>=1.0.0-rc.1'
       '@tanstack/react-router': '>=1.43.2'
       '@tanstack/router-core': '>=1.127.0'
       react: '>=18.0.0'
@@ -7239,9 +7240,6 @@ packages:
       react: ^18.0.0 || ^19.0.0 || ^19.0.0-rc
       react-dom: ^18.0.0 || ^19.0.0 || ^19.0.0-rc
 
-  sorted-btree@1.8.1:
-    resolution: {integrity: sha512-395+XIP+wqNn3USkFSrNz7G3Ss/MXlZEqesxvzCRFwL14h6e8LukDHdLBePn5pwbm5OQ9vGu8mDyz2lLDIqamQ==}
-
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
@@ -10890,16 +10888,15 @@ snapshots:
       react-dom: 19.2.5(react@19.2.5)
       solid-js: 1.9.15
 
-  '@tanstack/db-ivm@0.1.22(typescript@7.0.1-rc)':
+  '@tanstack/db-ivm@1.0.0-rc.1(typescript@7.0.1-rc)':
     dependencies:
       fractional-indexing: 3.4.0
-      sorted-btree: 1.8.1
       typescript: 7.0.1-rc
 
-  '@tanstack/db@0.9.2(typescript@7.0.1-rc)':
+  '@tanstack/db@1.0.0-rc.1(typescript@7.0.1-rc)':
     dependencies:
       '@standard-schema/spec': 1.1.0
-      '@tanstack/db-ivm': 0.1.22(typescript@7.0.1-rc)
+      '@tanstack/db-ivm': 1.0.0-rc.1(typescript@7.0.1-rc)
       '@tanstack/pacer-lite': 0.2.2
       typescript: 7.0.1-rc
 
@@ -11058,10 +11055,10 @@ snapshots:
 
   '@tanstack/query-core@5.104.0': {}
 
-  '@tanstack/query-db-collection@1.2.15(@tanstack/query-core@5.104.0)(typescript@7.0.1-rc)':
+  '@tanstack/query-db-collection@1.5.1(@tanstack/db@1.0.0-rc.1(typescript@7.0.1-rc))(@tanstack/query-core@5.104.0)(typescript@7.0.1-rc)':
     dependencies:
       '@standard-schema/spec': 1.1.0
-      '@tanstack/db': 0.9.2(typescript@7.0.1-rc)
+      '@tanstack/db': 1.0.0-rc.1(typescript@7.0.1-rc)
       '@tanstack/query-core': 5.104.0
       typescript: 7.0.1-rc
 
@@ -11081,11 +11078,10 @@ snapshots:
     transitivePeerDependencies:
       - csstype
 
-  '@tanstack/react-db@0.4.1(react@19.2.5)(typescript@7.0.1-rc)':
+  '@tanstack/react-db@1.0.0-rc.1(react@19.2.5)(typescript@7.0.1-rc)':
     dependencies:
-      '@tanstack/db': 0.9.2(typescript@7.0.1-rc)
+      '@tanstack/db': 1.0.0-rc.1(typescript@7.0.1-rc)
       react: 19.2.5
-      use-sync-external-store: 1.6.0(react@19.2.5)
     transitivePeerDependencies:
       - typescript
 
@@ -11162,9 +11158,9 @@ snapshots:
     transitivePeerDependencies:
       - '@tanstack/router-core'
 
-  '@tanstack/react-router-with-db@0.1.0(@tanstack/react-db@0.4.1(react@19.2.5)(typescript@7.0.1-rc))(@tanstack/react-router@1.170.41(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(@tanstack/router-core@1.171.34)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+  '@tanstack/react-router-with-db@1.0.0-rc.1(@tanstack/react-db@1.0.0-rc.1(react@19.2.5)(typescript@7.0.1-rc))(@tanstack/react-router@1.170.41(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(@tanstack/router-core@1.171.34)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
-      '@tanstack/react-db': 0.4.1(react@19.2.5)(typescript@7.0.1-rc)
+      '@tanstack/react-db': 1.0.0-rc.1(react@19.2.5)(typescript@7.0.1-rc)
       '@tanstack/react-router': 1.170.41(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@tanstack/router-core': 1.171.34
       react: 19.2.5
@@ -15604,8 +15600,6 @@ snapshots:
     dependencies:
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
-
-  sorted-btree@1.8.1: {}
 
   source-map-js@1.2.1: {}
 
