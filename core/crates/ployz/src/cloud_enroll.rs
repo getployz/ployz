@@ -646,6 +646,7 @@ async fn post_callback(
     operation: &'static str,
 ) -> Result<Vec<u8>, Error> {
     let http = http_client()?;
+    let sent = sent_strings(token, body);
     crate::setup_retry::run(
         &mut (),
         &format!("Cloud {operation} at {}", diagnostic_origin(url)),
@@ -668,10 +669,14 @@ async fn post_callback(
                 {
                     return Error::CloudCantReach;
                 }
-                // Both stages carry credentials; a server may echo them in any encoding.
+                // Both stages carry credentials; a server may echo them in any encoding, so
+                // only Cloud's own sentence survives, and only when it holds none of them.
                 Error::Status {
                     status,
-                    body: format!("{operation} rejected"),
+                    body: cloud_refusal(&body, &sent).map_or_else(
+                        || format!("{operation} rejected"),
+                        |said| serde_json::json!({ "error": said }).to_string(),
+                    ),
                 }
             })
         },
@@ -689,6 +694,60 @@ async fn post_callback(
             cause: Box::new(error),
         },
     })
+}
+
+/// The longest refusal Cloud writes for a person; a longer one is not Cloud's.
+const CLOUD_REFUSAL_MAX: usize = 500;
+
+/// Strings this long are credentials or values the request sent, never Cloud's prose.
+const SENT_MIN: usize = 16;
+
+/// The strings a callback sends: its bearer, its Pairing Credential, and every long
+/// string in its body.
+fn sent_strings(token: &CloudEnrollToken, body: &EnrollCallback<'_>) -> Vec<String> {
+    fn leaves(value: serde_json::Value, into: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) => into.push(text),
+            serde_json::Value::Array(items) => {
+                items.into_iter().for_each(|item| leaves(item, into));
+            }
+            serde_json::Value::Object(fields) => {
+                fields
+                    .into_iter()
+                    .for_each(|(_, field)| leaves(field, into));
+            }
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            }
+        }
+    }
+    let mut sent = Vec::new();
+    if let Ok(body) = serde_json::to_value(body) {
+        leaves(body, &mut sent);
+    }
+    sent.retain(|text| text.len() >= SENT_MIN);
+    sent.push(token.as_str().to_owned());
+    sent.push(body.pairing_credential.0.clone());
+    sent
+}
+
+/// Cloud's refusal sentence, when `body` is exactly the `{"error": "..."}` its enroll
+/// routes answer with, short, free of control characters, and holding nothing `sent`.
+fn cloud_refusal(body: &str, sent: &[String]) -> Option<String> {
+    let serde_json::Value::Object(fields) = serde_json::from_str(body).ok()? else {
+        return None;
+    };
+    let mut fields = fields.into_iter();
+    let (Some((name, serde_json::Value::String(said))), None) = (fields.next(), fields.next())
+    else {
+        return None;
+    };
+    let said = said.trim();
+    (name == "error"
+        && !said.is_empty()
+        && said.chars().count() <= CLOUD_REFUSAL_MAX
+        && !said.chars().any(char::is_control)
+        && !sent.iter().any(|sent| said.contains(sent.as_str())))
+    .then(|| said.to_owned())
 }
 
 fn retry_error(
@@ -1837,9 +1896,80 @@ mod tests {
         }
     }
 
+    /// What `ployz server add` prints when Cloud refuses its completion with `answer`.
+    async fn completion_refused_with(answer: Vec<u8>) -> String {
+        let (listener, url) = listen().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let response = http_response(409, "Conflict", &answer);
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+                .await
+                .unwrap();
+        });
+        let credential = PairingCredential::parse("pairing-secret").unwrap();
+        let error = callback(
+            Command::ServerAdd,
+            &url,
+            &token(),
+            MachineId::random(),
+            &credential,
+            Some(ployz_core::Sealing::NeedsAccess),
+            None,
+        )
+        .await
+        .unwrap_err();
+        server.await.unwrap();
+        crate::ui::chain_text(&error)
+    }
+
+    #[tokio::test]
+    async fn a_completion_refusal_shows_cloud_s_sentence() {
+        let said = "This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.";
+        let printed = completion_refused_with(
+            serde_json::json!({ "error": said })
+                .to_string()
+                .into_bytes(),
+        )
+        .await;
+        assert!(printed.contains(said), "{printed}");
+        assert!(!printed.contains("rejected"), "{printed}");
+        assert!(printed.contains("without --reset"), "{printed}");
+    }
+
+    #[tokio::test]
+    async fn a_completion_refusal_shows_nothing_else_from_the_answer() {
+        let long = "word ".repeat(120);
+        for answer in [
+            String::new(),
+            "FAKE garbage".to_owned(),
+            "<html>FAKE gateway</html>".to_owned(),
+            r#"{"error":""}"#.to_owned(),
+            r#"{"error":"FAKE said","details":"FAKE detail"}"#.to_owned(),
+            r#"{"error":{"code":"conflict","message":"FAKE said","details":{"cause":"FAKE cause"}}}"#
+                .to_owned(),
+            r#"{"_tag":"PublicError","code":"CONFLICT","message":"FAKE said"}"#.to_owned(),
+            r#"["FAKE said"]"#.to_owned(),
+            r#"{"error":"FAKE said\u001b[31m"}"#.to_owned(),
+            r#"{"error":"FAKE said\nFAKE line"}"#.to_owned(),
+            serde_json::json!({ "error": format!("FAKE {long}") }).to_string(),
+            r#"{"error":"Your token pmet_test was refused"}"#.to_owned(),
+            r#"{"error":"Your pairing pairing-secret was refused"}"#.to_owned(),
+        ] {
+            let printed = completion_refused_with(answer.clone().into_bytes()).await;
+            assert!(
+                printed.contains("HTTP 409: enrollment completion rejected"),
+                "{answer}: {printed}"
+            );
+            for leaked in ["FAKE", "pmet_test", "pairing-secret"] {
+                assert!(!printed.contains(leaked), "{answer}: {printed}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn callback_errors_redact_capability_and_pairing_credentials() {
-        for publishing in [true, false] {
+        for (publishing, as_cloud) in [(true, false), (true, true), (false, false), (false, true)] {
             let (listener, url) = listen().await;
             let capability = ManagementCapability::new(
                 ployz_core::ManagementIdentity::from_bytes([3; 32]),
@@ -1847,7 +1977,11 @@ mod tests {
             );
             let secret = capability.to_secret_string();
             let pairing = "pairing-secret";
-            let echoed = format!("{secret} {pairing}");
+            let mut echoed = format!("{secret} {pairing}");
+            if as_cloud {
+                // Cloud's own shape, so only the credentials in it keep it from printing.
+                echoed = serde_json::json!({ "error": echoed }).to_string();
+            }
             tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 read_http(&mut stream).await;

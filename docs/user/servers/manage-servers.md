@@ -632,7 +632,8 @@ error: Cloud enrollment completion failed; rerun the same ployz server add comma
 
 Rerunning alone fails the same way. Ployz Cloud's own answer says
 `This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key.`, with
-the steps below. The CLI doesn't show that sentence yet.
+the steps below. A newer `ployz` prints that sentence as the cause, but the `ployz` on a 0.3.2
+server is too old to, so it shows only `enrollment completion rejected`.
 
 `ployz server add` puts the server's daemon on the release of the `ployz` that runs it, so update
 `ployz` wherever this add runs:
