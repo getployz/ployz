@@ -30,6 +30,7 @@ const DEFAULT: &str = "ployz_store=warn,ployz=warn,ployz_core=warn,ployz_sdk=war
 /// The messages a line keeps: each a warning's fixed text.
 const MESSAGES: &[&str] = &[
     "couldn't seal values below a Branch",
+    "couldn't follow into a Branch; it takes the changes at a later deploy",
     "couldn't seal values a Branch inherited; it takes them at a later deploy",
     "couldn't delete a removed Volume's data",
     "couldn't record what the Deploy did to ingress",
