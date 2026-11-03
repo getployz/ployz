@@ -10,6 +10,7 @@ import { describe, expect, test } from "vitest";
 
 const execFile = promisify(execFileCallback);
 const migration = "20261102163240_sealing_key_owner";
+const backfill = "20261103021258_sealing_key_owner_backfill";
 const migrations = resolve("drizzle");
 
 async function migrate(databaseUrl: string, folder: string) {
@@ -88,7 +89,7 @@ describe("Sealing Key owner migration", () => {
     try {
       await migrate(database.url, migrationsBefore(migration));
       await withClient(database.url, seedClusterKeys);
-      await migrate(database.url, migrations);
+      await migrate(database.url, migrationsBefore(backfill));
       await withClient(database.url, async (client) => {
         const owners = await client.query(`select public_key, organization_id from sealing_key_owner order by public_key`);
         expect(owners.rows).toEqual([
@@ -108,6 +109,29 @@ describe("Sealing Key owner migration", () => {
           message: expect.stringContaining("1 Sealing public key(s) are recorded for more than one Organization"),
           hint: expect.stringContaining("List them with"),
         }]);
+      });
+    } finally {
+      await database.drop();
+    }
+  }, 120_000);
+
+  test("gives keys recorded after it, by a release from before owners, their earliest Organization and keeps every owner", async () => {
+    const database = await emptyDatabase();
+    try {
+      await migrate(database.url, migrationsBefore(backfill));
+      await withClient(database.url, async (client) => {
+        await seedClusterKeys(client);
+        await client.query(`insert into sealing_key_owner (public_key, organization_id) values ($1, $2)`, [key("L"), second]);
+      });
+      await migrate(database.url, migrations);
+      await withClient(database.url, async (client) => {
+        const owners = await client.query(`select public_key, organization_id from sealing_key_owner order by public_key`);
+        expect(owners.rows).toEqual([
+          { public_key: key("K"), organization_id: first },
+          { public_key: key("L"), organization_id: second },
+          { public_key: key("M"), organization_id: second },
+        ]);
+        expect((await client.query(`select count(*)::int as count from cluster_sealing_key`)).rows).toEqual([{ count: 4 }]);
       });
     } finally {
       await database.drop();

@@ -224,6 +224,8 @@ If the database contains migrations the image does not ship, `db:migrate`, `web`
 refuse to start. The error names the image version and asks you to use a newer image.
 To roll back to an older image anyway, set `PLOYZ_ALLOW_OLDER_IMAGE=1` in `.env`. It starts with
 a warning, and requests that need the newer tables fail. Remove it once you run a newer image.
+When you roll forward, run `db:migrate` as on any upgrade. It fills in what the older image recorded
+without the newer tables.
 
 Once 0.3.6 has made any [generated value](services/variables.md#generate-a-value) (Create →
 Database makes one for every new database's password), don't roll Cloud back to an earlier

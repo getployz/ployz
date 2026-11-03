@@ -40,11 +40,14 @@ export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(fu
     // A pairing keeps its first key: a racing record waits on this row, and one that finds a key already here records nothing.
     const inserted = yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey }).onConflictDoNothing()
       .returning({ clusterKey: clusterSealingKey.clusterKey });
-    if (inserted.length === 0) return;
-    // Returns the key's owner, taking it when it has none; a racing first record waits on this row.
-    const [owner] = yield* drizzle.insert(sealingKeyOwner).values({ publicKey, organizationId })
-      .onConflictDoUpdate({ target: sealingKeyOwner.publicKey, set: { organizationId: sql`${sealingKeyOwner.organizationId}` } })
-      .returning({ organizationId: sealingKeyOwner.organizationId });
+    if (inserted.length === 0) {
+      // A key recorded while Cloud ran a release without owners gets its owner on the pairing's next report.
+      const [recorded] = yield* drizzle.select({ publicKey: clusterSealingKey.publicKey }).from(clusterSealingKey)
+        .where(and(eq(clusterSealingKey.organizationId, organizationId), eq(clusterSealingKey.clusterKey, clusterKey)));
+      if (recorded !== undefined) yield* keyOwner(recorded.publicKey);
+      return;
+    }
+    const owner = yield* keyOwner(publicKey);
     if (owner?.organizationId !== organizationId && !(yield* recordsKey(organizationId, publicKey, clusterKey))) {
       yield* Effect.logError("A Server reported a Sealing Key another Organization's Cluster recorded; Cloud didn't record it.")
         .pipe(Effect.annotateLogs({ organizationId, recordedBy: owner?.organizationId }));
@@ -65,7 +68,28 @@ export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(fu
  * {@link recordSealingPublicKey} for a key `reporter` reported. A pairing's first key comes only from its founder: another
  * Server's report records nothing until the founder's does, and a founder that never reports leaves the pairing keyless.
  */
-export const recordReportedSealingPublicKey = Effect.fn("SealingKey.recordReported")(function* (
+/**
+ * Returns the key's owner. A key without one goes to the Organization that recorded it first, counting keys kept after
+ * forgetting Servers, as the owners' migration did; a racing first record waits on this row.
+ */
+const keyOwner = Effect.fn("SealingKey.owner")(function* (publicKey: SealingPublicKey) {
+  const { drizzle } = yield* Database;
+  const [owner] = yield* drizzle.execute<{ organization_id: string }>(sql`
+    insert into ${sealingKeyOwner} (public_key, organization_id)
+    select ${publicKey}, organization_id from (
+      select organization_id, created_at from ${clusterSealingKey} where public_key = ${publicKey}
+      union all
+      select organization_id, created_at from ${organizationSealingKey} where public_key = ${publicKey}
+    ) as records
+    order by created_at, organization_id
+    limit 1
+    on conflict (public_key) do update set organization_id = ${sealingKeyOwner}.organization_id
+    returning organization_id
+  `, "objects");
+  return owner === undefined ? undefined : { organizationId: owner.organization_id };
+});
+
+export const recordReportedSealingPublicKey =Effect.fn("SealingKey.recordReported")(function* (
   organizationId: string, clusterKey: string, publicKey: SealingPublicKey, reporter: MachineId,
   delivery: "await" | "detach" = "await",
 ) {
