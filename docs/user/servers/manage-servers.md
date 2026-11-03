@@ -622,18 +622,28 @@ share. A server without your cluster's key is used once a key holder is back onl
 **Servers** page reads **Waiting for a server that holds your cluster's key** or **Can't reach your
 servers right now**. Either way, keep the server running and don't forget it.
 
-A server on 0.3.2 or earlier can't finish joining a cluster that already has a key. Adding one
-fails with:
+A server on 0.3.2 or earlier can't finish joining a cluster that already has a key. It joins the
+mesh, then `ployz server add` stops with:
 
 ```text
-This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key. On the Server, install the current release: curl -fsSL https://ployz.sh | sudo sh. Then rerun the same ployz server add while a server that holds your cluster's key is online.
+error: Cloud enrollment completion failed; rerun the same ployz server add command without --reset (keep all other options).
+  cause: enroll HTTP 503: enrollment completion rejected
 ```
 
-A 0.3.2 CLI shows only `enrollment completion rejected` and says to rerun. Either way, install the
-current release on the server with `curl -fsSL https://ployz.sh | sudo sh`, then rerun the same
-`ployz server add` command, which brings the daemon up to the same release. Upgrading over SSH
-alone isn't enough here: the rerun with the old CLI puts the old daemon back. A server that holds
-your cluster's key must be online for that join.
+Rerunning alone fails the same way. Ployz Cloud's own answer says
+`This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key.`, with
+the steps below. The CLI doesn't show that sentence yet.
+
+`ployz server add` installs the release of the `ployz` that runs it, so update `ployz` there first:
+
+- If you ran the line it printed on the server, or used `--no-install`, update it on the server
+  with `curl -fsSL https://ployz.sh | sudo sh`.
+- If you added it over SSH with `ployz server add root@HOST`, update it on your computer with
+  `curl -fsSL https://ployz.sh | sh`.
+
+Then rerun the same `ployz server add` command. A server that holds your cluster's key must be
+online for that join. Upgrading the server over SSH alone isn't enough here: the rerun with the old
+`ployz` puts the old daemon back.
 
 ## Remove a server
 

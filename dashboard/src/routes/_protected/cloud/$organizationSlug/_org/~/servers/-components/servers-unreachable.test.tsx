@@ -54,7 +54,7 @@ it("says a Server waiting for the cluster's key is used once a key holder is bac
   expect(screen.getByText(/uses it once a server that holds the key is back online/)).toBeTruthy();
 });
 
-it("doesn't say an upgraded Server on 0.3.2 is used before a key holder is back", () => {
+it("says an upgraded Server on 0.3.2 is used once a key holder is back", () => {
   renderAs("admin", "sealing");
   expect(screen.getByText(/Ployz Cloud uses it once a server that holds your cluster’s key is back online/)).toBeTruthy();
 });
