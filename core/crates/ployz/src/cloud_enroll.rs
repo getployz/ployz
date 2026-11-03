@@ -705,8 +705,10 @@ const SENT_MIN: usize = 16;
 /// A piece of a sent string this long in a refusal means the refusal echoes it.
 const ECHO_FRAGMENT: usize = 12;
 
-/// A run this long of only base64 or hex letters is an encoded value, never Cloud's prose.
-const ENCODED_MIN: usize = 24;
+/// The most data a refusal may hold and still read as Cloud's prose: the letters of its
+/// data-like runs (see [`data_letters`]). A version or an address fits; any dump of a
+/// credential, in hex, base64, or byte by byte, does not.
+const DATA_MAX: usize = 24;
 
 /// The strings a callback sends: its bearer, its Pairing Credential, and every long
 /// string in its body.
@@ -762,13 +764,10 @@ fn invisible(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
 }
 
-/// Whether `said` holds a piece of a sent string, or a long run of base64 or hex letters
-/// anywhere, after punctuation too, that could encode one.
+/// Whether `said` is not prose Cloud wrote for a person: it holds a piece of a sent
+/// string, or more data than [`DATA_MAX`] allows, which any encoding of one would.
 fn echoes(said: &str, sent: &[String]) -> bool {
-    let encoded = said
-        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-')))
-        .any(|run| run.len() >= ENCODED_MIN);
-    encoded
+    data_letters(said) > DATA_MAX
         || sent.iter().any(|sent| {
             if sent.len() <= ECHO_FRAGMENT {
                 return said.contains(sent.as_str());
@@ -778,6 +777,16 @@ fn echoes(said: &str, sent: &[String]) -> bool {
                 .filter_map(|piece| std::str::from_utf8(piece).ok())
                 .any(|piece| said.contains(piece))
         })
+}
+
+/// The letters of `said`'s data-like runs. A run is an unbroken stretch of base64 or hex
+/// letters, wherever it starts; it is data-like when it holds a digit or is longer than any
+/// word, as each run of a hex, base64 or byte-by-byte dump is.
+fn data_letters(said: &str) -> usize {
+    said.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-')))
+        .filter(|run| run.len() > DATA_MAX || run.chars().any(|c| c.is_ascii_digit()))
+        .map(str::len)
+        .sum()
 }
 
 fn retry_error(
@@ -2026,6 +2035,16 @@ mod tests {
                 r#"{{"secret":"{}"}}"#,
                 hex::encode(capability.client_secret())
             ),
+            format!(
+                "<Buffer {}>",
+                capability
+                    .client_secret()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            format!("{:?}", capability.client_secret()),
             "\u{202e}".to_owned(),
         ] {
             let (listener, url) = listen().await;
