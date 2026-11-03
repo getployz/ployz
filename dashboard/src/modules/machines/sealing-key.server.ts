@@ -65,15 +65,14 @@ export const recordSealingPublicKey = Effect.fn("SealingKey.recordPublicKey")(fu
 });
 
 /**
- * {@link recordSealingPublicKey} for a key `reporter` reported. A pairing's first key comes only from its founder: another
- * Server's report records nothing until the founder's does, and a founder that never reports leaves the pairing keyless.
- */
-/**
  * Returns the key's owner. A key without one goes to the Organization that recorded it first, counting keys kept after
  * forgetting Servers, as the owners' migration did; a racing first record waits on this row.
  */
 const keyOwner = Effect.fn("SealingKey.owner")(function* (publicKey: SealingPublicKey) {
   const { drizzle } = yield* Database;
+  const [known] = yield* drizzle.select({ organizationId: sealingKeyOwner.organizationId }).from(sealingKeyOwner)
+    .where(eq(sealingKeyOwner.publicKey, publicKey));
+  if (known !== undefined) return known;
   const [owner] = yield* drizzle.execute<{ organization_id: string }>(sql`
     insert into ${sealingKeyOwner} (public_key, organization_id)
     select ${publicKey}, organization_id from (
@@ -89,7 +88,11 @@ const keyOwner = Effect.fn("SealingKey.owner")(function* (publicKey: SealingPubl
   return owner === undefined ? undefined : { organizationId: owner.organization_id };
 });
 
-export const recordReportedSealingPublicKey =Effect.fn("SealingKey.recordReported")(function* (
+/**
+ * {@link recordSealingPublicKey} for a key `reporter` reported. A pairing's first key comes only from its founder: another
+ * Server's report records nothing until the founder's does, and a founder that never reports leaves the pairing keyless.
+ */
+export const recordReportedSealingPublicKey = Effect.fn("SealingKey.recordReported")(function* (
   organizationId: string, clusterKey: string, publicKey: SealingPublicKey, reporter: MachineId,
   delivery: "await" | "detach" = "await",
 ) {
