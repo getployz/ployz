@@ -941,6 +941,23 @@ describe("organization enrollment coordinator", () => {
     expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
   });
 
+  it.each([
+    ["names its release", "Machine 0123 runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST", "This Server runs Ployz 0.3.2,"],
+    ["says older than 0.3.3 without one", "Server machine-3 needs an upgrade: runs Ployz, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH", "This Server runs a Ployz older than 0.3.3,"],
+  ])("tells a Server too old to show its Cluster to upgrade, then rerun (%s)", async (_case, message, opening) => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.error = new RpcError({ code: "internal", message, details: null });
+    const completed = await fake.coordinator.completeFounding(attempt);
+    if (!Result.isFailure(completed)) throw new Error("Completion succeeded past the Server's refusal");
+    expect(completed.failure).toMatchObject({ _tag: "Unavailable", userFacing: true });
+    expect(completed.failure.message.startsWith(opening)).toBe(true);
+    expect(completed.failure.message).toContain("ployz server upgrade stable SERVER --connect ssh://USER@HOST");
+    expect(completed.failure.message).toContain("rerun ployz server add while a server that holds your cluster's key is online");
+    expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
+  });
+
   const keyed = (key: number, secret = 0xee) => `ployz1:${Buffer.concat([Buffer.alloc(32, key), Buffer.alloc(32, secret)]).toString("base64url")}`;
 
   it("keeps the management key a refreshed capability carries, and asks for its push target again", async () => {

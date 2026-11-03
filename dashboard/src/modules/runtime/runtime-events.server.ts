@@ -1,9 +1,9 @@
 import "@tanstack/react-start/server-only";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
-import { CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR, PREDATES_SEALING_ERROR } from "#/modules/runtime/runtime.collection";
+import { AWAITS_KEY_ERROR, CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR, PREDATES_SEALING_ERROR } from "#/modules/runtime/runtime.collection";
 import { runtimeWatchFrameForTransport } from "#/modules/runtime/runtime-watch-frame";
-import { type PloyzProviderError, predatesSealing, speaksOlderProtocol } from "#/modules/runtime/ployz.server";
+import { lacksClusterKey, type PloyzProviderError, predatesSealing, speaksOlderProtocol } from "#/modules/runtime/ployz.server";
 
 export type RuntimeWatch =
   | {
@@ -21,11 +21,12 @@ export type RuntimeWatch =
 
 type RuntimeEventsSource = { request: Request } & RuntimeWatch;
 
-/** Why Cloud can't watch the Cluster: a Server that needs its upgrade says so, as nothing else lets Cloud use it. */
+/** Why Cloud can't watch the Cluster: a Server that answers says why it can't be used, so it isn't read as gone. */
 function unreachableError(error: PloyzProviderError | null) {
   if (error === null) return CLUSTER_UNREACHABLE_ERROR;
   if (speaksOlderProtocol(error)) return OLDER_SERVERS_ERROR;
   if (predatesSealing(error)) return PREDATES_SEALING_ERROR;
+  if (lacksClusterKey(error)) return AWAITS_KEY_ERROR;
   return error.message || CLUSTER_UNREACHABLE_ERROR;
 }
 

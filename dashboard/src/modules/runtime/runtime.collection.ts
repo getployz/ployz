@@ -258,6 +258,10 @@ export const OLDER_SERVERS_ERROR =
 export const PREDATES_SEALING_ERROR =
   "A Server runs a Ployz older than 0.3.3, which can't show Ployz Cloud that it belongs to your cluster.";
 
+/** Cloud reached a Server that holds no Sealing Key yet: a Server that holds the key shares it once it's back online. */
+export const AWAITS_KEY_ERROR =
+  "A Server answers but doesn't hold your cluster's key yet, so Ployz Cloud can't tell it belongs to your cluster.";
+
 /** Pairing is present but Cloud cannot dial an entry Machine. Clearing rows
  * prevents prior observations from being rendered as current membership. */
 export function unreachableRuntimeSnapshot(error: string): RuntimeSnapshot {

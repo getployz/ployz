@@ -13,7 +13,7 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
-import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, ployzVersion, RpcError } from "#/modules/runtime/ployz.server";
+import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, ployzVersion, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
@@ -69,6 +69,22 @@ const unreachable = () => new Conflict({ message: CLUSTER_UNREACHABLE, userFacin
 const cantReachServer = (cause: unknown) => new Unavailable({
   message: "Cloud can't reach this Server through the relay or directly.", userFacing: true, cause,
 });
+
+/**
+ * A Server too old to show which Cluster it belongs to refused completion. Retrying won't help, but the answer stays
+ * retryable as every failed completion is, so a CLI that predates this message still says to rerun.
+ */
+const predatesSealingRefusal = (error: PloyzProviderError) => {
+  const release = /runs Ployz (\S+), which can't show/u.exec(error.cause instanceof Error ? error.cause.message : "")?.[1];
+  return new Unavailable({
+    message: `This Server runs ${release === undefined ? "a Ployz older than 0.3.3" : `Ployz ${release}`}, which can't finish joining `
+      + "a cluster that has a Sealing Key. Upgrade it over SSH from your computer: "
+      + "ployz server upgrade stable SERVER --connect ssh://USER@HOST. Then rerun ployz server add while a server "
+      + "that holds your cluster's key is online.",
+    userFacing: true,
+    cause: error,
+  });
+};
 
 /**
  * A connect no Server answered becomes `cantReachServer`: Cloud's timeout ran out, or the SDK says the dial failed, got
@@ -1118,6 +1134,7 @@ export const completeMachineEnrollment = Effect.fn(
     yield* Effect.scoped(Effect.gen(function* () {
       const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, { only: machineId });
       if (opened.status === "unreachable" && opened.error?.cause instanceof RpcError && unlessAnswered(opened.error) === opened.error) {
+        if (predatesSealing(opened.error)) return yield* predatesSealingRefusal(opened.error);
         // Still retryable, as every failed completion is, but a Server that answered isn't blamed on the relay.
         return yield* new Unavailable({ message: "This Server refused Cloud's connection.", userFacing: true, cause: opened.error });
       }

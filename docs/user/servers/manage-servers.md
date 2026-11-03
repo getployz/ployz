@@ -606,16 +606,32 @@ on a later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh
 
 ### Servers on 0.3.2 and earlier
 
-Cloud and the CLI use a server only once it shows it belongs to your Organization's cluster, which
-servers before 0.3.3 can't. They're reached through a server on a newer release instead, so while
-that one is down, the **Servers** page reads **Upgrade your server over SSH**, and the CLI says:
+Servers before 0.3.3 can't show that they belong to your Organization's cluster, so Cloud and the
+CLI use them only through a server on a newer release. While every newer server is down, the
+**Servers** page reads **Upgrade your server over SSH**, and the CLI says:
 
 ```text
 Machine 0123… runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST
 ```
 
-The server keeps running your apps, so don't forget it. Upgrade it over SSH, as for a server on 0.2 above, or wait for
-the newer server to come back and upgrade it from the **Servers** page.
+The server keeps running your apps, so don't forget it. Upgrade it over SSH, as for a server on 0.2
+above, or wait for a newer server to come back and upgrade it from the **Servers** page.
+
+After the upgrade, the server still needs your cluster's key, which only a server that holds it can
+share. A server without your cluster's key is used once a key holder is back online. Until then the
+**Servers** page reads **Waiting for a server that holds your cluster's key** or **Can't reach your
+servers right now**. Either way, keep the server running and don't forget it.
+
+A server on 0.3.2 or earlier can't finish joining a cluster that already has a key. Adding one
+fails with:
+
+```text
+This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key. Upgrade it over SSH from your computer: ployz server upgrade stable SERVER --connect ssh://USER@HOST. Then rerun ployz server add while a server that holds your cluster's key is online.
+```
+
+A 0.3.2 CLI shows only `enrollment completion rejected` and says to rerun. Install a current
+release instead, or upgrade the server over SSH as the message says. Then rerun the same
+`ployz server add` command. A server that holds your cluster's key must be online for that join.
 
 ## Remove a server
 

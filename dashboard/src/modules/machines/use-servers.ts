@@ -1,6 +1,6 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { getRuntimeCollections, OLDER_SERVERS_ERROR, PREDATES_SEALING_ERROR, projectRuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import { AWAITS_KEY_ERROR, getRuntimeCollections, OLDER_SERVERS_ERROR, PREDATES_SEALING_ERROR, projectRuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { servicesOnServers } from "./server-services";
 import { serverListState, serverStatus, sortServers } from "./server-status";
@@ -14,6 +14,8 @@ export function useServerList(organizationSlug: string) {
     servers,
     /** Cloud can't use a Server because it runs an older Ployz; only its upgrade over SSH lets it. */
     older: runtime.status !== "unreachable" ? null : olderServers(runtime.error),
+    /** Cloud can't use a Server that answers until a Server holding the cluster's key is back to share it. */
+    awaitingKey: runtime.status === "unreachable" && runtime.error === AWAITS_KEY_ERROR,
   };
 }
 
@@ -36,6 +38,7 @@ export function useServers(organizationSlug: string) {
   return {
     state: list.state,
     older: list.older,
+    awaitingKey: list.awaitingKey,
     servers: list.servers.map((server) => ({
       ...server,
       services: services.filter((service) => service.machineIds.has(server.machine.id)),

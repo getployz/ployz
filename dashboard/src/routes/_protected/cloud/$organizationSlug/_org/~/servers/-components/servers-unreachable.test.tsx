@@ -12,7 +12,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderAs(role: "admin" | "member" | "support", older: OlderServers | null = null) {
+function renderAs(role: "admin" | "member" | "support", older: OlderServers | null = null, awaitingKey = false) {
   vi.spyOn(runtime, "useClusterReleased").mockReturnValue(() => {});
   const queryClient = new QueryClient();
   queryClient.setQueryData(organizationMembersQueryOptions("ada").queryKey, {
@@ -21,7 +21,7 @@ function renderAs(role: "admin" | "member" | "support", older: OlderServers | nu
     mail: false,
     support: role === "support",
   });
-  render(<QueryClientProvider client={queryClient}><ServersUnreachable organizationSlug="ada" older={older} /></QueryClientProvider>);
+  render(<QueryClientProvider client={queryClient}><ServersUnreachable organizationSlug="ada" older={older} awaitingKey={awaitingKey} /></QueryClientProvider>);
   return screen.queryByRole("button", { name: "Forget them and start over." });
 }
 
@@ -46,4 +46,15 @@ it.each([
   expect(screen.getByText("Upgrade your server over SSH")).toBeTruthy();
   expect(screen.getByText(why)).toBeTruthy();
   expect(screen.getByText((_, element) => element?.tagName === "CODE" && element.textContent === SSH_UPGRADE)).toBeTruthy();
+});
+
+it("says a Server waiting for the cluster's key is used once a key holder is back, not to Forget it", () => {
+  expect(renderAs("admin", null, true)).toBeNull();
+  expect(screen.getByText("Waiting for a server that holds your cluster’s key")).toBeTruthy();
+  expect(screen.getByText(/uses it once a server that holds the key is back online/)).toBeTruthy();
+});
+
+it("doesn't say an upgraded Server on 0.3.2 is used before a key holder is back", () => {
+  renderAs("admin", "sealing");
+  expect(screen.getByText(/Ployz Cloud uses it once a server that holds your cluster’s key is back online/)).toBeTruthy();
 });
