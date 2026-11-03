@@ -1020,6 +1020,16 @@ enum Took {
     Seal,
 }
 
+/// Each fingerprint `environment` held plain for each of `rows` before it sealed
+/// it, as the seal's walk reads them: none for a row it holds plain now.
+pub(crate) fn held_by_sealer(
+    tx: &mut dyn Tx,
+    environment: &str,
+    rows: &BTreeSet<(String, String)>,
+) -> Result<review::sealed::Held, RpcError> {
+    held(tx, environment, rows, None, Took::Sealer)
+}
+
 /// Each fingerprint `environment` held for `rows`: in what its Working State held
 /// before the write, and what it was made with or shares with its Parent and
 /// Branches, which keep a value's fingerprint once emptied. Its History holds none
@@ -1330,7 +1340,7 @@ fn inherited(
 }
 
 /// The fingerprint of a plain variable's cell.
-fn plain_fingerprint(cell: &Cell) -> Option<&str> {
+pub(super) fn plain_fingerprint(cell: &Cell) -> Option<&str> {
     let Cell::Value(Value::Object(fields)) = cell else {
         return None;
     };
