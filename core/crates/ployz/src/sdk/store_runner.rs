@@ -812,7 +812,11 @@ impl Run {
         };
         for evidence in evidence {
             if let Err(error) = self.record(evidence).await {
-                tracing::warn!(%error, "couldn't record what the Deploy did to ingress");
+                tracing::warn!(
+                    code = error.code.as_str(),
+                    error = error.message.as_str(),
+                    "couldn't record what the Deploy did to ingress"
+                );
             }
         }
     }
@@ -1152,7 +1156,11 @@ impl Run {
         let mut unrecorded = Vec::new();
         for warning in warnings.drain(..) {
             if let Err(error) = self.record(RunEvidence::Warned(warning.clone())).await {
-                tracing::warn!(%error, "couldn't record a Deploy warning; retrying later");
+                tracing::warn!(
+                    code = error.code.as_str(),
+                    error = error.message.as_str(),
+                    "couldn't record a Deploy warning; retrying later"
+                );
                 unrecorded.push(warning);
             }
         }

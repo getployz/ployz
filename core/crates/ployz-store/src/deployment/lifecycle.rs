@@ -1989,10 +1989,18 @@ fn undeleted(
             let why = match outcome {
                 Some(VolumeRemovalOutcome::Removed) => return None,
                 Some(VolumeRemovalOutcome::Failed { error }) => {
-                    tracing::warn!(volume = %name, docker_volume = %id, %error, "couldn't delete a removed Volume's data");
+                    tracing::warn!(
+                        volume = name.to_string().as_str(),
+                        docker_volume = id.to_string().as_str(),
+                        code = error.code.as_str(),
+                        error = error.message.as_str(),
+                        "couldn't delete a removed Volume's data"
+                    );
                     match error.code {
                         ployz_core::RpcErrorCode::Unavailable => format!("{server} did not answer"),
-                        ployz_core::RpcErrorCode::Conflict => format!("it is still in use on {server}"),
+                        ployz_core::RpcErrorCode::Conflict => {
+                            format!("it is still in use on {server}")
+                        }
                         ployz_core::RpcErrorCode::InvalidArgument
                         | ployz_core::RpcErrorCode::NotFound
                         | ployz_core::RpcErrorCode::Ambiguous
@@ -2006,7 +2014,9 @@ fn undeleted(
                 Some(VolumeRemovalOutcome::Omitted) => format!("{server} did not answer"),
                 None => "the Cluster could not be reached".to_owned(),
             };
-            Some(Failure::from(format!("{name}: deleting its data failed: {why}")))
+            Some(Failure::from(format!(
+                "{name}: deleting its data failed: {why}"
+            )))
         })
     })
 }

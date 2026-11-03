@@ -4069,6 +4069,7 @@ dependencies = [
  "tempfile",
  "tokio-postgres-rustls",
  "tracing",
+ "tracing-subscriber",
  "ts-rs",
  "uuid",
  "webpki-roots",
