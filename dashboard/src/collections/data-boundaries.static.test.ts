@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { API, SignatureKind } from "typescript/unstable/sync";
+import { API, SignatureKind, type Type } from "typescript/unstable/sync";
 import type { Node, SourceFile } from "typescript/unstable/ast";
 import {
   isAwaitExpression,
@@ -215,18 +215,14 @@ describe("data boundaries", () => {
           const line = source.text.slice(0, node.pos).split("\n").length;
           violations.push(`${relative(SRC, source.fileName)}:${line} ${message}`);
         };
+        const { checker } = project;
         /** A Config Store write: a `Write`, which the checker names where a bare Promise would not. */
-        const isWrite = (node: Node) => {
-          const type = project.checker.getTypeAtLocation(node);
-          return type !== undefined && /^Write\b/.test(project.checker.typeToString(type));
-        };
+        const named = (type: Type | undefined) => type !== undefined && /^Write\b/.test(checker.typeToString(type));
+        const isWrite = (node: Node) => named(checker.getTypeAtLocation(node));
         /** A function that makes a Config Store write, such as the writer's `commit` handed to a helper. */
         const makesWrite = (node: Node) => {
-          const type = project.checker.getTypeAtLocation(node);
-          return type !== undefined && project.checker.getSignaturesOfType(type, SignatureKind.Call).some((signature) => {
-            const returned = project.checker.getReturnTypeOfSignature(signature);
-            return returned !== undefined && /^Write\b/.test(project.checker.typeToString(returned));
-          });
+          const type = checker.getTypeAtLocation(node);
+          return type !== undefined && checker.getSignaturesOfType(type, SignatureKind.Call).some((signature) => named(checker.getReturnTypeOfSignature(signature)));
         };
         const calleeName = (node: Node) => {
           if (!isCallExpression(node)) return null;
