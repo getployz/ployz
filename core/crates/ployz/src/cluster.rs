@@ -71,8 +71,9 @@ pub struct Client {
     /// The Machine `channel` was last confirmed to reach. Unlike `entry`, a failed redial
     /// keeps it, so a later one can tell the endpoint now reaches another Machine.
     confirmed: Option<MachineId>,
-    /// What the dial confirmed about the entry's Cluster, when it expected one.
-    pub(crate) cluster: Option<crate::connect::ClusterCheck>,
+    /// The Cluster the dial expected and what it confirmed about it; None when it expected
+    /// none. Boxed so a client stays small beside the enums that carry it.
+    pub(crate) cluster: Option<Box<crate::connect::ExpectedCluster>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -104,7 +105,7 @@ impl Client {
     /// What the dial confirmed about the entry's Cluster; None when it expected none.
     #[must_use]
     pub fn cluster(&self) -> Option<&crate::connect::ClusterCheck> {
-        self.cluster.as_ref()
+        self.cluster.as_ref().map(|cluster| &cluster.check)
     }
 
     /// Whether the confirmed entry holds `expect`'s Sealing Key. Inspect is a read every
@@ -134,31 +135,7 @@ impl Client {
                 let predates = crate::connect::predates_sealing(&details);
                 (details.sealing, self.entry.unwrap_or(details.id), predates)
             };
-        match sealing {
-            Some(
-                ployz_core::Sealing::Held { public_key }
-                | ployz_core::Sealing::AwaitsRecovery { public_key },
-            ) if public_key == expect.sealing_public_key => Ok(crate::connect::ClusterCheck {
-                verified: true,
-                foreign: Vec::new(),
-            }),
-            Some(ployz_core::Sealing::Held { .. } | ployz_core::Sealing::AwaitsRecovery { .. }) => {
-                Err(ConnectError::ClusterMismatch { machine_id })
-            }
-            Some(ployz_core::Sealing::NeedsAccess) | None if expect.allow_unverified => {
-                Ok(crate::connect::ClusterCheck::default())
-            }
-            Some(ployz_core::Sealing::NeedsAccess) => {
-                Err(ConnectError::ClusterUnverified { machine_id })
-            }
-            None => Err(match predates {
-                Some(version) => ConnectError::PredatesSealing {
-                    machine_id,
-                    version,
-                },
-                None => ConnectError::ClusterUnverified { machine_id },
-            }),
-        }
+        expect.check(machine_id, sealing, predates)
     }
 
     #[must_use]
@@ -260,10 +237,19 @@ impl Client {
     }
 
     /// The Machine this channel's daemon describes itself as, checked against the
-    /// connection. None when neither the connection nor a Machine this client confirmed
-    /// names one and the daemon doesn't say.
+    /// connection and, when the confirmation tells the key it holds, the Cluster this
+    /// client's dial expected. None when neither the connection nor a Machine this client
+    /// confirmed names one and the daemon doesn't say.
     async fn confirmed_entry(&self) -> Result<Option<MachineId>, ConnectError> {
-        Ok(self.confirmation().await?.0)
+        let (entry, sealing) = self.confirmation().await?;
+        // Only a held key tells the Cluster without Inspect; a confirmation without one
+        // leaves the redial to the Machine ID, as before.
+        if let (Some(cluster), Some(machine_id), Some(held @ ployz_core::Sealing::Held { .. })) =
+            (&self.cluster, entry, sealing)
+        {
+            cluster.expect.check(machine_id, Some(held), None)?;
+        }
+        Ok(entry)
     }
 
     /// [`Self::confirmed_entry`], with the Sealing Key the daemon said it holds.

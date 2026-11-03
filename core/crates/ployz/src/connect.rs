@@ -880,6 +880,43 @@ pub struct ClusterExpectation {
     pub allow_unverified: bool,
 }
 
+impl ClusterExpectation {
+    /// Whether Machine `machine_id`, holding `sealing`, is in this Cluster. `predates` is
+    /// the release of an entry whose daemon reported no key because it predates the key.
+    pub(crate) fn check(
+        &self,
+        machine_id: MachineId,
+        sealing: Option<ployz_core::Sealing>,
+        predates: Option<ployz_core::MachineVersion>,
+    ) -> Result<ClusterCheck, ConnectError> {
+        match sealing {
+            Some(
+                ployz_core::Sealing::Held { public_key }
+                | ployz_core::Sealing::AwaitsRecovery { public_key },
+            ) if public_key == self.sealing_public_key => Ok(ClusterCheck {
+                verified: true,
+                foreign: Vec::new(),
+            }),
+            Some(ployz_core::Sealing::Held { .. } | ployz_core::Sealing::AwaitsRecovery { .. }) => {
+                Err(ConnectError::ClusterMismatch { machine_id })
+            }
+            Some(ployz_core::Sealing::NeedsAccess) | None if self.allow_unverified => {
+                Ok(ClusterCheck::default())
+            }
+            Some(ployz_core::Sealing::NeedsAccess) => {
+                Err(ConnectError::ClusterUnverified { machine_id })
+            }
+            None => Err(match predates {
+                Some(version) => ConnectError::PredatesSealing {
+                    machine_id,
+                    version,
+                },
+                None => ConnectError::ClusterUnverified { machine_id },
+            }),
+        }
+    }
+}
+
 /// The first release whose daemon holds a Sealing Key and reports it in Inspect.
 const SEALING_SINCE: &str = "0.3.3";
 
@@ -902,6 +939,14 @@ pub struct ClusterCheck {
     pub verified: bool,
     /// Machines this dial reached and left because they hold another Cluster's key.
     pub foreign: Vec<MachineId>,
+}
+
+/// The Cluster a client's dial expected, kept so every redial checks it again, with what
+/// the dial confirmed.
+#[derive(Clone, Debug)]
+pub(crate) struct ExpectedCluster {
+    pub(crate) expect: ClusterExpectation,
+    pub(crate) check: ClusterCheck,
 }
 
 /// [`connect_selected_with`], keeping only an entry in `expect`'s Cluster.
@@ -981,7 +1026,7 @@ async fn connect_selected(
                 Some((index, connection, outcome)) = dialing.next() => {
                     let error = match outcome {
                         Ok(mut client) => {
-                            if let Some(check) = client.cluster.as_mut() {
+                            if let Some(ExpectedCluster { check, .. }) = client.cluster.as_deref_mut() {
                                 check.foreign = failures
                                     .values()
                                     .filter_map(|(_, error)| {
@@ -1070,7 +1115,11 @@ pub(crate) async fn connect_one(
     stage.finish(&confirmed);
     let sealing = confirmed.map_err(|error| naming_local_refusal(connection, error))?;
     if let Some(expect) = expect {
-        client.cluster = Some(client.check_cluster(expect, sealing).await?);
+        let check = client.check_cluster(expect, sealing).await?;
+        client.cluster = Some(Box::new(ExpectedCluster {
+            expect: *expect,
+            check,
+        }));
     }
     Ok(client)
 }
