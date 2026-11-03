@@ -634,14 +634,15 @@ Rerunning alone fails the same way. Ployz Cloud's own answer says
 `This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key.`, with
 the steps below. The CLI doesn't show that sentence yet.
 
-`ployz server add` installs the release of the `ployz` that runs it, so update `ployz` there first:
+`ployz server add` installs the release of the `ployz` that runs it, unless `--version` or
+`PLOYZ_DAEMON_VERSION` names one. Update `ployz` wherever this add runs:
 
-- If you ran the line it printed on the server, or used `--no-install`, update it on the server
-  with `curl -fsSL https://ployz.sh | sudo sh`.
-- If you added it over SSH with `ployz server add root@HOST`, update it on your computer with
+- On the server: `curl -fsSL https://ployz.sh | sudo sh`.
+- On your computer too, if you ran `ployz server add` there, over SSH:
   `curl -fsSL https://ployz.sh | sh`.
 
-Then rerun the same `ployz server add` command. A server that holds your cluster's key must be
+Drop any `--version` or `PLOYZ_DAEMON_VERSION` that names 0.3.2 or earlier.
+Then rerun the `ployz server add` command. A server that holds your cluster's key must be
 online for that join. Upgrading the server over SSH alone isn't enough here: the rerun with the old
 `ployz` puts the old daemon back.
 
