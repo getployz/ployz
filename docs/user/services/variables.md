@@ -202,6 +202,7 @@ PIN=${{ secret(8, "0-9") }}
 - Before Ployz 0.3.6, a value typed as `${{ secret(32) }}` was saved as that text. Values saved
   then stay as they are; typing it now makes a value.
 
+## Reference another service's variable
 
 A reference fills a variable with another variable's value. Write `${{ SERVICE.KEY }}` for
 another service's variable and `${{ KEY }}` for one of this service's own:
