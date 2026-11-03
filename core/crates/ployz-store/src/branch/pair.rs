@@ -1205,8 +1205,8 @@ fn empty_below(
 /// with its own Parent. That Branch then holds it Not set, staged, as does that base,
 /// so what `receiver` deploys later lands there as it would have. A Branch that
 /// changed a variable keeps its value. Each Branch is one attempt, locked once for
-/// every row and waiting at most [`super::follow::BRANCH_LOCK_WAIT`], so one that can't take the
-/// seals keeps its values and never fails the deploy.
+/// every row and waiting at most [`super::follow::BRANCH_LOCK_WAIT`], so one that
+/// can't take the seals keeps its values and never fails the deploy.
 pub(crate) fn seal_inherited_below(
     tx: &mut dyn Tx,
     who: &Actor,

@@ -203,7 +203,7 @@ to take it.
 
 If something else is saving to staging for more than a second as production's deploy ends,
 production's deploy still completes, and staging gets nothing from it. Staging gets those changes
-at production's next deploy, or sooner with **Sync** from production.
+the next time production deploys those services, or sooner with **Sync** from production.
 
 A removal doesn't follow, with one exception. When production removes a service, volume or config
 that reached staging only from production's deploys, staging never changed, saved or deployed it,

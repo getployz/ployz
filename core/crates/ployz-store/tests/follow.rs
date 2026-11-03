@@ -4777,6 +4777,36 @@ fn a_branch_another_write_holds_never_fails_its_parents_deploy() {
     );
 }
 
+/// A held Branch takes the change the next time its Parent deploys that Service,
+/// as one never delivered (#3788).
+#[test]
+fn a_held_branch_takes_the_change_at_its_parents_next_deploy() {
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    branch(&store, &who, 10, "production", "qa");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.FLAG", json!("plain-flag-3788-b"))],
+    );
+    let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let held = hold(&mut other, 10);
+    deploy(&store, &who, "production", 2);
+    held.rollback().unwrap();
+    assert_eq!(web(&store, &who, "qa")["env"].get("FLAG"), None);
+
+    deploy(&store, &who, "production", 3);
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["FLAG"],
+        json!("plain-flag-3788-b")
+    );
+    assert!(incoming(&store, &who, "qa").contains(&"web.env.FLAG production".to_owned()));
+}
+
 /// A held Branch takes neither the deploy's changes nor the seals below it, and
 /// the Parent's next deploy brings both (#3788).
 #[test]

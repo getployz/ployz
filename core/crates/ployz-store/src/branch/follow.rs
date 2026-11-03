@@ -127,25 +127,15 @@ pub(crate) fn follow(
             }
         }
         let mut left: Vec<String> = left.into_iter().collect();
-        'withdraw: loop {
+        loop {
             let tried = left.len();
             let mut refused = Vec::new();
             for lineage in left {
                 let withdrawn = crate::storage::attempt(tx, |tx| {
-                    let mut branch = lock_below(tx, &who, &branch)?;
+                    let mut branch = scope::lock_id(tx, &who, &branch)?;
                     withdraw(tx, &mut branch, &parent.summary.id, &lineage)
                 });
                 match withdrawn {
-                    // Held longer, the Branch keeps them all until a later batch.
-                    Err(error) if error.code == RpcErrorCode::Unavailable => {
-                        tracing::warn!(
-                            branch = branch.as_str(),
-                            code = error.code.as_str(),
-                            error = error.message.as_str(),
-                            "couldn't take back what a Parent removed from a Branch; it tries at a later deploy"
-                        );
-                        break 'withdraw;
-                    }
                     Ok(false) => refused.push(lineage),
                     Err(error) if crate::automation::skippable(&error) => refused.push(lineage),
                     done => {
