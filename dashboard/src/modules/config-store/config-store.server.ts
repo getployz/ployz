@@ -221,13 +221,10 @@ const principalFor = Effect.fn("ConfigStore.principalFor")(function* (userId: st
   return row === undefined ? null : row.name || row.email;
 });
 
-/** The Organization's Servers, to dial; none while it has no pairing. */
-export const connectionsOf = Effect.fn("ConfigStore.connectionsOf")(function* (organizationId: string) {
-  const loaded = yield* loadOrganizationConnections(organizationId);
-  return loaded.kind === "ready" ? loaded.connections : [];
-});
-
-/** `connectionsOf`, with the Cluster a Deploy's dial expects them in. */
+/**
+ * The Organization's Servers, to dial, with the Cluster the dial expects them in: its pairing's recorded Sealing Key,
+ * else none. No Servers while it has no pairing.
+ */
 export const deployDialOf = Effect.fn("ConfigStore.deployDialOf")(function* (organizationId: string) {
   const loaded = yield* loadOrganizationConnections(organizationId);
   return loaded.kind === "ready"

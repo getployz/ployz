@@ -8,7 +8,7 @@ use ployz_store::{
 };
 use std::{sync::Arc, time::Duration};
 
-fn deployment() -> (Arc<ConfigStore>, Actor, DeploymentId) {
+pub(super) fn deployment() -> (Arc<ConfigStore>, Actor, DeploymentId) {
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
     let who = Actor::system(OrganizationId::parse("org").unwrap());
@@ -319,8 +319,18 @@ async fn cancel_during_a_create_records_the_work_it_stopped_cancelled_not_failed
     server.abort();
 }
 
-#[tokio::test]
-async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() {
+/// A Deployment whose new copy serves on `entry`, cancelled while its cleanup waited
+/// on `edge`'s proxy, so it left `entry`'s old copy running.
+pub(super) struct CutCleanup {
+    pub(super) store: Arc<ConfigStore>,
+    pub(super) actor: Actor,
+    pub(super) id: DeploymentId,
+    pub(super) old_id: ployz_core::ContainerId,
+    pub(super) summary: ployz_store::DeploymentSummary,
+    pub(super) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+}
+
+pub(super) async fn cut_cleanup() -> CutCleanup {
     let (store, actor, id) = deployment();
     let (entry, edge) = (machine('a', "entry"), machine('b', "edge"));
     let earlier = serde_json::from_value(serde_json::json!({
@@ -362,7 +372,26 @@ async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() 
         .expect("cancel must stop the unrouted wait")
         .unwrap()
         .unwrap();
+    CutCleanup {
+        store,
+        actor,
+        id,
+        old_id,
+        summary,
+        server,
+    }
+}
 
+#[tokio::test]
+async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() {
+    let CutCleanup {
+        store,
+        actor,
+        id,
+        old_id,
+        summary,
+        server,
+    } = cut_cleanup().await;
     assert_eq!(
         summary.status,
         DeploymentStatus::Applied,

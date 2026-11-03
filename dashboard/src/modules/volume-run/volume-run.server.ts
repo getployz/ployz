@@ -28,7 +28,7 @@ import type { JsonObject, JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modules/inngest/events";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import {
   ClusterOutOfTime,
@@ -1721,7 +1721,7 @@ export const observeOrganization = Effect.fn("VolumeRun.observeOrganization")(fu
   const loaded = yield* loadOrganizationConnections(organizationId);
   if (loaded.kind !== "ready") return yield* new ClusterNotPaired({ organizationId });
   if (loaded.connections.length === 0) return { copies: [], unanswered: [] } satisfies CopyObservation;
-  return yield* observeVolumeCopies(loaded.connections);
+  return yield* observeVolumeCopies(loaded.connections, clusterExpectation(loaded));
 });
 
 export const observeOrganizationCopies: CopyObserver = (organizationId) =>

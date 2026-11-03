@@ -28,7 +28,7 @@ use ts_rs::TS;
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::{
-    ImageCleanup, PreparedDeploy, Running, RunningBuild, Session, Unprepared, connect_connections,
+    ImageCleanup, PreparedDeploy, Running, RunningBuild, Session, Unprepared, connect_expecting,
 };
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
@@ -346,15 +346,17 @@ pub async fn observe_running_expecting(
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep
-/// finds orphaned mirror slots with.
+/// finds orphaned mirror slots with. With `expect`, only through an entry of its Cluster.
 ///
 /// # Errors
 /// Returns the connection's error when no Server can be reached, or listing the
 /// Machines fails.
 pub async fn observe_copies(
     connections: Vec<Connection>,
+    expect: Option<crate::connect::ClusterExpectation>,
 ) -> Result<super::CopyObservation, RpcError> {
-    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
+    let connector = Arc::new(SystemConnector::default());
+    let session = connect_expecting(connections, connector, expect).await?;
     let observed = session.observe_copies().await;
     session.close().await;
     observed
@@ -389,7 +391,8 @@ pub struct RetireLeft {
 /// old copy, which may be the one serving, and is reported left. A copy already
 /// gone counts as retired, so a retry observes again and only retires what is
 /// still there. A Machine the Deploy could not reach is reported left, since a copy
-/// it never saw may run there.
+/// it never saw may run there. With `expect`, it retires only through an entry of
+/// its Cluster, as [`run_deployment_expecting`] runs.
 ///
 /// # Errors
 /// Returns `not_found` for a Deployment of another Organization, the connection's
@@ -400,6 +403,7 @@ pub async fn retire_old(
     who: Actor,
     deployment: DeploymentId,
     connections: Vec<Connection>,
+    expect: Option<crate::connect::ClusterExpectation>,
 ) -> Result<RetireOutcome, RpcError> {
     let view = super::store_call(&store, move |store| {
         store.read(&who, &DeploymentQuery { id: deployment })
@@ -409,7 +413,8 @@ pub async fn retire_old(
     if copies.is_empty() {
         return Ok(named_left(&view, Vec::new()));
     }
-    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
+    let connector = Arc::new(SystemConnector::default());
+    let session = connect_expecting(connections, connector, expect).await?;
     let retired: Result<_, RpcError> = async {
         let mut client = session.client()?;
         let machines = client.machines().await.map_err(crate::connect::rpc_error)?;

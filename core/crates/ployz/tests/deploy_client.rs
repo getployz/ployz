@@ -1,6 +1,8 @@
 //! Session-level preview/confirm/run behaviour against a fake Machine.
 #[path = "deploy_client/cleanup_report.rs"]
 mod cleanup_report;
+#[path = "deploy_client/expected_cluster.rs"]
+mod expected_cluster;
 #[path = "deploy_client/operate.rs"]
 mod operate;
 #[path = "deploy_client/runner_cancellation.rs"]

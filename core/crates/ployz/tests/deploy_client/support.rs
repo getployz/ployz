@@ -133,6 +133,8 @@ pub(super) struct DeployService {
     /// Another operator's Ingress Proxy starts on the Server once a start there fails or a
     /// Container there is removed.
     rival_proxy: bool,
+    /// The Sealing the daemon reports, in its confirmation and Inspect; none by default.
+    sealing: Option<ployz_core::Sealing>,
 }
 
 #[derive(Clone, Debug)]
@@ -218,6 +220,7 @@ impl DeployService {
             removal_refusal: None,
             lists_created: false,
             rival_proxy: false,
+            sealing: None,
         }
     }
 
@@ -293,6 +296,12 @@ impl DeployService {
     /// Container is removed there.
     pub(super) fn rival_proxy(mut self) -> Self {
         self.rival_proxy = true;
+        self
+    }
+
+    /// Its Cluster holds Sealing public key `public_key`, as its daemon reports.
+    pub(super) fn sealed_with(mut self, public_key: ployz_core::SealingPublicKey) -> Self {
+        self.sealing = Some(ployz_core::Sealing::Held { public_key });
         self
     }
 
@@ -885,7 +894,7 @@ impl FakeMachine for DeployService {
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: "test".into(),
             capabilities,
-            sealing: None,
+            sealing: self.sealing,
         }))
     }
 
@@ -1002,7 +1011,7 @@ impl FakeMachine for DeployService {
             storage: self.machines.first().and_then(|machine| machine.storage),
             upgrade: None,
             token: None,
-            sealing: None,
+            sealing: self.sealing,
             founding: Default::default(),
         }))
     }

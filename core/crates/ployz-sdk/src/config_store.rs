@@ -68,7 +68,7 @@ pub async fn observe_volumes(
 
 /// Every copy of every Volume on `connections`' Servers, by role
 /// (`CopyObservation`): what Cloud's sweep finds orphaned mirror slots with. Servers
-/// that don't answer are named, never assumed empty.
+/// that don't answer are named, never assumed empty. `expect` is as `observeVolumes`'.
 ///
 /// # Errors
 /// Returns `invalid_argument` for malformed input, or the connection's error when
@@ -76,9 +76,11 @@ pub async fn observe_volumes(
 #[napi(ts_return_type = "Promise<CopyObservation>")]
 pub async fn observe_copies(
     #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let connections = crate::parse_connections(connections)?;
-    to_json(ployz::sdk::observe_copies(connections).await)
+    let expect = crate::parse_expect(expect)?;
+    to_json(ployz::sdk::observe_copies(connections, expect).await)
 }
 
 /// Which Services run on `connections`' Servers, by Namespace
@@ -309,6 +311,7 @@ impl ConfigStore {
     /// running, of a Service it deployed or removed. A copy already gone counts as
     /// retired, so a retry is safe. Resolves to the copies still running
     /// (`RetireOutcome`), each with its Machine and why. Only Cloud's worker calls this.
+    /// `expect` is as `runDeployment`'s.
     ///
     /// # Errors
     /// Returns `not_found` for a Deployment of another Organization, the connection's
@@ -319,11 +322,23 @@ impl ConfigStore {
         organization: String,
         deployment: String,
         #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
         let connections = crate::parse_connections(connections)?;
-        to_json(ployz::sdk::retire_old(Arc::clone(&self.store), who, deployment, connections).await)
+        let expect = crate::parse_expect(expect)?;
+        to_json(
+            ployz::sdk::retire_old(
+                Arc::clone(&self.store),
+                who,
+                deployment,
+                connections,
+                expect,
+            )
+            .await,
+        )
     }
 
     /// Record that `runner` stopped without finishing Deployment `deployment`: its
@@ -496,7 +511,8 @@ impl ConfigStore {
 #[napi]
 impl ConfigStore {
     /// Start GitHub build `build` (`DEPLOYMENT.SERVICE`): `{kind: "reused"}`,
-    /// `{kind: "dispatch", runner}` or `{kind: "skipped", message}`.
+    /// `{kind: "dispatch", runner}` or `{kind: "skipped", message}`. `expect` is as
+    /// `runDeployment`'s, here and in `githubCheckIn` and `githubFinish`.
     ///
     /// # Errors
     /// Returns `conflict` once the build started or ended.
@@ -505,9 +521,12 @@ impl ConfigStore {
         &self,
         build: String,
         #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
-        to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections).await)
+        let expect = crate::parse_expect(expect)?;
+        to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections, expect).await)
     }
 
     /// Hand a pinned build to GitHub run `run` (`GithubRun`).
@@ -564,6 +583,8 @@ impl ConfigStore {
         #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
         #[napi(ts_arg_type = "string | null")] holder: Option<String>,
         #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let (build, claims) = (github_id(&build)?, claims_of(claims)?);
         let holder = holder
@@ -573,6 +594,7 @@ impl ConfigStore {
             })
             .transpose()?;
         let connections = crate::parse_connections(connections)?;
+        let expect = crate::parse_expect(expect)?;
         to_json(
             ployz::sdk::github_check_in(
                 Arc::clone(&self.store),
@@ -580,6 +602,7 @@ impl ConfigStore {
                 claims,
                 holder,
                 connections,
+                expect,
             )
             .await,
         )
@@ -623,10 +646,20 @@ impl ConfigStore {
         build: String,
         timed_out: bool,
         #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
+        let expect = crate::parse_expect(expect)?;
         to_json(
-            ployz::sdk::github_finish(Arc::clone(&self.store), build, timed_out, connections).await,
+            ployz::sdk::github_finish(
+                Arc::clone(&self.store),
+                build,
+                timed_out,
+                connections,
+                expect,
+            )
+            .await,
         )
     }
 

@@ -16,7 +16,10 @@ import { GithubOidcKeys } from "#/modules/github/github-oidc.server";
 import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
-import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { machineId } from "#/test/ids";
+import {
+  acmeWeb, enrollStoreServer, recordStoreSealingKey, seedStoreGitService, seedStoreOrganization, storeTestCloud,
+} from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000b001";
 const PROJECT = "00000000-0000-4000-8000-00000000b002";
@@ -216,6 +219,55 @@ it.live("a build that checked in reports its steps until its Organization discon
     expect(yield* provided(unlinkGithubInstallation({ organizationId: ORGANIZATION, installationId: 7 }))).toBe(true);
     expect(yield* provided(Effect.flip(steps()))).toMatchObject({ _tag: "Forbidden", message: "GitHub account `acme` was disconnected" });
     expect(githubReport).toHaveBeenCalledTimes(1);
+  }), 60_000);
+
+it.live("a Store build's start, check-in and finish reach a Server of the pairing's Cluster once its Sealing Key is known, as a Deploy does", () =>
+  Effect.gen(function* () {
+    const services = yield* storeTestCloud({ github: github.service });
+    const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
+      Effect.provide(services),
+      Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
+    );
+    const cloud = yield* provided(cloudStore);
+    const githubStart = vi.spyOn(cloud, "githubStart").mockResolvedValue({ kind: "reused" });
+    const githubCheckIn = vi.spyOn(cloud, "githubCheckIn").mockResolvedValue({
+      grant: "ployzgrant1:fake", commit: HEAD, fingerprint: "fake", ployzVersion: "0.0.0", deployment: { namespace: "shop-production", snapshots: [] },
+    });
+    vi.spyOn(cloud, "githubReport").mockResolvedValue({ received: 1, ended: true });
+    const githubFinish = vi.spyOn(cloud, "githubFinish").mockResolvedValue({ ended: "built" });
+    yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
+    const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
+    }, acmeWeb()));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
+    yield* Effect.promise(() => store.githubDispatched(BUILD, {
+      run_id: RUN, run_url: `https://github.com/acme/web/actions/runs/${RUN}`, workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+    }));
+    const servers = [{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }];
+    const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: null, hasNext: true };
+    const runner = (step: string) => new Request(`http://localhost:3000/api/builds/${BUILD}/${step}`, {
+      method: "POST", headers: { authorization: `Bearer ${oidcToken()}` },
+    });
+
+    // No Sealing Key recorded yet: any of the pairing's Servers, as before.
+    expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "done" });
+    expect(githubStart).toHaveBeenLastCalledWith(BUILD, servers, null);
+
+    const pairingKey = `${"P".repeat(43)}=`;
+    const expectation = { sealingPublicKey: pairingKey };
+    yield* provided(recordStoreSealingKey(ORGANIZATION, pairingKey));
+    yield* provided(startStoreGithubBuild(ORGANIZATION, target));
+    expect(githubStart).toHaveBeenLastCalledWith(BUILD, servers, expectation);
+    yield* provided(checkInStoreGithubBuild(runner("check-in"), BUILD, ""));
+    expect(githubCheckIn).toHaveBeenCalledExactlyOnceWith(BUILD, expect.anything(), null, servers, expectation);
+    expect(yield* provided(recordStoreGithubBuildSteps(runner("steps"), BUILD, JSON.stringify({ from: 0, events: [] }))))
+      .toEqual({ received: 1 });
+    expect(githubFinish).toHaveBeenLastCalledWith(BUILD, false, servers, expectation);
+    expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, { ...target, installationId: 7 }, { ended: true, startLimit: false })))
+      .toBe("done");
+    expect(githubFinish).toHaveBeenCalledTimes(2);
+    expect(githubFinish).toHaveBeenLastCalledWith(BUILD, false, servers, expectation);
   }), 60_000);
 
 it.live("a build GitHub passed on before its run checked in is no longer GitHub's, even once the next Builder claims it", () =>

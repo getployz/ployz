@@ -586,7 +586,7 @@ async fn mock_machine() -> (
         BTreeMap::from([("PLAIN".to_owned(), "from-docker".to_owned())]),
     );
     let (address, server) = support::listening(service).await;
-    let session = connect_connections(
+    let session = crate::sdk::connect_connections(
         vec![Connection::tcp(address)],
         Arc::new(SystemConnector::default()),
     )
@@ -1114,7 +1114,7 @@ async fn retire(
 #[tokio::test]
 async fn a_deployment_that_left_nothing_running_retires_without_connecting() {
     let (run, actor) = run();
-    let retired = retire_old(run.store, actor, run.deployment, Vec::new())
+    let retired = retire_old(run.store, actor, run.deployment, Vec::new(), None)
         .await
         .unwrap();
     assert_eq!(retired, RetireOutcome::default());
@@ -1124,7 +1124,7 @@ async fn a_deployment_that_left_nothing_running_retires_without_connecting() {
 async fn another_organizations_deployment_is_not_found() {
     let (run, _) = run();
     let other = ployz_store::Actor::system(ployz_store::OrganizationId::parse("other").unwrap());
-    let error = retire_old(run.store, other, run.deployment, Vec::new())
+    let error = retire_old(run.store, other, run.deployment, Vec::new(), None)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
