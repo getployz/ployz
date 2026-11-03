@@ -33,13 +33,15 @@ pub struct IncomingChange {
 /// Parent `parent` deployed the nodes of `lineages`, shipping its Saved revision
 /// `shipped`: stage each change it made to them in each of its Branches, and take
 /// back each node it removed that a Follow brought there untouched. Changes a Branch refuses (one of its rules, say) stay
-/// hints there, and never fail the Parent's Deployment. The caller holds the
-/// Project's lock.
+/// hints there, and never fail the Parent's Deployment. With `seal_below`, a seal a
+/// Branch holds back also reaches the Branches below it that inherited the value:
+/// once per Deployment, as it ends (#3780). The caller holds the Project's lock.
 pub(crate) fn follow(
     tx: &mut dyn Tx,
     parent: &EnvironmentId,
     shipped: &SavedEnvironmentIntent,
     lineages: &BTreeSet<String>,
+    seal_below: bool,
 ) -> Result<(), RpcError> {
     let branches = tx.query(
         "SELECT environment_id, organization_id FROM config_environment_branch b \
@@ -72,12 +74,12 @@ pub(crate) fn follow(
             Err(error) if crate::automation::skippable(&error) => Vec::new(),
             done => done?,
         };
-        for row in &sealed {
+        if seal_below && !sealed.is_empty() {
             let below = crate::storage::attempt(tx, |tx| {
-                seal_inherited_below(tx, &who, &parent.summary.id, &branch, row)
+                seal_inherited_below(tx, &who, &parent.summary.id, &branch, &sealed)
             });
             if let Err(error) = below {
-                tracing::warn!(?error, "couldn't seal a value below a Branch");
+                tracing::warn!(branch = %branch.as_str(), ?error, "couldn't seal values below a Branch");
             }
         }
         // Take back what this Deployment removed, and each new node an earlier Follow

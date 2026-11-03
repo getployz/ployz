@@ -1800,7 +1800,8 @@ pub(crate) fn record(
                 &stored.run.nodes,
                 settled(&stored.nodes, &saved, &applied, preview, &confirmed),
             );
-            advance(tx, &stored, false)?;
+            // The seal's walk below waits for the end, so it runs once (#3780).
+            advance(tx, &stored, false, false)?;
             save(tx, &mut stored)?;
             Ok(stored.summary)
         }
@@ -2322,7 +2323,7 @@ fn end(
     outcome: Outcome,
     status: DeploymentStatus,
 ) -> Result<DeploymentSummary, RpcError> {
-    advance(tx, &stored, status == DeploymentStatus::Applied)?;
+    advance(tx, &stored, status == DeploymentStatus::Applied, true)?;
     stored.summary.status = match (stored.summary.status, status) {
         (DeploymentStatus::Cancelling, DeploymentStatus::Failed) => DeploymentStatus::Cancelled,
         _ => status,
@@ -2337,7 +2338,14 @@ fn end(
 /// Put each node `stored` confirmed into Applied State as its Saved revision has
 /// it, by [`NodeStatus::applied`], a Volume at the size its Servers hold. Applying
 /// one again changes nothing. The Environment's Branches then follow it.
-fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcError> {
+/// With `seal_below`, the Follow also seals what Branches below inherited: only as the
+/// Deployment ends, so once per Deployment (#3780).
+fn advance(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    succeeded: bool,
+    seal_below: bool,
+) -> Result<(), RpcError> {
     let advanced: Vec<&TargetNode> = stored
         .nodes
         .iter()
@@ -2389,7 +2397,13 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
             };
         }
         crate::branch::deployed(tx, &stored.summary.environment_id, &saved, &deployed)?;
-        crate::branch::follow(tx, &stored.summary.environment_id, &saved, &deployed)?;
+        crate::branch::follow(
+            tx,
+            &stored.summary.environment_id,
+            &saved,
+            &deployed,
+            seal_below,
+        )?;
     }
     Ok(())
 }
