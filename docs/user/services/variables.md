@@ -135,13 +135,13 @@ service still gets the real value when it deploys.
   fixed:
   - Don't click **Use theirs** or run that `--take` command for a variable sealed above.
   - To remove the earlier value from the branch's History, choose **Set value** on the
-    variable in that branch, give it a sealed value, and save or deploy. Do this before the
-    parent deploys: after that, the variable holds the parent's value instead. Its earlier
-    versions then show **Sealed**, as for any variable you seal, except a version a queued or
-    running deployment still needs, which is cleared when that deployment finishes.
+    variable in that branch, give it a sealed value, and save or deploy. Its earlier versions
+    then show **Sealed**, as for any variable you seal, except a version a queued or running
+    deployment still needs, which is cleared when that deployment finishes. Do this before the
+    parent deploys: after that, the branch takes the parent's value or deletion instead.
   - Deploy the branch's parent. The hint with the earlier value goes. Its own value, or its
-    deletion, arrives in the branch as a change to deploy, or as a hint if you set a value
-    above.
+    deletion, arrives in the branch as a change to deploy, or as a hint if you already set a
+    sealed value.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
   a plain value is refused, so a secret never turns into plain text by mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that
