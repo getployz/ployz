@@ -121,18 +121,25 @@ service still gets the real value when it deploys.
   back. If the branch
   adds it again plain after taking the seal, its History keeps no copy of the earlier value
   either.
-- One case isn't covered yet. In a branch made from a branch, a value that branch took by a
-  follow after it was created (its parent deployed a new value, and the branch took it) still
-  shows plain after an environment above seals it. It shows in that branch's History, and in a
-  `ployz diff` hint that its parent deployed it, with a `ployz env sync --take` command. Running
-  that command stages the plain value in the branch, and its next deploy ships it. Values the
-  branch was created with are covered as described above. Until this is fixed:
-  - Don't run that `--take` command for a variable sealed above.
-  - Deploy the branch between, so it no longer runs the earlier value. The hint then names
-    the value that branch deploys instead.
-  - To remove the earlier value from the branch's History, give the variable a sealed value
-    in that branch too, and save. History then shows its earlier versions as **Sealed**, as for
-    any variable you seal.
+- One case isn't covered yet. It applies in a branch made from a branch whose parent changed
+  or deleted the variable before the seal, to a value that branch took from its parent by a
+  follow or a sync after it was created. After an environment above seals the variable, that
+  value still shows plain:
+  - in that branch's History;
+  - in its **Details**, under that change, as "*parent* has since set *value*" with
+    **Use theirs**;
+  - in `ployz diff`, as a hint with a `ployz env sync --take` command.
+
+  **Use theirs** or that command stages the plain value in the branch, and its next deploy
+  ships it. Values the branch was created with are covered as described above. Until this is
+  fixed:
+  - Don't click **Use theirs** or run that `--take` command for a variable sealed above.
+  - Deploy the branch's parent. Its own value, or its deletion, then arrives in the branch as
+    a change to deploy, and the hint goes. History still shows the earlier value.
+  - To remove the earlier value from the branch's History, choose **Set value** on the
+    variable in that branch, give it a sealed value, and save or deploy. Its earlier versions
+    then show **Sealed**, as for any variable you seal, except a version a queued or running
+    deployment still needs, which is cleared when that deployment finishes.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
   a plain value is refused, so a secret never turns into plain text by mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that
