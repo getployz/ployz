@@ -4628,3 +4628,37 @@ fn a_followed_value_shows_in_history_again_once_the_branch_between_takes_the_sea
     let history = history_of(&store, &who, "qa-two");
     assert!(!history.contains("plain-private-0317"), "{history}");
 }
+
+/// A Parent that took a seal still hints below a plain value it adds again after
+/// deleting the sealed one: only text from before the seal is held back (#3794).
+#[test]
+fn a_value_the_parent_adds_again_plain_after_its_seal_is_still_hinted_below() {
+    let (store, who) = shop();
+    let token = |value: &str| [("web.env.TOKEN", json!(value))];
+    set(&store, &who, "production", &token("plain-made-0317"));
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    deploy(&store, &who, "qa", 3);
+    branch(&store, &who, 11, "qa", "qa-two");
+    deploy(&store, &who, "qa-two", 4);
+    set(&store, &who, "qa-two", &token("plain-own-0317"));
+    deploy(&store, &who, "qa-two", 5);
+    seal_token(&store, &who, 6);
+    deploy(&store, &who, "qa", 7);
+    unset(&store, &who, "qa", "web.env.TOKEN");
+    deploy(&store, &who, "qa", 8);
+    set(&store, &who, "qa", &token("plain-readd-0317"));
+    deploy(&store, &who, "qa", 9);
+
+    let hinted = hints(&store, &who, "qa-two");
+    assert_eq!(hinted.len(), 1, "{hinted:?}");
+    assert!(hinted[0].contains("plain-readd-0317"), "{hinted:?}");
+    let version = diff(&store, &who, "qa-two").version;
+    store
+        .write(&who, &take("qa", "qa-two", &["variables.TOKEN"], version))
+        .unwrap();
+    assert_eq!(
+        web(&store, &who, "qa-two")["env"]["TOKEN"],
+        json!("plain-readd-0317")
+    );
+}
