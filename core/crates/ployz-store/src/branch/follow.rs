@@ -79,7 +79,12 @@ pub(crate) fn follow(
                 seal_inherited_below(tx, &who, &parent.summary.id, &branch, &sealed)
             });
             if let Err(error) = below {
-                tracing::warn!(branch = %branch.as_str(), ?error, "couldn't seal values below a Branch");
+                tracing::warn!(
+                    branch = branch.as_str(),
+                    code = error.code.as_str(),
+                    error = error.message.as_str(),
+                    "couldn't seal values below a Branch"
+                );
             }
         }
         // Take back what this Deployment removed, and each new node an earlier Follow

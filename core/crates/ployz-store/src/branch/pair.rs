@@ -1274,9 +1274,10 @@ pub(crate) fn seal_inherited_below(
             // Unread, it may mark the rows: what's below it waits as well.
             fenced.insert(branch.clone(), every.clone());
             tracing::warn!(
-                branch = %branch.as_str(),
+                branch = branch.as_str(),
                 rows = ?rows.iter().map(|(row, _)| row).collect::<Vec<_>>(),
-                ?error,
+                code = error.code.as_str(),
+                error = error.message.as_str(),
                 "couldn't seal values a Branch inherited; it takes them at a later deploy"
             );
         }
