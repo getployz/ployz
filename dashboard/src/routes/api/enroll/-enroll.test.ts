@@ -449,12 +449,15 @@ describe("machine enrollment routes", () => {
     const logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
     mocks.enroll.mockReturnValue(Effect.fail(new ProviderFailure({ operation: "register" })));
 
-    const response = await join(identity);
+    try {
+      const response = await join(identity);
 
-    expect(response.status).toBe(500);
-    expect(await response.json()).toEqual({ error: "The request could not be completed." });
-    await vi.waitFor(() => expect(inspect(logged.mock.calls, { depth: null })).toMatch(/ERROR[\s\S]*ProviderFailure/u));
-    logged.mockRestore();
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "The request could not be completed." });
+      await vi.waitFor(() => expect(inspect(logged.mock.calls, { depth: null })).toMatch(/ERROR[\s\S]*ProviderFailure/u));
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
 
