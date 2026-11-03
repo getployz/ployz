@@ -514,6 +514,7 @@ fn unanswered(error: &LoginError) -> bool {
         | LoginError::SignedOut
         | LoginError::Ended
         | LoginError::TokenRefused
+        | LoginError::AgentTokenRefused
         | LoginError::TokenMalformed
         | LoginError::NotMember(_)
         | LoginError::Unsupported(_)
@@ -626,6 +627,7 @@ mod tests {
         let credential = crate::cloud_account::Credential::Token {
             cloud: "http://cloud.test/".into(),
             token: crate::cloud_login::Secret::new("ployz_secret".into()),
+            from: crate::cloud_account::TokenFrom::Env,
         };
         assert_eq!(
             super::for_another_approver(&credential, "a1"),

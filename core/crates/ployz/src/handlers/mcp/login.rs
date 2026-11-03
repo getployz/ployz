@@ -32,6 +32,7 @@ impl Stored {
         Credential::Token {
             cloud: self.cloud.clone(),
             token: self.token.clone(),
+            from: crate::cloud_account::TokenFrom::McpLogin,
         }
     }
 }

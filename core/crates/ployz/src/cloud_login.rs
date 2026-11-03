@@ -77,6 +77,10 @@ pub(crate) enum LoginError {
     )]
     TokenRefused,
     #[error(
+        "Cloud refused the agent token `ployz mcp` acts with: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted. Run `ployz mcp login` to give it a new one."
+    )]
+    AgentTokenRefused,
+    #[error(
         "PLOYZ_TOKEN is not a token: it holds a newline or other character a token never has. Copy it again from where it was made."
     )]
     TokenMalformed,

@@ -31,8 +31,21 @@ pub(crate) enum Via {
 pub(crate) enum Credential {
     /// This device's approved sign-in; its Organization can be switched.
     Device(SignedIn),
-    /// An Organization Token from `PLOYZ_TOKEN`, bound to its Organization.
-    Token { cloud: String, token: Secret },
+    /// An Organization Token, bound to its Organization.
+    Token {
+        cloud: String,
+        token: Secret,
+        from: TokenFrom,
+    },
+}
+
+/// Where an Organization Token came from, so a refusal names what to fix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TokenFrom {
+    /// `PLOYZ_TOKEN`.
+    Env,
+    /// The agent token `ployz mcp login` stored.
+    McpLogin,
 }
 
 impl Credential {
@@ -40,6 +53,17 @@ impl Credential {
         match self {
             Self::Device(signed_in) => &signed_in.cloud,
             Self::Token { cloud, .. } => cloud,
+        }
+    }
+
+    /// Cloud refused this token: the refusal names where it came from and its fix.
+    pub(crate) fn token_refused(&self) -> LoginError {
+        match self {
+            Self::Token {
+                from: TokenFrom::McpLogin,
+                ..
+            } => LoginError::AgentTokenRefused,
+            Self::Device(_) | Self::Token { .. } => LoginError::TokenRefused,
         }
     }
 
@@ -71,6 +95,7 @@ pub(crate) async fn credential(
     Ok(Credential::Token {
         cloud: named_cloud(store, true, cloud)?.unwrap_or_else(|| cloud_origin(DEFAULT_CLOUD)),
         token: Secret::new(token),
+        from: TokenFrom::Env,
     })
 }
 
@@ -166,7 +191,7 @@ pub(crate) async fn acting_as(credential: &Credential) -> Result<Acting, LoginEr
                     id: entry.id,
                     slug: entry.slug,
                 })
-                .ok_or(LoginError::TokenRefused)?;
+                .ok_or_else(|| credential.token_refused())?;
             Ok(Acting {
                 organization,
                 agent: listed.via.as_deref() == Some(TokenKind::Agent.as_str()),
@@ -1430,7 +1455,7 @@ fn answer<T: DeserializeOwned>(
     match (status, credential) {
         (status, _) if status.is_success() => cloud_login::decode(body.to_vec()),
         (StatusCode::UNAUTHORIZED, Credential::Device(_)) => Err(LoginError::Ended),
-        (StatusCode::UNAUTHORIZED, Credential::Token { .. }) => Err(LoginError::TokenRefused),
+        (StatusCode::UNAUTHORIZED, Credential::Token { .. }) => Err(credential.token_refused()),
         // Cloud refuses a member's call in the RPC error vocabulary (`claim_required`);
         // only a bare 403 means the sign-in left its Organization.
         (StatusCode::FORBIDDEN, Credential::Device(signed_in)) if refusal(body).is_none() => {
@@ -1547,6 +1572,7 @@ mod tests {
         Credential::Token {
             cloud: cloud.to_owned(),
             token: Secret::new("ployz_secret".to_owned()),
+            from: TokenFrom::Env,
         }
     }
 

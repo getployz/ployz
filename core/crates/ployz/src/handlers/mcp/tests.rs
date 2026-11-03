@@ -1031,6 +1031,70 @@ async fn ployz_mcp_without_its_own_token_refuses_and_names_ployz_mcp_login() {
     );
 }
 
+/// A Ployz Cloud that refuses every bearer, as for a revoked token.
+fn refusing_cloud() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            incoming(&stream);
+            write!(
+                stream,
+                "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\n\
+                 content-length: 2\r\nconnection: close\r\n\r\n{{}}"
+            )
+            .unwrap();
+        }
+    });
+    url
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn a_refused_token_names_where_it_came_from_and_its_fix() {
+    let url = refusing_cloud();
+    let transcript = transcript("project_create", in_org());
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    let mcp =
+        json!({ "cloud": url, "id": "tok_agent", "organization": "acme", "token": "ployz_agent" });
+    std::fs::write(home.path().join("mcp.json"), mcp.to_string()).unwrap();
+    let refusal = async |token: Option<&str>, cloud: Option<&str>| {
+        let account = Account {
+            config: config.clone(),
+            token: token.map(str::to_owned),
+            cloud: cloud.map(str::to_owned),
+            organization: Acting::default(),
+        };
+        let server = Server::new(account, Store::Cloud, fixed(transcript.place.clone()));
+        let mut client = Client::initialized(server, json!({})).await;
+        let done = client
+            .call(2, "project_create", transcript.input.clone())
+            .await;
+        assert_eq!(done["result"]["isError"], true, "{done}");
+        done.to_string()
+    };
+
+    let agent = refusal(None, None).await;
+    assert!(
+        agent.contains("Cloud refused the agent token `ployz mcp` acts with")
+            && agent.contains("Run `ployz mcp login`"),
+        "names the agent token and its fix: {agent}"
+    );
+    assert!(
+        !agent.contains("PLOYZ_TOKEN"),
+        "PLOYZ_TOKEN isn't set: {agent}"
+    );
+
+    let env = refusal(Some("ployz_env"), Some(&url)).await;
+    assert!(env.contains("Cloud refused PLOYZ_TOKEN"), "{env}");
+    assert!(
+        !env.contains("ployz mcp login"),
+        "the agent token isn't in use: {env}"
+    );
+}
+
 /// `server` keeps its `PLOYZ_TOKEN` but finds this device's sign-in in `home`.
 fn signed_in_beside(server: Server, home: &tempfile::TempDir) -> Server {
     Server {

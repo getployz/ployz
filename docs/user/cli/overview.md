@@ -113,8 +113,9 @@ For Codex, run `codex mcp add ployz -- ployz mcp`. `ployz mcp` doesn't use your 
 with its own agent token, which `ployz mcp login` makes in your current organization and keeps
 on this computer. Until you run it, every tool call fails and names the command. The token acts
 as you in that organization, expires after 365 days, and shows as `agent` under KIND in
-`ployz token ls`. Running `ployz mcp login` again makes a new one and revokes the old. An agent
-token can't answer an approval, so the agent can't approve its own calls through `ployz mcp`.
+`ployz token ls`. Running `ployz mcp login` again makes a new one and revokes the old. Once the
+token is revoked or expired, each tool call fails with `Cloud refused the agent token` and names
+`ployz mcp login`; run it again. An agent token can't answer an approval, so the agent can't approve its own calls through `ployz mcp`.
 When `ployz mcp` asks you, your answer goes with your own sign-in. An agent that can run commands
 in your terminal still acts with your sign-in there, so don't let it run `ployz org approval`
 for you. With `PLOYZ_TOKEN` set, `ployz mcp` uses that token instead, and Ployz still treats its

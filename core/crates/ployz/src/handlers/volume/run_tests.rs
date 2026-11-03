@@ -15,6 +15,7 @@ fn token(cloud: &str) -> Credential {
     Credential::Token {
         cloud: cloud.to_owned(),
         token: Secret::new("ployz_secret".to_owned()),
+        from: crate::cloud_account::TokenFrom::Env,
     }
 }
 
