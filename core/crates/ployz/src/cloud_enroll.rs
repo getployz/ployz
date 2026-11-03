@@ -702,6 +702,12 @@ const CLOUD_REFUSAL_MAX: usize = 500;
 /// Strings this long are credentials or values the request sent, never Cloud's prose.
 const SENT_MIN: usize = 16;
 
+/// A piece of a sent string this long in a refusal means the refusal echoes it.
+const ECHO_FRAGMENT: usize = 12;
+
+/// A word this long in only base64 or hex letters is an encoded value, never Cloud's prose.
+const ENCODED_MIN: usize = 24;
+
 /// The strings a callback sends: its bearer, its Pairing Credential, and every long
 /// string in its body.
 fn sent_strings(token: &CloudEnrollToken, body: &EnrollCallback<'_>) -> Vec<String> {
@@ -731,7 +737,8 @@ fn sent_strings(token: &CloudEnrollToken, body: &EnrollCallback<'_>) -> Vec<Stri
 }
 
 /// Cloud's refusal sentence, when `body` is exactly the `{"error": "..."}` its enroll
-/// routes answer with, short, free of control characters, and holding nothing `sent`.
+/// routes answer with, short, free of control and direction characters, and holding no
+/// piece of anything `sent` nor anything that reads as an encoded value.
 fn cloud_refusal(body: &str, sent: &[String]) -> Option<String> {
     let serde_json::Value::Object(fields) = serde_json::from_str(body).ok()? else {
         return None;
@@ -745,9 +752,35 @@ fn cloud_refusal(body: &str, sent: &[String]) -> Option<String> {
     (name == "error"
         && !said.is_empty()
         && said.chars().count() <= CLOUD_REFUSAL_MAX
-        && !said.chars().any(char::is_control)
-        && !sent.iter().any(|sent| said.contains(sent.as_str())))
+        && !said.chars().any(|c| c.is_control() || invisible(c))
+        && !echoes(said, sent))
     .then(|| said.to_owned())
+}
+
+/// Characters that reorder or hide text on a terminal.
+fn invisible(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
+/// Whether `said` holds a piece of a sent string, or a long word that could encode one.
+fn echoes(said: &str, sent: &[String]) -> bool {
+    let encoded = said.split_whitespace().any(|word| {
+        let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        word.len() >= ENCODED_MIN
+            && word
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-'))
+    });
+    encoded
+        || sent.iter().any(|sent| {
+            if sent.len() <= ECHO_FRAGMENT {
+                return said.contains(sent.as_str());
+            }
+            sent.as_bytes()
+                .windows(ECHO_FRAGMENT)
+                .filter_map(|piece| std::str::from_utf8(piece).ok())
+                .any(|piece| said.contains(piece))
+        })
 }
 
 fn retry_error(
@@ -1925,16 +1958,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_completion_refusal_shows_cloud_s_sentence() {
-        let said = "This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.";
-        let printed = completion_refused_with(
-            serde_json::json!({ "error": said })
-                .to_string()
-                .into_bytes(),
-        )
-        .await;
-        assert!(printed.contains(said), "{printed}");
-        assert!(!printed.contains("rejected"), "{printed}");
-        assert!(printed.contains("without --reset"), "{printed}");
+        for said in [
+            "This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.",
+            "This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key. Update ployz where you run ployz server add: curl -fsSL https://ployz.sh | sh (with sudo on the Server). Then rerun ployz server add while a server that holds your cluster's key is online.",
+        ] {
+            let printed = completion_refused_with(
+                serde_json::json!({ "error": said })
+                    .to_string()
+                    .into_bytes(),
+            )
+            .await;
+            assert!(printed.contains(said), "{printed}");
+            assert!(!printed.contains("rejected"), "{printed}");
+            assert!(printed.contains("without --reset"), "{printed}");
+        }
     }
 
     #[tokio::test]
@@ -1964,6 +2001,60 @@ mod tests {
             for leaked in ["FAKE", "pmet_test", "pairing-secret"] {
                 assert!(!printed.contains(leaked), "{answer}: {printed}");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refusal_echoing_a_credential_in_part_or_encoded_is_not_shown() {
+        use base64::Engine as _;
+        let token = CloudEnrollToken::parse("pmet_FAKEtoken0123456789abcdefghij").unwrap();
+        let pairing = "FAKEpairing0123456789abcdefghijkl";
+        let capability =
+            ManagementCapability::new(ployz_core::ManagementIdentity::from_bytes([5; 32]), [6; 32]);
+        let secret = capability.to_secret_string();
+        let half = |text: &str| text[..text.len() / 2].to_owned();
+        for echoed in [
+            secret.clone(),
+            half(&secret),
+            hex::encode(capability.client_secret()),
+            base64::engine::general_purpose::STANDARD.encode(capability.client_secret()),
+            pairing.to_owned(),
+            half(pairing),
+            base64::engine::general_purpose::STANDARD.encode(pairing),
+            token.as_str().to_owned(),
+            half(token.as_str()),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token.as_str()),
+            "\u{202e}".to_owned(),
+        ] {
+            let (listener, url) = listen().await;
+            let answer = serde_json::json!({ "error": format!("Refused: {echoed}.") }).to_string();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                let response = http_response(409, "Conflict", answer.as_bytes());
+                tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+                    .await
+                    .unwrap();
+            });
+            let error = publish(
+                Command::ServerAdd,
+                &url,
+                &token,
+                MachineId::random(),
+                &PairingCredential::parse(pairing).unwrap(),
+                &capability,
+            )
+            .await
+            .unwrap_err();
+            server.await.unwrap();
+            for printed in [crate::ui::chain_text(&error), format!("{error:?}")] {
+                assert!(!printed.contains(&echoed), "{echoed}: {printed}");
+                assert!(!printed.contains("Refused"), "{echoed}: {printed}");
+            }
+            assert!(
+                crate::ui::chain_text(&error).contains("HTTP 409: candidate publication rejected"),
+                "{echoed}"
+            );
         }
     }
 
