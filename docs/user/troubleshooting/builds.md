@@ -183,10 +183,9 @@ GitHub**.
 ## A GitHub build says a server belongs to another cluster
 
 You'll see `Machine … belongs to another Cluster` when a build on GitHub Actions finishes. The server
-that started the build now answers for another cluster, so Ployz Cloud can't confirm the build and
-fails it. Check which cluster that server is in. If it moved, remove it
-there and [add it back](../servers/add-a-server.md), or let another server start GitHub builds. Then
-deploy again.
+the build pushed its image to now belongs to another cluster, so Ployz Cloud can't confirm the build and
+fails it. Deploy again: the new build uses one of this cluster's servers. If that server moved by
+mistake, remove it from the other cluster and [add it back](../servers/add-a-server.md).
 
 ## The build queue is full
 
