@@ -42,16 +42,16 @@ pub(crate) async fn admit(
         return Ok(());
     }
     let machines = client.clone().machines().await.map_err(RpcError::from)?;
-    if !machines
-        .iter()
-        .any(|observation| machine_matches_target(&observation.machine, target))
-    {
+    if !machines.iter().any(|observation| {
+        !observation.unarrived() && machine_matches_target(&observation.machine, target)
+    }) {
         return Err(unsupported(format!(
             "{target} shows no evidence it can open Sealed values; refusing to send them"
         )));
     }
     let behind: Vec<_> = machines
         .iter()
+        .filter(|observation| !observation.unarrived())
         .filter(|observation| {
             let capabilities = &observation.machine.runtime.capabilities;
             !SEALED_READY.iter().all(|name| capabilities.contains(*name))
@@ -67,15 +67,25 @@ pub(crate) async fn admit(
     )))
 }
 
-/// The Machines a Build may run on. One that reads Sealed values, built and
-/// named by `reads`, runs only where the daemon opens them; without one, every
-/// visible Machine stays.
+/// The Machines a Build may run on, excluding Unarrived Machines. One that reads
+/// Sealed values, built and named by `reads`, runs only where the daemon opens them.
 pub(crate) fn builders<'a>(
     visible: &'a [MachineObservation],
     reads: Option<(BuildMethod, Vec<&str>)>,
 ) -> Result<Cow<'a, [MachineObservation]>, ConnectError> {
+    let visible = if visible.iter().any(MachineObservation::unarrived) {
+        Cow::Owned(
+            visible
+                .iter()
+                .filter(|machine| !machine.unarrived())
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        Cow::Borrowed(visible)
+    };
     let Some((method, read)) = reads else {
-        return Ok(Cow::Borrowed(visible));
+        return Ok(visible);
     };
     let (able, behind): (Vec<_>, Vec<_>) = visible.iter().cloned().partition(|observation| {
         observation

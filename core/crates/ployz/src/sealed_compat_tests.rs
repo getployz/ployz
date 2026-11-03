@@ -264,3 +264,39 @@ fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
         );
     }
 }
+
+#[tokio::test]
+async fn an_unarrived_machine_does_not_block_sealed_values_or_builds() {
+    use ployz_core::{BUILD_SEALED_CAPABILITY, config::BuildMethod};
+    let mut ready = machine('a', "ready");
+    ready.runtime.capabilities = [
+        MANAGEMENT_SCOPE_CAPABILITY,
+        ENV_SEALED_CAPABILITY,
+        BUILD_SEALED_CAPABILITY,
+    ]
+    .map(String::from)
+    .into();
+    let mut pending = machine('b', "pending");
+    pending.runtime = Default::default();
+    let pending_id = pending.id;
+    let visible = vec![
+        MachineObservation::new(ready.clone(), MembershipObservation::Up),
+        MachineObservation::new(pending, MembershipObservation::Down),
+    ];
+    assert!(visible.get(1).unwrap().unarrived());
+    for reads in [None, Some((BuildMethod::Railpack, vec!["TOKEN"]))] {
+        let builders = super::builders(&visible, reads).unwrap();
+        assert_eq!(builders.len(), 1);
+        assert_eq!(builders.first().unwrap().machine.id, ready.id);
+    }
+    let Fleet { client, server, .. } = listing(visible).await;
+    super::admit(&client, &(&ready.id).into(), &want(spec(true)))
+        .await
+        .unwrap();
+    assert!(
+        super::admit(&client, &(&pending_id).into(), &want(spec(true)))
+            .await
+            .is_err()
+    );
+    server.abort();
+}

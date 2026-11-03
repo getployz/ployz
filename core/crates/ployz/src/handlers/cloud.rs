@@ -298,6 +298,42 @@ fn unlisted_participation(details: &MachineDetails, assigned: &Machine) -> Resul
     )))
 }
 
+fn sealing_public_key(sealing: &ployz_core::Sealing) -> Option<ployz_core::SealingPublicKey> {
+    match sealing {
+        ployz_core::Sealing::Held { public_key }
+        | ployz_core::Sealing::AwaitsRecovery { public_key } => Some(*public_key),
+        ployz_core::Sealing::NeedsAccess => None,
+    }
+}
+
+fn another_cluster(details: &MachineDetails, registration: &ployz_core::Registered) -> bool {
+    let Some(local) = details.sealing.as_ref().and_then(sealing_public_key) else {
+        return false;
+    };
+    let mut keys = registration
+        .visible_peers
+        .iter()
+        .filter_map(|peer| peer.runtime.sealing.as_ref().and_then(sealing_public_key));
+    let Some(target) = keys.next() else {
+        return false;
+    };
+    target != local && keys.all(|key| key == target)
+}
+
+/// The Register reply's hand-off is for a Server joining this Cluster, so it is dropped unused.
+fn refuse_another_cluster(join: Join) -> Error {
+    let ployz_core::Registered {
+        assigned_machine: assigned,
+        sealing_key,
+        ..
+    } = join.registration;
+    drop(sealing_key);
+    Error::conflict(format!(
+        "Server {} belongs to another Cluster. Remove it from that Cluster first, then add it here with a new token: run `ployz server add --command` where you're signed in, and run the line it prints on the Server.",
+        assigned.name
+    ))
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the enrollment request carries its originating command"
@@ -353,6 +389,12 @@ where
 {
     let assigned = join.registration.assigned_machine.clone();
     let local = already_assigned(&details, &assigned);
+    if local.is_none()
+        && unlisted_participation(&details, &assigned).is_err()
+        && another_cluster(&details, &join.registration)
+    {
+        return Err(refuse_another_cluster(join));
+    }
     if !initial_policy.matches(&assigned)
         || local.is_some_and(|machine| !initial_policy.matches(machine))
     {
@@ -1768,6 +1810,106 @@ mod tests {
         assert!(
             unlisted_participation(&details(LocalMachinePhase::Uninitialized), &registered).is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn an_add_on_another_cluster_is_refused_only_with_different_observed_keys() {
+        let held = |byte| ployz_core::Sealing::Held {
+            public_key: ployz_core::SealingPublicKey::from_bytes([byte; 32]),
+        };
+        let awaits = |byte| ployz_core::Sealing::AwaitsRecovery {
+            public_key: ployz_core::SealingPublicKey::from_bytes([byte; 32]),
+        };
+        for (local_key, peer_keys, another) in [
+            (Some(held(1)), vec![Some(held(2))], true),
+            (Some(awaits(1)), vec![Some(awaits(2)), None], true),
+            (Some(held(1)), vec![Some(held(1))], false),
+            (Some(awaits(1)), vec![Some(held(1))], false),
+            (Some(held(1)), vec![Some(held(2)), Some(held(3))], false),
+            (
+                Some(ployz_core::Sealing::NeedsAccess),
+                vec![Some(held(2))],
+                false,
+            ),
+            (None, vec![Some(held(2))], false),
+            (
+                Some(held(1)),
+                vec![None, Some(ployz_core::Sealing::NeedsAccess)],
+                false,
+            ),
+        ] {
+            let assigned = crate::global_fixtures::machine('a', "my-server");
+            let details = MachineDetails {
+                id: assigned.id,
+                phase: LocalMachinePhase::Participating,
+                machine: Some(assigned.clone()),
+                public_key: assigned.public_key,
+                advertised_endpoints: Vec::new(),
+                store_version: Default::default(),
+                rtts: Vec::new(),
+                management_clients: Vec::new(),
+                founding: Default::default(),
+                telemetry: None,
+                storage: None,
+                upgrade: None,
+                token: None,
+                sealing: local_key,
+            };
+            let peers = peer_keys
+                .into_iter()
+                .zip(['b', 'c'])
+                .map(|(sealing, id)| {
+                    let mut peer = crate::global_fixtures::machine(id, "other-server");
+                    peer.runtime.sealing = sealing;
+                    peer
+                })
+                .collect();
+            let join = Join {
+                pairing: CloudPairing {
+                    secret: cloud_enroll::PairingCredential::parse("ppair_fake").unwrap(),
+                },
+                storage: StorageChoice::None.into(),
+                registration: ployz_core::Registered {
+                    assigned_machine: assigned,
+                    visible_peers: peers,
+                    target_versions: Default::default(),
+                    devices: Vec::new(),
+                    sealing_key: Some(ployz_core::SealedSealingKey::from_bytes(vec![7; 80])),
+                },
+            };
+            let (client, daemon) = crate::connect::test_support::rpc_client(|_| async {
+                panic!("a refused add sends no daemon RPC");
+            })
+            .await;
+            let root = crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "add", "--yes"])
+                .unwrap();
+            let error = enroll_join(
+                EnrollCommand::ServerAdd,
+                leaf_matches(&root),
+                client,
+                details,
+                join,
+                &Default::default(),
+                Default::default(),
+                "http://127.0.0.1:9/api/enroll/callback",
+                &CloudEnrollToken::parse("pmet_fake").unwrap(),
+                &|_| async { Ok(()) },
+                &mut SetupReport::start(),
+                &|_| {},
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            if another {
+                assert!(error.contains("belongs to another Cluster"), "{error}");
+                assert!(error.contains("new token"), "{error}");
+                assert!(!error.contains("same command"), "{error}");
+            } else {
+                assert!(error.contains("already participates"), "{error}");
+            }
+            daemon.abort();
+        }
     }
 
     #[test]
