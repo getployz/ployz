@@ -255,6 +255,10 @@ there may be the last copy of a volume.
 
 You'll see `This Server's Cluster is already connected to another Organization in Ployz Cloud. Contact Ployz support to move it.`
 
+`ployz server add` doesn't show that sentence yet. It says `Cloud enrollment completion failed; rerun the same ployz
+server add command without --reset (keep all other options).`, with the cause `enroll HTTP 409: enrollment completion
+rejected`. Rerunning it fails the same way, so follow the steps below instead.
+
 Ployz Cloud connects a Cluster to one Organization: the first one that added it. The server you're
 adding belongs to a Cluster another Organization already added, so this Organization can't manage
 it. On your first server, add one that isn't in that Cluster instead, or manage it from the
