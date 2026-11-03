@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::Trusted;
+use ployz_core::RpcErrorCode;
 
 /// A Parent's deployed value that followed into its Branch but isn't staged there:
 /// the Branch changed the row itself, or discarded it.
@@ -33,7 +34,9 @@ pub struct IncomingChange {
 /// Parent `parent` deployed the nodes of `lineages`, shipping its Saved revision
 /// `shipped`: stage each change it made to them in each of its Branches, and take
 /// back each node it removed that a Follow brought there untouched. Changes a Branch refuses (one of its rules, say) stay
-/// hints there, and never fail the Parent's Deployment. With `seal_below`, a seal a
+/// hints there, and never fail the Parent's Deployment; nor does a Branch another
+/// write holds past [`BRANCH_LOCK_WAIT`], which takes them at a later deploy or by a
+/// Sync, its arrivals unrecorded (#3788). With `seal_below`, a seal a
 /// Branch holds back also reaches the Branches below it that inherited the value:
 /// once per Deployment, as it ends (#3780). The caller holds the Project's lock.
 pub(crate) fn follow(
@@ -70,9 +73,22 @@ pub(crate) fn follow(
             continue;
         }
         let who = Actor::system(row.parse(1, "Branch")?);
-        let sealed = match into(tx, &who, &parent, &branch, lineages) {
-            Err(error) if crate::automation::skippable(&error) => Vec::new(),
-            done => done?,
+        let sealed = match crate::storage::attempt(tx, |tx| lock_below(tx, &who, &branch)) {
+            Err(error) if error.code == RpcErrorCode::Unavailable => {
+                tracing::warn!(
+                    branch = branch.as_str(),
+                    code = error.code.as_str(),
+                    error = error.message.as_str(),
+                    "couldn't follow into a Branch; it takes the changes at a later deploy"
+                );
+                continue;
+            }
+            locked => {
+                match locked.and_then(|mut locked| into(tx, &who, &parent, &mut locked, lineages)) {
+                    Err(error) if crate::automation::skippable(&error) => Vec::new(),
+                    done => done?,
+                }
+            }
         };
         if seal_below && !sealed.is_empty() {
             let below = crate::storage::attempt(tx, |tx| {
@@ -136,6 +152,25 @@ pub(crate) fn follow(
     Ok(())
 }
 
+/// How long a Parent's Deployment waits for each Branch's lock as it ends (#3780,
+/// #3788). A Branch another write holds longer is left for a later deploy.
+pub(super) const BRANCH_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Lock `branch` as [`scope::lock_id`] does, waiting at most [`BRANCH_LOCK_WAIT`],
+/// and only the wait: what it writes then keeps the usual timeout. Call it in a
+/// [`crate::storage::attempt`], whose savepoint rolled back drops the shorter wait
+/// too. Another write holding it longer is [`RpcErrorCode::Unavailable`].
+pub(super) fn lock_below(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    branch: &EnvironmentId,
+) -> Result<Environment, RpcError> {
+    tx.wait_for_locks(Some(BRANCH_LOCK_WAIT))?;
+    let branch = scope::lock_id(tx, who, branch)?;
+    tx.wait_for_locks(None)?;
+    Ok(branch)
+}
+
 /// Whether `branch` was shut down, or is being removed: nothing follows into it.
 pub(super) fn stopped(tx: &mut dyn Tx, branch: &EnvironmentId) -> Result<bool, RpcError> {
     let shut_down = crate::removal::latest(tx, branch)?.is_some_and(|removal| {
@@ -147,19 +182,19 @@ pub(super) fn stopped(tx: &mut dyn Tx, branch: &EnvironmentId) -> Result<bool, R
     Ok(shut_down || crate::removal::mark::naming(tx, branch)?.is_some())
 }
 
-/// Stage in `branch` what `parent` deployed to `lineages` and hasn't delivered yet.
-/// Answers each variable `parent` sealed that the Branch's own change holds back.
+/// Stage in `branch`, locked, what `parent` deployed to `lineages` and hasn't
+/// delivered yet. Answers each variable `parent` sealed that the Branch's own change
+/// holds back.
 fn into(
     tx: &mut dyn Tx,
     who: &Actor,
     parent: &Environment,
-    branch: &EnvironmentId,
+    branch: &mut Environment,
     lineages: &BTreeSet<String>,
 ) -> Result<Vec<RowId>, RpcError> {
-    let mut branch = scope::lock_id(tx, who, branch)?;
     let before = Cells::of(&branch.working, "");
-    let follow = Move::follow(tx, parent, &branch)?;
-    let checked = follow.check(tx, &branch, Guard::Deploy)?;
+    let follow = Move::follow(tx, parent, branch)?;
+    let checked = follow.check(tx, branch, Guard::Deploy)?;
     let delivered = arrivals(tx, &branch.summary.id, &parent.summary.id)?;
     let mut picks = BTreeSet::new();
     for row in checked.rows() {
@@ -201,7 +236,7 @@ fn into(
     }
     if !landing.is_empty() {
         let landed = crate::storage::attempt(tx, |tx| {
-            checked.apply(tx, who, &mut branch, &landing, &none, (Owner::None, None))
+            checked.apply(tx, who, branch, &landing, &none, (Owner::None, None))
         });
         match landed {
             // One of the Branch's own rules refuses it: all of it is a hint.

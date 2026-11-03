@@ -4669,3 +4669,170 @@ fn a_value_the_parent_adds_again_plain_after_its_seal_is_still_hinted_below() {
         json!("plain-readd-0317")
     );
 }
+
+/// Hold `branch`'s lock from another connection to the Store at `url`, as a long
+/// write would, until the returned transaction ends.
+fn hold(other: &mut postgres::Client, branch: u8) -> postgres::Transaction<'_> {
+    let mut held = other.transaction().unwrap();
+    held.execute(
+        "UPDATE config_environment SET working_revision = working_revision WHERE id = $1",
+        &[&uuid(branch)],
+    )
+    .unwrap();
+    held
+}
+
+/// A Branch another write holds as its Parent's deploy ends costs the deploy one
+/// short wait, never its outcome. The Branch takes nothing and records no arrival,
+/// so a Sync from the Parent offers the change, and brings it (#3788).
+#[test]
+fn a_branch_another_write_holds_never_fails_its_parents_deploy() {
+    // SQLite writers never overlap.
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    branch(&store, &who, 10, "production", "qa");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.FLAG", json!("plain-flag-3788-a"))],
+    );
+    deploy(&store, &who, "production", 2);
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["FLAG"],
+        json!("plain-flag-3788-a")
+    );
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.FLAG", json!("plain-flag-3788-b"))],
+    );
+    let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let held = hold(&mut other, 10);
+
+    let started = std::time::Instant::now();
+    deploy(&store, &who, "production", 3);
+    let waited = started.elapsed();
+    held.rollback().unwrap();
+
+    // One 1-second wait, with room for a loaded runner; any 10-second wait failed
+    // the deploy, as every retry of it did.
+    assert!(waited < std::time::Duration::from_secs(9), "{waited:?}");
+    assert_eq!(
+        web(&store, &who, "production")["env"]["FLAG"],
+        json!("plain-flag-3788-b")
+    );
+    assert!(diff(&store, &who, "production").changes.is_empty());
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["FLAG"],
+        json!("plain-flag-3788-a")
+    );
+    // Its arrival and its base still hold the first value only.
+    let qa = uuid(10);
+    let recorded = |value: &str| {
+        backend::count(
+            &url,
+            &format!(
+                "SELECT COUNT(*) FROM config_sync_arrival \
+                 WHERE environment_id = '{qa}' AND value LIKE '%{value}%'"
+            ),
+        ) + backend::count(
+            &url,
+            &format!(
+                "SELECT COUNT(*) FROM config_sync_base \
+                 WHERE (environment_id = '{qa}' OR other_id = '{qa}') AND base LIKE '%{value}%'"
+            ),
+        )
+    };
+    assert!(recorded("plain-flag-3788-a") > 0);
+    assert_eq!(recorded("plain-flag-3788-b"), 0);
+
+    let offered = store
+        .read(
+            &who,
+            &SyncQuery {
+                from: at("production"),
+                into: Some(at("qa")),
+            },
+        )
+        .unwrap();
+    let flag: Vec<(&Value, &Value)> = offered
+        .rows
+        .iter()
+        .filter(|offer| offer.at.to_string() == "web.env.FLAG")
+        .map(|offer| (&offer.from, &offer.into))
+        .collect();
+    assert_eq!(
+        flag,
+        [(&json!("plain-flag-3788-b"), &json!("plain-flag-3788-a"))]
+    );
+    include(&store, &who, "production", "qa", 1);
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["FLAG"],
+        json!("plain-flag-3788-b")
+    );
+}
+
+/// A held Branch takes the change the next time its Parent deploys that Service,
+/// as one never delivered (#3788).
+#[test]
+fn a_held_branch_takes_the_change_at_its_parents_next_deploy() {
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    branch(&store, &who, 10, "production", "qa");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.FLAG", json!("plain-flag-3788-b"))],
+    );
+    let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let held = hold(&mut other, 10);
+    deploy(&store, &who, "production", 2);
+    held.rollback().unwrap();
+    assert_eq!(web(&store, &who, "qa")["env"].get("FLAG"), None);
+
+    deploy(&store, &who, "production", 3);
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["FLAG"],
+        json!("plain-flag-3788-b")
+    );
+    assert!(incoming(&store, &who, "qa").contains(&"web.env.FLAG production".to_owned()));
+}
+
+/// A held Branch takes neither the deploy's changes nor the seals below it, and
+/// the Parent's next deploy brings both (#3788).
+#[test]
+fn a_held_branch_takes_the_seal_below_at_the_parents_next_deploy() {
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let keys = many_sealed_past_a_change(&store, &who, 2);
+    let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let held = hold(&mut other, 10);
+
+    let started = std::time::Instant::now();
+    deploy(&store, &who, "production", 5);
+    let waited = started.elapsed();
+    held.rollback().unwrap();
+
+    assert!(waited < std::time::Duration::from_secs(9), "{waited:?}");
+    assert_eq!(
+        qa_two_tokens(&store, &who, &keys),
+        vec![json!("plain-TOKEN1"), json!("plain-TOKEN2")]
+    );
+    deploy(&store, &who, "production", 6);
+    assert_eq!(
+        qa_two_tokens(&store, &who, &keys),
+        vec![json!({ "secret": false }); keys.len()]
+    );
+}
