@@ -260,9 +260,9 @@ error: Cloud enrollment completion failed; rerun the same ployz server add comma
   cause: enroll HTTP 409: enrollment completion rejected
 ```
 
-When `ployz server add` showed you a recovery code, the first line is
+If `ployz server add` was going to show you a recovery code, the first line is
 `Recovery code not saved. Run ployz recovery rotate now to make one.` instead, with the same cause.
-`ployz server enroll --status` and **Servers > Waiting to join** show `Enroll failed at` with the same cause.
+`ployz server enroll --status` and **Servers > Waiting to join** show the failed enrollment with the same cause.
 
 The CLI prints this for other refusals too, so rerun the command once. If it fails the same way again, the
 server's Cluster may be connected to another Organization. Ployz Cloud's own answer then says
