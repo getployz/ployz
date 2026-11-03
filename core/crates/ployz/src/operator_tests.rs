@@ -223,6 +223,149 @@ async fn exec_that_loses_its_server_partway_names_it() {
     assert_eq!(lost.report().code, ployz_core::RpcErrorCode::Unavailable);
 }
 
+type Read = tokio::sync::mpsc::UnboundedReceiver<Option<OpaquePayload>>;
+type Output = tokio::sync::mpsc::UnboundedSender<Result<OpaquePayload, tonic::Status>>;
+
+/// A client of Machine `a` expecting the Cluster of key 7, whose daemon now confirms key 9,
+/// so its first redial is refused. Its build or exec stream logs each input frame it reads,
+/// and None once the input ends, and sends what the returned `Output` gives.
+async fn refused_on_redial() -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    Read,
+    Output,
+) {
+    use ployz_core::{RpcRequestBody, RpcResponse};
+    let (logged, read) = tokio::sync::mpsc::unbounded_channel();
+    let (output, frames) = tokio::sync::mpsc::unbounded_channel();
+    let frames = Arc::new(std::sync::Mutex::new(Some(frames)));
+    let (mut client, server) = crate::connect::test_support::rpc_routes(
+        |rpc: tonic::Request<OpaquePayload>| async move {
+            let RpcRequestBody::DescribeContract(_) =
+                rpc.into_inner().decode_request().unwrap().body
+            else {
+                panic!("only a redial's confirmation is asked")
+            };
+            let confirmed = RpcResponse::from(ployz_core::ContractDescription {
+                machine_id: machine_id('a'),
+                protocol_major: ployz_core::PROTOCOL_MAJOR,
+                daemon_version: "test".into(),
+                capabilities: Default::default(),
+                sealing: Some(ployz_core::Sealing::Held {
+                    public_key: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+                }),
+            });
+            Ok(tonic::Response::new(confirmed.encode().unwrap()))
+        },
+        &[ployz_core::op::Build::PATH, ployz_core::op::Exec::PATH],
+        move |rpc: tonic::Request<tonic::Streaming<OpaquePayload>>| {
+            let logged = logged.clone();
+            let frames = frames.lock().unwrap().take().expect("one stream");
+            async move {
+                let mut input = rpc.into_inner();
+                tokio::spawn(async move {
+                    while let Ok(Some(frame)) = input.message().await {
+                        logged.send(Some(frame)).unwrap();
+                    }
+                    logged.send(None).unwrap();
+                });
+                Ok(tonic::Response::new(
+                    tokio_stream::wrappers::UnboundedReceiverStream::new(frames),
+                ))
+            }
+        },
+    )
+    .await;
+    client.cluster = Some(Box::new(crate::connect::ExpectedCluster {
+        expect: crate::connect::ClusterExpectation {
+            sealing_public_key: ployz_core::SealingPublicKey::from_bytes([7; 32]),
+            allow_unverified: false,
+        },
+        check: crate::connect::ClusterCheck::default(),
+    }));
+    (client, server, read, output)
+}
+
+fn frame(n: u8) -> OpaquePayload {
+    OpaquePayload::from_json(&serde_json::json!({ "frame": n })).unwrap()
+}
+
+fn in_another_cluster(error: &ConnectError) -> bool {
+    matches!(error, ConnectError::ClusterMismatch { machine_id: entry } if *entry == machine_id('a'))
+}
+
+#[tokio::test]
+async fn a_build_or_exec_whose_client_is_refused_sends_no_more_input() {
+    for build in [false, true] {
+        let (client, _server, mut read, _output) = refused_on_redial().await;
+        let (input, receiver) = mpsc::channel(4);
+        let target = MachineTarget::from(&machine_id('a'));
+        let receiver = tokio_stream::wrappers::ReceiverStream::new(receiver);
+        let _frames = if build {
+            client.build_stream(&target, receiver).await
+        } else {
+            client.exec_stream(&target, receiver).await
+        }
+        .unwrap();
+        input.send(frame(1)).await.unwrap();
+        assert_eq!(read.recv().await, Some(Some(frame(1))));
+
+        let refused = client.redial_shared().await.unwrap_err();
+        assert!(in_another_cluster(&refused), "{refused:?}");
+        input.send(frame(2)).await.unwrap();
+
+        // The input ends at the first frame after the refusal, which is never sent.
+        assert_eq!(read.recv().await, Some(None), "build: {build}");
+    }
+}
+
+#[tokio::test]
+async fn exec_output_whose_client_is_refused_reads_no_more_frames() {
+    let (client, _server, _read, output) = refused_on_redial().await;
+    let (_input, receiver) = mpsc::channel(4);
+    let frames = client
+        .exec_stream(
+            &MachineTarget::from(&machine_id('a')),
+            tokio_stream::wrappers::ReceiverStream::new(receiver),
+        )
+        .await
+        .unwrap();
+    let mut exec = ExecOutput {
+        frames,
+        server: "machine-a".into(),
+        refused: client.refusal(),
+    };
+    output.send(Ok(frame(1))).unwrap();
+    assert_eq!(exec.next().await.unwrap().unwrap(), frame(1));
+
+    let read = {
+        let reading = exec.next();
+        tokio::pin!(reading);
+        let waits =
+            std::future::poll_fn(|cx| Poll::Ready(reading.as_mut().poll(cx).is_pending())).await;
+        assert!(waits);
+        let refused = client.redial_shared().await.unwrap_err();
+        assert!(in_another_cluster(&refused), "{refused:?}");
+
+        // A frame that comes after the refusal isn't yielded.
+        output.send(Ok(frame(2))).unwrap();
+        reading.await.unwrap().unwrap_err()
+    };
+    assert!(
+        matches!(&read, OperatorError::Connect(error) if in_another_cluster(error)),
+        "{read:?}"
+    );
+    // A later read ends at once, without waiting for a frame.
+    let read = futures_util::FutureExt::now_or_never(exec.next())
+        .expect("ends at once")
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        matches!(&read, OperatorError::Connect(error) if in_another_cluster(error)),
+        "{read:?}"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn exec_with_a_container_selector_keeps_its_own_error_beside_a_silent_server() {
     let (mut client, server) = exec_cluster(vec![api_on_machine_one(running())], false).await;

@@ -480,13 +480,22 @@ pub struct ExecOutput {
     frames: Streaming<OpaquePayload>,
     /// The Server's name, or its ID when the Cluster lists no name for it.
     server: String,
+    /// Ends the output with the client that opened it.
+    refused: crate::cluster::Refusal,
 }
 
 impl ExecOutput {
     /// The next frame. A stream that breaks without the Server's own answer lost
-    /// its connection to the Server.
+    /// its connection to the Server. Once the client that opened it has ended, the
+    /// refusal instead of any frame.
     pub async fn next(&mut self) -> Option<Result<OpaquePayload, OperatorError>> {
+        if let Err(refused) = self.refused.check() {
+            return Some(Err(refused.into()));
+        }
         let frame = self.frames.next().await?;
+        if let Err(refused) = self.refused.check() {
+            return Some(Err(refused.into()));
+        }
         Some(frame.map_err(|status| {
             let source = TransportError::from_stream_status(status);
             if source.answered() {
@@ -610,7 +619,11 @@ pub async fn open_exec(
         })?;
     Ok(ExecSession {
         input: sender,
-        output: ExecOutput { frames, server },
+        output: ExecOutput {
+            frames,
+            server,
+            refused: client.refusal(),
+        },
         target: ExecTarget {
             identity: service.identity.clone(),
             machine_id,

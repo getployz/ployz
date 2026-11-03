@@ -41,6 +41,7 @@ fn an_unanswered_call_names_the_machine_in_its_deepest_line() {
     );
     assert!(error.cause.is_empty(), "{:?}", error.cause);
     assert!(error.target_unanswered());
+    assert_eq!(error.details.get("machine_id"), Some(&json!(machine)));
     let row = ployz_store::Failure::of(
         &crate::deploy::ExecutionError::Machine {
             action: ployz_core::MachineAction::CreateContainer,
@@ -669,6 +670,519 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
 
     let answer = client.clone().entry_id().await.unwrap_err();
     assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
+}
+
+/// Machine `a`, whose dials confirm with each of `sealings` in turn, and whose Inspect
+/// reports the same. Its Runtime Watch sends what [`Self::watched`] gets. Any other call
+/// drops, as a restarting daemon's does. It logs every call it is asked.
+struct Resealing {
+    sealings: std::sync::Mutex<std::collections::VecDeque<Option<ployz_core::Sealing>>>,
+    calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    /// Holds the next dial's confirmation until notified.
+    hold: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+    frames: Arc<std::sync::Mutex<Option<WatchFrames>>>,
+    watched: tokio::sync::mpsc::UnboundedSender<Result<OpaquePayload, tonic::Status>>,
+}
+
+type WatchFrames = tokio::sync::mpsc::UnboundedReceiver<Result<OpaquePayload, tonic::Status>>;
+
+type Answer =
+    futures_util::future::BoxFuture<'static, Result<tonic::Response<OpaquePayload>, tonic::Status>>;
+
+impl Resealing {
+    fn new(sealings: Vec<Option<ployz_core::Sealing>>) -> Arc<Self> {
+        let (watched, frames) = tokio::sync::mpsc::unbounded_channel();
+        Arc::new(Self {
+            sealings: std::sync::Mutex::new(sealings.into()),
+            calls: Arc::default(),
+            hold: std::sync::Mutex::default(),
+            frames: Arc::new(std::sync::Mutex::new(Some(frames))),
+            watched,
+        })
+    }
+
+    fn calls(&self) -> Vec<&'static str> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// Hold the next dial's confirmation until the returned Notify lets it answer.
+    fn hold_next_dial(&self) -> Arc<tokio::sync::Notify> {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        *self.hold.lock().unwrap() = Some(hold.clone());
+        hold
+    }
+
+    /// Send an empty frame on the Runtime Watch.
+    fn watched(&self) {
+        let frame = OpaquePayload::from_json(&json!({ "observed_at": "2026-01-01T00:00:00Z" }));
+        self.watched.send(Ok(frame.unwrap())).unwrap();
+    }
+
+    /// A client of Machine `a`, opened as a session expecting `expect` is.
+    async fn open(self: &Arc<Self>, expect: Option<crate::connect::ClusterExpectation>) -> Client {
+        let connector: Arc<dyn Connector> = self.clone();
+        crate::connect::connect_one(
+            &Connection::unix("/scripted/entry.sock").unwrap(),
+            &ConnectionSource::Cloud,
+            &connector,
+            false,
+            expect.as_ref(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// How Machine `a` answers a unary call, confirming with `sealing` once `held` lets it.
+    fn unary(
+        &self,
+        sealing: Option<ployz_core::Sealing>,
+        held: Option<Arc<tokio::sync::Notify>>,
+    ) -> impl Fn(tonic::Request<OpaquePayload>) -> Answer + Clone + Send + Sync + 'static {
+        let calls = self.calls.clone();
+        move |rpc: tonic::Request<OpaquePayload>| {
+            let calls = calls.clone();
+            let held = held.clone();
+            Box::pin(async move {
+                let body = rpc.into_inner().decode_request().unwrap().body;
+                let answer = if matches!(body, ployz_core::RpcRequestBody::DescribeContract(_)) {
+                    calls.lock().unwrap().push("DescribeContract");
+                    if let Some(held) = held {
+                        held.notified().await;
+                    }
+                    ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+                        machine_id: machine_id('a'),
+                        protocol_major: ployz_core::PROTOCOL_MAJOR,
+                        daemon_version: "test".into(),
+                        capabilities: [ployz_core::CapabilityName::parse(
+                            ployz_core::RUNTIME_WATCH_CAPABILITY,
+                        )
+                        .unwrap()]
+                        .into(),
+                        sealing,
+                    })
+                } else if matches!(body, ployz_core::RpcRequestBody::Inspect(_)) {
+                    calls.lock().unwrap().push("Inspect");
+                    let answering = machine('a').machine;
+                    ployz_core::RpcResponse::from(ployz_core::MachineDetails {
+                        id: answering.id,
+                        phase: ployz_core::LocalMachinePhase::Joining,
+                        public_key: answering.public_key,
+                        advertised_endpoints: Vec::new(),
+                        machine: Some(answering),
+                        store_version: Default::default(),
+                        rtts: Vec::new(),
+                        management_clients: Vec::new(),
+                        telemetry: None,
+                        storage: None,
+                        upgrade: None,
+                        token: None,
+                        sealing,
+                        founding: Default::default(),
+                    })
+                } else {
+                    calls.lock().unwrap().push("another call");
+                    return Err(tonic::Status::unavailable("restarting"));
+                };
+                Ok(tonic::Response::new(answer.encode().unwrap()))
+            }) as Answer
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl Connector for Resealing {
+    async fn connect(&self, _: &Connection) -> Result<Channel, ConnectError> {
+        let sealing = self
+            .sealings
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("a sealing for every dial");
+        let held = self.hold.lock().unwrap().take();
+        let calls = self.calls.clone();
+        let frames = self.frames.clone();
+        let (daemon, _server) = crate::connect::test_support::rpc_routes(
+            self.unary(sealing, held),
+            &[op::RuntimeWatch::PATH],
+            move |_| {
+                calls.lock().unwrap().push("RuntimeWatch");
+                let frames = frames
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap_or_else(|| tokio::sync::mpsc::unbounded_channel().1);
+                async move {
+                    Ok(tonic::Response::new(
+                        tokio_stream::wrappers::UnboundedReceiverStream::new(frames),
+                    ))
+                }
+            },
+        )
+        .await;
+        Ok(daemon.channel())
+    }
+
+    async fn dial_proxy(
+        &self,
+        _: &Connection,
+        _: &str,
+        _: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        unreachable!("a redial opens no proxy")
+    }
+}
+
+fn held(byte: u8) -> Option<ployz_core::Sealing> {
+    Some(ployz_core::Sealing::Held {
+        public_key: ployz_core::SealingPublicKey::from_bytes([byte; 32]),
+    })
+}
+
+fn awaiting_recovery(byte: u8) -> Option<ployz_core::Sealing> {
+    Some(ployz_core::Sealing::AwaitsRecovery {
+        public_key: ployz_core::SealingPublicKey::from_bytes([byte; 32]),
+    })
+}
+
+fn expecting(byte: u8, allow_unverified: bool) -> Option<crate::connect::ClusterExpectation> {
+    Some(crate::connect::ClusterExpectation {
+        sealing_public_key: ployz_core::SealingPublicKey::from_bytes([byte; 32]),
+        allow_unverified,
+    })
+}
+
+/// Redial `client` as a call does, or as a Deploy does when `shared`.
+async fn redialed(client: &Client, shared: bool) -> Result<(), ConnectError> {
+    if shared {
+        client.redial_shared().await
+    } else {
+        client.clone().redial().await
+    }
+}
+
+fn in_another_cluster(refused: &Result<(), ConnectError>) -> bool {
+    matches!(refused, Err(ConnectError::ClusterMismatch { machine_id: entry }) if *entry == machine_id('a'))
+}
+
+#[tokio::test]
+async fn a_redial_whose_entry_now_holds_another_clusters_key_fails() {
+    for sealing in [held(9), awaiting_recovery(9)] {
+        for allow_unverified in [false, true] {
+            for shared in [false, true] {
+                let connector = Resealing::new(vec![held(7), sealing]);
+                let client = connector.open(expecting(7, allow_unverified)).await;
+
+                let refused = redialed(&client, shared).await;
+                assert!(in_another_cluster(&refused), "{refused:?}");
+                assert_eq!(connector.calls(), ["DescribeContract"; 2]);
+                // The client has ended: neither redial dials again.
+                for shared in [false, true] {
+                    let refused = redialed(&client, shared).await;
+                    assert!(in_another_cluster(&refused), "{refused:?}");
+                }
+                assert_eq!(connector.calls(), ["DescribeContract"; 2]);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_redial_whose_entry_still_holds_the_expected_key_keeps_it() {
+    for sealing in [held(7), awaiting_recovery(7)] {
+        let connector = Resealing::new(vec![held(7), sealing, sealing]);
+        let mut client = connector.open(expecting(7, false)).await;
+
+        client.redial().await.unwrap();
+        client.redial_shared().await.unwrap();
+        assert_eq!(client.entry_machine(), Some(machine_id('a')));
+        assert_eq!(connector.calls(), ["DescribeContract"; 3]);
+    }
+}
+
+#[tokio::test]
+async fn a_session_opened_unverified_checks_the_key_a_redial_reports() {
+    for shared in [false, true] {
+        let connector = Resealing::new(vec![
+            Some(ployz_core::Sealing::NeedsAccess),
+            held(7),
+            held(9),
+        ]);
+        let client = connector.open(expecting(7, true)).await;
+        assert!(!client.cluster().unwrap().verified);
+
+        redialed(&client, shared).await.unwrap();
+        let refused = redialed(&client, shared).await;
+        assert!(in_another_cluster(&refused), "{refused:?}");
+        assert_eq!(
+            connector.calls(),
+            [
+                "DescribeContract",
+                "Inspect",
+                "DescribeContract",
+                "DescribeContract"
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_redial_whose_confirmation_tells_no_key_checks_only_the_machine() {
+    for sealing in [None, Some(ployz_core::Sealing::NeedsAccess)] {
+        let connector = Resealing::new(vec![held(7), sealing, sealing]);
+        let mut client = connector.open(expecting(7, false)).await;
+
+        client.redial().await.unwrap();
+        client.redial_shared().await.unwrap();
+        assert_eq!(client.entry_machine(), Some(machine_id('a')));
+        // Nothing beyond the confirmation is asked on a redial.
+        assert_eq!(connector.calls(), ["DescribeContract"; 3]);
+    }
+}
+
+#[tokio::test]
+async fn a_redial_of_a_client_expecting_no_cluster_checks_none() {
+    let connector = Resealing::new(vec![held(7), held(9), held(9)]);
+    let mut client = connector.open(None).await;
+
+    client.redial().await.unwrap();
+    client.redial_shared().await.unwrap();
+    assert_eq!(client.entry_machine(), Some(machine_id('a')));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
+    let connector = Resealing::new(vec![held(7), held(9)]);
+    let client = connector.open(expecting(7, false)).await;
+
+    let refused = client
+        .clone()
+        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .await
+        .map(drop);
+    assert!(in_another_cluster(&refused), "{refused:?}");
+    let ended = ["DescribeContract", "another call", "DescribeContract"];
+    assert_eq!(connector.calls(), ended);
+
+    let read = client
+        .clone()
+        .try_read::<op::ListMachines>(
+            ListMachinesRequest {},
+            &MachineTarget::parse("machine-a").unwrap(),
+        )
+        .await
+        .map(drop);
+    assert!(in_another_cluster(&read), "{read:?}");
+    let described = client.entry_id().await.map(drop);
+    assert!(in_another_cluster(&described), "{described:?}");
+    let watched = client.runtime_frame().await.unwrap_err();
+    assert_eq!(
+        watched,
+        crate::connect::rpc_error(ConnectError::ClusterMismatch {
+            machine_id: machine_id('a')
+        })
+    );
+    let proxied = client.dial_proxy("tcp", "127.0.0.1:1").await.map(drop);
+    assert!(in_another_cluster(&proxied), "{proxied:?}");
+    assert_eq!(connector.calls(), ended);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_session_whose_redial_finds_another_cluster_ends() {
+    let connector = Resealing::new(vec![held(7), held(9)]);
+    let session = crate::sdk::connect_expecting(
+        vec![Connection::unix("/scripted/entry.sock").unwrap()],
+        connector.clone(),
+        expecting(7, false),
+    )
+    .await
+    .unwrap();
+    let in_another_cluster = crate::connect::rpc_error(ConnectError::ClusterMismatch {
+        machine_id: machine_id('a'),
+    });
+
+    let refused = session
+        .inspect_build_grant(ployz_core::InspectBuildGrantRequest {
+            id: ployz_core::BuildGrantId::parse("d".repeat(64)).unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(refused, in_another_cluster);
+    let ended = ["DescribeContract", "another call", "DescribeContract"];
+    assert_eq!(connector.calls(), ended);
+
+    assert_eq!(
+        session.clone().about().await.unwrap_err(),
+        in_another_cluster
+    );
+    assert_eq!(session.inspect().await.unwrap_err(), in_another_cluster);
+    assert!(matches!(session.watch().await, Err(error) if error == in_another_cluster));
+    assert_eq!(connector.calls(), ended);
+}
+
+/// Whether `future` still waits after one poll.
+async fn waits<F: std::future::Future>(mut future: std::pin::Pin<&mut F>) -> bool {
+    std::future::poll_fn(|cx| std::task::Poll::Ready(future.as_mut().poll(cx).is_pending())).await
+}
+
+#[tokio::test]
+async fn a_call_waiting_to_send_when_another_clone_is_refused_sends_nothing() {
+    let connector = Resealing::new(vec![held(7), held(9)]);
+    let client = connector.open(expecting(7, false)).await;
+    let connect = Arc::new(tokio::sync::Notify::new());
+    client.share(crate::connect::test_support::waiting_channel(
+        connector.unary(held(7), None),
+        connect.clone(),
+    ));
+
+    let sent = client.call_unretried::<op::ListMachines>(
+        ListMachinesRequest {},
+        None,
+        LIVE_MUTATION_REPLY_TIMEOUT,
+    );
+    let unsent = client.call_unretried::<op::Inspect>(
+        ployz_core::InspectRequest::default(),
+        None,
+        LIVE_MUTATION_REPLY_TIMEOUT,
+    );
+    let unopened = client.runtime_frame();
+    tokio::pin!(sent, unsent, unopened);
+    assert!(waits(sent.as_mut()).await);
+    // The channel's one place is taken, so these wait to be ready.
+    assert!(waits(unsent.as_mut()).await);
+    assert!(waits(unopened.as_mut()).await);
+
+    let refused = client.clone().redial().await;
+    assert!(in_another_cluster(&refused), "{refused:?}");
+    connect.notify_one();
+
+    let (sent, unsent, unopened) = tokio::join!(sent, unsent, unopened);
+    assert!(sent.is_err(), "{sent:?}");
+    let unsent = unsent.map(drop);
+    assert!(in_another_cluster(&unsent), "{unsent:?}");
+    assert_eq!(
+        unopened.unwrap_err(),
+        crate::connect::rpc_error(ConnectError::ClusterMismatch {
+            machine_id: machine_id('a')
+        })
+    );
+    // The call sent before the refusal still went; nothing after it did.
+    assert_eq!(
+        connector.calls(),
+        ["DescribeContract", "DescribeContract", "another call"]
+    );
+}
+
+#[tokio::test]
+async fn a_redial_that_finishes_after_another_clone_is_refused_returns_the_refusal() {
+    for shared in [false, true] {
+        let connector = Resealing::new(vec![held(7), held(7), held(9)]);
+        let client = connector.open(expecting(7, false)).await;
+        let answer = connector.hold_next_dial();
+        let later = tokio::spawn({
+            let client = client.clone();
+            async move { redialed(&client, shared).await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while connector.calls().len() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let refused = redialed(&client, !shared).await;
+        assert!(in_another_cluster(&refused), "{refused:?}");
+        answer.notify_one();
+
+        // Its entry confirmed the expected key, but the client had ended meanwhile.
+        let later = later.await.unwrap();
+        assert!(in_another_cluster(&later), "{later:?}");
+        assert_eq!(connector.calls(), ["DescribeContract"; 3]);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_watch_whose_session_is_refused_reads_no_more_frames() {
+    let connector = Resealing::new(vec![held(7), held(9)]);
+    let session = crate::sdk::connect_expecting(
+        vec![Connection::unix("/scripted/entry.sock").unwrap()],
+        connector.clone(),
+        expecting(7, false),
+    )
+    .await
+    .unwrap();
+    let in_another_cluster = crate::connect::rpc_error(ConnectError::ClusterMismatch {
+        machine_id: machine_id('a'),
+    });
+    let watch = session.watch().await.unwrap();
+    connector.watched();
+    assert!(watch.next().await.unwrap().is_some());
+
+    let reading = watch.next();
+    tokio::pin!(reading);
+    assert!(waits(reading.as_mut()).await);
+    let refused = session
+        .inspect_build_grant(ployz_core::InspectBuildGrantRequest {
+            id: ployz_core::BuildGrantId::parse("d".repeat(64)).unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(refused, in_another_cluster);
+
+    // A frame that comes after the refusal isn't yielded, and the Watch stays ended.
+    connector.watched();
+    assert_eq!(reading.await.unwrap_err(), in_another_cluster);
+    connector.watched();
+    assert_eq!(watch.next().await.unwrap_err(), in_another_cluster);
+}
+
+/// A connector whose every dial fails before it reaches a daemon.
+struct Unreachable;
+
+#[tonic::async_trait]
+impl Connector for Unreachable {
+    async fn connect(&self, _: &Connection) -> Result<Channel, ConnectError> {
+        Err(ConnectError::Io(std::io::Error::from(
+            std::io::ErrorKind::ConnectionRefused,
+        )))
+    }
+
+    async fn dial_proxy(
+        &self,
+        _: &Connection,
+        _: &str,
+        _: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        unreachable!("a redial opens no proxy")
+    }
+}
+
+#[tokio::test]
+async fn a_deploys_redial_tells_a_refusal_from_a_failed_dial() {
+    use crate::deploy::{MachineOperations, RedialFailure};
+
+    let connector = Resealing::new(vec![held(7), held(9)]);
+    let client = connector.open(expecting(7, false)).await;
+    let refused = MachineOperations::redial(&client).await;
+    assert!(
+        matches!(
+            &refused,
+            Some(Err(RedialFailure::Refused(error)))
+                if *error == crate::connect::rpc_error(ConnectError::ClusterMismatch {
+                    machine_id: machine_id('a'),
+                })
+        ),
+        "{refused:?}"
+    );
+
+    let connector = Resealing::new(vec![held(7)]);
+    let mut client = connector.open(expecting(7, false)).await;
+    client.connector = Arc::new(Unreachable);
+    let failed = MachineOperations::redial(&client).await;
+    assert!(
+        matches!(failed, Some(Err(RedialFailure::Failed))),
+        "{failed:?}"
+    );
 }
 
 /// Parallel forgets through one entry: the Server's first answer is a retryable failure,

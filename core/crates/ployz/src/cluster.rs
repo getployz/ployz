@@ -71,8 +71,40 @@ pub struct Client {
     /// The Machine `channel` was last confirmed to reach. Unlike `entry`, a failed redial
     /// keeps it, so a later one can tell the endpoint now reaches another Machine.
     confirmed: Option<MachineId>,
-    /// What the dial confirmed about the entry's Cluster, when it expected one.
-    pub(crate) cluster: Option<crate::connect::ClusterCheck>,
+    /// The Cluster the dial expected and what the first dial confirmed about it; None when
+    /// it expected none. Boxed so a client stays small beside the enums that carry it.
+    pub(crate) cluster: Option<Box<crate::connect::ExpectedCluster>>,
+    /// Set once a redial finds the entry in another Cluster. Every clone shares it.
+    refused: Refusal,
+}
+
+/// The entry a redial found in another Cluster, shared by every clone of a client and
+/// the streams it opened. The client ends then: no new call, stream or dial starts on any
+/// clone. Work already started may still complete:
+/// - a dial or tunnel in progress;
+/// - a request already handed to the channel, including one waiting for its connection,
+///   which tonic's own Tcp/Unix reconnect may carry;
+/// - a send racing the refusal on another thread.
+///
+/// A dial, or a Watch or exec output read, that finishes afterwards returns the refusal
+/// instead; a unary call or a stream open already under way returns what the daemon
+/// answered. A request the daemon received isn't undone.
+#[derive(Clone, Default)]
+pub(crate) struct Refusal(Arc<std::sync::OnceLock<MachineId>>);
+
+impl Refusal {
+    /// Fails once a redial found the entry in another Cluster.
+    pub(crate) fn check(&self) -> Result<(), ConnectError> {
+        match self.0.get() {
+            Some(&machine_id) => Err(ConnectError::ClusterMismatch { machine_id }),
+            None => Ok(()),
+        }
+    }
+
+    /// End the client. True for the first refusal only.
+    fn set(&self, machine_id: MachineId) -> bool {
+        self.0.set(machine_id).is_ok()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -98,13 +130,15 @@ impl Client {
             entry: None,
             confirmed: None,
             cluster: None,
+            refused: Refusal::default(),
         }
     }
 
-    /// What the dial confirmed about the entry's Cluster; None when it expected none.
+    /// What the first dial confirmed about the entry's Cluster; None when it expected none.
+    /// A redial checks the Cluster again but leaves this as the first dial found it.
     #[must_use]
     pub fn cluster(&self) -> Option<&crate::connect::ClusterCheck> {
-        self.cluster.as_ref()
+        self.cluster.as_ref().map(|cluster| &cluster.check)
     }
 
     /// Whether the confirmed entry holds `expect`'s Sealing Key. Inspect is a read every
@@ -134,31 +168,7 @@ impl Client {
                 let predates = crate::connect::predates_sealing(&details);
                 (details.sealing, self.entry.unwrap_or(details.id), predates)
             };
-        match sealing {
-            Some(
-                ployz_core::Sealing::Held { public_key }
-                | ployz_core::Sealing::AwaitsRecovery { public_key },
-            ) if public_key == expect.sealing_public_key => Ok(crate::connect::ClusterCheck {
-                verified: true,
-                foreign: Vec::new(),
-            }),
-            Some(ployz_core::Sealing::Held { .. } | ployz_core::Sealing::AwaitsRecovery { .. }) => {
-                Err(ConnectError::ClusterMismatch { machine_id })
-            }
-            Some(ployz_core::Sealing::NeedsAccess) | None if expect.allow_unverified => {
-                Ok(crate::connect::ClusterCheck::default())
-            }
-            Some(ployz_core::Sealing::NeedsAccess) => {
-                Err(ConnectError::ClusterUnverified { machine_id })
-            }
-            None => Err(match predates {
-                Some(version) => ConnectError::PredatesSealing {
-                    machine_id,
-                    version,
-                },
-                None => ConnectError::ClusterUnverified { machine_id },
-            }),
-        }
+        expect.check(machine_id, sealing, predates)
     }
 
     #[must_use]
@@ -223,15 +233,32 @@ impl Client {
 
     /// Dial the connection again and confirm its entry on the new channel. Returns the
     /// channel unshared, with the entry it confirmed.
+    /// Fails with the refusal when the client ended while it dialed, whatever the dial found.
     async fn dial_confirmed(&self) -> Result<(Channel, Option<MachineId>), ConnectError> {
-        let candidate = Self {
-            channel: Arc::new(std::sync::RwLock::new(
-                self.connector.connect(&self.connection).await?,
-            )),
-            ..self.clone()
-        };
-        let entry = candidate.confirmed_entry().await?;
-        Ok((candidate.channel(), entry))
+        self.ended()?;
+        let dialed = async {
+            let candidate = Self {
+                channel: Arc::new(std::sync::RwLock::new(
+                    self.connector.connect(&self.connection).await?,
+                )),
+                ..self.clone()
+            };
+            let entry = candidate.confirmed_entry().await?;
+            Ok((candidate.channel(), entry))
+        }
+        .await;
+        self.ended()?;
+        dialed
+    }
+
+    /// Fails once a redial found the entry in another Cluster.
+    fn ended(&self) -> Result<(), ConnectError> {
+        self.refused.check()
+    }
+
+    /// What ends this client, for a stream it opened to check as it reads.
+    pub(crate) fn refusal(&self) -> Refusal {
+        self.refused.clone()
     }
 
     /// Replace the channel every clone shares.
@@ -260,10 +287,32 @@ impl Client {
     }
 
     /// The Machine this channel's daemon describes itself as, checked against the
-    /// connection. None when neither the connection nor a Machine this client confirmed
-    /// names one and the daemon doesn't say.
+    /// connection and, when the confirmation tells the key it holds, the Cluster this
+    /// client's dial expected. None when neither the connection nor a Machine this client
+    /// confirmed names one and the daemon doesn't say.
     async fn confirmed_entry(&self) -> Result<Option<MachineId>, ConnectError> {
-        Ok(self.confirmation().await?.0)
+        let (entry, sealing) = self.confirmation().await?;
+        // Only a key tells the Cluster without Inspect; a confirmation without one leaves the
+        // redial to the Machine ID, as before.
+        if let (
+            Some(cluster),
+            Some(machine_id),
+            Some(
+                key @ (ployz_core::Sealing::Held { .. }
+                | ployz_core::Sealing::AwaitsRecovery { .. }),
+            ),
+        ) = (&self.cluster, entry, sealing)
+            && let Err(error) = cluster.expect.check(machine_id, Some(key), None)
+        {
+            if self.refused.set(machine_id) {
+                tracing::warn!(
+                    %machine_id,
+                    "the entry now belongs to another Cluster; the session ends"
+                );
+            }
+            return Err(error);
+        }
+        Ok(entry)
     }
 
     /// [`Self::confirmed_entry`], with the Sealing Key the daemon said it holds.
@@ -614,8 +663,7 @@ impl Client {
     ) -> Result<ployz_core::RpcResponse, ConnectError> {
         let payload = request.encode().map_err(ConnectError::Codec)?;
         apply_timeout(timeout, async {
-            let mut grpc = self.grpc();
-            grpc.ready().await?;
+            let mut grpc = self.grpc().await?;
             Ok(grpc
                 .unary(
                     target_request(payload, target),
@@ -640,14 +688,45 @@ impl Client {
 
     /// Specs carry Config bytes as JSON number arrays, so a 1 MB Config alone nears
     /// tonic's 4 MiB default, and stored log lines reach 8 MiB.
-    fn grpc(&self) -> tonic::client::Grpc<Channel> {
-        tonic::client::Grpc::new(self.channel())
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
+    /// Ready to send. Fails once the client has ended, also while it waited to be ready.
+    async fn grpc(&self) -> Result<tonic::client::Grpc<Channel>, ConnectError> {
+        Ok(tonic::client::Grpc::new(self.ready_channel().await?)
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
     }
 
-    fn machine_rpc(&self) -> MachineRpcClient<Channel> {
-        MachineRpcClient::new(self.channel())
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
+    /// [`Self::grpc`] for streams, with the status [`rpc_error`] gives the refusal. The
+    /// channel stays ready, so the stream opens with no wait after the check.
+    async fn machine_rpc(&self) -> Result<MachineRpcClient<Channel>, TransportError> {
+        let channel = self.ready_channel().await.map_err(|error| {
+            if let ConnectError::Dial(error) = error {
+                // Worded as the generated client words a channel that isn't ready.
+                TransportError::from(tonic::Status::unknown(format!(
+                    "Service was not ready: {error}"
+                )))
+            } else {
+                TransportError::client_ended(error)
+            }
+        })?;
+        Ok(MachineRpcClient::new(channel)
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
+    }
+
+    /// `input` until the client ends, so a stream it opened takes no more input after that.
+    fn until_ended(
+        &self,
+        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
+    ) -> impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static {
+        let refused = self.refusal();
+        tokio_stream::StreamExt::take_while(input, move |_| refused.check().is_ok())
+    }
+
+    /// The latest channel, once it can take a call, unless the client ended meanwhile.
+    async fn ready_channel(&self) -> Result<Channel, ConnectError> {
+        self.ended()?;
+        let mut channel = self.channel();
+        tower::ServiceExt::<http::Request<tonic::body::Body>>::ready(&mut channel).await?;
+        self.ended()?;
+        Ok(channel)
     }
 
     pub(crate) async fn build_stream(
@@ -658,7 +737,8 @@ impl Client {
         // Submission is one-shot. A lost response must never replay a Build.
         Ok(self
             .machine_rpc()
-            .build(target_request(input, Some(target)))
+            .await?
+            .build(target_request(self.until_ended(input), Some(target)))
             .await
             .map_err(|status| TransportError::from(status).name_refusal(op::Build::PATH, target))?
             .into_inner())
@@ -669,9 +749,9 @@ impl Client {
         target: &MachineTarget,
         input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc();
+        let mut rpc = self.machine_rpc().await?;
         Ok(rpc
-            .exec(target_request(input, Some(target)))
+            .exec(target_request(self.until_ended(input), Some(target)))
             .await
             .map_err(|status| TransportError::from(status).name_refusal(op::Exec::PATH, target))?
             .into_inner())
@@ -682,7 +762,7 @@ impl Client {
         target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc();
+        let mut rpc = self.machine_rpc().await?;
         Ok(rpc
             .tail_logs(target_request(request, Some(target)))
             .await
@@ -697,7 +777,7 @@ impl Client {
         target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc();
+        let mut rpc = self.machine_rpc().await?;
         Ok(rpc
             .log_history(target_request(request, Some(target)))
             .await
@@ -713,6 +793,7 @@ impl Client {
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self
             .machine_rpc()
+            .await?
             .accept_compressed(CompressionEncoding::Gzip);
         Ok(rpc
             .runtime_watch(tonic::Request::new(request))
@@ -750,8 +831,7 @@ impl Client {
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        let mut grpc = self.grpc();
-        grpc.ready().await?;
+        let mut grpc = self.grpc().await?;
         let response = grpc
             .unary(
                 target_request(payload, target),
@@ -1246,9 +1326,13 @@ impl Client {
         network: &str,
         address: &str,
     ) -> Result<BoxProxyStream, ConnectError> {
-        self.connector
+        self.ended()?;
+        let stream = self
+            .connector
             .dial_proxy(&self.connection, network, address)
-            .await
+            .await;
+        self.ended()?;
+        stream
     }
 
     /// Membership Observation of Machines visible from this entry Machine.
@@ -1533,8 +1617,9 @@ impl Client {
 /// keeps its own words.
 pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
-        // Only a failure a retry may fix is marked unreached: a refused key or another
-        // lasting failure is what the user acts on, so it keeps its own words.
+        // Only a failure a retry may fix is marked unreached here: a refused key or another
+        // lasting failure is what the user acts on, so it keeps its own words. A refused
+        // entry comes marked by `rpc_error`, and keeps its words too.
         let (lost, unreached) = (
             error.unreplied(),
             error.unreached() && error.retry() != ployz_core::Retry::Never,
@@ -1548,7 +1633,13 @@ pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcErr
             error
         };
     }
-    unanswered_by(machine_id, rpc_error(error))
+    // Named in the details too, as a lost reply is, so a refusal after it can still say
+    // which Machine may have done the call.
+    let mut silent = unanswered_by(machine_id, rpc_error(error));
+    if let serde_json::Value::Object(details) = &mut silent.details {
+        details.insert("machine_id".into(), machine_id.to_string().into());
+    }
+    silent
 }
 
 /// `error`, from a call `machine` left unanswered, naming it in the deepest line.

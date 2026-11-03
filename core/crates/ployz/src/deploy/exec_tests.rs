@@ -292,7 +292,7 @@ struct Scripted {
     /// Each live proxy's route once each move was applied.
     listed: Mutex<Vec<BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>>>,
     /// What dialing the entry again answers; none when this client can't.
-    redial: Option<Result<(), RpcError>>,
+    redial: Option<Result<(), RedialFailure>>,
     redials: Mutex<usize>,
 }
 
@@ -1114,7 +1114,7 @@ fn edge_refusal(refused: ployz_core::RotationRefusal) -> ContainerRefusal {
 }
 
 impl MachineOperations for Scripted {
-    async fn redial(&self) -> Option<Result<(), RpcError>> {
+    async fn redial(&self) -> Option<Result<(), RedialFailure>> {
         let answer = self.redial.clone()?;
         *self.redials.lock().unwrap() += 1;
         Some(answer)
@@ -1742,7 +1742,7 @@ fn exited_leaving() -> HealthVerdict {
 }
 
 /// A client that can't dial its entry again.
-async fn no_redial() -> Option<Result<(), RpcError>> {
+async fn no_redial() -> Option<Result<(), RedialFailure>> {
     None
 }
 
@@ -1941,6 +1941,10 @@ async fn a_lost_answer_outlasts_a_resend_that_never_reached_the_server() {
     .await
     .unwrap_err();
     assert!(error.reply_lost(), "{error:?}");
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (RpcErrorCode::Unavailable, "connection lost")
+    );
 }
 
 #[test]

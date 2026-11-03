@@ -238,6 +238,8 @@ pub struct Watch {
     cancel: CancellationToken,
     session: std::sync::Weak<SessionInner>,
     stream: Arc<Mutex<Option<tonic::Streaming<OpaquePayload>>>>,
+    /// Ends the Watch with the client that opened it.
+    refused: crate::cluster::Refusal,
 }
 
 /// A planned Deploy that has not executed. [`Self::confirm`] runs these operations.
@@ -371,7 +373,8 @@ async fn dial(
 }
 
 impl Session {
-    /// What the dial confirmed about the entry's Cluster; None when it expected none.
+    /// What the first dial confirmed about the entry's Cluster; None when it expected none.
+    /// A redial checks the Cluster again but leaves this as the first dial found it.
     #[must_use]
     pub fn cluster(&self) -> Option<crate::connect::ClusterCheck> {
         self.inner.client.lock().ok()?.as_ref()?.cluster().cloned()
@@ -658,6 +661,7 @@ impl Session {
             cancel,
             session: Arc::downgrade(&self.inner),
             stream,
+            refused: client.refusal(),
         })
     }
 
@@ -1407,12 +1411,14 @@ impl Watch {
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the daemon, store, or RPC fails,
-    /// including when the stream ends without cancellation.
+    /// including when the stream ends without cancellation. Once the client that opened
+    /// it has ended, the refusal instead of any frame.
     pub async fn next(&self) -> Result<Option<RuntimeWatchFrame>, RpcError> {
         if self.cancel.is_cancelled() {
             return Ok(None);
         }
         let mut guard = self.stream.lock().await;
+        self.ended(&mut guard)?;
         let message = {
             let Some(stream) = guard.as_mut() else {
                 return Ok(None);
@@ -1422,6 +1428,9 @@ impl Watch {
                 message = stream.message() => Some(message),
             }
         };
+        if message.is_some() {
+            self.ended(&mut guard)?;
+        }
         match message {
             None => {
                 *guard = None;
@@ -1452,6 +1461,7 @@ impl Watch {
                             Ok(None)
                         }
                         _ = client.observe_machine_storage(&mut frame.machines) => {
+                            self.ended(&mut guard)?;
                             Ok(Some(frame))
                         }
                     }
@@ -1472,6 +1482,15 @@ impl Watch {
                 )))
             }
         }
+    }
+
+    /// Fails with the refusal once the client that opened this Watch has ended, and drops
+    /// its stream.
+    fn ended(&self, stream: &mut Option<tonic::Streaming<OpaquePayload>>) -> Result<(), RpcError> {
+        self.refused.check().map_err(|refused| {
+            *stream = None;
+            RpcError::from(refused)
+        })
     }
 
     /// End this Watch stream. The Client stays usable.
