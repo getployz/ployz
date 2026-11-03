@@ -172,6 +172,13 @@ impl Tx for PostgresTx<'_, '_> {
     fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
         self.0.batch_execute(sql).map_err(storage_error)
     }
+
+    fn wait_for_locks(&mut self, at_most: Option<Duration>) -> Result<(), RpcError> {
+        let millis = at_most.unwrap_or(TIMEOUT).min(TIMEOUT).as_millis();
+        self.0
+            .batch_execute(&format!("SET LOCAL lock_timeout = {millis}"))
+            .map_err(storage_error)
+    }
 }
 
 /// `?N` to Postgres's `$N`. The Store's SQL never puts `?` in a literal.

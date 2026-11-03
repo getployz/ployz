@@ -4166,3 +4166,132 @@ fn undoing_a_change_between_two_values_sealed_above_finds_it() {
         "{shown}"
     );
 }
+
+/// production's `TOKEN1..=n` plain, deployed down `qa` and `qa-two`; `qa` changes
+/// each, staged, and production seals each, staged, not yet deployed (#3780).
+fn many_sealed_past_a_change(store: &ConfigStore, who: &Actor, n: u8) -> Vec<String> {
+    let keys: Vec<String> = (1..=n).map(|index| format!("TOKEN{index}")).collect();
+    let paths: Vec<String> = keys.iter().map(|key| format!("web.env.{key}")).collect();
+    let values = |make: &dyn Fn(&str) -> Value| -> Vec<(&str, Value)> {
+        paths
+            .iter()
+            .zip(&keys)
+            .map(|(path, key)| (path.as_str(), make(key)))
+            .collect()
+    };
+    set(
+        store,
+        who,
+        "production",
+        &values(&|key| json!(format!("plain-{key}"))),
+    );
+    deploy(store, who, "production", 2);
+    branch(store, who, 10, "production", "qa");
+    deploy(store, who, "qa", 3);
+    branch(store, who, 11, "qa", "qa-two");
+    deploy(store, who, "qa-two", 4);
+    set(
+        store,
+        who,
+        "qa",
+        &values(&|key| json!(format!("edit-{key}"))),
+    );
+    let web = web_id(store, who, "production");
+    set(
+        store,
+        who,
+        "production",
+        &values(&|key| json!({ "secret": backend::client_sealed(&uuid(2), &web, key, 1) })),
+    );
+    keys
+}
+
+/// Each of `keys` as `qa-two` holds it.
+fn qa_two_tokens(store: &ConfigStore, who: &Actor, keys: &[String]) -> Vec<Value> {
+    let env = &web(store, who, "qa-two")["env"];
+    keys.iter().map(|key| env[key].clone()).collect()
+}
+
+/// A walk below seals every row a Branch inherited, the runner confirming `web`
+/// mid-run before the outcome (#3780).
+#[test]
+fn a_seal_of_many_values_reaches_the_branch_below_once_the_deploy_ends() {
+    let (store, who) = shop();
+    let keys = many_sealed_past_a_change(&store, &who, 4);
+
+    deploy_in_batches(&store, &who, "production", 5, &[&["web"]]);
+
+    assert_eq!(
+        qa_two_tokens(&store, &who, &keys),
+        vec![json!({ "secret": false }); keys.len()]
+    );
+}
+
+/// A Deployment that never ends seals nothing below: confirming `web` mid-run runs
+/// Follow without the walk. The next one that ends seals it (#3780).
+#[test]
+fn a_deploy_that_never_ends_leaves_the_branch_below_to_the_next_one() {
+    let (store, who) = shop();
+    let keys = many_sealed_past_a_change(&store, &who, 2);
+    let id = backend::admit(&store, &who, "production", 5);
+    let claimed = store
+        .claim(&id, &ployz_store::RunnerId::parse("runner").unwrap())
+        .unwrap();
+    backend::confirm(&store, &id, &claimed, &[&["web"]], 1);
+
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN1"],
+        json!("edit-TOKEN1")
+    );
+    assert_eq!(
+        qa_two_tokens(&store, &who, &keys),
+        vec![json!("plain-TOKEN1"), json!("plain-TOKEN2")]
+    );
+
+    deploy(&store, &who, "production", 6);
+    assert_eq!(
+        qa_two_tokens(&store, &who, &keys),
+        vec![json!({ "secret": false }); keys.len()]
+    );
+}
+
+/// A Branch below that another write holds costs the deploy one short wait, however
+/// many rows it would seal and however many times the runner reports, then keeps
+/// its values until a later deploy (#3780).
+#[test]
+fn a_branch_below_another_write_holds_costs_one_short_wait() {
+    // SQLite writers never overlap.
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let keys = many_sealed_past_a_change(&store, &who, 4);
+    let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = other.transaction().unwrap();
+    held.execute(
+        "UPDATE config_environment SET working_revision = working_revision WHERE id = $1",
+        &[&uuid(11)],
+    )
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    deploy_in_batches(&store, &who, "production", 5, &[&["web"]]);
+    let waited = started.elapsed();
+    held.commit().unwrap();
+
+    // One 1-second wait, with room for a loaded runner; per row and per report it
+    // was 4 × 10 s × 2, and any one 10-second wait fails this.
+    assert!(waited < std::time::Duration::from_secs(9), "{waited:?}");
+    assert_eq!(
+        qa_two_tokens(&store, &who, &keys),
+        keys.iter()
+            .map(|key| json!(format!("plain-{key}")))
+            .collect::<Vec<_>>()
+    );
+    deploy(&store, &who, "production", 6);
+    assert_eq!(
+        qa_two_tokens(&store, &who, &keys),
+        vec![json!({ "secret": false }); keys.len()]
+    );
+}
