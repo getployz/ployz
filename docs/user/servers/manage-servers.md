@@ -626,12 +626,14 @@ A server on 0.3.2 or earlier can't finish joining a cluster that already has a k
 fails with:
 
 ```text
-This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key. Upgrade it over SSH from your computer: ployz server upgrade stable SERVER --connect ssh://USER@HOST. Then rerun ployz server add while a server that holds your cluster's key is online.
+This Server runs Ployz 0.3.2, which can't finish joining a cluster that has a Sealing Key. On the Server, install the current release: curl -fsSL https://ployz.sh | sudo sh. Then rerun the same ployz server add while a server that holds your cluster's key is online.
 ```
 
-A 0.3.2 CLI shows only `enrollment completion rejected` and says to rerun. Install a current
-release instead, or upgrade the server over SSH as the message says. Then rerun the same
-`ployz server add` command. A server that holds your cluster's key must be online for that join.
+A 0.3.2 CLI shows only `enrollment completion rejected` and says to rerun. Either way, install the
+current release on the server with `curl -fsSL https://ployz.sh | sudo sh`, then rerun the same
+`ployz server add` command, which brings the daemon up to the same release. Upgrading over SSH
+alone isn't enough here: the rerun with the old CLI puts the old daemon back. A server that holds
+your cluster's key must be online for that join.
 
 ## Remove a server
 
