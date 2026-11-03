@@ -17,6 +17,7 @@ import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
 import { machineId } from "#/test/ids";
+import { logged } from "#/test/logged";
 import {
   acmeWeb, enrollStoreServer, recordStoreSealingKey, seedStoreGitService, seedStoreOrganization, storeTestCloud,
 } from "#/test/store-cloud";
@@ -221,7 +222,7 @@ it.live("a build that checked in reports its steps until its Organization discon
     expect(githubReport).toHaveBeenCalledTimes(1);
   }), 60_000);
 
-it.live("a Store build's start, check-in and finish reach a Server of the pairing's Cluster once its Sealing Key is known, as a Deploy does", () =>
+it.live("a Store build's start, check-in and finish reach a Server of the pairing's Cluster once its Sealing Key is known, as a Deploy does, and log one they left", () =>
   Effect.gen(function* () {
     const services = yield* storeTestCloud({ github: github.service });
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
@@ -229,10 +230,11 @@ it.live("a Store build's start, check-in and finish reach a Server of the pairin
       Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
     );
     const cloud = yield* provided(cloudStore);
-    const githubStart = vi.spyOn(cloud, "githubStart").mockResolvedValue({ kind: "reused" });
-    const githubCheckIn = vi.spyOn(cloud, "githubCheckIn").mockResolvedValue({
+    const githubStart = vi.spyOn(cloud, "githubStart").mockResolvedValue({ kind: "reused", foreign: [] });
+    const checkIn = {
       grant: "ployzgrant1:fake", commit: HEAD, fingerprint: "fake", ployzVersion: "0.0.0", deployment: { namespace: "shop-production", snapshots: [] },
-    });
+    };
+    const githubCheckIn = vi.spyOn(cloud, "githubCheckIn").mockResolvedValue({ ...checkIn, foreign: [machineId("9")] });
     vi.spyOn(cloud, "githubReport").mockResolvedValue({ received: 1, ended: true });
     const githubFinish = vi.spyOn(cloud, "githubFinish").mockResolvedValue({ ended: "built" });
     yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
@@ -257,10 +259,15 @@ it.live("a Store build's start, check-in and finish reach a Server of the pairin
     const pairingKey = `${"P".repeat(43)}=`;
     const expectation = { sealingPublicKey: pairingKey };
     yield* provided(recordStoreSealingKey(ORGANIZATION, pairingKey));
+    githubStart.mockResolvedValueOnce({ kind: "reused", foreign: [machineId("9")] });
+    using errors = logged("ERROR", "in another Cluster", machineId("9"));
     yield* provided(startStoreGithubBuild(ORGANIZATION, target));
     expect(githubStart).toHaveBeenLastCalledWith(BUILD, servers, expectation);
-    yield* provided(checkInStoreGithubBuild(runner("check-in"), BUILD, ""));
+    expect(errors.count()).toBe(1);
+    // The runner receives only what it pushes and builds with.
+    expect(yield* provided(checkInStoreGithubBuild(runner("check-in"), BUILD, ""))).toStrictEqual(checkIn);
     expect(githubCheckIn).toHaveBeenCalledExactlyOnceWith(BUILD, expect.anything(), null, servers, expectation);
+    expect(errors.count()).toBe(2);
     expect(yield* provided(recordStoreGithubBuildSteps(runner("steps"), BUILD, JSON.stringify({ from: 0, events: [] }))))
       .toEqual({ received: 1 });
     expect(githubFinish).toHaveBeenLastCalledWith(BUILD, false, servers, expectation);

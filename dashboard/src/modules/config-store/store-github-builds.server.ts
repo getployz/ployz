@@ -10,6 +10,7 @@ import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow,
 import { githubBuildId } from "#/modules/github/github-build-workflow";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { installationRefusal } from "#/modules/github/github-token.server";
+import { logForeignServers } from "#/modules/machines/connections.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import { requirements, serversLacking } from "#/modules/runtime/daemon-compat";
@@ -117,6 +118,7 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     // A Service whose image a Server still holds reads as reused, not as waiting on an App it doesn't need.
     const { connections, expect } = yield* deployDialOf(organizationId);
     const start = yield* storeTry(() => store.githubStart(target.build, connections, expect)).pipe(
+      Effect.tap(({ foreign }) => logForeignServers(organizationId, foreign)),
       Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
     if (start === null || start.kind === "reused") return done;
@@ -134,7 +136,9 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     const lacking = yield* serversLackingGrants(organizationId);
     if (lacking.length > 0) return yield* skip(`GitHub builds need a newer Ployz on ${lacking.join(", ")}`);
     const { connections, expect } = yield* deployDialOf(organizationId);
-    const start = yield* storeTry(() => store.githubStart(target.build, connections, expect));
+    const start = yield* storeTry(() => store.githubStart(target.build, connections, expect)).pipe(
+      Effect.tap(({ foreign }) => logForeignServers(organizationId, foreign)),
+    );
     if (start.kind !== "dispatch") return done;
     const config = yield* AppConfig;
     const fullName = workflow.fullName;
@@ -272,7 +276,10 @@ export const checkInStoreGithubBuild = Effect.fn("StoreGithub.checkIn")(function
     const refusal = yield* installationRefusal(build.organization, build.run.installation_id);
     if (refusal !== null) return yield* new Forbidden({ message: refusal.message });
     const { connections, expect } = yield* deployDialOf(build.organization);
-    return yield* storeTry(() => store.githubCheckIn(buildId, claims, holder, connections, expect));
+    const { foreign, ...checkIn } = yield* storeTry(() => store.githubCheckIn(buildId, claims, holder, connections, expect));
+    yield* logForeignServers(build.organization, foreign);
+    // Only what the runner pushes and builds with goes back to it.
+    return checkIn;
   }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.fail(refused(error))));
 });
 

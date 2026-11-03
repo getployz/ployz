@@ -10,16 +10,17 @@ import { VolumeCopyObserver } from "#/modules/runtime/ployz.server";
 import { observeOrganization } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 import { machineId } from "#/test/ids";
+import { logged } from "#/test/logged";
 import { enrollStoreServer, recordStoreSealingKey, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000d701";
 const PROJECT = "00000000-0000-4000-8000-00000000d702";
 const ENVIRONMENT = "00000000-0000-4000-8000-00000000d703";
 
-it.live("the Volume-copy sweep and an agent's copies ask a Server of the pairing's Cluster once its Sealing Key is known", () =>
+it.live("the Volume-copy sweep and an agent's copies ask a Server of the pairing's Cluster once its Sealing Key is known, and log one they left", () =>
   Effect.gen(function* () {
     const services = yield* storeTestCloud();
-    const observeCopies = vi.fn(async (_connections: Connection[], _expect?: { readonly sealingPublicKey: string } | null) => ({ copies: [], unanswered: [] }));
+    const observeCopies = vi.fn(async (_connections: Connection[], _expect?: { readonly sealingPublicKey: string } | null) => ({ copies: [], unanswered: [], foreign: [] as string[] }));
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) =>
       program.pipe(Effect.provide(services), Effect.provideService(VolumeCopyObserver, { observe: observeCopies }));
     yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
@@ -36,7 +37,7 @@ it.live("the Volume-copy sweep and an agent's copies ask a Server of the pairing
     };
     const servers = [{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }];
     const asked = Effect.gen(function* () {
-      yield* observeOrganization(ORGANIZATION);
+      expect(yield* observeOrganization(ORGANIZATION)).toStrictEqual({ copies: [], unanswered: [] });
       expect(yield* callCloud(owner, { ask: { query: "copies", namespace: "shop-prod", volume: null } })).toMatchObject({ ok: true });
     });
 
@@ -47,7 +48,10 @@ it.live("the Volume-copy sweep and an agent's copies ask a Server of the pairing
     const pairingKey = `${"P".repeat(43)}=`;
     yield* provided(recordStoreSealingKey(ORGANIZATION, pairingKey));
     observeCopies.mockClear();
+    observeCopies.mockResolvedValue({ copies: [], unanswered: [], foreign: [machineId("9")] });
+    using errors = logged("ERROR", "in another Cluster", machineId("9"));
     yield* provided(asked);
     const expectation = { sealingPublicKey: pairingKey };
     expect(observeCopies.mock.calls).toEqual([[servers, expectation], [servers, expectation]]);
+    expect(errors.count()).toBe(2);
   }), 60_000);

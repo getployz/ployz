@@ -1117,7 +1117,8 @@ async fn a_deployment_that_left_nothing_running_retires_without_connecting() {
     let retired = retire_old(run.store, actor, run.deployment, Vec::new(), None)
         .await
         .unwrap();
-    assert_eq!(retired, RetireOutcome::default());
+    assert_eq!(retired.outcome, RetireOutcome::default());
+    assert!(retired.foreign.is_empty());
 }
 
 #[tokio::test]

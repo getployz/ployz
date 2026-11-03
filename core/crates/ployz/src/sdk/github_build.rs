@@ -27,8 +27,8 @@ use super::build::OutsideBuild;
 use super::preparation::{BuildReceipt, OutsideBuildInput};
 use super::store_call;
 use super::store_runner::{internal, log_line, only};
-use super::{Session, connect_expecting};
-use crate::connect::{ClusterExpectation, SystemConnector};
+use super::{Dialed, Session};
+use crate::connect::{ClusterExpectation, ConnectError, SystemConnector};
 use crate::context::Connection;
 
 /// What starting a GitHub build found.
@@ -47,7 +47,7 @@ pub enum GithubStart {
 /// Machine still holds it for this commit, else dispatch to the runner of its one
 /// platform. A Service that needs several platforms, or a Cluster Cloud can't read,
 /// skips GitHub. With `expect`, it reads only an entry of that Cluster, as
-/// [`super::run_deployment_expecting`] runs.
+/// [`super::run_deployment_expecting`] runs, naming the Machines it left.
 ///
 /// # Errors
 /// Returns the Store's `conflict` when the build already started or ended.
@@ -56,7 +56,7 @@ pub async fn github_start(
     id: GithubBuildId,
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
-) -> Result<GithubStart, RpcError> {
+) -> Result<Dialed<GithubStart>, RpcError> {
     let built = store_call(&store, {
         let id = id.clone();
         move |store| store.github_input(&id)
@@ -67,8 +67,10 @@ pub async fn github_start(
     let receipt = built
         .receipt
         .and_then(|receipt| serde_json::from_value(receipt).ok());
+    let mut foreign = Vec::new();
     let outside = match session(connections, expect).await {
         Ok(session) => {
+            foreign = session.foreign();
             let outside = outside(&session, deployment, commit.to_string(), receipt).await;
             session.close().await;
             outside
@@ -86,8 +88,11 @@ pub async fn github_start(
                 } else {
                     "ubuntu-latest"
                 };
-                return Ok(GithubStart::Dispatch {
-                    runner: runner.to_owned(),
+                return Ok(Dialed {
+                    outcome: GithubStart::Dispatch {
+                        runner: runner.to_owned(),
+                    },
+                    foreign,
                 });
             }
             _ => GithubEnd::Skipped {
@@ -113,7 +118,10 @@ pub async fn github_start(
         }
     };
     store_call(&store, move |store| store.github_end(&id, None, &end)).await?;
-    Ok(start)
+    Ok(Dialed {
+        outcome: start,
+        foreign,
+    })
 }
 
 /// A receipt that can't be checked is only a missed shortcut: GitHub builds.
@@ -169,7 +177,8 @@ pub enum GithubKey {
 /// A runner's one check-in, with the OIDC `claims` Cloud verified: the build
 /// starts. Mints a Build Grant on a Machine, for the runner's `holder` key when it
 /// sent one, and returns it with the Service's build inputs. Accepted once, while
-/// GitHub still holds the build. With `expect`, it mints only on an entry of that Cluster.
+/// GitHub still holds the build. With `expect`, it mints only on an entry of that
+/// Cluster, naming the Machines it left.
 ///
 /// # Errors
 /// Returns `unauthenticated` for a token of another repository, workflow or run,
@@ -182,7 +191,7 @@ pub async fn github_check_in(
     holder: Option<BuildGrantId>,
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
-) -> Result<GithubCheckIn, RpcError> {
+) -> Result<Dialed<GithubCheckIn>, RpcError> {
     let build = store_call(&store, {
         let id = id.clone();
         move |store| store.github_authorize(&id, &claims)
@@ -209,6 +218,7 @@ pub async fn github_check_in(
     .ok_or_else(|| internal("The build has no fingerprint"))?;
     let sealed = sealed_record(&deployment, &id.service)?;
     let session = session(connections, expect).await?;
+    let foreign = session.foreign();
     let minted = mint(&session, &id, holder, sealed).await;
     let (machine, minted) = match minted {
         Ok(Some(minted)) => minted,
@@ -251,12 +261,15 @@ pub async fn github_check_in(
             machine: machine.to_hex(),
         },
     };
-    Ok(GithubCheckIn {
-        key,
-        commit: commit.to_string(),
-        fingerprint,
-        ployz_version: super::preparation::VERSION.to_owned(),
-        deployment,
+    Ok(Dialed {
+        outcome: GithubCheckIn {
+            key,
+            commit: commit.to_string(),
+            fingerprint,
+            ployz_version: super::preparation::VERSION.to_owned(),
+            deployment,
+        },
+        foreign,
     })
 }
 
@@ -432,8 +445,9 @@ pub enum GithubFinish {
 /// (`timed_out`, and Cloud cancelled it): read its grant on the Machine that minted
 /// it, and write the receipt from the digest it received. A run that never checked
 /// in, or that GitHub failed for its own reasons, is skipped for the next Builder.
-/// With `expect`, it reads the grant only on an entry of that Cluster; another
-/// Cluster's reads as unreachable.
+/// With `expect`, it reads the grant only on an entry of that Cluster: a grant
+/// Machine of another Cluster fails the build with the connection's sentence, since
+/// waiting won't change it. One that doesn't answer reads as unreachable.
 ///
 /// # Errors
 /// Returns a storage error; the Store's `conflict` means the build already ended.
@@ -543,7 +557,8 @@ enum GrantRead {
     /// What it received, if anything. A grant that expired or whose Machine restarted
     /// received nothing more.
     Pushed(Option<ployz_core::ImageDigest>),
-    /// The Machine cannot read grants; the build fails with this sentence.
+    /// The Machine cannot read grants, or belongs to another Cluster; the build fails
+    /// with this sentence.
     Refused(String),
     /// The Machine can't be reached now.
     Unreachable,
@@ -558,8 +573,15 @@ async fn inspect_grant(
         .into_iter()
         .filter(|connection| connection.machine_id() == Some(&grant.machine))
         .collect();
-    let Ok(session) = session(connections, expect).await else {
+    if connections.is_empty() {
         return GrantRead::Unreachable;
+    }
+    let connector = Arc::new(SystemConnector::default());
+    let session = match super::dial(connections, connector, expect).await {
+        Ok(session) => session,
+        Err(error) => {
+            return foreign_refusal(&error).map_or(GrantRead::Unreachable, GrantRead::Refused);
+        }
     };
     let Ok(id) = BuildGrantId::parse(&grant.id) else {
         return GrantRead::Unreachable;
@@ -569,6 +591,17 @@ async fn inspect_grant(
         .await;
     session.close().await;
     grant_read(read, &grant.machine)
+}
+
+/// The sentence of a dial refused because the Machine holds another Cluster's key.
+fn foreign_refusal(error: &ConnectError) -> Option<String> {
+    if let ConnectError::AllFailed {
+        last: Some(last), ..
+    } = error
+    {
+        return foreign_refusal(last);
+    }
+    matches!(error, ConnectError::ClusterMismatch { .. }).then(|| error.to_string())
 }
 
 fn grant_read(
@@ -629,7 +662,7 @@ async fn session(
             cause: Vec::new(),
         });
     }
-    Ok(connect_expecting(connections, Arc::new(SystemConnector::default()), expect).await?)
+    Ok(super::dial(connections, Arc::new(SystemConnector::default()), expect).await?)
 }
 
 fn conflict(message: &str) -> RpcError {
@@ -684,6 +717,48 @@ mod tests {
     }
 
     #[test]
+    fn a_start_or_check_in_keeps_its_shape_beside_the_machines_it_left() {
+        let foreign = vec![ployz_core::MachineId::parse("a".repeat(32)).unwrap()];
+        let start = |outcome| {
+            serde_json::to_value(Dialed {
+                outcome,
+                foreign: foreign.clone(),
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            start(GithubStart::Reused),
+            serde_json::json!({ "kind": "reused", "foreign": ["a".repeat(32)] })
+        );
+        assert_eq!(
+            start(GithubStart::Dispatch {
+                runner: "ubuntu-latest".into()
+            }),
+            serde_json::json!({ "kind": "dispatch", "runner": "ubuntu-latest", "foreign": ["a".repeat(32)] })
+        );
+        let check_in = serde_json::to_value(Dialed {
+            outcome: GithubCheckIn {
+                key: GithubKey::Grant {
+                    grant: "ployzgrant1:x".into(),
+                },
+                commit: "c".into(),
+                fingerprint: "f".into(),
+                ployz_version: "1".into(),
+                deployment: Value::Null,
+            },
+            foreign: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(
+            check_in,
+            serde_json::json!({
+                "grant": "ployzgrant1:x", "commit": "c", "fingerprint": "f", "ployzVersion": "1",
+                "deployment": null, "foreign": [],
+            })
+        );
+    }
+
+    #[test]
     fn a_machine_that_cannot_read_grants_fails_the_build_by_name() {
         let machine = ployz_core::MachineId::random();
         let error = |code| RpcError {
@@ -709,39 +784,6 @@ mod tests {
             grant_read(Err(error(RpcErrorCode::Unavailable)), &machine),
             GrantRead::Unreachable
         );
-    }
-
-    #[tokio::test]
-    async fn a_build_reaches_a_server_only_through_an_entry_of_the_expected_cluster() {
-        use crate::sdk::test_support as support;
-        let key = |byte| ployz_core::SealingPublicKey::from_bytes([byte; 32]);
-        let expecting = |byte| {
-            Some(ClusterExpectation {
-                sealing_public_key: key(byte),
-                allow_unverified: false,
-            })
-        };
-        let service = support::DeployService::new(support::machine('a', "one")).sealed_with(key(7));
-        let (address, server) = support::listening(service).await;
-        let connections = || vec![Connection::tcp(address)];
-
-        let refused = session(connections(), expecting(9)).await;
-        assert!(
-            refused.is_err(),
-            "the only entry is another Cluster's: {:?}",
-            refused.err()
-        );
-        session(connections(), expecting(7))
-            .await
-            .expect("an entry of the expected Cluster")
-            .close()
-            .await;
-        session(connections(), None)
-            .await
-            .expect("without an expectation any entry, as before")
-            .close()
-            .await;
-        server.abort();
     }
 
     #[tokio::test]
