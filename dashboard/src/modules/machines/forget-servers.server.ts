@@ -76,7 +76,10 @@ const NAME_TIMEOUT_MS = 2_000;
  */
 export const FORGET_CLUSTER_BUDGET_MS = 15_000;
 
-/** One connection attempt to each known Server, all at once, each bounded by the timeout. One that answers says its name. */
+/**
+ * One connection attempt to each known Server, all at once, each bounded by the timeout. One that answers says its name.
+ * The attempt expects no Cluster: any answer keeps Forget from going ahead, so it can only keep what Cloud holds.
+ */
 const reachServers = Effect.fn("ForgetServers.reach")(function* (known: ReadonlyArray<{ id: MachineId; name: string; management: string | null }>) {
   const ployz = yield* Ployz;
   type Reach = "answered" | ObservedServer["reach"];

@@ -2,10 +2,10 @@ import { it } from "@effect/vitest";
 import type { Client } from "@ployz/sdk";
 import { asc, eq } from "drizzle-orm";
 import { Effect } from "effect";
-import { expect } from "vitest";
+import { assert, expect } from "vitest";
 import type { MachineId } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
-import { organizationMachine } from "#/modules/machines/tables";
+import { clusterSealingKey, organizationMachine } from "#/modules/machines/tables";
 import { deliverPushTargets } from "#/modules/observe-ingest/push-target.server";
 import { SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -19,19 +19,25 @@ const ORGANIZATION = "00000000-0000-4000-8000-00000000f301";
 const CURRENT = machineId("0");
 const OLD = machineId("1");
 const OFFLINE = machineId("2");
+const SEALING_KEY = `${"K".repeat(43)}=`;
 const url = (machine: string) => `http://localhost:3000/api/machines/${machine}/observe`;
 
 type OnSet = (machine: string, republish: (machine: MachineId) => Promise<void>) => Promise<void>;
 
-const setup = Effect.fn(function* (onSet: OnSet = async () => {}, close: () => Promise<void> = async () => undefined) {
+const setup = Effect.fn(function* (onSet: OnSet = async () => {}, close: () => Promise<void> = async () => undefined, foreign: string[] = []) {
   const dialed: Array<{ machine: string; url: string | null }> = [];
+  const expected = new Map<string, string | null>();
   const aborts = connectionAborts();
   const ployz = makePloyzLayer({
     connect: async (options) => {
       aborts.watch(options.signal);
       const [connection] = options.connections;
       const machine = connection && "machine_id" in connection ? connection.machine_id ?? "" : "";
+      expected.set(machine, options.expect?.sealingPublicKey ?? null);
       if (machine === OFFLINE) throw new Error("Endpoint unavailable");
+      // A `foreign` Machine holds another Cluster's key; every other one holds none yet.
+      if (foreign.includes(machine) && options.expect) throw { code: "unauthenticated", message: `Machine ${machine} belongs to another Cluster`, details: null };
+      if (options.expect && options.expect.allowUnverified !== true) throw { code: "unauthenticated", message: `Machine ${machine} can't show which Cluster it belongs to`, details: null };
       return asTestDouble<Client>()({
         setPushTarget: async (target: string | null) => {
           dialed.push({ machine, url: target });
@@ -70,7 +76,14 @@ const setup = Effect.fn(function* (onSet: OnSet = async () => {}, close: () => P
       .where(eq(organizationMachine.machineId, machine));
   })));
   const sweep = () => deliverPushTargets().pipe(Effect.provide(cloud), Effect.orDie);
-  return { dialed, aborts, confirmed, sweep, republish };
+  // The current pairing records its Cluster's key; the old rows' pairing records none.
+  const recordKey = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [current = assert.fail("no current Machine")] = yield* drizzle.select({ clusterKey: organizationMachine.clusterKey }).from(organizationMachine)
+      .where(eq(organizationMachine.machineId, CURRENT));
+    yield* drizzle.insert(clusterSealingKey).values({ organizationId: ORGANIZATION, clusterKey: current.clusterKey, publicKey: SEALING_KEY });
+  }));
+  return { dialed, expected, aborts, confirmed, sweep, republish, recordKey };
 });
 
 it.live("a sweep points each Machine at its observe URL and records only what the Machine confirmed", () => Effect.gen(function* () {
@@ -119,3 +132,21 @@ it.live("a sweep finishes within its Cluster time, and aborts each connection, w
   expect((yield* confirmed()).find((row) => row.machineId === CURRENT)?.pushTarget).toBe(url(CURRENT));
   expect(aborts.aborted()).toEqual([true, true, true]);
 }), 30_000);
+
+it.live("each Machine is dialed expecting its own pairing's recorded key, and one answering for another Cluster stays pending", () => Effect.gen(function* () {
+  const { expected, confirmed, sweep, recordKey } = yield* setup(undefined, undefined, [CURRENT]);
+  yield* recordKey();
+  const outcomes = yield* sweep();
+  expect(expected.get(CURRENT)).toBe(SEALING_KEY);
+  expect(expected.get(OLD)).toBeNull();
+  expect(outcomes).toEqual(expect.arrayContaining([{ machineId: CURRENT, delivery: "unreachable" }]));
+  expect((yield* confirmed()).find((row) => row.machineId === CURRENT)?.pushTarget).toBeNull();
+}));
+
+it.live("a Machine that holds no key yet is still pointed here once its pairing records one", () => Effect.gen(function* () {
+  const { expected, confirmed, sweep, recordKey } = yield* setup();
+  yield* recordKey();
+  yield* sweep();
+  expect(expected.get(CURRENT)).toBe(SEALING_KEY);
+  expect((yield* confirmed()).find((row) => row.machineId === CURRENT)?.pushTarget).toBe(url(CURRENT));
+}));

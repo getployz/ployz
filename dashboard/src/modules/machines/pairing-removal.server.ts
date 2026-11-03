@@ -4,6 +4,7 @@ import type { MachineId } from "@ployz/sdk";
 import { and, eq, gt, isNull, ne, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
+import { releasingExpectation } from "#/modules/machines/connections.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
   clusterSealingKey, clusterSealingKeyGenerator, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt,
@@ -369,13 +370,16 @@ const ManagementClientCleared = Schema.Struct({
 /**
  * Clear one Machine's device holders (`cli-*`), its push target, then its `cloud` Management Client. Only a successful Clear or an
  * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders. A Machine that
- * authenticates but never confirms still holds the pairing, and Cloud records that it answered.
+ * authenticates but never confirms still holds the pairing, and Cloud records that it answered. One that now answers for
+ * another Cluster than the pairing's, `expect`, stays silent, as one that doesn't answer does: the removal clears every
+ * device holder it lists, and another Cluster's are not this pairing's to clear. A revocation's Clear names only the
+ * `cli-*` holder Cloud gave one credential, so it expects nothing.
  */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
-  function* (machineId: MachineId, management: string) {
+  function* (machineId: MachineId, management: string, expect: { readonly sealingPublicKey: string; readonly allowUnverified: boolean } | null) {
     const ployz = yield* Ployz;
     return yield* Effect.scoped(Effect.gen(function* () {
-      const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 }, { closeWithin: clusterRead });
+      const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000, expect }, { closeWithin: clusterRead });
       return yield* Effect.gen(function* () {
         const { management_clients: labels } = yield* session.inspect();
         for (const label of labels) {
@@ -385,10 +389,12 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
         yield* session.clearManagementClient("cloud");
         return "confirmed" as const;
       }).pipe(Effect.orElseSucceed(() => "answered" as const));
-    })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS), Effect.catch((error) => Effect.succeed(
+    })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS), Effect.catch((error) =>
       error._tag === "PloyzProviderError" && error.operation === "connect"
-        && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause)) ? "confirmed" as const : "silent" as const,
-    )));
+        && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause))
+        ? Effect.succeed("confirmed" as const)
+        : Effect.logInfo("Server didn't confirm its removal yet.", { machineId, error }).pipe(Effect.as("silent" as const)),
+    ));
   },
 );
 
@@ -403,10 +409,12 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
         .from(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
       return { confirmed: candidates.length === 0, endpoints: candidates.map(({ machineId }) => ({ machineId, status: "unconfirmed" as const })) };
     }
+    const generation = createHash("sha256").update(yield* decrypt(attempt.encryptedPairingSecret)).digest("hex");
+    const expect = yield* releasingExpectation(organizationId, generation);
     yield* Effect.forEach(attempt.removalEndpoints, (endpoint) => Effect.gen(function* () {
       if (endpoint.status !== "pending") return;
       const heard = yield* decrypt(endpoint.encryptedExpected).pipe(
-        Effect.flatMap((management) => removeEndpointPairing(endpoint.machineId, management)),
+        Effect.flatMap((management) => removeEndpointPairing(endpoint.machineId, management, expect)),
         Effect.orElseSucceed(() => "silent" as const),
       );
       if (heard === "silent") return;

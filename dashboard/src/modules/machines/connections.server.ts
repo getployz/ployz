@@ -96,6 +96,16 @@ export const clusterExpectation = (loaded: { readonly sealingPublicKey: string |
   loaded.sealingPublicKey === null ? null : { sealingPublicKey: loaded.sealingPublicKey };
 
 /**
+ * What a dial that hands one of pairing `clusterKey`'s Servers no access, as a Clear or a push target, expects of its
+ * Cluster: that pairing's recorded Sealing Key, else nothing. A Server that holds no key yet, or predates keys, still gets the dial;
+ * only one holding another Cluster's key is refused.
+ */
+export const releasingExpectation = Effect.fn("MachineConnections.releasingExpectation")(function* (organizationId: string, clusterKey: string) {
+  const sealingPublicKey = (yield* readSealingPublicKey(organizationId, clusterKey)) ?? null;
+  return sealingPublicKey === null ? null : { sealingPublicKey, allowUnverified: true };
+});
+
+/**
  * Protected candidates are scoped to the current pairing and never browser projections. Each carries its Server's
  * name where Cloud holds one, so a failed connection names the Server.
  */

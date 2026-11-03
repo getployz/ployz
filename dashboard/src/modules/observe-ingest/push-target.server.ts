@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { MachineId } from "#/db/tables";
-import { decryptPairingSecret } from "#/modules/machines/connections.server";
+import { decryptPairingSecret, releasingExpectation } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
 import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
@@ -25,6 +25,7 @@ export const deliverPushTargets = Effect.fn("ObservePushTarget.deliver")(functio
   const rows = yield* drizzle.select({
     organizationId: organizationMachine.organizationId,
     machineId: organizationMachine.machineId,
+    clusterKey: organizationMachine.clusterKey,
     capability: organizationMachine.encryptedCapability,
     pushTarget: organizationMachine.pushTarget,
   }).from(organizationMachine);
@@ -34,9 +35,11 @@ export const deliverPushTargets = Effect.fn("ObservePushTarget.deliver")(functio
   });
   const outcomes = yield* Effect.forEach(pending, (row) => Effect.gen(function* () {
     const management = yield* decryptPairingSecret(row.capability);
+    // A Server that now answers for another Cluster than its pairing's is never pointed here; the next sweep retries.
+    const expect = yield* releasingExpectation(row.organizationId, row.clusterKey);
     yield* Effect.scoped(Effect.gen(function* () {
       const ployz = yield* Ployz;
-      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS }, { closeWithin: clusterRead });
+      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS, expect }, { closeWithin: clusterRead });
       yield* client.setPushTarget(row.url);
     })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2), withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     // A publish that lands mid-dial carries a new capability; leave its confirmation for the next sweep.

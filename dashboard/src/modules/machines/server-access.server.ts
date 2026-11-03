@@ -52,6 +52,11 @@ const lockCredential = (credentialId: string, mode: "exclusive" | "shared") => E
  * live holder again until its credential loses authorization and the next sweep Clears it.
  */
 const CLAIM_LEASE_MS = SERVER_TIMEOUT_MS * 3;
+/**
+ * How long a stored holder's check waits for its Server. One that answers does so in under a second; one that
+ * doesn't keeps its holder anyway, so a stopped Server costs every call this, not the full dial timeout.
+ */
+const STORED_CHECK_TIMEOUT_MS = 2_000;
 const CLAIM_POLL = "200 millis";
 /** Timestamps the lease compares come from one clock, the database's, whatever instance wrote them. */
 const now = sql`clock_timestamp()`;
@@ -143,7 +148,15 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");
     const stored = held.get(machineId);
-    if (stored != null) return { machine_id: machineId, management: yield* decryptPairingSecret(stored), refused: null };
+    if (stored != null) {
+      const management = yield* decryptPairingSecret(stored);
+      if (expect === null) return { machine_id: machineId, management, refused: null };
+      // A stored holder is checked with one dial whose expectation refuses only a Server holding another Cluster's key.
+      // Any refusal the Server answers withholds the holder; a Server that doesn't answer keeps it, as before.
+      const checking = (yield* Ployz).connect({ connections: [cloud], timeoutMs: STORED_CHECK_TIMEOUT_MS, expect: { ...expect, allowUnverified: true } }, { closeWithin: clusterRead });
+      const checked = yield* answered(Effect.scoped(checking).pipe(Effect.timeout(STORED_CHECK_TIMEOUT_MS), withClusterBudget(SESSION_CLOSE_CLUSTER_MS)));
+      return { machine_id: machineId, management: checked.refused === null ? management : null, refused: checked.refused };
+    }
     const holder = and(
       eq(serverAccess.organizationId, caller.organization.id),
       eq(serverAccess.credentialId, caller.credential.id),

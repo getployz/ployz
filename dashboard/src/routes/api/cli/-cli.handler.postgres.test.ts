@@ -112,7 +112,9 @@ function fakeServers() {
       if (server === undefined || !server.online) {
         throw new RpcError({ code: "internal", message: "All 1 connections failed", details: null, unanswered: true });
       }
-      if (options.expect != null && server.holds !== options.expect.sealingPublicKey) {
+      // One that holds no key passes a dial that allows that, as the SDK passes it.
+      const unverifiedAllowed = server.holds === undefined && options.expect?.allowUnverified === true;
+      if (options.expect != null && !unverifiedAllowed && server.holds !== options.expect.sealingPublicKey) {
         throw new RpcError({ code: "internal", message: "All 1 connections failed", details: null });
       }
       dials += 1;
@@ -1555,6 +1557,101 @@ it.live(
         assert.deepStrictEqual(access.connections?.map((connection: { machine_id: string }) => connection.machine_id), [own]);
         assert.deepStrictEqual(access.refused?.map((refused: { machine_id: string }) => refused.machine_id), [moved]);
         assert.strictEqual(fake.servers.get(moved)?.slots.size, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "Server access withholds a stored holder from a Server that answers for another Cluster, and keeps it for one that holds no key or doesn't answer",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const moving = ids.machineId("00000000000000000000000000001272");
+        const own = ids.machineId("00000000000000000000000000001273");
+        const pairingKey = `${"P".repeat(43)}=`;
+        yield* enroll(alice.organization.id, moving, true);
+        const movingServer = { online: true as boolean | "hangs", slots: new Map<string, string>(), holds: pairingKey };
+        fake.servers.set(moving, movingServer);
+        yield* enroll(alice.organization.id, own, false);
+        const ownServer = { online: true, slots: new Map<string, string>(), holds: pairingKey as string | undefined };
+        fake.servers.set(own, ownServer);
+        yield* (yield* Database).drizzle.insert(clusterSealingKey).values({
+          organizationId: alice.organization.id, clusterKey: createHash("sha256").update(pairingSecret).digest("hex"), publicKey: pairingKey,
+        });
+        const first = (yield* cli("POST", "server-access", alice)).json;
+        assert.lengthOf(first.connections ?? [], 2);
+        const held = (machine: string): string => first.connections?.find((connection: { machine_id: string }) => connection.machine_id === machine)?.management
+          ?? assert.fail("no holder");
+
+        // Each stored holder is checked with one dial, and none is provisioned again.
+        const dials = fake.dials();
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.connections, first.connections);
+        assert.strictEqual(fake.dials() - dials, 2);
+        assert.strictEqual(fake.sets(), 2);
+
+        movingServer.holds = `${"X".repeat(43)}=`;
+        const moved = (yield* cli("POST", "server-access", alice)).json;
+        assert.deepStrictEqual(moved.connections, [{ machine_id: own, management: held(own) }]);
+        assert.deepStrictEqual(moved.refused?.map((refused: { machine_id: string }) => refused.machine_id), [moving]);
+
+        // One that holds no key yet, as a joiner waiting for it does, keeps its holder.
+        ownServer.holds = undefined;
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.connections, [{ machine_id: own, management: held(own) }]);
+
+        // One that doesn't answer Cloud keeps its holder, as before Cloud checked one.
+        movingServer.online = false;
+        const silent = (yield* cli("POST", "server-access", alice)).json;
+        assert.deepStrictEqual(silent.connections?.map((connection: { machine_id: string }) => connection.machine_id).sort(), [moving, own].sort());
+        assert.deepStrictEqual(silent.refused, []);
+        assert.strictEqual(fake.sets(), 2);
+
+        // One that hangs costs the call the check's short bound, not a full dial's, and keeps its holder too.
+        movingServer.online = "hangs";
+        const started = Date.now();
+        const hung = (yield* cli("POST", "server-access", alice)).json;
+        assert.isBelow(Date.now() - started, 5_000);
+        assert.deepStrictEqual(hung.connections?.map((connection: { machine_id: string }) => connection.machine_id).sort(), [moving, own].sort());
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a revoked holder's Clear reaches its Server whichever Cluster it answers for, since it hands out nothing",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001274");
+        const other = ids.machineId("00000000000000000000000000001275");
+        const pairingKey = `${"P".repeat(43)}=`;
+        yield* enroll(alice.organization.id, machine, true);
+        const server = { online: true, slots: new Map<string, string>(), holds: pairingKey };
+        fake.servers.set(machine, server);
+        // A joiner that holds no key yet still takes a Clear.
+        yield* enroll(alice.organization.id, other, false);
+        const joiner = { online: true, slots: new Map<string, string>() };
+        fake.servers.set(other, joiner);
+        assert.lengthOf((yield* cli("POST", "server-access", alice)).json.connections ?? [], 2);
+        yield* database.drizzle.insert(clusterSealingKey).values({
+          organizationId: alice.organization.id, clusterKey: createHash("sha256").update(pairingSecret).digest("hex"), publicKey: pairingKey,
+        });
+        yield* database.drizzle.update(serverAccess).set({ revokedAt: new Date(), encryptedCapability: null })
+          .where(eq(serverAccess.organizationId, alice.organization.id));
+
+        server.holds = `${"X".repeat(43)}=`;
+        const swept = yield* retireServerAccess();
+        assert.deepStrictEqual([...swept.confirmed].sort(), [machine, other].sort());
+        assert.deepStrictEqual(swept.unconfirmed, []);
+        assert.strictEqual(server.slots.size, 0);
+        assert.strictEqual(joiner.slots.size, 0);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
