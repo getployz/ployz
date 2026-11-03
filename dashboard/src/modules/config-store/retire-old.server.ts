@@ -2,7 +2,8 @@ import "@tanstack/react-start/server-only";
 import { and, eq, lt, ne, or } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
-import { connectionsOf } from "#/modules/config-store/config-store.server";
+import { deployDialOf } from "#/modules/config-store/config-store.server";
+import { logForeignServers } from "#/modules/machines/connections.server";
 import { type CleanupLeft, deploymentCleanup, type DeploymentCleanupState } from "#/modules/config-store/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import type { ConfigDeploymentRetireRequestedEventData } from "#/modules/inngest/events";
@@ -17,9 +18,13 @@ type RetireOutcome = { left: CleanupLeft[]; kept: CleanupLeft[] };
  */
 export const retireOldCopies = Effect.fn("DeploymentCleanup.retireOld")(function* (data: ConfigDeploymentRetireRequestedEventData) {
   const store = yield* cloudStore;
-  const connections = yield* connectionsOf(data.organizationId);
-  return yield* storeTry<RetireOutcome>(() => store.retireOld(data.organizationId, data.deploymentId, connections))
-    .pipe(Effect.catchIf(refusedWith("not_found"), () => Effect.succeed<RetireOutcome>({ left: [], kept: [] })));
+  const { connections, expect } = yield* deployDialOf(data.organizationId);
+  return yield* storeTry<RetireOutcome & { foreign: string[] }>(() => store.retireOld(data.organizationId, data.deploymentId, connections, expect))
+    .pipe(
+      Effect.tap(({ foreign }) => logForeignServers(data.organizationId, foreign)),
+      Effect.map(({ left, kept }): RetireOutcome => ({ left, kept })),
+      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed<RetireOutcome>({ left: [], kept: [] })),
+    );
 });
 
 const cleanupOf = (data: ConfigDeploymentRetireRequestedEventData) =>

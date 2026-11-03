@@ -8,7 +8,7 @@ import { findService, owners, sealedNames, unreadable, unreadableEnvironment } f
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, callerEnvironments } from "#/modules/identity/actor";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
-import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections, logForeignServers } from "#/modules/machines/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { admittedAt, type Admission } from "#/modules/operations/keyed.server";
@@ -113,7 +113,8 @@ const copies = Effect.fn("CallCloud.copies")(function* (caller: Caller, namespac
   const named = volumes.filter(({ name }) => only === null || name === only);
   const loaded = yield* loadOrganizationConnections(organizationId);
   if (loaded.kind !== "ready" || loaded.connections.length === 0) return yield* notConnected(organizationId);
-  const observed = yield* observeVolumeCopies(loaded.connections);
+  const observed = yield* observeVolumeCopies(loaded.connections, clusterExpectation(loaded));
+  yield* logForeignServers(organizationId, observed.foreign);
   const names = yield* serverNames(organizationId, [...observed.copies.map((copy) => copy.machine_id), ...observed.unanswered]);
   const server = (machine: MachineId) => ({ machine, name: names.get(machine) ?? machine });
   const now = Math.floor(Date.now() / 1000);

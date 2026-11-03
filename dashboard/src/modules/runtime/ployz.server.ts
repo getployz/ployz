@@ -49,8 +49,17 @@ export { machineUpgradeAttemptId, SealedNames, setVolumeCopyRefusal };
 /** The error an SDK call rejects with when a Machine or the Store refuses it. */
 export { RpcError } from "@ployz/sdk";
 
-export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
-  sdkPromise("observe copies", () => observeCopies(connections));
+/** Asks Servers which Volume copies they hold. The SDK's, unless a test provides another. */
+export const VolumeCopyObserver = Context.Reference<{ readonly observe: typeof observeCopies }>("ployz/VolumeCopyObserver", {
+  defaultValue: () => ({ observe: observeCopies }),
+});
+
+export const observeVolumeCopies = Effect.fn("Ployz.observeVolumeCopies")(function* (
+  connections: Parameters<typeof observeCopies>[0], expect: Parameters<typeof observeCopies>[1],
+) {
+  const { observe } = yield* VolumeCopyObserver;
+  return yield* sdkPromise("observe copies", () => observe(connections, expect));
+});
 
 export class PloyzProviderError extends Data.TaggedError(
   "PloyzProviderError",

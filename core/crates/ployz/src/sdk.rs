@@ -152,6 +152,26 @@ impl From<RuntimeWatchFrame> for RuntimeWatchView {
     }
 }
 
+/// A Store call's outcome, and the Machines its dial left because they hold another
+/// Cluster's key ([`ClusterCheck::foreign`](crate::connect::ClusterCheck::foreign)),
+/// for Cloud to log as it logs an Organization's connection's.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Dialed<T> {
+    #[serde(flatten)]
+    pub outcome: T,
+    pub foreign: Vec<ployz_core::MachineId>,
+}
+
+impl<T> Dialed<T> {
+    /// `outcome`, of a call that dialed no Machine.
+    pub(crate) fn undialed(outcome: T) -> Self {
+        Self {
+            outcome,
+            foreign: Vec::new(),
+        }
+    }
+}
+
 /// Every copy of every Volume a Cluster's Machines hold, by role. Machines that did
 /// not answer are named in `unanswered`, never assumed to hold nothing.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
@@ -378,6 +398,14 @@ impl Session {
     #[must_use]
     pub fn cluster(&self) -> Option<crate::connect::ClusterCheck> {
         self.inner.client.lock().ok()?.as_ref()?.cluster().cloned()
+    }
+
+    /// The Machines the dial left because they hold another Cluster's key; none once closed.
+    #[must_use]
+    pub fn foreign(&self) -> Vec<ployz_core::MachineId> {
+        self.cluster()
+            .map(|check| check.foreign)
+            .unwrap_or_default()
     }
 
     fn client(&self) -> Result<Client, RpcError> {

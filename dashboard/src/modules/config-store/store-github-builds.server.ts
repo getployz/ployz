@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { GithubBuild, GithubClaims } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
-import { cancelDispatchedGithubRun, cancelStoreGithubBuilds, connectionsOf, heldGithubBuild } from "#/modules/config-store/config-store.server";
+import { cancelDispatchedGithubRun, cancelStoreGithubBuilds, deployDialOf, heldGithubBuild } from "#/modules/config-store/config-store.server";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
@@ -10,6 +10,7 @@ import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow,
 import { githubBuildId } from "#/modules/github/github-build-workflow";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { installationRefusal } from "#/modules/github/github-token.server";
+import { logForeignServers } from "#/modules/machines/connections.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import { requirements, serversLacking } from "#/modules/runtime/daemon-compat";
@@ -115,8 +116,9 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
   );
   if (target.installationId === null) {
     // A Service whose image a Server still holds reads as reused, not as waiting on an App it doesn't need.
-    const connections = yield* connectionsOf(organizationId);
-    const start = yield* storeTry(() => store.githubStart(target.build, connections)).pipe(
+    const { connections, expect } = yield* deployDialOf(organizationId);
+    const start = yield* storeTry(() => store.githubStart(target.build, connections, expect)).pipe(
+      Effect.tap(({ foreign }) => logForeignServers(organizationId, foreign)),
       Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
     if (start === null || start.kind === "reused") return done;
@@ -133,8 +135,10 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     }
     const lacking = yield* serversLackingGrants(organizationId);
     if (lacking.length > 0) return yield* skip(`GitHub builds need a newer Ployz on ${lacking.join(", ")}`);
-    const connections = yield* connectionsOf(organizationId);
-    const start = yield* storeTry(() => store.githubStart(target.build, connections));
+    const { connections, expect } = yield* deployDialOf(organizationId);
+    const start = yield* storeTry(() => store.githubStart(target.build, connections, expect)).pipe(
+      Effect.tap(({ foreign }) => logForeignServers(organizationId, foreign)),
+    );
     if (start.kind !== "dispatch") return done;
     const config = yield* AppConfig;
     const fullName = workflow.fullName;
@@ -195,8 +199,8 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
     return { failed: refusal.message };
   }
   const finish = (timedOut: boolean) => Effect.gen(function* () {
-    const connections = yield* connectionsOf(organizationId);
-    const finished = yield* storeTry(() => store.githubFinish(target.build, timedOut, connections));
+    const { connections, expect } = yield* deployDialOf(organizationId);
+    const finished = yield* storeTry(() => store.githubFinish(target.build, timedOut, connections, expect));
     return finished === "waiting" ? "waiting" as const : "done" as const;
   });
   if (build.checked_in_at !== null && Date.now() - build.checked_in_at * 1000 > GITHUB_RUN_BUDGET_MS) {
@@ -271,8 +275,11 @@ export const checkInStoreGithubBuild = Effect.fn("StoreGithub.checkIn")(function
     if (build === null) return yield* passedOn();
     const refusal = yield* installationRefusal(build.organization, build.run.installation_id);
     if (refusal !== null) return yield* new Forbidden({ message: refusal.message });
-    const connections = yield* connectionsOf(build.organization);
-    return yield* storeTry(() => store.githubCheckIn(buildId, claims, holder, connections));
+    const { connections, expect } = yield* deployDialOf(build.organization);
+    const { foreign, ...checkIn } = yield* storeTry(() => store.githubCheckIn(buildId, claims, holder, connections, expect));
+    yield* logForeignServers(build.organization, foreign);
+    // Only what the runner pushes and builds with goes back to it.
+    return checkIn;
   }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.fail(refused(error))));
 });
 
@@ -294,9 +301,9 @@ export const recordStoreGithubBuildSteps = Effect.fn("StoreGithub.steps")(functi
     if (refusal !== null) return yield* new Forbidden({ message: refusal.message });
     const reported = yield* storeTry(() => store.githubReport(buildId, claims, report));
     if (reported.ended) {
-      const connections = yield* connectionsOf(build.organization);
+      const { connections, expect } = yield* deployDialOf(build.organization);
       // The walk's next look ends it otherwise.
-      yield* storeTry(() => store.githubFinish(buildId, false, connections)).pipe(
+      yield* storeTry(() => store.githubFinish(buildId, false, connections, expect)).pipe(
         Effect.catch((error) => Effect.logWarning("Could not end a reported GitHub build.", error)),
       );
       yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `reported-${buildId}`, runId: build.run.run_id })).pipe(

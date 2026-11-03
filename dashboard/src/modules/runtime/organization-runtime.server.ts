@@ -8,6 +8,7 @@ import {
 } from "#/modules/runtime/ployz.server";
 import {
   loadOrganizationConnections,
+  logForeignServers,
 } from "#/modules/machines/connections.server";
 import { runtimeFrameRecords, runtimeNamesDigest } from "#/modules/runtime/runtime-frame-record.server";
 import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
@@ -356,12 +357,7 @@ export function makeOrganizationRuntimeLayer(
               clusterRead,
               // Forked outside the session scope so the check can close that scope.
               Effect.tap(() => Effect.forkIn(watchPairing(organizationId, session, cursor), parent)),
-              Effect.tap((connected) => {
-                const foreign = sealingPublicKey === null ? [] : connected.cluster()?.foreign ?? [];
-                return foreign.length === 0 ? Effect.void
-                  : Effect.logError("A Server Cloud holds a connection for runs in another Cluster; Cloud didn't use it.")
-                    .pipe(Effect.annotateLogs({ organizationId, machineIds: foreign }));
-              }),
+              Effect.tap((connected) => logForeignServers(organizationId, sealingPublicKey === null ? [] : connected.cluster()?.foreign ?? [])),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
                 connected: recordingFrames(connected, (frame) => record(organizationId, access.generation, frame)),

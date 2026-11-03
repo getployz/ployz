@@ -133,6 +133,10 @@ pub(super) struct DeployService {
     /// Another operator's Ingress Proxy starts on the Server once a start there fails or a
     /// Container there is removed.
     rival_proxy: bool,
+    /// The Sealing the daemon reports, in its confirmation and Inspect; none by default.
+    sealing: Option<ployz_core::Sealing>,
+    /// It mints and reads Build Grants, as a Machine a GitHub build pushes to.
+    grants: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -218,6 +222,8 @@ impl DeployService {
             removal_refusal: None,
             lists_created: false,
             rival_proxy: false,
+            sealing: None,
+            grants: false,
         }
     }
 
@@ -293,6 +299,18 @@ impl DeployService {
     /// Container is removed there.
     pub(super) fn rival_proxy(mut self) -> Self {
         self.rival_proxy = true;
+        self
+    }
+
+    /// Its Cluster holds Sealing public key `public_key`, as its daemon reports.
+    pub(super) fn sealed_with(mut self, public_key: ployz_core::SealingPublicKey) -> Self {
+        self.sealing = Some(ployz_core::Sealing::Held { public_key });
+        self
+    }
+
+    /// It mints Build Grants, and reads each as having received nothing yet.
+    pub(super) fn minting_grants(mut self) -> Self {
+        self.grants = true;
         self
     }
 
@@ -866,6 +884,15 @@ impl FakeMachine for DeployService {
         }
         let mut capabilities: BTreeSet<_> =
             [CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap()].into();
+        if self.grants {
+            capabilities.extend(
+                [
+                    ployz_core::MINT_BUILD_GRANT_CAPABILITY,
+                    ployz_core::INSPECT_BUILD_GRANT_CAPABILITY,
+                ]
+                .map(|name| CapabilityName::parse(name).unwrap()),
+            );
+        }
         if self.builds.is_some() {
             capabilities.extend(
                 [
@@ -885,7 +912,7 @@ impl FakeMachine for DeployService {
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: "test".into(),
             capabilities,
-            sealing: None,
+            sealing: self.sealing,
         }))
     }
 
@@ -1002,7 +1029,7 @@ impl FakeMachine for DeployService {
             storage: self.machines.first().and_then(|machine| machine.storage),
             upgrade: None,
             token: None,
-            sealing: None,
+            sealing: self.sealing,
             founding: Default::default(),
         }))
     }
@@ -1420,6 +1447,36 @@ impl FakeMachine for DeployService {
         }
         self.record_mutation();
         unused()
+    }
+    async fn mint_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !self.grants {
+            return unused();
+        }
+        self.record_mutation();
+        let grant = ployz_core::BuildGrant::new(
+            ployz_core::ManagementIdentity::from_bytes([1; 32]),
+            [2; 32],
+        );
+        encoded(RpcResponse::from(ployz_core::BuildGrantMinted {
+            id: ployz_core::BuildGrantId::parse("d".repeat(64)).unwrap(),
+            key: ployz_core::MintedKey::Grant { grant },
+            expires_in_seconds: 600,
+        }))
+    }
+    async fn inspect_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !self.grants {
+            return unused();
+        }
+        encoded(RpcResponse::from(ployz_core::BuildGrantInspected {
+            pushed: None,
+            expires_in_seconds: 600,
+        }))
     }
     async fn read_routes(
         &self,
