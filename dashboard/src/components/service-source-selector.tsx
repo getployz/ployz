@@ -277,8 +277,8 @@ export function GitRepoSelectorFooter({ organizationSlug }: { organizationSlug: 
 function GitRepoSelectorResults(props: GitRepoSelectorProps) {
   const { queryClient, sessionId } = useCollectionScope();
   const githubRepos = getGithubReposCollection({ queryClient, sessionId, organizationSlug: props.organizationSlug });
-  const { isReady, isLoadingError, isSyncError } = useLiveQuery(githubRepos);
-  if (isLoadingError) return <GithubRepositoryRefreshNotice initial />;
+  const { isReady, isLoadingError, isCrashed, isSyncError } = useLiveQuery(githubRepos);
+  if (isLoadingError || isCrashed) return <GithubRepositoryRefreshNotice initial />;
   // A live query started on a failed first load stays failed after the read recovers, so the list starts on ready rows.
   if (!isReady) return <SelectorLoading />;
   return <GitRepoList {...props} githubRepos={githubRepos} stale={isSyncError} />;

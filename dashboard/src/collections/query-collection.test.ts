@@ -65,6 +65,7 @@ it("rejects failed initial loader readiness, retries later, and retains successf
   expect(collection.subscriberCount).toBe(0);
   read.mockResolvedValue([{ id: "retained" }]);
   await preloadCollection(collection);
+  expect(read).toHaveBeenCalledTimes(2);
   expect(collection.get("retained")).toMatchObject({ id: "retained" });
   const active = collection.subscribeChanges(() => {});
   read.mockRejectedValue(failure);
@@ -73,6 +74,35 @@ it("rejects failed initial loader readiness, retries later, and retains successf
   expect(collection.get("retained")).toMatchObject({ id: "retained" });
   active.unsubscribe();
   await collection.cleanup();
+  client.clear();
+});
+
+it.each(["api", "change"] as const)("leaves a failed first load when a later read succeeds, with one reload read (%s)", async (kind) => {
+  vi.useFakeTimers();
+  const client = new QueryClient();
+  client.mount();
+  const read = vi.fn<() => Promise<{ id: string }[]>>().mockRejectedValueOnce(new Error("first")).mockResolvedValue([{ id: "one" }]);
+  const input = { queryClient: client, queryKey: ["recovers", kind], getKey: (row: { id: string }) => row.id };
+  const collection = kind === "api"
+    ? createApiCollection({ ...input, queryFn: read, refetchInterval: 15_000 })
+    : createChangeCollection({ ...input, read: async () => ({ full: true as const, rows: await read(), cursor: "1" }) });
+  const active = collection.subscribeChanges(() => {});
+  await vi.advanceTimersByTimeAsync(10);
+  expect(collection.status).toBe("error");
+  if (kind === "api") await vi.advanceTimersByTimeAsync(15_000);
+  else await client.refetchQueries({ queryKey: input.queryKey });
+  await vi.advanceTimersByTimeAsync(10);
+  expect(collection.status).toBe("ready");
+  expect(collection.get("one")).toMatchObject({ id: "one" });
+  // reload() starts a fresh Query entry, so recovery reads once more.
+  expect(read).toHaveBeenCalledTimes(3);
+  if (kind === "api") {
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(read).toHaveBeenCalledTimes(4);
+  }
+  active.unsubscribe();
+  await collection.cleanup();
+  client.unmount();
   client.clear();
 });
 

@@ -1,6 +1,6 @@
 import { queryCollectionOptions, type QueryCollectionConfig, type QueryCollectionUtils } from "@tanstack/query-db-collection";
 import { BasicIndex, collectionOptions, type Collection } from "@tanstack/react-db";
-import type { QueryClient } from "@tanstack/react-query";
+import { hashKey, type QueryClient } from "@tanstack/react-query";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
 
@@ -48,13 +48,25 @@ function withWriteCommitted<T extends object, C extends ApiCollection<T>>(input:
   });
 }
 
+/** A failed first load ends its sync run, and later reads of the same Query never reach it: reload once one succeeds. */
+function reloadAfterFailedFirstLoad<T extends object, C extends Pick<Collection<T>, "status" | "health" | "reload">>(
+  input: ApiCollectionInput<T>, collection: C,
+) {
+  const queryHash = hashKey(input.queryKey);
+  input.queryClient.getQueryCache().subscribe((event) => {
+    if (event.type !== "updated" || event.action.type !== "success" || event.query.queryHash !== queryHash) return;
+    if (collection.status === "error" && !collection.health.reloading) void collection.reload().catch(() => {});
+  });
+  return collection;
+}
+
 /** Each owner supplies its request-local QueryClient and authenticated scope. A Remote Read that polls sets `refetchInterval`. */
 export function createApiCollection<T extends object>(input: ApiCollectionInput<T> & {
   refetchInterval?: number;
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
 }) {
   const options = queryCollectionOptions({ ...baseOptions(input), refetchInterval: input.refetchInterval, queryFn: input.queryFn });
-  return withWriteCommitted(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
+  return withWriteCommitted(input, reloadAfterFailedFirstLoad(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
 }
 
 /** Rows and their change cursor live in one Query entry, so a cancelled or reverted read reverts both. */
@@ -83,7 +95,7 @@ export function createChangeCollection<T extends object>(input: ApiCollectionInp
     queryFn,
     select: (snapshot: ChangeSnapshot<T>) => snapshot.rows,
   });
-  return withWriteCommitted(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
+  return withWriteCommitted(input, reloadAfterFailedFirstLoad(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
 }
 
 type ApiCollectionReadiness = Pick<Collection<object>, "status" | "preload" | "reload"> & {
@@ -93,9 +105,11 @@ type ApiCollectionReadiness = Pick<Collection<object>, "status" | "preload" | "r
 
 /** Hold an observer only until readiness; a failed first read rejects and reloads on the next call. */
 export async function preloadCollection(collection: ApiCollectionReadiness) {
+  // Subscribing to a failed Collection starts a read that reload() would abort, so the read starts first.
+  const ready = collection.status === "error" ? collection.reload() : collection.preload();
   const subscription = collection.subscribeChanges(() => {});
   try {
-    await (collection.status === "error" ? collection.reload() : collection.preload());
+    await ready;
   } finally {
     subscription.unsubscribe();
   }
