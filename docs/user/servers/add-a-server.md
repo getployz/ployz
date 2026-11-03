@@ -384,6 +384,12 @@ images from ghcr.io.
   lists each such server under `unarrived`, with its `id`, `name` and that command as `next`; run
   it only on the same condition. You get the warning, the command and the list even when the add
   then fails for another reason, such as a down server.
+- **Cloud refuses an enrollment with HTTP 409.** When Cloud marks its user-facing reply
+  with a conflict code, the CLI shows its reason and next step, such as contacting support
+  to move a Cluster connected to another Organization. It does not add advice to repeat
+  the same command. For these coded conflicts, `--json` reports `conflict`.
+  Generic conflicts and replies from older Cloud versions keep their existing messages,
+  retry advice, and JSON codes.
 - **A failed add can be retried with other options.** If `ployz server add` fails after Cloud took
   the server, for example while downloading or installing the daemon, run it again on the same
   host, with the same token while it lasts or a new one. It may change options such as

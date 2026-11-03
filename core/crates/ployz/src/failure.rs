@@ -753,6 +753,7 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
         cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
         cloud_enroll::Error::TokenRefused => RpcErrorCode::Unauthenticated,
         cloud_enroll::Error::Status { status, .. } => http_status_code(*status),
+        cloud_enroll::Error::CodedConflict { .. } => RpcErrorCode::Conflict,
     }
 }
 
@@ -1453,6 +1454,14 @@ mod tests {
     fn missing_root_is_unauthenticated() {
         let failure = Failure::from(ProvisionError::NotRoot);
         assert_eq!(failure.report().code, RpcErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn cloud_coded_conflict_keeps_its_code() {
+        let failure = Failure::from(cloud_enroll::Error::CodedConflict {
+            body: serde_json::json!({"error": "Bring existing Servers online."}).to_string(),
+        });
+        assert_eq!(failure.report().code, RpcErrorCode::Conflict);
     }
 
     #[test]
