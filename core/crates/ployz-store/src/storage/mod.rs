@@ -372,6 +372,13 @@ pub(crate) trait Tx {
     fn acting_for(&self) -> Option<&crate::Trusted> {
         None
     }
+    /// Wait at most `at_most` for a row lock from here on in this transaction, or as
+    /// long as any other statement when None. A savepoint rolled back drops it. SQLite
+    /// never waits for a row: its writer holds the whole database from BEGIN.
+    fn wait_for_locks(&mut self, at_most: Option<std::time::Duration>) -> Result<(), RpcError> {
+        let _ = at_most;
+        Ok(())
+    }
 }
 
 /// The one Protected Environment fence: a caller without
@@ -418,6 +425,9 @@ impl Tx for Acting<'_, '_> {
     }
     fn acting_for(&self) -> Option<&crate::Trusted> {
         Some(self.trusted)
+    }
+    fn wait_for_locks(&mut self, at_most: Option<std::time::Duration>) -> Result<(), RpcError> {
+        self.tx.wait_for_locks(at_most)
     }
 }
 
@@ -807,5 +817,55 @@ mod mixed_version_tests {
             })
             .unwrap();
         assert_eq!(migrated.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod lock_wait_tests {
+    use std::time::Duration;
+
+    use super::{Storage, Tx, attempt};
+    use crate::error;
+
+    fn lock_timeout(tx: &mut dyn Tx) -> String {
+        tx.query("SELECT current_setting('lock_timeout')", &[])
+            .unwrap()
+            .first()
+            .unwrap()
+            .text(0)
+            .unwrap()
+            .to_owned()
+    }
+
+    /// A shorter lock wait lasts until it is lifted or its savepoint rolls back, so
+    /// the rest of the transaction waits as long as ever (#3780).
+    #[test]
+    fn a_shorter_lock_wait_lasts_until_lifted_or_rolled_back() {
+        // SQLite never waits for a row.
+        let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {
+            return;
+        };
+        let database = format!("lock_wait_{}", uuid::Uuid::new_v4().simple());
+        postgres::Client::connect(&server, postgres::NoTls)
+            .unwrap()
+            .batch_execute(&format!("CREATE DATABASE {database}"))
+            .unwrap();
+        let (storage, _) = Storage::open(&format!("{server}/{database}")).unwrap();
+        storage
+            .write(|tx| {
+                assert_eq!(lock_timeout(tx), "10s");
+                tx.wait_for_locks(Some(Duration::from_secs(1)))?;
+                assert_eq!(lock_timeout(tx), "1s");
+                tx.wait_for_locks(None)?;
+                assert_eq!(lock_timeout(tx), "10s");
+                let rolled_back = attempt(tx, |tx| {
+                    tx.wait_for_locks(Some(Duration::from_secs(1)))?;
+                    Err::<(), _>(error::internal("rolled back"))
+                });
+                assert!(rolled_back.is_err());
+                assert_eq!(lock_timeout(tx), "10s");
+                Ok(())
+            })
+            .unwrap();
     }
 }

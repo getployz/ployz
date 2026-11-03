@@ -1188,61 +1188,97 @@ fn empty_below(
     Ok(())
 }
 
-/// A variable `parent` sealed and deployed stays a hint in `receiver`, whose own change
-/// to it wins, so Follow never carries the seal further down (#3760). Seal it in each
-/// Branch below that still holds a value it was made with or took from its Parent: a
-/// plain value whose fingerprint `parent` held, which it shares unchanged with its own
-/// Parent. That Branch then holds it Not set, staged, as does that base, so what
-/// `receiver` deploys later lands there as it would have. A Branch that changed the
-/// variable keeps its value. Each Branch is its own attempt, so one that can't take the
-/// seal keeps its value and never fails the deploy.
+/// How long a seal's walk below waits for each Branch's lock (#3780). A Branch another
+/// write holds longer keeps its value, and takes the seal at a later deploy.
+const BELOW_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Variables `parent` sealed and deployed stay hints in `receiver`, whose own change
+/// to each wins, so Follow never carries those seals further down (#3760). Seal each
+/// in every Branch below that still holds a value it was made with or took from its
+/// Parent: a plain value whose fingerprint `parent` held, which it shares unchanged
+/// with its own Parent. That Branch then holds it Not set, staged, as does that base,
+/// so what `receiver` deploys later lands there as it would have. A Branch that
+/// changed a variable keeps its value. Each Branch is one attempt, locked once for
+/// every row and waiting at most [`BELOW_LOCK_WAIT`], so one that can't take the
+/// seals keeps its values and never fails the deploy.
 pub(crate) fn seal_inherited_below(
     tx: &mut dyn Tx,
     who: &Actor,
     parent: &EnvironmentId,
     receiver: &EnvironmentId,
-    sealed_row: &RowId,
+    sealed_rows: &[RowId],
 ) -> Result<(), RpcError> {
-    let At::Variable(key) = sealed_row.at() else {
+    let rows: BTreeSet<(String, String)> = sealed_rows
+        .iter()
+        .filter_map(|row| {
+            let At::Variable(key) = row.at() else {
+                return None;
+            };
+            Some((row.lineage().to_owned(), key.clone()))
+        })
+        .collect();
+    if rows.is_empty() {
         return Ok(());
-    };
-    let rows = BTreeSet::from([(sealed_row.lineage().to_owned(), key.clone())]);
-    let Some(fingerprints) = held(tx, parent.as_str(), &rows, None, Took::Sealer)?
-        .into_values()
-        .next()
-    else {
+    }
+    let rows: Vec<((String, String), BTreeSet<String>)> =
+        held(tx, parent.as_str(), &rows, None, Took::Sealer)?
+            .into_iter()
+            .collect();
+    if rows.is_empty() {
         return Ok(());
-    };
-    let (lineage, key) = (sealed_row.lineage(), key.as_str());
-    let at = RowId::of(lineage, At::Variable(key.to_owned()));
-    // A Branch that marks the row Never sync never takes the seal by Follow, so
-    // neither does any Branch below it.
-    let mut fenced = BTreeSet::new();
+    }
+    let every: BTreeSet<usize> = (0..rows.len()).collect();
+    // The rows each Branch fences from what's below it: one it marks Never sync never
+    // takes the seal by Follow, so neither does any Branch below it.
+    let mut fenced: BTreeMap<EnvironmentId, BTreeSet<usize>> = BTreeMap::new();
     for branch in below(tx, receiver.as_str())? {
         let branch = EnvironmentId::try_from(branch).map_err(|_| error::corrupt("Branch"))?;
         let sealed = storage::attempt(tx, |tx| {
-            let parent = row(tx, &branch)?.map(|row| row.parent);
-            if parent.is_some_and(|parent| fenced.contains(&parent))
-                || marked(tx, &branch)?.contains(&at)
-            {
-                fenced.insert(branch.clone());
-                return Ok(());
+            let mut fence = row(tx, &branch)?
+                .and_then(|row| fenced.get(&row.parent).cloned())
+                .unwrap_or_default();
+            let marks = marked(tx, &branch)?;
+            for (index, ((lineage, key), _)) in rows.iter().enumerate() {
+                if marks.contains(&RowId::of(lineage, At::Variable(key.clone()))) {
+                    fence.insert(index);
+                }
             }
+            fenced.insert(branch.clone(), fence.clone());
             if super::follow::stopped(tx, &branch)? {
                 return Ok(());
             }
             // Locked only to write: a Branch holds the value until its Parent deploys.
             let mut unlocked = scope::load_by_id(tx, &branch)?;
-            if inherited(tx, &mut unlocked, lineage, key, &fingerprints)?.is_none() {
+            let mut due = Vec::new();
+            for (index, row) in rows.iter().enumerate() {
+                let ((lineage, key), fingerprints) = row;
+                if !fence.contains(&index)
+                    && inherited(tx, &mut unlocked, lineage, key, fingerprints)?.is_some()
+                {
+                    due.push(row);
+                }
+            }
+            if due.is_empty() {
                 return Ok(());
             }
+            // Its savepoint rolled back drops the shorter wait too.
+            tx.wait_for_locks(Some(BELOW_LOCK_WAIT))?;
             let mut branch = scope::lock_id(tx, who, &branch)?;
-            seal_inherited(tx, &mut branch, lineage, key, &fingerprints)
+            tx.wait_for_locks(None)?;
+            for ((lineage, key), fingerprints) in due {
+                seal_inherited(tx, &mut branch, lineage, key, fingerprints)?;
+            }
+            Ok(())
         });
         if let Err(error) = sealed {
-            // Unread, it may mark the row: what's below it waits as well.
-            fenced.insert(branch.clone());
-            tracing::warn!(branch = %branch.as_str(), ?error, "couldn't seal a value a Branch inherited");
+            // Unread, it may mark the rows: what's below it waits as well.
+            fenced.insert(branch.clone(), every.clone());
+            tracing::warn!(
+                branch = %branch.as_str(),
+                rows = ?rows.iter().map(|(row, _)| row).collect::<Vec<_>>(),
+                ?error,
+                "couldn't seal values a Branch inherited; it takes them at a later deploy"
+            );
         }
     }
     Ok(())
