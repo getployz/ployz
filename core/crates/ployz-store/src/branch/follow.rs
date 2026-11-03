@@ -255,17 +255,27 @@ fn hinted<'rows>(
     rows: &'rows [PlannedRow],
 ) -> Result<Vec<&'rows PlannedRow>, RpcError> {
     let delivered = arrivals(tx, branch, parent)?;
+    let delivered: Vec<&PlannedRow> = rows
+        .iter()
+        .filter(|row| {
+            matches!(row.verdict, Verdict::Moves { .. })
+                && delivered.get(&row.id) == Some(&row.from)
+        })
+        .collect();
+    let plain = |row: &PlannedRow| match (row.id.at(), super::pair::plain_fingerprint(&row.from)) {
+        (At::Variable(key), Some(fingerprint)) => Some((key.to_owned(), fingerprint.to_owned())),
+        _ => None,
+    };
     let mut sealed = review::sealed::AncestorSeals::default();
+    let keys = delivered
+        .iter()
+        .filter_map(|row| plain(row).map(|(key, _)| (row.id.lineage().to_owned(), key)))
+        .collect();
+    sealed.read(tx, branch.as_str(), &keys)?;
     let mut hinted = Vec::new();
-    for row in rows {
-        if !matches!(row.verdict, Verdict::Moves { .. })
-            || delivered.get(&row.id) != Some(&row.from)
-        {
-            continue;
-        }
-        if let (At::Variable(key), Some(fingerprint)) =
-            (row.id.at(), super::pair::plain_fingerprint(&row.from))
-            && sealed.sealed(tx, branch.as_str(), row.id.lineage(), key, fingerprint)?
+    for row in delivered {
+        if let Some((key, fingerprint)) = plain(row)
+            && sealed.sealed(tx, branch.as_str(), row.id.lineage(), &key, &fingerprint)?
         {
             continue;
         }

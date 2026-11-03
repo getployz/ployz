@@ -265,8 +265,8 @@ fn sealed_above(
             chain.insert(read)
         }
     };
-    // A value the Environment set itself, and deployed or saved, was never sealed
-    // above it, unless it shares that value with one above that sealed it since.
+    // A value the Environment was made with or copied, as it was, is sealed above it
+    // when the one it came from sealed it since.
     let made = chain.introduced(tx, environment.as_str(), node, |made| made.id == was.id)?;
     if let Some(made) = &made
         && made.fingerprint == was.value_fingerprint
@@ -316,6 +316,41 @@ impl AncestorSeals {
         self.0
             .sealed_by_ancestor(tx, branch, lineage, key, fingerprint)
     }
+
+    /// Read at once, for each Environment above `branch`, what it held of each of
+    /// `rows` (lineage, key) it holds sealed now, so [`Self::sealed`] reads no more.
+    pub(crate) fn read(
+        &mut self,
+        tx: &mut dyn Tx,
+        branch: &str,
+        rows: &BTreeSet<(String, String)>,
+    ) -> Result<(), RpcError> {
+        let chain = &mut self.0;
+        let mut at = branch.to_owned();
+        while let Some((parent, _)) = chain.shared_above(tx, &at)? {
+            let parent = parent.clone();
+            let mut sealed = BTreeSet::new();
+            for (lineage, key) in rows {
+                let row = (parent.clone(), lineage.clone(), key.clone());
+                if !chain.held.contains_key(&row) && chain.sealed_now(tx, &parent, lineage, key)? {
+                    sealed.insert((lineage.clone(), key.clone()));
+                }
+            }
+            if !sealed.is_empty() {
+                let mut held = crate::branch::held_by_ancestor(tx, &parent, &sealed)?;
+                for (lineage, key) in sealed {
+                    let fingerprints = held
+                        .remove(&(lineage.clone(), key.clone()))
+                        .unwrap_or_default();
+                    chain
+                        .held
+                        .insert((parent.clone(), lineage, key), fingerprints);
+                }
+            }
+            at = parent;
+        }
+        Ok(())
+    }
 }
 
 /// Each variable a Branch was made with, or copied from a node's owner since, that
@@ -358,8 +393,10 @@ struct Chain {
     shared: BTreeMap<String, Option<(String, SavedEnvironmentIntent)>>,
     /// By Environment, its Working State.
     working: BTreeMap<String, SavedEnvironmentIntent>,
+    /// By Environment, its Node Introductions' Service nodes, with each lineage.
+    nodes: BTreeMap<String, Vec<(String, String)>>,
     /// By Environment, lineage and key, the fingerprints it held plain before it
-    /// sealed that row.
+    /// sealed that row, or still runs.
     held: BTreeMap<(String, String, String), BTreeSet<String>>,
 }
 
@@ -506,10 +543,13 @@ impl Chain {
     }
 
     /// Whether an Environment above `environment`, by its Parents, holds the row
-    /// `lineage`, `key` sealed now and held it plain at `fingerprint` before: the
-    /// value is that secret's text, however it reached `environment` (#3794). Unlike
-    /// [`Self::shared_sealed`], it needs no Sync base to still hold the fingerprint,
-    /// which a seal reaching a Branch below empties.
+    /// `lineage`, `key` sealed now, and held it plain at `fingerprint` before or still
+    /// runs that: the value is that secret's text, however it reached `environment`
+    /// (#3794). Unlike [`Self::shared_sealed`], it needs no Sync base to still hold
+    /// the fingerprint, which a seal reaching a Branch below empties. It matches by
+    /// that lineage and key alone: a value the row held under another key, or plain
+    /// again after a delete, is not matched, and text one above shares with another
+    /// Branch of its own is (#3800).
     fn sealed_by_ancestor(
         &mut self,
         tx: &mut dyn Tx,
@@ -527,7 +567,11 @@ impl Chain {
             if self.sealed_now(tx, &parent, lineage, key)? {
                 let row = (parent.clone(), lineage.to_owned(), key.to_owned());
                 if !self.held.contains_key(&row) {
-                    let held = crate::branch::held_by_sealer(tx, &parent, lineage, key)?;
+                    let rows = BTreeSet::from([(lineage.to_owned(), key.to_owned())]);
+                    let held = crate::branch::held_by_ancestor(tx, &parent, &rows)?
+                        .into_values()
+                        .next()
+                        .unwrap_or_default();
                     self.held.insert(row.clone(), held);
                 }
                 if self
@@ -572,21 +616,15 @@ impl Chain {
         }
         // Deleted, with its Service or alone: by each node of the lineage it had.
         let mut nodes: BTreeSet<String> = service.map(|s| s.id.clone()).into_iter().collect();
-        for row in tx.query(
-            "SELECT node FROM config_node_introduction \
-             WHERE environment_id = ?1 AND node_type = ?2",
-            &[
-                environment.into(),
-                crate::storage::name_of(EnvironmentNodeType::Service)
-                    .as_str()
-                    .into(),
-            ],
-        )? {
-            let introduced: SavedServiceIntent = row.json(0, "Node Introduction")?;
-            if introduced.lineage_id == lineage {
-                nodes.insert(introduced.id);
-            }
-        }
+        self.read_introduced(tx, environment)?;
+        nodes.extend(
+            self.nodes
+                .get(environment)
+                .into_iter()
+                .flatten()
+                .filter(|(of, _)| of == lineage)
+                .map(|(_, node)| node.clone()),
+        );
         let ever = ledger(tx, &mut self.ledgers, environment)?;
         Ok(nodes
             .into_iter()
@@ -659,35 +697,44 @@ impl Chain {
         node: &str,
         matches: impl Fn(&Introduced) -> bool,
     ) -> Result<Option<Introduced>, RpcError> {
-        let introduced = match self.introduced.entry(environment.to_owned()) {
-            Entry::Occupied(introduced) => introduced.into_mut(),
-            Entry::Vacant(at) => {
-                let mut introduced = Vec::new();
-                for row in tx.query(
-                    "SELECT node FROM config_node_introduction \
-                     WHERE environment_id = ?1 AND node_type = ?2",
-                    &[
-                        environment.into(),
-                        crate::storage::name_of(EnvironmentNodeType::Service)
-                            .as_str()
-                            .into(),
-                    ],
-                )? {
-                    let service: SavedServiceIntent = row.json(0, "Node Introduction")?;
-                    introduced.extend(service.variables.into_iter().map(|variable| Introduced {
-                        node: service.id.clone(),
-                        id: variable.id,
-                        key: variable.key,
-                        fingerprint: variable.value_fingerprint,
-                    }));
-                }
-                at.insert(introduced)
-            }
-        };
-        Ok(introduced
-            .iter()
+        self.read_introduced(tx, environment)?;
+        Ok(self
+            .introduced
+            .get(environment)
+            .into_iter()
+            .flatten()
             .find(|was| was.node == node && matches(was))
             .cloned())
+    }
+
+    /// Read `environment`'s Node Introductions of Services once.
+    fn read_introduced(&mut self, tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
+        if self.introduced.contains_key(environment) {
+            return Ok(());
+        }
+        let (mut introduced, mut nodes) = (Vec::new(), Vec::new());
+        for row in tx.query(
+            "SELECT node FROM config_node_introduction \
+             WHERE environment_id = ?1 AND node_type = ?2",
+            &[
+                environment.into(),
+                crate::storage::name_of(EnvironmentNodeType::Service)
+                    .as_str()
+                    .into(),
+            ],
+        )? {
+            let service: SavedServiceIntent = row.json(0, "Node Introduction")?;
+            nodes.push((service.lineage_id.clone(), service.id.clone()));
+            introduced.extend(service.variables.into_iter().map(|variable| Introduced {
+                node: service.id.clone(),
+                id: variable.id,
+                key: variable.key,
+                fingerprint: variable.value_fingerprint,
+            }));
+        }
+        self.introduced.insert(environment.to_owned(), introduced);
+        self.nodes.insert(environment.to_owned(), nodes);
+        Ok(())
     }
 }
 

@@ -4330,7 +4330,8 @@ fn followed_then_sealed(store: &ConfigStore, who: &Actor) {
 }
 
 /// A Branch of a Branch reads a value it took by Follow and an Environment above
-/// sealed since as Sealed in History, and Undo brings it back Not set (#3794).
+/// sealed since as Sealed in History, and Undo of that Follow leaves it Not set
+/// (#3794).
 #[test]
 fn a_followed_value_sealed_above_reads_sealed_in_a_branch_of_a_branchs_history() {
     let (store, who) = shop();
@@ -4348,12 +4349,13 @@ fn a_followed_value_sealed_above_reads_sealed_in_a_branch_of_a_branchs_history()
         )
         .unwrap()
         .revisions;
-    // The version that took the followed value, from the first.
-    let took = revisions
-        .iter()
-        .map(|revision| revision.revision)
-        .max()
-        .unwrap();
+    // The Follow's version: the only one since the first, and it changed TOKEN.
+    let [follow, _first] = revisions.as_slice() else {
+        panic!("{revisions:?}")
+    };
+    let changed = serde_json::to_string(&follow.changes).unwrap();
+    assert!(changed.contains("web.env.TOKEN"), "{changed}");
+    let took = follow.revision;
     let undo = ployz_store::HistoryPreviewQuery {
         environment: at("qa-two"),
         revision: took,
@@ -4396,14 +4398,23 @@ fn a_followed_value_sealed_above_is_never_hinted_or_taken_back() {
     let refused = store
         .write(
             &who,
-            &take("qa", "qa-two", &["variables.TOKEN"], review.version),
+            &take("qa", "qa-two", &["variables.TOKEN"], review.version.clone()),
         )
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::NotFound);
+    // Nor does taking every hint, which finds none.
+    let all = Take {
+        rows: None,
+        ..take("qa", "qa-two", &[], review.version)
+    };
+    let refused = store.write(&who, &all).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert!(refused.message.contains("No value from qa"), "{refused:?}");
     assert_eq!(
         web(&store, &who, "qa-two")["env"]["TOKEN"],
         json!({ "secret": false })
     );
+    // What it deploys next is its Working State, which neither take touched.
     let shipped = deploy(&store, &who, "qa-two", 9);
     assert!(
         !shipped.to_string().contains("plain-private-0317"),
@@ -4451,4 +4462,67 @@ fn a_value_the_branch_between_deploys_itself_is_still_hinted_below() {
     );
     deploy(&store, &who, "qa-two", 11);
     assert!(history_of(&store, &who, "qa-two").contains("plain-own-0317"));
+}
+
+/// An older value the Branch between still runs, once its base moved on staged, is
+/// read as Sealed below once an Environment above seals the row: the one between
+/// held it, by its Applied State (#3794).
+#[test]
+fn an_older_value_the_branch_between_still_runs_reads_sealed_below() {
+    let (store, who) = shop();
+    let token = |value: &str| [("web.env.TOKEN", json!(value))];
+    set(&store, &who, "production", &token("plain-made-0317"));
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    branch(&store, &who, 11, "qa", "qa-two");
+    set(&store, &who, "production", &token("plain-older-0317"));
+    deploy(&store, &who, "production", 3);
+    deploy(&store, &who, "qa", 4);
+    deploy(&store, &who, "qa-two", 5);
+    assert!(history_of(&store, &who, "qa-two").contains("plain-older-0317"));
+    // qa takes the next value staged, and still runs the older one.
+    set(&store, &who, "production", &token("plain-newer-0317"));
+    deploy(&store, &who, "production", 6);
+    assert_eq!(
+        web(&store, &who, "qa")["env"]["TOKEN"],
+        json!("plain-newer-0317")
+    );
+    seal_token(&store, &who, 7);
+    // qa-two moves off it to a value of its own.
+    set(&store, &who, "qa-two", &token("plain-own-0317"));
+    deploy(&store, &who, "qa-two", 8);
+
+    let history = history_of(&store, &who, "qa-two");
+    assert!(!history.contains("plain-older-0317"), "{history}");
+    assert!(hints(&store, &who, "qa-two").is_empty());
+    let shown = serde_json::to_string(&diff(&store, &who, "qa-two")).unwrap();
+    assert!(!shown.contains("plain-older-0317"), "{shown}");
+}
+
+/// A value a Branch of a Branch sets itself reads as Sealed in its History when it
+/// is text an Environment above held before sealing that row, even by another
+/// Branch of its own: the mask matches the text, not where it came from (#3794).
+#[test]
+fn a_value_an_environment_above_held_reads_sealed_even_set_below_by_hand() {
+    let (store, who) = shop();
+    let token = |value: &str| [("web.env.TOKEN", json!(value))];
+    set(&store, &who, "production", &token("plain-made-0317"));
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "qa");
+    deploy(&store, &who, "qa", 3);
+    branch(&store, &who, 11, "qa", "qa-two");
+    deploy(&store, &who, "qa-two", 4);
+    set(&store, &who, "production", &token("plain-sibling-0317"));
+    deploy(&store, &who, "production", 5);
+    branch(&store, &who, 12, "production", "sibling");
+    seal_token(&store, &who, 6);
+    unset(&store, &who, "qa-two", "web.env.TOKEN");
+    set(&store, &who, "qa-two", &token("plain-sibling-0317"));
+    deploy(&store, &who, "qa-two", 7);
+    assert!(history_of(&store, &who, "qa-two").contains("plain-sibling-0317"));
+    // Once it moves off it, History reads the value it held as Sealed.
+    set(&store, &who, "qa-two", &token("plain-later-0317"));
+    deploy(&store, &who, "qa-two", 8);
+    let history = history_of(&store, &who, "qa-two");
+    assert!(!history.contains("plain-sibling-0317"), "{history}");
 }
