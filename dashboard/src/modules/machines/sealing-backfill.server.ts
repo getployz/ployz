@@ -9,7 +9,7 @@ import {
   forgetSealingKeyGenerator,
   readOrganizationSealingKey,
   readSealingKeyGenerator,
-  recordSealingPublicKey,
+  recordReportedSealingPublicKey,
 } from "#/modules/machines/sealing-key.server";
 import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
 import { clusterRead, OrganizationRuntime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
@@ -26,6 +26,9 @@ export type SealingBackfillTarget = {
   readonly clusterKey: string;
   readonly expected: BackfillSealingKeyRequest["expected"];
   readonly generator: MachineId | null;
+  readonly founder: MachineId;
+  /** No key is recorded for the pairing yet, so the pass runs through its founder, the only Server whose report records one. */
+  readonly throughFounder: boolean;
 };
 
 export type SealingBackfillNext =
@@ -41,31 +44,40 @@ export const loadSealingBackfillTarget = Effect.fn("SealingBackfill.loadTarget")
   }).from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
   if (pairing === undefined || pairing.founderMachineId === null || pairing.removalStartedAt !== null) return null;
   const clusterKey = hashEnrollmentToken(yield* decryptPairingSecret(pairing.encryptedPairingSecret));
-  const expected = (yield* readSealingPublicKey(organizationId, clusterKey))
-    ?? (yield* readOrganizationSealingKey(organizationId))?.publicKey;
+  const recorded = yield* readSealingPublicKey(organizationId, clusterKey);
+  const expected = recorded ?? (yield* readOrganizationSealingKey(organizationId))?.publicKey;
   return {
     clusterKey,
     expected: expected ?? null,
     generator: (yield* readSealingKeyGenerator(organizationId, clusterKey)) ?? null,
+    founder: pairing.founderMachineId,
+    throughFounder: recorded === undefined,
   } satisfies SealingBackfillTarget;
 });
 
 export const backfillClusterSealingKey = Effect.fn("SealingBackfill.backfill")(function* (
-  organizationId: string, request: BackfillSealingKeyRequest,
+  organizationId: string, request: BackfillSealingKeyRequest, target: Pick<SealingBackfillTarget, "founder" | "throughFounder">,
 ) {
-  const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  const session = yield* (yield* OrganizationRuntime).open(organizationId, target.throughFounder ? { only: target.founder } : undefined);
+  if (target.throughFounder && session.status !== "connected") {
+    yield* Effect.logWarning("The Cluster's first Server didn't answer, so its Sealing Key stays unrecorded.")
+      .pipe(Effect.annotateLogs({ organizationId, founder: target.founder }));
+  }
   if (session.status === "no_connection") return null;
   if (session.status !== "connected") return yield* new SealingBackfillUnreachable({ cause: session.status });
   return yield* session.connected.backfillSealingKey(request).pipe(clusterRead);
 }, Effect.scoped, withClusterBudget(BACKFILL_CLUSTER_BUDGET_MS));
 
 export const handleSealingBackfillReport = Effect.fn("SealingBackfill.handleReport")(function* (
-  organizationId: string, clusterKey: string, report: BackfillSealingKeyReport,
+  organizationId: string, target: Pick<SealingBackfillTarget, "clusterKey" | "founder" | "throughFounder">,
+  report: BackfillSealingKeyReport,
 ) {
+  const { clusterKey } = target;
   const stop = (awaitsOperator = false): SealingBackfillNext => ({ next: "stop", result: report.result, awaitsOperator });
   switch (report.result) {
     case "distributed": {
-      const recorded = yield* recordSealingPublicKey(organizationId, clusterKey, report.public_key).pipe(
+      // Keyless, the pass ran through the founder, so this is its Cluster's key; with a key recorded, it is only compared.
+      const recorded = yield* recordReportedSealingPublicKey(organizationId, clusterKey, report.public_key, target.founder).pipe(
         Effect.as(true), Effect.catchTag("SealingKeyHeldElsewhere", () => Effect.succeed(false)),
       );
       if (!recorded) return stop();

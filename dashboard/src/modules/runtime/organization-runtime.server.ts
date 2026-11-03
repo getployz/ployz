@@ -411,8 +411,10 @@ export const OrganizationRuntimeLive = Layer.unwrap(
  * Cluster is paired. A fresh connection through the relay can take longer than a glance allows, so only the connect
  * phase and the frame are bounded, each by its own ceiling.
  */
-export const operationRuntimeFrame = Effect.fn("OrganizationRuntime.operationFrame")(function* (organizationId: string) {
-  const session = yield* (yield* OrganizationRuntime).open(organizationId);
+export const operationRuntimeFrame = Effect.fn("OrganizationRuntime.operationFrame")(function* (
+  organizationId: string, entry?: RuntimeEntry,
+) {
+  const session = yield* (yield* OrganizationRuntime).open(organizationId, entry);
   if (session.status !== "connected") return null;
   return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
 }, Effect.scoped);
@@ -421,6 +423,6 @@ export const operationRuntimeFrame = Effect.fn("OrganizationRuntime.operationFra
  * One Runtime Watch frame of the Organization's Cluster, for a read that looks once: null when no Cluster is paired.
  * Fails when the Cluster doesn't answer within 5 seconds of Cluster time, so a slow one never holds up what asked.
  */
-export const firstRuntimeFrame = Effect.fn("OrganizationRuntime.firstFrame")(function* (organizationId: string) {
-  return yield* operationRuntimeFrame(organizationId);
+export const firstRuntimeFrame = Effect.fn("OrganizationRuntime.firstFrame")(function* (organizationId: string, entry?: RuntimeEntry) {
+  return yield* operationRuntimeFrame(organizationId, entry);
 }, withClusterBudget(5_000));

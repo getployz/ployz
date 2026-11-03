@@ -1578,6 +1578,23 @@ describe("organization enrollment coordinator", () => {
     expect(warnings.count()).toBe(1);
   });
 
+  it("records no first Sealing Key a joining Server reports, and still completes it", async () => {
+    const fake = fakeSession(harness.database);
+    fake.cluster.joins = true;
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    expect(await fake.coordinator.completeFounding({ ...founder, sealing: { kind: "needs_access" } }))
+      .toMatchObject({ success: { machineId: founder.machineId } });
+
+    await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+    const joiner = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+    await fake.coordinator.publish({ ...joiner, capability: "ployz1:joining" });
+    using warnings = logged("WARN", "waits for the first Server's report");
+    expect(await fake.coordinator.completeFounding({ ...joiner, sealing: held("B") })).toMatchObject({ success: { machineId: joiner.machineId } });
+    expect(await sealingKeys()).toEqual([]);
+    expect(warnings.count()).toBe(1);
+  });
+
   it("drops the Sealing Key of a completion its Organization re-paired under", async () => {
     const fake = fakeSession(harness.database);
     const founder = await readyFounder(fake);

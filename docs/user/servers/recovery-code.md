@@ -56,6 +56,20 @@ seconds."
 Servers you add after that get the key from this one. If the code is wrong, `ployz recover`
 says so and changes nothing, so you can try again.
 
+Ployz Cloud reads the recovered key through the first server you added after forgetting the
+others, so keep that server until Cloud has seen the key. If it's gone before then (removed,
+forgotten, or no longer answering), `ployz set --secret` says "Sealed values need a server."
+and the dashboard says "Add a server to set sealed values.", both before and after
+`ployz recover`. Adding a server doesn't help. To get going again:
+
+1. On each server that still runs, stop Ployz with `sudo systemctl stop ployz.socket ployz`,
+   since Ployz won't forget a server that still answers.
+2. [Forget your servers](manage-servers.md#forget-servers-you-deleted).
+3. On the server you keep, start Ployz with `sudo systemctl start ployz.socket ployz` and add it
+   again with `--reset`, as in
+   [The server is already initialised](../troubleshooting/servers.md#the-server-is-already-initialised).
+4. Run `ployz recover` on it, then add the others.
+
 ## If you have no recovery code
 
 If you lose every server and have no code, no one can open the values you sealed for them,

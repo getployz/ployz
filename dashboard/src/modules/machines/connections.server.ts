@@ -52,6 +52,19 @@ export const currentGeneration = Effect.fn("MachineConnections.generation")(func
   return crypto.createHash("sha256").update(secret).digest("hex");
 });
 
+/** The current pairing and the Machine that founded it, once one has; null without a current pairing. */
+export const currentFounder = Effect.fn("MachineConnections.founder")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [pairing] = yield* drizzle.select({
+    encryptedPairingSecret: organizationPairing.encryptedPairingSecret,
+    removalStartedAt: organizationPairing.removalStartedAt,
+    founderMachineId: organizationPairing.founderMachineId,
+  }).from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId)).limit(1);
+  if (!pairing || pairing.removalStartedAt !== null) return null;
+  const secret = yield* decryptPairingSecret(pairing.encryptedPairingSecret);
+  return { generation: crypto.createHash("sha256").update(secret).digest("hex"), founder: pairing.founderMachineId };
+});
+
 /** How many Servers the current pairing has: the Machines `loadOrganizationConnections` would dial, counted. */
 export const countOrganizationMachines = Effect.fn("MachineConnections.count")(function* (organizationId: string) {
   const generation = yield* currentGeneration(organizationId);

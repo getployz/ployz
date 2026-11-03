@@ -1,4 +1,4 @@
-import type { BackfillSealingKeyRequest, Client, ConnectOptions } from "@ployz/sdk";
+import type { BackfillSealingKeyRequest, Client, ConnectOptions, MachineId } from "@ployz/sdk";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -68,13 +68,14 @@ describe("a session's Cluster", () => {
   }
 
   const request: BackfillSealingKeyRequest = { expected: pairingKey, generator: null };
+  const pinned = { founder: founder.machineId as MachineId, throughFounder: false };
 
   it("hands the pairing's Sealing Key only through an entry in its own Cluster, past a Server that moved to another", async () => {
     await saveRow(moved, true);
     await saveRow(founder, false);
     const { asked, dialed, runtime } = fixture({ [founder.management]: pairingKey, [moved.management]: otherClusterKey });
     try {
-      await runtime.runPromise(backfillClusterSealingKey(organizationId, request));
+      await runtime.runPromise(backfillClusterSealingKey(organizationId, request, pinned));
       expect(dialed.map((options) => options.expect)).toEqual([{ sealingPublicKey: pairingKey }]);
       expect(asked).toEqual([founder.management]);
     } finally { await runtime.dispose(); }
@@ -84,9 +85,22 @@ describe("a session's Cluster", () => {
     await saveRow(moved, true);
     const { asked, runtime } = fixture({ [moved.management]: otherClusterKey });
     try {
-      const failed = await runtime.runPromise(backfillClusterSealingKey(organizationId, request).pipe(Effect.flip));
+      const failed = await runtime.runPromise(backfillClusterSealingKey(organizationId, request, pinned).pipe(Effect.flip));
       expect(failed).toBeInstanceOf(SealingBackfillUnreachable);
       expect(asked).toEqual([]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("runs a backfill for a pairing with no key only through its founder", async () => {
+    await harness.pool.query("delete from cluster_sealing_key");
+    await saveRow(moved, true);
+    await saveRow(founder, false);
+    const { asked, dialed, runtime } = fixture({ [founder.management]: pairingKey, [moved.management]: otherClusterKey });
+    try {
+      await runtime.runPromise(backfillClusterSealingKey(organizationId, { expected: null, generator: null },
+        { founder: founder.machineId as MachineId, throughFounder: true }));
+      expect(dialed.map((options) => options.connections.map((connection) => connection.machine_id))).toEqual([[founder.machineId]]);
+      expect(asked).toEqual([founder.management]);
     } finally { await runtime.dispose(); }
   });
 

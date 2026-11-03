@@ -7,7 +7,7 @@ import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, type RuntimeEntry } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import {
   runtimeWatchFrameFixture,
@@ -27,6 +27,8 @@ const pairingSecret = "cluster-sealing-test-pairing-secret";
 const clusterKey = hashEnrollmentToken(pairingSecret);
 const publicKey = `${"A".repeat(43)}=`;
 const otherKey = `${"B".repeat(43)}=`;
+const founder = "1".repeat(32);
+const joiner = "2".repeat(32);
 
 type Sealing = NonNullable<RuntimeWatchView["machines"][number]["machine"]["runtime"]["sealing"]>;
 const held = (key: string): Sealing => ({ kind: "held", public_key: key });
@@ -44,10 +46,12 @@ describe("readClusterSealing", () => {
   /** What the Cluster answers when Cloud reads it: a frame, unreachable, or never read. */
   let cluster: RuntimeWatchView | "unreachable" | "unread";
   let opened: number;
+  let entries: (RuntimeEntry | undefined)[];
   const runtime = {
     cancel: () => Effect.void,
-    open: () => Effect.sync(() => {
+    open: (_organizationId: string, entry?: RuntimeEntry) => Effect.sync(() => {
       opened += 1;
+      entries.push(entry);
       if (cluster === "unread") throw new Error("the Cluster was read");
       return cluster === "unreachable"
         ? { status: "unreachable" as const, error: null }
@@ -72,7 +76,7 @@ describe("readClusterSealing", () => {
   const pair = () => harness.pool.query(
     `insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
      values ($1, $2, $3, $3)`,
-    [organizationId, JSON.stringify(encryption.encrypt(pairingSecret)), "1".repeat(32)],
+    [organizationId, JSON.stringify(encryption.encrypt(pairingSecret)), founder],
   );
   const reseals = async () => Number((await harness.pool.query(
     `select count(*) from operation_outbox where name = 'variables/reseal.requested'`,
@@ -91,6 +95,7 @@ describe("readClusterSealing", () => {
   beforeEach(async () => {
     cluster = "unread";
     opened = 0;
+    entries = [];
     await harness.pool.query(`
       truncate table organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
@@ -111,7 +116,7 @@ describe("readClusterSealing", () => {
 
   it("to seal, records the key a lone recovered Server holds that Cloud never recorded", async () => {
     await pair();
-    cluster = frameOf({ m1: held(publicKey) });
+    cluster = frameOf({ [founder]: held(publicKey) });
     expect(await readToSeal()).toEqual({ state: "ready", publicKey });
     expect(await read()).toEqual({ state: "ready", publicKey });
     expect(await reseals()).toBe(1);
@@ -125,7 +130,7 @@ describe("readClusterSealing", () => {
     const other = "00000000-0000-4000-8000-0000000089cc";
     await harness.pool.query("insert into organization (id, name, slug) values ($1, 'Owner', 'sealing-frame-owner')", [other]);
     await harness.pool.query("insert into sealing_key_owner (public_key, organization_id) values ($1, $2)", [publicKey, other]);
-    cluster = frameOf({ m1: held(publicKey) });
+    cluster = frameOf({ [founder]: held(publicKey) });
     const before = await reseals();
     expect(await readToSeal()).toEqual({ state: "no_server" });
     expect(await read()).toEqual({ state: "no_server" });
@@ -134,7 +139,7 @@ describe("readClusterSealing", () => {
 
   it("to seal, answers without waiting for Inngest to take the reseal request", async () => {
     await pair();
-    cluster = frameOf({ m1: held(publicKey) });
+    cluster = frameOf({ [founder]: held(publicKey) });
     const stalled = new Inngest({ id: "stalled" });
     vi.spyOn(stalled, "send").mockReturnValue(new Promise(() => {}));
     expect(await readToSeal(stalled)).toEqual({ state: "ready", publicKey });
@@ -143,13 +148,20 @@ describe("readClusterSealing", () => {
 
   it("to seal, records the held key while another Server still awaits recovery", async () => {
     await pair();
-    cluster = frameOf({ m1: held(publicKey), m2: awaitsRecovery });
+    cluster = frameOf({ [founder]: held(publicKey), [joiner]: awaitsRecovery });
     expect(await readToSeal()).toEqual({ state: "ready", publicKey });
   });
 
-  it("to seal, has no server while two Servers hold different keys or the Cluster doesn't answer", async () => {
+  it("to seal, reads the Cluster only through its first Server, and records the key another of its Servers recovered", async () => {
     await pair();
-    for (const answer of [frameOf({ m1: held(publicKey), m2: held(otherKey) }), "unreachable" as const]) {
+    cluster = frameOf({ [founder]: { kind: "needs_access" }, [joiner]: held(publicKey) });
+    expect(await readToSeal()).toEqual({ state: "ready", publicKey });
+    expect(entries).toEqual([{ only: founder }]);
+  });
+
+  it("to seal, has no server while two Servers hold different keys or the first Server doesn't answer", async () => {
+    await pair();
+    for (const answer of [frameOf({ [founder]: held(publicKey), [joiner]: held(otherKey) }), "unreachable" as const]) {
       cluster = answer;
       expect(await readToSeal()).toEqual({ state: "no_server" });
     }
@@ -158,7 +170,7 @@ describe("readClusterSealing", () => {
 
   it("to seal, says the Cluster awaits recovery while a Server does and none holds a key", async () => {
     await pair();
-    cluster = frameOf({ m1: awaitsRecovery });
+    cluster = frameOf({ [founder]: awaitsRecovery });
     expect(await readToSeal()).toEqual({ state: "no_server", awaitsRecovery: true });
     expect(await read()).toEqual({ state: "no_server" });
   });
