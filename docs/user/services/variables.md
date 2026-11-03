@@ -111,7 +111,8 @@ service still gets the real value when it deploys.
   **Sealed** too. Undo or Roll back to one never brings that value back: the
   variable comes back **Not set**, or keeps the value the branch holds now.
   A value the branch set itself before the seal, saved or deployed, wasn't
-  sealed, so it still shows until the branch takes the seal. When a branch changed or deleted
+  sealed, so it still shows until the branch takes the seal, unless it's the same text an
+  environment above held ([Limits](#limits-of-a-seal-in-branches-below)). When a branch changed or deleted
   the variable before the seal, it keeps its own change and shows the seal as a hint. Each
   branch below it that still holds the earlier value, and never changed it, gets the variable
   **Not set** as a change to deploy when the seal deploys, and deploys without it; a value it
@@ -124,17 +125,8 @@ service still gets the real value when it deploys.
 - A branch's **Details** and `ployz diff` don't offer back a plain value its parent still
   runs once the parent holds the variable sealed, or the value an environment above held
   under that variable's name when it sealed it. You see no "*parent* has since set
-  *value*" with **Use theirs**, and no `ployz env sync --take` hint for it. Ployz matches
-  the value's text. So when a branch below sets that same text itself, its History shows
-  that text as **Sealed** once the branch moves off it, and discarding a change from it, or
-  Undo or Roll back to it, brings the variable back **Not set**. Some cases aren't covered
-  yet ([#3800](https://github.com/getployz/ployz/issues/3800)): a value held under a name
-  the branch above renamed, and one from before the environment above deleted the sealed
-  variable and added it again plain. One more case shows only in History. A branch's
-  parent deleted the variable before the seal, and then takes the seal from its own
-  parent. A value the branch took from that parent by a follow then shows plain again in
-  the branch's History, though `ployz diff` and **Details** never offer it. The branch's
-  next deploy clears it.
+  *value*" with **Use theirs**, and no `ployz env sync --take` hint for it. For the cases
+  this doesn't cover, see [Limits of a seal in branches below](#limits-of-a-seal-in-branches-below).
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
   a plain value is refused, so a secret never turns into plain text by mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that
