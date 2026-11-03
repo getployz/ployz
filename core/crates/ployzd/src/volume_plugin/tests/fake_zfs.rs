@@ -426,8 +426,9 @@ case "$*" in
     fi
     ;;
   'receive -u -s -o readonly=on -o refquota='*)
-    # Written first, so a pull's stall watchdog never kills a receive whose pid a test cannot read.
-    echo $$ > '{props}/receive-pid'
+    # Written first, so a pull's stall watchdog never kills a receive whose pid a test cannot
+    # read; in one rename, so a test that sees the file reads the whole pid.
+    put '{props}/receive-pid' $$
     eval "fs=\${{$#}}"
     case "$fs" in
       tank/ployz-mirror/data/fs|tank/ployz-mirror/{seed}/fs) ;;
@@ -452,7 +453,7 @@ case "$*" in
       previous=$option
     done
     # Apart from the pid, so a departure test can stop a receive that already holds its dataset.
-    echo $$ > '{props}/receive-ready'
+    put '{props}/receive-ready' $$
     while [ -e '{props}/stall-read' ]; do sleep 0.01; done
     read -r verb arg guid || verb=empty
     if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
