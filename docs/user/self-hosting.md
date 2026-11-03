@@ -289,8 +289,9 @@ one variable, set that variable again.
   such as a branch it couldn't update in time, `web` and `worker` write one JSON line for it to
   stderr, shown in `docker compose logs`. A line says what went wrong, which branch, volume or
   machine it hit, and the error's first line. It never holds a variable's value: anything else
-  reads `[redacted]`. To see other lines, set `PLOYZ_SDK_LOG` in `.env` to a `tracing` filter,
-  for example `PLOYZ_SDK_LOG=ployz_store=info`.
+  reads `[redacted]`. To change which lines appear, set `PLOYZ_SDK_LOG` in `.env` to a `tracing`
+  filter. It replaces the default, `ployz=warn`, so keep that in it: for example
+  `PLOYZ_SDK_LOG=ployz=warn,ployz_store=info`. Lines below warnings mostly read `[redacted]`.
 - **Back up one volume.** Everything Ployz Cloud stores, your organizations, projects and
   settings included, is in `ployz-cloud-self-host_postgres-data`.
 - **Restarting Postgres.** While it's down, pages say **This page couldn't load** and try again
