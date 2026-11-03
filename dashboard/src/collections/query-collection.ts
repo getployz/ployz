@@ -49,17 +49,31 @@ function withWriteCommitted<T extends object, C extends ApiCollection<T>>(input:
 }
 
 /**
- * A failed first load ends its sync run, and later reads of the same Query never reach it: reload once one succeeds.
- * The Query cache is watched only while the collection is in `error`.
+ * A failed first load ends its sync run, and later reads of the same Query never reach it. The Collection reloads
+ * after its Query next succeeds, or when `recover()` is called. A reload starts a new run, which cancels every read of
+ * the old run still settling, so it waits until none is. The Query cache is watched only while the Collection is in
+ * `error`.
  */
-function reloadAfterFailedFirstLoad<T extends object, C extends Pick<Collection<T>, "status" | "health" | "reload" | "on">>(
+function withRecovery<T extends object, C extends Pick<Collection<T>, "status" | "preload" | "reload" | "on">>(
   input: ApiCollectionInput<T>, collection: C,
 ) {
   const queryHash = hashKey(input.queryKey);
+  const fetching = () => input.queryClient.getQueryCache().get(queryHash)?.state.fetchStatus === "fetching";
+  const settled = async () => {
+    do {
+      await input.queryClient.getQueryCache().get(queryHash)?.promise?.catch(() => {});
+      // A read's callers settle in the microtasks after it.
+      await new Promise((resolve) => setTimeout(resolve));
+    } while (fetching());
+  };
+  const recover = async () => {
+    await settled();
+    await (collection.status === "error" ? collection.reload() : collection.preload());
+  };
   let watching: (() => void) | undefined;
   const watch = () => input.queryClient.getQueryCache().subscribe((event) => {
     if (event.type !== "updated" || event.action.type !== "success" || event.query.queryHash !== queryHash) return;
-    if (!collection.health.reloading) void collection.reload().catch(() => {});
+    if (collection.status === "error") void recover().catch(() => {});
   });
   const arm = () => collection.on("status:change", ({ status }) => {
     if (status === "error") watching ??= watch();
@@ -75,7 +89,7 @@ function reloadAfterFailedFirstLoad<T extends object, C extends Pick<Collection<
     disarm();
     disarm = arm();
   };
-  return collection;
+  return Object.assign(collection, { recover });
 }
 
 /** Each owner supplies its request-local QueryClient and authenticated scope. A Remote Read that polls sets `refetchInterval`. */
@@ -84,7 +98,7 @@ export function createApiCollection<T extends object>(input: ApiCollectionInput<
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
 }) {
   const options = queryCollectionOptions({ ...baseOptions(input), refetchInterval: input.refetchInterval, queryFn: input.queryFn });
-  return withWriteCommitted(input, reloadAfterFailedFirstLoad(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
+  return withWriteCommitted(input, withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
 }
 
 /** Rows and their change cursor live in one Query entry, so a cancelled or reverted read reverts both. */
@@ -113,21 +127,22 @@ export function createChangeCollection<T extends object>(input: ApiCollectionInp
     queryFn,
     select: (snapshot: ChangeSnapshot<T>) => snapshot.rows,
   });
-  return withWriteCommitted(input, reloadAfterFailedFirstLoad(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
+  return withWriteCommitted(input, withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
 }
 
-type ApiCollectionReadiness = Pick<Collection<object>, "status" | "preload" | "reload"> & {
+type ApiCollectionReadiness = Pick<Collection<object>, "status" | "preload"> & {
+  recover: () => Promise<void>;
   subscribeChanges: (callback: () => void) => { unsubscribe: () => void };
   utils: Pick<QueryCollectionUtils, "refetch">;
 };
 
-/** Hold an observer only until readiness; a failed first read rejects and reloads on the next call. */
+/** Hold an observer only until readiness; a failed first read rejects and recovers on the next call. */
 export async function preloadCollection(collection: ApiCollectionReadiness) {
-  // Subscribing to a failed Collection starts a read that reload() would abort, so the read starts first.
-  const ready = collection.status === "error" ? collection.reload() : collection.preload();
+  // Subscribing to a failed Collection starts a read of its ended run, so recovery runs without one.
+  if (collection.status === "error") return collection.recover();
   const subscription = collection.subscribeChanges(() => {});
   try {
-    await ready;
+    await collection.preload();
   } finally {
     subscription.unsubscribe();
   }

@@ -107,6 +107,26 @@ it.each(["api", "change"] as const)("leaves a failed first load when a later rea
   client.clear();
 });
 
+it.each(["api", "change"] as const)("recovers through another caller's refetch without cancelling it (%s)", async (kind) => {
+  const client = new QueryClient();
+  const read = vi.fn<() => Promise<{ id: string }[]>>().mockRejectedValueOnce(new Error("first")).mockResolvedValue([{ id: "one" }]);
+  const input = { queryClient: client, queryKey: ["caller", kind], getKey: (row: { id: string }) => row.id };
+  const collection = kind === "api"
+    ? createApiCollection({ ...input, queryFn: read })
+    : createChangeCollection({ ...input, read: async () => ({ full: true as const, rows: await read(), cursor: "1" }) });
+  const active = collection.subscribeChanges(() => {});
+  await vi.waitFor(() => expect(collection.status).toBe("error"));
+  const refetch = collection.utils.refetch();
+  const preload = preloadCollection(collection);
+  await expect(refetch).resolves.toBeDefined();
+  await expect(preload).resolves.toBeUndefined();
+  await vi.waitFor(() => expect(collection.status).toBe("ready"));
+  expect(collection.get("one")).toMatchObject({ id: "one" });
+  active.unsubscribe();
+  await getDbClient(client).cleanup();
+  client.clear();
+});
+
 function countCacheListeners(client: QueryClient) {
   const cache = client.getQueryCache();
   const subscribe = cache.subscribe.bind(cache);

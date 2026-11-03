@@ -43,6 +43,7 @@ it("an open picker recovers a failed first load when the next read succeeds", as
       html_url: "https://github.com/acme/repo", repo_updated_at: now, synced_at: now }];
     await act(async () => { await read(rows); });
     // Queries are disabled here, so this read stands in for the one the recovery reload's observer starts.
+    await waitFor(() => expect(githubRepos.health.reloading).toBe(true));
     await act(async () => { await read(rows); });
     await screen.findByRole("option", { name: "acme/repo" });
     expect(githubRepos.status).toBe("ready");
