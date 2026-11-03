@@ -738,6 +738,8 @@ impl LocalMachine {
     }
 
     /// Publish a client-selected assignment from a participating Entry Machine.
+    /// An id whose row already names a daemon version keeps that row, and the
+    /// reply carries it in place of the assignment.
     ///
     /// # Errors
     /// Rejects absent assignments, invalid assignments, unavailable storage, or
@@ -759,24 +761,34 @@ impl LocalMachine {
     async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let replicated = self.replicated()?;
         let publication = replicated.machine_publication().await;
-        // Other Machines' rows are not consulted: Cloud owns concurrency, and a
-        // Register for an existing id overwrites its row.
+        // Other Machines' rows are not consulted: Cloud owns concurrency.
         let snapshot = ployz_core::EnrollmentSnapshot {
             network: published_network(&self.record(), replicated).await?,
             machines: Vec::new(),
             target_versions: BTreeMap::new(),
         };
         let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
+        // A row that already names a daemon version is kept as it is.
+        let published = replicated
+            .machine(assignment.machine.id.as_str())
+            .await?
+            .filter(|machine| !machine.runtime.daemon_version.is_empty());
+        let machine = published.as_ref().unwrap_or(&assignment.machine);
         let sealing_key = SealingKey::load(self.owner.data_dir())
             .unwrap_or_else(|error| {
                 tracing::warn!(%error, "could not read the Sealing Key; registering without it");
                 None
             })
-            .map(|key| key.seal_to(&assignment.machine.public_key))
+            .map(|key| key.seal_to(&machine.public_key))
             .transpose()?;
-        publication.publish(&assignment.machine).await?;
+        let machine = if let Some(published) = published {
+            published
+        } else {
+            publication.publish(&assignment.machine).await?;
+            assignment.machine
+        };
         Ok(registered(
-            assignment.machine,
+            machine,
             replicated.machines().await?.observations,
             replicated.version().await?,
             sealing_key,

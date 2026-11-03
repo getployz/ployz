@@ -222,6 +222,80 @@ async fn client_assignment_publishes_through_entry_and_a_changed_register_overwr
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+#[tokio::test]
+async fn register_preserves_a_machine_that_already_published() {
+    let (local, replicated, _, data_dir, server) = participating().await;
+    let identity = request("joiner", WireGuardPublicKey([21; 32]));
+    let mut published = local
+        .register(identity.clone())
+        .await
+        .unwrap()
+        .assigned_machine;
+    published.runtime.daemon_version = "FAKE".into();
+    published.name = ployz_core::MachineName::parse("published").unwrap();
+    replicated.publish_local_machine(&published).await.unwrap();
+    let mut changed = identity;
+    changed.public_key = WireGuardPublicKey([22; 32]);
+    let reply = local.register(changed).await.unwrap();
+    assert_eq!(reply.assigned_machine, published);
+    assert_eq!(
+        replicated.machine(published.id.as_str()).await.unwrap(),
+        Some(published)
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn a_repeated_register_seals_only_to_the_published_machine() {
+    let (replicated, server) = fake_cluster::store().await;
+    let cluster = || {
+        Some((
+            replicated.clone(),
+            AdminClient::new("/no/such/ployz-admin.sock"),
+        ))
+    };
+    let prefix = "ployzd-register-published-seal";
+    let (entry_dir, entry_store, founder) = open_store(prefix);
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let entry = LocalMachine::new(entry_store).with_cluster(cluster());
+    let dir = std::env::temp_dir().join(format!("{prefix}-joiner-{}", MachineId::random()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&dir).unwrap()).unwrap();
+    let mut changed = request("joiner", store.record().wireguard_private_key.public_key());
+    changed.machine_id = store.record().id();
+    let joiner = LocalMachine::new(store).with_cluster(cluster());
+    let published_key = crate::network::WireGuardPrivateKey::generate();
+    let mut identity = changed.clone();
+    identity.public_key = published_key.public_key();
+    let mut published = entry.register(identity).await.unwrap().assigned_machine;
+    published.runtime.daemon_version = "FAKE".into();
+    replicated.publish_local_machine(&published).await.unwrap();
+
+    let reply = entry.register(changed).await.unwrap();
+    assert_eq!(reply.assigned_machine, published);
+    let sealed = reply.sealing_key.clone().expect("the founder holds a key");
+    assert!(SealingKey::open(&sealed, &published_key).is_ok());
+    assert!(SealingKey::open(&sealed, &joiner.record().wireguard_private_key).is_err());
+    let refused = joiner.enroll(member(reply)).await.unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("assigned public key does not match this Machine"),
+        "{refused}"
+    );
+    assert_eq!(SealingKey::load(&dir).unwrap(), None);
+    assert_eq!(joiner.record().phase(), LocalMachinePhase::Uninitialized);
+    assert_eq!(
+        replicated.machine(published.id.as_str()).await.unwrap(),
+        Some(published)
+    );
+    server.abort();
+    drop((entry, joiner));
+    let _ = std::fs::remove_dir_all(entry_dir);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A plain add of a forgotten Server that still holds its old id reaches Register on
 /// an Entry before the CLI refuses it. The Register must not list that id again (#3613).
 #[tokio::test]
@@ -319,7 +393,7 @@ async fn register_requires_a_valid_assignment_and_preserves_the_row_on_refusal()
 }
 
 #[tokio::test]
-async fn replayed_enroll_republishes_runtime_over_a_register_row() {
+async fn replayed_enroll_keeps_runtime_and_publisher_restores_a_replaced_row() {
     let (replicated, server) = fake_cluster::store_with_subscriptions().await;
     let cluster = || {
         Some((
@@ -413,21 +487,18 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     assert_eq!(target.record().phase(), LocalMachinePhase::Participating);
     replicated.publish_cluster_network(marker).await.unwrap();
 
-    // `ployz server add` registers through the entry with an empty runtime,
-    // then resends Enroll to a Machine that already participates.
+    // A Register rerun keeps what the Machine published.
     let registration = entry.register(identity.clone()).await.unwrap();
-    assert!(
-        registration
-            .assigned_machine
-            .runtime
-            .capabilities
-            .is_empty()
-    );
+    assert_eq!(registration.assigned_machine, published);
+    // An older Entry's Register still blanks the runtime.
+    let mut replaced = published;
+    replaced.runtime = Default::default();
+    replicated.publish_local_machine(&replaced).await.unwrap();
     let replayed = target.enroll(enroll(registration)).await.unwrap();
     assert!(matches!(replayed, ployz_core::Enrolled::Enrolled { .. }));
     assert!(
         republished().await.is_ok(),
-        "the row kept the Register runtime: {:?}",
+        "the publisher did not restore the runtime: {:?}",
         capabilities().await
     );
     // The founder saw the Register and restore as Machines view changes too.
