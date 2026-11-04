@@ -407,3 +407,34 @@ it("merges incremental reads, drops deleted ids, and advances the cursor when no
   await collection.cleanup();
   client.clear();
 });
+
+it.each(["api", "change"] as const)("retries a failed refresh with backoff, one read at a time, and stops after three tries (%s)", async (kind) => {
+  vi.useFakeTimers();
+  const client = new QueryClient();
+  const read = vi.fn<() => Promise<{ id: string }[]>>().mockResolvedValue([{ id: "before" }]);
+  const input = { queryClient: client, queryKey: ["refresh-retry", kind], getKey: (row: { id: string }) => row.id };
+  const collection = kind === "api"
+    ? createApiCollection({ ...input, queryFn: read })
+    : createChangeCollection({ ...input, read: async () => ({ full: true as const, rows: await read(), cursor: "1" }) });
+  const active = collection.subscribeChanges(() => {});
+  await vi.advanceTimersByTimeAsync(10);
+  read.mockRejectedValueOnce(new Error("one")).mockRejectedValueOnce(new Error("two")).mockResolvedValue([{ id: "after" }]);
+  void collection.utils.refetch();
+  await vi.advanceTimersByTimeAsync(10);
+  expect(read).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(999);
+  expect(read).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(read).toHaveBeenCalledTimes(4);
+  expect(collection.get("after")).toMatchObject({ id: "after" });
+  expect(client.getQueryState(input.queryKey)?.status).toBe("success");
+  read.mockRejectedValue(new Error("down"));
+  void collection.utils.refetch();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(read).toHaveBeenCalledTimes(8);
+  expect(client.getQueryState(input.queryKey)?.status).toBe("error");
+  expect(collection.get("after")).toMatchObject({ id: "after" });
+  active.unsubscribe();
+  await collection.cleanup();
+  client.clear();
+});
