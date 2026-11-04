@@ -218,41 +218,48 @@ impl Recorded {
 /// Where the watcher is in `watch_caddy`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Pc {
-    /// `wait_for_debounced_change`, or `wait_before_retry` after a failed pass. Caddy
-    /// and the store act here.
+    /// `ingress.rs` `watch_caddy`: `wait_for_debounced_change`, or `wait_before_retry`
+    /// after a failed pass. Caddy and the store act here.
     Wait,
-    /// The top of the inner loop: `replicated.containers()` and `certificate_state()`,
-    /// reached from the wait or from `Probe::Refused`'s `continue`.
+    /// `ingress.rs` `watch_caddy`: the top of the inner loop, `replicated.containers()`
+    /// and `certificate_state()`, reached from the wait or from `Probe::Refused`'s
+    /// `continue`.
     Read,
-    /// `let loaded = !no_caddy && last_input.loaded(..)`.
+    /// `ingress.rs` `watch_caddy`: `let loaded = !no_caddy && last_input.loaded(..)`
+    /// (`CaddyInput::loaded`).
     Cached,
-    /// `connect().await`.
+    /// `ingress.rs` `watch_caddy`: `connect().await` (`caddy.rs`
+    /// `AdminClient::connect_if_available`).
     Connect,
-    /// `last_input.as_ref() == Some(&input)`.
+    /// `ingress.rs` `watch_caddy`: `last_input.as_ref() == Some(&input)`.
     Same { admin: bool },
-    /// `apply_caddy`: `write_certificate_files`.
+    /// `ingress.rs` `apply_caddy`: `write_certificate_files`.
     WriteCertificates { admin: bool },
-    /// `apply_caddy`: `caddy::load`, which adapts and loads through the admin when it
-    /// has one and only renders without.
+    /// `ingress.rs` `apply_caddy`: `caddy::load` (`caddy.rs` `load`), which adapts and
+    /// loads through the admin when it has one and only renders without.
     Load { admin: bool },
-    /// `apply_caddy`: `caddy::write_caddyfile`.
+    /// `ingress.rs` `apply_caddy`: `caddy::write_caddyfile` (`caddy.rs`
+    /// `write_caddyfile`, `filesystem.rs` `atomic_write`).
     WriteCaddyfile { admin: bool },
-    /// `apply_caddy`: `remove_stale_certificate_files`.
+    /// `ingress.rs` `apply_caddy`: `remove_stale_certificate_files`.
     RemoveStale { admin: bool },
-    /// `find_refused`: `admin.loaded_certificates()`, then the suspects.
+    /// `ingress.rs` `CaddyCertificates::find_refused`: `admin.loaded_certificates()`,
+    /// then the suspects.
     ProbeLoaded,
-    /// `find_refused`: `caddy::load(&without(projection, &excluded), ..)`.
+    /// `ingress.rs` `find_refused`: `caddy::load(&without(projection, &excluded), ..)`.
     ProbeWithout,
-    /// `find_refused`: the candidate with `c` back in, loaded twice on an admin error.
+    /// `ingress.rs` `find_refused`: the candidate with `c` back in, loaded twice on an
+    /// admin error.
     ProbeCandidate,
-    /// The `Probe` arms, then the `(applied, admin)` match.
+    /// `ingress.rs` `watch_caddy`: the `Probe` arms, then the `(applied, admin)` match.
     Settle {
         applied: Outcome,
         /// Through the admin, what `find_refused` left (`Unchanged` when no probe
         /// ran); `None` without the admin, which has no probe.
         probe: Option<Probe>,
     },
-    /// The keep rule and the record write, then the retry or the acks.
+    /// `ingress.rs` `watch_caddy`: `refused`, the keep rule and the record write
+    /// (`route_publishes.send_if_modified`), then `wait_before_retry` or the acks.
     Record(Recorded),
 }
 
@@ -271,7 +278,7 @@ struct State {
     projection: Config,
     pc: Pc,
     last_input: Option<CaddyInput>,
-    /// The Caddy whose admin confirmed the published addresses.
+    /// The Caddy whose admin confirmed the claim.
     recorded_by: Option<Container>,
     certificates: Certificates,
     /// `PublishedRoutes.addresses`.
@@ -386,20 +393,40 @@ enum Write {
     FailedAfterReplacing,
 }
 
+/// One statement of the watcher, with its outcome, or one Caddy or store event. Each
+/// watcher action runs at the `Pc` of the same name, whose doc names its file and
+/// function.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Action {
+    /// `ingress.rs` `watch_caddy`: `replicated.containers()`, `certificate_state()` and
+    /// `next_pass`; `Err` is the read's `Err` arm, which logs and waits.
     Read(Call),
+    /// `ingress.rs` `watch_caddy`: the `loaded` cache (`CaddyInput::loaded`).
     Cached,
+    /// `ingress.rs` `watch_caddy`: `connect().await` and its three arms.
     Connect(Admin),
+    /// `ingress.rs` `watch_caddy`: the equal-input skip.
     Same,
+    /// `ingress.rs` `apply_caddy`: `write_certificate_files`.
     WriteCertificates(Call),
+    /// `ingress.rs` `apply_caddy`: `caddy::load` (`caddy.rs` `load`, `AdminClient::adapt`
+    /// and `AdminClient::load`).
     Load(Load),
+    /// `ingress.rs` `apply_caddy`: `caddy::write_caddyfile` (`caddy.rs`
+    /// `write_caddyfile`, `filesystem.rs` `atomic_write`).
     WriteCaddyfile(Write),
+    /// `ingress.rs` `apply_caddy`: `remove_stale_certificate_files`.
     RemoveStale(Call),
+    /// `ingress.rs` `CaddyCertificates::find_refused`: `admin.loaded_certificates()`.
     ProbeLoaded(Call),
+    /// `ingress.rs` `find_refused`: the load without the suspects.
     ProbeWithout(Load),
+    /// `ingress.rs` `find_refused`: the candidate with `c`, loaded twice on an admin
+    /// error.
     ProbeCandidate(Load),
+    /// `ingress.rs` `watch_caddy`: the `Probe` arms and the `(applied, admin)` match.
     Settle,
+    /// `ingress.rs` `watch_caddy`: the keep rule and the record write.
     Record,
     /// Caddy restarts in place under the same container id and serves the Caddyfile.
     Restart,
@@ -799,6 +826,15 @@ impl CaddyLoad {
         }
     }
 
+    /// `let loaded = !no_caddy && last_input.loaded(projection, caddy)`.
+    fn cache_hits(&self, state: &State) -> bool {
+        let running = !state.no_caddy() || self.broken.cache_ignores_a_stopped_caddy;
+        running
+            && state
+                .last_input
+                .is_some_and(|last| last.loaded(state.derived(), state.caddy.container))
+    }
+
     /// `action` from `before` to `after` is what the coverage check cut.
     fn omitted(&self, before: &State, action: Action, after: &State) -> bool {
         match self.omit {
@@ -824,12 +860,7 @@ impl CaddyLoad {
             }
             Action::Read(Call::Err) => state.pc = Pc::Wait,
             Action::Cached => {
-                let running = !state.no_caddy() || self.broken.cache_ignores_a_stopped_caddy;
-                let loaded = running
-                    && state
-                        .last_input
-                        .is_some_and(|last| last.loaded(state.derived(), state.caddy.container));
-                state.pc = if loaded {
+                state.pc = if self.cache_hits(state) {
                     Pc::Record(Recorded::Cached)
                 } else {
                     Pc::Connect
@@ -1307,10 +1338,7 @@ fn reads_as(model: &CaddyLoad, before: &State, action: Action) -> String {
         }
         Action::Cached => format!(
             "watcher: `loaded` = !no_caddy && last_input.loaded(projection, caddy): {} (watch_caddy, CaddyInput::loaded)",
-            !before.no_caddy()
-                && before
-                    .last_input
-                    .is_some_and(|last| last.loaded(before.derived(), before.caddy.container))
+            model.cache_hits(before)
         ),
         Action::Connect(Admin::Some) => "watcher: connect() returns Some(admin) (watch_caddy)".to_owned(),
         Action::Connect(Admin::None) => {
@@ -1471,6 +1499,8 @@ fn reads_as(model: &CaddyLoad, before: &State, action: Action) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
 
     type Path = Vec<(State, Option<Action>)>;
@@ -1479,28 +1509,38 @@ mod tests {
         model.checker().threads(1).spawn_bfs().join()
     }
 
-    /// The shortest path on which `property` fails under `model`, cut at the first
-    /// state that breaks it, printed as a story under the test's name. One thread
-    /// keeps the path the same from run to run.
+    /// The first path in BFS order whose last state breaks `property` under `model`,
+    /// so no shorter path breaks it, printed as a story under the test's name. The
+    /// checker's own discovery is not that path: `check_block` stores every violation
+    /// it visits, each overwriting the last, and `finish_when` is read once per
+    /// 1500-state block, so a visitor keeps the first. One thread keeps the path the
+    /// same from run to run.
     fn breaks(model: CaddyLoad, property: &'static str) -> Path {
-        let checker = model
-            .checker()
-            .threads(1)
-            .finish_when(HasDiscoveries::AllOf([property].into()))
-            .spawn_bfs()
-            .join();
         let holds = model
             .properties()
             .into_iter()
             .find(|candidate| candidate.name == property)
             .expect("a model property")
             .condition;
-        let mut path = checker.assert_any_discovery(property).into_vec();
-        let first_broken = path
-            .iter()
-            .position(|(state, _)| !holds(&model, state))
-            .expect("a discovery breaks its property");
-        path.truncate(first_broken + 1);
+        let first = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&first);
+        model
+            .checker()
+            .threads(1)
+            .visitor(move |path: stateright::Path<State, Action>| {
+                let mut first = seen.lock().expect("the first break");
+                if first.is_none() && !holds(&model, path.last_state()) {
+                    *first = Some(path.into_vec());
+                }
+            })
+            .finish_when(HasDiscoveries::AllOf([property].into()))
+            .spawn_bfs()
+            .join();
+        let path = first
+            .lock()
+            .expect("the first break")
+            .take()
+            .expect("a path breaks the property");
         let test = std::thread::current();
         println!(
             "[{}] {property} fails under {model:?}:\n{}",
@@ -1560,11 +1600,13 @@ mod tests {
         assert_eq!(last.addresses, Some(Served::Config(Config::P1)));
     }
 
-    /// The second finding. Caddy confirms P0, the projection changes to P1, and the
-    /// admin refuses the load. `loaded_certificates` has no `c`, so the probe loads
-    /// `P1WithoutC` and quarantines `c`: `Probe::Refused` clears `recorded_by` and
-    /// `continue`s past the record write, so the claim of P0 stands while Caddy
-    /// serves the probe config. The next read fails, and its `Err` arm only logs, so
+    /// The second finding. Caddy X confirms P1 after a write that failed before the
+    /// rename, so the Caddyfile holds P0; a new container serves that file, and the
+    /// admin refuses the next load of P1. `loaded_certificates` has no `c`, so the
+    /// probe loads `P1WithoutC` and quarantines `c`: `Probe::Refused` clears
+    /// `recorded_by` and `continue`s past the record write, so the claim of P1 stands
+    /// while Caddy serves the probe config. (A confirmed P0 with the projection
+    /// changed to P1 reaches the same arm at the same length.) The next read fails, and its `Err` arm only logs, so
     /// the watcher waits on that claim. This test passes by finding that path; it
     /// starts failing once the claim is written on every exit from a pass.
     #[test]
@@ -1584,7 +1626,7 @@ mod tests {
         assert_eq!(last.recorded_by, None);
         assert!(last.certificates.refused_c);
         assert_eq!(last.caddy.serves, Served::Config(Config::P1WithoutC));
-        assert_eq!(last.addresses, Some(Served::Config(Config::P0)));
+        assert_eq!(last.addresses, Some(Served::Config(Config::P1)));
     }
 
     /// The third finding. Caddy confirms P1, the projection changes to P0, and the
@@ -1654,7 +1696,8 @@ mod tests {
     /// Open under the fix: Caddy restarts in place between `caddy::load` and
     /// `write_caddyfile`, so it serves P0 while the write lands P1 and the pass
     /// claims P1. Every later pass hits the `loaded` cache, which skips the admin
-    /// while Caddy runs and the last load matches, so the claim never corrects.
+    /// while Caddy runs and the last load matches, so the claim stands until the
+    /// projection or the ingress container changes, or Caddy stops.
     #[test]
     fn the_fix_does_not_close_a_restart_between_the_load_and_the_caddyfile_write() {
         let path = breaks(
