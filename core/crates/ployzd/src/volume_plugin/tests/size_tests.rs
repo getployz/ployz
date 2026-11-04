@@ -392,7 +392,7 @@ async fn a_grow_a_first_receive_lands_during_raises_the_copy_it_landed() {
         Some(&json!("w-1-1")),
         "{started}"
     );
-    assert!(receives.running(&name));
+    assert!(receives.status(&name).busy());
 
     fs::write(test.0.join("list-gate"), "").unwrap();
     let grow_during = tokio::spawn({
@@ -404,7 +404,7 @@ async fn a_grow_a_first_receive_lands_during_raises_the_copy_it_landed() {
     })
     .await;
     fs::remove_file(test.0.join("receive-gate")).unwrap();
-    eventually("the receive's finish", || !receives.running(&name)).await;
+    eventually("the receive's finish", || !receives.status(&name).busy()).await;
     fs::remove_file(test.0.join("list-gate")).unwrap();
     let reply = grow_during.await.unwrap();
     server.abort();

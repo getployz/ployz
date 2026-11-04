@@ -5,7 +5,10 @@ use std::{
     collections::BTreeMap,
     future::Future,
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -19,7 +22,7 @@ use tokio::{
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
 
-use super::{DockerVolumeName, VolumeStorage};
+use super::{DockerVolumeName, VolumeStorage, storage::HeldMutation};
 
 /// The Volume and target a pull of `stream` lands, for the lane at `gen`.
 pub(super) fn pulling(stream: &SendStream, r#gen: VolumeGen) -> Identity<'_> {
@@ -42,13 +45,12 @@ pub(super) const RECEIVE_STALL: Duration = Duration::from_secs(60);
 /// One deadline for all of a departure's stops, well inside Demote's 120 s timeout.
 pub(super) const STOP_DEADLINE: Duration = Duration::from_secs(30);
 
-/// The receive tasks this process started, by Volume name. An entry lasts while any of
-/// its tasks has a `zfs` child alive, whatever was forgotten or spawned since: that
-/// child can still write the slot or hold it busy, and only the entry lets the departure
-/// wait for it or name it.
+/// The receive this process started for each Volume, by name. An entry lasts while its
+/// task or a `zfs` child the task dropped is alive: that child can still write the slot
+/// or hold it busy, and only the entry lets the departure wait for it or name it.
 #[derive(Clone)]
 pub(super) struct Receives {
-    tasks: Arc<Mutex<BTreeMap<String, ReceiveTask>>>,
+    receives: Arc<Mutex<BTreeMap<String, Receive>>>,
     /// How long a failure waits for the children its task dropped. One still alive after
     /// the departure's own deadline for a stop is stuck, not writing.
     hold: Duration,
@@ -57,43 +59,101 @@ pub(super) struct Receives {
 impl Default for Receives {
     fn default() -> Self {
         Self {
-            tasks: Arc::default(),
+            receives: Arc::default(),
             hold: STOP_DEADLINE,
         }
     }
 }
 
-#[derive(Default)]
-struct ReceiveTask {
-    /// The latest task's outcome, until it is forgotten or replaced.
-    outcome: Arc<Mutex<Option<Outcome>>>,
-    lives: Vec<Life>,
+/// One Volume's receive. Its task writes the ending before it lets go of its life, so a
+/// `Running` receive's life is never finished.
+enum Receive {
+    Running {
+        life: Life,
+    },
+    /// The task returned. Its life finishes once every child it dropped has exited.
+    Ended {
+        ending: Ending,
+        at: Instant,
+        life: Life,
+    },
 }
 
-#[derive(Clone)]
-struct Outcome {
-    at: Instant,
-    result: Result<(), String>,
+enum Ending {
+    Landed,
+    Failed(String),
+    /// A departure stopped the task before it landed.
+    Stopped,
 }
 
-/// One task's stop signal and its finish, which fires once the task returned and every
+/// A task's stop signal and its finish, which fires once the task returned and every
 /// child it dropped has exited.
 struct Life {
     stop: CancellationToken,
     finished: CancellationToken,
 }
 
-impl ReceiveTask {
-    fn running(&self) -> bool {
-        self.lives.iter().any(|life| !life.finished.is_cancelled())
+impl Receive {
+    fn life(&self) -> &Life {
+        match self {
+            Self::Running { life } | Self::Ended { life, .. } => life,
+        }
+    }
+
+    fn unfinished(&self) -> bool {
+        !self.life().finished.is_cancelled()
+    }
+
+    fn end(self, ending: Ending) -> Self {
+        match self {
+            Self::Running { life } => Self::Ended {
+                ending,
+                at: Instant::now(),
+                life,
+            },
+            ended @ Self::Ended { .. } => ended,
+        }
     }
 }
+
+/// What a route reads of a Volume's receive.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Status {
+    /// No receive, or one that landed or was stopped and left no child alive.
+    Idle,
+    /// The task, or a child it dropped, is alive, with no failure to show yet.
+    Receiving,
+    /// `settled` is false while a child the task dropped outlives the hold: the failure
+    /// shows, but that child can still hold the slot.
+    Failed { failure: String, settled: bool },
+}
+
+impl Status {
+    /// Whether the task or a child it dropped can still change the slot.
+    pub(super) fn busy(&self) -> bool {
+        matches!(self, Self::Receiving | Self::Failed { settled: false, .. })
+    }
+
+    pub(super) fn failure(self) -> Option<String> {
+        match self {
+            Self::Failed { failure, .. } => Some(failure),
+            Self::Idle | Self::Receiving => None,
+        }
+    }
+}
+
+/// The receive's task, or a child it dropped, is still alive.
+#[derive(Debug)]
+pub(super) struct Busy;
 
 /// A receive task's stop signal and a share of its finish. The task has finished once
 /// every share is gone, and a `zfs` child dropped unreaped keeps one until it exits.
 #[derive(Clone)]
 pub(super) struct Stop {
     token: CancellationToken,
+    /// Set once the task acted on the stop, so the error it then returns names the stop,
+    /// not a fault of the receive.
+    heeded: Arc<AtomicBool>,
     finish: Arc<DropGuard>,
 }
 
@@ -103,12 +163,20 @@ impl Stop {
     pub(super) fn unowned() -> Self {
         Self {
             token: CancellationToken::new(),
+            heeded: Arc::default(),
             finish: Arc::new(CancellationToken::new().drop_guard()),
         }
     }
 
+    /// Fires once [`Receives::stop_all`] stops the task. A task that acts on it returns
+    /// an error, which the receive records as stopped rather than failed.
     pub(super) async fn cancelled(&self) {
         self.token.cancelled().await;
+        self.heeded.store(true, Ordering::Relaxed);
+    }
+
+    fn heeded(&self) -> bool {
+        self.heeded.load(Ordering::Relaxed)
     }
 }
 
@@ -121,46 +189,91 @@ impl Receives {
         }
     }
 
-    /// Whether a task of `name` has not finished, including one that answered but still
-    /// waits for a child it dropped to exit.
-    pub(super) fn running(&self, name: &DockerVolumeName) -> bool {
-        self.tasks
+    /// The receive of `name`. A task that answered still runs until the children it
+    /// dropped exit, and those can still change the slot, so its failure waits for them,
+    /// but only for the hold.
+    pub(super) fn status(&self, name: &DockerVolumeName) -> Status {
+        let receives = self
+            .receives
             .lock()
-            .expect("receive registry is not poisoned")
-            .get(&name.0)
-            .is_some_and(ReceiveTask::running)
-    }
-
-    /// The failure of `name`'s task once it has finished. A task that answered still runs
-    /// until the children it dropped exit, and those can still change the slot, so the
-    /// failure waits for them, but only for the hold.
-    pub(super) fn failure(&self, name: &DockerVolumeName) -> Option<String> {
-        let tasks = self.tasks.lock().expect("receive registry is not poisoned");
-        let task = tasks.get(&name.0)?;
-        let outcome = task.outcome.lock().expect("outcome lock").clone()?;
-        if task.running() && outcome.at.elapsed() < self.hold {
-            return None;
-        }
-        outcome.result.err()
-    }
-
-    /// Drops `name`'s outcome, and its entry once no task of it has a child alive.
-    pub(super) fn forget(&self, name: &DockerVolumeName) {
-        let mut tasks = self.tasks.lock().expect("receive registry is not poisoned");
-        let Some(task) = tasks.get_mut(&name.0) else {
-            return;
+            .expect("receive registry is not poisoned");
+        let Some(receive) = receives.get(&name.0) else {
+            return Status::Idle;
         };
-        if task.running() {
-            task.outcome = Arc::default();
-        } else {
-            tasks.remove(&name.0);
+        let settled = !receive.unfinished();
+        match receive {
+            Receive::Running { .. } => Status::Receiving,
+            Receive::Ended {
+                ending: Ending::Failed(failure),
+                at,
+                ..
+            } if settled || at.elapsed() >= self.hold => Status::Failed {
+                failure: failure.clone(),
+                settled,
+            },
+            Receive::Ended { .. } if settled => Status::Idle,
+            Receive::Ended { .. } => Status::Receiving,
         }
     }
 
-    /// Runs `work` as the receive task of `name`. `work` gets the [`Stop`]
-    /// [`Self::stop_all`] fires; once it does, `work` kills and reaps its `zfs` children
-    /// before returning. A panic is recorded as the task's failure.
-    pub(super) fn spawn<F>(&self, name: &DockerVolumeName, work: impl FnOnce(Stop) -> F)
+    /// Answers `name`'s failure and clears it in one step, so the answer is given once and
+    /// the next start of the receive begins afresh.
+    ///
+    /// # Errors
+    ///
+    /// [`Busy`] while the task or a child it dropped is alive, whether or not its failure
+    /// already shows.
+    pub(super) fn take_failure(&self, name: &DockerVolumeName) -> Result<Option<String>, Busy> {
+        let mut receives = self
+            .receives
+            .lock()
+            .expect("receive registry is not poisoned");
+        match receives.remove(&name.0) {
+            None => Ok(None),
+            Some(Receive::Ended {
+                ending: Ending::Failed(failure),
+                life,
+                ..
+            }) if life.finished.is_cancelled() => Ok(Some(failure)),
+            Some(receive) => {
+                let busy = receive.unfinished();
+                receives.insert(name.0.clone(), receive);
+                if busy { Err(Busy) } else { Ok(None) }
+            }
+        }
+    }
+
+    /// Drops `name`'s receive once it has finished. One whose task or dropped child is
+    /// alive stays, so the departure still waits for it and its ending is not lost.
+    pub(super) fn forget(&self, name: &DockerVolumeName) {
+        let mut receives = self
+            .receives
+            .lock()
+            .expect("receive registry is not poisoned");
+        if receives
+            .get(&name.0)
+            .is_some_and(|receive| !receive.unfinished())
+        {
+            receives.remove(&name.0);
+        }
+    }
+
+    /// Runs `work` as the receive task of `name`. A receive starts only under the plugin's
+    /// mutation, which the departure holds while it stops them all. `work` gets the
+    /// [`Stop`] [`Self::stop_all`] fires; once it does, `work` kills and reaps its `zfs`
+    /// children before returning, and an error it returns after acting on the stop ends
+    /// the receive stopped. A panic is recorded as the task's failure.
+    ///
+    /// # Errors
+    ///
+    /// [`Busy`] while the receive of `name`, or a child it dropped, is alive. `work` does
+    /// not run then.
+    pub(super) fn spawn<F>(
+        &self,
+        _held: &HeldMutation,
+        name: &DockerVolumeName,
+        work: impl FnOnce(Stop) -> F,
+    ) -> Result<(), Busy>
     where
         F: Future<Output = Result<(), String>> + Send + 'static,
     {
@@ -170,63 +283,65 @@ impl Receives {
         };
         let stop = Stop {
             token: life.stop.clone(),
+            heeded: Arc::default(),
             finish: Arc::new(life.finished.clone().drop_guard()),
         };
+        {
+            let mut receives = self
+                .receives
+                .lock()
+                .expect("receive registry is not poisoned");
+            if receives.get(&name.0).is_some_and(Receive::unfinished) {
+                return Err(Busy);
+            }
+            receives.insert(name.0.clone(), Receive::Running { life });
+        }
         let held = stop.clone();
         let work = work(stop);
-        let outcome = {
-            let mut tasks = self.tasks.lock().expect("receive registry is not poisoned");
-            let task = tasks.entry(name.0.clone()).or_default();
-            task.lives.retain(|life| !life.finished.is_cancelled());
-            task.lives.push(life);
-            task.outcome = Arc::default();
-            Arc::clone(&task.outcome)
-        };
+        let receives = Arc::clone(&self.receives);
+        let name = name.0.clone();
         tokio::spawn(async move {
-            let _held = held;
-            let result = std::panic::AssertUnwindSafe(work)
-                .catch_unwind()
-                .await
-                .unwrap_or_else(|_| Err("the receive task panicked".to_owned()));
-            *outcome.lock().expect("outcome lock") = Some(Outcome {
-                at: Instant::now(),
-                result,
-            });
+            let ending = match std::panic::AssertUnwindSafe(work).catch_unwind().await {
+                Ok(Ok(())) => Ending::Landed,
+                Ok(Err(_)) if held.heeded() => Ending::Stopped,
+                Ok(Err(failure)) => Ending::Failed(failure),
+                Err(_) => Ending::Failed("the receive task panicked".to_owned()),
+            };
+            let mut receives = receives.lock().expect("receive registry is not poisoned");
+            if let Some(receive) = receives.remove(&name) {
+                receives.insert(name, receive.end(ending));
+            }
+            drop(receives);
+            // The task's share of the finish goes only once the ending is written, so a
+            // finished receive is never `Running`.
+            drop(held);
         });
+        Ok(())
     }
 
     /// Stops every receive task and waits until each ended and its `zfs` children
     /// exited, so ZFS holds no slot busy and no receive changes a slot afterwards. Answers
     /// the names with a task still running once `deadline` passes.
     pub(super) async fn stop_all(&self, deadline: Duration) -> Vec<String> {
-        let finished: Vec<(String, Vec<CancellationToken>)> = self
-            .tasks
+        let finished: Vec<(String, CancellationToken)> = self
+            .receives
             .lock()
             .expect("receive registry is not poisoned")
             .iter()
-            .map(|(name, task)| {
-                let finished = task
-                    .lives
-                    .iter()
-                    .map(|life| {
-                        life.stop.cancel();
-                        life.finished.clone()
-                    })
-                    .collect();
-                (name.clone(), finished)
+            .map(|(name, receive)| {
+                let life = receive.life();
+                life.stop.cancel();
+                (name.clone(), life.finished.clone())
             })
             .collect();
         let deadline = Instant::now() + deadline;
         let mut stuck = Vec::new();
         for (name, finished) in finished {
-            for finished in finished {
-                if tokio::time::timeout_at(deadline, finished.cancelled())
-                    .await
-                    .is_err()
-                {
-                    stuck.push(name);
-                    break;
-                }
+            if tokio::time::timeout_at(deadline, finished.cancelled())
+                .await
+                .is_err()
+            {
+                stuck.push(name);
             }
         }
         stuck

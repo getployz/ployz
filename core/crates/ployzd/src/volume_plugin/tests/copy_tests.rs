@@ -14,7 +14,8 @@ use axum::{Router, body::Body, extract::Request, http::StatusCode, response::Int
 use tokio::{net::TcpListener, process::Command, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use super::super::transfer::{Receives, Stop, ZfsChild};
+use super::super::storage::{HeldMutation, MutationLock};
+use super::super::transfer::{Busy, Receives, Status, Stop, ZfsChild};
 
 use super::first_pool_tests::fake_first_pool;
 use super::inspect_tests::{set_property, start};
@@ -1487,7 +1488,7 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
         fs::remove_file(test.0.join("props/stall-read")).unwrap();
         let name: DockerVolumeName = "data".parse().unwrap();
         eventually(&format!("{mark}: the receive task's finish"), || {
-            !receives.running(&name)
+            !receives.status(&name).busy()
         })
         .await;
         fs::remove_file(test.0.join("props/stall-command")).unwrap();
@@ -1839,6 +1840,11 @@ fn alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
+/// The mutation a receive starts under, for a test that spawns one without a route.
+pub(super) async fn mutation() -> HeldMutation {
+    MutationLock::default().lock().await
+}
+
 /// Stops every task in `receives` and answers whether `pid` had exited by then.
 async fn stopped_after(receives: &Receives, pid: u32) -> bool {
     let stuck = receives.stop_all(Duration::from_secs(5)).await;
@@ -1851,14 +1857,16 @@ async fn a_zfs_child_dropped_without_a_reap_is_killed() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     let mut pid = 0;
-    receives.spawn(&name, |stop| {
-        let child = ZfsChild::spawn(Command::new("sleep").arg("30"), &stop).unwrap();
-        pid = child.id().unwrap();
-        async move {
-            drop(child);
-            Ok(())
-        }
-    });
+    receives
+        .spawn(&mutation().await, &name, |stop| {
+            let child = ZfsChild::spawn(Command::new("sleep").arg("30"), &stop).unwrap();
+            pid = child.id().unwrap();
+            async move {
+                drop(child);
+                Ok(())
+            }
+        })
+        .unwrap();
     assert!(stopped_after(&receives, pid).await);
 }
 
@@ -1867,14 +1875,16 @@ async fn a_receive_task_finishes_only_once_a_dropped_child_exits() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     let mut pid = 0;
-    receives.spawn(&name, |stop| {
-        let (child, spawned) = slow_child(&stop);
-        pid = spawned;
-        async move {
-            drop(child);
-            Ok(())
-        }
-    });
+    receives
+        .spawn(&mutation().await, &name, |stop| {
+            let (child, spawned) = slow_child(&stop);
+            pid = spawned;
+            async move {
+                drop(child);
+                Ok(())
+            }
+        })
+        .unwrap();
     assert!(
         stopped_after(&receives, pid).await,
         "the task finished before its child exited"
@@ -1888,21 +1898,23 @@ async fn a_receive_task_whose_second_spawn_fails_finishes_once_the_first_child_e
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     let mut pid = 0;
-    receives.spawn(&name, |stop| {
-        let (send, spawned) = slow_child(&stop);
-        pid = spawned;
-        async move {
-            let _send = send;
-            let _receive = ZfsChild::spawn(&mut Command::new("/nonexistent/zfs"), &stop)
-                .map_err(|error| format!("could not run zfs receive: {error}"))?;
-            Ok(())
-        }
-    });
+    receives
+        .spawn(&mutation().await, &name, |stop| {
+            let (send, spawned) = slow_child(&stop);
+            pid = spawned;
+            async move {
+                let _send = send;
+                let _receive = ZfsChild::spawn(&mut Command::new("/nonexistent/zfs"), &stop)
+                    .map_err(|error| format!("could not run zfs receive: {error}"))?;
+                Ok(())
+            }
+        })
+        .unwrap();
     assert!(
         stopped_after(&receives, pid).await,
         "the task finished before its send exited"
     );
-    assert!(receives.failure(&name).is_some());
+    assert!(receives.status(&name).failure().is_some());
 }
 
 #[tokio::test]
@@ -1910,20 +1922,25 @@ async fn a_receive_task_that_panics_with_a_live_child_finishes_once_it_exits() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     let mut pid = 0;
-    receives.spawn(&name, |stop| {
-        let (child, spawned) = slow_child(&stop);
-        pid = spawned;
-        async move {
-            let _child = child;
-            panic!("the receive task broke");
-        }
-    });
+    receives
+        .spawn(&mutation().await, &name, |stop| {
+            let (child, spawned) = slow_child(&stop);
+            pid = spawned;
+            async move {
+                let _child = child;
+                panic!("the receive task broke");
+            }
+        })
+        .unwrap();
     assert!(
         stopped_after(&receives, pid).await,
         "the task finished before its child exited"
     );
-    assert!(!receives.running(&name), "a panicked task reads as running");
-    assert!(receives.failure(&name).is_some());
+    assert!(
+        !receives.status(&name).busy(),
+        "a panicked task reads as running"
+    );
+    assert!(receives.status(&name).failure().is_some());
 }
 
 /// A child the kill leaves running until the test removes `gate`, as a `zfs` blocked in
@@ -1955,14 +1972,16 @@ async fn a_reap_whose_kill_fails_holds_its_task_until_the_child_exits() {
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
-    receives.spawn(&name, |stop| {
-        let mut child = held_child(&stop, &gate);
-        child.fail_kill();
-        async move {
-            child.reap().await;
-            Ok(())
-        }
-    });
+    receives
+        .spawn(&mutation().await, &name, |stop| {
+            let mut child = held_child(&stop, &gate);
+            child.fail_kill();
+            async move {
+                child.reap().await;
+                Ok(())
+            }
+        })
+        .unwrap();
     assert_eq!(
         receives.stop_all(Duration::from_millis(200)).await,
         ["data"],
@@ -1970,7 +1989,7 @@ async fn a_reap_whose_kill_fails_holds_its_task_until_the_child_exits() {
     );
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
-    assert!(!receives.running(&name));
+    assert!(!receives.status(&name).busy());
 }
 
 /// A wait that errors proves no exit, so neither the reap nor the drop may release the
@@ -1981,15 +2000,17 @@ async fn a_reap_whose_wait_fails_holds_its_task_until_the_child_exits() {
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
-    receives.spawn(&name, |stop| {
-        let mut child = held_child(&stop, &gate);
-        child.fail_kill();
-        child.fail_wait();
-        async move {
-            child.reap().await;
-            Ok(())
-        }
-    });
+    receives
+        .spawn(&mutation().await, &name, |stop| {
+            let mut child = held_child(&stop, &gate);
+            child.fail_kill();
+            child.fail_wait();
+            async move {
+                child.reap().await;
+                Ok(())
+            }
+        })
+        .unwrap();
     assert_eq!(
         receives.stop_all(Duration::from_millis(200)).await,
         ["data"],
@@ -1997,7 +2018,7 @@ async fn a_reap_whose_wait_fails_holds_its_task_until_the_child_exits() {
     );
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
-    assert!(!receives.running(&name));
+    assert!(!receives.status(&name).busy());
 }
 
 #[tokio::test]
@@ -2006,14 +2027,16 @@ async fn a_dropped_child_whose_wait_fails_holds_its_task_until_it_exits() {
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
-    receives.spawn(&name, |stop| {
-        let mut child = held_child(&stop, &gate);
-        child.fail_wait();
-        async move {
-            let _child = child;
-            Err("the receive task returned early".to_owned())
-        }
-    });
+    receives
+        .spawn(&mutation().await, &name, |stop| {
+            let mut child = held_child(&stop, &gate);
+            child.fail_wait();
+            async move {
+                let _child = child;
+                Err("the receive task returned early".to_owned())
+            }
+        })
+        .unwrap();
     assert_eq!(
         receives.stop_all(Duration::from_millis(200)).await,
         ["data"],
@@ -2021,7 +2044,7 @@ async fn a_dropped_child_whose_wait_fails_holds_its_task_until_it_exits() {
     );
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
-    assert!(!receives.running(&name));
+    assert!(!receives.status(&name).busy());
 }
 
 /// A drop kills through the same kill as a reap, so a refused kill is logged and the
@@ -2039,14 +2062,16 @@ async fn a_dropped_child_whose_kill_fails_holds_its_task_until_it_exits() {
             .with_ansi(false)
             .finish(),
     );
-    receives.spawn(&name, |stop| {
-        let mut child = gated_child(&stop, &gate);
-        child.fail_kill();
-        async move {
-            let _child = child;
-            Err("the receive task returned early".to_owned())
-        }
-    });
+    receives
+        .spawn(&mutation().await, &name, |stop| {
+            let mut child = gated_child(&stop, &gate);
+            child.fail_kill();
+            async move {
+                let _child = child;
+                Err("the receive task returned early".to_owned())
+            }
+        })
+        .unwrap();
     assert_eq!(
         receives.stop_all(Duration::from_millis(200)).await,
         ["data"],
@@ -2059,7 +2084,7 @@ async fn a_dropped_child_whose_kill_fails_holds_its_task_until_it_exits() {
     );
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
-    assert!(!receives.running(&name));
+    assert!(!receives.status(&name).busy());
 }
 
 #[derive(Clone, Default)]
@@ -2089,19 +2114,21 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
 /// is recorded by then.
 async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName, gate: &Path) {
     let panicked = Arc::new(AtomicBool::new(false));
-    receives.spawn(name, |stop| {
-        let child = held_child(&stop, gate);
-        let panicked = Arc::clone(&panicked);
-        async move {
-            let _child = child;
-            panicked.store(true, Ordering::SeqCst);
-            panic!("the receive task broke");
-        }
-    });
+    receives
+        .spawn(&mutation().await, name, |stop| {
+            let child = held_child(&stop, gate);
+            let panicked = Arc::clone(&panicked);
+            async move {
+                let _child = child;
+                panicked.store(true, Ordering::SeqCst);
+                panic!("the receive task broke");
+            }
+        })
+        .unwrap();
     for _ in 0..100 {
         if panicked.load(Ordering::SeqCst) {
             assert!(
-                receives.failure(name).is_none(),
+                receives.status(name).failure().is_none(),
                 "a failure was answered while its task's child is alive"
             );
             return;
@@ -2122,52 +2149,63 @@ async fn a_panicked_task_reads_as_running_until_its_child_exits() {
     let name: DockerVolumeName = "data".parse().unwrap();
     panicked_with_a_held_child(&receives, &name, &gate).await;
     assert!(
-        receives.running(&name),
+        receives.status(&name).busy(),
         "a retry would forget a task whose child is alive"
     );
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
-    assert!(!receives.running(&name));
-    assert!(receives.failure(&name).is_some());
+    assert!(!receives.status(&name).busy());
+    assert!(receives.status(&name).failure().is_some());
 }
 
+/// A failure whose task's child is alive is neither answered nor forgotten: the departure
+/// must still name that child, and the failure must outlive it.
 #[tokio::test]
-async fn a_forget_while_a_child_is_reaped_leaves_it_for_the_departure_to_name() {
+async fn a_failure_whose_child_is_alive_is_neither_taken_nor_forgotten() {
     let test = TestDir::new();
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     panicked_with_a_held_child(&receives, &name, &gate).await;
+    assert!(matches!(receives.take_failure(&name), Err(Busy)));
     receives.forget(&name);
     assert_eq!(
         receives.stop_all(Duration::from_millis(200)).await,
         ["data"],
         "the departure lost a child that still holds the slot"
     );
-    assert!(
-        receives.failure(&name).is_none(),
-        "the forgotten failure came back"
-    );
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert_eq!(
+        receives.take_failure(&name).unwrap().as_deref(),
+        Some("the receive task panicked")
+    );
+    assert_eq!(receives.status(&name), Status::Idle);
 }
 
+/// A receive whose task's child is alive is not replaced, so no second task runs over a
+/// slot that child still holds.
 #[tokio::test]
-async fn a_task_that_replaces_one_still_reaping_a_child_leaves_that_child_for_the_departure() {
+async fn a_spawn_over_a_task_whose_child_is_alive_answers_busy() {
     let test = TestDir::new();
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     panicked_with_a_held_child(&receives, &name, &gate).await;
-    receives.spawn(&name, |_stop| async { Ok(()) });
-    assert_eq!(
-        receives.stop_all(Duration::from_millis(200)).await,
-        ["data"],
-        "the departure lost a child that still holds the slot"
-    );
+    let ran = Arc::new(AtomicBool::new(false));
+    let spawned = receives.spawn(&mutation().await, &name, |_stop| {
+        ran.store(true, Ordering::SeqCst);
+        async { Ok(()) }
+    });
+    assert!(matches!(spawned, Err(Busy)));
+    assert!(!ran.load(Ordering::SeqCst), "a refused spawn ran its work");
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
-    assert!(!receives.running(&name));
+    receives
+        .spawn(&mutation().await, &name, |_stop| async { Ok(()) })
+        .unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert_eq!(receives.status(&name), Status::Idle);
 }
 
 #[tokio::test]

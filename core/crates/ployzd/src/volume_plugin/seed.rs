@@ -11,12 +11,12 @@ use tokio::process::Command;
 
 use super::{
     VolumeStorage,
-    inspect::internal,
+    inspect::{answering, internal},
     mirror,
     storage::{
         PROMOTE_PROPERTY, PULL_PROPERTY, PULLED_PROPERTY, root_dataset, slot_fs, slot_parent,
     },
-    transfer::{Stop, ZfsChild, exited},
+    transfer::{Busy, Stop, ZfsChild, exited},
 };
 
 /// On the root a seed lands as: the guid of the restore point it holds. Landing sets it on
@@ -28,7 +28,7 @@ impl VolumeStorage {
         let name = mirror::name(&request.name)?;
         let into = mirror::name(&request.into)?;
         let guid = request.guid;
-        let _held = self.admit_mutation().await.map_err(internal)?;
+        let (held, _installation) = self.admit_mutation().await.map_err(internal)?;
         let pool = self.one_pool().await.map_err(internal)?;
         let datasets = self.datasets(&pool).await.map_err(internal)?;
         let root = root_dataset(&pool, &into);
@@ -52,15 +52,16 @@ impl VolumeStorage {
             }
             return self.seeded(&pool, &into).await;
         }
-        if self.receives.running(&into) {
-            return self.seeded(&pool, &into).await;
-        }
-        if let Some(failure) = self.receives.failure(&into) {
+        match self.receives.take_failure(&into) {
+            Err(Busy) => return self.seeded(&pool, &into).await,
             // Answer the failure once; the next call starts the copy over.
-            let view = self.seeded(&pool, &into).await;
-            self.receives.forget(&into);
-            tracing::warn!(%into, failure, "Volume seed copy failed");
-            return view;
+            Ok(Some(failure)) => {
+                tracing::warn!(%into, failure, "Volume seed copy failed");
+                return self.seeded(&pool, &into).await.map(|view| VolumeCopyView {
+                    copy: answering(view.copy, failure),
+                });
+            }
+            Ok(None) => {}
         }
         if Self::slot_fs(&datasets, &pool, &into).is_some() {
             let landed = self.snapshots(&fs).await.map_err(internal)?;
@@ -120,7 +121,8 @@ impl VolumeStorage {
             .map_err(internal)?;
         let storage = self.clone();
         let snapshot = format!("{source}@{}", point.name);
-        self.receives.spawn(&into, |stop| async move {
+        // A receive still alive refuses the spawn, and the copy as it stands answers then too.
+        let _ = self.receives.spawn(&held, &into, |stop| async move {
             storage.copy_snapshot(&snapshot, &fs, bound, &stop).await
         });
         self.seeded(&pool, &into).await
