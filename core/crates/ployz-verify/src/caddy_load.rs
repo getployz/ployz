@@ -13,7 +13,7 @@
 //! Each watcher step is one statement of `watch_caddy` or of what it calls, in the
 //! order the code runs them:
 //!
-//! - the `loaded` cache (`CaddyInput::loaded`), which skips the admin while Caddy
+//! - the `loaded` cache (`CaddyLoad::skip`), which skips the admin while Caddy
 //!   runs and the last load matches;
 //! - `connect`, and its `Err` arm that counts as a failure without the admin;
 //! - the equal-input skip, and `CaddyCertificates::loaded_only` for a file written
@@ -25,9 +25,11 @@
 //!   `write_caddyfile` chowns after that) and `remove_stale_certificate_files`
 //!   (`AfterServing`);
 //! - `CaddyCertificates::find_refused` statement by statement, and the `Probe` arms,
-//!   where `Refused` re-derives with `continue` and skips the record write;
-//! - the `(applied, admin)` match that sets `last_input` and accepts certificates;
-//! - the keep rule (`refused && recorded_by == caddy`) and the record write;
+//!   where `Refused` writes the record and then re-derives with `continue`;
+//! - `CaddyLoad::after`, which sets what the next pass skips (`last_input` here) and
+//!   who confirmed the claim (`recorded_by`), and accepts certificates;
+//! - the keep rule (`CaddyLoad::refused_by`: the newest container confirmed the load
+//!   and the Caddyfile holds it) and the record write (`CaddyLoad::claim`);
 //! - the retry wait, the read's `Err` arm that only logs, and the debounce wait.
 //!
 //! Caddy is an actor outside the watcher. It holds its container id, what its process
@@ -136,7 +138,7 @@ struct CaddyInput {
 }
 
 impl CaddyInput {
-    /// `CaddyInput::loaded`.
+    /// `CaddyLoad::skip` on `CaddyLoad::Loaded`.
     fn loaded(self, projection: Config, caddy: Container) -> bool {
         self.through_admin && self.projection == projection && self.caddy == caddy
     }
@@ -183,7 +185,7 @@ enum Recorded {
     /// A pass through the admin.
     ThroughAdmin {
         outcome: Outcome,
-        /// `Probe::Refused` under the fix: record, then `continue` to the read.
+        /// `Probe::Refused`: record, then `continue` to the read.
         continues: bool,
     },
 }
@@ -225,13 +227,13 @@ enum Pc {
     /// and `certificate_state()`, reached from the wait or from `Probe::Refused`'s
     /// `continue`.
     Read,
-    /// `ingress.rs` `watch_caddy`: `let loaded = !no_caddy && last_input.loaded(..)`
-    /// (`CaddyInput::loaded`).
+    /// `ingress.rs` `watch_caddy`: `!no_caddy && load.skip(&input, true)`
+    /// (`CaddyLoad::skip`).
     Cached,
     /// `ingress.rs` `watch_caddy`: `connect().await` (`caddy.rs`
     /// `AdminClient::connect_if_available`).
     Connect,
-    /// `ingress.rs` `watch_caddy`: `last_input.as_ref() == Some(&input)`.
+    /// `ingress.rs` `watch_caddy`: `load.skip(&input, admin.is_some())` after `connect`.
     Same { admin: bool },
     /// `ingress.rs` `apply_caddy`: `write_certificate_files`.
     WriteCertificates { admin: bool },
@@ -285,7 +287,7 @@ struct State {
     addresses: Option<Served>,
     /// What the watcher's last `write_caddyfile` confirmed it wrote: `None` before the
     /// first, and after a failed write, which may or may not have replaced the file.
-    /// The fix reads it as `CaddyFile::Current` when it holds the claim.
+    /// The code reads it as `CaddyFile::Current` when it holds the claim.
     written: Option<Config>,
     /// The action that led here, so a `sometimes` can name the call or event it
     /// covers.
@@ -332,7 +334,7 @@ impl State {
         }
     }
 
-    /// The claim names what the Caddyfile holds, as the fix's `CaddyFile::Current`.
+    /// The claim names what the Caddyfile holds, as `CaddyFile::Current`.
     fn claim_is_written(&self) -> bool {
         self.written
             .is_some_and(|written| self.addresses == Some(Served::Config(written)))
@@ -401,7 +403,7 @@ enum Action {
     /// `ingress.rs` `watch_caddy`: `replicated.containers()`, `certificate_state()` and
     /// `next_pass`; `Err` is the read's `Err` arm, which logs and waits.
     Read(Call),
-    /// `ingress.rs` `watch_caddy`: the `loaded` cache (`CaddyInput::loaded`).
+    /// `ingress.rs` `watch_caddy`: the `loaded` cache (`CaddyLoad::skip`).
     Cached,
     /// `ingress.rs` `watch_caddy`: `connect().await` and its three arms.
     Connect(Admin),
@@ -455,24 +457,12 @@ struct Broken {
     /// `if through_admin` in the record write: the addresses are claimed without the
     /// admin's confirmation.
     claims_without_admin: bool,
-}
-
-/// The fix E-20 lands, in two parts, each closing one finding.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Fix {
-    /// The keep rule keeps the claim only while the Caddyfile holds what was recorded
-    /// (`CaddyFile::Current`), so a refusal after a failed write claims nothing.
-    keep_needs_current_file: bool,
-    /// `Probe::Refused` runs the record write before its `continue`, so the claim is
-    /// written on every exit from a pass.
-    refused_probe_records: bool,
-}
-
-impl Fix {
-    const BOTH: Self = Self {
-        keep_needs_current_file: true,
-        refused_probe_records: true,
-    };
+    /// `CaddyFile::Current` in the keep rule: a refusal keeps the claim though the
+    /// Caddyfile a restart reads may hold an earlier config (#2787).
+    keep_ignores_the_caddyfile: bool,
+    /// The record write before `Probe::Refused`'s `continue`: the pass re-derives and
+    /// leaves the claim from before the probe standing.
+    refused_probe_skips_the_record: bool,
 }
 
 /// What a coverage check takes out of the model, to show that the `sometimes` naming
@@ -497,7 +487,9 @@ enum Bound {
     RestartsMidApply,
     ReadsFail,
     LoadsLost,
+    /// The keep rule reads the Caddyfile.
     KeepNeedsCurrentFile,
+    /// `Probe::Refused` writes the record.
     RefusedProbeRecords,
 }
 
@@ -785,31 +777,28 @@ struct CaddyLoad {
     reads_fail: bool,
     /// A load through the admin may take and lose its response.
     loads_lost: bool,
-    fix: Fix,
     broken: Broken,
     /// A coverage check's cut, `None` to run the whole model.
     omit: Option<Omit>,
 }
 
 impl CaddyLoad {
-    /// The code as it is, with only the events it answers for: Caddy stops, starts
-    /// and is replaced, loads are refused or fail short of Caddy, probes reload and
-    /// quarantine, writes fail before and after the rename, and the projection
+    /// The code as it is, with only the events it always answered for: Caddy stops,
+    /// starts and is replaced, loads are refused or fail short of Caddy, probes reload
+    /// and quarantine, writes fail before and after the rename, and the projection
     /// changes. Each test names the event it adds.
     const QUIET: Self = Self {
         restarts: false,
         restarts_mid_apply: false,
         reads_fail: false,
         loads_lost: false,
-        fix: Fix {
-            keep_needs_current_file: false,
-            refused_probe_records: false,
-        },
         broken: Broken {
             cache_ignores_a_stopped_caddy: false,
             reloaded_keeps_recorded_by: false,
             keep_ignores_the_container: false,
             claims_without_admin: false,
+            keep_ignores_the_caddyfile: false,
+            refused_probe_skips_the_record: false,
         },
         omit: None,
     };
@@ -821,12 +810,12 @@ impl CaddyLoad {
             Bound::RestartsMidApply => self.restarts_mid_apply,
             Bound::ReadsFail => self.reads_fail,
             Bound::LoadsLost => self.loads_lost,
-            Bound::KeepNeedsCurrentFile => self.fix.keep_needs_current_file,
-            Bound::RefusedProbeRecords => self.fix.refused_probe_records,
+            Bound::KeepNeedsCurrentFile => !self.broken.keep_ignores_the_caddyfile,
+            Bound::RefusedProbeRecords => !self.broken.refused_probe_skips_the_record,
         }
     }
 
-    /// `let loaded = !no_caddy && last_input.loaded(projection, caddy)`.
+    /// `!no_caddy && load.skip(&input, true)`.
     fn cache_hits(&self, state: &State) -> bool {
         let running = !state.no_caddy() || self.broken.cache_ignores_a_stopped_caddy;
         running
@@ -868,7 +857,9 @@ impl CaddyLoad {
             }
             Action::Connect(Admin::Some) => state.pc = Pc::Same { admin: true },
             Action::Connect(Admin::None) => state.pc = Pc::Same { admin: false },
+            // `PassOutcome::Unknown`: `CaddyLoad::after` forgets the last load.
             Action::Connect(Admin::Err) => {
+                state.last_input = None;
                 state.pc = Pc::Record(Recorded::WithoutAdmin(Outcome::BeforeServing));
             }
             Action::Same => {
@@ -1045,7 +1036,7 @@ impl CaddyLoad {
                 }
                 state.pc = match probe {
                     None => Pc::Record(Recorded::WithoutAdmin(applied)),
-                    Some(Probe::Refused) if self.fix.refused_probe_records => {
+                    Some(Probe::Refused) if !self.broken.refused_probe_skips_the_record => {
                         Pc::Record(Recorded::ThroughAdmin {
                             outcome: applied,
                             continues: true,
@@ -1065,6 +1056,12 @@ impl CaddyLoad {
                     unreachable!("Record at {:?}", state.pc)
                 };
                 if !self.keeps(state, recorded) {
+                    // `CaddyLoad::refused_by`: a load the keep rule does not keep is
+                    // forgotten; a Caddyfile written without the admin stays.
+                    if recorded.refused() && state.last_input.is_some_and(|last| last.through_admin)
+                    {
+                        state.last_input = None;
+                    }
                     let claimed = recorded.through_admin() || self.broken.claims_without_admin;
                     state.addresses = if claimed {
                         (!recorded.refused()).then(|| state.addresses())
@@ -1115,15 +1112,15 @@ impl CaddyLoad {
         }
     }
 
-    /// The keep rule: a refused load leaves the record standing while the newest
-    /// observed ingress container is the one whose admin confirmed it. The fix adds:
-    /// and the Caddyfile holds what was recorded.
+    /// The keep rule (`CaddyLoad::refused_by`): a refused load leaves the record
+    /// standing while the newest observed ingress container is the one whose admin
+    /// confirmed it and the Caddyfile holds what was recorded.
     fn keeps(&self, state: &State, recorded: Recorded) -> bool {
         recorded.refused()
             && state.recorded_by.is_some()
             && (self.broken.keep_ignores_the_container
                 || state.recorded_by == Some(state.caddy.container))
-            && (!self.fix.keep_needs_current_file || state.claim_is_written())
+            && (self.broken.keep_ignores_the_caddyfile || state.claim_is_written())
     }
 }
 
@@ -1337,7 +1334,7 @@ fn reads_as(model: &CaddyLoad, before: &State, action: Action) -> String {
             "watcher: the read fails; the Err arm logs and goes to wait_for_debounced_change (watch_caddy)".to_owned()
         }
         Action::Cached => format!(
-            "watcher: `loaded` = !no_caddy && last_input.loaded(projection, caddy): {} (watch_caddy, CaddyInput::loaded)",
+            "watcher: `loaded` = !no_caddy && load.skip(input, true): {} (watch_caddy, CaddyLoad::skip)",
             model.cache_hits(before)
         ),
         Action::Connect(Admin::Some) => "watcher: connect() returns Some(admin) (watch_caddy)".to_owned(),
@@ -1345,9 +1342,9 @@ fn reads_as(model: &CaddyLoad, before: &State, action: Action) -> String {
             "watcher: connect() returns None, the admin socket is down (watch_caddy)".to_owned()
         }
         Action::Connect(Admin::Err) => {
-            "watcher: connect() fails; counted as (false, Err(BeforeServing)) (watch_caddy)".to_owned()
+            "watcher: connect() fails; PassOutcome::Unknown forgets the last load, Err(BeforeServing) without the admin (watch_caddy)".to_owned()
         }
-        Action::Same => "watcher: last_input == input? (watch_caddy)".to_owned(),
+        Action::Same => "watcher: load.skip(&input, admin.is_some())? (watch_caddy)".to_owned(),
         Action::WriteCertificates(Call::Ok) => {
             "watcher: write_certificate_files succeeds (apply_caddy)".to_owned()
         }
@@ -1447,8 +1444,11 @@ fn reads_as(model: &CaddyLoad, before: &State, action: Action) -> String {
                 None => "no probe without the admin",
                 Some(Probe::Unchanged) => "Probe::Unchanged",
                 Some(Probe::Reloaded) => "Probe::Reloaded clears last_input and recorded_by",
-                Some(Probe::Refused) => {
+                Some(Probe::Refused) if model.broken.refused_probe_skips_the_record => {
                     "Probe::Refused clears last_input and recorded_by and `continue`s"
+                }
+                Some(Probe::Refused) => {
+                    "Probe::Refused clears last_input and recorded_by, records, then `continue`s"
                 }
             };
             format!(
@@ -1462,15 +1462,16 @@ fn reads_as(model: &CaddyLoad, before: &State, action: Action) -> String {
             };
             if model.keeps(before, recorded) {
                 format!(
-                    "watcher: refused = true; the keep rule finds recorded_by {:?} is the running caddy {:?} and keeps the claim: no record write (watch_caddy)",
-                    before.recorded_by, before.caddy.container
+                    "watcher: refused = true; the keep rule finds recorded_by {:?} is the running caddy {:?} and the last confirmed write is {:?}, and keeps the claim (CaddyLoad::refused_by)",
+                    before.recorded_by, before.caddy.container, before.written
                 )
             } else {
                 format!(
-                    "watcher: refused = {}; the keep rule checks recorded_by {:?} against caddy {:?}, then the record write (watch_caddy)",
+                    "watcher: refused = {}; the keep rule checks recorded_by {:?} against caddy {:?} and the last confirmed write {:?}, then the record write (CaddyLoad::claim)",
                     recorded.refused(),
                     before.recorded_by,
-                    before.caddy.container
+                    before.caddy.container,
+                    before.written
                 )
             }
         }
@@ -1571,18 +1572,21 @@ mod tests {
         assert_ne!(state.addresses, Some(state.caddy.serves));
     }
 
-    /// The finding (#2787). Caddy loads P1 through its admin, then `write_caddyfile`
-    /// fails before its rename, so the Caddyfile still holds P0 while the claim names
-    /// P1 and `recorded_by` names the container. Caddy restarts in place under the
-    /// same id and serves P0. The retry fails before serving, and the keep rule finds
-    /// `recorded_by == caddy`, so the claim stays P1: an over-claim of the HTTPS site
-    /// and the moved HTTP address. This test passes by finding that path; it starts
-    /// failing once the code ties the claim to the Caddyfile.
+    /// Finding 1 (#2787), closed. Without the Caddyfile in the keep rule: Caddy loads
+    /// P1 through its admin, then `write_caddyfile` fails before its rename, so the
+    /// Caddyfile still holds P0 while the claim names P1 and `recorded_by` names the
+    /// container. Caddy restarts in place under the same id and serves P0. The retry
+    /// fails before serving, and the keep rule finds `recorded_by == caddy`, so the
+    /// claim stays P1: an over-claim of the HTTPS site and the moved HTTP address.
     #[test]
-    fn current_code_keeps_a_claim_a_restarted_caddy_no_longer_serves() {
+    fn the_keep_rule_needs_the_caddyfile() {
         let path = breaks(
             CaddyLoad {
                 restarts: true,
+                broken: Broken {
+                    keep_ignores_the_caddyfile: true,
+                    ..Broken::default()
+                },
                 ..CaddyLoad::QUIET
             },
             CLAIM_SERVED,
@@ -1600,20 +1604,22 @@ mod tests {
         assert_eq!(last.addresses, Some(Served::Config(Config::P1)));
     }
 
-    /// The second finding. Caddy X confirms P1 after a write that failed before the
-    /// rename, so the Caddyfile holds P0; a new container serves that file, and the
-    /// admin refuses the next load of P1. `loaded_certificates` has no `c`, so the
-    /// probe loads `P1WithoutC` and quarantines `c`: `Probe::Refused` clears
-    /// `recorded_by` and `continue`s past the record write, so the claim of P1 stands
-    /// while Caddy serves the probe config. (A confirmed P0 with the projection
-    /// changed to P1 reaches the same arm at the same length.) The next read fails, and its `Err` arm only logs, so
-    /// the watcher waits on that claim. This test passes by finding that path; it
-    /// starts failing once the claim is written on every exit from a pass.
+    /// Finding 2, closed. Without the record write before `Probe::Refused`'s
+    /// `continue`: Caddy X confirms P1 after a write that failed before the rename,
+    /// so the Caddyfile holds P0; a new container serves that file, and the admin
+    /// refuses the next load of P1. `loaded_certificates` has no `c`, so the probe
+    /// loads `P1WithoutC` and quarantines `c`, and the pass re-derives with the claim
+    /// of P1 standing while Caddy serves the probe config. The next read fails, and
+    /// its `Err` arm only logs, so the watcher waits on that claim.
     #[test]
-    fn current_code_leaves_the_pre_probe_claim_standing_when_the_next_read_fails() {
+    fn a_refused_probe_must_record_before_it_rederives() {
         let path = breaks(
             CaddyLoad {
                 reads_fail: true,
+                broken: Broken {
+                    refused_probe_skips_the_record: true,
+                    ..Broken::default()
+                },
                 ..CaddyLoad::QUIET
             },
             CLAIM_SERVED,
@@ -1629,82 +1635,59 @@ mod tests {
         assert_eq!(last.addresses, Some(Served::Config(Config::P1)));
     }
 
-    /// The third finding. Caddy confirms P1, the projection changes to P0, and the
-    /// load of P0 takes while its response is lost: `apply_caddy` returns
-    /// `BeforeServing(Http)`, no probe runs, and the keep rule keeps the claim of P1
-    /// while Caddy serves P0. No restart and no failed read is needed. The fix keeps
-    /// it too, since the Caddyfile still holds what was recorded: E-20 must treat a
-    /// lost load as Caddy serving anything.
+    /// Finding 3, open. Caddy confirms P1 and the Caddyfile holds it, the projection
+    /// changes to P0, and the load of P0 takes while its response is lost:
+    /// `apply_caddy` returns `BeforeServing(Http)`, no probe runs, and the keep rule
+    /// keeps the claim of P1 while Caddy serves P0. No restart and no failed read is
+    /// needed.
     #[test]
     fn current_code_keeps_a_claim_after_a_load_that_lost_its_response() {
-        let model = CaddyLoad {
-            loads_lost: true,
-            ..CaddyLoad::QUIET
-        };
-        let path = breaks(model, CLAIM_SERVED);
+        let path = breaks(
+            CaddyLoad {
+                loads_lost: true,
+                ..CaddyLoad::QUIET
+            },
+            CLAIM_SERVED,
+        );
         let last = last(&path);
         over_claims(&last);
         assert!(took(&path, Action::Load(Load::Lost)));
         assert_eq!(last.recorded_by, Some(last.caddy.container));
+        assert!(last.claim_is_written());
         assert_eq!(last.caddy.serves, Served::Config(Config::P0));
         assert_eq!(last.addresses, Some(Served::Config(Config::P1)));
-
-        let under_the_fix = breaks(
-            CaddyLoad {
-                fix: Fix::BOTH,
-                ..model
-            },
-            CLAIM_SERVED,
-        );
-        let kept = under_the_fix.last().expect("a path has a state").0;
-        over_claims(&kept);
-        assert!(took(&under_the_fix, Action::Load(Load::Lost)));
-        assert_eq!(kept.recorded_by, Some(kept.caddy.container));
-        assert!(kept.claim_is_written());
-        assert_eq!(kept.caddy.serves, Served::Config(Config::P0));
-        assert_eq!(kept.addresses, Some(Served::Config(Config::P1)));
     }
 
-    /// Where the code already holds: under `QUIET`, every claim at rest is what Caddy
-    /// serves. Every other event still happens: Caddy stops, starts and is replaced,
-    /// loads are refused, probes reload and quarantine, writes fail before and after
-    /// the rename, and the projection changes.
+    /// Where the code holds: a refusal keeps the claim only while the Caddyfile holds
+    /// what was recorded, and `Probe::Refused` records before it re-derives, so every
+    /// property holds with Caddy restarting in place between passes and reads
+    /// failing, and every `sometimes` is reached. Lost loads and mid-apply restarts
+    /// stay out: the code does not close them, as the findings beside this show.
     #[test]
-    fn current_code_holds_while_caddy_never_restarts_and_every_read_and_load_answers() {
-        let checker = check(CaddyLoad::QUIET);
-        println!("quiet: {} states", checker.unique_state_count());
-        checker.assert_properties();
-    }
-
-    /// The fix: a refusal keeps the claim only while the Caddyfile holds what was
-    /// recorded, and `Probe::Refused` records before it re-derives. Every property
-    /// holds with Caddy restarting in place between passes and reads failing, and
-    /// every `sometimes` is reached. Lost loads and mid-apply restarts stay out: the
-    /// fix does not close them, as the finding above and the test below show.
-    #[test]
-    fn a_claim_tied_to_the_caddyfile_and_written_on_every_exit_holds() {
+    fn current_code_holds_while_caddy_restarts_between_passes_and_reads_fail() {
         let checker = check(CaddyLoad {
             restarts: true,
             reads_fail: true,
-            fix: Fix::BOTH,
             ..CaddyLoad::QUIET
         });
-        println!("fixed: {} states", checker.unique_state_count());
+        println!(
+            "restarts and failed reads: {} states",
+            checker.unique_state_count()
+        );
         checker.assert_properties();
     }
 
-    /// Open under the fix: Caddy restarts in place between `caddy::load` and
-    /// `write_caddyfile`, so it serves P0 while the write lands P1 and the pass
-    /// claims P1. Every later pass hits the `loaded` cache, which skips the admin
-    /// while Caddy runs and the last load matches, so no retry, debounce or
-    /// resnapshot pass corrects it; the first cache miss is the next projection or
-    /// ingress container change, or Caddy stopping.
+    /// Open: Caddy restarts in place between `caddy::load` and `write_caddyfile`, so
+    /// it serves P0 while the write lands P1 and the pass claims P1. Every later pass
+    /// hits the `loaded` cache, which skips the admin while Caddy runs and the last
+    /// load matches, so no retry, debounce or resnapshot pass corrects it; the first
+    /// cache miss is the next projection or ingress container change, or Caddy
+    /// stopping.
     #[test]
-    fn the_fix_does_not_close_a_restart_between_the_load_and_the_caddyfile_write() {
+    fn current_code_keeps_a_claim_after_a_restart_between_the_load_and_the_caddyfile_write() {
         let path = breaks(
             CaddyLoad {
                 restarts_mid_apply: true,
-                fix: Fix::BOTH,
                 ..CaddyLoad::QUIET
             },
             CLAIM_SERVED,
@@ -1735,7 +1718,6 @@ mod tests {
             restarts_mid_apply: true,
             reads_fail: true,
             loads_lost: true,
-            fix: Fix::BOTH,
             ..CaddyLoad::QUIET
         };
         let whole = check(all);
@@ -1774,7 +1756,6 @@ mod tests {
             CaddyLoad {
                 restarts: true,
                 reads_fail: true,
-                fix: Fix::BOTH,
                 broken: Broken {
                     cache_ignores_a_stopped_caddy: true,
                     ..Broken::default()
@@ -1796,7 +1777,6 @@ mod tests {
             CaddyLoad {
                 restarts: true,
                 reads_fail: true,
-                fix: Fix::BOTH,
                 broken: Broken {
                     reloaded_keeps_recorded_by: true,
                     ..Broken::default()
@@ -1813,22 +1793,22 @@ mod tests {
 
     /// Without `recorded_by == caddy` in the keep rule, a new container that started
     /// from a stale Caddyfile inherits the old container's claim on its first
-    /// refusal. The fix's Caddyfile check covers this on its own, so the guard shows
-    /// its worth on the keep rule as it is, with the probe fix in and restarts out,
-    /// where the code holds with the guard and breaks without it.
+    /// refusal. The Caddyfile check covers this on its own, so the guard shows its
+    /// worth with that check out and restarts out, where the code holds with the
+    /// guard and breaks without it.
     #[test]
     fn the_keep_rule_needs_the_recording_container() {
         let model = CaddyLoad {
             reads_fail: true,
-            fix: Fix {
-                keep_needs_current_file: false,
-                refused_probe_records: true,
+            broken: Broken {
+                keep_ignores_the_caddyfile: true,
+                ..Broken::default()
             },
             ..CaddyLoad::QUIET
         };
         let checker = check(model);
         println!(
-            "keep rule as is, no restart: {} states",
+            "keep rule without the Caddyfile, no restart: {} states",
             checker.unique_state_count()
         );
         checker.assert_properties();
@@ -1836,7 +1816,7 @@ mod tests {
             CaddyLoad {
                 broken: Broken {
                     keep_ignores_the_container: true,
-                    ..Broken::default()
+                    ..model.broken
                 },
                 ..model
             },
@@ -1858,7 +1838,6 @@ mod tests {
             CaddyLoad {
                 restarts: true,
                 reads_fail: true,
-                fix: Fix::BOTH,
                 broken: Broken {
                     claims_without_admin: true,
                     ..Broken::default()
