@@ -395,9 +395,13 @@ def pool():
         doomed = {entry["id"] for entry in retiring}
         entries = [entry for entry in read(POOL) or [] if entry["id"] not in doomed] + retiring
         yield entries
-        # RETIRING first: a crash between the writes leaves an entry in both, and retiring wins.
-        write(RETIRING, [entry for entry in entries if entry.get("retiring")])
-        write(POOL, [entry for entry in entries if not entry.get("retiring")])
+        save(entries)
+
+
+def save(entries):
+    """Write pool()'s entries to the ledgers; RETIRING first, so a crash between the writes leaves an entry in both, and retiring wins."""
+    write(RETIRING, [entry for entry in entries if entry.get("retiring")])
+    write(POOL, [entry for entry in entries if not entry.get("retiring")])
 
 
 def pick(entries, image, want):
@@ -1054,6 +1058,9 @@ systemctl start docker ployz.service $observe
                     room = self.make_room(entries, dead)
                     if room == "admit":
                         entries.append(dict(id=entry["id"], image=image, ip=entry["ip"], ssh=entry["ssh"], parked_at=int(time.time())))
+                        # The pool holds it before the registry lets it go: a crash between leaves it pooled and still
+                        # running, which tidy() drops from the pool and down deletes, never parked and in neither.
+                        save(entries)
                         self.mark(name, state="parked")
             except RuntimeError as why:
                 print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
