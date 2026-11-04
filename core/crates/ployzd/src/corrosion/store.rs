@@ -107,7 +107,7 @@ impl MachinePublicationGuard<'_> {
                     "DELETE FROM cluster WHERE key = 'forgotten-id:' || ?",
                     [json!(machine.id)],
                 ),
-                machine_upsert(machine)?,
+                registration_upsert(machine)?,
             ])
             .await
     }
@@ -268,6 +268,24 @@ fn machine_upsert(machine: &Machine) -> Result<Statement, Error> {
                          WHERE key LIKE 'forgotten:%' AND value = ?1) \
              AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
          ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+        [json!(machine.id), json!(serde_json::to_string(machine)?)],
+    ))
+}
+
+/// Write a Register's row as [`machine_upsert`] does, but replace an existing row
+/// only while its `daemon_version` is empty: a Server fills it when it publishes
+/// itself, so a late Register leaves a joined row. The check reads this Entry's
+/// replica; a self-publish that has not reached it is still overwritten, until that
+/// Machine's publisher writes its row back.
+fn registration_upsert(machine: &Machine) -> Result<Statement, Error> {
+    Ok(Statement::new(
+        "INSERT INTO machines (id, info) SELECT ?1, ?2 \
+         WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+         OR (NOT EXISTS (SELECT 1 FROM cluster \
+                         WHERE key LIKE 'forgotten:%' AND value = ?1) \
+             AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
+         ON CONFLICT (id) DO UPDATE SET info = excluded.info \
+         WHERE COALESCE(json_extract(machines.info, '$.runtime.daemon_version'), '') = ''",
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
     ))
 }
