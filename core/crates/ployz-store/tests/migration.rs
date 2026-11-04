@@ -624,10 +624,8 @@ fn a_seal_only_working_state_held_at_upgrade_keeps_history_from_plain_text() {
     }
 }
 
-/// Production of project shop, with Service web holding TOKEN plain at revision 1,
-/// then sealed under a new variable ID at revision 2: the Save scrubs revision 1's
-/// TOKEN by key, sealing it under its own, older ID.
-fn sealed_by_key(url: &str) -> ConfigStore {
+/// Project shop, its production holding Service web.
+fn shop_at(url: &str) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     let store = ConfigStore::open(url, backend::key()).unwrap();
     store
@@ -652,6 +650,44 @@ fn sealed_by_key(url: &str) -> ConfigStore {
             },
         )
         .unwrap();
+    (store, who)
+}
+
+fn unset(store: &ConfigStore, who: &Actor, path: &str) {
+    store
+        .write(
+            who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse(path).unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+/// TOKEN sealed in production's web under a new variable ID: the Save seals what
+/// History holds of the TOKEN before it by key, under that variable's own ID.
+fn seal_token_again(store: &ConfigStore, who: &Actor) {
+    unset(store, who, "web.env.TOKEN");
+    set(
+        store,
+        who,
+        "production",
+        &[(
+            "web.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+        )],
+    );
+    publish(store, who);
+}
+
+/// [`shop_at`], with web holding TOKEN plain at revision 1, then sealed under a new
+/// variable ID at revision 2, which seals revision 1's TOKEN by key.
+fn sealed_by_key(url: &str) -> ConfigStore {
+    let (store, who) = shop_at(url);
     set(
         &store,
         &who,
@@ -659,72 +695,8 @@ fn sealed_by_key(url: &str) -> ConfigStore {
         &[("web.env.TOKEN", json!("plain-value"))],
     );
     publish(&store, &who);
+    seal_token_again(&store, &who);
     store
-        .write(
-            &who,
-            &Edit {
-                environment: at("production"),
-                expect: None,
-                changes: vec![Change::Unset {
-                    path: SettingPath::parse("web.env.TOKEN").unwrap(),
-                }],
-            },
-        )
-        .unwrap();
-    set(
-        &store,
-        &who,
-        "production",
-        &[(
-            "web.env.TOKEN",
-            backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
-        )],
-    );
-    publish(&store, &who);
-    store
-}
-
-/// Each `[environment, service, variable, key]` a saved version or Working State
-/// holds sealed that `config_sealed_variable` lacks.
-fn unrecorded_seals(url: &str) -> Vec<Vec<String>> {
-    let ledger = select(
-        url,
-        "SELECT environment_id, service_id, variable_id, key FROM config_sealed_variable",
-    );
-    let mut documents = select(url, "SELECT environment_id, intent FROM config_saved");
-    documents.extend(select(url, "SELECT id, working FROM config_environment"));
-    let mut unrecorded: Vec<Vec<String>> = documents
-        .iter()
-        .flat_map(|row| {
-            let [environment, document] = row.as_slice() else {
-                unreachable!("two columns are selected")
-            };
-            let intent: ployz_core::config::SavedEnvironmentIntent =
-                serde_json::from_str(document).unwrap();
-            intent
-                .services
-                .iter()
-                .flat_map(|service| {
-                    service
-                        .variables
-                        .iter()
-                        .filter(|variable| variable.value.is_secret())
-                        .map(|variable| {
-                            vec![
-                                environment.clone(),
-                                service.id.clone(),
-                                variable.id.clone(),
-                                variable.key.clone(),
-                            ]
-                        })
-                })
-                .collect::<Vec<_>>()
-        })
-        .filter(|seal| !ledger.contains(seal))
-        .collect();
-    unrecorded.sort();
-    unrecorded.dedup();
-    unrecorded
 }
 
 /// A scrub that seals an earlier version's variable by key, under that variable's
@@ -734,7 +706,7 @@ fn a_seal_a_scrub_writes_into_history_is_in_the_ledger() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let _store = sealed_by_key(&url);
-    assert_eq!(unrecorded_seals(&url), Vec::<Vec<String>>::new());
+    assert_eq!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
 }
 
 /// A database whose saves hold seals the ledger lacks, as one an older Store wrote,
@@ -749,9 +721,68 @@ fn every_seal_a_save_holds_is_in_the_ledger_after_upgrade() {
         "DELETE FROM config_sealed_variable;
          DELETE FROM config_migration WHERE name = '0033_record_saved_seals';",
     );
-    assert_ne!(unrecorded_seals(&url), Vec::<Vec<String>>::new());
+    assert_ne!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
     drop(ConfigStore::open(&url, backend::key()).unwrap());
-    assert_eq!(unrecorded_seals(&url), Vec::<Vec<String>>::new());
+    assert_eq!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
+}
+
+/// A Store from before 0033, still running beside one that migrated their shared
+/// database, seals a value by key without recording it. A plain copy a Deployment
+/// kept still leaves History when that Deployment ends: the saves are read too.
+#[test]
+fn a_seal_a_store_from_before_0033_left_unrecorded_still_scrubs_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_at(&url);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    publish(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.OTHER", json!("other"))],
+    );
+    let queued = backend::admit(&store, &who, "production", 1);
+    seal_token_again(&store, &who);
+    assert_eq!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
+    // The older Store records only what Working State holds: TOKEN's newest ID.
+    let working: ployz_core::config::SavedEnvironmentIntent = serde_json::from_str(
+        &select(&url, "SELECT working FROM config_environment")
+            .concat()
+            .concat(),
+    )
+    .unwrap();
+    let token = working
+        .services
+        .iter()
+        .flat_map(|service| &service.variables)
+        .find(|variable| variable.key == "TOKEN")
+        .unwrap();
+    run(
+        &url,
+        &format!(
+            "DELETE FROM config_sealed_variable WHERE variable_id <> '{}';",
+            token.id
+        ),
+    );
+    assert_eq!(backend::unrecorded_seals(&url).len(), 1);
+    unset(&store, &who, "web.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-again"))],
+    );
+    publish(&store, &who);
+    assert!(backend::tables_holding(&url, "plain-private").contains(&"config_saved".to_owned()));
+
+    backend::run(&store, &queued);
+    assert!(!backend::tables_holding(&url, "plain-private").contains(&"config_saved".to_owned()));
 }
 
 #[test]

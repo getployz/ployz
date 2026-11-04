@@ -1052,17 +1052,17 @@ pub(crate) fn reconsent(
 /// from that revision when it finishes.
 pub(crate) struct Scrub {
     latest: Option<Saved>,
-    ever: sealed::SealLedger,
+    ledger: sealed::SealLedger,
     running: BTreeSet<Revision>,
 }
 
 impl Scrub {
     pub(crate) fn load(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Self, RpcError> {
-        let ever = sealed::SealLedger::load(tx, environment.as_str())?;
-        if ever.is_empty() {
+        let ledger = sealed::SealLedger::load(tx, environment.as_str())?;
+        if ledger.is_empty() {
             return Ok(Self {
                 latest: None,
-                ever,
+                ledger,
                 running: BTreeSet::new(),
             });
         }
@@ -1079,13 +1079,13 @@ impl Scrub {
             .collect::<Result<BTreeSet<_>, _>>()?;
         Ok(Self {
             latest: latest_saved(tx, environment)?,
-            ever,
+            ledger,
             running,
         })
     }
 
-    pub(crate) fn ever(&self) -> &sealed::SealLedger {
-        &self.ever
+    pub(crate) fn ledger(&self) -> &sealed::SealLedger {
+        &self.ledger
     }
 
     /// Remove from `saved`, the version saved at `revision`, what sealing took
@@ -1120,11 +1120,11 @@ impl Scrub {
                     Some(now)
                         if now.id != was.id
                             && !sealed::sealed(&was.value)
-                            && self.ever.holds_id(&service.id, was) =>
+                            && self.ledger.holds_id(&service.id, was) =>
                     {
                         &VariableValue::NotSet
                     }
-                    None if !sealed::sealed(&was.value) && self.ever.holds(&service.id, was) => {
+                    None if !sealed::sealed(&was.value) && self.ledger.holds(&service.id, was) => {
                         &VariableValue::NotSet
                     }
                     Some(_) | None => continue,

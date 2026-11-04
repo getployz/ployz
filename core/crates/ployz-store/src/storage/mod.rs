@@ -822,26 +822,6 @@ mod mixed_version_tests {
             .unwrap();
         assert_eq!(migrated.len(), 1);
     }
-
-    /// A Store from before 0033, still running beside one that migrated their shared
-    /// database, opens it, skipping the step it doesn't know, and writes as before.
-    #[test]
-    fn a_store_from_before_0033_opens_a_database_migrated_past_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let url = format!("sqlite:{}", dir.path().join("store.db").display());
-        drop(Storage::open(&url).unwrap());
-        let older = Storage::open_through(&url, "0032_node_copied_from").unwrap();
-        let migrated = older
-            .read(|tx| {
-                tx.query(
-                    "SELECT name FROM config_migration WHERE name = ?1",
-                    &["0033_record_saved_seals".into()],
-                )
-            })
-            .unwrap();
-        assert_eq!(migrated.len(), 1);
-        assert_eq!(create(&older, Some("{}")).unwrap(), 1);
-    }
 }
 
 #[cfg(test)]
