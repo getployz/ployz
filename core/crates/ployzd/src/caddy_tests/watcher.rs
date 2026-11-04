@@ -2344,6 +2344,163 @@ async fn routed_addresses_follow_a_probe_load_when_the_next_apply_fails() {
 }
 
 #[tokio::test]
+async fn a_refused_load_claims_nothing_once_the_same_caddy_failed_to_write_its_caddyfile() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    let (load_tx, mut loads) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let caddyfile = directory.join(CONFIG_FILE);
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    assert!(next_load(&mut loads).await.contains("10.210.1.2:80"));
+    state.wait_for_ack_transactions(1).await;
+    let first = std::fs::read_to_string(&caddyfile).unwrap();
+
+    std::fs::create_dir(caddyfile.with_extension("tmp")).unwrap();
+    state.set_address(api.container_id, [10, 210, 1, 7]);
+    assert!(next_load(&mut loads).await.contains("10.210.1.7:80"));
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| {
+            published.addresses.as_ref().is_some_and(|addresses| {
+                addresses
+                    .get(&api.identity())
+                    .and_then(|copies| copies.get(&api.container_id))
+                    == Some(&ContainerAddress([10, 210, 1, 7].into()))
+            })
+        }),
+    )
+    .await
+    .expect("the running Caddy loaded 10.210.1.7")
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&caddyfile).unwrap(), first);
+
+    // The same Caddy stays newest, so a restart in place would serve the file above.
+    let queries = state.container_queries();
+    std::fs::remove_dir_all(directory.join("certs")).unwrap();
+    std::fs::write(directory.join("certs"), b"blocks certificate preparation").unwrap();
+    state.wait_for_container_queries(queries + 2).await;
+    assert_eq!(
+        published.borrow().addresses,
+        None,
+        "the Caddyfile still holds 10.210.1.2, so a refused load claims nothing"
+    );
+    assert_eq!(std::fs::read_to_string(&caddyfile).unwrap(), first);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// Fails every store query once a probe asks Caddy which certificates it loaded.
+#[derive(Clone)]
+struct FailingReadsAfterProbe {
+    inner: RefusingAdmin,
+    fail_queries: Arc<AtomicBool>,
+}
+
+impl CaddyAdmin for FailingReadsAfterProbe {
+    async fn adapt(&self, caddyfile: &str) -> Result<String, CaddyError> {
+        self.inner.adapt(caddyfile).await
+    }
+
+    async fn load(&self, caddyfile: &str) -> Result<(), CaddyError> {
+        self.inner.load(caddyfile).await
+    }
+
+    async fn loaded_certificates(&self) -> Result<BTreeSet<String>, CaddyError> {
+        self.fail_queries.store(true, Ordering::SeqCst);
+        self.inner.loaded_certificates().await
+    }
+}
+
+#[tokio::test]
+async fn a_refused_probe_withdraws_the_claim_before_the_next_read() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    let (load_tx, mut loads) = mpsc::unbounded_channel();
+    let admin = FailingReadsAfterProbe {
+        inner: RefusingAdmin {
+            refused: "https://bad.example.com {",
+            loads: load_tx,
+            running: Arc::default(),
+        },
+        fail_queries: state.fail_queries.clone(),
+    };
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    let first = BTreeMap::from([(
+        api.identity(),
+        BTreeMap::from([(api.container_id, api.address.unwrap())]),
+    )]);
+    assert!(next_load(&mut loads).await.contains("10.210.1.2:80"));
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.addresses.as_ref() == Some(&first)),
+    )
+    .await
+    .expect("the first load is claimed")
+    .unwrap();
+
+    state.write_certificates(&[("bad.example.com", material_body("bad.example.com"))]);
+    state.containers.lock().unwrap().push(observation(
+        4,
+        &machine.id,
+        "web",
+        Some([10, 210, 1, 5]),
+        vec![ingress("bad.example.com", 8443, HttpProtocol::Https)],
+    ));
+    state.set_address(api.container_id, [10, 210, 1, 7]);
+    let probe = next_load(&mut loads).await;
+    assert!(probe.contains("10.210.1.7:80") && !probe.contains("https://bad.example.com {"));
+    let queries = state.container_queries();
+    state.wait_for_container_queries(queries + 1).await;
+    assert_eq!(
+        published.borrow().addresses,
+        None,
+        "Caddy serves the probe's 10.210.1.7, and the read after it failed"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn certificates_caddy_loaded_before_a_failed_caddyfile_write_survive_an_admin_outage() {
     let WatcherFixture {
         machine,

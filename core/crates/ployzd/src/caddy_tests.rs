@@ -84,7 +84,7 @@ async fn reconcile<A: CaddyAdmin>(
     );
     apply_caddy(&projection, config_file, admin)
         .await
-        .map_err(|(ApplyError::BeforeServing(error) | ApplyError::AfterServing(error))| error)
+        .map_err(|(ApplyError::BeforeServing(error) | ApplyError::AfterServing(error, _))| error)
 }
 
 #[test]
