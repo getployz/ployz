@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Helper commands must not wait on the caller's stdin: `incus launch` reads YAML from a non-terminal one."""
 
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import unittest
@@ -130,6 +134,47 @@ class CloudCredentials(unittest.TestCase):
         self.assertEqual(args[0][:2], ["script", "-qfec"])
         self.assertTrue(args[0][2].endswith("org approval approve id-1"))
         self.assertEqual(kwargs["input"], b"ada\r")
+
+
+class RunState(unittest.TestCase):
+    """A run that up never finished, or down never finished, accepts only down."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.manifest = Path(directory.name).resolve() / "cluster.json"
+
+    def write(self, state):
+        # A killed up leaves its Machines without address or ssh.
+        cluster.save(dict(root=str(cluster.CORE), manifest=str(self.manifest), id="t1", provider="boat", state=state,
+                          timings={}, machines=[dict(name="machine-1")]))
+
+    def main(self, *argv, backend=None):
+        provider = (unittest.mock.Mock(return_value=backend) if backend else
+                    unittest.mock.Mock(side_effect=AssertionError("provider reached")))
+        with unittest.mock.patch.object(sys, "argv", ["verify-cluster", *argv]), \
+             unittest.mock.patch.object(cluster, "provider", provider):
+            return cluster.main()
+
+    def test_a_run_left_starting_or_tearing_down_refuses_every_command_but_down(self):
+        manifest = str(self.manifest)
+        for state in ("starting", "tearing-down"):
+            self.write(state)
+            for argv in (["exec", manifest, "machine-1", "--", "true"], ["cli", manifest, "--", "server", "ls"],
+                         ["power", "on", manifest, "machine-1"], ["doctor", manifest], ["update", manifest]):
+                with self.subTest(state=state, action=argv[0]), self.assertRaisesRegex(RuntimeError, state):
+                    self.main(*argv)
+
+    def test_down_removes_a_run_left_starting(self):
+        def hung(signum, frame):
+            raise TimeoutError("down hung")
+        self.addCleanup(signal.signal, signal.SIGALRM, signal.signal(signal.SIGALRM, hung))
+        self.addCleanup(signal.alarm, 0)
+        self.write("starting")
+        signal.alarm(10)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.main("down", str(self.manifest), backend=unittest.mock.Mock()), 0)
+        self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
 
 
 if __name__ == "__main__":
