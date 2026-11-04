@@ -413,7 +413,8 @@ prepares Docker and ZFS meanwhile.
     Cloud. If Cloud enrollment publication or completion failed, run `ployz server enroll`
     again, or use **Enroll** in **Servers > Waiting to join**. If the loop restarts mid-enroll,
     it picks up the same attempt rather than starting a second one and keeps the last reported
-    stage. If the join committed but a follow-up failed, the server stays Joined, the loop
+    stage, so a resumed join that fails reports the stage it had reached, such as `joining`,
+    not the step it was retrying. If the join committed but a follow-up failed, the server stays Joined, the loop
     cleans up, and its log and status name that follow-up.
 14. Rejecting a server stops enrollment at the next safe point. A package install finishes
     before stopping at the enroll or queue step. Storage setup finishes once begun in the

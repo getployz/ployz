@@ -29,6 +29,67 @@ pub struct EnrollmentAssignment {
     pub machine: Machine,
 }
 
+/// Where an in-process enrollment has reached, reported to Cloud on each check-in. Declared in
+/// the order an enrollment runs them, which Cloud's `ENROLLMENT_STAGES` shares.
+///
+/// `Unknown` is any stage a newer release wrote. No enrollment reports it, and it sorts first,
+/// so it is never committed and never the furthest stage an attempt reached. Written back, it
+/// reads as `"unknown"`, which Cloud ignores. The TypeScript union leaves it out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(into = "&'static str", from = "String")]
+#[ts(rename_all = "lowercase")]
+pub enum EnrollStage {
+    #[ts(skip)]
+    Unknown,
+    Installing,
+    Enrolling,
+    Queued,
+    Storage,
+    Joining,
+    Publishing,
+}
+
+impl EnrollStage {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Installing => "installing",
+            Self::Storage => "storage",
+            Self::Enrolling => "enrolling",
+            Self::Queued => "queued",
+            Self::Joining => "joining",
+            Self::Publishing => "publishing",
+        }
+    }
+
+    /// Whether the daemon has committed the join, so the attempt can no longer be cancelled.
+    #[must_use]
+    pub const fn committed(self) -> bool {
+        matches!(self, Self::Joining | Self::Publishing)
+    }
+}
+
+impl From<EnrollStage> for &'static str {
+    fn from(stage: EnrollStage) -> Self {
+        stage.as_str()
+    }
+}
+
+impl From<String> for EnrollStage {
+    fn from(stage: String) -> Self {
+        match stage.as_str() {
+            "installing" => Self::Installing,
+            "storage" => Self::Storage,
+            "enrolling" => Self::Enrolling,
+            "queued" => Self::Queued,
+            "joining" => Self::Joining,
+            "publishing" => Self::Publishing,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// Reasons an observed or saved allocation cannot be used safely.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum EnrollmentError {
@@ -269,5 +330,16 @@ mod tests {
             allocate_enrollment(&invalid, &snapshot, &[]),
             Err(EnrollmentError::InvalidIdentity)
         );
+    }
+
+    #[test]
+    fn a_stage_from_a_newer_release_reads_as_unknown_and_never_counts_as_reached() {
+        let stage: EnrollStage = serde_json::from_str(r#""verifying""#).unwrap();
+        assert_eq!(stage, EnrollStage::Unknown);
+        assert!(!stage.committed());
+        assert_eq!(stage.max(EnrollStage::Installing), EnrollStage::Installing);
+        let joining: EnrollStage = serde_json::from_str(r#""joining""#).unwrap();
+        assert!(joining.committed());
+        assert_eq!(serde_json::to_string(&joining).unwrap(), r#""joining""#);
     }
 }

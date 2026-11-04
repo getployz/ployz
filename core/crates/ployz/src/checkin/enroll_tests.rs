@@ -894,8 +894,8 @@ async fn rejected_committed_resume_reports_its_actual_failure() {
     assert!(host.events().contains(&"finished"));
     assert_eq!(fixture.status().answer, Seen::Wait);
     let failure = fixture.status().attempt.unwrap().failure.unwrap();
-    assert_eq!(failure.stage, EnrollStage::Joining);
-    assert_eq!(failure.message, "Publish failed");
+    assert_eq!(failure.stage(), EnrollStage::Joining);
+    assert_eq!(failure.message(), "Publish failed");
     assert!(fixture.paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 0);
 }
@@ -925,7 +925,7 @@ async fn a_resumed_committed_attempt_that_fails_before_joining_keeps_its_committ
     let attempt = fixture.status().attempt.unwrap();
     assert_eq!(attempt.stage, EnrollStage::Joining);
     let failure = attempt.failure.unwrap();
-    assert_eq!(failure.stage, EnrollStage::Joining);
+    assert_eq!(failure.stage(), EnrollStage::Joining);
     assert_eq!(
         failure_line(&failure),
         "Enroll failed at joining: Could not reach ployzd"

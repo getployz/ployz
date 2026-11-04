@@ -10,6 +10,8 @@ use ployz_core::{
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
+pub(crate) use ployz_core::EnrollStage;
+
 pub(crate) mod recovery_compat;
 
 const DEFAULT_RETRY_AFTER: u64 = 2;
@@ -290,57 +292,6 @@ pub(crate) enum Response {
 pub(crate) enum Waiting {
     Founder,
     Queued { ahead: u32 },
-}
-
-/// Where an in-process enrollment has reached, reported to Cloud on each check-in. Declared in
-/// the order an enrollment runs them, which Cloud's `ENROLLMENT_STAGES` shares.
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
-#[serde(into = "&'static str", try_from = "String")]
-pub(crate) enum EnrollStage {
-    Installing,
-    Enrolling,
-    Queued,
-    Storage,
-    Joining,
-    Publishing,
-}
-
-impl EnrollStage {
-    #[must_use]
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Installing => "installing",
-            Self::Storage => "storage",
-            Self::Enrolling => "enrolling",
-            Self::Queued => "queued",
-            Self::Joining => "joining",
-            Self::Publishing => "publishing",
-        }
-    }
-}
-
-impl From<EnrollStage> for &'static str {
-    fn from(stage: EnrollStage) -> Self {
-        stage.as_str()
-    }
-}
-
-impl TryFrom<String> for EnrollStage {
-    type Error = String;
-
-    fn try_from(stage: String) -> Result<Self, Self::Error> {
-        Ok(match stage.as_str() {
-            "installing" => Self::Installing,
-            "storage" => Self::Storage,
-            "enrolling" => Self::Enrolling,
-            "queued" => Self::Queued,
-            "joining" => Self::Joining,
-            "publishing" => Self::Publishing,
-            _ => return Err(format!("unknown enrollment stage {stage}")),
-        })
-    }
 }
 
 /// Enrollment responses ignore fields a newer Cloud adds; only the pairing is strict.

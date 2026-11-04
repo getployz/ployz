@@ -44,10 +44,32 @@ pub(crate) struct Attempt {
     pub(crate) failure: Option<AttemptFailure>,
 }
 
+impl Attempt {
+    /// Fail the attempt at the furthest stage it reached, saved or `live`.
+    pub(crate) fn fail(&mut self, live: EnrollStage, message: String) -> &AttemptFailure {
+        self.stage = self.stage.max(live);
+        self.failure.insert(AttemptFailure {
+            stage: self.stage,
+            message,
+        })
+    }
+}
+
+/// Built only by [`Attempt::fail`], so its stage is never below the attempt's.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct AttemptFailure {
-    pub(crate) stage: EnrollStage,
-    pub(crate) message: String,
+    stage: EnrollStage,
+    message: String,
+}
+
+impl AttemptFailure {
+    pub(crate) const fn stage(&self) -> EnrollStage {
+        self.stage
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
