@@ -1,6 +1,6 @@
 use super::history::NotSetVariable;
 use super::publish::DiscardTarget;
-use super::sealed::{EverSealed, sealed};
+use super::sealed::{SealLedger, sealed};
 use super::{NodeChange, Review};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, shown};
@@ -2233,7 +2233,7 @@ impl Prepared {
 pub(super) fn prepare_history(
     tx: &mut dyn Tx,
     environment: &Environment,
-    ever: &EverSealed,
+    ever: &SealLedger,
     saved: Option<&SavedEnvironmentIntent>,
     selected: &SavedEnvironmentIntent,
     previous: Option<&SavedEnvironmentIntent>,
@@ -2282,7 +2282,7 @@ pub(super) fn prepare_history(
 /// back as plain text. Returns the keys that came back without a value.
 fn keep_sealed(
     environment: &Environment,
-    ever: &EverSealed,
+    ever: &SealLedger,
     target: &mut SavedEnvironmentIntent,
 ) -> Result<Vec<NotSetVariable>, RpcError> {
     let mut not_set = Vec::new();

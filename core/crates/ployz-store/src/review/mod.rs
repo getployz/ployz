@@ -924,6 +924,7 @@ pub(crate) fn publish(
             changed.as_deref().into(),
         ],
     )?;
+    sealed::SealLedger::record(tx, environment.as_str(), &intent)?;
     // Saving a sealed value again clears what an earlier seal left plain below.
     crate::branch::empty_sealed_below(
         tx,
@@ -1051,13 +1052,13 @@ pub(crate) fn reconsent(
 /// from that revision when it finishes.
 pub(crate) struct Scrub {
     latest: Option<Saved>,
-    ever: sealed::EverSealed,
+    ever: sealed::SealLedger,
     running: BTreeSet<Revision>,
 }
 
 impl Scrub {
     pub(crate) fn load(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Self, RpcError> {
-        let ever = sealed::EverSealed::load(tx, environment.as_str())?;
+        let ever = sealed::SealLedger::load(tx, environment.as_str())?;
         if ever.is_empty() {
             return Ok(Self {
                 latest: None,
@@ -1083,7 +1084,7 @@ impl Scrub {
         })
     }
 
-    pub(crate) fn ever(&self) -> &sealed::EverSealed {
+    pub(crate) fn ever(&self) -> &sealed::SealLedger {
         &self.ever
     }
 
@@ -1157,6 +1158,8 @@ pub(crate) fn scrub_sealed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Resu
         let earlier = Revision(row.number(0, "revision")?);
         let mut saved = row.intent(1, "Saved State")?;
         if scrub.apply(earlier, &mut saved) {
+            // A scrub matched by key seals a variable under its own ID.
+            sealed::SealLedger::record(tx, environment.as_str(), &saved)?;
             tx.execute(
                 "UPDATE config_saved SET intent = ?3 WHERE environment_id = ?1 AND revision = ?2",
                 &[
