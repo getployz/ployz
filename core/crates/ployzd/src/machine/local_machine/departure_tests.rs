@@ -48,6 +48,11 @@ fn initialize_request() -> EnrollRequest {
 /// A Machine over a fake plugin that demotes `data`, a fake Docker, a fake Cluster, and
 /// ZFS ready.
 async fn harness(initialized: bool) -> Harness {
+    let (replicated, _cluster) = fake_cluster::store().await;
+    harness_over(initialized, replicated).await
+}
+
+async fn harness_over(initialized: bool, replicated: crate::corrosion::ReplicatedStore) -> Harness {
     let data_dir = std::env::temp_dir().join(format!("ployzd-departure-{}", MachineId::random()));
     std::fs::create_dir_all(&data_dir).unwrap();
     let mut store = LocalMachineStore::open(&data_dir).unwrap();
@@ -63,7 +68,6 @@ async fn harness(initialized: bool) -> Harness {
     }
     let (client, _server) = plugin.serve(&data_dir);
     let (runtime, docker) = fake_runtime_with(FakeDocker::default()).await;
-    let (replicated, _cluster) = fake_cluster::store().await;
     let owner = RecordOwner::spawn(store).unwrap();
     let local = LocalMachine::new(owner)
         .with_containers(Some(runtime))
@@ -549,4 +553,30 @@ async fn a_leaving_mark_never_brings_back_a_forgotten_row() {
         .unwrap();
 
     assert_eq!(replicated.machine(forgotten.as_str()).await.unwrap(), None);
+}
+
+/// A Leave whose reset commits but whose row removal fails still answers Left, carrying
+/// the failure as `reset_warning`, and the Cluster keeps the row marked leaving: this
+/// Machine has no Cluster left to remove it from, so only the caller can say so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_leave_whose_row_removal_fails_says_so_and_leaves_its_row_leaving() {
+    let cluster = std::sync::Arc::new(std::sync::Mutex::new(fake_cluster::FakeCluster::start()));
+    let replicated = cluster.lock().unwrap().store();
+    let test = harness_over(true, replicated.clone()).await;
+    let me = test.local.record().machine().unwrap().clone();
+    replicated.publish_local_machine(&me).await.unwrap();
+    test.plugin.on("Storage.Demote", {
+        let cluster = cluster.clone();
+        move || tokio::task::block_in_place(|| cluster.lock().unwrap().stop())
+    });
+
+    let left = test.local.leave(LeaveRequest::default()).await.unwrap();
+
+    let ployz_core::Left::Left { reset_warning, .. } = left else {
+        panic!("the reset committed, so the Leave answers Left: {left:?}");
+    };
+    assert!(reset_warning.is_some(), "the failed removal is reported");
+    cluster.lock().unwrap().restart();
+    let row = replicated.machine(me.id.as_str()).await.unwrap();
+    assert_eq!(row.map(|row| row.runtime.leaving), Some(true));
 }

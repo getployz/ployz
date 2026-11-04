@@ -214,6 +214,37 @@ async fn leave_lost_to_a_daemon_restart_is_resent() {
     assert_eq!(resent.load(Ordering::SeqCst), 1);
 }
 
+/// A reset that left its row in the old Cluster, as when the row removal fails after
+/// the reset commits, is said: nothing else removes that row, and `server add --reset`,
+/// `server init` and `cloud enroll --reset` never reach the old Cluster to forget it.
+#[tokio::test]
+async fn a_leave_that_could_not_remove_its_row_says_so() {
+    use crate::connect::test_support::{unix_client, unix_daemon};
+    let _mode = crate::ui::test_mode(true);
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ployz.sock");
+    let daemon = unix_daemon(&path, |_| async {
+        Ok(RpcResponse::from(Left::Left {
+            phase: LeftPhase::Uninitialized,
+            reset_warning: Some("connection refused".into()),
+        }))
+    });
+    let mut client = unix_client(&path).await;
+
+    super::leave(&mut client).await.unwrap();
+
+    daemon.shutdown_background();
+    let (_, json) = crate::ui::captured(|| crate::ui::show(&serde_json::json!({})));
+    let warnings = json.and_then(|json| json.get("warnings").cloned());
+    let warning = warnings
+        .as_ref()
+        .and_then(|warnings| warnings.get(0))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("the reset's warning reaches the user, warned {warnings:?}"));
+    assert!(warning.contains("connection refused"), "{warning}");
+    assert!(warning.contains("ployz server forget"), "{warning}");
+}
+
 /// Answers Inspect as Participating, and ListMachines with the restarting
 /// daemon's Unavailable refusal for the first `refusals` calls.
 async fn restarting_cluster_store(
