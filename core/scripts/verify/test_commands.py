@@ -176,6 +176,36 @@ class RunState(unittest.TestCase):
             self.assertEqual(self.main("down", str(self.manifest), backend=unittest.mock.Mock()), 0)
         self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
 
+    def test_a_down_during_up_leaves_nothing_up_made(self):
+        core = self.manifest.parent
+        sandboxes = set()
+        backend = unittest.mock.Mock()
+        backend.create.side_effect = lambda: sandboxes.add("machine-1")
+        backend.destroy.side_effect = sandboxes.clear
+        downs = []
+
+        def concurrent_down_then_failure(run, *args, **kwargs):
+            try:
+                downs.append(self.main("down", run["manifest"], backend=backend))
+            except RuntimeError as error:
+                downs.append(str(error))
+            backend.create()
+            raise RuntimeError("boot failed")
+        args = cluster.argparse.Namespace(provider="boat", machines=1, memory=None, disk=None, bare=False,
+                                          distro=cluster.boat.DISTROS[0], cloud=False, cloud_attach=False, daemon=None)
+        with unittest.mock.patch.object(cluster, "CORE", core), \
+             unittest.mock.patch.object(cluster, "preflight"), \
+             unittest.mock.patch.object(cluster.host, "owner", return_value={}), \
+             unittest.mock.patch.object(cluster, "provider", return_value=backend), \
+             unittest.mock.patch.object(cluster, "select_daemons", side_effect=concurrent_down_then_failure), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(RuntimeError):
+            cluster.up(args)
+        self.assertEqual(sandboxes, set())
+        self.assertEqual(downs, ["Another up, update or teardown is using this run"])
+        manifest, = (core / ".verify").glob("*/cluster.json")
+        self.assertEqual(json.loads(manifest.read_text())["state"], "removed")
+
     def write_unknown(self, state):
         self.write(state)
         if state is None:

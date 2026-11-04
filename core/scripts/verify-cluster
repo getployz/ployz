@@ -772,6 +772,13 @@ def up(args):
                timings={}, machines=[dict(name=f"machine-{index}") for index in range(1, args.machines + 1)])
     if args.bare:
         run.update(bare=True, distro=args.distro)
+    # A down or reap that landed mid-up would leave its failure cleanup no run to tear down, stranding what it made.
+    with locked(run):
+        launch(args, run, private, total_started)
+
+
+def launch(args, run, private, total_started):
+    """Boot and enroll a new run's Machines, tearing down what it made on any failure."""
     save(run)
     commands = Commands(run)
     backend = provider(run, commands)
@@ -952,7 +959,7 @@ def locked(run):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RuntimeError("Another update or teardown is using this run") from None
+            raise RuntimeError("Another up, update or teardown is using this run") from None
         yield
 
 
