@@ -247,6 +247,143 @@ mod tests {
         assert_eq!(serde_json::to_string(&variable).unwrap(), stored);
     }
 
+    /// Each shape a variable is stored in today, from Working, Saved and Applied State
+    /// and from Sync bases, with the generator and lifecycle it reads as.
+    const STORED: &[(&str, &str, bool, bool)] = &[
+        (
+            "plain literal",
+            r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"p1:x","value":{"kind":"literal","value":"x"}}"#,
+            false,
+            false,
+        ),
+        (
+            "template",
+            r#"{"id":"v","key":"K","description":null,"exported":true,"valueFingerprint":"p1:t","value":{"kind":"template","parts":[{"kind":"text","value":"http://"},{"kind":"ref","owner":{"scope":"service","lineageId":"l"},"key":"HOST"}]}}"#,
+            false,
+            false,
+        ),
+        (
+            "emptied template base",
+            r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"p1:t","value":{"kind":"template","parts":[]}}"#,
+            false,
+            false,
+        ),
+        (
+            "generated, made",
+            r#"{"id":"v","key":"K","description":"d","exported":false,"valueFingerprint":"p1:g","value":{"kind":"literal","value":"abcdefgh"},"generated":{"length":8,"charset":"a-z"}}"#,
+            true,
+            false,
+        ),
+        (
+            "generated, awaiting its value",
+            r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"generating","value":{"kind":"literal","value":""},"generated":{"length":32,"charset":"a-zA-Z0-9"}}"#,
+            true,
+            true,
+        ),
+        (
+            "emptied generated base",
+            r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"p1:g","value":{"kind":"literal","value":""},"generated":{"length":32,"charset":"a-z"}}"#,
+            true,
+            true,
+        ),
+        (
+            "secret, redacted",
+            r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"s1:k","value":{"kind":"secret","encryptedValue":null}}"#,
+            false,
+            false,
+        ),
+        (
+            "secret, client-sealed",
+            r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"s1:k","value":{"kind":"secret","encryptedValue":{"sealedFor":"00000000-0000-4000-8000-000000000002","value":{"sealed":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==","scope":{"service":"00000000-0000-4000-8000-000000000003"},"key":"K"}}}}"#,
+            false,
+            false,
+        ),
+        (
+            "secret, legacy",
+            r#"{"id":"v1","key":"K","description":null,"exported":false,"valueFingerprint":"v1:ab","value":{"kind":"secret","encryptedValue":{"version":1,"iv":"aXY=","tag":"dGFn","ciphertext":"Y3Q="}}}"#,
+            false,
+            false,
+        ),
+        (
+            "secret without a value",
+            r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"secret_without_value"}}"#,
+            false,
+            false,
+        ),
+    ];
+
+    #[test]
+    fn every_stored_variable_shape_keeps_its_bytes_and_lifecycle() {
+        for &(shape, stored, generated, awaits) in STORED {
+            let variable: crate::config::SavedVariableIntent =
+                serde_json::from_str(stored).unwrap_or_else(|error| panic!("{shape}: {error}"));
+            assert_eq!(serde_json::to_string(&variable).unwrap(), stored, "{shape}");
+            assert_eq!(variable.generator().is_some(), generated, "{shape}");
+            assert_eq!(variable.awaits_value(), awaits, "{shape}");
+        }
+    }
+
+    /// Only a secret without a value has no fingerprint. A variable that disagrees never
+    /// reads, so no writer that skips parsing can store one.
+    #[test]
+    fn a_variable_whose_fingerprint_disagrees_with_its_value_never_reads() {
+        for (shape, stored) in [
+            (
+                "secret without a value, with a fingerprint",
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"f","value":{"kind":"secret_without_value"}}"#,
+            ),
+            (
+                "literal without one",
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"literal","value":"x"}}"#,
+            ),
+            (
+                "template without one",
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"template","parts":[]}}"#,
+            ),
+            (
+                "secret without one",
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"secret","encryptedValue":null}}"#,
+            ),
+            (
+                "generated without one",
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"literal","value":"x"},"generated":{"length":32,"charset":"a-z"}}"#,
+            ),
+        ] {
+            assert!(
+                serde_json::from_str::<crate::config::SavedVariableIntent>(stored).is_err(),
+                "{shape} read"
+            );
+        }
+    }
+
+    /// Only a literal is generated: a marker beside any other value, such as one sealed
+    /// since, reads and is gone, so it is never written back.
+    #[test]
+    fn a_marker_beside_a_value_that_is_not_generated_is_never_written_back() {
+        for (shape, stored, kept) in [
+            (
+                "secret",
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"s1:k","value":{"kind":"secret","encryptedValue":null},"generated":{"length":32,"charset":"a-z"}}"#,
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"s1:k","value":{"kind":"secret","encryptedValue":null}}"#,
+            ),
+            (
+                "secret without a value",
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"secret_without_value"},"generated":{"length":32,"charset":"a-z"}}"#,
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"secret_without_value"}}"#,
+            ),
+            (
+                "template",
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"p1:t","value":{"kind":"template","parts":[]},"generated":{"length":32,"charset":"a-z"}}"#,
+                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"p1:t","value":{"kind":"template","parts":[]}}"#,
+            ),
+        ] {
+            let variable: crate::config::SavedVariableIntent =
+                serde_json::from_str(stored).unwrap();
+            assert_eq!(variable.generator(), None, "{shape}");
+            assert_eq!(serde_json::to_string(&variable).unwrap(), kept, "{shape}");
+        }
+    }
+
     #[test]
     fn a_marker_on_a_sealed_value_reads_and_canonicalizing_drops_it() {
         let stored = r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"f","value":{"kind":"secret_without_value"},"generated":{"length":32,"charset":"a-z"}}"#;

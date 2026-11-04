@@ -34,7 +34,11 @@ fn at(environment: &str) -> EnvironmentRef {
 
 /// production: `db` with a generated `PASSWORD`, and `web` reading it.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open())
+}
+
+/// [`shop`], in `store`.
+fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -373,6 +377,52 @@ fn sync_moves_a_generator_and_never_a_value() {
     assert!(
         production != password(&store, &who, "fix-db"),
         "the Sync carried the Branch's value"
+    );
+}
+
+/// A Sync base keeps a generated variable as it arrived, awaiting its value, while the
+/// receiver's Working and Saved State hold the value it made.
+#[test]
+fn a_synced_generator_awaits_its_value_only_in_the_sync_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    deploy(&store, &who, "production", 1);
+    branch(&store, &who, 9, "fix-db", &["db"]);
+    set(
+        &store,
+        &who,
+        "fix-db",
+        &[("db.env.PASSWORD", json!("${{ secret(40, \"a-zA-Z\") }}"))],
+    )
+    .unwrap();
+    let view = offered(&store, &who, "fix-db", "production");
+    store
+        .write(
+            &who,
+            &SyncChanges {
+                from: at("fix-db"),
+                into: Some(at("production")),
+                close_after: false,
+                version: view.version.clone(),
+                picks: None,
+                skip: Vec::new(),
+                values: std::collections::BTreeMap::new(),
+                id: None,
+            },
+        )
+        .unwrap();
+    assert!(letters(&password(&store, &who, "production"), 40));
+    let holding = backend::tables_holding(&url, "generating");
+    assert!(
+        holding.iter().any(|table| table == "config_sync_base"),
+        "{holding:?}"
+    );
+    assert!(
+        !holding
+            .iter()
+            .any(|table| table == "config_environment" || table == "config_saved"),
+        "{holding:?}"
     );
 }
 
