@@ -431,18 +431,146 @@ fn local_ingress<'container>(
         .max_by(|left, right| creation_key(left).cmp(&creation_key(right)))
 }
 
-/// What the Caddyfile was last written from. A write while Caddy's admin socket is down
-/// isn't `through_admin`, since a starting Caddy may have read the Caddyfile before it.
+/// What one pass applies: the projection, and the newest local ingress container.
 #[derive(Eq, PartialEq)]
 struct CaddyInput {
     projection: IngressProjection,
     caddy: Option<ContainerId>,
-    through_admin: bool,
 }
 
-impl CaddyInput {
-    fn loaded(&self, projection: &IngressProjection, caddy: Option<&ContainerId>) -> bool {
-        self.through_admin && self.projection == *projection && self.caddy.as_ref() == caddy
+type RoutedAddresses = BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>;
+
+/// Whether the Caddyfile a restarted Caddy reads holds what its admin loaded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CaddyFile {
+    Current,
+    /// `write_caddyfile` failed, so the file may hold an earlier config.
+    Stale,
+}
+
+/// What the watcher last left Caddy serving, carried from one pass to the next.
+enum CaddyLoad {
+    /// Nothing the watcher applied is known to be served.
+    Unapplied,
+    /// The Caddyfile was written from `input` without the admin. A starting Caddy may have
+    /// read the file before the write, so this confirms nothing.
+    Written { input: CaddyInput },
+    /// The admin of `input.caddy` loaded `input`, so Caddy serves `addresses`, and the files
+    /// a restart reads hold it.
+    Loaded {
+        input: CaddyInput,
+        addresses: RoutedAddresses,
+    },
+    /// The admin of `input.caddy` loaded `input`, then `apply_caddy` failed, so the next pass
+    /// applies it again.
+    Served {
+        input: CaddyInput,
+        addresses: RoutedAddresses,
+        file: CaddyFile,
+    },
+}
+
+/// How a pass left Caddy, as [`CaddyLoad::after`] reads it.
+enum PassOutcome {
+    /// [`CaddyLoad::skip`] held through the admin, so nothing was loaded.
+    Cached { addresses: RoutedAddresses },
+    /// Without the admin, the Caddyfile holds `input`.
+    Written { input: CaddyInput },
+    /// `connect` failed, or a write without the admin did.
+    Unknown,
+    /// `apply_caddy` through the admin, and `find_refused` after a refusal.
+    Loaded {
+        input: CaddyInput,
+        addresses: RoutedAddresses,
+        applied: Applied,
+    },
+}
+
+impl PassOutcome {
+    fn through_admin(&self) -> bool {
+        matches!(self, Self::Cached { .. } | Self::Loaded { .. })
+    }
+}
+
+/// What `apply_caddy` through the admin left Caddy serving.
+enum Applied {
+    Ok,
+    AfterServing(CaddyFile),
+    BeforeServing(Probe),
+}
+
+impl CaddyLoad {
+    /// Caddy already serves `input`, so the pass loads nothing. Through the admin, its last
+    /// load is `input` and the files hold it; without, the Caddyfile was written from it.
+    fn skip(&self, input: &CaddyInput, through_admin: bool) -> bool {
+        match self {
+            Self::Loaded { input: loaded, .. } => through_admin && loaded == input,
+            Self::Written { input: written } => !through_admin && written == input,
+            Self::Unapplied | Self::Served { .. } => false,
+        }
+    }
+
+    fn after(self, pass: PassOutcome) -> Self {
+        match pass {
+            PassOutcome::Cached { addresses } => match self {
+                Self::Loaded { input, .. } => Self::Loaded { input, addresses },
+                // `skip` holds through the admin only on a load.
+                Self::Unapplied | Self::Written { .. } | Self::Served { .. } => self,
+            },
+            PassOutcome::Written { input } => Self::Written { input },
+            PassOutcome::Unknown => Self::Unapplied,
+            PassOutcome::Loaded {
+                input,
+                addresses,
+                applied,
+            } => match applied {
+                Applied::Ok => Self::Loaded { input, addresses },
+                Applied::AfterServing(file) => Self::Served {
+                    input,
+                    addresses,
+                    file,
+                },
+                Applied::BeforeServing(Probe::Unchanged) => self.refused_by(input.caddy.as_ref()),
+                Applied::BeforeServing(Probe::Reloaded | Probe::Refused) => Self::Unapplied,
+            },
+        }
+    }
+
+    /// A refused load leaves Caddy serving its last load, and a restart under the same id
+    /// serves the Caddyfile, so the load stands only for the newest ingress container and
+    /// while the file holds it. A new Caddy serves its Caddyfile, which may predate this
+    /// watcher. A restart between the load and the Caddyfile write goes unseen (#2787).
+    fn refused_by(self, caddy: Option<&ContainerId>) -> Self {
+        let stands = match &self {
+            Self::Loaded { input, .. }
+            | Self::Served {
+                input,
+                file: CaddyFile::Current,
+                ..
+            } => input.caddy.is_some() && input.caddy.as_ref() == caddy,
+            Self::Written { .. } => true,
+            Self::Unapplied
+            | Self::Served {
+                file: CaddyFile::Stale,
+                ..
+            } => false,
+        };
+        if stands { self } else { Self::Unapplied }
+    }
+
+    /// `PublishedRoutes.addresses` after a pass. Without the admin, a running Caddy serves
+    /// what it last loaded or, after a restart, the Caddyfile, so only a stopped Caddy's
+    /// empty routes are claimed.
+    fn claim(&self, through_admin: bool, no_caddy: bool) -> Option<RoutedAddresses> {
+        if !through_admin {
+            return no_caddy.then(BTreeMap::new);
+        }
+        match self {
+            Self::Loaded { addresses, .. } | Self::Served { addresses, .. } => {
+                Some(addresses.clone())
+            }
+            Self::Unapplied | Self::Written { .. } => None,
+        }
     }
 }
 
@@ -602,9 +730,7 @@ where
 {
     // Every Caddy reload clears passive health counts and re-arms a dead upstream, so an
     // unchanged input is never reloaded.
-    let mut last_input = None;
-    // The Caddy whose admin confirmed the published addresses.
-    let mut recorded_by = None;
+    let mut load = CaddyLoad::Unapplied;
     let mut acked = BTreeMap::new();
     // Kept while every copy is out of reach.
     let mut routed = ProxyRoutes::new();
@@ -666,102 +792,88 @@ where
             };
             match input {
                 Ok((caddy, no_caddy, addresses, projection, routes)) => {
+                    let input = CaddyInput { projection, caddy };
                     // A stopped Caddy no longer serves what it loaded.
-                    let loaded = !no_caddy
-                        && last_input.as_ref().is_some_and(|last: &CaddyInput| {
-                            last.loaded(&projection, caddy.as_ref())
-                        });
-                    let (through_admin, result) = if loaded {
-                        (true, Ok(()))
+                    let (pass, result) = if !no_caddy && load.skip(&input, true) {
+                        (PassOutcome::Cached { addresses }, Ok(()))
                     } else {
                         match connect().await {
-                            Ok(admin) => {
-                                let input = CaddyInput {
-                                    projection,
-                                    caddy,
-                                    through_admin: admin.is_some(),
-                                };
-                                let result = if last_input.as_ref() == Some(&input) {
-                                    Ok(())
+                            Ok(admin) if load.skip(&input, admin.is_some()) => {
+                                let pass = if admin.is_some() {
+                                    PassOutcome::Cached { addresses }
                                 } else {
-                                    // Caddy starts from a file written without its admin, so
-                                    // that file pins only certificates this Caddy has loaded.
-                                    let validated;
-                                    let applying = if admin.is_some() {
-                                        &input.projection
-                                    } else {
-                                        validated = certificates.loaded_only(&input.projection);
-                                        &validated
-                                    };
-                                    let applied =
-                                        apply_caddy(applying, &config_file, admin.as_ref()).await;
-                                    let probe = match (&applied, admin.as_ref()) {
-                                        (
-                                            Err(ApplyError::BeforeServing(caddy::Error::Admin(_))),
-                                            Some(admin),
-                                        ) => {
-                                            certificates
-                                                .find_refused(&input.projection, admin)
-                                                .await
-                                        }
-                                        _ => Probe::Unchanged,
-                                    };
-                                    match probe {
-                                        Probe::Unchanged => {}
-                                        // Caddy no longer serves what was last loaded or recorded.
-                                        Probe::Reloaded => {
-                                            last_input = None;
-                                            recorded_by = None;
-                                        }
-                                        // Derive again without the refused.
-                                        Probe::Refused => {
-                                            last_input = None;
-                                            recorded_by = None;
-                                            continue;
-                                        }
-                                    }
-                                    // A refused load leaves the earlier one serving. A failure
-                                    // after the load leaves its certificates loaded. Any other
-                                    // failure may have replaced the file Caddy restarts from.
-                                    match (&applied, admin.is_some()) {
-                                        (Ok(()), true) => {
-                                            certificates.accept(&input.projection);
-                                            last_input = Some(input);
-                                        }
-                                        (Ok(()), false) => last_input = Some(input),
-                                        (Err(ApplyError::BeforeServing(_)), true) => {}
-                                        (Err(ApplyError::AfterServing(_)), true) => {
-                                            certificates.accept(&input.projection);
-                                            last_input = None;
-                                        }
-                                        (Err(_), false) => last_input = None,
-                                    }
-                                    applied
+                                    PassOutcome::Written { input }
                                 };
-                                (admin.is_some(), result)
+                                (pass, Ok(()))
                             }
-                            Err(error) => (false, Err(ApplyError::BeforeServing(error))),
+                            // Caddy starts from a file written without its admin, so that file
+                            // pins only certificates this Caddy has loaded.
+                            Ok(None) => {
+                                let validated = certificates.loaded_only(&input.projection);
+                                let applied =
+                                    apply_caddy::<A>(&validated, &config_file, None).await;
+                                let pass = if applied.is_ok() {
+                                    PassOutcome::Written { input }
+                                } else {
+                                    PassOutcome::Unknown
+                                };
+                                (pass, applied)
+                            }
+                            // A failure after the load leaves its certificates loaded.
+                            Ok(Some(admin)) => {
+                                let result =
+                                    apply_caddy(&input.projection, &config_file, Some(&admin))
+                                        .await;
+                                let applied = match &result {
+                                    Ok(()) => {
+                                        certificates.accept(&input.projection);
+                                        Applied::Ok
+                                    }
+                                    Err(ApplyError::AfterServing(_, file)) => {
+                                        certificates.accept(&input.projection);
+                                        Applied::AfterServing(*file)
+                                    }
+                                    Err(ApplyError::BeforeServing(caddy::Error::Admin(_))) => {
+                                        Applied::BeforeServing(
+                                            certificates
+                                                .find_refused(&input.projection, &admin)
+                                                .await,
+                                        )
+                                    }
+                                    Err(ApplyError::BeforeServing(_)) => {
+                                        Applied::BeforeServing(Probe::Unchanged)
+                                    }
+                                };
+                                let pass = PassOutcome::Loaded {
+                                    input,
+                                    addresses,
+                                    applied,
+                                };
+                                (pass, result)
+                            }
+                            Err(error) => {
+                                (PassOutcome::Unknown, Err(ApplyError::BeforeServing(error)))
+                            }
                         }
                     };
-                    // A refused load leaves the record standing only while the newest observed
-                    // ingress container is the one whose admin confirmed it. A new Caddy serves
-                    // its Caddyfile. An in-place restart under the same id goes unseen (#2787).
-                    let refused =
-                        through_admin && matches!(result, Err(ApplyError::BeforeServing(_)));
-                    if !(refused && recorded_by.is_some() && recorded_by == caddy) {
-                        // Without the admin, a running Caddy serves what it last loaded or, after
-                        // a restart, the Caddyfile, so the record claims nothing.
-                        let addresses = if through_admin {
-                            (!refused).then_some(addresses)
-                        } else {
-                            no_caddy.then(BTreeMap::new)
-                        };
-                        recorded_by = caddy.filter(|_| through_admin && addresses.is_some());
-                        route_publishes.send_if_modified(|publishes| {
-                            let changed = publishes.addresses != addresses;
-                            publishes.addresses = addresses;
-                            changed
-                        });
+                    let through_admin = pass.through_admin();
+                    let refused = matches!(
+                        pass,
+                        PassOutcome::Loaded {
+                            applied: Applied::BeforeServing(Probe::Refused),
+                            ..
+                        }
+                    );
+                    load = load.after(pass);
+                    let addresses = load.claim(through_admin, no_caddy);
+                    route_publishes.send_if_modified(|publishes| {
+                        let changed = publishes.addresses != addresses;
+                        publishes.addresses = addresses;
+                        changed
+                    });
+                    // Derive again without the refused.
+                    if refused {
+                        continue;
                     }
                     if let Err(error) = result {
                         eprintln!(
@@ -918,13 +1030,14 @@ async fn publish_route_acks(
     }
 }
 
-/// A failed Caddy apply, split by whether Caddy already serves the new config.
+/// A failed Caddy apply, split by whether Caddy already serves the new config, and after
+/// it, whether the Caddyfile a restart reads holds it.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ApplyError {
     #[error(transparent)]
     BeforeServing(caddy::Error),
-    #[error(transparent)]
-    AfterServing(caddy::Error),
+    #[error("{0}")]
+    AfterServing(#[source] caddy::Error, CaddyFile),
 }
 
 /// Write shared certificate state and concretely reconcile Caddy. Without a running
@@ -949,13 +1062,15 @@ pub(crate) async fn apply_caddy<A: CaddyAdmin>(
     let caddyfile = caddy::load(projection, admin)
         .await
         .map_err(ApplyError::BeforeServing)?;
-    caddy::write_caddyfile(config_file, &caddyfile).map_err(if admin.is_some() {
-        ApplyError::AfterServing
-    } else {
-        ApplyError::BeforeServing
+    caddy::write_caddyfile(config_file, &caddyfile).map_err(|error| {
+        if admin.is_some() {
+            ApplyError::AfterServing(error, CaddyFile::Stale)
+        } else {
+            ApplyError::BeforeServing(error)
+        }
     })?;
     remove_stale_certificate_files(config_file, &projection.sites)
-        .map_err(|error| ApplyError::AfterServing(error.into()))?;
+        .map_err(|error| ApplyError::AfterServing(error.into(), CaddyFile::Current))?;
     Ok(())
 }
 
