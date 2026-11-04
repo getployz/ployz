@@ -13,7 +13,7 @@ use axum::{body::Body, extract::Request, response::IntoResponse};
 use tokio::{net::TcpListener, process::Command, sync::Semaphore};
 
 use super::super::transfer::{Receives, ZfsChild};
-use super::copy_tests::{eventually, poll};
+use super::copy_tests::{eventually, mutation, poll};
 use super::*;
 
 const BOUND: u64 = 1_073_741_824;
@@ -101,7 +101,7 @@ async fn an_inspect_a_breaking_receive_lands_between_answers_the_copy_before_or_
     })
     .await;
     stream.add_permits(1);
-    eventually("the receive's finish", || !receives.running(&name)).await;
+    eventually("the receive's finish", || !receives.status(&name).busy()).await;
     fs::remove_file(test.0.join("gate")).unwrap();
     let during = during.await.unwrap();
     let after = inspect().await;
@@ -143,7 +143,7 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
         test.0.join("props/receive-ready").exists()
     })
     .await;
-    eventually("the receive's finish", || !receives.running(&name)).await;
+    eventually("the receive's finish", || !receives.status(&name).busy()).await;
     let before = inspect().await;
 
     let (held, token) = (
@@ -153,7 +153,7 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
     );
     fs::write(&held, "").unwrap();
     let panicked = Arc::new(AtomicBool::new(false));
-    receives.spawn(&name, |stop| {
+    receives.spawn(&mutation().await, &name, |stop| {
         let mut child = ZfsChild::spawn(
             Command::new("sh").args([
                 "-c",
@@ -173,7 +173,7 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
             panicked.store(true, Ordering::SeqCst);
             panic!("the receive task broke");
         }
-    });
+    }).unwrap();
     while !panicked.load(Ordering::SeqCst) {
         tokio::task::yield_now().await;
     }
@@ -188,7 +188,7 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
     })
     .await;
     fs::remove_file(&held).unwrap();
-    eventually("the receive's finish", || !receives.running(&name)).await;
+    eventually("the receive's finish", || !receives.status(&name).busy()).await;
     fs::remove_file(test.0.join("gate")).unwrap();
     let during = during.await.unwrap();
     let after = inspect().await;
@@ -231,25 +231,27 @@ async fn an_inspect_answers_a_failure_whose_dropped_child_never_exits_once_the_h
         test.0.join("props/receive-ready").exists()
     })
     .await;
-    eventually("the receive's finish", || !receives.running(&name)).await;
+    eventually("the receive's finish", || !receives.status(&name).busy()).await;
 
     let held = test.0.join("child-gate");
     fs::write(&held, "").unwrap();
-    receives.spawn(&name, |stop| {
-        let mut child = ZfsChild::spawn(
-            Command::new("sh").args([
-                "-c",
-                &format!("while [ -e '{}' ]; do sleep 0.01; done", held.display()),
-            ]),
-            &stop,
-        )
+    receives
+        .spawn(&mutation().await, &name, |stop| {
+            let mut child = ZfsChild::spawn(
+                Command::new("sh").args([
+                    "-c",
+                    &format!("while [ -e '{}' ]; do sleep 0.01; done", held.display()),
+                ]),
+                &stop,
+            )
+            .unwrap();
+            child.spare_from_kill();
+            async move {
+                let _child = child;
+                panic!("the receive task broke");
+            }
+        })
         .unwrap();
-        child.spare_from_kill();
-        async move {
-            let _child = child;
-            panic!("the receive task broke");
-        }
-    });
 
     let panicked = json!("the receive task panicked");
     let answered = poll(async || {
@@ -258,16 +260,19 @@ async fn an_inspect_answers_a_failure_whose_dropped_child_never_exits_once_the_h
     })
     .await;
     assert!(
-        receives.running(&name),
+        receives.status(&name).busy(),
         "the child exited, so this proves nothing"
     );
     assert!(
         answered.is_some(),
         "the failure stayed hidden behind a stuck child"
     );
-    assert_eq!(receives.failure(&name).as_deref(), panicked.as_str());
+    assert_eq!(
+        receives.status(&name).failure().as_deref(),
+        panicked.as_str()
+    );
 
     fs::remove_file(&held).unwrap();
-    eventually("the receive's finish", || !receives.running(&name)).await;
+    eventually("the receive's finish", || !receives.status(&name).busy()).await;
     server.abort();
 }

@@ -86,6 +86,18 @@ impl RootCopy {
     }
 }
 
+/// `copy` answering `failure`, which a route took from the receive registry to answer
+/// once, as its pull's failure.
+pub(super) fn answering(mut copy: Option<VolumeCopy>, failure: String) -> Option<VolumeCopy> {
+    if let Some(VolumeCopy::Slot {
+        pull: Some(pull), ..
+    }) = &mut copy
+    {
+        pull.failure = Some(failure);
+    }
+    copy
+}
+
 pub(super) fn internal(error: VolumeError) -> RpcError {
     match error {
         VolumeError::Capacity(error) => error.into_rpc_error(),
@@ -271,7 +283,7 @@ impl VolumeStorage {
         })?;
         Ok(Some(Pull {
             target,
-            failure: self.receives.failure(name),
+            failure: self.receives.status(name).failure(),
         }))
     }
 
@@ -340,9 +352,9 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &DockerVolumeName,
     ) -> Result<Option<VolumeCopy>> {
-        let running = self.receives.running(name);
+        let busy = self.receives.status(name).busy();
         let copy = self.copy(&self.datasets(pool).await?, pool, name).await?;
-        if running && !self.receives.running(name) {
+        if busy && !self.receives.status(name).busy() {
             return self.copy(&self.datasets(pool).await?, pool, name).await;
         }
         Ok(copy)

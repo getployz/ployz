@@ -19,7 +19,7 @@ use ployzd::{
 
 use super::{
     Dataset, DockerVolumeName, VolumeError, VolumeStorage,
-    inspect::internal,
+    inspect::{answering, internal},
     mirror,
     pool::UnlabeledBacking,
     seed::SEED_PROPERTY,
@@ -27,7 +27,7 @@ use super::{
         CUT_PROPERTY, DATASET_ROOT, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY,
         PULLED_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs, slot_parent,
     },
-    transfer::{ReceiveFailure, Stop, pulling},
+    transfer::{Busy, ReceiveFailure, Stop, pulling},
 };
 
 type Copy = Option<VolumeCopy>;
@@ -100,7 +100,7 @@ struct Admitted {
 
 /// What a route sees once it holds the plugin's mutation and the daemon's installation.
 struct Scope {
-    _held: super::storage::HeldMutation,
+    held: super::storage::HeldMutation,
     _installation: ployzd::mutation::MutationGuard,
     pool: MachinePool,
     datasets: Vec<Dataset>,
@@ -156,7 +156,7 @@ impl VolumeStorage {
     async fn enter(&self, admitted: Admitted, pool: MachinePool) -> Result<Scope, RpcError> {
         let datasets = self.datasets(&pool).await.map_err(internal)?;
         Ok(Scope {
-            _held: admitted.held,
+            held: admitted.held,
             _installation: admitted.installation,
             pool,
             datasets,
@@ -205,6 +205,16 @@ impl VolumeStorage {
         self.current_copy(&scope.pool, &scope.name)
             .await
             .map_err(internal)
+    }
+
+    async fn receiving_another(&self, scope: &Scope) -> RpcError {
+        let name = &scope.name;
+        self.refuse_found(
+            scope,
+            CopyRefusal::Busy,
+            format!("Volume {name} is still receiving another pull"),
+        )
+        .await
     }
 
     async fn refuse_found(&self, scope: &Scope, reason: CopyRefusal, message: String) -> RpcError {
@@ -459,7 +469,7 @@ impl VolumeStorage {
         };
         let fs_name = fs.name.clone();
         self.require_at(&scope, &fs_name, request).await?;
-        if self.receives.running(name) {
+        if self.receives.status(name).busy() {
             return Err(self
                 .refuse_found(
                     &scope,
@@ -592,25 +602,22 @@ impl VolumeStorage {
                 .map_err(internal)?,
             None => None,
         };
-        if self.receives.running(name) {
-            if pulling.as_deref() == Some(target.as_str()) {
-                return self.copy_now(&scope).await;
+        if pulling.as_deref() == Some(target.as_str()) {
+            match self.receives.take_failure(name) {
+                Err(Busy) => return self.copy_now(&scope).await,
+                // A resend after the receive failed answers that failure instead of hiding
+                // it under a fresh receive. The answer clears it, so the next want for this
+                // target retries, and a want for another target replaces it.
+                Ok(Some(failure)) => {
+                    return self
+                        .copy_now(&scope)
+                        .await
+                        .map(|copy| answering(copy, failure));
+                }
+                Ok(None) => {}
             }
-            return Err(self
-                .refuse_found(
-                    &scope,
-                    CopyRefusal::Busy,
-                    format!("Volume {name} is still receiving another pull"),
-                )
-                .await);
-        }
-        if pulling.as_deref() == Some(target.as_str()) && self.receives.failure(name).is_some() {
-            // A resend after the receive failed answers that failure instead of hiding it
-            // under a fresh receive. The answer clears it, so the next want for this
-            // target retries, and a want for another target replaces it.
-            let copy = self.copy_now(&scope).await;
-            self.receives.forget(name);
-            return copy;
+        } else if self.receives.status(name).busy() {
+            return Err(self.receiving_another(&scope).await);
         }
         let (fresh, bound) = match scope.slot() {
             Some(slot) => (false, slot.refquota),
@@ -719,7 +726,7 @@ impl VolumeStorage {
         };
         let storage = self.clone();
         let (from, r#gen) = (request.from, request.r#gen);
-        self.receives.spawn(name, |stop| async move {
+        let spawned = self.receives.spawn(&scope.held, name, |stop| async move {
             let result = match storage
                 .pull_stream(from, stream, &fs, bound, r#gen, &stop)
                 .await
@@ -732,6 +739,9 @@ impl VolumeStorage {
             }
             result
         });
+        if spawned.is_err() {
+            return Err(self.receiving_another(&scope).await);
+        }
         self.copy_now(&scope).await
     }
 
@@ -905,7 +915,7 @@ impl VolumeStorage {
                     Some(forgetting(wire, request.r#gen)),
                 );
                 self.z(&["destroy", "-r", &root.name]).await?;
-                if scope.slot().is_some() && !self.receives.running(name) {
+                if scope.slot().is_some() && !self.receives.status(name).busy() {
                     self.z(&["destroy", "-r", &slot_parent(&scope.pool, name)])
                         .await?;
                     self.receives.forget(name);
@@ -925,7 +935,7 @@ impl VolumeStorage {
         if scope.slot().is_none() {
             return Ok(None);
         }
-        if self.receives.running(name) {
+        if self.receives.status(name).busy() {
             return Err(self
                 .refuse_found(
                     &scope,

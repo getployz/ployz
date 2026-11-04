@@ -123,7 +123,7 @@ enum Into {
     Slot { fs: Option<Copy> },
 }
 
-/// The receive task for `into` in `Receives` (transfer.rs). `running` reads true from
+/// The receive task for `into` in `Receives` (transfer.rs). `status` reads it busy from
 /// `spawn` until the task ends.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Task {
@@ -167,7 +167,7 @@ enum SeedPath {
     Finishes,
     /// A root of `into` with another or no `ployz:seed`: "Volume into already exists".
     Exists,
-    /// `receives.running(&into)`: answers the copy as it stands.
+    /// `receives.take_failure(&into)` answers `Busy`: answers the copy as it stands.
     Receiving,
     /// The slot's `fs` holds `G` as its newest: `land` renames it to the root.
     Lands,
@@ -310,7 +310,7 @@ struct Broken {
     /// The root branch of `seed_volume` (seed.rs) answers any root of `into`, skipping
     /// its `ployz:seed` check against the guid.
     root_ignores_seed: bool,
-    /// `seed_volume` skips `receives.running(&into)` (seed.rs).
+    /// `seed_volume` skips the `Busy` arm of `receives.take_failure(&into)` (seed.rs).
     seed_ignores_receive: bool,
     /// `seed_volume` skips `written_here(&fs)` before its `destroy -r` (seed.rs).
     seed_ignores_written_here: bool,
@@ -548,7 +548,7 @@ impl VolumeMarks {
                 (SeedPath::AnswersRoot, Answer::Root(root.made))
             }
             Into::Root(_) => (SeedPath::Exists, Answer::Refused),
-            // seed.rs: `self.receives.running(&into)`.
+            // seed.rs: the `Busy` arm of `self.receives.take_failure(&into)`.
             _ if state.task != Task::Idle && !broken.seed_ignores_receive => {
                 (SeedPath::Receiving, Answer::Slot)
             }
@@ -1106,7 +1106,7 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
                 Some(SeedPath::Exists) => {
                     "the root of into carries another ployz:seed: refuses, Volume into already exists"
                 }
-                Some(SeedPath::Receiving) => "receives.running(into): answers the copy as it stands",
+                Some(SeedPath::Receiving) => "take_failure(into) answers Busy: answers the copy as it stands",
                 Some(SeedPath::Lands) => {
                     "the slot's fs holds G: land sets ployz:seed and ployz:promote and renames it to the root"
                 }
@@ -1117,7 +1117,7 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
                     "written_here(fs) reads true: refuses, Volume into is held in slot"
                 }
                 Some(SeedPath::Replaces) if before.task != Task::Idle => {
-                    "receives.running(into) skipped (under Broken): zfs destroy -r the slot parent under the receive, a new slot, copy_snapshot of name@G"
+                    "take_failure(into)'s Busy skipped (under Broken): zfs destroy -r the slot parent under the receive, a new slot, copy_snapshot of name@G"
                 }
                 Some(SeedPath::Replaces)
                     if fs.is_some_and(VolumeMarks::written_here) && broken.seed_ignores_written_here =>
@@ -1470,7 +1470,7 @@ mod tests {
         assert_eq!(last(&path).row, Row::Done(Made::Other));
     }
 
-    /// Without `receives.running`, a resend while the seed's own copy receives destroys
+    /// Without the `Busy` arm of `receives.take_failure`, a resend while the seed's own copy receives destroys
     /// the slot under it and starts the copy over.
     #[test]
     fn a_seed_needs_to_wait_for_a_running_receive() {
