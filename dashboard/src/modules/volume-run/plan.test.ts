@@ -595,8 +595,11 @@ describe("follow every next step a refusal names", () => {
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
   const newest = COPIES.mirror.newest;
   const earlier = { ...COPIES.behind.newest, created_unix_seconds: newest.created_unix_seconds - 60 };
-  const slotA = twin("a", false, { ...COPIES.behind, newest: earlier });
-  const slotB = twin("b", true, { ...COPIES.mirror, slot: "2", resume_token: "tok", pull: { target: newest.name, failure: "no space" }, role: "old_copy" });
+  const slotA = twin("a", false, { ...COPIES.behind, newest: earlier, pull: { target: earlier.name, failure: null }, pull_state: { kind: "landed", target: earlier.name } });
+  const slotB = twin("b", true, {
+    ...COPIES.mirror, slot: "2", resume_token: "tok", pull: { target: newest.name, failure: "no space" }, role: "old_copy",
+    pull_state: { kind: "failed", target: newest.name, failure: "no space" },
+  });
   const bareA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: null, mark: "cut" });
   const bareB = twin("d", true, { ...COPIES.cut, epoch: 9, newest: null, mark: "promote" });
   const heldA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: earlier, mark: "cut" });
