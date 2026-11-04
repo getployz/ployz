@@ -52,7 +52,12 @@ impl VolumeStorage {
             }
             return self.seeded(&pool, &into).await;
         }
-        match self.receives.take_failure(&into) {
+        let pulling = if slot {
+            self.pull_target(&parent).await.map_err(internal)?
+        } else {
+            None
+        };
+        match self.receives.take_failure(&into, pulling.as_ref()) {
             Err(Busy) => return self.seeded(&pool, &into).await,
             // Answer the failure once; the next call starts the copy over.
             Ok(Some(failure)) => {
@@ -122,9 +127,11 @@ impl VolumeStorage {
         let storage = self.clone();
         let snapshot = format!("{source}@{}", point.name);
         // A receive still alive refuses the spawn, and the copy as it stands answers then too.
-        let _ = self.receives.spawn(&held, &into, |stop| async move {
-            storage.copy_snapshot(&snapshot, &fs, bound, &stop).await
-        });
+        let _ = self
+            .receives
+            .spawn(&held, &into, &point.name, |stop| async move {
+                storage.copy_snapshot(&snapshot, &fs, bound, &stop).await
+            });
         self.seeded(&pool, &into).await
     }
 

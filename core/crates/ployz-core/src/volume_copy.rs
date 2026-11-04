@@ -561,6 +561,7 @@ mod tests {
             resume_token: None,
             pull,
             role: Some(SlotRole::Mirror),
+            pull_state: None,
         }
     }
 
@@ -572,6 +573,7 @@ mod tests {
             resume_token: None,
             pull: None,
             role: Some(SlotRole::OldCopy),
+            pull_state: None,
         }
     }
 

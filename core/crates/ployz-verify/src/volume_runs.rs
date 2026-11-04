@@ -752,6 +752,7 @@ fn volume_copy(held: Held, machine: Machine) -> Option<VolumeCopy> {
             resume_token: None,
             pull: None,
             role: Some(SlotRole::Mirror),
+            pull_state: None,
         }),
     }
 }

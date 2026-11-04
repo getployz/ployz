@@ -2,8 +2,8 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, Pull, RootMark, RpcError, RpcErrorCode, SlotId, SlotRole, Snapshot,
-    SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
+    InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, RpcErrorCode, SlotId, SlotRole,
+    Snapshot, SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
 };
 use ployzd::machine_pool::MachinePool;
 
@@ -14,6 +14,7 @@ use super::{
         CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY,
         ROLE_PROPERTY, slot_fs, slot_parent,
     },
+    transfer::Status,
 };
 
 /// The `ployz:*` marks [`RootCopy::parse`] reads off a root. They narrow which steps can
@@ -90,9 +91,15 @@ impl RootCopy {
 /// once, as its pull's failure.
 pub(super) fn answering(mut copy: Option<VolumeCopy>, failure: String) -> Option<VolumeCopy> {
     if let Some(VolumeCopy::Slot {
-        pull: Some(pull), ..
+        pull: Some(pull),
+        pull_state,
+        ..
     }) = &mut copy
     {
+        *pull_state = Some(PullState::Failed {
+            target: pull.target.clone(),
+            failure: failure.clone(),
+        });
         pull.failure = Some(failure);
     }
     copy
@@ -266,25 +273,48 @@ impl VolumeStorage {
         })
     }
 
-    /// The SetVolumeCopy pull in flight on a slot, with the failure its last receive hit.
-    pub(super) async fn pull(
+    /// The target a slot parent's `ployz:pull` names.
+    pub(super) async fn pull_target(&self, parent: &str) -> Result<Option<SnapshotName>> {
+        let Some(target) = self.property(parent, PULL_PROPERTY).await? else {
+            return Ok(None);
+        };
+        target.parse().map(Some).map_err(|error| {
+            VolumeError::from(format!(
+                "{parent} carries an unreadable {PULL_PROPERTY} {target:?}: {error}"
+            ))
+        })
+    }
+
+    /// The SetVolumeCopy pull a slot names, with the failure of its own target's receive,
+    /// and what attends it.
+    async fn pull(
         &self,
         slot: &Dataset,
         name: &DockerVolumeName,
-    ) -> Result<Option<Pull>> {
-        let Some(target) = self.property(&slot.name, PULL_PROPERTY).await? else {
+        newest: Option<&Snapshot>,
+        resumable: bool,
+    ) -> Result<Option<(Pull, PullState)>> {
+        let Some(target) = self.pull_target(&slot.name).await? else {
             return Ok(None);
         };
-        let target = target.parse().map_err(|error| {
-            VolumeError::from(format!(
-                "{} carries an unreadable {PULL_PROPERTY} {target:?}: {error}",
-                slot.name
-            ))
-        })?;
-        Ok(Some(Pull {
-            target,
-            failure: self.receives.status(name).failure(),
-        }))
+        let status = self.receives.status_of(name, &target);
+        let pull = Pull {
+            target: target.clone(),
+            failure: match &status {
+                Status::Failed { failure, .. } => Some(failure.clone()),
+                Status::Idle | Status::Receiving => None,
+            },
+        };
+        let state = match status {
+            Status::Receiving => PullState::Receiving { target },
+            Status::Failed { failure, .. } => PullState::Failed { target, failure },
+            // The landed check copy_pull makes before it starts a receive.
+            Status::Idle if newest.is_some_and(|newest| newest.name == target) => {
+                PullState::Landed { target }
+            }
+            Status::Idle => PullState::Unattended { target, resumable },
+        };
+        Ok(Some((pull, state)))
     }
 
     pub(super) async fn copy(
@@ -313,13 +343,18 @@ impl VolumeStorage {
             ),
             None => (slot.readonly, None, None),
         };
+        let (pull, pull_state) = self
+            .pull(slot, name, newest.as_ref(), resume_token.is_some())
+            .await?
+            .unzip();
         Ok(Some(VolumeCopy::Slot {
             slot: self.slot_id(&slot.name).await?,
             readonly,
             newest,
             resume_token,
-            pull: self.pull(slot, name).await?,
+            pull,
             role: Some(self.slot_role(&slot.name).await?),
+            pull_state,
         }))
     }
 

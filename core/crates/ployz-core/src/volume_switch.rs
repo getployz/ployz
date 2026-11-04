@@ -220,6 +220,11 @@ pub enum VolumeCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         role: Option<SlotRole>,
+        /// What attends the pull `pull` names, for the same target. Absent when there is no
+        /// pull, and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        pull_state: Option<PullState>,
     },
 }
 
@@ -288,6 +293,34 @@ pub struct Pull {
     pub target: SnapshotName,
     #[serde(default)]
     pub failure: Option<String>,
+}
+
+/// A slot's pull as its own Machine reads it: `ployz:pull` names the target, the plugin
+/// process's receive of that target says whether anything attends it, and the slot's newest
+/// snapshot says whether it landed. Open: a state this build does not know reads as
+/// `Unrecognized`, so a newer daemon's value never breaks an older reader's whole reply.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PullState {
+    /// The receive of `target`, or a `zfs` child it dropped, is alive.
+    Receiving { target: SnapshotName },
+    /// The slot's newest snapshot is `target`, and no receive of it is alive or failed.
+    Landed { target: SnapshotName },
+    /// The receive of `target` stopped without landing it.
+    Failed {
+        target: SnapshotName,
+        failure: String,
+    },
+    /// No receive of `target` is alive or failed, and the slot's newest is not `target`, as
+    /// after a restart of the plugin process, an answered failure, or a departure's stop.
+    /// `resumable` when the slot holds a resume token, which the next pull resumes from.
+    Unattended {
+        target: SnapshotName,
+        resumable: bool,
+    },
+    /// A state introduced after this build. This daemon never sends it.
+    #[serde(other)]
+    Unrecognized,
 }
 
 /// Live answer to `InspectVolumeCopy`: what this Machine holds.
@@ -650,6 +683,26 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_state_this_build_does_not_know_reads_as_unrecognized() {
+        let copy: VolumeCopy = serde_json::from_value(serde_json::json!({
+            "kind": "slot",
+            "slot": "1",
+            "readonly": true,
+            "newest": null,
+            "pull": {"target": "w-1-2"},
+            "pull_state": {"kind": "verifying", "target": "w-1-2", "progress": 3},
+        }))
+        .unwrap();
+        assert!(matches!(
+            copy,
+            VolumeCopy::Slot {
+                pull_state: Some(PullState::Unrecognized),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn plain_mount_admission_table() {
         let root = |readonly| VolumeCopy::Root {
             readonly,
@@ -665,6 +718,7 @@ mod tests {
             resume_token: None,
             pull: None,
             role: Some(SlotRole::Mirror),
+            pull_state: None,
         };
         let known = |role| {
             vec![KnownCopy {

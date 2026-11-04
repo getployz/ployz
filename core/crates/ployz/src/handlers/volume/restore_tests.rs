@@ -49,6 +49,7 @@ fn old_copy(newest: Option<Snapshot>) -> VolumeCopy {
         resume_token: None,
         pull: None,
         role: Some(SlotRole::OldCopy),
+        pull_state: None,
     }
 }
 

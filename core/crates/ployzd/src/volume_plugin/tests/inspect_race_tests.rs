@@ -13,7 +13,7 @@ use axum::{body::Body, extract::Request, response::IntoResponse};
 use tokio::{net::TcpListener, process::Command, sync::Semaphore};
 
 use super::super::transfer::{Receives, ZfsChild};
-use super::copy_tests::{eventually, mutation, poll};
+use super::copy_tests::{eventually, mutation, poll, target};
 use super::*;
 
 const BOUND: u64 = 1_073_741_824;
@@ -153,7 +153,7 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
     );
     fs::write(&held, "").unwrap();
     let panicked = Arc::new(AtomicBool::new(false));
-    receives.spawn(&mutation().await, &name, |stop| {
+    receives.spawn(&mutation().await, &name, &target(), |stop| {
         let mut child = ZfsChild::spawn(
             Command::new("sh").args([
                 "-c",
@@ -236,7 +236,7 @@ async fn an_inspect_answers_a_failure_whose_dropped_child_never_exits_once_the_h
     let held = test.0.join("child-gate");
     fs::write(&held, "").unwrap();
     receives
-        .spawn(&mutation().await, &name, |stop| {
+        .spawn(&mutation().await, &name, &target(), |stop| {
             let mut child = ZfsChild::spawn(
                 Command::new("sh").args([
                     "-c",
