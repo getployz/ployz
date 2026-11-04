@@ -46,7 +46,9 @@ pub(crate) struct Attempt {
 
 impl Attempt {
     /// Fail the attempt at the `live` stage of the run, unless the attempt, already raised to
-    /// `live`, holds a committed stage: a committed attempt never fails below Joining.
+    /// `live`, holds a committed stage. So a committed attempt this release fails never fails
+    /// below Joining. A record from a newer release can still carry a failure this release
+    /// reads as Unknown.
     pub(crate) fn fail(&mut self, live: EnrollStage, message: String) -> &AttemptFailure {
         let stage = if self.stage.committed() {
             self.stage
