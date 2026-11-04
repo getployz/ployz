@@ -3,4 +3,6 @@
 //! interleaving within the bounds the module states.
 
 #[cfg(test)]
+mod removal_marks;
+#[cfg(test)]
 mod volume_runs;
