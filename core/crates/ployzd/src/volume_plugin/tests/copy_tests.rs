@@ -1370,6 +1370,35 @@ async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
     server.abort();
 }
 
+#[tokio::test]
+async fn a_seal_during_a_receive_keeps_the_mirror_without_reporting_a_failure() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/stall-read"), "").unwrap();
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    receive_ready(&test).await;
+
+    let reply = post(&socket, "/Storage.Seal", json!(null)).await;
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(
+        copy.pointer("/Ok/pull/target"),
+        Some(&json!("w-1-1")),
+        "{copy}"
+    );
+    assert_eq!(
+        copy.pointer("/Ok/pull/failure"),
+        Some(&json!(null)),
+        "{copy}"
+    );
+    server.abort();
+}
+
 pub(super) async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> Option<T> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
