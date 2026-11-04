@@ -11,6 +11,7 @@ pub mod framing;
 pub use enrollment::*;
 mod founding;
 mod host_config;
+pub mod host_preparation;
 pub mod labels;
 mod log_level;
 mod machine_telemetry;

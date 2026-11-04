@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use chrono::{DateTime, SubsecRound, Utc};
 use ployz_core::CloudEnrollToken;
+use ployz_core::host_preparation::{DockerOutcome, PrepStep, ZfsOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::cloud_enroll::EnrollStage;
@@ -18,6 +19,7 @@ pub(super) const PROTOCOL_VERSION: u8 = 1;
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
 pub(super) const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DOCKER_INSTALL_FAILED: &str = "docker_install_failed";
+const GAVE_UP: &str = "Preparation stopped mid-step on every try. Run sudo ployz server checkin --install to try again.";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -362,119 +364,106 @@ enum ProbeTarget {
     Disk { by_id: String },
 }
 
-#[derive(Debug, Deserialize)]
+/// ployzd's record of host preparation. A host with no record reads as both steps not started.
+#[derive(Debug, Default, Deserialize)]
 pub(super) struct PrepState {
-    pub(super) docker: Step<DockerStep>,
-    pub(super) zfs: Step<ZfsStep>,
+    pub(super) docker: PrepStep<DockerOutcome>,
+    pub(super) zfs: PrepStep<ZfsOutcome>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct Step<S> {
-    #[serde(flatten)]
-    pub(super) step: S,
-    pub(super) finished_at: Option<String>,
+/// Whether a step has yet to finish. A step this release can't read counts too: only a run of
+/// ployzd rewrites it.
+const fn step_unfinished<O>(step: &PrepStep<O>) -> bool {
+    match step {
+        PrepStep::NotStarted | PrepStep::Running { .. } | PrepStep::Unknown(_) => true,
+        PrepStep::Finished { .. } => false,
+    }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "state", rename_all = "lowercase")]
-pub(super) enum DockerStep {
-    Installing,
-    Ready,
-    Failed { message: String },
+fn time(at: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(at).ok().map(|at| at.to_utc())
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "state", rename_all = "lowercase")]
-pub(super) enum ZfsStep {
-    Installing,
-    Ready,
-    Failed { message: String },
-    Skipped { reason: String },
-    Off,
+/// How check-in has judged a step it reports.
+enum Reported<'s, O> {
+    Unfinished,
+    Finished(&'s O),
+    /// Check-in gave up on it unfinished.
+    GaveUp,
 }
 
 impl PrepState {
-    pub(super) fn prep(&self) -> Prep {
-        Prep {
-            docker: match self.docker.step {
-                DockerStep::Installing => DockerPrep::Installing,
-                DockerStep::Ready => DockerPrep::Ready,
-                DockerStep::Failed { .. } => DockerPrep::Failed,
-            },
-            zfs: match self.zfs.step {
-                ZfsStep::Installing => ZfsPrep::Installing,
-                ZfsStep::Ready => ZfsPrep::Ready,
-                ZfsStep::Failed { .. } => ZfsPrep::Failed,
-                ZfsStep::Skipped { .. } => ZfsPrep::Skipped,
-                ZfsStep::Off => ZfsPrep::Off,
-            },
-        }
+    pub(super) fn unfinished(&self) -> bool {
+        step_unfinished(&self.docker) || step_unfinished(&self.zfs)
     }
 
-    pub(super) fn failed_at(&self) -> Option<&str> {
-        let docker = matches!(self.docker.step, DockerStep::Failed { .. })
-            .then_some(self.docker.finished_at.as_deref())
-            .flatten();
-        let zfs = matches!(self.zfs.step, ZfsStep::Failed { .. })
-            .then_some(self.zfs.finished_at.as_deref())
-            .flatten();
-        docker.into_iter().chain(zfs).max()
+    /// Whether a step finished failed.
+    pub(super) fn failed(&self) -> bool {
+        self.docker.failed_at().is_some() || self.zfs.failed_at().is_some()
+    }
+
+    /// When the latest failed step failed, when its time reads.
+    pub(super) fn failed_at(&self) -> Option<DateTime<Utc>> {
+        let docker = self.docker.failed_at().and_then(time);
+        docker.max(self.zfs.failed_at().and_then(time))
+    }
+
+    /// The latest time either step records.
+    pub(super) fn last_dated(&self) -> Option<DateTime<Utc>> {
+        let docker = self.docker.last_dated().and_then(time);
+        docker.max(self.zfs.last_dated().and_then(time))
+    }
+
+    /// Each step as check-in reports it. Once it has given up, a step left unfinished counts as
+    /// failed.
+    pub(super) fn prep(&self, gave_up: bool) -> Prep {
+        Prep {
+            docker: match reported(&self.docker, gave_up) {
+                Reported::Unfinished => DockerPrep::Installing,
+                Reported::Finished(DockerOutcome::Ready) => DockerPrep::Ready,
+                Reported::Finished(DockerOutcome::Failed { .. }) | Reported::GaveUp => {
+                    DockerPrep::Failed
+                }
+            },
+            zfs: match reported(&self.zfs, gave_up) {
+                Reported::Unfinished => ZfsPrep::Installing,
+                Reported::Finished(ZfsOutcome::Ready) => ZfsPrep::Ready,
+                Reported::Finished(ZfsOutcome::Failed { .. }) | Reported::GaveUp => ZfsPrep::Failed,
+                Reported::Finished(ZfsOutcome::Skipped { .. }) => ZfsPrep::Skipped,
+                Reported::Finished(ZfsOutcome::Off) => ZfsPrep::Off,
+            },
+        }
     }
 
     /// Whether Docker's install failed before `started`, so the preparation started then tries it
     /// again and the failure no longer stands.
     pub(super) fn docker_retried(&self, started: Option<DateTime<Utc>>) -> bool {
-        let failed = matches!(self.docker.step, DockerStep::Failed { .. })
-            .then_some(self.docker.finished_at.as_deref())
-            .flatten()
-            .and_then(|at| DateTime::parse_from_rfc3339(at).ok());
+        let failed = self.docker.failed_at().and_then(time);
         // ployzd dates the failure to the second, so one in the start's own second is this run's.
         failed
             .zip(started)
             .is_some_and(|(failed, started)| failed < started.trunc_subsecs(0))
     }
+}
 
-    pub(super) const fn fresh() -> Self {
-        Self {
-            docker: Step {
-                step: DockerStep::Installing,
-                finished_at: None,
-            },
-            zfs: Step {
-                step: ZfsStep::Installing,
-                finished_at: None,
-            },
-        }
-    }
-
-    /// Marks a step still installing as failed, once nothing will run it again.
-    pub(super) fn give_up(&mut self, message: &str) {
-        if matches!(self.docker.step, DockerStep::Installing) {
-            self.docker.step = DockerStep::Failed {
-                message: message.to_owned(),
-            };
-        }
-        if matches!(self.zfs.step, ZfsStep::Installing) {
-            self.zfs.step = ZfsStep::Failed {
-                message: message.to_owned(),
-            };
-        }
-    }
-
-    pub(super) fn installing(&self) -> bool {
-        matches!(self.docker.step, DockerStep::Installing)
-            || matches!(self.zfs.step, ZfsStep::Installing)
+fn reported<O>(step: &PrepStep<O>, gave_up: bool) -> Reported<'_, O> {
+    match step.outcome() {
+        Some(outcome) => Reported::Finished(outcome),
+        None if gave_up => Reported::GaveUp,
+        None => Reported::Unfinished,
     }
 }
 
 impl Probe {
-    /// `preparing` is whether `ployz-prepare` was seen running now, not merely assumed to be.
+    /// `preparing` is whether preparation was seen running now, by its unit or its lock's mark,
+    /// not merely assumed to be. `gave_up` is whether check-in gave up on what preparation left unfinished.
     /// `prepare_started` is when the last preparation was started.
     pub(super) fn report(
         self,
         hostname: String,
-        prep: Option<&PrepState>,
+        prep: &PrepState,
         preparing: bool,
+        gave_up: bool,
         prepare_started: Option<DateTime<Utc>>,
     ) -> HostReport {
         let Self { facts, assessment } = self;
@@ -485,8 +474,7 @@ impl Probe {
         } = assessment;
         // Part-way through Ployz's own install, dpkg has registered Docker before its unit starts.
         // Before ployzd records that step, a stopped Docker is the user's own.
-        if preparing && prep.is_some_and(|prep| matches!(prep.docker.step, DockerStep::Installing))
-        {
+        if preparing && matches!(prep.docker, PrepStep::Running { .. }) {
             blockers.retain(|issue| issue.code != "docker_stopped");
         }
         let compatible = !blockers
@@ -511,33 +499,44 @@ impl Probe {
                 message: reason.message,
             },
         };
-        if let Some(prep) = prep {
-            // Once the unit stops, the state file is final: an older failure the run never
-            // rewrote still stands.
-            if let DockerStep::Failed { message } = &prep.docker.step
-                && !(preparing && prep.docker_retried(prepare_started))
+        // Once preparation is no longer seen running, by its unit or its lock's mark, the state
+        // file is final: an older failure the run never rewrote still stands.
+        let docker_failure = match reported(&prep.docker, gave_up) {
+            Reported::Finished(DockerOutcome::Failed { message })
+                if !(preparing && prep.docker_retried(prepare_started)) =>
             {
-                blockers.push(Issue {
-                    code: DOCKER_INSTALL_FAILED.to_owned(),
-                    message: message.clone(),
-                });
+                Some(message.as_str())
             }
-            let zfs_issue = match &prep.zfs.step {
-                ZfsStep::Failed { message } => Some(("zfs_build_failed", message)),
-                ZfsStep::Skipped { reason } => Some(("zfs_build_skipped", reason)),
-                ZfsStep::Installing | ZfsStep::Ready | ZfsStep::Off => None,
+            Reported::GaveUp => Some(GAVE_UP),
+            Reported::Unfinished
+            | Reported::Finished(DockerOutcome::Ready | DockerOutcome::Failed { .. }) => None,
+        };
+        if let Some(message) = docker_failure {
+            blockers.push(Issue {
+                code: DOCKER_INSTALL_FAILED.to_owned(),
+                message: message.to_owned(),
+            });
+        }
+        let zfs_issue = match reported(&prep.zfs, gave_up) {
+            Reported::Finished(ZfsOutcome::Failed { message }) => {
+                Some(("zfs_build_failed", message.as_str()))
+            }
+            Reported::Finished(ZfsOutcome::Skipped { reason }) => {
+                Some(("zfs_build_skipped", reason.as_str()))
+            }
+            Reported::GaveUp => Some(("zfs_build_failed", GAVE_UP)),
+            Reported::Unfinished | Reported::Finished(ZfsOutcome::Ready | ZfsOutcome::Off) => None,
+        };
+        if let Some((code, message)) = zfs_issue {
+            let issue = Issue {
+                code: code.to_owned(),
+                message: message.to_owned(),
             };
-            if let Some((code, message)) = zfs_issue {
-                let issue = Issue {
-                    code: code.to_owned(),
-                    message: message.clone(),
-                };
-                zfs = ReportZfs::Ineligible {
-                    code: issue.code.clone(),
-                    message: issue.message.clone(),
-                };
-                warnings.push(issue);
-            }
+            zfs = ReportZfs::Ineligible {
+                code: issue.code.clone(),
+                message: issue.message.clone(),
+            };
+            warnings.push(issue);
         }
         HostReport {
             hostname,

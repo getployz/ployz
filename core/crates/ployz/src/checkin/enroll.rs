@@ -84,7 +84,7 @@ pub(super) async fn attempt<H: Host>(
     let discard = instruction.storage == EnrollStorage::None
         && read_prep_state(&paths.prepare_state).is_some_and(|(state, _)| {
             matches!(
-                state.prep().zfs,
+                state.prep(false).zfs,
                 ZfsPrep::Installing | ZfsPrep::Ready | ZfsPrep::Failed
             )
         });

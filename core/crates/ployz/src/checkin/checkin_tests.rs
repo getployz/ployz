@@ -69,6 +69,10 @@ struct FakeHost {
     docker_stopped: bool,
     /// `systemctl` cannot say whether `ployz-prepare` runs.
     unit_unreadable: bool,
+    /// ployzd's preparation lock can't be checked for a run's mark.
+    mark_unreadable: bool,
+    /// ployzd's preparation lock is on a filesystem whose mark can't be read.
+    mark_unsupported: bool,
     /// A preparation that finishes, writing this state, while its unit is being checked.
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
@@ -104,6 +108,20 @@ impl Host for FakeHost {
             return Err("systemctl timed out".to_owned());
         }
         Ok(self.preparing.load(Ordering::SeqCst))
+    }
+
+    fn preparation_marked(&self, lock: &Path) -> io::Result<bool> {
+        assert!(
+            self.unit_unreadable || !self.preparing.load(Ordering::SeqCst),
+            "a unit seen running settles liveness without the mark"
+        );
+        if self.mark_unreadable {
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
+        if self.mark_unsupported {
+            return Err(io::Error::from(io::ErrorKind::Unsupported));
+        }
+        preparation_marked(lock)
     }
 
     async fn start_prepare(&self) -> Result<(), String> {
@@ -2017,7 +2035,7 @@ async fn one_failed_preparation_is_retried_once_however_often_the_loop_polls() {
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
     fs::write(
         &paths.prepare_state,
-        r#"{"docker":{"state":"ready"},"zfs":{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}}"#,
+        r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}}"#,
     )
     .unwrap();
     let host = FakeHost {
@@ -2041,7 +2059,7 @@ async fn a_failed_preparation_is_retried_after_each_reboot_up_to_the_cap() {
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
     fs::write(
         &paths.prepare_state,
-        r#"{"docker":{"state":"ready"},"zfs":{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}}"#,
+        r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}}"#,
     )
     .unwrap();
     let mut unused = client("http://127.0.0.1:9");
@@ -2067,7 +2085,7 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
     fs::write(
         &paths.prepare_state,
-        r#"{"docker":{"state":"ready"},"zfs":{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}}"#,
+        r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}}"#,
     )
     .unwrap();
     let mut unused = client("http://127.0.0.1:9");
@@ -2127,7 +2145,7 @@ fn docker_failed_at(paths: &Paths, finished_at: &str) {
     fs::write(
         &paths.prepare_state,
         format!(
-            r#"{{"docker":{{"state":"failed","message":"Docker 29.1.3 is too old.","finished_at":"{finished_at}"}},"zfs":{{"state":"off"}}}}"#
+            r#"{{"docker":{{"state":"failed","message":"Docker 29.1.3 is too old.","finished_at":"{finished_at}"}},"zfs":{{"state":"off","finished_at":"2026-10-16T00:00:00Z"}}}}"#
         ),
     )
     .unwrap();
@@ -2293,7 +2311,7 @@ async fn a_preparation_that_finished_or_runs_is_not_restarted_by_an_install() {
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
     fs::write(
         &paths.prepare_state,
-        r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#,
+        r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"off","finished_at":"2026-10-16T00:00:00Z"}}"#,
     )
     .unwrap();
     let ready = FakeHost::default();
@@ -2408,40 +2426,477 @@ fn state(json: &str) -> PrepState {
 #[test]
 fn preparation_starts_when_missing_and_retries_when_it_ended_long_enough_ago() {
     let now = at("2026-10-16T01:00:00Z");
-    assert_eq!(prepare_due(None, None, 0, now), Some(PrepareRun::Start));
+    let free = |state: Option<&PrepState>, last_start, retries| {
+        preparation(state, None, Liveness::Stopped, retries, last_start, now)
+    };
+    assert_eq!(free(None, None, 0), Preparation::NotStarted);
     let started = |minutes| Some(now - TimeDelta::minutes(minutes));
-    assert_eq!(prepare_due(None, started(5), 0, now), None);
-    assert_eq!(
-        prepare_due(None, started(10), 0, now),
-        Some(PrepareRun::Retry)
+    assert_eq!(free(None, started(5), 0), Preparation::DiedMidStep);
+    assert_eq!(free(None, started(10), 0), Preparation::RetryDue);
+    assert_eq!(free(None, started(10), PREPARE_TRIES), Preparation::GaveUp);
+    let ready = state(
+        r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"off","finished_at":"2026-10-16T00:00:00Z"}}"#,
     );
-    assert_eq!(prepare_due(None, started(10), PREPARE_TRIES, now), None);
-    let ready = state(r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#);
-    assert_eq!(prepare_due(Some(&ready), Some(now), 0, now), None);
+    assert_eq!(free(Some(&ready), Some(now), 0), Preparation::Finished);
 
-    let installing = state(r#"{"docker":{"state":"ready"},"zfs":{"state":"installing"}}"#);
-    let died =
-        |written: &str, retries| prepare_due(Some(&installing), Some(at(written)), retries, now);
-    assert_eq!(died("2026-10-16T00:55:00Z", 0), None);
-    assert_eq!(died("2026-10-16T00:50:00Z", 0), Some(PrepareRun::Retry));
-    assert_eq!(died("2026-10-16T00:50:00Z", PREPARE_TRIES), None);
+    let installing = |started: &str| {
+        state(&format!(
+            r#"{{"docker":{{"state":"ready","finished_at":"2026-10-16T00:00:00Z"}},"zfs":{{"state":"installing","started_at":"{started}"}}}}"#
+        ))
+    };
+    let died = |started: &str, retries| free(Some(&installing(started)), None, retries);
+    assert_eq!(died("2026-10-16T00:55:00Z", 0), Preparation::DiedMidStep);
+    assert_eq!(died("2026-10-16T00:50:00Z", 0), Preparation::RetryDue);
+    assert_eq!(
+        died("2026-10-16T00:50:00Z", PREPARE_TRIES),
+        Preparation::GaveUp
+    );
+    for (liveness, preparation_is) in [
+        (Liveness::Live, Preparation::Running),
+        (Liveness::Unknown, Preparation::Unknown),
+    ] {
+        let spent = installing("2026-10-16T00:50:00Z");
+        assert_eq!(
+            preparation(Some(&spent), None, liveness, PREPARE_TRIES, None, now),
+            preparation_is
+        );
+    }
 
     let failed = |finished: &str| {
         state(&format!(
-            r#"{{"docker":{{"state":"ready"}},"zfs":{{"state":"failed","message":"dkms","finished_at":"{finished}"}}}}"#
+            r#"{{"docker":{{"state":"ready","finished_at":"2026-10-16T00:00:00Z"}},"zfs":{{"state":"failed","message":"dkms","finished_at":"{finished}"}}}}"#
         ))
     };
-    let after = |finished: &str, retries| prepare_due(Some(&failed(finished)), None, retries, now);
-    assert_eq!(after("2026-10-16T00:55:00Z", 0), None);
-    assert_eq!(after("2026-10-16T00:50:00Z", 0), Some(PrepareRun::Retry));
-    assert_eq!(after("2026-10-16T00:50:00Z", 2), Some(PrepareRun::Retry));
-    assert_eq!(after("2026-10-16T00:50:00Z", 3), None);
+    let after = |finished: &str, retries| free(Some(&failed(finished)), None, retries);
+    assert_eq!(after("2026-10-16T00:55:00Z", 0), Preparation::Failed);
+    assert_eq!(after("2026-10-16T00:50:00Z", 0), Preparation::RetryDue);
+    assert_eq!(after("2026-10-16T00:50:00Z", 2), Preparation::RetryDue);
+    assert_eq!(after("2026-10-16T00:50:00Z", 3), Preparation::Failed);
     assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), started(5), 0, now),
-        None
+        free(Some(&failed("2026-10-16T00:50:00Z")), started(5), 0),
+        Preparation::Failed
     );
 }
 
+/// The ZFS step saves what it adds as it goes, without a time of its own, so a stopped run is
+/// dated by its latest save.
+#[test]
+fn a_stall_is_dated_from_its_latest_save() {
+    let now = at("2026-10-16T01:00:00Z");
+    let installing = state(
+        r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"installing","started_at":"2026-10-16T00:30:00Z"}}"#,
+    );
+    let saved = |minutes_ago| {
+        let written = Some(now - TimeDelta::minutes(minutes_ago));
+        preparation(Some(&installing), written, Liveness::Stopped, 0, None, now)
+    };
+    assert_eq!(saved(5), Preparation::DiedMidStep);
+    assert_eq!(saved(11), Preparation::RetryDue);
+}
+
+/// A run that stopped with its ZFS step left installing since `started`, its state file last
+/// written at `written`.
+fn stopped_mid_step(paths: &Paths, started: DateTime<Utc>, written: DateTime<Utc>) {
+    let started = started.to_rfc3339();
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        format!(
+            r#"{{"docker":{{"state":"ready","started_at":"{started}","finished_at":"{started}"}},"zfs":{{"state":"installing","started_at":"{started}","finished_at":null}}}}"#
+        ),
+    )
+    .unwrap();
+    written_at(&paths.prepare_state, written);
+}
+
+fn written_at(path: &Path, at: DateTime<Utc>) {
+    fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(at.into())
+        .unwrap();
+}
+
+#[tokio::test]
+async fn liveness_goes_by_the_unit_wherever_the_mark_says_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let unit_active = FakeHost {
+        preparing: AtomicBool::new(true),
+        ..FakeHost::default()
+    };
+    let unit_stopped = FakeHost::default();
+    let unit_stopped_mark_unreadable = FakeHost {
+        mark_unreadable: true,
+        ..FakeHost::default()
+    };
+    let unit_unreadable = FakeHost {
+        unit_unreadable: true,
+        ..FakeHost::default()
+    };
+    let both_unreadable = FakeHost {
+        unit_unreadable: true,
+        mark_unreadable: true,
+        ..FakeHost::default()
+    };
+    for (host, liveness) in [
+        (unit_active, Liveness::Live),
+        (unit_stopped, Liveness::Stopped),
+        (unit_stopped_mark_unreadable, Liveness::Stopped),
+        (unit_unreadable, Liveness::Unknown),
+        (both_unreadable, Liveness::Unknown),
+    ] {
+        assert_eq!(observe_liveness(&host, &paths).await.0, liveness);
+    }
+}
+
+#[tokio::test]
+async fn a_filesystem_that_keeps_no_readable_mark_is_noted_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let unit_stopped = FakeHost {
+        mark_unsupported: true,
+        ..FakeHost::default()
+    };
+    let (liveness, notes) = observe_liveness(&unit_stopped, &paths).await;
+    assert_eq!(liveness, Liveness::Stopped);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    let (liveness, notes) = observe_liveness(&unit_stopped, &paths).await;
+    assert_eq!(liveness, Liveness::Stopped);
+    assert!(notes.is_empty(), "{notes:?}");
+}
+
+#[cfg(target_os = "linux")]
+mod mark {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+
+    use nix::{
+        fcntl::{FcntlArg, fcntl},
+        libc,
+    };
+
+    use super::*;
+
+    fn range(kind: libc::c_int, start: i64, len: i64) -> libc::flock {
+        libc::flock {
+            l_type: kind as libc::c_short,
+            l_whence: libc::SEEK_SET as libc::c_short,
+            l_start: start,
+            l_len: len,
+            l_pid: 0,
+        }
+    }
+
+    /// The lock file as ployzd opens it, readable too so a read lock can be put on it.
+    fn opened(lock: &Path) -> fs::File {
+        fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o644)
+            .open(lock)
+            .unwrap()
+    }
+
+    /// What a preparation run holds on ployzd's lock: the flock, and the mark on the same open
+    /// file.
+    fn run_marking(lock: &Path) -> fs::File {
+        let run = opened(lock);
+        run.try_lock().unwrap();
+        fcntl(
+            run.as_raw_fd(),
+            FcntlArg::F_OFD_SETLK(&range(libc::F_WRLCK, 0, 0)),
+        )
+        .unwrap();
+        run
+    }
+
+    /// Whether `lock`'s directory is on a filesystem that keeps locks local, the premise of the
+    /// tests that call it. Off it, the reader must refuse the lock, which this asserts, and the
+    /// test is skipped.
+    fn locks_stay_local(lock: &Path) -> bool {
+        let filesystem = nix::sys::statfs::statfs(lock.parent().unwrap())
+            .unwrap()
+            .filesystem_type();
+        if keeps_locks_local(filesystem) {
+            return true;
+        }
+        drop(opened(lock));
+        let refused = preparation_marked(lock).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::Unsupported, "{refused}");
+        eprintln!(
+            "skipped: {} is on a filesystem of type {:#x}, whose locks aren't local",
+            lock.display(),
+            filesystem.0
+        );
+        false
+    }
+
+    #[test]
+    fn a_missing_lock_is_no_run() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!preparation_marked(&dir.path().join("lock")).unwrap());
+    }
+
+    #[test]
+    fn only_filesystems_that_keep_locks_local_are_read() {
+        use nix::sys::statfs::{
+            BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, FUSE_SUPER_MAGIC, FsType, NFS_SUPER_MAGIC,
+            OVERLAYFS_SUPER_MAGIC, SMB_SUPER_MAGIC, TMPFS_MAGIC, XFS_SUPER_MAGIC,
+        };
+        for local in [
+            EXT4_SUPER_MAGIC,
+            XFS_SUPER_MAGIC,
+            BTRFS_SUPER_MAGIC,
+            TMPFS_MAGIC,
+            OVERLAYFS_SUPER_MAGIC,
+            FsType(0x2fc1_2fc1),
+        ] {
+            assert!(keeps_locks_local(local), "{local:?}");
+        }
+        for remote in [NFS_SUPER_MAGIC, SMB_SUPER_MAGIC, FUSE_SUPER_MAGIC] {
+            assert!(!keeps_locks_local(remote), "{remote:?}");
+        }
+    }
+
+    /// On CI's filesystem, ext4 or tmpfs, the reader passes its own `fstatfs` check and reads the
+    /// lock.
+    #[test]
+    fn the_test_filesystem_keeps_locks_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        let _run = opened(&lock);
+        if locks_stay_local(&lock) {
+            assert!(!preparation_marked(&lock).unwrap());
+        }
+    }
+
+    /// The reader goes by the filesystem it is given: a flocked lock that ext4's magic reads as
+    /// no mark, NFS's refuses.
+    #[test]
+    fn a_lock_off_the_allowlist_is_refused() {
+        use nix::sys::statfs::{EXT4_SUPER_MAGIC, NFS_SUPER_MAGIC};
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        let run = opened(&lock);
+        run.try_lock().unwrap();
+        let file = fs::File::open(&lock).unwrap();
+        let refused = marked_on(&file, NFS_SUPER_MAGIC).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::Unsupported, "{refused}");
+        if locks_stay_local(&lock) {
+            assert!(!marked_on(&file, EXT4_SUPER_MAGIC).unwrap());
+        }
+    }
+
+    /// An older ployzd, run by hand, takes only the flock, which reads as no run on a filesystem
+    /// that keeps locks local.
+    #[test]
+    fn a_flock_alone_is_no_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        if !locks_stay_local(&lock) {
+            return;
+        }
+        let run = opened(&lock);
+        run.try_lock().unwrap();
+        assert!(!preparation_marked(&lock).unwrap());
+    }
+
+    #[test]
+    fn a_marked_lock_is_a_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        if !locks_stay_local(&lock) {
+            return;
+        }
+        let _run = run_marking(&lock);
+        assert!(preparation_marked(&lock).unwrap());
+    }
+
+    #[test]
+    fn a_read_lock_is_no_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        if !locks_stay_local(&lock) {
+            return;
+        }
+        let run = opened(&lock);
+        fcntl(
+            run.as_raw_fd(),
+            FcntlArg::F_OFD_SETLK(&range(libc::F_RDLCK, 0, 0)),
+        )
+        .unwrap();
+        assert!(!preparation_marked(&lock).unwrap());
+    }
+
+    /// A process's own record lock reports its pid.
+    #[test]
+    fn a_process_lock_is_no_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        if !locks_stay_local(&lock) {
+            return;
+        }
+        let run = opened(&lock);
+        fcntl(
+            run.as_raw_fd(),
+            FcntlArg::F_SETLK(&range(libc::F_WRLCK, 0, 0)),
+        )
+        .unwrap();
+        assert!(!preparation_marked(&lock).unwrap());
+    }
+
+    #[test]
+    fn a_partial_range_is_no_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        if !locks_stay_local(&lock) {
+            return;
+        }
+        let run = opened(&lock);
+        fcntl(
+            run.as_raw_fd(),
+            FcntlArg::F_OFD_SETLK(&range(libc::F_WRLCK, 10, 10)),
+        )
+        .unwrap();
+        assert!(!preparation_marked(&lock).unwrap());
+    }
+
+    /// Anyone who can write the lock file could open it and mark it.
+    #[test]
+    fn a_mark_on_a_group_or_world_writable_lock_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        let _run = run_marking(&lock);
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(!preparation_marked(&lock).unwrap());
+    }
+
+    /// Closing a descriptor drops every record lock its process holds on the file, but not an
+    /// open file description's.
+    #[test]
+    fn a_mark_survives_check_ins_own_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        if !locks_stay_local(&lock) {
+            return;
+        }
+        let _run = run_marking(&lock);
+        for _ in 0..3 {
+            assert!(preparation_marked(&lock).unwrap());
+        }
+    }
+
+    #[test]
+    fn querying_never_turns_a_run_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("lock");
+        if !locks_stay_local(&lock) {
+            return;
+        }
+        let queries = AtomicU32::new(0);
+        let done = AtomicBool::new(false);
+        let mut refusals = 0;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !done.load(Ordering::SeqCst) {
+                    let _ = preparation_marked(&lock);
+                    queries.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            for _ in 0..1000 {
+                let run = opened(&lock);
+                let whole = range(libc::F_WRLCK, 0, 0);
+                if run.try_lock().is_err()
+                    || fcntl(run.as_raw_fd(), FcntlArg::F_OFD_SETLK(&whole)).is_err()
+                {
+                    refusals += 1;
+                }
+            }
+            done.store(true, Ordering::SeqCst);
+        });
+        assert_eq!(refusals, 0);
+        assert!(queries.load(Ordering::SeqCst) > 0);
+    }
+
+    #[tokio::test]
+    async fn a_marked_lock_is_live_whatever_the_unit_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+        if !locks_stay_local(&paths.prepare_lock()) {
+            return;
+        }
+        let _run = run_marking(&paths.prepare_lock());
+        let unit_unreadable = FakeHost {
+            unit_unreadable: true,
+            ..FakeHost::default()
+        };
+        let (liveness, notes) = observe_liveness(&FakeHost::default(), &paths).await;
+        assert_eq!(liveness, Liveness::Live);
+        assert!(
+            notes.iter().any(|note| note.contains("waiting for it")),
+            "{notes:?}"
+        );
+        assert_eq!(
+            observe_liveness(&unit_unreadable, &paths).await.0,
+            Liveness::Live
+        );
+    }
+
+    /// A preparation run outside `ployz-prepare`, as a manual `ployzd install --prepare` is,
+    /// marks ployzd's lock through a long build while the unit reads stopped and the state file
+    /// goes unwritten.
+    #[tokio::test(start_paused = true)]
+    async fn a_preparation_holding_its_lock_is_neither_restarted_nor_given_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        let written = at("2026-10-16T00:00:00Z");
+        stopped_mid_step(&paths, written, written);
+        if !locks_stay_local(&paths.prepare_lock()) {
+            return;
+        }
+        let _run = run_marking(&paths.prepare_lock());
+        let mut unused = client("http://127.0.0.1:9");
+        let mut prepares = 0;
+        for minute in (20..80).step_by(10) {
+            let unit_stopped = FakeHost {
+                probe_hangs: true,
+                ..FakeHost::default()
+            };
+            pass(
+                &unit_stopped,
+                &mut unused,
+                &key(),
+                &paths,
+                written + TimeDelta::minutes(minute),
+            )
+            .await;
+            prepares += unit_stopped.prepares.load(Ordering::SeqCst);
+        }
+        assert_eq!(prepares, 0, "the marked run is still preparing");
+        let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+        assert_eq!(status.prep.map(|prep| prep.zfs), Some(ZfsPrep::Installing));
+        assert!(status.blockers.is_empty(), "{:?}", status.blockers);
+    }
+
+    #[tokio::test]
+    async fn install_leaves_a_preparation_holding_its_lock_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        let written = at("2026-10-16T00:00:00Z");
+        stopped_mid_step(&paths, written, written);
+        if !locks_stay_local(&paths.prepare_lock()) {
+            return;
+        }
+        let _run = run_marking(&paths.prepare_lock());
+        let unit_stopped = FakeHost::default();
+        assert!(!restart_preparation(&unit_stopped, &paths, written + TimeDelta::hours(1)).await);
+        assert_eq!(unit_stopped.prepares.load(Ordering::SeqCst), 0);
+    }
+}
 #[tokio::test(start_paused = true)]
 async fn a_preparation_that_died_mid_step_is_retried_up_to_the_cap() {
     let dir = tempfile::tempdir().unwrap();
@@ -2449,16 +2904,11 @@ async fn a_preparation_that_died_mid_step_is_retried_up_to_the_cap() {
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
     fs::write(
         &paths.prepare_state,
-        r#"{"docker":{"state":"ready"},"zfs":{"state":"installing"}}"#,
+        r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"installing","started_at":"2026-10-16T00:00:00Z"}}"#,
     )
     .unwrap();
     let written = at("2026-10-16T00:00:00Z");
-    fs::File::options()
-        .write(true)
-        .open(&paths.prepare_state)
-        .unwrap()
-        .set_modified(written.into())
-        .unwrap();
+    written_at(&paths.prepare_state, written);
     let mut unused = client("http://127.0.0.1:9");
     let mut prepares = 0;
     for minute in (20..120).step_by(10) {
@@ -2516,16 +2966,11 @@ async fn a_retry_that_leaves_an_old_state_file_waits_out_the_retry_delay() {
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
     fs::write(
         &paths.prepare_state,
-        r#"{"docker":{"state":"ready"},"zfs":{"state":"installing"}}"#,
+        r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"installing","started_at":"2026-10-16T00:00:00Z"}}"#,
     )
     .unwrap();
     let written = at("2026-10-16T00:00:00Z");
-    fs::File::options()
-        .write(true)
-        .open(&paths.prepare_state)
-        .unwrap()
-        .set_modified(written.into())
-        .unwrap();
+    written_at(&paths.prepare_state, written);
     let mut unused = client("http://127.0.0.1:9");
     let mut prepares = 0;
     for minute in 60..70 {
@@ -2553,21 +2998,15 @@ async fn a_preparation_that_finishes_while_its_unit_is_checked_reads_as_finished
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
     fs::write(
         &paths.prepare_state,
-        r#"{"docker":{"state":"ready"},"zfs":{"state":"installing"}}"#,
+        r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"installing","started_at":"2026-10-16T00:00:00Z"}}"#,
     )
     .unwrap();
     let written = at("2026-10-16T00:00:00Z");
-    fs::File::options()
-        .write(true)
-        .open(&paths.prepare_state)
-        .unwrap()
-        .set_modified(written.into())
-        .unwrap();
     let host = FakeHost {
         probe_hangs: true,
         finishes: Some((
             paths.prepare_state.clone(),
-            r#"{"docker":{"state":"ready"},"zfs":{"state":"ready"}}"#,
+            r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"}}"#,
         )),
         ..FakeHost::default()
     };
@@ -2598,16 +3037,11 @@ async fn a_step_left_installing_after_the_last_retry_reads_as_failed() {
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
     fs::write(
         &paths.prepare_state,
-        r#"{"docker":{"state":"installing"},"zfs":{"state":"installing"}}"#,
+        r#"{"docker":{"state":"installing","started_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"installing","started_at":"2026-10-16T00:00:00Z"}}"#,
     )
     .unwrap();
     let written = at("2026-10-16T00:00:00Z");
-    fs::File::options()
-        .write(true)
-        .open(&paths.prepare_state)
-        .unwrap()
-        .set_modified(written.into())
-        .unwrap();
+    written_at(&paths.prepare_state, written);
     let mut unused = client("http://127.0.0.1:9");
     for minute in (20..80).step_by(10) {
         let rebooted = FakeHost {
@@ -2788,19 +3222,25 @@ async fn docker_stopped_pass(unit: Result<bool, ()>, state: Option<&str>) -> (St
     (request, status.headline().title.to_owned())
 }
 
-const DOCKER_INSTALLING: &str = r#"{"docker":{"state":"installing"},"zfs":{"state":"installing"}}"#;
-const DOCKER_READY: &str = r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#;
+/// A Docker install that began now.
+fn docker_installing() -> String {
+    format!(
+        r#"{{"docker":{{"state":"installing","started_at":"{}"}},"zfs":{{"state":"installing"}}}}"#,
+        Utc::now().to_rfc3339()
+    )
+}
+const DOCKER_READY: &str = r#"{"docker":{"state":"ready","finished_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"off","finished_at":"2026-10-16T00:00:00Z"}}"#;
 
 #[tokio::test]
 async fn docker_stopped_mid_install_reads_as_installing_docker() {
-    let (request, headline) = docker_stopped_pass(Ok(true), Some(DOCKER_INSTALLING)).await;
+    let (request, headline) = docker_stopped_pass(Ok(true), Some(&docker_installing())).await;
     assert!(!request.contains("docker_stopped"), "{request}");
     assert_eq!(headline, "Installing Docker");
 }
 
 #[tokio::test]
 async fn docker_stopped_blocks_when_the_preparation_unit_cannot_be_read() {
-    let (request, headline) = docker_stopped_pass(Err(()), Some(DOCKER_INSTALLING)).await;
+    let (request, headline) = docker_stopped_pass(Err(()), Some(&docker_installing())).await;
     assert!(request.contains(r#""code":"docker_stopped""#), "{request}");
     assert_eq!(headline, "Blocked");
 }
@@ -2814,7 +3254,7 @@ async fn docker_stopped_blocks_while_preparing_before_docker_has_begun() {
 
 #[tokio::test]
 async fn docker_stopped_blocks_when_a_stale_install_is_not_running() {
-    let (request, headline) = docker_stopped_pass(Ok(false), Some(DOCKER_INSTALLING)).await;
+    let (request, headline) = docker_stopped_pass(Ok(false), Some(&docker_installing())).await;
     assert!(request.contains(r#""code":"docker_stopped""#), "{request}");
     assert_eq!(headline, "Blocked");
 }
@@ -2978,7 +3418,7 @@ async fn docker_stopped_reads_as_installing_docker_once_a_retry_starts_the_prepa
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
-    fs::write(&paths.prepare_state, DOCKER_INSTALLING).unwrap();
+    fs::write(&paths.prepare_state, docker_installing()).unwrap();
     let (url, server) = cloud("200 OK", WAIT).await;
     let host = FakeHost {
         docker_stopped: true,
@@ -2994,114 +3434,186 @@ async fn docker_stopped_reads_as_installing_docker_once_a_retry_starts_the_prepa
     assert_eq!(status.headline().title, "Installing Docker");
 }
 
-/// A run that stopped with its ZFS step left installing since `started`, its state file last
-/// written at `written`.
-fn stopped_mid_step(paths: &Paths, started: DateTime<Utc>, written: DateTime<Utc>) {
-    let started = started.to_rfc3339();
+#[tokio::test(start_paused = true)]
+async fn a_failed_step_its_file_left_undated_is_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
     fs::write(
         &paths.prepare_state,
-        format!(
-            r#"{{"docker":{{"state":"ready","started_at":"{started}","finished_at":"{started}"}},"zfs":{{"state":"installing","started_at":"{started}","finished_at":null}}}}"#
-        ),
+        r#"{"docker":{"state":"failed","message":"x"},"zfs":{"state":"off","finished_at":"2026-10-16T00:00:00Z"}}"#,
     )
     .unwrap();
-    fs::File::options()
-        .write(true)
-        .open(&paths.prepare_state)
-        .unwrap()
-        .set_modified(written.into())
-        .unwrap();
+    written_at(&paths.prepare_state, at("2026-10-16T00:00:00Z"));
+    let host = FakeHost {
+        probe_hangs: true,
+        ..FakeHost::default()
+    };
+    pass(
+        &host,
+        &mut client("http://127.0.0.1:9"),
+        &key(),
+        &paths,
+        at("2026-10-16T00:20:00Z"),
+    )
+    .await;
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(target_os = "linux")]
-mod mark {
-    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
-
-    use nix::{
-        fcntl::{FcntlArg, fcntl},
-        libc,
-    };
-
-    use super::*;
-
-    fn range(kind: libc::c_int, start: i64, len: i64) -> libc::flock {
-        libc::flock {
-            l_type: kind as libc::c_short,
-            l_whence: libc::SEEK_SET as libc::c_short,
-            l_start: start,
-            l_len: len,
-            l_pid: 0,
-        }
-    }
-
-    /// The lock file as ployzd opens it, readable too so a read lock can be put on it.
-    fn opened(lock: &Path) -> fs::File {
-        fs::File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o644)
-            .open(lock)
-            .unwrap()
-    }
-
-    /// What a preparation run holds on ployzd's lock: the flock, and the mark on the same open
-    /// file.
-    fn run_marking(lock: &Path) -> fs::File {
-        let run = opened(lock);
-        run.try_lock().unwrap();
-        fcntl(
-            run.as_raw_fd(),
-            FcntlArg::F_OFD_SETLK(&range(libc::F_WRLCK, 0, 0)),
+/// A stopped unit with a mark that can't be read decides alone, as before the mark: a run that
+/// died mid-step is retried, given up once the retries are spent, and restarted by `--install`.
+#[tokio::test(start_paused = true)]
+async fn a_run_that_died_mid_step_is_retried_then_given_up_when_its_mark_cannot_be_read() {
+    let _ticker = tick_through_io();
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let died = at("2026-10-16T00:00:00Z");
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        r#"{"docker":{"state":"installing","started_at":"2026-10-16T00:00:00Z"},"zfs":{"state":"installing"}}"#,
+    )
+    .unwrap();
+    written_at(&paths.prepare_state, died);
+    let mut unused = client("http://127.0.0.1:9");
+    let mut passes = Vec::new();
+    for minute in [20, 30, 40, 50, 60] {
+        let host = FakeHost {
+            mark_unreadable: true,
+            ..FakeHost::default()
+        };
+        pass(
+            &host,
+            &mut unused,
+            &key(),
+            &paths,
+            died + TimeDelta::minutes(minute),
         )
-        .unwrap();
-        run
-    }
-
-    /// A preparation run outside `ployz-prepare`, as a manual `ployzd install --prepare` is,
-    /// marks ployzd's lock through a long build while the unit reads stopped and the state file
-    /// goes unwritten.
-    #[tokio::test(start_paused = true)]
-    async fn a_preparation_holding_its_lock_is_neither_restarted_nor_given_up() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = paths(&dir);
-        let written = at("2026-10-16T00:00:00Z");
-        stopped_mid_step(&paths, written, written);
-        let _run = run_marking(&paths.prepare_state.with_file_name("lock"));
-        let mut unused = client("http://127.0.0.1:9");
-        let mut prepares = 0;
-        for minute in (20..80).step_by(10) {
-            let unit_stopped = FakeHost {
-                probe_hangs: true,
-                ..FakeHost::default()
-            };
-            pass(
-                &unit_stopped,
-                &mut unused,
-                &key(),
-                &paths,
-                written + TimeDelta::minutes(minute),
-            )
-            .await;
-            prepares += unit_stopped.prepares.load(Ordering::SeqCst);
-        }
-        assert_eq!(prepares, 0, "the marked run is still preparing");
+        .await;
         let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-        assert_eq!(status.prep.map(|prep| prep.zfs), Some(ZfsPrep::Installing));
-        assert!(status.blockers.is_empty(), "{:?}", status.blockers);
+        let gave_up = status
+            .blockers
+            .iter()
+            .any(|blocker| blocker.message.contains("stopped mid-step on every try"));
+        passes.push((
+            host.prepares.load(Ordering::SeqCst),
+            status.prepare_retries,
+            gave_up,
+        ));
     }
+    assert_eq!(
+        passes,
+        [
+            (1, 1, false),
+            (1, 2, false),
+            (1, 3, false),
+            (0, 3, true),
+            (0, 3, true)
+        ]
+    );
 
-    #[tokio::test]
-    async fn install_leaves_a_preparation_holding_its_lock_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = paths(&dir);
-        let written = at("2026-10-16T00:00:00Z");
-        stopped_mid_step(&paths, written, written);
-        let _run = run_marking(&paths.prepare_state.with_file_name("lock"));
-        let unit_stopped = FakeHost::default();
-        assert!(!restart_preparation(&unit_stopped, &paths, written + TimeDelta::hours(1)).await);
-        assert_eq!(unit_stopped.prepares.load(Ordering::SeqCst), 0);
+    let reinstalled = FakeHost {
+        mark_unreadable: true,
+        ..FakeHost::default()
+    };
+    assert!(restart_preparation(&reinstalled, &paths, died + TimeDelta::minutes(70)).await);
+    assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 1);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.prepare_retries, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_step_is_retried_then_reported_when_its_mark_cannot_be_read() {
+    let _ticker = tick_through_io();
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    docker_failed_at(&paths, "2026-10-16T00:00:00Z");
+    let failed = at("2026-10-16T00:00:00Z");
+    let mut unused = client("http://127.0.0.1:9");
+    let mut prepares = Vec::new();
+    for minute in [20, 30, 40, 50] {
+        let host = FakeHost {
+            mark_unreadable: true,
+            ..FakeHost::default()
+        };
+        pass(
+            &host,
+            &mut unused,
+            &key(),
+            &paths,
+            failed + TimeDelta::minutes(minute),
+        )
+        .await;
+        prepares.push(host.prepares.load(Ordering::SeqCst));
     }
+    assert_eq!(prepares, [1, 1, 1, 0]);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert!(
+        status
+            .blockers
+            .iter()
+            .any(|blocker| blocker.message == "Docker 29.1.3 is too old."),
+        "{:?}",
+        status.blockers
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_host_never_prepared_starts_when_its_mark_cannot_be_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(paths.prepare_lock(), "").unwrap();
+    let host = FakeHost {
+        probe_hangs: true,
+        mark_unreadable: true,
+        ..FakeHost::default()
+    };
+    pass(
+        &host,
+        &mut client("http://127.0.0.1:9"),
+        &key(),
+        &paths,
+        at("2026-10-16T00:00:00Z"),
+    )
+    .await;
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.prepare_retries, 0);
+}
+
+/// Absence of evidence that preparation runs is not evidence that it stopped.
+#[tokio::test(start_paused = true)]
+async fn a_preparation_whose_unit_and_lock_cannot_be_read_is_neither_restarted_nor_given_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let written = at("2026-10-16T00:00:00Z");
+    stopped_mid_step(&paths, written, written);
+    let unreadable = || FakeHost {
+        probe_hangs: true,
+        unit_unreadable: true,
+        mark_unreadable: true,
+        ..FakeHost::default()
+    };
+    let mut unused = client("http://127.0.0.1:9");
+    let mut prepares = 0;
+    for minute in (20..80).step_by(10) {
+        let host = unreadable();
+        pass(
+            &host,
+            &mut unused,
+            &key(),
+            &paths,
+            written + TimeDelta::minutes(minute),
+        )
+        .await;
+        prepares += host.prepares.load(Ordering::SeqCst);
+    }
+    assert_eq!(prepares, 0, "nothing says preparation stopped");
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.prepare_retries, 0);
+    assert_eq!(status.prep.map(|prep| prep.zfs), Some(ZfsPrep::Installing));
+    let host = unreadable();
+    assert!(!restart_preparation(&host, &paths, written + TimeDelta::minutes(90)).await);
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
 }

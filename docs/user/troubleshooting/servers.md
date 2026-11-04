@@ -352,7 +352,13 @@ prepares Docker and ZFS meanwhile.
 2. Read the loop's log with `sudo journalctl -u ployz-checkin -n 100`, and preparation's with
    `sudo journalctl -u ployz-prepare -n 200`. A failed preparation is retried 10 minutes later,
    up to three times. Once you've fixed the cause, `sudo ployz server checkin --install` starts it
-   again right away. Preparation that stopped mid-step on every try reads as failed.
+   again right away. Preparation that stopped mid-step on every try reads as failed. Preparation
+   still running outside `ployz-prepare` is waited on, not retried or given up. That covers a run
+   you started by hand with `ployzd install --prepare`, including a build that outlived the
+   `ployzd` you ran. It needs a `ployzd` as new as the check-in loop, and `/var/lib/ployz/prepare`
+   on ext2, ext3, ext4, XFS, Btrfs, tmpfs, overlayfs or ZFS. An older `ployzd`, another
+   filesystem such as NFS, or a lock file check-in can't read leaves it judged by `ployz-prepare`
+   alone.
 3. `Check-in stopped` means the loop isn't running, so nothing checks in and, a few minutes
    later, Ployz Cloud shows the server Offline. `last answer` is what it saw before it stopped,
    and `checked in` says when. `sudo systemctl status ployz-checkin` says why it stopped, and

@@ -322,7 +322,9 @@ struct Fixture {
 
 impl Fixture {
     fn new(zfs: &str) -> Self {
-        Self::with_zfs(&format!(r#"{{"state":"{zfs}"}}"#))
+        Self::with_zfs(&format!(
+            r#"{{"state":"{zfs}","finished_at":"2026-10-16T00:00:00Z"}}"#
+        ))
     }
 
     fn with_zfs(zfs: &str) -> Self {
@@ -335,7 +337,9 @@ impl Fixture {
         fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
         fs::write(
             &paths.prepare_state,
-            format!(r#"{{"docker":{{"state":"ready"}},"zfs":{zfs}}}"#),
+            format!(
+                r#"{{"docker":{{"state":"ready","finished_at":"2026-10-16T00:00:00Z"}},"zfs":{zfs}}}"#
+            ),
         )
         .unwrap();
         fs::write(&paths.token_file, FLEET).unwrap();
@@ -536,7 +540,11 @@ async fn an_attempt_cut_short_is_sent_again_so_cloud_serves_it_to_resume() {
 #[tokio::test]
 async fn a_server_enrolled_without_storage_discards_the_zfs_build_prep_began_first() {
     for (storage, zfs, events) in [
-        ("none", r#"{"state":"ready"}"#, vec!["discard", "enroll"]),
+        (
+            "none",
+            r#"{"state":"ready","finished_at":"2026-10-16T00:00:00Z"}"#,
+            vec!["discard", "enroll"],
+        ),
         (
             "none",
             r#"{"state":"installing"}"#,
@@ -547,9 +555,21 @@ async fn a_server_enrolled_without_storage_discards_the_zfs_build_prep_began_fir
             r#"{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}"#,
             vec!["discard", "enroll"],
         ),
-        ("none", r#"{"state":"skipped"}"#, vec!["enroll"]),
-        ("zfs", r#"{"state":"ready"}"#, vec!["enroll"]),
-        ("none", r#"{"state":"off"}"#, vec!["enroll"]),
+        (
+            "none",
+            r#"{"state":"skipped","reason":"vm","finished_at":"2026-10-16T00:00:00Z"}"#,
+            vec!["enroll"],
+        ),
+        (
+            "zfs",
+            r#"{"state":"ready","finished_at":"2026-10-16T00:00:00Z"}"#,
+            vec!["enroll"],
+        ),
+        (
+            "none",
+            r#"{"state":"off","finished_at":"2026-10-16T00:00:00Z"}"#,
+            vec!["enroll"],
+        ),
     ] {
         let fixture = Fixture::with_zfs(zfs);
         let cloud = Arc::new(Cloud::answering(vec![instruction(storage)]).await);
