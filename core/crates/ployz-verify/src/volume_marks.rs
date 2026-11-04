@@ -19,11 +19,12 @@
 //! the finding is, because a live Seed replacing a pulled Mirror is designed
 //! (`seed_tests.rs` `a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point`).
 //!
-//! The fix variant gives Seed its run's gen and admits it against `into`'s floor, as
-//! `admit_gen` (machine_api/local_volume_copy.rs) and `FloorTurn::admit`
-//! (docker/spec_store.rs) do for `SetVolumeCopy`, before `seed_volume` runs. Gens come
-//! from one identity column, so a later run's `SetVolumeCopy` on A raises `into`'s floor
-//! above the seed run's gen.
+//! The fix variant gives Seed its run's gen and admits it against `into`'s floor under
+//! the switch lock, before `seed_volume` runs, as `admit_gen` (machine_api/
+//! local_volume_copy.rs) and `FloorTurn::admit` (docker/spec_store.rs) do for
+//! `SetVolumeCopy` in `set_copy_admitted` (local_volume_copy.rs:86-88). Gens come from
+//! one identity column, so a later run's `SetVolumeCopy` on A raises `into`'s floor above
+//! the seed run's gen.
 //!
 //! Every plugin handler holds `admit_mutation` (storage.rs) from its first read to its
 //! answer, so each handler is one step. A receive task runs outside it, so a receive
@@ -432,7 +433,7 @@ const COVERAGE: &[Coverage] = &[
         reached: |_, state| state.last == Some(Action::MarkPulled),
     },
     Coverage {
-        name: "the floor a Seed raised refuses the earlier run's pull",
+        name: "admit_gen refuses the earlier run's pull below into's floor",
         scenarios: OLD_COPY,
         fix_only: true,
         omit: Omit::Actions(&[Action::EarlierPull]),
@@ -443,8 +444,14 @@ const COVERAGE: &[Coverage] = &[
 #[derive(Clone, Copy, Debug)]
 struct VolumeMarks {
     scenario: Scenario,
-    /// The fix: Seed carries its run's gen and admits it against `into`'s floor
-    /// (`admit_gen`, machine_api/local_volume_copy.rs) before `seed_volume` runs.
+    /// The fix: Seed carries its run's gen, and `admit_gen` admits it against `into`'s
+    /// floor under the switch lock, before `seed_volume` runs, as `set_copy_admitted`
+    /// checks `SetVolumeCopy` again under the lock (machine_api/local_volume_copy.rs:86-88).
+    /// The one atomic Seed step models only that check; one before the lock is optional.
+    /// A check made only before the lock fails: PR #3836's round-1 replay admitted a Seed
+    /// at floor 2, let Adopt, Cut, Commit, Pull, Received and MarkPulled raise the floor to
+    /// 3 while it waited for the lock, and the admitted Seed then destroyed the Mirror the
+    /// later run pulled. Splitting the step to show that is follow-up E-21b.
     fix: bool,
     broken: Broken,
     /// A coverage check's cut, `None` to run the whole model.
@@ -533,7 +540,8 @@ impl VolumeMarks {
     }
 
     /// `FloorTurn::admit` (docker/spec_store.rs) through `admit_gen`
-    /// (machine_api/local_volume_copy.rs), which `set_copy` runs before the switch lock.
+    /// (machine_api/local_volume_copy.rs), which `set_copy` runs before the switch lock
+    /// (:47) and `set_copy_admitted` again under it (:86-88).
     fn admit(state: &mut State, generation: u8) -> bool {
         if generation < state.floor {
             return false;
@@ -887,7 +895,7 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
             let branch = match after.seed {
                 Some(SeedPath::Stale) => {
                     return format!(
-                        "A: Volume.Seed carries its run's gen, {row}; admit_gen refuses it below into's floor before the switch lock (the fix, machine_api/local_volume_copy.rs); {to}"
+                        "A: Volume.Seed carries its run's gen, {row}; under the switch lock, admit_gen refuses it below into's floor (the fix, as set_copy_admitted checks SetVolumeCopy, machine_api/local_volume_copy.rs:86-88); {to}"
                     );
                 }
                 Some(SeedPath::AnswersRoot)
@@ -926,12 +934,12 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
                 None => "?",
             };
             let admitted = if model.fix {
-                "admit_gen admits its gen, then "
+                "under the switch lock admit_gen admits its gen, then under admit_mutation"
             } else {
-                ""
+                "under the switch lock and admit_mutation"
             };
             format!(
-                "A: Volume.Seed runs a request, {row}; {admitted}under the switch lock and admit_mutation, {branch} (seed.rs seed_volume); {to}"
+                "A: Volume.Seed runs a request, {row}; {admitted}, {branch} (seed.rs seed_volume); {to}"
             )
         }
         Action::CopyDone => {
@@ -965,7 +973,7 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
             "A: mark_pulled sets ployz:pulled to the newest guid, keeping every mark (under Broken); the task ends (copy.rs)".to_owned()
         }
         Action::MarkPulled => {
-            "A: mark_pulled inherits ployz:cut, epoch, promote and seed and sets ployz:pulled to the newest guid; the task ends (copy.rs)".to_owned()
+            "A: mark_pulled clears (zfs inherit) ployz:cut, epoch, promote and seed and sets ployz:pulled to the newest guid; the task ends (copy.rs)".to_owned()
         }
     }
 }
@@ -1003,9 +1011,10 @@ mod tests {
     }
 
     /// The first path in BFS order whose last state breaks `property` under `model`, so
-    /// no shorter path breaks it, printed as a story. A visitor keeps the first: the
-    /// checker's own discovery is whichever violation its last block stored. One thread
-    /// keeps the path the same from run to run.
+    /// no shorter path breaks it, printed as a story under the test's name. The checker's
+    /// own discovery is not that path: `check_block` stores every violation it visits,
+    /// each overwriting the last, and `finish_when` is read once per 1500-state block, so
+    /// a visitor keeps the first. One thread keeps the path the same from run to run.
     fn breaks(model: VolumeMarks, property: &'static str) -> Path {
         let holds = model
             .properties()
