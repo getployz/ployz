@@ -249,13 +249,23 @@ rerunning the same line is refused.
 If you can't manage that Cluster, signed in here run `ployz server add --command --reset` and run
 the line it prints on the server. The reset takes the server out of the other Cluster and removes
 every container Ployz runs on it, and it can delete its mirrors, so don't use it while a mirror
-there may be the last copy of a volume. If the server can't reach the other Cluster as it resets,
-you'll see `The Server reset, but its old Cluster still lists it`, and that Cluster keeps listing
-it until whoever manages it runs `ployz server forget <id> --confirm dead` there.
+there may be the last copy of a volume.
 
-The server may stay listed as down in the Organization you tried to add it to. `ployz server ls`
-shows its id; forget it by that id, `ployz server forget <id> --confirm dead`, since a server you
-add again can share its name.
+The reset can leave the server listed, as down, in the other Cluster:
+
+- If the server couldn't remove itself from its own copy of the Cluster's records, the add warns
+  `Server NAME (ID) reset, but couldn't confirm that its old Cluster removed it`, then gives the
+  reason and the `ployz server forget ID --confirm dead` line for the other Cluster.
+- If the server was cut off from the other Cluster while it reset, the add shows no warning, and
+  the other Cluster keeps listing it.
+
+Either way, whoever manages the other Cluster removes it there with
+`ployz server forget <id> --confirm dead`. In that Cluster, `ployz server ls --json` shows each
+server's id as `machine.id`.
+
+The server may stay listed as down in the Organization you tried to add it to.
+`ployz server ls --json` shows its id as `machine.id`; forget it by that id,
+`ployz server forget <id> --confirm dead`, since a server you add again can share its name.
 
 ## A forgotten server is refused when you add it again
 

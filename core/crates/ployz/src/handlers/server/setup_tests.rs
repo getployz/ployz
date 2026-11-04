@@ -34,6 +34,27 @@ fn founder() -> Machine {
     }
 }
 
+/// The founder as Inspect shows it before a Leave.
+fn departing() -> ployz_core::MachineDetails {
+    let machine = founder();
+    ployz_core::MachineDetails {
+        id: machine.id,
+        phase: LocalMachinePhase::Participating,
+        public_key: machine.public_key,
+        advertised_endpoints: Vec::new(),
+        machine: Some(machine),
+        store_version: Default::default(),
+        rtts: Vec::new(),
+        management_clients: Vec::new(),
+        telemetry: None,
+        storage: None,
+        upgrade: None,
+        token: None,
+        sealing: None,
+        founding: Default::default(),
+    }
+}
+
 /// Every Enroll before `ready` hangs; later ones get `reply`.
 async fn enrolling_machine(
     reply: Enrolled,
@@ -208,15 +229,17 @@ async fn leave_lost_to_a_daemon_restart_is_resent() {
             })
         }
     };
-    let (result, new) = tokio::join!(super::leave(&mut client), restart);
+    let departing = departing();
+    let (result, new) = tokio::join!(super::leave(&mut client, &departing), restart);
     new.shutdown_background();
     result.unwrap();
     assert_eq!(resent.load(Ordering::SeqCst), 1);
 }
 
-/// A reset that left its row in the old Cluster, as when the row removal fails after
-/// the reset commits, is warned: nothing else removes that row, and `server add --reset`,
-/// `server init` and `cloud enroll --reset` never reach the old Cluster to forget it.
+/// A Leave whose reset committed but whose row removal on the Server's own store failed
+/// is warned, naming the id and name the Server had before it reset: the standalone
+/// `server add` (into a context, or founding one) and the Cloud `server add --reset`
+/// never reach the old Cluster to forget it.
 #[tokio::test]
 async fn a_leave_that_could_not_remove_its_row_says_so() {
     use crate::connect::test_support::{unix_client, unix_daemon};
@@ -230,8 +253,9 @@ async fn a_leave_that_could_not_remove_its_row_says_so() {
         }))
     });
     let mut client = unix_client(&path).await;
+    let departing = departing();
 
-    super::leave(&mut client).await.unwrap();
+    super::leave(&mut client, &departing).await.unwrap();
 
     daemon.shutdown_background();
     let (_, json) = crate::ui::captured(|| crate::ui::show(&serde_json::json!({})));
@@ -241,8 +265,13 @@ async fn a_leave_that_could_not_remove_its_row_says_so() {
         .and_then(|warnings| warnings.get(0))
         .and_then(serde_json::Value::as_str)
         .unwrap_or_else(|| panic!("the reset's warning reaches the user, warned {warnings:?}"));
-    assert!(warning.contains("connection refused"), "{warning}");
-    assert!(warning.contains("ployz server forget"), "{warning}");
+    let id = departing.id;
+    assert_eq!(
+        warning,
+        format!(
+            "Server founder ({id}) reset, but couldn't confirm that its old Cluster removed it: connection refused. If that Cluster still shows it, whoever manages it can remove it there with `ployz server forget {id} --confirm dead`."
+        )
+    );
 }
 
 /// Answers Inspect as Participating, and ListMachines with the restarting

@@ -555,9 +555,10 @@ async fn a_leaving_mark_never_brings_back_a_forgotten_row() {
     assert_eq!(replicated.machine(forgotten.as_str()).await.unwrap(), None);
 }
 
-/// A Leave whose reset commits but whose row removal fails still answers Left, carrying
-/// the failure as `reset_warning`, and the Cluster keeps the row marked leaving: this
-/// Machine has no Cluster left to remove it from, so only the caller can say so.
+/// The FakeCluster stops during `Storage.Demote`, after the leaving mark and before the
+/// reset commits and the row removal runs. Leave still answers Left with the removal's
+/// error as `reset_warning`, the record is Resetting, and once the FakeCluster restarts
+/// the row still reads leaving.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_leave_whose_row_removal_fails_says_so_and_leaves_its_row_leaving() {
     let cluster = std::sync::Arc::new(std::sync::Mutex::new(fake_cluster::FakeCluster::start()));
@@ -576,6 +577,7 @@ async fn a_leave_whose_row_removal_fails_says_so_and_leaves_its_row_leaving() {
         panic!("the reset committed, so the Leave answers Left: {left:?}");
     };
     assert!(reset_warning.is_some(), "the failed removal is reported");
+    assert_eq!(test.local.record().phase(), LocalMachinePhase::Resetting);
     cluster.lock().unwrap().restart();
     let row = replicated.machine(me.id.as_str()).await.unwrap();
     assert_eq!(row.map(|row| row.runtime.leaving), Some(true));
