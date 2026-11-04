@@ -50,10 +50,9 @@ pub enum GeneratorError {
     Charset,
 }
 
-/// The fingerprint a generated variable holds while it [awaits its
-/// value](super::SavedVariableIntent::awaits_value): never a real one, which is
-/// versioned.
-pub const AWAITING_FINGERPRINT: &str = "generating";
+/// The fingerprint an [arriving](super::VariableValue::Arriving) generated variable is
+/// stored with: never a real one, which is versioned.
+pub(super) const AWAITING_FINGERPRINT: &str = "generating";
 
 pub const DEFAULT_LENGTH: u16 = 32;
 pub const DEFAULT_CHARSET: &str = "a-zA-Z0-9";
@@ -243,7 +242,7 @@ mod tests {
     fn a_variable_without_a_generator_keeps_its_stored_bytes() {
         let stored = r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"f","value":{"kind":"literal","value":"x"}}"#;
         let variable: crate::config::SavedVariableIntent = serde_json::from_str(stored).unwrap();
-        assert_eq!(variable.generated, None);
+        assert_eq!(variable.generator(), None);
         assert_eq!(serde_json::to_string(&variable).unwrap(), stored);
     }
 
@@ -385,13 +384,10 @@ mod tests {
     }
 
     #[test]
-    fn a_marker_on_a_sealed_value_reads_and_canonicalizing_drops_it() {
-        let stored = r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"f","value":{"kind":"secret_without_value"},"generated":{"length":32,"charset":"a-z"}}"#;
+    fn a_marker_on_a_sealed_value_reads_and_is_dropped() {
+        let stored = r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"secret_without_value"},"generated":{"length":32,"charset":"a-z"}}"#;
         let variable: crate::config::SavedVariableIntent = serde_json::from_str(stored).unwrap();
         assert_eq!(variable.generator(), None);
-        let mut variable = variable;
-        variable.drop_stale_generator();
-        assert_eq!(variable.generated, None);
     }
 
     #[test]

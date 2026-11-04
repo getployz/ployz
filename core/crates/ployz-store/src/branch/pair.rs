@@ -1312,20 +1312,21 @@ fn inherited(
     let Some(fingerprint) = variable(&mut branch.working, lineage, key)
         .filter(|variable| {
             !review::sealed::sealed(&variable.value)
-                && fingerprints.contains(&variable.value_fingerprint)
+                && fingerprints.contains(variable.value.stored_fingerprint())
         })
-        .map(|variable| variable.value_fingerprint.clone())
+        .map(|variable| variable.value.stored_fingerprint().to_owned())
     else {
         return Ok(None);
     };
     let mut base = base_of(tx, (&branch.summary.id, &parent))?;
     let shared = variable(&mut base, lineage, key)
-        .is_some_and(|shared| shared.value_fingerprint == fingerprint);
+        .is_some_and(|shared| shared.value.stored_fingerprint() == fingerprint);
     if !shared {
         return Ok(None);
     }
     let made = made_with(tx, &branch.summary.id)?.is_some_and(|mut made| {
-        variable(&mut made, lineage, key).is_some_and(|made| made.value_fingerprint == fingerprint)
+        variable(&mut made, lineage, key)
+            .is_some_and(|made| made.value.stored_fingerprint() == fingerprint)
     });
     let arrived = arrivals(tx, &branch.summary.id, &parent)?
         .get(&at)
@@ -1381,9 +1382,7 @@ fn variable<'intent>(
 
 /// `variable` sealed without a value: Not set.
 fn seal_without_value(variable: &mut SavedVariableIntent) {
-    variable.value = SavedVariableValue::SecretWithoutValue;
-    variable.value_fingerprint = String::new();
-    variable.generated = None;
+    variable.value = VariableValue::NotSet;
 }
 
 /// Record `arrived` in `receiver`, replacing what arrived at that row from that side

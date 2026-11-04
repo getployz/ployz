@@ -5,9 +5,9 @@ use serde_json::{Value, json};
 use super::*;
 use crate::config::service_changes::{default_value, keep_branch};
 use crate::config::{
-    AWAITING_FINGERPRINT, ConfigAttachment, ConfigError, SavedEnvironmentIntent as Intent,
-    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, ServiceGitBranch,
-    ServiceImageCredentials, ServiceSource, VolumeAttachment,
+    ConfigAttachment, ConfigError, PlainText, SavedEnvironmentIntent as Intent, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, ServiceGitBranch, ServiceImageCredentials,
+    ServiceSource, ValueFingerprint, VariableValue, VolumeAttachment,
 };
 
 /// Give `intent` `cell` at `row`, the inverse of the projection a plan's cells come
@@ -50,10 +50,9 @@ pub(super) fn put_sealed(
     if let (SealedCell::Secret(secret), At::Variable(key)) = (cell, &row.at)
         && let Some(variable) = service_mut(env, &row.lineage)
             .and_then(|service| service.variables.iter_mut().find(|v| v.key == *key))
+        && let VariableValue::Sealed { ciphertext, .. } = &mut variable.value
     {
-        variable.value = SavedVariableValue::Secret {
-            encrypted_value: Some(secret.value.clone()),
-        };
+        *ciphertext = Some(secret.value.clone());
     }
     Ok(())
 }
@@ -197,44 +196,38 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
             let Some(service) = service_mut(env, lineage) else {
                 return missing();
             };
-            let generated = cell_generator(cell);
-            let (value, fingerprint) = match cell {
-                Cell::Absent => {
+            let value = match (cell, cell_generator(cell)) {
+                (Cell::Absent, _) => {
                     service.variables.retain(|v| v.key != *key);
                     return Ok(());
                 }
                 // Each Environment makes its own value; the Store makes this one, unless
                 // an undo puts back the value it held.
-                Cell::Value(_) if generated.is_some() => {
-                    let (value, fingerprint) = held_value(cell)
-                        .unwrap_or_else(|| (String::new(), AWAITING_FINGERPRINT.to_owned()));
-                    (SavedVariableValue::Literal { value }, fingerprint)
-                }
-                Cell::Value(value) => {
+                (Cell::Value(_), Some(generator)) => match held_value(cell) {
+                    Some((value, fingerprint)) => {
+                        VariableValue::generated(generator, value, fingerprint)
+                            .map_err(|_| invalid("Not a variable's value"))?
+                    }
+                    None => VariableValue::Arriving { generator },
+                },
+                (Cell::Value(value), None) => {
                     plain(value).ok_or_else(|| invalid("Not a variable's value"))?
                 }
-                Cell::Secret { fingerprint } => (
-                    SavedVariableValue::Secret {
-                        encrypted_value: None,
-                    },
-                    fingerprint.clone(),
-                ),
-                Cell::SecretWithoutValue => (SavedVariableValue::SecretWithoutValue, String::new()),
+                (Cell::Secret { fingerprint }, _) => VariableValue::Sealed {
+                    ciphertext: None,
+                    fingerprint: ValueFingerprint::parse(fingerprint.as_str())
+                        .map_err(|_| invalid("Not a variable's value"))?,
+                },
+                (Cell::SecretWithoutValue, _) => VariableValue::NotSet,
             };
             match service.variables.iter_mut().find(|v| v.key == *key) {
-                Some(variable) => {
-                    variable.value = value;
-                    variable.value_fingerprint = fingerprint;
-                    variable.generated = generated;
-                }
+                Some(variable) => variable.value = value,
                 None => service.variables.push(SavedVariableIntent {
                     id: uuid::Uuid::new_v4().to_string(),
                     key: key.clone(),
                     description: None,
                     exported: false,
-                    value_fingerprint: fingerprint,
                     value,
-                    generated,
                 }),
             }
         }
@@ -343,15 +336,15 @@ pub(super) fn put_setting(
     Ok(())
 }
 
-/// A plain variable's cell back as its value and fingerprint.
-fn plain(cell: &Value) -> Option<(SavedVariableValue, String)> {
+/// A plain variable's cell back as its value.
+fn plain(cell: &Value) -> Option<VariableValue> {
     let mut value = cell.clone();
     let fingerprint = value.as_object_mut()?.remove("fingerprint")?;
-    let value: SavedVariableValue = serde_json::from_value(value).ok()?;
-    match value {
-        SavedVariableValue::Literal { .. } | SavedVariableValue::Template { .. } => {
-            Some((value, fingerprint.as_str()?.to_owned()))
-        }
-        SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue => None,
-    }
+    let fingerprint = ValueFingerprint::parse(fingerprint.as_str()?).ok()?;
+    let text = match serde_json::from_value(value).ok()? {
+        SavedVariableValue::Literal { value } => PlainText::Literal(value),
+        SavedVariableValue::Template { parts } => PlainText::Template(parts),
+        SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue => return None,
+    };
+    Some(VariableValue::Plain { text, fingerprint })
 }

@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    Cell, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    SavedVariableValue, ValuePart,
+    Cell, EnvironmentNodeType, PlainText, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, ValueFingerprint, ValuePart, VariableValue,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,14 +17,8 @@ use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
 use crate::{Actor, EnvironmentId, EnvironmentSummary};
 
-pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
-    match value {
-        SavedVariableValue::Secret { encrypted_value: _ }
-        | SavedVariableValue::SecretWithoutValue => true,
-        SavedVariableValue::Literal { value: _ } | SavedVariableValue::Template { parts: _ } => {
-            false
-        }
-    }
+pub(crate) const fn sealed(value: &VariableValue) -> bool {
+    value.is_secret()
 }
 
 /// Read each plain variable of the `copied` Services in `running`, what `owner`
@@ -64,17 +58,12 @@ pub(crate) fn seal_running(
                     .find(|now| now.id == variable.id)
                     .or_else(|| now.iter().find(|now| now.key == variable.key))
             });
-            let (value, fingerprint) = match now {
-                Some(now) if sealed(&now.value) => {
-                    (now.value.clone(), now.value_fingerprint.clone())
-                }
+            variable.value = match now {
+                Some(now) if sealed(&now.value) => now.value.clone(),
                 Some(_) if !ever.holds_id(&service.id, variable) => continue,
                 None if !ever.holds(&service.id, variable) => continue,
-                Some(_) | None => (SavedVariableValue::SecretWithoutValue, String::new()),
+                Some(_) | None => VariableValue::NotSet,
             };
-            variable.value = value;
-            variable.value_fingerprint = fingerprint;
-            variable.generated = None;
         }
     }
     Ok(())
@@ -136,10 +125,13 @@ impl<'env> SealedSince<'env> {
         baseline: &mut SavedEnvironmentIntent,
     ) -> Result<(), RpcError> {
         self.each(tx, baseline, |was, _| {
-            was.value = SavedVariableValue::Secret {
-                encrypted_value: None,
+            was.value = match ValueFingerprint::parse(was.value.stored_fingerprint()) {
+                Ok(fingerprint) => VariableValue::Sealed {
+                    ciphertext: None,
+                    fingerprint,
+                },
+                Err(_) => VariableValue::NotSet,
             };
-            was.generated = None;
         })
     }
 
@@ -157,9 +149,7 @@ impl<'env> SealedSince<'env> {
             if held {
                 return;
             }
-            was.value = SavedVariableValue::SecretWithoutValue;
-            was.value_fingerprint.clear();
-            was.generated = None;
+            was.value = VariableValue::NotSet;
         })
     }
 
@@ -195,7 +185,9 @@ impl<'env> SealedSince<'env> {
                 });
                 let sealed_now = match now {
                     Some(now)
-                        if now.id == was.id && now.key == was.key && now.value == was.value =>
+                        if now.id == was.id
+                            && now.key == was.key
+                            && now.value.holds_same(&was.value) =>
                     {
                         false
                     }
@@ -236,9 +228,7 @@ impl<'env> SealedSince<'env> {
                     // Only a sealed value is kept: one Not set has nothing to keep.
                     seal(
                         was,
-                        now.is_some_and(|now| {
-                            matches!(now.value, SavedVariableValue::Secret { .. })
-                        }),
+                        now.is_some_and(|now| matches!(now.value, VariableValue::Sealed { .. })),
                     );
                 }
             }
@@ -269,7 +259,7 @@ fn sealed_above(
     // when the one it came from sealed it since.
     let made = chain.introduced(tx, environment.as_str(), node, |made| made.id == was.id)?;
     if let Some(made) = &made
-        && made.fingerprint == was.value_fingerprint
+        && made.fingerprint == was.value.stored_fingerprint()
         && chain.holds(environment.as_str(), node, lineage, &made.key)
     {
         return Ok(true);
@@ -282,7 +272,7 @@ fn sealed_above(
         environment.as_str(),
         lineage,
         keys,
-        &was.value_fingerprint,
+        was.value.stored_fingerprint(),
     )? {
         return Ok(true);
     }
@@ -293,7 +283,7 @@ fn sealed_above(
         environment.as_str(),
         lineage,
         &was.key,
-        &was.value_fingerprint,
+        was.value.stored_fingerprint(),
     )
 }
 
@@ -500,7 +490,7 @@ impl Chain {
             let Some(shared) = shared else {
                 return Ok(false);
             };
-            if shared.value_fingerprint != fingerprint {
+            if shared.value.stored_fingerprint() != fingerprint {
                 return Ok(false);
             }
             let key = shared.key.clone();
@@ -686,7 +676,7 @@ impl Chain {
         variable: &SavedVariableIntent,
     ) -> Result<bool, RpcError> {
         let Some(was) = self.introduced(tx, environment, &service.id, |was| {
-            was.id == variable.id && was.fingerprint == variable.value_fingerprint
+            was.id == variable.id && was.fingerprint == variable.value.stored_fingerprint()
         })?
         else {
             return Ok(false);
@@ -736,7 +726,7 @@ impl Chain {
                 node: service.id.clone(),
                 id: variable.id,
                 key: variable.key,
-                fingerprint: variable.value_fingerprint,
+                fingerprint: variable.value.stored_fingerprint().to_owned(),
             }));
         }
         self.introduced.insert(environment.to_owned(), introduced);
@@ -762,7 +752,7 @@ fn ledger<'a>(
 
 /// Whether a template reads a name in `names`. By key alone, whatever Service owns
 /// it, so a shared key counts.
-fn reads_any(value: &SavedVariableValue, names: &BTreeSet<String>) -> bool {
+fn reads_any(value: &VariableValue, names: &BTreeSet<String>) -> bool {
     value.parts().iter().any(|part| match part {
         ValuePart::Ref { key, .. } => names.contains(key),
         ValuePart::Text { .. } => false,
@@ -1061,7 +1051,7 @@ pub(crate) fn empty_plain_in(
     for service in &mut base.services {
         for variable in &mut service.variables {
             if rows.contains(&(service.lineage_id.clone(), variable.key.clone())) {
-                emptied |= empty_plain(&mut variable.value);
+                emptied |= empty_variable(&mut variable.value);
             }
         }
     }
@@ -1085,7 +1075,7 @@ pub(crate) fn hold(
             if rows.contains(&row) && !sealed(&variable.value) {
                 held.entry(row)
                     .or_default()
-                    .insert(variable.value_fingerprint.clone());
+                    .insert(variable.value.stored_fingerprint().to_owned());
             }
         }
     }
@@ -1100,9 +1090,9 @@ pub(crate) fn empty_held_in(base: &mut SavedEnvironmentIntent, held: &Held) -> b
             let row = (service.lineage_id.clone(), variable.key.clone());
             if held
                 .get(&row)
-                .is_some_and(|held| held.contains(&variable.value_fingerprint))
+                .is_some_and(|held| held.contains(variable.value.stored_fingerprint()))
             {
-                emptied |= empty_plain(&mut variable.value);
+                emptied |= empty_variable(&mut variable.value);
             }
         }
     }
@@ -1119,6 +1109,31 @@ pub(crate) fn empty_held_cell(cell: &mut Cell, held: &BTreeSet<String>) -> bool 
         .and_then(Value::as_str)
         .is_some_and(|fingerprint| held.contains(fingerprint));
     matches && empty_plain_cell(cell)
+}
+
+/// Empty a variable's plain or generated text, keeping its kind and fingerprint.
+fn empty_variable(value: &mut VariableValue) -> bool {
+    match value {
+        VariableValue::Plain {
+            text: PlainText::Literal(value),
+            ..
+        }
+        | VariableValue::Generated { value, .. }
+            if !value.is_empty() =>
+        {
+            value.clear();
+        }
+        VariableValue::Plain {
+            text: PlainText::Template(parts),
+            ..
+        } if !parts.is_empty() => parts.clear(),
+        VariableValue::Plain { .. }
+        | VariableValue::Generated { .. }
+        | VariableValue::Arriving { .. }
+        | VariableValue::Sealed { .. }
+        | VariableValue::NotSet => return false,
+    }
+    true
 }
 
 fn empty_plain(value: &mut SavedVariableValue) -> bool {

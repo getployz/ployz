@@ -8,12 +8,12 @@ use crate::storage::Tx;
 use crate::{error, scope};
 use ployz_core::config::{
     At, AuthoredServiceConfig, BuildMethod, ChangeKind, CompiledNodeConfig, ConfigAttachment,
-    EnvironmentNodeType, Generator, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity,
+    EnvironmentNodeType, PlainText, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity,
     RowId, SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, ServiceBuildConfig,
-    ServiceGitAccess, ServiceGitBranch, ServiceHealthcheck, ServiceManagedHostname,
-    ServiceRestartPolicy, ServiceRoute, ServiceSettingChange, ServiceSource, ServiceTemplate,
-    ServiceUpdateOrder, Setting, ValuePart, VolumeAttachment, VolumeKind, compare_service_settings,
+    SavedVariableIntent, SavedVolumeIntent, ServiceBuildConfig, ServiceGitAccess, ServiceGitBranch,
+    ServiceHealthcheck, ServiceManagedHostname, ServiceRestartPolicy, ServiceRoute,
+    ServiceSettingChange, ServiceSource, ServiceTemplate, ServiceUpdateOrder, Setting, ValuePart,
+    VariableValue, VolumeAttachment, VolumeKind, compare_service_settings,
     compile_environment_intent, render_variable_parts,
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
@@ -49,51 +49,36 @@ impl<T> Lifecycle<T> {
         }
     }
 }
+/// A variable's value with its fingerprint and generator: what a review compares.
 #[derive(Clone, PartialEq)]
 struct VersionedValue {
-    value: SavedVariableValue,
-    fingerprint: String,
-    generated: Option<Generator>,
+    value: VariableValue,
 }
 impl VersionedValue {
     fn of(variable: &SavedVariableIntent) -> Self {
-        let SavedVariableIntent {
-            id: _,
-            key: _,
-            description: _,
-            exported: _,
-            value_fingerprint,
-            value,
-            generated: _,
-        } = variable;
         Self {
-            value: value.clone(),
-            fingerprint: value_fingerprint.clone(),
-            generated: variable.generator().cloned(),
+            value: variable.value.clone(),
         }
     }
     fn restore(&self, variable: &mut SavedVariableIntent) {
-        (
-            variable.value,
-            variable.value_fingerprint,
-            variable.generated,
-        ) = (
-            self.value.clone(),
-            self.fingerprint.clone(),
-            self.generated.clone(),
-        );
+        variable.value.clone_from(&self.value);
     }
     fn shown(&self, names: &BTreeMap<String, String>) -> Value {
         match &self.value {
-            SavedVariableValue::Literal { value } => json!(render_variable_parts(
+            VariableValue::Plain {
+                text: PlainText::Template(parts),
+                ..
+            } => json!(render_variable_parts(parts, names)),
+            VariableValue::Plain { .. }
+            | VariableValue::Generated { .. }
+            | VariableValue::Arriving { .. } => json!(render_variable_parts(
                 &[ValuePart::Text {
-                    value: value.clone()
+                    value: self.value.literal().unwrap_or_default().to_owned()
                 }],
                 names
             )),
-            SavedVariableValue::Template { parts } => json!(render_variable_parts(parts, names)),
-            SavedVariableValue::Secret { encrypted_value: _ } => json!({ "secret": true }),
-            SavedVariableValue::SecretWithoutValue => json!({ "secret": false }),
+            VariableValue::Sealed { .. } => json!({ "secret": true }),
+            VariableValue::NotSet => json!({ "secret": false }),
         }
     }
 }
@@ -266,7 +251,7 @@ impl Uses {
             ..Self::default()
         }
     }
-    fn of_value(value: &SavedVariableValue) -> Self {
+    fn of_value(value: &VariableValue) -> Self {
         Self {
             lineages: value.referenced_lineages().map(str::to_owned).collect(),
             ..Self::default()
@@ -899,9 +884,7 @@ fn variable_changes(
                 key,
                 description,
                 exported,
-                value_fingerprint: _,
                 value: _,
-                generated: _,
             } = after;
             let pair = VersionedValue::of(after);
             let mut add = |field| {
@@ -2293,13 +2276,9 @@ fn keep_sealed(
             match now {
                 Some(now) if sealed(&now.value) || sealed(&variable.value) => {
                     variable.id.clone_from(&now.id);
-                    variable
-                        .value_fingerprint
-                        .clone_from(&now.value_fingerprint);
-                    variable.value = now.value.clone();
-                    variable.generated.clone_from(&now.generated);
+                    variable.value.clone_from(&now.value);
                 }
-                Some(now) if now.value == variable.value => {}
+                Some(now) if now.value.holds_same(&variable.value) => {}
                 Some(_) if ever.holds(&service.id, variable) => {
                     let key = &variable.key;
                     return Err(error::conflict(
@@ -2308,9 +2287,7 @@ fn keep_sealed(
                     ));
                 }
                 None if sealed(&variable.value) || ever.holds(&service.id, variable) => {
-                    variable.value = SavedVariableValue::SecretWithoutValue;
-                    variable.value_fingerprint.clear();
-                    variable.generated = None;
+                    variable.value = VariableValue::NotSet;
                     not_set.push(NotSetVariable {
                         service: ServiceName::parse(&service.slug)
                             .map_err(|_| error::corrupt("Service name"))?,
@@ -2653,12 +2630,7 @@ fn prevent_plaintext(
     for service in &current.services {
         if let Some(restored) = target.services.iter().find(|owner| owner.id == service.id) {
             for variable in &service.variables {
-                let secret = |value: &SavedVariableValue| match value {
-                    SavedVariableValue::Secret { encrypted_value: _ }
-                    | SavedVariableValue::SecretWithoutValue => true,
-                    SavedVariableValue::Literal { value: _ }
-                    | SavedVariableValue::Template { parts: _ } => false,
-                };
+                let secret = VariableValue::is_secret;
                 if secret(&variable.value)
                     && restored
                         .variables

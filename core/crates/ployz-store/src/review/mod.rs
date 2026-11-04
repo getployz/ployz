@@ -18,9 +18,9 @@ use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedConfigIntent,
-    SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue, SavedVolumeIntent,
-    ServiceGitBranch, ServiceSettingChange, ServiceSource, Setting,
-    canonicalize_environment_intent, compile_environment_intent, project_environment_changes,
+    SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, ServiceGitBranch,
+    ServiceSettingChange, ServiceSource, Setting, VariableValue, canonicalize_environment_intent,
+    compile_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -950,8 +950,8 @@ fn value_changes(
                 .find(|was| was.id == variable.id)
                 .or_else(|| was.variables.iter().find(|was| was.key == variable.key));
             if before.is_some_and(|before| {
-                before.value != variable.value
-                    || before.value_fingerprint != variable.value_fingerprint
+                !before.value.holds_same(&variable.value)
+                    || before.value.stored_fingerprint() != variable.value.stored_fingerprint()
             }) {
                 changed.push((service.id.clone(), variable.id.clone()));
             }
@@ -1102,7 +1102,7 @@ impl Scrub {
                 .find(|now| now.id == service.id)
                 .map(|now| &now.variables);
             for was in &mut service.variables {
-                if was.value == SavedVariableValue::SecretWithoutValue {
+                if was.value == VariableValue::NotSet {
                     continue;
                 }
                 let now = now.and_then(|now| {
@@ -1110,28 +1110,23 @@ impl Scrub {
                         .find(|now| now.id == was.id)
                         .or_else(|| now.iter().find(|now| now.key == was.key))
                 });
-                let (value, fingerprint) = match now {
-                    Some(now) if sealed::sealed(&now.value) => {
-                        (&now.value, now.value_fingerprint.as_str())
-                    }
+                let value = match now {
+                    Some(now) if sealed::sealed(&now.value) => &now.value,
                     // Added again plain since: only this very variable was sealed.
                     Some(now)
                         if now.id != was.id
                             && !sealed::sealed(&was.value)
                             && self.ever.holds_id(&service.id, was) =>
                     {
-                        (&SavedVariableValue::SecretWithoutValue, "")
+                        &VariableValue::NotSet
                     }
                     None if !sealed::sealed(&was.value) && self.ever.holds(&service.id, was) => {
-                        (&SavedVariableValue::SecretWithoutValue, "")
+                        &VariableValue::NotSet
                     }
                     Some(_) | None => continue,
                 };
-                if was.value != *value {
+                if !was.value.holds_same(value) {
                     was.value = value.clone();
-                    fingerprint.clone_into(&mut was.value_fingerprint);
-                    // A sealed value is never generated.
-                    was.generated = None;
                     scrubbed = true;
                 }
             }

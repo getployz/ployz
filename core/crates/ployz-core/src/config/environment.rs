@@ -9,8 +9,8 @@ use ts_rs::TS;
 use crate::{ConfigFileName, ConfigName, ContainerPath};
 
 use super::{
-    AuthoredServiceConfig, ConfigError, Generator, SecretCiphertext, ValuePart, ValuePartOwner,
-    parse_service_config,
+    AWAITING_FINGERPRINT, AuthoredServiceConfig, ConfigError, Generator, SecretCiphertext,
+    ValuePart, ValuePartOwner, parse_service_config,
 };
 
 /// Complete authored Environment state; compiled artifacts are not accepted here.
@@ -262,57 +262,390 @@ impl VolumeKind {
 }
 
 /// An authored variable, including stable identity and comparison fingerprint.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+///
+/// It reads and writes as [`StoredVariable`], the shape every stored document holds.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, TS)]
+#[serde(try_from = "StoredVariable")]
+#[ts(as = "StoredVariable")]
 pub struct SavedVariableIntent {
     pub id: String,
     pub key: String,
     pub description: Option<String>,
     pub exported: bool,
-    /// Empty exactly for a [`SavedVariableValue::SecretWithoutValue`], checked by
-    /// `validate_variables`. It stays beside `value`, not in each valued variant:
-    /// moving it would reshape every stored Working State and Applied State.
-    pub value_fingerprint: String,
-    pub value: SavedVariableValue,
-    /// How the Store makes this variable's value, which each Environment holds its own
-    /// of. It counts only on a literal: read it through [`Self::generator`], and
-    /// canonicalizing drops it from any other value, so a document that sealed the value
-    /// and kept the marker still reads. Written only when set, so other documents keep
-    /// their bytes and fingerprints.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub generated: Option<Generator>,
+    pub value: VariableValue,
 }
 
 impl SavedVariableIntent {
-    /// How the Store makes this variable's value: only a literal is generated.
+    /// How the Store makes this variable's value.
     #[must_use]
-    pub fn generator(&self) -> Option<&Generator> {
-        match self.value {
-            SavedVariableValue::Literal { .. } => self.generated.as_ref(),
-            SavedVariableValue::Template { .. }
-            | SavedVariableValue::Secret { .. }
-            | SavedVariableValue::SecretWithoutValue => None,
-        }
+    pub const fn generator(&self) -> Option<&Generator> {
+        self.value.generator()
     }
 
-    /// Drop a generator from a value it doesn't count on, such as one sealed since.
-    pub fn drop_stale_generator(&mut self) {
-        if self.generator().is_none() {
-            self.generated = None;
-        }
-    }
-
-    /// Whether this generated variable arrived without its own value yet: a copy or Sync
+    /// Whether this generated variable has no value of its own yet: a copy or Sync
     /// brought its [`Generator`], and the Store makes the value before it saves.
     #[must_use]
     pub fn awaits_value(&self) -> bool {
-        self.generator().is_some()
-            && matches!(&self.value, SavedVariableValue::Literal { value } if value.is_empty())
+        self.value.awaits_value()
     }
 }
 
-/// Literal text, structured references, or a privately stored sealed value.
+/// What a variable holds, and the fingerprint that compares it without reading it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VariableValue {
+    /// Text or references, as written.
+    Plain {
+        text: PlainText,
+        fingerprint: ValueFingerprint,
+    },
+    /// A Generated Value: plain text the Store made from `generator`. A Sync base can
+    /// hold one emptied, with no text but its fingerprint.
+    Generated {
+        generator: Generator,
+        value: String,
+        fingerprint: ValueFingerprint,
+    },
+    /// A Generated Value a copy, Sync or merge brought without its value: the Store
+    /// makes this Environment's own before it saves, so Working and Saved State never
+    /// keep one. Sync bases do, as it arrived.
+    Arriving { generator: Generator },
+    /// A secret. Its ciphertext is absent in the browser-readable authored document:
+    /// Cloud keeps it privately and captures it into each immutable publication.
+    Sealed {
+        ciphertext: Option<SecretCiphertext>,
+        fingerprint: ValueFingerprint,
+    },
+    /// A secret that arrived without its value: Sync never carries one up or across.
+    /// A Deployment leaves it out until a value is set.
+    NotSet,
+}
+
+/// A plain variable's text: literal, or with references.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlainText {
+    Literal(String),
+    Template(Vec<ValuePart>),
+}
+
+impl VariableValue {
+    /// The value a stored generated literal is: [`Self::Arriving`] when it holds the
+    /// fingerprint an arriving one is stored with, else [`Self::Generated`].
+    ///
+    /// # Errors
+    /// [`VariableError`] when `fingerprint` is empty.
+    pub(crate) fn generated(
+        generator: Generator,
+        value: String,
+        fingerprint: String,
+    ) -> Result<Self, VariableError> {
+        if value.is_empty() && fingerprint == AWAITING_FINGERPRINT {
+            return Ok(Self::Arriving { generator });
+        }
+        Ok(Self::Generated {
+            generator,
+            value,
+            fingerprint: ValueFingerprint::parse(fingerprint)?,
+        })
+    }
+
+    #[must_use]
+    pub const fn generator(&self) -> Option<&Generator> {
+        match self {
+            Self::Generated { generator, .. } | Self::Arriving { generator } => Some(generator),
+            Self::Plain { .. } | Self::Sealed { .. } | Self::NotSet => None,
+        }
+    }
+
+    /// Whether the Store still makes this generated value: one that arrived without
+    /// it, or was emptied.
+    #[must_use]
+    pub fn awaits_value(&self) -> bool {
+        match self {
+            Self::Arriving { .. } => true,
+            Self::Generated { value, .. } => value.is_empty(),
+            Self::Plain { .. } | Self::Sealed { .. } | Self::NotSet => false,
+        }
+    }
+
+    /// The fingerprint that compares this value; none for one not set or still arriving.
+    #[must_use]
+    pub const fn fingerprint(&self) -> Option<&ValueFingerprint> {
+        match self {
+            Self::Plain { fingerprint, .. }
+            | Self::Generated { fingerprint, .. }
+            | Self::Sealed { fingerprint, .. } => Some(fingerprint),
+            Self::Arriving { .. } | Self::NotSet => None,
+        }
+    }
+
+    /// The literal text this value is, a generated one's included; an arriving one has
+    /// none yet.
+    #[must_use]
+    pub fn literal(&self) -> Option<&str> {
+        match self {
+            Self::Plain {
+                text: PlainText::Literal(value),
+                ..
+            }
+            | Self::Generated { value, .. } => Some(value),
+            Self::Arriving { .. } => Some(""),
+            Self::Plain {
+                text: PlainText::Template(_),
+                ..
+            }
+            | Self::Sealed { .. }
+            | Self::NotSet => None,
+        }
+    }
+
+    /// Whether this is a secret, with its value or without.
+    #[must_use]
+    pub const fn is_secret(&self) -> bool {
+        matches!(self, Self::Sealed { .. } | Self::NotSet)
+    }
+
+    /// The template parts of this value; none unless it is a template.
+    #[must_use]
+    pub fn parts(&self) -> &[ValuePart] {
+        match self {
+            Self::Plain {
+                text: PlainText::Template(parts),
+                ..
+            } => parts,
+            Self::Plain {
+                text: PlainText::Literal(_),
+                ..
+            }
+            | Self::Generated { .. }
+            | Self::Arriving { .. }
+            | Self::Sealed { .. }
+            | Self::NotSet => &[],
+        }
+    }
+
+    /// The service lineages this value reads through template references.
+    pub fn referenced_lineages(&self) -> impl Iterator<Item = &str> {
+        self.parts().iter().filter_map(|part| match part {
+            ValuePart::Ref {
+                owner: ValuePartOwner::Service { lineage_id },
+                ..
+            } => Some(lineage_id.as_str()),
+            ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
+        })
+    }
+
+    /// Whether `other` holds the same text or secret, whatever its fingerprint or
+    /// generator.
+    #[must_use]
+    pub fn holds_same(&self, other: &Self) -> bool {
+        self.stored() == other.stored()
+    }
+
+    /// This value as stored, without its fingerprint or generator.
+    #[must_use]
+    pub fn to_saved_value(&self) -> SavedVariableValue {
+        match self.stored() {
+            StoredValue::Literal { value } => SavedVariableValue::Literal {
+                value: value.to_owned(),
+            },
+            StoredValue::Template { parts } => SavedVariableValue::Template {
+                parts: parts.to_vec(),
+            },
+            StoredValue::Secret { encrypted_value } => SavedVariableValue::Secret {
+                encrypted_value: encrypted_value.cloned(),
+            },
+            StoredValue::SecretWithoutValue => SavedVariableValue::SecretWithoutValue,
+        }
+    }
+
+    /// The fingerprint as stored documents hold it, to compare with theirs: empty for
+    /// one not set, and the awaiting marker for one still arriving.
+    #[must_use]
+    pub fn stored_fingerprint(&self) -> &str {
+        match self {
+            Self::Arriving { .. } => AWAITING_FINGERPRINT,
+            Self::Plain { .. } | Self::Generated { .. } | Self::Sealed { .. } | Self::NotSet => {
+                self.fingerprint().map_or("", ValueFingerprint::as_str)
+            }
+        }
+    }
+
+    /// This value as stored, borrowed.
+    pub(crate) fn stored(&self) -> StoredValue<'_> {
+        match self {
+            Self::Plain {
+                text: PlainText::Template(parts),
+                ..
+            } => StoredValue::Template { parts },
+            Self::Plain { .. } | Self::Generated { .. } | Self::Arriving { .. } => {
+                StoredValue::Literal {
+                    value: self.literal().unwrap_or_default(),
+                }
+            }
+            Self::Sealed { ciphertext, .. } => StoredValue::Secret {
+                encrypted_value: ciphertext.as_ref(),
+            },
+            Self::NotSet => StoredValue::SecretWithoutValue,
+        }
+    }
+}
+
+impl PlainText {
+    /// The text `parts` write: literal unless it reads a reference.
+    #[must_use]
+    pub fn of(mut parts: Vec<ValuePart>) -> Self {
+        match parts.as_mut_slice() {
+            [] => Self::Literal(String::new()),
+            [ValuePart::Text { value }] => Self::Literal(std::mem::take(value)),
+            _ => Self::Template(parts),
+        }
+    }
+}
+
+/// The fingerprint that compares a variable's value without reading it. Never empty:
+/// only a secret without a value has none, and it holds no fingerprint.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ValueFingerprint(String);
+
+impl ValueFingerprint {
+    /// # Errors
+    /// [`VariableError`] when `fingerprint` is empty.
+    pub fn parse(fingerprint: impl Into<String>) -> Result<Self, VariableError> {
+        let fingerprint = fingerprint.into();
+        if fingerprint.is_empty() {
+            return Err(VariableError::Fingerprint);
+        }
+        Ok(Self(fingerprint))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ValueFingerprint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Why a stored variable is not one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum VariableError {
+    #[error("only a secret without a value has no fingerprint")]
+    Fingerprint,
+}
+
+/// A [`SavedVariableIntent`] as every stored document holds it: its fingerprint, value
+/// and generator side by side.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename = "SavedVariableIntent")]
+pub(crate) struct StoredVariable {
+    id: String,
+    key: String,
+    description: Option<String>,
+    exported: bool,
+    /// Empty exactly for a secret without a value.
+    value_fingerprint: String,
+    value: SavedVariableValue,
+    /// How the Store makes this variable's value, which each Environment holds its own
+    /// of. It counts only on a literal: it reads and is dropped beside any other value,
+    /// so a document that sealed the value and kept the marker still reads. Written only
+    /// when set, so other documents keep their bytes and fingerprints.
+    #[serde(default)]
+    #[ts(optional)]
+    generated: Option<Generator>,
+}
+
+impl TryFrom<StoredVariable> for SavedVariableIntent {
+    type Error = VariableError;
+
+    fn try_from(stored: StoredVariable) -> Result<Self, Self::Error> {
+        let fingerprint = stored.value_fingerprint;
+        let value = match (stored.value, stored.generated) {
+            (SavedVariableValue::Literal { value }, Some(generator)) => {
+                VariableValue::generated(generator, value, fingerprint)?
+            }
+            (SavedVariableValue::Literal { value }, None) => VariableValue::Plain {
+                text: PlainText::Literal(value),
+                fingerprint: ValueFingerprint::parse(fingerprint)?,
+            },
+            (SavedVariableValue::Template { parts }, _) => VariableValue::Plain {
+                text: PlainText::Template(parts),
+                fingerprint: ValueFingerprint::parse(fingerprint)?,
+            },
+            (SavedVariableValue::Secret { encrypted_value }, _) => VariableValue::Sealed {
+                ciphertext: encrypted_value,
+                fingerprint: ValueFingerprint::parse(fingerprint)?,
+            },
+            (SavedVariableValue::SecretWithoutValue, _) if fingerprint.is_empty() => {
+                VariableValue::NotSet
+            }
+            (SavedVariableValue::SecretWithoutValue, _) => return Err(VariableError::Fingerprint),
+        };
+        Ok(Self {
+            id: stored.id,
+            key: stored.key,
+            description: stored.description,
+            exported: stored.exported,
+            value,
+        })
+    }
+}
+
+impl Serialize for SavedVariableIntent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        StoredVariableRef {
+            id: &self.id,
+            key: &self.key,
+            description: self.description.as_deref(),
+            exported: self.exported,
+            value_fingerprint: self.value.stored_fingerprint(),
+            value: self.value.stored(),
+            generated: self.value.generator(),
+        }
+        .serialize(serializer)
+    }
+}
+
+/// [`StoredVariable`], borrowed to write.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredVariableRef<'a> {
+    id: &'a str,
+    key: &'a str,
+    description: Option<&'a str>,
+    exported: bool,
+    value_fingerprint: &'a str,
+    value: StoredValue<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated: Option<&'a Generator>,
+}
+
+/// [`SavedVariableValue`], borrowed to write.
+#[derive(PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub(crate) enum StoredValue<'a> {
+    Literal {
+        value: &'a str,
+    },
+    Template {
+        parts: &'a [ValuePart],
+    },
+    Secret {
+        encrypted_value: Option<&'a SecretCiphertext>,
+    },
+    SecretWithoutValue,
+}
+
+/// A variable's value as stored: literal text, structured references, or a privately
+/// stored sealed value.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "kind",
@@ -335,28 +668,6 @@ pub enum SavedVariableValue {
     /// A secret that arrived without its value: Sync never carries one up or across.
     /// It has no fingerprint, and a Deployment leaves it out until a value is set.
     SecretWithoutValue,
-}
-
-impl SavedVariableValue {
-    /// The template parts of this value; none unless it is a template.
-    #[must_use]
-    pub fn parts(&self) -> &[ValuePart] {
-        match self {
-            Self::Template { parts } => parts,
-            Self::Literal { .. } | Self::Secret { .. } | Self::SecretWithoutValue => &[],
-        }
-    }
-
-    /// The service lineages this value reads through template references.
-    pub fn referenced_lineages(&self) -> impl Iterator<Item = &str> {
-        self.parts().iter().filter_map(|part| match part {
-            ValuePart::Ref {
-                owner: ValuePartOwner::Service { lineage_id },
-                ..
-            } => Some(lineage_id.as_str()),
-            ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
-        })
-    }
 }
 
 /// Decode and normalize an authored document while validating owner identities and relationships.
@@ -629,17 +940,9 @@ fn validate_variables(variables: &[SavedVariableIntent]) -> Result<(), ConfigErr
         false,
     )?;
     for variable in variables {
-        // Only a secret without a value has no fingerprint, and it has none.
-        if (variable.value == SavedVariableValue::SecretWithoutValue)
-            != variable.value_fingerprint.is_empty()
-        {
-            return Err(ConfigError::at(
-                "variables.valueFingerprint",
-                "Only a secret without a value has no fingerprint",
-            ));
-        }
-        if let SavedVariableValue::Secret {
-            encrypted_value: Some(SecretCiphertext::Legacy(value)),
+        if let VariableValue::Sealed {
+            ciphertext: Some(SecretCiphertext::Legacy(value)),
+            ..
         } = &variable.value
             && value.version != 1
         {
@@ -660,8 +963,8 @@ pub fn redact_environment_intent(mut intent: SavedEnvironmentIntent) -> SavedEnv
         .iter_mut()
         .flat_map(|service| &mut service.variables)
     {
-        if let SavedVariableValue::Secret { encrypted_value } = &mut variable.value {
-            *encrypted_value = None;
+        if let VariableValue::Sealed { ciphertext, .. } = &mut variable.value {
+            *ciphertext = None;
         }
     }
     intent
@@ -684,9 +987,6 @@ pub fn canonicalize_environment_intent(
             (&a.mount_dir, &a.config_resource_id).cmp(&(&b.mount_dir, &b.config_resource_id))
         });
         service.variables.sort_by(|a, b| a.id.cmp(&b.id));
-        for variable in &mut service.variables {
-            variable.drop_stale_generator();
-        }
         service.volume_attachments.sort_by(|a, b| {
             (&a.mount_path, &a.volume_resource_id).cmp(&(&b.mount_path, &b.volume_resource_id))
         });

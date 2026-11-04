@@ -3347,12 +3347,7 @@ fn legacy_metadata_inverse_preserves_later_value_and_export_without_consent() {
     let restored = fixture.key();
     assert_eq!(restored.id, original.id);
     assert_eq!(restored.description, original.description);
-    assert_eq!(
-        restored.value,
-        ployz_core::config::SavedVariableValue::Literal {
-            value: "later".into()
-        }
-    );
+    assert_eq!(restored.value.literal(), Some("later"));
     assert!(restored.exported);
 }
 

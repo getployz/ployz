@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use ployz_core::config::{SavedEnvironmentIntent, SavedVariableIntent};
+use ployz_core::config::{
+    SavedEnvironmentIntent, SavedVariableIntent, ValueFingerprint, VariableValue,
+};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -241,9 +243,25 @@ fn unscrub_changes(
             continue;
         };
         // The comparison counts a differing fingerprint as a changed value but never
-        // shows one, so this marks the row without revealing anything.
-        if was.value == now.value && was.value_fingerprint == now.value_fingerprint {
-            was.value_fingerprint = format!("{}:before", now.value_fingerprint);
+        // shows one, so this marks the row without revealing anything. One Not set
+        // holds no fingerprint to mark: it shows sealed before.
+        if !(was.value.holds_same(&now.value)
+            && was.value.stored_fingerprint() == now.value.stored_fingerprint())
+        {
+            continue;
+        }
+        let before = ValueFingerprint::parse(format!("{}:before", now.value.stored_fingerprint()))
+            .expect("a marked fingerprint is never empty");
+        match &mut was.value {
+            VariableValue::Plain { fingerprint, .. }
+            | VariableValue::Generated { fingerprint, .. }
+            | VariableValue::Sealed { fingerprint, .. } => *fingerprint = before,
+            value @ (VariableValue::Arriving { .. } | VariableValue::NotSet) => {
+                *value = VariableValue::Sealed {
+                    ciphertext: None,
+                    fingerprint: before,
+                };
+            }
         }
     }
 }
