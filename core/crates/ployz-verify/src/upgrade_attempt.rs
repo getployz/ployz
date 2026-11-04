@@ -45,6 +45,12 @@
 //! lock shared (:57-58), so no write lands between its two reads. Readers that run without
 //! the lock (`settle`'s first receipt read and its `worker_state`, :265) are separate model
 //! steps, and another process can step between them.
+//!
+//! The fix variant reads the receipt only beside the marker: Busy while another process
+//! holds the lock, or while `.upgrade-active` exists and the receipt is not terminal. It
+//! still writes and clears the marker as the code does. The model's older reader stands for
+//! a release before the fix, which gates on the marker alone, and the fix does not help it:
+//! it still refuses on a stale marker until a settling reader clears it.
 
 use std::fmt::Write as _;
 
@@ -276,6 +282,8 @@ enum Asker {
     Daemon,
     /// The volume plugin's `admit_mutation` (volume_plugin/storage.rs:184), its own unit.
     Plugin,
+    /// The fix: a release before it, which gates on the marker as the code as it is does.
+    Older,
 }
 
 /// What `try_mutation` answered.
@@ -486,7 +494,8 @@ impl State {
     }
 }
 
-/// A guard the code has, taken out, to show the check catches what it prevents.
+/// A guard taken out, to show the check catches what it prevents. The first eight are
+/// guards the code has; the last three are parts of the fix.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -496,7 +505,8 @@ struct Broken {
     /// `try_mutation` takes no shared lock (mutation.rs:57), so it does not see another
     /// process holding the lock.
     mutation_ignores_lock: bool,
-    /// `try_mutation` reads no marker (mutation.rs:58-62).
+    /// `try_mutation` reads no marker (mutation.rs:58-62). Under the fix this is every
+    /// marker read in admission.
     mutation_ignores_marker: bool,
     /// `request_locked` launches the worker (:230) before `mark_active` (:228).
     launches_before_marking: bool,
@@ -512,11 +522,28 @@ struct Broken {
     /// The daemon serves again after a kill without daemon start's `reconcile`
     /// (daemon.rs:186-188).
     serves_before_reconcile: bool,
+    /// The fix's admission reads the marker alone, as the code as it is does.
+    fix_ignores_receipt: bool,
+    /// The fix's admission reads the receipt whether or not the marker exists.
+    fix_skips_marker_gate: bool,
+    /// The fix writes no marker.
+    fix_writes_no_marker: bool,
+}
+
+/// Which model a `COVERAGE` row is reached on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reach {
+    Both,
+    /// Only on the code as it is: the row is a refusal the fix removes.
+    AsIs,
+    /// Only with the fix.
+    Fix,
 }
 
 /// One `sometimes`: a branch the code handles, read from the state that took it.
 struct Coverage {
     name: &'static str,
+    reach: Reach,
     reached: fn(&UpgradeAttempt, &State) -> bool,
 }
 
@@ -524,17 +551,20 @@ fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
 }
 
-/// Each branch the bounds reach. `current_code_breaks_only_the_finding` expects every row
-/// reached.
+/// Each branch the bounds reach, on the code as it is, on the fix, or on both.
+/// `current_code_breaks_only_the_finding` and `the_fix_answers_from_the_receipt` expect
+/// every row their model reaches.
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "try_mutation refuses while the worker holds the installation lock",
+        reach: Reach::Both,
         reached: |_, state| {
             state.current_answered(Answer::Busy) && state.holder == Some(Holder::Worker)
         },
     },
     Coverage {
         name: "try_mutation refuses between the request dropping the lock and the worker taking it",
+        reach: Reach::Both,
         reached: |_, state| {
             state.current_answered(Answer::Busy)
                 && state.lock_free()
@@ -544,10 +574,12 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the worker clears the marker after its terminal write",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::WorkerClears) && !state.marker,
     },
     Coverage {
         name: "request_locked clears the marker after Failed{Launching}",
+        reach: Reach::Both,
         reached: |_, state| {
             took(state, Branch::ClearsAfterLaunchFailure)
                 && !state.marker
@@ -556,14 +588,17 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the worker refuses an attempt whose receipt is already terminal",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::WorkerNotActive) && state.receipt_terminal(),
     },
     Coverage {
         name: "settle returns a running worker's receipt as it stands",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::SettleSeesActive) && state.worker.active(),
     },
     Coverage {
         name: "settle leaves the marker of a terminal receipt while the worker holds the lock",
+        reach: Reach::Both,
         reached: |_, state| {
             took(state, Branch::SettleBusy)
                 && state.receipt_terminal()
@@ -573,6 +608,7 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "reconcile_locked writes Interrupted for a stopped worker",
+        reach: Reach::Both,
         reached: |_, state| {
             took(state, Branch::Interrupts)
                 && state.receipt == Some(Outcome::Interrupted)
@@ -581,6 +617,7 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "reconcile_locked leaves a running worker's receipt as it stands",
+        reach: Reach::Both,
         reached: |_, state| {
             took(state, Branch::ReconcileSeesActive)
                 && state.worker.active()
@@ -589,44 +626,54 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "clear_active fails before removing the marker of a finished attempt",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::ClearFails) && state.stale_marker(),
     },
     Coverage {
         name: "clear_active removes the marker and then fails its directory sync",
+        reach: Reach::Both,
         reached: |_, state| {
             took(state, Branch::ClearFailsAfterRemoval) && !state.marker && state.lock_free()
         },
     },
     Coverage {
         name: "a clear_active that finds no marker removes nothing",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::ClearsNothing) && !state.marker,
     },
     Coverage {
         name: "Inspect's settle removes the marker a stopped writer left",
+        reach: Reach::Both,
         reached: |_, state| state.cleared == Some(Caller::Inspect),
     },
     Coverage {
         name: "a resend's settle removes the marker a stopped writer left",
+        reach: Reach::Both,
         reached: |_, state| state.cleared == Some(Caller::Replay),
     },
     Coverage {
         name: "Leave's settle removes the marker a stopped writer left",
+        reach: Reach::Both,
         reached: |_, state| state.cleared == Some(Caller::Leave),
     },
     Coverage {
         name: "daemon start's settle removes the marker a stopped writer left",
+        reach: Reach::Both,
         reached: |_, state| state.cleared == Some(Caller::DaemonStart),
     },
     Coverage {
         name: "a new request's reconcile_locked removes the marker a stopped writer left",
+        reach: Reach::Both,
         reached: |_, state| state.cleared == Some(Caller::NewRequest),
     },
     Coverage {
         name: "ployzd install's reconcile_locked removes the marker a stopped writer left",
+        reach: Reach::Both,
         reached: |_, state| state.cleared == Some(Caller::Install),
     },
     Coverage {
         name: "Leave is admitted after its own settle removed the marker a stopped writer left",
+        reach: Reach::Both,
         reached: |_, state| {
             took(state, Branch::DepartsAfterItsClear)
                 && state.answered(Asker::Daemon, Answer::Admitted)
@@ -634,36 +681,44 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Leave refuses while the attempt is live",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::LeaveRefuses) && state.receipt_live(),
     },
     Coverage {
         name: "a new request refuses while the attempt is live",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::NewRequestBusy) && state.receipt_live(),
     },
     Coverage {
         name: "a new request goes on after a finished attempt",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::NewRequestGoesOn) && state.receipt_terminal(),
     },
     Coverage {
         name: "ployzd install refuses while the attempt is live",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::InstallBusy) && state.receipt_live(),
     },
     Coverage {
         name: "ployzd install goes on after a finished attempt",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::InstallGoesOn) && state.receipt_terminal(),
     },
     Coverage {
         name: "a caller's try_installation refuses while another process holds the lock",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::CallerBusy) && !state.lock_free(),
     },
     Coverage {
         name: "request_locked refuses .upgrade-active with no receipt",
+        reach: Reach::Both,
         reached: |_, state| {
             took(state, Branch::RequestFindsMarker) && state.marker && state.receipt.is_none()
         },
     },
     Coverage {
         name: "try_mutation refuses on .upgrade-active with no receipt",
+        reach: Reach::Both,
         reached: |_, state| {
             state.current_answered(Answer::Busy)
                 && state.lock_free()
@@ -673,6 +728,7 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the volume plugin refuses on the marker a killed daemon left while the daemon is down",
+        reach: Reach::AsIs,
         reached: |_, state| {
             state.answered(Asker::Plugin, Answer::Busy)
                 && state.stale_marker()
@@ -682,6 +738,7 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a daemon RPC refuses on the marker a killed daemon left after daemon start lost try_installation",
+        reach: Reach::AsIs,
         reached: |_, state| {
             state.answered(Asker::Daemon, Answer::Busy)
                 && state.stale_marker()
@@ -691,28 +748,65 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a daemon RPC refuses on the marker a killed worker left",
+        reach: Reach::AsIs,
         reached: |_, state| {
             state.answered(Asker::Daemon, Answer::Busy)
                 && state.stale_marker()
                 && state.stranded == Some(Stop::Worker)
         },
     },
+    Coverage {
+        name: "the fix admits beside the marker of a finished attempt",
+        reach: Reach::Fix,
+        reached: |_, state| state.current_answered(Answer::Admitted) && state.stale_marker(),
+    },
+    Coverage {
+        name: "the fix refuses on the marker of an attempt whose worker stopped before a terminal write",
+        reach: Reach::Fix,
+        reached: |_, state| {
+            state.current_answered(Answer::Busy)
+                && state.lock_free()
+                && state.marker
+                && state.receipt_live()
+                && state.worker == Worker::Stopped
+        },
+    },
+    Coverage {
+        name: "an older reader refuses on the marker of a finished attempt under the fix",
+        reach: Reach::Fix,
+        reached: |_, state| state.answered(Asker::Older, Answer::Busy) && state.stale_marker(),
+    },
 ];
 
 #[derive(Clone, Copy, Debug)]
 struct UpgradeAttempt {
+    /// The fix: the receipt read beside the marker; the marker kept as it is written today.
+    fix: bool,
     broken: Broken,
 }
 
 impl UpgradeAttempt {
-    /// `try_mutation` (mutation.rs:55-69): the shared lock first (:57), then the marker
-    /// (:58-62). Every receipt and marker write holds the lock exclusively, so neither
-    /// changes while `try_mutation` holds it shared.
-    fn admission(&self, state: &State) -> Answer {
+    /// `try_mutation` (mutation.rs:55-69) as `asker` runs it. The shared lock first (:57).
+    /// The code as it is, and a release before the fix, then read the marker (:58-62); the
+    /// fix reads the receipt when the marker exists, and refuses unless it is terminal, so a
+    /// marker with no receipt still refuses. Every receipt and marker write holds the lock
+    /// exclusively, so neither changes while `try_mutation` holds it shared.
+    fn admission(&self, state: &State, asker: Asker) -> Answer {
         let broken = self.broken;
         let locked = !state.lock_free() && !broken.mutation_ignores_lock;
         let marker = state.marker && !broken.mutation_ignores_marker;
-        if locked || marker {
+        let busy = if self.fix && asker != Asker::Older {
+            if broken.fix_skips_marker_gate {
+                state.receipt_live()
+            } else if broken.fix_ignores_receipt {
+                marker
+            } else {
+                marker && !state.receipt_terminal()
+            }
+        } else {
+            marker
+        };
+        if locked || busy {
             Answer::Busy
         } else {
             Answer::Admitted
@@ -756,7 +850,9 @@ impl UpgradeAttempt {
                 }
             }
             Action::Mark => {
-                state.marker = true;
+                if !(self.fix && broken.fix_writes_no_marker) {
+                    state.marker = true;
+                }
                 if state.request == Request::Launched {
                     state.request = Request::Done;
                     Self::release(state);
@@ -886,7 +982,7 @@ impl UpgradeAttempt {
                 state.install = None;
             }
             Action::Mutate(asker) => {
-                state.answer = Some((asker, self.admission(state)));
+                state.answer = Some((asker, self.admission(state, asker)));
             }
         }
     }
@@ -1051,7 +1147,7 @@ impl UpgradeAttempt {
                 live: false,
                 repaired,
             } => {
-                state.answer = Some((Asker::Daemon, self.admission(state)));
+                state.answer = Some((Asker::Daemon, self.admission(state, Asker::Daemon)));
                 if repaired {
                     state.took = Some(Branch::DepartsAfterItsClear);
                 }
@@ -1175,6 +1271,9 @@ impl Model for UpgradeAttempt {
             actions.push(Action::Mutate(Asker::Daemon));
         }
         actions.push(Action::Mutate(Asker::Plugin));
+        if self.fix {
+            actions.push(Action::Mutate(Asker::Older));
+        }
     }
 
     fn next_state(&self, last: &State, action: Action) -> Option<State> {
@@ -1235,10 +1334,18 @@ impl Model for UpgradeAttempt {
                     && state.stranded == Some(Stop::Daemon))
                     || state.start_lost
             }),
+            Property::always(NO_NEW_REFUSAL, |_, state: &State| {
+                !state.current_answered(Answer::Busy) || !state.lock_free() || state.marker
+            }),
         ];
         properties.extend(
             COVERAGE
                 .iter()
+                .filter(|row| match row.reach {
+                    Reach::Both => true,
+                    Reach::AsIs => !self.fix,
+                    Reach::Fix => self.fix,
+                })
                 .map(|row| Property::sometimes(row.name, row.reached)),
         );
         properties
@@ -1254,6 +1361,7 @@ const RECEIPT_FINAL: &str = "once the receipt is terminal, nothing changes it";
 const INTERRUPTED_ONLY_STOPPED: &str =
     "reconcile_locked writes Interrupted only while the worker's unit is stopped";
 const DAEMON_START_SETTLES_FIRST: &str = "a daemon RPC answers Busy on the marker a killed daemon left only after daemon start's settle lost try_installation";
+const NO_NEW_REFUSAL: &str = "try_mutation answers Busy only while a process holds the installation lock or .upgrade-active exists";
 
 /// `path` in the code's words: each step, then the receipt, the marker, the lock, the
 /// daemon, the request, the worker, the daemon's reader and `ployzd install`.
@@ -1339,10 +1447,14 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
         Action::Accept => {
             "Daemon: request_upgrade takes the installation lock (local_machine/upgrade.rs:38); request_locked finds no receipt and no marker, and writes Accepted (installer/upgrade.rs:177, :191, :227)".to_owned()
         }
-        Action::Mark if before.request == Request::Launched => {
-            "Daemon: mark_active writes .upgrade-active after the launch (under Broken); request_locked returns Accepted and the task drops the lock (installer/upgrade.rs:228, :238)".to_owned()
-        }
-        Action::Mark => "Daemon: mark_active writes .upgrade-active (installer/upgrade.rs:228)".to_owned(),
+        Action::Mark if before.request == Request::Launched => format!(
+            "Daemon: mark_active {} after the launch (under Broken); request_locked returns Accepted and the task drops the lock (installer/upgrade.rs:228, :238)",
+            marks(after)
+        ),
+        Action::Mark => format!(
+            "Daemon: mark_active {} (installer/upgrade.rs:228)",
+            marks(after)
+        ),
         Action::Launch if after.request == Request::Launched => {
             "Daemon: launch_worker starts the unit before mark_active (under Broken); the task still holds the lock (installer/upgrade.rs:230)".to_owned()
         }
@@ -1501,12 +1613,24 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
         }
         Action::Mutate(Asker::Daemon) => format!(
             "Daemon RPC: admit_installation's try_mutation {} (local_machine.rs:331-334, mutation.rs:55-69)",
-            answer_reads_as(before, after)
+            answer_reads_as(model, before, after)
         ),
         Action::Mutate(Asker::Plugin) => format!(
             "Volume plugin: admit_mutation's try_mutation {} (volume_plugin/storage.rs:184, mutation.rs:55-69)",
-            answer_reads_as(before, after)
+            answer_reads_as(model, before, after)
         ),
+        Action::Mutate(Asker::Older) => format!(
+            "Older release: its try_mutation {} (mutation.rs:55-69 as the code is)",
+            answer_reads_as(model, before, after)
+        ),
+    }
+}
+
+fn marks(after: &State) -> &'static str {
+    if after.marker {
+        "writes .upgrade-active"
+    } else {
+        "writes nothing (under Broken)"
     }
 }
 
@@ -1518,16 +1642,41 @@ fn clears(after: &State) -> &'static str {
     }
 }
 
-fn answer_reads_as(before: &State, after: &State) -> &'static str {
+fn answer_reads_as(model: &UpgradeAttempt, before: &State, after: &State) -> &'static str {
+    let fix = model.fix && after.answer.is_some_and(|(asker, _)| asker != Asker::Older);
     match after.answer {
         Some((_, Answer::Busy)) if !before.lock_free() => {
             "finds the installation lock held and answers Busy, \"a Ployz installation or upgrade is active\""
+        }
+        Some((_, Answer::Busy)) if fix && !before.marker => {
+            "takes the lock shared, reads a receipt that is not terminal without .upgrade-active and answers Busy (under Broken)"
+        }
+        Some((_, Answer::Busy)) if fix && before.receipt_terminal() => {
+            "takes the lock shared, finds .upgrade-active, ignores the terminal receipt and answers Busy (under Broken)"
+        }
+        Some((_, Answer::Busy)) if fix && before.receipt.is_none() => {
+            "takes the lock shared, finds .upgrade-active, finds no receipt and answers Busy (the fix)"
+        }
+        Some((_, Answer::Busy)) if fix => {
+            "takes the lock shared, finds .upgrade-active, reads a receipt that is not terminal and answers Busy (the fix)"
         }
         Some((_, Answer::Busy)) => {
             "takes the lock shared, finds .upgrade-active and answers Busy, \"a Ployz installation or upgrade is active\""
         }
         Some((_, Answer::Admitted)) if !before.lock_free() => {
             "takes no shared lock and admits while another process holds the lock (under Broken)"
+        }
+        Some((_, Answer::Admitted)) if before.marker && model.broken.mutation_ignores_marker => {
+            "takes the lock shared, does not read .upgrade-active and admits (under Broken)"
+        }
+        Some((_, Answer::Admitted)) if fix && before.marker && before.receipt.is_none() => {
+            "takes the lock shared, finds .upgrade-active, finds no receipt and admits (under Broken)"
+        }
+        Some((_, Answer::Admitted)) if fix && before.marker && !before.receipt_terminal() => {
+            "takes the lock shared, finds .upgrade-active, ignores the receipt and admits (under Broken)"
+        }
+        Some((_, Answer::Admitted)) if fix && before.marker => {
+            "takes the lock shared, finds .upgrade-active, reads a terminal receipt and admits (the fix)"
         }
         Some((_, Answer::Admitted)) if before.marker => {
             "takes the lock shared, does not read .upgrade-active and admits (under Broken)"
@@ -1673,7 +1822,7 @@ fn reader_step_reads_as(
         }
         At::Depart { live: false, .. } => format!(
             "Reader: depart goes on to finish_mutation, whose try_mutation {} (local_machine.rs:959, :355, :333)",
-            answer_reads_as(before, after)
+            answer_reads_as(model, before, after)
         ),
     }
 }
@@ -1694,12 +1843,25 @@ mod tests {
     /// The code as it is.
     fn as_is() -> UpgradeAttempt {
         UpgradeAttempt {
+            fix: false,
             broken: Broken::default(),
         }
     }
 
+    /// The fix: the receipt read beside the marker, the marker kept as it is written today.
+    fn fixed() -> UpgradeAttempt {
+        UpgradeAttempt {
+            fix: true,
+            ..as_is()
+        }
+    }
+
     fn as_is_without(broken: Broken) -> UpgradeAttempt {
-        UpgradeAttempt { broken }
+        UpgradeAttempt { broken, ..as_is() }
+    }
+
+    fn fixed_without(broken: Broken) -> UpgradeAttempt {
+        UpgradeAttempt { broken, ..fixed() }
     }
 
     fn check(model: UpgradeAttempt) -> impl Checker<UpgradeAttempt> {
@@ -1939,7 +2101,8 @@ mod tests {
         );
     }
 
-    /// The code as it is breaks only the finding's property, and reaches every `sometimes`.
+    /// The code as it is breaks only the finding's property, and reaches every `sometimes`
+    /// the fix does not add.
     #[test]
     fn current_code_breaks_only_the_finding() {
         let checker = check(as_is());
@@ -1951,10 +2114,11 @@ mod tests {
             RECEIPT_FINAL,
             INTERRUPTED_ONLY_STOPPED,
             DAEMON_START_SETTLES_FIRST,
+            NO_NEW_REFUSAL,
         ] {
             assert!(checker.discovery(property).is_none(), "{property} breaks");
         }
-        for row in COVERAGE {
+        for row in COVERAGE.iter().filter(|row| row.reach != Reach::Fix) {
             assert!(
                 checker.discovery(row.name).is_some(),
                 "{} is never reached",
@@ -2086,7 +2250,7 @@ mod tests {
         }
         let unreached: Vec<_> = COVERAGE
             .iter()
-            .filter(|row| checker.discovery(row.name).is_none())
+            .filter(|row| row.reach != Reach::Fix && checker.discovery(row.name).is_none())
             .map(|row| row.name)
             .collect();
         assert_eq!(
@@ -2226,5 +2390,102 @@ mod tests {
         assert!(broken.answered(Asker::Daemon, Answer::Busy));
         assert!(took_action(&path, Action::DaemonDies { started: false }));
         assert!(!took_action(&path, Action::Start(Caller::DaemonStart)));
+    }
+
+    /// The fix holds, and every `sometimes` it reaches is reached.
+    #[test]
+    fn the_fix_answers_from_the_receipt() {
+        let checker = check(fixed());
+        println!("fixed: {} states", checker.unique_state_count());
+        checker.assert_properties();
+    }
+
+    /// Without the receipt, the fix's admission is the marker alone, as the code as it is,
+    /// and the finding comes back.
+    #[test]
+    fn the_fix_needs_the_receipt() {
+        let path = breaks(
+            fixed_without(Broken {
+                fix_ignores_receipt: true,
+                ..Broken::default()
+            }),
+            BUSY_ONLY_WHILE_LIVE,
+        );
+        let broken = last(&path);
+        assert!(broken.current_answered(Answer::Busy) && broken.stale_marker());
+    }
+
+    /// Read without the marker, the receipt refuses where the code as it is admits: a
+    /// daemon killed between the Accepted write (:227) and `mark_active` (:228) leaves
+    /// Accepted with no marker.
+    #[test]
+    fn the_fix_reads_the_receipt_only_beside_the_marker() {
+        let path = breaks(
+            fixed_without(Broken {
+                fix_skips_marker_gate: true,
+                ..Broken::default()
+            }),
+            NO_NEW_REFUSAL,
+        );
+        let broken = last(&path);
+        assert!(broken.current_answered(Answer::Busy) && broken.lock_free() && !broken.marker);
+        assert_eq!(broken.receipt, Some(Outcome::Accepted));
+    }
+
+    /// Without the marker, the fix's own admission lets a mutation in between the request
+    /// and the worker.
+    #[test]
+    fn the_fix_still_writes_the_marker() {
+        let path = breaks(
+            fixed_without(Broken {
+                fix_writes_no_marker: true,
+                ..Broken::default()
+            }),
+            NO_MUTATION_BESIDE_A_LIVE_WORKER,
+        );
+        let broken = last(&path);
+        assert!(broken.current_answered(Answer::Admitted));
+        assert_eq!(broken.worker, Worker::Waiting);
+        assert!(!broken.marker);
+    }
+
+    /// Under the fix, `.upgrade-active` with no receipt still refuses, as `try_mutation`
+    /// and `reconcile_for_install` (:357-362) do today.
+    #[test]
+    fn the_fix_refuses_a_marker_with_no_receipt() {
+        let path = breaks(
+            fixed(),
+            "try_mutation refuses on .upgrade-active with no receipt",
+        );
+        let refused = last(&path);
+        assert!(refused.marker && refused.receipt.is_none());
+        assert!(refused.current_answered(Answer::Busy));
+    }
+
+    /// Under the fix, a release before it still refuses on the marker a stopped writer
+    /// left.
+    #[test]
+    fn the_fix_leaves_older_readers_their_window() {
+        let path = breaks(
+            fixed(),
+            "an older reader refuses on the marker of a finished attempt under the fix",
+        );
+        let refused = last(&path);
+        assert!(refused.stranded.is_some() && refused.stale_marker());
+        assert!(refused.answered(Asker::Older, Answer::Busy));
+    }
+
+    /// Under the fix, an attempt whose worker stopped before a terminal write still refuses
+    /// beside its marker, as on the code as it is, until a reader writes Interrupted.
+    #[test]
+    fn the_fix_keeps_the_dead_attempt_window() {
+        let path = breaks(
+            fixed(),
+            "the fix refuses on the marker of an attempt whose worker stopped before a terminal write",
+        );
+        let refused = last(&path);
+        assert!(refused.receipt_live() && refused.marker && refused.lock_free());
+        assert_eq!(refused.worker, Worker::Stopped);
+        assert!(took_action(&path, Action::WorkerDies));
     }
 }
