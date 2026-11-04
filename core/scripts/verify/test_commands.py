@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Helper commands must not wait on the caller's stdin: `incus launch` reads YAML from a non-terminal one."""
 
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import unittest
@@ -130,6 +134,135 @@ class CloudCredentials(unittest.TestCase):
         self.assertEqual(args[0][:2], ["script", "-qfec"])
         self.assertTrue(args[0][2].endswith("org approval approve id-1"))
         self.assertEqual(kwargs["input"], b"ada\r")
+
+
+class RunState(unittest.TestCase):
+    """A run that up never finished, or down never finished, accepts only down."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.manifest = Path(directory.name).resolve() / "cluster.json"
+
+    def write(self, state):
+        # A killed up leaves its Machines without address or ssh.
+        cluster.save(dict(root=str(cluster.CORE), manifest=str(self.manifest), id="t1", provider="boat", state=state,
+                          timings={}, machines=[dict(name="machine-1")]))
+
+    def main(self, *argv, backend=None):
+        provider = (unittest.mock.Mock(return_value=backend) if backend else
+                    unittest.mock.Mock(side_effect=AssertionError("provider reached")))
+        with unittest.mock.patch.object(sys, "argv", ["verify-cluster", *argv]), \
+             unittest.mock.patch.object(cluster, "provider", provider):
+            return cluster.main()
+
+    def test_a_run_left_starting_or_tearing_down_refuses_every_command_but_down(self):
+        manifest = str(self.manifest)
+        for state in ("starting", "tearing-down"):
+            self.write(state)
+            for argv in (["exec", manifest, "machine-1", "--", "true"], ["cli", manifest, "--", "server", "ls"],
+                         ["power", "on", manifest, "machine-1"], ["doctor", manifest], ["update", manifest]):
+                with self.subTest(state=state, action=argv[0]), self.assertRaisesRegex(RuntimeError, state):
+                    self.main(*argv)
+
+    def test_down_removes_a_run_left_starting(self):
+        def hung(signum, frame):
+            raise TimeoutError("down hung")
+        self.addCleanup(signal.signal, signal.SIGALRM, signal.signal(signal.SIGALRM, hung))
+        self.addCleanup(signal.alarm, 0)
+        self.write("starting")
+        signal.alarm(10)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.main("down", str(self.manifest), backend=unittest.mock.Mock()), 0)
+        self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
+
+    def test_a_down_during_up_leaves_nothing_up_made(self):
+        core = self.manifest.parent
+        sandboxes = set()
+        backend = unittest.mock.Mock()
+        backend.create.side_effect = lambda: sandboxes.add("machine-1")
+        backend.destroy.side_effect = sandboxes.clear
+        downs = []
+
+        def concurrent_down_then_failure(run, *args, **kwargs):
+            try:
+                downs.append(self.main("down", run["manifest"], backend=backend))
+            except RuntimeError as error:
+                downs.append(str(error))
+            backend.create()
+            raise RuntimeError("boot failed")
+        args = cluster.argparse.Namespace(provider="boat", machines=1, memory=None, disk=None, bare=False,
+                                          distro=cluster.boat.DISTROS[0], cloud=False, cloud_attach=False, daemon=None)
+        with unittest.mock.patch.object(cluster, "CORE", core), \
+             unittest.mock.patch.object(cluster, "preflight"), \
+             unittest.mock.patch.object(cluster.host, "owner", return_value={}), \
+             unittest.mock.patch.object(cluster, "provider", return_value=backend), \
+             unittest.mock.patch.object(cluster, "select_daemons", side_effect=concurrent_down_then_failure), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(RuntimeError):
+            cluster.up(args)
+        self.assertEqual(sandboxes, set())
+        self.assertEqual(downs, ["Another up, update or teardown is using this run"])
+        manifest, = (core / ".verify").glob("*/cluster.json")
+        self.assertEqual(json.loads(manifest.read_text())["state"], "removed")
+
+    def write_unknown(self, state):
+        self.write(state)
+        if state is None:
+            run = json.loads(self.manifest.read_text())
+            del run["state"]
+            cluster.save(run)
+
+    def test_a_run_with_an_unknown_state_refuses_every_command_but_down(self):
+        for state, named in (("bogus", "'bogus'"), (None, "None")):
+            with self.subTest(state=state):
+                self.write_unknown(state)
+                with self.assertRaisesRegex(RuntimeError, f"state {named} is unknown"):
+                    self.main("doctor", str(self.manifest))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(self.main("down", str(self.manifest), backend=unittest.mock.Mock()), 0)
+                self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
+
+    def reap(self, *found, backend):
+        args = cluster.argparse.Namespace(runs=[run["id"] for run in found], older_than=24, force=True, yes=True)
+        row = dict(run="", age="", machines="", ram="", owner="", checkout="")
+        output = io.StringIO()
+        with unittest.mock.patch.object(cluster, "host_runs", return_value=list(found)), \
+             unittest.mock.patch.object(cluster.host, "verdict", return_value=(True, "old")), \
+             unittest.mock.patch.object(cluster, "describe", side_effect=lambda found, now: dict(row, run=found["id"])), \
+             unittest.mock.patch.object(cluster, "provider", return_value=backend), \
+             contextlib.redirect_stdout(output):
+            cluster.reap(args)
+        return {line.split()[0]: line.split()[1] for line in output.getvalue().splitlines()[1:]}
+
+    def found(self, manifest, id="t1"):
+        return dict(id=id, provider="boat", owner=dict(manifest=str(manifest)), machines=[dict(name="machine-1")])
+
+    def test_reap_destroys_what_a_removed_run_still_holds(self):
+        # A Boat key that may not delete a sandbox stops it, and teardown still ends removed.
+        self.write("removed")
+        backend = unittest.mock.Mock()
+        self.assertEqual(self.reap(self.found(self.manifest), backend=backend), {"t1": "removed"})
+        backend.destroy.assert_called_once()
+        self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
+
+    def test_reap_removes_a_run_with_an_unknown_state(self):
+        for state in ("bogus", None):
+            with self.subTest(state=state):
+                self.write_unknown(state)
+                backend = unittest.mock.Mock()
+                self.assertEqual(self.reap(self.found(self.manifest), backend=backend), {"t1": "removed"})
+                backend.destroy.assert_called_once()
+                self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
+
+    def test_one_unreadable_manifest_does_not_stop_reap(self):
+        broken = self.manifest.with_name("broken.json")
+        broken.write_text("{")
+        self.write("ready")
+        backend = unittest.mock.Mock()
+        rows = self.reap(self.found(broken, id="t0"), self.found(self.manifest), backend=backend)
+        self.assertEqual(rows, {"t0": "failed", "t1": "removed"})
+        self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
 
 
 if __name__ == "__main__":
