@@ -2993,3 +2993,115 @@ async fn docker_stopped_reads_as_installing_docker_once_a_retry_starts_the_prepa
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Installing Docker");
 }
+
+/// A run that stopped with its ZFS step left installing since `started`, its state file last
+/// written at `written`.
+fn stopped_mid_step(paths: &Paths, started: DateTime<Utc>, written: DateTime<Utc>) {
+    let started = started.to_rfc3339();
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        format!(
+            r#"{{"docker":{{"state":"ready","started_at":"{started}","finished_at":"{started}"}},"zfs":{{"state":"installing","started_at":"{started}","finished_at":null}}}}"#
+        ),
+    )
+    .unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&paths.prepare_state)
+        .unwrap()
+        .set_modified(written.into())
+        .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+mod mark {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+
+    use nix::{
+        fcntl::{FcntlArg, fcntl},
+        libc,
+    };
+
+    use super::*;
+
+    fn range(kind: libc::c_int, start: i64, len: i64) -> libc::flock {
+        libc::flock {
+            l_type: kind as libc::c_short,
+            l_whence: libc::SEEK_SET as libc::c_short,
+            l_start: start,
+            l_len: len,
+            l_pid: 0,
+        }
+    }
+
+    /// The lock file as ployzd opens it, readable too so a read lock can be put on it.
+    fn opened(lock: &Path) -> fs::File {
+        fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o644)
+            .open(lock)
+            .unwrap()
+    }
+
+    /// What a preparation run holds on ployzd's lock: the flock, and the mark on the same open
+    /// file.
+    fn run_marking(lock: &Path) -> fs::File {
+        let run = opened(lock);
+        run.try_lock().unwrap();
+        fcntl(
+            run.as_raw_fd(),
+            FcntlArg::F_OFD_SETLK(&range(libc::F_WRLCK, 0, 0)),
+        )
+        .unwrap();
+        run
+    }
+
+    /// A preparation run outside `ployz-prepare`, as a manual `ployzd install --prepare` is,
+    /// marks ployzd's lock through a long build while the unit reads stopped and the state file
+    /// goes unwritten.
+    #[tokio::test(start_paused = true)]
+    async fn a_preparation_holding_its_lock_is_neither_restarted_nor_given_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        let written = at("2026-10-16T00:00:00Z");
+        stopped_mid_step(&paths, written, written);
+        let _run = run_marking(&paths.prepare_state.with_file_name("lock"));
+        let mut unused = client("http://127.0.0.1:9");
+        let mut prepares = 0;
+        for minute in (20..80).step_by(10) {
+            let unit_stopped = FakeHost {
+                probe_hangs: true,
+                ..FakeHost::default()
+            };
+            pass(
+                &unit_stopped,
+                &mut unused,
+                &key(),
+                &paths,
+                written + TimeDelta::minutes(minute),
+            )
+            .await;
+            prepares += unit_stopped.prepares.load(Ordering::SeqCst);
+        }
+        assert_eq!(prepares, 0, "the marked run is still preparing");
+        let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+        assert_eq!(status.prep.map(|prep| prep.zfs), Some(ZfsPrep::Installing));
+        assert!(status.blockers.is_empty(), "{:?}", status.blockers);
+    }
+
+    #[tokio::test]
+    async fn install_leaves_a_preparation_holding_its_lock_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        let written = at("2026-10-16T00:00:00Z");
+        stopped_mid_step(&paths, written, written);
+        let _run = run_marking(&paths.prepare_state.with_file_name("lock"));
+        let unit_stopped = FakeHost::default();
+        assert!(!restart_preparation(&unit_stopped, &paths, written + TimeDelta::hours(1)).await);
+        assert_eq!(unit_stopped.prepares.load(Ordering::SeqCst), 0);
+    }
+}
