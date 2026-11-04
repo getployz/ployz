@@ -16,17 +16,26 @@ use super::{
     },
 };
 
-/// The `ployz:*` marks on a root that tell which step left it read-only.
+/// The `ployz:*` marks [`RootCopy::parse`] reads off a root. They narrow which steps can
+/// have left it read-only and name none.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RootMarks {
+    /// `ployz:cut`, read only on a read-only root, the one place `parse` looks at it.
     pub(super) cut: bool,
-    pub(super) promote: bool,
-    /// `ployz:seed`. It counts only beside `ployz:promote`, so it is read only then.
-    pub(super) seed: bool,
+    pub(super) promote: PromoteMark,
 }
 
-/// A Volume's root on this Machine, parsed once from its `readonly` and its marks. Each
-/// variant claims only what those show. `seed` is a root Volume.Seed landed that Docker
+/// `ployz:promote`, and whether `ployz:seed` is beside it. `ployz:seed` without
+/// `ployz:promote` counts for nothing, so it has no place here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PromoteMark {
+    Unset,
+    Set { seed: bool },
+}
+
+/// A Volume's root on this Machine, parsed once from its `readonly` and its marks for
+/// `Volume.Inspect` and every reply built by [`VolumeStorage::copy`]. Each variant claims
+/// only what those show. `seed` is a root Volume.Seed landed that Docker
 /// has not adopted: it carries both `ployz:seed` and `ployz:promote`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RootCopy {
@@ -50,12 +59,12 @@ impl RootCopy {
     /// The read-only split is [`Dataset::switching`], the one [`super::storage::Held`]
     /// reads too.
     pub(super) fn parse(root: &Dataset, marks: RootMarks) -> Self {
-        let seed = marks.promote && marks.seed;
+        let seed = marks.promote == PromoteMark::Set { seed: true };
         match (root.switching(), marks.cut, marks.promote) {
             (false, _, _) => Self::Writable { seed },
             (true, true, _) => Self::Cut { seed },
-            (true, false, true) => Self::Promote { seed },
-            (true, false, false) => Self::Unmarked,
+            (true, false, PromoteMark::Set { .. }) => Self::Promote { seed },
+            (true, false, PromoteMark::Unset) => Self::Unmarked,
         }
     }
 
@@ -132,13 +141,16 @@ impl VolumeStorage {
             && self.property(dataset, SEED_PROPERTY).await?.is_some())
     }
 
-    async fn root_marks(&self, root: &str) -> Result<RootMarks> {
-        let promote = self.unregistered(root).await?;
-        Ok(RootMarks {
-            cut: self.property(root, CUT_PROPERTY).await?.is_some(),
-            promote,
-            seed: promote && self.property(root, SEED_PROPERTY).await?.is_some(),
-        })
+    async fn root_marks(&self, root: &Dataset) -> Result<RootMarks> {
+        let promote = if self.unregistered(&root.name).await? {
+            PromoteMark::Set {
+                seed: self.property(&root.name, SEED_PROPERTY).await?.is_some(),
+            }
+        } else {
+            PromoteMark::Unset
+        };
+        let cut = root.switching() && self.property(&root.name, CUT_PROPERTY).await?.is_some();
+        Ok(RootMarks { cut, promote })
     }
 
     /// Every snapshot of a dataset as `name<TAB>guid<TAB>creation`, newest first by
@@ -271,7 +283,7 @@ impl VolumeStorage {
     ) -> Result<Option<VolumeCopy>> {
         if let Some(root) = Self::dataset(datasets, pool, name)? {
             root.require_provisioned(name)?;
-            let copy = RootCopy::parse(root, self.root_marks(&root.name).await?);
+            let copy = RootCopy::parse(root, self.root_marks(root).await?);
             return Ok(Some(copy.view(
                 self.newest_snapshot(&root.name).await?,
                 self.epoch(&root.name).await?,

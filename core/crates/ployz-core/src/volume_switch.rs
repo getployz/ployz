@@ -194,9 +194,11 @@ pub enum VolumeCopy {
         /// `ployz:seed` and `ployz:promote`. Older daemons never report it.
         #[serde(default)]
         seed: bool,
-        /// On a read-only root, the mark that tells which step left it read-only. Absent
-        /// on a writable root, on a read-only root with neither mark, and from older
-        /// daemons.
+        /// On a read-only root, the `ployz:*` mark it carries: `cut` if it has `ployz:cut`,
+        /// else `promote` if it has `ployz:promote` (ployzd `RootCopy::parse` and
+        /// `RootCopy::view`). It narrows which steps can have left the root read-only and
+        /// names none; see [`RootMark`]. Absent on a writable root, on a read-only root with
+        /// neither mark, and from older daemons.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         mark: Option<RootMark>,
@@ -222,6 +224,8 @@ pub enum VolumeCopy {
 }
 
 /// The `ployz:*` mark on a read-only root, named after the mark and claiming no more.
+/// Open: a mark this build does not know reads as `Unrecognized`, so a newer daemon's
+/// value never breaks an older reader's whole reply.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RootMark {
@@ -233,6 +237,10 @@ pub enum RootMark {
     /// leaves it from its rename until `readonly=off`. So does a cut of a root Docker has
     /// not registered, from `readonly=on` until it sets `ployz:cut`.
     Promote,
+    /// A mark introduced after this build. This daemon never sends it: ployzd
+    /// `RootCopy::view` answers only `Cut` and `Promote`.
+    #[serde(other)]
+    Unrecognized,
 }
 
 /// What a slot holds its copy for, as its own Machine recorded it: a pull makes it a
@@ -614,6 +622,31 @@ mod tests {
 
     fn name(machine: &str) -> MachineName {
         MachineName::parse(machine).unwrap()
+    }
+
+    #[test]
+    fn a_root_mark_this_build_does_not_know_reads_as_unrecognized() {
+        for (wire, mark) in [
+            ("\"cut\"", RootMark::Cut),
+            ("\"promote\"", RootMark::Promote),
+            ("\"demote\"", RootMark::Unrecognized),
+        ] {
+            assert_eq!(serde_json::from_str::<RootMark>(wire).unwrap(), mark);
+        }
+        let copy: VolumeCopy = serde_json::from_value(serde_json::json!({
+            "kind": "root",
+            "readonly": true,
+            "newest": null,
+            "mark": "demote",
+        }))
+        .unwrap();
+        assert!(matches!(
+            copy,
+            VolumeCopy::Root {
+                mark: Some(RootMark::Unrecognized),
+                ..
+            }
+        ));
     }
 
     #[test]

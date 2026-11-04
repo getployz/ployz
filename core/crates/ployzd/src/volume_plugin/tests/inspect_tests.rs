@@ -49,6 +49,10 @@ async fn inspect_reports_a_root_with_its_newest_snapshot() {
             },
         }})
     );
+    assert!(
+        !commands(&test).contains("ployz:cut"),
+        "a writable root's cut is read"
+    );
     server.abort();
 }
 
@@ -84,21 +88,98 @@ async fn inspect_without_a_pool_holds_nothing() {
     server.abort();
 }
 
-/// Every combination of `readonly` and the marks parses to one root. Its reply keeps the
-/// `readonly` and `seed` the root read as before the parse (`seed` is `ployz:promote` and
-/// `ployz:seed` together) and only adds `mark`. Every plan reads the reply as it reads it
-/// without `mark`, and `Held::switching` answers `readonly`, as it did.
+/// Every combination of `readonly` and the marks parses to the root this table names. Its
+/// reply keeps the `readonly` and `seed` the root read as before the parse (`seed` is
+/// `ployz:promote` and `ployz:seed` together) and only adds `mark`. These wants and expects
+/// plan the reply as they plan it without `mark`, and `Held::switching` answers `readonly`,
+/// as it did.
 #[test]
 fn every_root_mark_combination_parses_to_one_copy() {
     use ployz_core::{
-        Drain, ExpectedCopy, RootMark, SnapshotGuid, VolumeCopy, WantedCopy, WriterEpoch, plan,
+        Drain, ExpectedCopy, RootMark, SlotId, SlotRole, SnapshotGuid, VolumeCopy, WantedCopy,
+        WriterEpoch, plan,
     };
 
     use super::super::{
-        inspect::{RootCopy, RootMarks},
+        inspect::{PromoteMark, RootCopy, RootMarks},
         storage::Held,
     };
 
+    // readonly, ployz:cut, ployz:promote, ployz:seed => root, mark.
+    let table = [
+        (
+            (false, false, false, false),
+            RootCopy::Writable { seed: false },
+            None,
+        ),
+        (
+            (false, false, false, true),
+            RootCopy::Writable { seed: false },
+            None,
+        ),
+        (
+            (false, false, true, false),
+            RootCopy::Writable { seed: false },
+            None,
+        ),
+        (
+            (false, false, true, true),
+            RootCopy::Writable { seed: true },
+            None,
+        ),
+        (
+            (false, true, false, false),
+            RootCopy::Writable { seed: false },
+            None,
+        ),
+        (
+            (false, true, false, true),
+            RootCopy::Writable { seed: false },
+            None,
+        ),
+        (
+            (false, true, true, false),
+            RootCopy::Writable { seed: false },
+            None,
+        ),
+        (
+            (false, true, true, true),
+            RootCopy::Writable { seed: true },
+            None,
+        ),
+        ((true, false, false, false), RootCopy::Unmarked, None),
+        ((true, false, false, true), RootCopy::Unmarked, None),
+        (
+            (true, false, true, false),
+            RootCopy::Promote { seed: false },
+            Some(RootMark::Promote),
+        ),
+        (
+            (true, false, true, true),
+            RootCopy::Promote { seed: true },
+            Some(RootMark::Promote),
+        ),
+        (
+            (true, true, false, false),
+            RootCopy::Cut { seed: false },
+            Some(RootMark::Cut),
+        ),
+        (
+            (true, true, false, true),
+            RootCopy::Cut { seed: false },
+            Some(RootMark::Cut),
+        ),
+        (
+            (true, true, true, false),
+            RootCopy::Cut { seed: false },
+            Some(RootMark::Cut),
+        ),
+        (
+            (true, true, true, true),
+            RootCopy::Cut { seed: true },
+            Some(RootMark::Cut),
+        ),
+    ];
     let epoch = WriterEpoch::new(2);
     let wants = [
         WantedCopy::Writer {
@@ -122,7 +203,15 @@ fn every_root_mark_combination_parses_to_one_copy() {
         WantedCopy::Forget,
         WantedCopy::Floor,
     ];
-    let expects = [ExpectedCopy::Writer { epoch }, ExpectedCopy::None];
+    let expects = [
+        ExpectedCopy::Writer { epoch },
+        ExpectedCopy::Mirror {
+            newest: SnapshotGuid::new(13),
+            slot: SlotId::new(1),
+            role: Some(SlotRole::Mirror),
+        },
+        ExpectedCopy::None,
+    ];
     let newest = || {
         Some(ployz_core::Snapshot {
             name: "f-1".parse().unwrap(),
@@ -130,13 +219,14 @@ fn every_root_mark_combination_parses_to_one_copy() {
             created_unix_seconds: 1_700_000_000,
         })
     };
-    let mut parsed = Vec::new();
-    for bits in 0..16_u8 {
-        let readonly = bits & 1 != 0;
+    for ((readonly, cut, promote, seed_mark), expected_root, expected_mark) in table {
         let marks = RootMarks {
-            cut: bits & 2 != 0,
-            promote: bits & 4 != 0,
-            seed: bits & 8 != 0,
+            cut,
+            promote: if promote {
+                PromoteMark::Set { seed: seed_mark }
+            } else {
+                PromoteMark::Unset
+            },
         };
         let dataset = Dataset::parse(
             &format!(
@@ -147,7 +237,7 @@ fn every_root_mark_combination_parses_to_one_copy() {
         )
         .unwrap();
         let root = RootCopy::parse(&dataset, marks);
-        parsed.push(root);
+        assert_eq!(root, expected_root, "{marks:?} readonly={readonly}");
         let copy = root.view(newest(), epoch);
         let VolumeCopy::Root {
             readonly: replied,
@@ -159,13 +249,8 @@ fn every_root_mark_combination_parses_to_one_copy() {
             panic!("{copy:?}");
         };
         assert_eq!(replied, readonly, "{marks:?}");
-        assert_eq!(seed, marks.promote && marks.seed, "{marks:?}");
-        let expected = match (readonly, marks.cut, marks.promote) {
-            (true, true, _) => Some(RootMark::Cut),
-            (true, false, true) => Some(RootMark::Promote),
-            (true, false, false) | (false, _, _) => None,
-        };
-        assert_eq!(mark, expected, "readonly={readonly} {marks:?}");
+        assert_eq!(seed, promote && seed_mark, "{marks:?}");
+        assert_eq!(mark, expected_mark, "readonly={readonly} {marks:?}");
         assert_eq!(Held::Root(&dataset).switching(), readonly);
 
         let before = VolumeCopy::Root {
@@ -181,20 +266,10 @@ fn every_root_mark_combination_parses_to_one_copy() {
                     assert_eq!(
                         plan(Some(&copy), running, expect, want),
                         plan(Some(&before), running, expect, want),
-                        "{copy:?} {want:?}"
+                        "{copy:?} {want:?} {expect:?}"
                     );
                 }
             }
-        }
-    }
-    assert!(parsed.contains(&RootCopy::Unmarked));
-    for seed in [false, true] {
-        for root in [
-            RootCopy::Writable { seed },
-            RootCopy::Cut { seed },
-            RootCopy::Promote { seed },
-        ] {
-            assert!(parsed.contains(&root), "{root:?} is never parsed");
         }
     }
 }
