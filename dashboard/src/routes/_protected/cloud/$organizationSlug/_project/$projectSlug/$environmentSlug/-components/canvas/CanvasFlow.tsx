@@ -47,10 +47,7 @@ import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
-import {
-  ENVIRONMENT_ROUTE_FROM,
-  ENVIRONMENT_SERVICE_ROUTE_TO,
-} from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import type { CanvasResourceNode, StoreCanvas } from "./types";
 
 // Every canvas edge is a Live Node's link, dashed by `buildStoreEdges`; each is a smooth step ending in an arrow.
@@ -74,7 +71,6 @@ export function CanvasFlow({
 }) {
   const [flowReady, setFlowReady] = useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const navigate = useNavigate();
   const { onNodeDrag } = useCanvasPositionMutation({
     ...params,
     organizationId,
@@ -181,18 +177,9 @@ export function CanvasFlow({
         params={params}
         onCreateVolume={openVolumeCreatorFromServiceDialog}
         onCreateConfig={openConfigCreatorFromServiceDialog}
-        onCreated={async (result, stillHere) => {
+        onCreated={async (created, stillHere) => {
           creator.setCreatorOpen(false);
-          if (stillHere) await navigate({
-            to: ENVIRONMENT_SERVICE_ROUTE_TO,
-            params: {
-              organizationSlug: params.organizationSlug,
-              projectSlug: params.projectSlug,
-              environmentSlug: params.environmentSlug,
-              serviceId: result.service.id,
-            },
-            search: (prev) => prev,
-          });
+          if (stillHere) await creator.openCreated(created);
         }}
       />
       <VolumeCreatorDialog
