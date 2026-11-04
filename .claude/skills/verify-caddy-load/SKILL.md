@@ -62,6 +62,7 @@ The code holds with restarts in place between passes and read failures on. It do
 
 - **A restart between `caddy::load` and `write_caddyfile`** (`restarts_mid_apply`). Caddy loads `P1` through its admin, restarts in place and serves the Caddyfile, `P0`; the write then lands `P1`, `remove_stale_certificate_files` succeeds, and the pass claims `P1` with `last_input` set. Every later pass hits the `loaded` cache (`!no_caddy && load.skip(..)`), which skips the admin while Caddy runs and the last load matches, so no retry, debounce or resnapshot pass corrects it; its first cache miss is the next projection or ingress container change, or Caddy stopping, and that pass can keep the claim too (the keep rule keeps it when the write fails before serving with the container unchanged and the Caddyfile holding what was recorded). `current_code_keeps_a_claim_after_a_restart_between_the_load_and_the_caddyfile_write` prints this path (15 rows). The bound allows one such restart per apply, only through the admin, and only while no other Caddy event is unseen.
 - **A lost load** (`loads_lost`), finding 3 above. For a fix: only `admin.load` inside `caddy::load` (`caddy.rs`) leaves Caddy's state unknown on an error, since `Http` from `adapt`, and every `Io` and `Json` error, come before Caddy changes; treating `BeforeServing` as unknown must split on which call failed, not on the error type. `find_refused`'s load without the suspects maps any error to `Probe::Unchanged` (`ingress.rs`, the `is_err()` guard before the candidates), a second site of the same finding. A lost candidate load is already safe: it reads as `Probe::Reloaded`, which leaves `CaddyLoad::Unapplied`.
+- **A restart in the retry sleep after a stale write** (follow-up E-20b, on `main` too). A pass whose `write_caddyfile` fails through the admin ends in `CaddyLoad::Served { file: Stale }`, and `claim` names the new load. If Caddy restarts in place during the `WATCH_RETRY` sleep that follows (1 s), it serves the older Caddyfile while the claim names the new load. The retry pass ends it: `Served` never skips, so the retry loads the new config again, and if that fails before serving, `refused_by` drops the claim. The model does not see this window: `at_rest` needs `unseen.is_none()`, and the restart stays unseen until the retry's `Read`.
 
 Each needs its own remedy. The mid-apply restart needs the watcher to see the restart, a start time in the observation, since nothing in its locals changes. The lost load has no restart and no start time to see: it needs Caddy's config read back through the admin, or a probe, before the record write, or the uncertain claim dropped.
 
@@ -105,5 +106,17 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployzd/src/ingress/caddy.rs`: `load` and when it goes through the admin, `write_caddyfile` and what runs after its `atomic_write` (`set_ployz_group`), `AdminClient::post` and `ADMIN_TIMEOUT`, `Error`.
 - `core/crates/ployzd/src/filesystem.rs`: `atomic_write`, which renames into place and then syncs the directory, so a failure after the rename leaves the new file.
 - `core/crates/ployzd/src/caddy_tests/watcher.rs`: `routed_addresses_stand_while_the_caddy_that_loaded_them_refuses_a_new_load`, the test of the keep rule; `a_refused_load_claims_nothing_once_the_same_caddy_failed_to_write_its_caddyfile` and `a_refused_probe_withdraws_the_claim_before_the_next_read`, findings 1 and 2 on the real loop.
+
+The model carries the watcher's state as the locals the code had before `CaddyLoad`, and each maps to one `CaddyLoad` state:
+
+| model locals | `CaddyLoad` |
+|---|---|
+| `last_input` through the admin, `recorded_by == last_input.caddy` | `Loaded` |
+| `last_input` None, `recorded_by` Some, `written == claim` | `Served { file: Current }` |
+| `last_input` None, `recorded_by` Some, `written` None or another config | `Served { file: Stale }` |
+| `last_input` without the admin | `Written` |
+| `last_input` None, `recorded_by` None | `Unapplied` |
+
+The claim the model keeps in `addresses` is what `Loaded` and `Served` carry as `addresses`. Where the model's keep rule skips the record write, the code republishes the same claim. `written` is the model's `CaddyFile`: the config the last `write_caddyfile` confirmed. A state outside the table is a model bug, except `Loaded` with no ingress container, which is out of scope.
 
 Sync commit: `b3a0139338a5d28888efd1038b462d2b70fe7609`, the commit this model was checked against. Code in the list above that changed after it has not been rechecked.

@@ -448,14 +448,14 @@ struct Broken {
     /// `!no_caddy` in the `loaded` cache: a stopped Caddy still counts as serving
     /// what it loaded.
     cache_ignores_a_stopped_caddy: bool,
-    /// `recorded_by = None` on `Probe::Reloaded`: the recording Caddy stands after a
-    /// probe reloaded it.
+    /// `Probe::Reloaded` leaving `CaddyLoad::Unapplied` in `CaddyLoad::after`: the
+    /// load that was recorded stands after a probe reloaded Caddy.
     reloaded_keeps_recorded_by: bool,
-    /// `recorded_by == caddy` in the keep rule: a refusal keeps the claim for any
-    /// recording Caddy, not only the newest container.
+    /// `input.caddy == caddy` in the keep rule (`CaddyLoad::refused_by`): a refusal
+    /// keeps the claim for any recording Caddy, not only the newest container.
     keep_ignores_the_container: bool,
-    /// `if through_admin` in the record write: the addresses are claimed without the
-    /// admin's confirmation.
+    /// `if !through_admin` in `CaddyLoad::claim`: the addresses are claimed without
+    /// the admin's confirmation.
     claims_without_admin: bool,
     /// `CaddyFile::Current` in the keep rule: a refusal keeps the claim though the
     /// Caddyfile a restart reads may hold an earlier config (#2787).
@@ -1769,8 +1769,8 @@ mod tests {
         assert_eq!(last.caddy.serves, Served::Nothing);
     }
 
-    /// Without `recorded_by = None` on `Probe::Reloaded`, the keep rule finds the
-    /// recording container and keeps a claim the probe itself replaced.
+    /// Without `Probe::Reloaded` leaving `CaddyLoad::Unapplied`, the keep rule finds
+    /// the recording container and keeps a claim the probe itself replaced.
     #[test]
     fn a_reloaded_probe_must_clear_the_recording_caddy() {
         let path = breaks(
@@ -1829,7 +1829,7 @@ mod tests {
         assert_eq!(last.caddy.container, Container::Y);
     }
 
-    /// Without `if through_admin` in the record write, a pass that never reached
+    /// Without `if !through_admin` in `CaddyLoad::claim`, a pass that never reached
     /// the admin, because `connect` failed or found it down, claims the projection's
     /// addresses while Caddy serves what it last loaded.
     #[test]

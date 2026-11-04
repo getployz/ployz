@@ -500,16 +500,17 @@ When status warns that `web-3 has not confirmed what its proxy serves`, one of t
 - Web-3's daemon has just started.
 - Web-3 wrote a new proxy config without reaching the proxy.
 - Web-3's proxy restarted, and web-3 hasn't loaded its config into the new proxy yet.
-- Web-3 couldn't save its proxy config to disk, then failed to load a newer one. A proxy restart
-  would serve the older file, so web-3 claims nothing until a load and its save both succeed.
+- Web-3 couldn't save its proxy config to disk, and a later attempt failed before reaching the
+  proxy. A restarted proxy would serve the older file, so web-3 claims nothing until a load reaches
+  the proxy again. Check free space and permissions on web-3's disk.
 - Web-3's proxy refused a certificate, and web-3 hasn't read the cluster's state since.
 - Status couldn't read what web-3 routes within 3 seconds, which a slow link between servers can
   cause.
 
 Until web-3's proxy loads a config web-3 can see, status doesn't check what web-3 routes.
 The warning goes away once the proxy answers, usually within 2 seconds of a daemon restart or
-upgrade. If it stays, web-3's proxy isn't answering its daemon, or web-3 can't load its config
-into the proxy. See [Troubleshooting servers](servers.md).
+upgrade. If it stays, web-3's proxy isn't answering its daemon, web-3 can't load its config into
+the proxy, or web-3 can't write its proxy files to disk. See [Troubleshooting servers](servers.md).
 
 - **Check web-3's network.** Your servers need UDP port 51820 open between them. See
   [Troubleshooting servers](servers.md).

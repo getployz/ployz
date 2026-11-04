@@ -2488,9 +2488,9 @@ async fn a_refused_probe_withdraws_the_claim_before_the_next_read() {
     assert!(probe.contains("10.210.1.7:80") && !probe.contains("https://bad.example.com {"));
     let queries = state.container_queries();
     state.wait_for_container_queries(queries + 1).await;
-    assert_ne!(
-        published.borrow().addresses.as_ref(),
-        Some(&first),
+    assert_eq!(
+        published.borrow().addresses,
+        None,
         "Caddy serves the probe's 10.210.1.7, and the read after it failed"
     );
 
