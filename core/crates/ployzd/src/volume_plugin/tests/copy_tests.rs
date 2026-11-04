@@ -1400,6 +1400,77 @@ async fn a_seal_during_a_receive_keeps_the_mirror_without_reporting_a_failure() 
     server.abort();
 }
 
+/// A same-target pull resent after a Seal stopped its receive resumes it, with no stop
+/// to answer first.
+#[tokio::test]
+async fn a_pull_resent_after_a_seal_stopped_its_receive_resumes_it() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/stall-read"), "").unwrap();
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    receive_ready(&test).await;
+    let seal = post(&socket, "/Storage.Seal", json!(null)).await;
+    assert_eq!(
+        seal,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
+
+    fs::remove_file(test.0.join("props/stall-read")).unwrap();
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(
+        reply.pointer("/Ok/pull/failure"),
+        Some(&json!(null)),
+        "{reply}"
+    );
+    let copy = landed(&socket, "w-1-1").await;
+    assert_eq!(
+        copy.pointer("/Ok/newest/name"),
+        Some(&json!("w-1-1")),
+        "{copy}"
+    );
+    server.abort();
+}
+
+/// A Demote that cannot destroy a mirror leaves its stopped receive registered on a
+/// Machine whose Leave then fails, and Inspect there reports no failure for it.
+#[tokio::test]
+async fn a_demote_that_cannot_destroy_a_mirror_reports_no_failure_for_its_stopped_receive() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/stall-read"), "").unwrap();
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    receive_ready(&test).await;
+    fs::write(
+        test.0.join("props/fail-command"),
+        format!("destroy -r {SLOT}"),
+    )
+    .unwrap();
+
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(reply.pointer("/Ok/demoted"), Some(&json!([])), "{reply}");
+    assert_eq!(
+        reply.pointer("/Ok/failed/0/name"),
+        Some(&json!("data")),
+        "{reply}"
+    );
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(
+        copy.pointer("/Ok/pull/target"),
+        Some(&json!("w-1-1")),
+        "{copy}"
+    );
+    assert_eq!(
+        copy.pointer("/Ok/pull/failure"),
+        Some(&json!(null)),
+        "{copy}"
+    );
+    server.abort();
+}
+
 pub(super) async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> Option<T> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {

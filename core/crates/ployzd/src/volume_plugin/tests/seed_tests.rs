@@ -378,6 +378,36 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
     assert!(!test.0.join("seed-slot").exists());
 }
 
+/// A seed resent after a departure stopped its copy starts the copy over, with no stop to
+/// answer first. The departure fails to demote the source, so the Machine stays
+/// Participating and the source is still the writer for the resend.
+#[tokio::test]
+async fn a_seed_resent_after_a_failed_departure_stopped_its_copy_starts_it_over() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    fs::write(test.0.join("props").join("stall-read"), "").unwrap();
+    post(&socket, "/Volume.Seed", seed(77)).await;
+    receive_ready(&test).await;
+    fs::write(test.0.join("rename-fails"), "").unwrap();
+    let seal = post(&socket, "/Storage.Seal", json!(null)).await;
+    assert_eq!(seal.pointer("/Ok/stuck"), Some(&json!([])), "{seal}");
+    assert_eq!(
+        seal.pointer("/Ok/failed/0/name"),
+        Some(&json!("data")),
+        "{seal}"
+    );
+
+    fs::remove_file(test.0.join("props").join("stall-read")).unwrap();
+    let resent = post(&socket, "/Volume.Seed", seed(77)).await;
+    assert_eq!(
+        resent.pointer("/Ok/copy/pull/failure"),
+        Some(&json!(null)),
+        "{resent}"
+    );
+    assert_eq!(commands(&test).matches("zfs send ").count(), 2);
+}
+
 /// Seeds `into` from `point` of `data` with the fake naming `into` as its seed Volume,
 /// and waits until the receive has exited and the copy is being verified.
 async fn completed_seed(test: &TestDir, into: &str, point: &str, guid: &str) -> PathBuf {

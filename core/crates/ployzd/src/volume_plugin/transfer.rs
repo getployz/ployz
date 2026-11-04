@@ -169,7 +169,8 @@ impl Stop {
     }
 
     /// Fires once [`Receives::stop_all`] stops the task. A task that acts on it returns
-    /// an error, which the receive records as stopped rather than failed.
+    /// an error, which the receive records as stopped rather than failed. A caller returns
+    /// as soon as it fires, or a failure of its own after that would be recorded as stopped.
     pub(super) async fn cancelled(&self) {
         self.token.cancelled().await;
         self.heeded.store(true, Ordering::Relaxed);
