@@ -5,7 +5,9 @@ use std::{fmt, str::FromStr, time::Duration};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{CopyRole, DockerVolumeName, MachineName, RpcError, RpcErrorCode, WriterEpoch};
+use crate::{
+    CopyRole, DockerVolumeName, MachineName, RpcError, RpcErrorCode, VolumeGen, WriterEpoch,
+};
 
 /// How long a Machine waits on one call to its volume plugin, such as the call that
 /// mounts a handed-over Volume and starts its Container.
@@ -280,6 +282,11 @@ pub struct SeedVolumeRequest {
     pub name: DockerVolumeName,
     pub into: DockerVolumeName,
     pub guid: SnapshotGuid,
+    /// The seed run's gen. The Machine refuses it Stale below `into`'s floor and leaves
+    /// the floor where it is. `None` skips the check, as a Machine that predates it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub r#gen: Option<VolumeGen>,
 }
 
 /// Which stream a mirror asks its writer Machine for over the mesh.

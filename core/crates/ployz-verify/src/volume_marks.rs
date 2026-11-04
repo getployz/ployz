@@ -7,10 +7,11 @@
 //! (`copy_pull` and `mark_pulled`, copy.rs). A Seed request is a message: it can wait in
 //! transit, before the switch lock, past its own run's row.
 //!
-//! The finding: such a request from an ended seed run lands on the Mirror the later run
-//! pulled. `mark_pulled` cleared `ployz:seed` and `ployz:cut` and set `ployz:pulled`, so
-//! `written_here` (departure.rs) reads false, and the Seed runs `zfs destroy -r` on the
-//! slot and starts copying the old restore point into it.
+//! The finding, before the fix: such a request from an ended seed run lands on the Mirror
+//! the later run pulled. `mark_pulled` cleared `ployz:seed` and `ployz:cut` and set
+//! `ployz:pulled`, so `written_here` (departure.rs) reads false, and the Seed runs
+//! `zfs destroy -r` on the slot and starts copying the old restore point into it.
+//! `Broken::seed_skips_floor` restores that Seed.
 //!
 //! The properties: a Seed from an ended seed run never destroys a copy of `into` a later
 //! run made; a Seed never destroys a copy only this Machine may hold, nor a slot a
@@ -19,12 +20,12 @@
 //! the finding is, because a live Seed replacing a pulled Mirror is designed
 //! (`seed_tests.rs` `a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point`).
 //!
-//! The fix variant gives Seed its run's gen and admits it against `into`'s floor under
-//! the switch lock, before `seed_volume` runs, as `admit_gen` (machine_api/
-//! local_volume_copy.rs) and `FloorTurn::admit` (docker/spec_store.rs) do for
-//! `SetVolumeCopy` in `set_copy_admitted` (local_volume_copy.rs:86-88). Gens come from
-//! one identity column, so a later run's `SetVolumeCopy` on A raises `into`'s floor above
-//! the seed run's gen.
+//! The fix: Seed carries its run's gen, and `seed_volume` (machine_api/local.rs:557-573)
+//! checks it against `into`'s floor under the switch lock, before the plugin's
+//! `seed_volume` runs, through `check_gen` (machine_api/local_volume_copy.rs:273-283) and
+//! `FloorTurn::check` (docker/spec_store.rs:552-565). The check refuses a gen below the
+//! floor and leaves the floor where it is. Gens come from one identity column, so a later
+//! run's `SetVolumeCopy` on A raises `into`'s floor above the seed run's gen.
 //!
 //! Every plugin handler holds `admit_mutation` (storage.rs) from its first read to its
 //! answer, so each handler is one step. A receive task runs outside it, so a receive
@@ -149,7 +150,7 @@ impl Row {
 /// The branch of `VolumeStorage::seed_volume` (seed.rs) one Seed request took.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum SeedPath {
-    /// The fix: `admit_gen` refuses the seed run's gen below `into`'s floor.
+    /// `check_gen` refuses the seed run's gen below `into`'s floor.
     Stale,
     /// A root of `into` with this guid in `ployz:seed`: answers the root.
     AnswersRoot,
@@ -213,9 +214,14 @@ enum Action {
     TimeOut,
     /// `PATIENCE_WAITS` ran out: `03-too-long` fails the run.
     GiveUp,
-    /// A's `Volume.Seed` (machine_api/local.rs `seed_volume`, `switch_verb`) runs one
-    /// request off the wire; `answered` when the step that sent it still waits.
+    /// A's `Volume.Seed` (machine_api/local.rs `seed_volume`) runs one request off the
+    /// wire under the switch lock; `answered` when the step that sent it still waits. Under
+    /// `Broken::floor_checked_only_before_lock` it runs one request `Admit` let through.
     Seed { answered: bool },
+    /// Only under `Broken::floor_checked_only_before_lock`: the floor check takes one
+    /// request off the wire before the switch lock, and either refuses it or lets it on
+    /// toward the lock; `answered` when it is the request the step waits for.
+    Admit { answered: bool },
     /// The seed's `copy_snapshot` receive completes and its task ends.
     CopyDone,
     /// The Deploy's Docker Create adopts the landed root (storage.rs `create_volume`).
@@ -243,8 +249,12 @@ struct State {
     row: Row,
     sends: u8,
     timeouts: u8,
-    /// Seed requests sent and not yet run by A, all alike: `{name, into, guid: G}`.
+    /// Seed requests sent and not yet run by A, all alike: `{name, into, guid: G, gen: SEED}`.
     on_wire: u8,
+    /// Requests `Admit` let through that have not yet taken the switch lock.
+    queued: u8,
+    /// The request the step waits for is among `queued`, not `on_wire`.
+    awaiting_queued: bool,
     /// A's `volume_floors` row for `into` (docker/spec_store.rs `FloorTurn::admit`).
     floor: u8,
     into: Into,
@@ -289,6 +299,13 @@ struct Broken {
     /// `mark_pulled` (copy.rs) sets `ployz:pulled` without inheriting `ployz:cut`,
     /// `epoch`, `promote` and `seed` first.
     pull_keeps_marks: bool,
+    /// Volume.Seed checks no floor: the code before the fix, a Cloud that sends no gen,
+    /// or a Machine that predates the field and drops it.
+    seed_skips_floor: bool,
+    /// Volume.Seed checks the floor before it takes the switch lock, not under it.
+    floor_checked_only_before_lock: bool,
+    /// The Seed's floor check raises the floor, as `FloorTurn::admit` does.
+    seed_raises_floor: bool,
 }
 
 /// What a coverage check takes out of the model, to show the `sometimes` naming it is
@@ -306,8 +323,6 @@ enum Omit {
 struct Coverage {
     name: &'static str,
     scenarios: &'static [Scenario],
-    /// Reached only with the fix's floor check.
-    fix_only: bool,
     omit: Omit,
     reached: fn(&VolumeMarks, &State) -> bool,
 }
@@ -329,49 +344,42 @@ const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "a Seed starts its copy in a new slot",
         scenarios: FRESH,
-        fix_only: false,
         omit: Omit::Path(SeedPath::Starts),
         reached: |_, state| took(state, SeedPath::Starts),
     },
     Coverage {
         name: "a resent Seed answers the copy still receiving",
         scenarios: SEEDS,
-        fix_only: false,
         omit: Omit::Path(SeedPath::Receiving),
         reached: |_, state| took(state, SeedPath::Receiving),
     },
     Coverage {
         name: "a Seed lands its complete copy as a root",
         scenarios: SEEDS,
-        fix_only: false,
         omit: Omit::Path(SeedPath::Lands),
         reached: |_, state| took(state, SeedPath::Lands),
     },
     Coverage {
         name: "a Seed answers the root it landed",
         scenarios: FRESH,
-        fix_only: false,
         omit: Omit::Path(SeedPath::AnswersRoot),
         reached: |_, state| took(state, SeedPath::AnswersRoot),
     },
     Coverage {
         name: "a Seed refuses a Volume into that already exists",
         scenarios: TAKEN,
-        fix_only: false,
         omit: Omit::Path(SeedPath::Exists),
         reached: |_, state| took(state, SeedPath::Exists),
     },
     Coverage {
         name: "a Seed refuses a slot written here",
         scenarios: OLD_COPY,
-        fix_only: false,
         omit: Omit::Path(SeedPath::Held),
         reached: |_, state| took(state, SeedPath::Held),
     },
     Coverage {
         name: LIVE_REPLACES_PULLED,
         scenarios: OLD_COPY,
-        fix_only: false,
         omit: Omit::Path(SeedPath::Replaces),
         reached: |_, state| {
             took(state, SeedPath::Replaces) && state.destroyed.is_some_and(|d| !d.stale && d.pulled)
@@ -380,7 +388,6 @@ const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "the floor refuses a Seed from an ended seed run",
         scenarios: FRESH,
-        fix_only: true,
         omit: Omit::Path(SeedPath::Stale),
         reached: |_, state| {
             took(state, SeedPath::Stale)
@@ -391,7 +398,6 @@ const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "the seed run ends done",
         scenarios: SEEDS,
-        fix_only: false,
         omit: Omit::Actions(&[Action::Seed { answered: true }]),
         reached: |_, state| {
             state.last == Some(Action::Seed { answered: true }) && matches!(state.row, Row::Done(_))
@@ -400,59 +406,48 @@ const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "a Seed request outlives its run's row",
         scenarios: ALL,
-        fix_only: false,
         omit: Omit::Actions(&[Action::TimeOut]),
         reached: |_, state| !state.row.open() && state.on_wire > 0,
     },
     Coverage {
         name: "the run gives up after its last poll",
         scenarios: FRESH,
-        fix_only: false,
         omit: Omit::Actions(&[Action::GiveUp]),
         reached: |_, state| state.last == Some(Action::GiveUp),
     },
     Coverage {
         name: "Create adopts the landed root",
         scenarios: FRESH,
-        fix_only: false,
         omit: Omit::Actions(&[Action::Adopt]),
         reached: |_, state| state.last == Some(Action::Adopt),
     },
     Coverage {
         name: "the later Move cuts the adopted root into an old copy",
         scenarios: FRESH,
-        fix_only: false,
         omit: Omit::Actions(&[Action::Cut]),
         reached: |_, state| state.last == Some(Action::Cut),
     },
     Coverage {
         name: "mark_pulled marks the slot a pull received",
         scenarios: SEEDS,
-        fix_only: false,
         omit: Omit::Actions(&[Action::MarkPulled]),
         reached: |_, state| state.last == Some(Action::MarkPulled),
     },
     Coverage {
-        name: "admit_gen refuses the earlier run's pull below into's floor",
+        name: EARLIER_PULL_AFTER_SEED,
         scenarios: OLD_COPY,
-        fix_only: true,
-        omit: Omit::Actions(&[Action::EarlierPull]),
-        reached: |_, state| state.last == Some(Action::EarlierPull) && state.task == Task::Idle,
+        omit: Omit::Path(SeedPath::Held),
+        reached: |_, state| {
+            state.last == Some(Action::EarlierPull)
+                && state.task != Task::Idle
+                && state.seed.is_some()
+        },
     },
 ];
 
 #[derive(Clone, Copy, Debug)]
 struct VolumeMarks {
     scenario: Scenario,
-    /// The fix: Seed carries its run's gen, and `admit_gen` admits it against `into`'s
-    /// floor under the switch lock, before `seed_volume` runs, as `set_copy_admitted`
-    /// checks `SetVolumeCopy` again under the lock (machine_api/local_volume_copy.rs:86-88).
-    /// The one atomic Seed step models only that check; one before the lock is optional.
-    /// A check made only before the lock fails: PR #3836's round-1 replay admitted a Seed
-    /// at floor 2, let Adopt, Cut, Commit, Pull, Received and MarkPulled raise the floor to
-    /// 3 while it waited for the lock, and the admitted Seed then destroyed the Mirror the
-    /// later run pulled. Splitting the step to show that is follow-up E-21b.
-    fix: bool,
     broken: Broken,
     /// A coverage check's cut, `None` to run the whole model.
     omit: Option<Omit>,
@@ -465,10 +460,13 @@ impl VolumeMarks {
         fs.marks.any() || fs.newest.is_some_and(|newest| fs.pulled != Some(newest))
     }
 
-    /// `VolumeStorage::seed_volume` (seed.rs) for one request, under `admit_mutation`.
+    /// Volume.Seed for one request: the floor check under the switch lock
+    /// (machine_api/local.rs `seed_volume`), then `VolumeStorage::seed_volume` (seed.rs)
+    /// under `admit_mutation`.
     fn seed(&self, state: &mut State) -> Answer {
         let broken = self.broken;
-        if self.fix && !Self::admit(state, SEED) {
+        let checks = !broken.seed_skips_floor && !broken.floor_checked_only_before_lock;
+        if checks && !self.check(state, SEED) {
             state.seed = Some(SeedPath::Stale);
             return Answer::Refused;
         }
@@ -539,9 +537,9 @@ impl VolumeMarks {
         };
     }
 
-    /// `FloorTurn::admit` (docker/spec_store.rs) through `admit_gen`
-    /// (machine_api/local_volume_copy.rs), which `set_copy` runs before the switch lock
-    /// (:47) and `set_copy_admitted` again under it (:86-88).
+    /// `FloorTurn::admit` (docker/spec_store.rs:525-548) through `admit_gen`
+    /// (machine_api/local_volume_copy.rs:258-268), which `set_copy` runs before the switch
+    /// lock (:47) and `set_copy_admitted` again under it (:88).
     fn admit(state: &mut State, generation: u8) -> bool {
         if generation < state.floor {
             return false;
@@ -550,12 +548,23 @@ impl VolumeMarks {
         true
     }
 
+    /// `FloorTurn::check` (docker/spec_store.rs:552-565) through `check_gen`
+    /// (machine_api/local_volume_copy.rs:273-283): refuses a gen below the floor, so an
+    /// equal one passes, and leaves the floor where it is.
+    fn check(&self, state: &mut State, generation: u8) -> bool {
+        if self.broken.seed_raises_floor {
+            return Self::admit(state, generation);
+        }
+        generation >= state.floor
+    }
+
     fn step(&self, state: &mut State, action: Action) {
         match action {
             Action::Send => {
                 state.sends += 1;
                 state.on_wire += 1;
                 state.row = Row::Open { awaiting: true };
+                state.awaiting_queued = false;
             }
             Action::TimeOut => {
                 state.timeouts += 1;
@@ -563,10 +572,26 @@ impl VolumeMarks {
             }
             Action::GiveUp => state.row = Row::Failed,
             Action::Seed { answered } => {
-                state.on_wire -= 1;
+                if self.broken.floor_checked_only_before_lock {
+                    state.queued -= 1;
+                } else {
+                    state.on_wire -= 1;
+                }
                 let answer = self.seed(state);
                 if answered {
                     Self::answer(state, answer);
+                }
+            }
+            Action::Admit { answered } => {
+                state.on_wire -= 1;
+                if self.check(state, SEED) {
+                    state.queued += 1;
+                    state.awaiting_queued |= answered;
+                } else {
+                    state.seed = Some(SeedPath::Stale);
+                    if answered {
+                        Self::answer(state, Answer::Refused);
+                    }
                 }
             }
             Action::CopyDone => {
@@ -703,6 +728,8 @@ impl Model for VolumeMarks {
             sends: 0,
             timeouts: 0,
             on_wire: 0,
+            queued: 0,
+            awaiting_queued: false,
             floor: 0,
             into,
             task: Task::Idle,
@@ -727,12 +754,30 @@ impl Model for VolumeMarks {
             }
             Row::Open { .. } | Row::Done(_) | Row::Failed => {}
         }
-        let awaiting = u8::from(state.row == Row::Open { awaiting: true });
-        if awaiting == 1 && state.on_wire >= 1 {
-            actions.push(Action::Seed { answered: true });
-        }
-        if state.on_wire > awaiting {
-            actions.push(Action::Seed { answered: false });
+        // The request the step waits for, in the pool it is in.
+        let awaiting = state.row == Row::Open { awaiting: true };
+        let on_wire_awaits = u8::from(awaiting && !state.awaiting_queued);
+        if self.broken.floor_checked_only_before_lock {
+            let queued_awaits = u8::from(awaiting && state.awaiting_queued);
+            if on_wire_awaits == 1 {
+                actions.push(Action::Admit { answered: true });
+            }
+            if state.on_wire > on_wire_awaits {
+                actions.push(Action::Admit { answered: false });
+            }
+            if queued_awaits == 1 {
+                actions.push(Action::Seed { answered: true });
+            }
+            if state.queued > queued_awaits {
+                actions.push(Action::Seed { answered: false });
+            }
+        } else {
+            if on_wire_awaits == 1 {
+                actions.push(Action::Seed { answered: true });
+            }
+            if state.on_wire > on_wire_awaits {
+                actions.push(Action::Seed { answered: false });
+            }
         }
         match state.task {
             Task::Copying => actions.push(Action::CopyDone),
@@ -804,7 +849,7 @@ impl Model for VolumeMarks {
         properties.extend(
             COVERAGE
                 .iter()
-                .filter(|row| row.scenarios.contains(&self.scenario) && (self.fix || !row.fix_only))
+                .filter(|row| row.scenarios.contains(&self.scenario))
                 .map(|row| Property::sometimes(row.name, row.reached)),
         );
         properties
@@ -818,6 +863,8 @@ const KEEPS_RECEIVING: &str = "a Seed never destroys a slot a receive is still w
 const DONE_HOLDS_POINT: &str = "a seed run ends done only on a root holding its restore point";
 const EVERY_ROW_ENDS: &str = "at rest, the seed run's row has ended";
 const LIVE_REPLACES_PULLED: &str = "a live Seed replaces a Mirror a pull received";
+const EARLIER_PULL_AFTER_SEED: &str =
+    "admit_gen admits the earlier run's pull after a Seed of into ran";
 
 /// `path` in the code's words: each step, and the row, the wire, A's floor and `into`'s
 /// datasets once it ran.
@@ -859,34 +906,57 @@ fn story(model: &VolumeMarks, path: &[(State, Option<Action>)]) -> String {
         };
         let _ = writeln!(
             story,
-            "{n:2}. {what}\n    row={:?} on_wire={} floor={} | into: {into} | task={:?}",
-            state.row, state.on_wire, state.floor, state.task,
+            "{n:2}. {what}\n    row={:?} on_wire={} queued={} floor={} | into: {into} | task={:?}",
+            state.row, state.on_wire, state.queued, state.floor, state.task,
         );
     }
     story
+}
+
+/// Whether the request's row was open, and who reads the answer.
+fn row_and_reader(before: &State, answered: bool) -> (&'static str, &'static str) {
+    let row = if before.row.open() {
+        "its row open"
+    } else {
+        "its row ENDED"
+    };
+    let to = if answered {
+        "the step that waits reads the answer"
+    } else {
+        "no step waits for the answer"
+    };
+    (row, to)
 }
 
 /// `action` from `before` under `model`, read with `after` for the branch it took.
 fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) -> String {
     match action {
         Action::Send => {
-            "Cloud: seedVolume's 03-ask step sends seed_volume {name, into, guid: G} (volume-run.inngest.ts)".to_owned()
+            "Cloud: seedVolume's 03-ask step sends seed_volume {name, into, guid: G, gen: SEED} (volume-run.inngest.ts)".to_owned()
         }
         Action::TimeOut => {
             "Cloud: the attempt fails short of an answer; sendSwitch fails only the attempt, the step retries, and its request stays in transit (volume-run.server.ts)".to_owned()
         }
         Action::GiveUp => "Cloud: PATIENCE_WAITS ran out, 03-too-long fails the run".to_owned(),
+        Action::Admit { answered } => {
+            let (row, to) = row_and_reader(before, answered);
+            let which = if answered {
+                "the request the step waits for"
+            } else {
+                "a request no step waits for"
+            };
+            if after.queued > before.queued {
+                format!(
+                    "A: Volume.Seed checks the gen of {which} against into's floor before the switch lock (under Broken), {row}: admits it, and it goes on toward the lock"
+                )
+            } else {
+                format!(
+                    "A: Volume.Seed checks the gen of {which} against into's floor before the switch lock (under Broken), {row}: refuses it below the floor; {to}"
+                )
+            }
+        }
         Action::Seed { answered } => {
-            let row = if before.row.open() {
-                "its row open"
-            } else {
-                "its row ENDED"
-            };
-            let to = if answered {
-                "the step that waits reads the answer"
-            } else {
-                "no step waits for the answer"
-            };
+            let (row, to) = row_and_reader(before, answered);
             let broken = model.broken;
             let fs = match before.into {
                 Into::Slot { fs } => fs,
@@ -895,7 +965,7 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
             let branch = match after.seed {
                 Some(SeedPath::Stale) => {
                     return format!(
-                        "A: Volume.Seed carries its run's gen, {row}; under the switch lock, admit_gen refuses it below into's floor (the fix, as set_copy_admitted checks SetVolumeCopy, machine_api/local_volume_copy.rs:86-88); {to}"
+                        "A: Volume.Seed carries its run's gen, {row}; under the switch lock, check_gen refuses it below into's floor and leaves the floor (machine_api/local.rs seed_volume); {to}"
                     );
                 }
                 Some(SeedPath::AnswersRoot)
@@ -933,10 +1003,14 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
                 Some(SeedPath::Starts) => "no slot: a new slot, copy_snapshot of name@G",
                 None => "?",
             };
-            let admitted = if model.fix {
-                "under the switch lock admit_gen admits its gen, then under admit_mutation"
+            let admitted = if broken.seed_skips_floor {
+                "under the switch lock, checking no floor (under Broken), and admit_mutation"
+            } else if broken.floor_checked_only_before_lock {
+                "under the switch lock, its floor checked only before it (under Broken), and admit_mutation"
+            } else if broken.seed_raises_floor {
+                "under the switch lock its floor check admits and RAISES into's floor (under Broken), then under admit_mutation"
             } else {
-                "under the switch lock and admit_mutation"
+                "under the switch lock check_gen admits its gen and leaves the floor, then under admit_mutation"
             };
             format!(
                 "A: Volume.Seed runs a request, {row}; {admitted}, {branch} (seed.rs seed_volume); {to}"
@@ -989,20 +1063,23 @@ mod tests {
     type Path = Vec<(State, Option<Action>)>;
 
     /// The code as it is.
-    fn as_is(scenario: Scenario) -> VolumeMarks {
+    fn fixed(scenario: Scenario) -> VolumeMarks {
         VolumeMarks {
             scenario,
-            fix: false,
             broken: Broken::default(),
             omit: None,
         }
     }
 
-    /// The fix: Seed admits its run's gen against `into`'s floor.
-    fn fixed(scenario: Scenario) -> VolumeMarks {
+    /// Volume.Seed with no floor check: the code before the fix, or a Seed sent or read
+    /// without a gen.
+    fn unfenced(scenario: Scenario) -> VolumeMarks {
         VolumeMarks {
-            fix: true,
-            ..as_is(scenario)
+            broken: Broken {
+                seed_skips_floor: true,
+                ..Broken::default()
+            },
+            ..fixed(scenario)
         }
     }
 
@@ -1054,15 +1131,15 @@ mod tests {
         path.last().expect("a path has a state").0
     }
 
-    /// The finding. The seed run's first request outlives its attempt. A resend starts
-    /// the copy, another lands it, and the row ends done. The Deploy adopts the root, the
-    /// later Move cuts it into an old copy and commits on B, and B's newer snapshot is
-    /// pulled back into the slot, where `mark_pulled` clears `ployz:seed` and `ployz:cut`.
-    /// The stranded request then lands: `written_here` reads false, and the Seed
-    /// destroys the Mirror the later run pulled. This test passes by finding that path.
+    /// The finding, without the floor. The seed run's first request outlives its
+    /// attempt. A resend starts the copy, another lands it, and the row ends done. The
+    /// Deploy adopts the root, the later Move cuts it into an old copy and commits on B,
+    /// and B's newer snapshot is pulled back into the slot, where `mark_pulled` clears
+    /// `ployz:seed` and `ployz:cut`. The stranded request then lands: `written_here` reads
+    /// false, and the Seed destroys the Mirror the later run pulled.
     #[test]
-    fn current_code_lets_a_late_seed_destroy_a_mirror_a_later_run_pulled() {
-        let path = breaks(as_is(Scenario::Fresh), STALE_KEEPS_LATER);
+    fn a_seed_needs_the_floor_of_into() {
+        let path = breaks(unfenced(Scenario::Fresh), STALE_KEEPS_LATER);
         let broken = last(&path);
         let destroyed = broken.destroyed.expect("the Seed destroyed a slot");
         assert!(destroyed.stale, "the seed run's row had ended");
@@ -1078,14 +1155,14 @@ mod tests {
         );
     }
 
-    /// Every other property holds on the code as it is, in every scenario: the late
-    /// Seed breaks only the one the finding names.
+    /// Without the floor every other property holds, in every scenario: the late Seed
+    /// breaks only the one the finding names.
     #[test]
-    fn current_code_breaks_only_the_late_seed_property() {
+    fn without_the_floor_only_the_late_seed_property_breaks() {
         for scenario in [Scenario::Fresh, Scenario::OldCopy, Scenario::Taken] {
-            let checker = check(as_is(scenario));
+            let checker = check(unfenced(scenario));
             println!(
-                "{scenario:?}, as is: {} states",
+                "{scenario:?}, unfenced: {} states",
                 checker.unique_state_count()
             );
             for property in [
@@ -1107,8 +1184,8 @@ mod tests {
         }
     }
 
-    /// The fix holds in every scenario, and every `sometimes` is reached: a live Seed
-    /// still replaces a Mirror a pull received, as `seed_tests.rs`
+    /// The code holds every property in every scenario, and every `sometimes` is
+    /// reached: a live Seed still replaces a Mirror a pull received, as `seed_tests.rs`
     /// `a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point` pins, while
     /// the floor the later Move raised refuses the stranded request.
     #[test]
@@ -1121,6 +1198,58 @@ mod tests {
             );
             checker.assert_properties();
         }
+    }
+
+    /// A floor checked only before the switch lock lets the stranded request through
+    /// while the floor is still the seed run's. It waits at the lock across the Deploy,
+    /// the Move's cut and the pull, then destroys the Mirror the later run pulled.
+    #[test]
+    fn a_seed_needs_the_floor_checked_under_the_switch_lock() {
+        let path = breaks(
+            VolumeMarks {
+                broken: Broken {
+                    floor_checked_only_before_lock: true,
+                    ..Broken::default()
+                },
+                ..fixed(Scenario::Fresh)
+            },
+            STALE_KEEPS_LATER,
+        );
+        let broken = last(&path);
+        let destroyed = broken.destroyed.expect("the Seed destroyed a slot");
+        assert!(destroyed.stale && destroyed.pulled);
+        assert_eq!(destroyed.made, Some(Made::Later));
+        let step = |wanted: Action| {
+            path.iter()
+                .position(|(_, action)| *action == Some(wanted))
+                .expect("the path takes the step")
+        };
+        assert!(
+            step(Action::Admit { answered: false }) < step(Action::Cut),
+            "the stranded request passed the check before the Move raised the floor"
+        );
+    }
+
+    /// A Seed leaves `into`'s floor where it found it, so a request on `into` with a gen
+    /// below the seed run's is still admitted after a Seed ran. A check that raised the
+    /// floor would refuse it, as it would every mirror sync of `into` whose gen is below
+    /// the seed run's.
+    #[test]
+    fn a_seed_leaves_the_floor_of_into_where_it_found_it() {
+        let checker = check(VolumeMarks {
+            broken: Broken {
+                seed_raises_floor: true,
+                ..Broken::default()
+            },
+            ..fixed(Scenario::OldCopy)
+        });
+        assert!(checker.discovery(EARLIER_PULL_AFTER_SEED).is_none());
+        assert!(
+            fixed(Scenario::OldCopy)
+                .properties()
+                .iter()
+                .any(|property| property.name == EARLIER_PULL_AFTER_SEED)
+        );
     }
 
     /// Every `sometimes` needs what it names: with the row's `omit` taken out of the
@@ -1227,8 +1356,11 @@ mod tests {
         );
 
         let checker = check(VolumeMarks {
-            broken: keeps,
-            ..as_is(Scenario::Fresh)
+            broken: Broken {
+                seed_skips_floor: true,
+                ..keeps
+            },
+            ..fixed(Scenario::Fresh)
         });
         assert!(checker.discovery(STALE_KEEPS_LATER).is_none());
     }
