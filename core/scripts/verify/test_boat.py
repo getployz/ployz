@@ -278,6 +278,7 @@ class Registry(unittest.TestCase):
         backend = unittest.mock.Mock()
         backend.exec.side_effect = KeyError("ssh")
         run = dict(machines=[dict(name="machine-1")], manifest=self.run["manifest"])
+        cluster.save(dict(run, state="ready"))
         with unittest.mock.patch.object(cluster, "save"), contextlib.suppress(KeyError):
             cluster.teardown(run, None, backend)
         backend.destroy.assert_called_once()

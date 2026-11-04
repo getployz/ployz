@@ -4,6 +4,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import enum
 import fcntl
 import hashlib
 import importlib
@@ -43,6 +44,33 @@ def save(run):
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(run, indent=2) + "\n")
     temporary.replace(path)
+
+
+class RunState(enum.Enum):
+    """Where a run's lifecycle stands, as its manifest's `state`. Only a ready run is live."""
+
+    STARTING = "starting"
+    READY = "ready"
+    TEARING_DOWN = "tearing-down"
+    REMOVED = "removed"
+
+
+# Down may begin from every state but removed, including a teardown that raised.
+UNREMOVED = (RunState.STARTING, RunState.READY, RunState.TEARING_DOWN)
+
+
+def advance(run, frm, to):
+    """Move the run from one of the states `frm` to `to`, against the manifest on disk.
+
+    Its own lock, held only for this write: teardown runs inside `locked`, whose flock a second open would wait on.
+    """
+    with Path(run["manifest"]).with_suffix(".state.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = RunState(json.loads(Path(run["manifest"]).read_text())["state"])
+        if current not in frm:
+            raise RuntimeError(f"This cluster is {current.value}, so it can't become {to.value}")
+        run["state"] = to.value
+        save(run)
 
 
 class Commands:
@@ -579,8 +607,7 @@ done
 
 
 def teardown(run, commands, backend):
-    run["state"] = "tearing-down"
-    save(run)
+    advance(run, UNREMOVED, RunState.TEARING_DOWN)
     try:
         for node in run["machines"]:
             try:
@@ -601,8 +628,7 @@ def teardown(run, commands, backend):
         if started:
             commands([Path(cloud["dashboard"]) / "scripts" / "verify" / "down.sh"], check=False)
     shutil.rmtree(private, ignore_errors=True)
-    run["state"] = "removed"
-    save(run)
+    advance(run, (RunState.TEARING_DOWN,), RunState.REMOVED)
 
 
 def age(seconds):
@@ -727,7 +753,8 @@ def up(args):
     run = dict(manifest=str(directory / "cluster.json"), root=str(CORE),
                owner=host.owner(CORE.parent, directory / "cluster.json"),
                id=directory.name.rsplit("-", 1)[1], provider=args.provider,
-               provider_state={resource: size for resource, size in [("memory", args.memory), ("disk", args.disk)] if size}, state="starting",
+               provider_state={resource: size for resource, size in [("memory", args.memory), ("disk", args.disk)] if size},
+               state=RunState.STARTING.value,
                timings={}, machines=[dict(name=f"machine-{index}") for index in range(1, args.machines + 1)])
     if args.bare:
         run.update(bare=True, distro=args.distro)
@@ -813,9 +840,8 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
         if args.bare:
             if paired:
                 attach_bare(run, backend)
-            run["state"] = "ready"
             run["timings"]["total"] = round(time.monotonic() - total_started, 3)
-            save(run)
+            advance(run, (RunState.STARTING,), RunState.READY)
             print(run["manifest"])
             print(json.dumps(run["timings"]), file=sys.stderr)
             return
@@ -835,9 +861,8 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
             except Exception as error:  # noqa: BLE001 - the run is ready either way
                 print(f"No approved device, so probe and cli --device won't work: {str(error).splitlines()[0]}", file=sys.stderr)
         run["timings"]["join_and_ready"] = round(time.monotonic() - started, 3)
-        run["state"] = "ready"
         run["timings"]["total"] = round(time.monotonic() - total_started, 3)
-        save(run)
+        advance(run, (RunState.STARTING,), RunState.READY)
         print(run["manifest"])
         print(json.dumps(run["timings"]), file=sys.stderr)
     except BaseException:
@@ -1010,11 +1035,15 @@ def main():
             node.setdefault("endpoint", endpoint(node["address"]))
     if run["root"] != str(CORE) or Path(run["manifest"]).resolve() != args.manifest.resolve():
         raise RuntimeError("Use this run's originating checkout and manifest path")
-    if run["state"] == "removed":
+    state = RunState(run["state"])
+    if state is RunState.REMOVED:
         if args.action == "down":
             print(f"Already removed. Evidence: {args.manifest.parent / 'evidence'}")
             return 0
         raise RuntimeError("This cluster has been removed")
+    if state is not RunState.READY and args.action != "down":
+        # up never finished, or down never did: its Machines may lack an address or be half gone.
+        raise RuntimeError(f"This cluster is {state.value}, not ready; remove it: scripts/verify-cluster down {args.manifest}")
     commands = Commands(run)
     backend = provider(run, commands)
     if run["provider"] == "boat" and args.action != "down":
