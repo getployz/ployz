@@ -87,10 +87,6 @@ export function getRouter() {
     defaultRemountDeps: ({ params }) => params,
   });
 
-  // Collection Queries dehydrate too: DB hydration restores rows but not readiness, and a Query collection
-  // is ready only once its Query holds data; without it the canvas re-suspends mid-hydration and swaps
-  // the SSR HTML for its fallback. The Query also carries each change collection's cursor.
-  // ponytail: collection rows serialize twice (DB and Query); drop one once DB hydration marks collections ready.
   setupRouterSsrQueryIntegration({ router, queryClient });
   router.subscribe("onBeforeNavigate", ({ toLocation }) => followPostHogNavigation(toLocation.pathname));
 

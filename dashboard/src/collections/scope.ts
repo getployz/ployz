@@ -1,5 +1,16 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { DbClient } from "@tanstack/react-db";
+import { DbClient, type DehydrateDbClientOptions } from "@tanstack/react-db";
+
+/**
+ * A collection's SSR copy is its Query, which carries its rows, its readiness and a change collection's cursor; DB
+ * hydration restores rows without readiness. DB dehydrates only live queries, whose snapshots hold the page until each
+ * collection syncs from its Query.
+ */
+class QueryBackedDbClient extends DbClient {
+  override dehydrate(options?: DehydrateDbClientOptions) {
+    return super.dehydrate({ shouldDehydrateCollection: () => false, ...options });
+  }
+}
 
 const dbClients = new WeakMap<QueryClient, DbClient>();
 
@@ -7,7 +18,7 @@ const dbClients = new WeakMap<QueryClient, DbClient>();
 export function getDbClient(queryClient: QueryClient) {
   let client = dbClients.get(queryClient);
   if (!client) {
-    client = new DbClient();
+    client = new QueryBackedDbClient();
     dbClients.set(queryClient, client);
   }
   return client;

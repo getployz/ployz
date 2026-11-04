@@ -30,6 +30,7 @@ it("hydrates the server result before live reads and committed writes take over"
   const markup = renderToString(<DbProvider client={serverDb}><Names collection={serverRows} /></DbProvider>);
   expect(markup).toContain("Server snapshot");
   const state = serverDb.dehydrate();
+  expect(state.collections).toEqual([]);
 
   const browserQuery = new QueryClient();
   const browserDb = getDbClient(browserQuery);
