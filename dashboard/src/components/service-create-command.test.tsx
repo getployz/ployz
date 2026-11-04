@@ -32,11 +32,10 @@ function setup({ project, database }: { project: Answer; database: Answer }) {
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(github, "preloadGithubRepos").mockImplementation(() => {});
   const sent: ConfigCommand["command"][] = [];
-  vi.spyOn(functions, "writeStoreServerFn").mockImplementation((async ({ data }: { data: { command: ConfigCommand } }) => {
+  vi.spyOn(functions, "writeStoreServerFn").mockImplementation(async ({ data }) => {
     sent.push(data.command.command);
     return data.command.command === "create_project" ? project() : database();
-    // SAFETY: the spy answers the one server function the writer calls.
-  }) as never);
+  });
   vi.spyOn(creators, "useCreateStoreService").mockReturnValue(vi.fn());
   vi.spyOn(creators, "useCreateStoreDatabase").mockImplementation((organizationSlug) => {
     const writer = useStoreWriter(organizationSlug);
@@ -118,6 +117,19 @@ it("someone who left /new while the database saved stays where they went when it
   await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
   expect(toastError.mock.calls[0]?.[0]).toBe("brave-otter was created, but its database wasn’t added. Add it from the canvas.");
   expect(router.state.location.pathname).toBe("/cloud/acme/~/servers");
+});
+
+it("someone who left /new while the database saved stays where they went when it saves", async () => {
+  const database = deferred();
+  const { router, sent, toastError, choosePostgres } = setup({ project: saved, database: database.answer });
+
+  await choosePostgres();
+  await waitFor(() => expect(sent).toEqual(["create_project", "batch"]));
+  await act(() => router.navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug: "acme" } }));
+  await act(async () => database.settle(saved));
+
+  expect(router.state.location.pathname).toBe("/cloud/acme/~/servers");
+  expect(toastError).not.toHaveBeenCalled();
 });
 
 it("a new project with its database opens the database", async () => {
