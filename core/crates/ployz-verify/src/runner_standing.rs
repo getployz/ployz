@@ -27,13 +27,15 @@
 //! `fill_ingress` read `Ok(Unknown)` as keep (:1195, :782).
 //!
 //! The fix variant changes the runner and the store. The runner classifies every read into
-//! one `Standing`, latches Lost and Ended, stops at each site on either, and records
-//! Interrupted carrying the deletions when it is Lost. The store's `record` turns a
-//! non-Interrupted `Executed` for an Unknown Deployment into Interrupted in the same
-//! transaction, where the code refuses it (lifecycle.rs:1615-1618). Its projection shows
-//! the deletions of an Interrupted outcome, where the code reads them NotAttempted for any
-//! outcome but a Success (lifecycle.rs:2158-2162), and an Interrupted outcome projects
-//! to Failed (ployz-core config/runtime_outcome.rs:208-220).
+//! one `Standing`, latches Lost and Ended, and stops on either in `connecting`, `renewing`,
+//! the read after executing and the gate, which `NO_WORK_AFTER_END` needs. It sends the
+//! `Executed` record as the code does. The store's `record` turns a non-Interrupted
+//! `Executed` for an Unknown Deployment into Interrupted in the same transaction, where
+//! the code refuses it (lifecycle.rs:1615-1618), which `TAKEOVER_KEEPS_OUTCOME` needs. Its
+//! projection shows the deletions of an Interrupted outcome, which `DELETIONS_KEPT` needs,
+//! where the code reads them NotAttempted for any outcome but a Success
+//! (lifecycle.rs:2158-2162), and an Interrupted outcome projects to Failed (ployz-core
+//! config/runtime_outcome.rs:208-220).
 //!
 //! Each store call is one step, since `record`, `claim`, `cancel` and `cancel_in_flight`
 //! each take one transaction (lifecycle.rs:1512-1517, :1231-1236, :1459-1463,
@@ -263,8 +265,6 @@ enum Branch {
     GateSkips,
     /// The run sent `Executed` with its outcome.
     Records,
-    /// The fix: the latch said Lost, so the run sent Interrupted with its deletions.
-    RecordsInterrupted,
     /// The fix: `record` kept the `Executed` as Interrupted.
     Converted,
     /// The fix: the latch said the run is over, so the run returned without more work.
@@ -512,24 +512,26 @@ const COVERAGE: &[Coverage] = &[
         reached: |_, state| took(state, Branch::Latches),
     },
     Coverage {
-        name: "the latch records Interrupted and the store shows the deleted Volumes",
-        fix_only: true,
-        omit: Omit::Branch(Branch::RecordsInterrupted),
-        reached: |_, state| {
-            took(state, Branch::RecordsInterrupted)
-                && state.store.outcome
-                    == Some(Outcome::Executed {
-                        interrupted: true,
-                        removed: true,
-                    })
-                && state.store.shows_removed
-        },
-    },
-    Coverage {
         name: "record keeps a late Executed as Interrupted and shows the deleted Volumes",
         fix_only: true,
         omit: Omit::Branch(Branch::Converted),
         reached: |_, state| took(state, Branch::Converted) && state.store.shows_removed,
+    },
+    Coverage {
+        name: "renewing aborts once a read says the run ended",
+        fix_only: true,
+        omit: Omit::Branch(Branch::Aborts),
+        reached: |_, state| took(state, Branch::Aborts) && state.last_read == Some(Read::Ended),
+    },
+    Coverage {
+        name: "the gate skips fill_ingress once the latch says the run is over",
+        fix_only: true,
+        omit: Omit::Branch(Branch::GateSkips),
+        reached: |_, state| {
+            took(state, Branch::GateSkips)
+                && state.standing != Standing::Keep
+                && state.last_read != Some(Read::Cancelling)
+        },
     },
     Coverage {
         name: "the run stops in connecting once a read says it lost",
@@ -551,9 +553,10 @@ const COVERAGE: &[Coverage] = &[
 
 #[derive(Clone, Copy, Debug)]
 struct RunnerStanding {
-    /// The fix: one `Standing` from every read, latched, and each site stops on Lost or
-    /// Ended; `record` keeps a late `Executed` as Interrupted, and the projection shows
-    /// an Interrupted outcome's deletions.
+    /// The fix: one `Standing` from every read, latched, and `connecting`, `renewing`, the
+    /// read after executing and the gate stop on Lost or Ended; `record` keeps a late
+    /// `Executed` as Interrupted, and the projection shows an Interrupted outcome's
+    /// deletions.
     fix: bool,
     broken: Broken,
     /// How many `status()` calls may fail.
@@ -831,22 +834,13 @@ impl RunnerStanding {
                 }
             }
             Action::Record => {
-                if self.fix && state.standing == Standing::Lost {
-                    self.executed(state, true);
-                    state.phase = Phase::Returned;
-                    state.took = Some(Branch::RecordsInterrupted);
-                } else if self.stops(state) {
-                    state.phase = Phase::Returned;
-                    state.took = Some(Branch::StopsOver);
+                let answer = self.executed(state, false);
+                state.phase = Phase::Returned;
+                state.took = Some(if answer == Answer::Converted {
+                    Branch::Converted
                 } else {
-                    let answer = self.executed(state, false);
-                    state.phase = Phase::Returned;
-                    state.took = Some(if answer == Answer::Converted {
-                        Branch::Converted
-                    } else {
-                        Branch::Records
-                    });
-                }
+                    Branch::Records
+                });
             }
         }
     }
@@ -991,10 +985,12 @@ impl Model for RunnerStanding {
 
 const TAKEOVER_KEEPS_OUTCOME: &str =
     "a run never returns with its Executed refused because the Deployment went Unknown";
-/// `cancel_in_flight` is exempt: `forget_cluster`, which runs it, lets go of the
-/// Organization's Applied State and Volumes' fixed storage (teardown.rs:442-445,
-/// :458-469).
-const DELETIONS_KEPT: &str = "once the run returned, the store shows the Volumes it deleted as removed, unless cancel_in_flight ended the Deployment";
+/// Only the `removed_volume` node projection (lifecycle.rs:2146-2168). Applied State still
+/// lists the deleted Volume under the fix, since a run that was taken over moves no Applied
+/// State (lifecycle.rs:1763-1771). `cancel_in_flight` is exempt: `forget_cluster`, which
+/// runs it, lets go of the Organization's Applied State and Volumes' fixed storage
+/// (teardown.rs:442-445, :458-469).
+const DELETIONS_KEPT: &str = "once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless cancel_in_flight ended the Deployment";
 const NO_WORK_AFTER_END: &str = "once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes";
 const HEEDS_CANCEL: &str = "while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes";
 const TAKEN_OVER_INTERRUPTED: &str =
@@ -1178,9 +1174,7 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
         }
         Action::Filled => "Runner: fill_ingress ends (store_runner.rs fill_ingress)".to_owned(),
         Action::Record => {
-            let Some(sent) = after.sent else {
-                return "Runner: the latch says the run ended: the run returns without a record (the fix)".to_owned();
-            };
+            let sent = after.sent.expect("record(Executed) sets sent");
             let what = if sent.interrupted {
                 "Interrupted"
             } else {
@@ -1207,10 +1201,6 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
                 }
                 Answer::RefusedEnded => "the Deployment ended: finish's running() refuses it",
             };
-            let why = match after.took {
-                Some(Branch::RecordsInterrupted) => "the latch says Lost (the fix)",
-                _ => "record(Executed)",
-            };
             let shown = match (sent.removed, after.store.outcome, after.store.shows_removed) {
                 (true, Some(_), true) => "; removed_volume reads the deleted Volumes Removed",
                 (true, Some(_), false) if model.broken.projection_hides_interrupted_deletions => {
@@ -1222,7 +1212,7 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
                 _ => "",
             };
             format!(
-                "Runner: {why} with {what}{removed}; {answer}{shown} (store_runner.rs execute, lifecycle.rs record)"
+                "Runner: record(Executed) with {what}{removed}; {answer}{shown} (store_runner.rs execute, lifecycle.rs record)"
             )
         }
     }
@@ -1232,7 +1222,7 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use stateright::{Checker, HasDiscoveries};
+    use stateright::{Checker, Expectation, HasDiscoveries};
 
     use super::*;
 
@@ -1270,7 +1260,9 @@ mod tests {
     }
 
     /// The first path in BFS order whose last state breaks `property` under `model`, so
-    /// no shorter path breaks it, printed as a story under the test's name. The checker's
+    /// no shorter path breaks it, printed as a story under the test's name. For a
+    /// `sometimes`, such as a `COVERAGE` row's name, it is the first path that reaches it.
+    /// It panics when no path does, as for an `always` that holds. The checker's
     /// own discovery is not that path: `check_block` stores every violation it visits,
     /// each overwriting the last, and `finish_when` is read once per 1500-state block, so
     /// a visitor keeps the first. One thread keeps the path the same from run to run.
@@ -1290,12 +1282,13 @@ mod tests {
         and: fn(&Path) -> bool,
         stop_at_discovery: bool,
     ) -> Path {
-        let holds = model
+        let named = model
             .properties()
             .into_iter()
             .find(|candidate| candidate.name == property)
-            .expect("a model property")
-            .condition;
+            .expect("a model property");
+        let holds = named.condition;
+        let reached = matches!(named.expectation, Expectation::Sometimes);
         let first = Arc::new(Mutex::new(None));
         let seen = Arc::clone(&first);
         let checker =
@@ -1304,7 +1297,7 @@ mod tests {
                 .threads(1)
                 .visitor(move |path: stateright::Path<State, Action>| {
                     let mut first = seen.lock().expect("the first break");
-                    if first.is_none() && !holds(&model, path.last_state()) {
+                    if first.is_none() && holds(&model, path.last_state()) == reached {
                         let path = path.into_vec();
                         if and(&path) {
                             *first = Some(path);
@@ -1324,8 +1317,9 @@ mod tests {
             .expect("a path breaks the property");
         let test = std::thread::current();
         println!(
-            "[{}] {property} fails under {model:?}:\n{}",
+            "[{}] {property} {} under {model:?}:\n{}",
             test.name().unwrap_or("?"),
+            if reached { "is reached" } else { "fails" },
             story(&model, &path)
         );
         path
@@ -1532,8 +1526,8 @@ mod tests {
         assert_eq!(last(&path).after_cancel, Some(Work::Execute));
     }
 
-    /// Without the read after executing, a run taken over after its last tick deletes
-    /// Volumes though that read said Unknown.
+    /// Without the read after executing, a run taken over while it executes, with no tick
+    /// in between, starts deleting Volumes though that read said Unknown.
     #[test]
     fn deleting_needs_the_read_after_executing() {
         let path = breaks(
@@ -1570,7 +1564,15 @@ mod tests {
             }),
             TAKEN_OVER_INTERRUPTED,
         );
-        assert_eq!(last(&path).store.status, Status::Unknown);
+        let broken = last(&path);
+        assert_eq!(broken.store.status, Status::Unknown);
+        assert!(matches!(
+            broken.store.outcome,
+            Some(Outcome::Executed {
+                interrupted: false,
+                ..
+            })
+        ));
     }
 
     /// Without Lost sticking, a failed read after a takeover puts the fix's latch back to
@@ -1585,7 +1587,10 @@ mod tests {
             })),
             NO_WORK_AFTER_END,
         );
-        assert_eq!(last(&path).failed, 1);
+        let broken = last(&path);
+        assert_eq!(broken.failed, 1);
+        assert!(broken.after_over.is_some());
+        assert_eq!(broken.standing, Standing::Keep);
     }
 
     /// Without the store keeping a late `Executed` as Interrupted, a takeover after the

@@ -27,7 +27,7 @@ What `status()` returns, as the model reads it:
 The properties, each one sentence:
 
 - `TAKEOVER_KEEPS_OUTCOME`: **a run never returns with its `Executed` refused because the Deployment went Unknown.** This is finding 1. The store keeps no outcome for a run that executed (`lifecycle.rs:1615-1618`).
-- `DELETIONS_KEPT`: **once the run returned, the store shows the Volumes it deleted as removed, unless `cancel_in_flight` ended the Deployment.** This is finding 1 with Volumes deleted. `cancel_in_flight` is exempt because `forget_cluster`, which runs it, lets go of the Organization's Applied State and Volumes' fixed storage (`teardown.rs:442-445`, `458-469`).
+- `DELETIONS_KEPT`: **once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless `cancel_in_flight` ended the Deployment.** This is finding 1 with Volumes deleted. It checks only the `removed_volume` node projection (`lifecycle.rs:2146-2168`), not Applied State. `cancel_in_flight` is exempt because `forget_cluster`, which runs it, lets go of the Organization's Applied State and Volumes' fixed storage (`teardown.rs:442-445`, `458-469`).
 - `NO_WORK_AFTER_END`: **once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes.** "Over" is Unknown or ended, the two `running` refuses (`mod.rs:1214-1221`). Deleting is exempt from "keeps on" because its abort is `|| ()` by design (`store_runner.rs:777-778`). This is finding 2.
 - `HEEDS_CANCEL`: **while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes.** Deleting is exempt because the code never stops it on a cancel: the one read before `remove_volumes`, `lost_to_another_runner`, acts only on Unknown (`store_runner.rs:771`, `1367-1369`), and its abort is `|| ()` (`:778`).
 - `TAKEN_OVER_INTERRUPTED`: **the store keeps no outcome but Interrupted on a Deployment that went Unknown.** This is what `record`'s takeover refusal keeps (`lifecycle.rs:1615-1618`).
@@ -49,7 +49,9 @@ The run is green when all sixteen tests pass. Read them as four groups.
   - `current_code_works_on_after_a_read_said_unknown` takes `cancel_in_flight` out and breaks `NO_WORK_AFTER_END` through `Ok(Unknown)` read as keep: at `connecting`, and at the gate.
 
   `current_code_breaks_only_the_findings` checks the code as it is with one failed read. It expects those three properties to break, `HEEDS_CANCEL` and `TAKEN_OVER_INTERRUPTED` to hold, and every `COVERAGE` row that is not `fix_only` to be reached. When the product fix lands, model it as the code writes it, make it the default, and turn each finding test into a `Broken` flag that restores the old code, as `removal_marks.rs` `finish_needs_its_conditional_save` did.
-- **The fix variant.** `a_latched_standing_and_a_converting_store_keep_the_outcome_and_the_deletions` runs `failing(fixed())`: every property holds and every `sometimes` is reached. Each `sometimes` is one `COVERAGE` row naming a branch the code handles. `every_sometimes_needs_what_it_names` takes each row's `omit` out of the same model and expects the row unreached. To print a path under the fix, pass `failing(fixed())` to `breaks`.
+- **The fix variant.** `a_latched_standing_and_a_converting_store_keep_the_outcome_and_the_deletions` runs `failing(fixed())`: every property holds and every `sometimes` is reached. Each `sometimes` is one `COVERAGE` row naming a branch the code handles. `every_sometimes_needs_what_it_names` takes each row's `omit` out of the same model and expects the row unreached.
+
+  Since every `always` holds on `failing(fixed())`, passing it to `breaks` with an `always` panics with "a path breaks the property" (`first_break`). To see a fix guard's break, pass the fix with that guard dropped, as `the_fix_needs_lost_to_stick` does: `breaks(failing(fixed_without(Broken { lost_does_not_stick: true, ..Broken::default() })), NO_WORK_AFTER_END)`. To print the first path that reaches a `sometimes`, pass its `COVERAGE` row's name to `breaks`, which looks for a state where a `sometimes` holds (`first_break`): for example `breaks(failing(fixed()), "record keeps a late Executed as Interrupted and shows the deleted Volumes")`.
 - **The code's guards.** Six tests each drop one guard the code has (a `Broken` flag) from `fixed()` and expect the property it keeps to fail.
   - `connecting_needs_its_cancel_check` drops the Cancelling check in `connecting` (`store_runner.rs:1195-1197`) and breaks `HEEDS_CANCEL`.
   - `renewing_needs_its_abort` drops `renewing`'s abort (`:1214-1219`) and breaks `HEEDS_CANCEL`.
@@ -63,9 +65,9 @@ If a guard test goes from green to red, the guard no longer earns its keep, or t
 
 ## The fix
 
-The fix needs a runner change and a store change. Without the store change, `TAKEOVER_KEEPS_OUTCOME` still breaks (`the_fix_needs_the_store_to_keep_a_late_executed`). Without the runner change, finding 2 stays, since both its causes are the runner's reads (`store_runner.rs:1195`, `1213-1219`, `782`).
+The fix needs a runner change and a store change. Without the store change, `TAKEOVER_KEEPS_OUTCOME` still breaks (`the_fix_needs_the_store_to_keep_a_late_executed`). Without the runner change, `NO_WORK_AFTER_END` stays red, since both causes of finding 2 are the runner's reads (`store_runner.rs:1195`, `1213-1219`, `782`).
 
-The runner change: every read goes through one `Standing`, and each site stops on Lost or Ended. "Latches Lost" means the first `Ok(Unknown)` read sets Lost and no later read changes it, and likewise the first ended `Err` sets Ended (`Standing::after`). `connecting` returns, and `renewing` aborts, except during `remove_volumes`, whose abort stays a no-op. The read after executing records Interrupted, carrying the deleted Volumes, on Lost and returns on Ended. The gate skips `fill_ingress`, and the `Executed` record goes as Interrupted on Lost.
+The runner change is to latch Lost and stop. Every read goes through one `Standing`. "Latches Lost" means the first `Ok(Unknown)` read sets Lost and no later read changes it, and likewise the first ended `Err` sets Ended (`Standing::after`). On either, `connecting` returns, `renewing` aborts (except during `remove_volumes`, whose abort stays a no-op), the read after executing returns, and the gate skips `fill_ingress`. These stops keep `NO_WORK_AFTER_END`, which breaks without them on the code as it is (the two finding 2 tests) and with Lost not sticking (`the_fix_needs_lost_to_stick`). The runner sends the `Executed` record as the code does (`store_runner.rs:786-791`), and the store keeps it.
 
 The store change has two parts. `record` keeps a non-Interrupted `Executed` for an Unknown Deployment as Interrupted, in the same transaction, where the code refuses it (`lifecycle.rs:1615-1618`). `removed_volume` shows the deleted Volumes for an Interrupted outcome, where the code reads them NotAttempted for anything but a Success (`lifecycle.rs:2158-2162`).
 
@@ -73,7 +75,7 @@ Each part has a `Broken` flag and a test that breaks the property it keeps on `f
 
 | Part of the fix | `Broken` flag | Test | Property it keeps |
 |---|---|---|---|
-| Lost sticks | `lost_does_not_stick` | `the_fix_needs_lost_to_stick` | `NO_WORK_AFTER_END` |
+| Latch Lost and stop | `lost_does_not_stick` | `the_fix_needs_lost_to_stick` | `NO_WORK_AFTER_END` |
 | `record` keeps a late `Executed` as Interrupted | `store_refuses_late_executed` | `the_fix_needs_the_store_to_keep_a_late_executed` | `TAKEOVER_KEEPS_OUTCOME` |
 | The projection shows an Interrupted outcome's deletions | `projection_hides_interrupted_deletions` | `the_fix_needs_the_projection_to_show_interrupted_deletions` | `DELETIONS_KEPT` |
 
@@ -83,7 +85,7 @@ The six code-guard tests run on `fixed()` too. So a change to the fix, or a fix 
 
 ## Read a counterexample
 
-A failure prints the test name, the property, the model's flags, and a numbered story cut at the first state in BFS order that breaks the property, so the last row is the broken state. `breaks` keeps that first path with a visitor and stops at the first discovery (`finish_when(HasDiscoveries::AllOf(..))`). `breaks_where` keeps the first one that also passes a filter on the path, and explores the whole model. Each row is one step in the code's words, followed by the Deployment's row and the runner once it ran, for example:
+A failure prints the test name, the property, the model's flags, and a numbered story cut at the first state in BFS order that breaks the property, so the last row is the broken state. For a `sometimes`, the story is cut at the first state that reaches it (`first_break`). `breaks` keeps that first path with a visitor and stops at the first discovery (`finish_when(HasDiscoveries::AllOf(..))`). `breaks_where` keeps the first one that also passes a filter on the path, and explores the whole model. Each row is one step in the code's words, followed by the Deployment's row and the runner once it ran, for example:
 
 ```
  9. Runner: record(Executed) with its outcome, naming the deleted Volumes; the Deployment is Unknown and the outcome not Interrupted: running() refuses it; execute returns that Err (store_runner.rs execute, lifecycle.rs record)
@@ -109,7 +111,7 @@ Finding 1, confirmed step by step at the sync commit below, has a path of 10 row
 2. Executing returns a Success. `lost_to_another_runner` reads `Ok(Running)`, which is not Unknown (`:771`, `1367-1369`). `remove_volumes` starts under `renewing` with the no-op abort `|| ()` (`:776-778`).
 3. Another Deployment of the Environment is claimed. Its UPDATE sets this one unknown and leaves its runner column (`lifecycle.rs:1320-1325`).
 4. `remove_volumes` returns the Volumes it deleted. The gate reads `Ok(Unknown)`, which is not Cancelling, so `fill_ingress` runs (`store_runner.rs:782-785`).
-5. `record(Executed)` sends the Success, naming the deleted Volumes (`:786-791`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`lifecycle.rs:1615-1618`, `mod.rs:1214-1218`). The arm returns before it writes anything (`lifecycle.rs:1595-1618`), and `execute` returns the error. Cloud's `stopStoreDeploymentRun` then sends `Abandoned` through `abandonDeployment` (`dashboard/src/modules/config-store/store-deployment.server.ts:187`, `core/crates/ployz-sdk/src/config_store.rs:358`), which changes nothing on an Unknown Deployment (`lifecycle.rs:1877-1879`).
+5. `record(Executed)` sends the Success, naming the deleted Volumes (`:786-791`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`lifecycle.rs:1615-1618`, `mod.rs:1214-1218`). The arm returns before it writes anything (`lifecycle.rs:1595-1618`), and `execute` returns the error. On Cloud, `runStoreDeployment` catches that conflict as `{ nothingToRun }` (`dashboard/src/modules/config-store/store-deployment.server.ts:106-107`). The function then marks the Volumes done, skips `retire-old`, and skips `mail-failure`, which runs only for a `ran` result that failed or is unknown (`dashboard/src/modules/config-store/store-deployment.inngest.ts:83-107`). `onFailure`, which calls `stopStoreDeploymentRun` (`:44-50`), never runs.
 
 No `status()` call fails on this path. The shortest path that breaks `TAKEOVER_KEEPS_OUTCOME` deletes nothing: a cancel lets the gate skip `fill_ingress`, and the takeover lands after the gate's read, so the store refuses a Failed outcome the same way. When the takeover lands before `lost_to_another_runner` instead, the run records Interrupted with no deletions (`store_runner.rs:771-773`, `1253-1264`). `tests/deploy_client/runner_cancellation.rs` `taken_over_mid_create` (`:120-164`) shows that case, with the takeover while the first run still executes.
 
@@ -122,11 +124,13 @@ What the model assumes, so you can judge the lead. A takeover needs a newer Depl
 
 ### Staging finding 1 in real code
 
-The `deploy_client` tests in `core/crates/ployz/tests/deploy_client/` run the real runner and store against fake Machines. To land the takeover while `remove_volumes` runs, hold the fake's `remove_volume` (`support.rs:1133`). The Deploy that takes over is the test's third, and it needs three things:
+The `deploy_client` tests in `core/crates/ployz/tests/deploy_client/` run the real runner and store against a fake Machine, `DeployService` (`support.rs`). The `ployz` helper in `operate.rs` runs the CLI against it (`operate.rs:42`).
 
-- `accept_volume_loss` naming the Volume (`core/crates/ployz-store/src/deployment/admit.rs:73-79`);
-- the volume observation in `Trusted.volumes` (`core/crates/ployz-store/src/trusted.rs:31-34`), which `observe_volumes` builds (`store_runner.rs:232`);
-- the `version` from the Conflict's `details.diff.version`, since a stale review refuses with `{"diff": review.view}` (`core/crates/ployz-store/src/review/mod.rs:869-873`), whose `DiffView.version` is at `review/mod.rs:46-47`.
+1. The first Deploy creates the Volume. The fake lists the Docker Volumes in its `volumes` (`support.rs:99`, `983-991`), so add one for it there.
+2. The second Deploy removes the Volume under destructive acceptance, and it is the run you take over. Its first admission is refused `confirmation_required`. That refusal's `details.version` is the review version bound to the loss digest (`core/crates/ployz-store/src/removal/review.rs:178-181`, `196`). Admit again with `accept_volume_loss` naming the Volume and that bound version. The plain review version is refused `confirmation_required` again, since only the bound one confirms (`:178-181`). A stale-review Conflict carries the bound version in `details.volume_loss.version` (`core/crates/ployz-store/src/review/mod.rs:645-660`, called at `core/crates/ployz-store/src/deployment/admit.rs:388`), not in `details.diff.version`.
+3. The fake's `remove_volume` (`support.rs:1133`) has no hold, and the fake's only hold is `hold_health` (`support.rs:333`). Add a hold to `remove_volume`, modelled on it, so the second Deploy's `remove_volumes` waits.
+4. While it waits, admit and claim a third Deploy (`ConfigStore::write_trusted` and `claim`, `core/crates/ployz-store/src/lib.rs:225`, `360`). The second Deploy's saved consent covers the loss. Admission passes it into the destructive review (`deployment/admit.rs:408-410`), which accepts a covered loss without a fresh confirmation (`removal/review.rs:172-177`). So the third Deploy needs no `accept_volume_loss` and no version. It still needs the volume observation in `Trusted.volumes` (`core/crates/ployz-store/src/trusted.rs:31-34`), since the review refuses `unavailable` without one (`removal/review.rs:201-215`).
+5. Release the hold. The run then takes steps 4 and 5 of finding 1 above.
 
 ## A break that stays green
 
@@ -169,6 +173,7 @@ These are out of scope:
 - a store call other than `status()` failing, such as `record(Prepared)`, whose error `?` returns (`store_runner.rs:751-753`)
 - an abort that comes too late to stop its work
 - the select order in `connecting` (`biased`, `:1193`) and `renewing`
+- Applied State: it still lists a deleted Volume under the fix, since a run that was taken over moves no Applied State (`lifecycle.rs:1763-1771`), and `DELETIONS_KEPT` checks only the node projection
 
 A green model says nothing about them. Cover them with `cargo nextest run -p ployz sdk::store_runner` and `cargo nextest run -p ployz --test deploy_client runner_cancellation`.
 
